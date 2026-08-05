@@ -5,6 +5,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 
 use super::fixtures::{llama_cpp_state, text_response};
+use crate::generation::service::TerminalRequestStats;
 use crate::routes::build_router;
 
 /// `/metrics` must stay a passive read: engine-step gauges only reflect
@@ -100,4 +101,87 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains(
         "ax_engine_model_kv_topology_info{model=\"qwen3\",attention_storage=\"contiguous\",sliding_storage=\"none\",recurrent_state=\"present\",rollback_strategy=\"restore_replay\"} 1\n"
     ));
+}
+
+/// Node-saturation series follow the AX Serving fleet-dispatch contract:
+/// config-derived series are always present once a model is loaded, while
+/// measurement-derived series stay hidden until real traffic produces them.
+#[tokio::test]
+async fn metrics_saturation_series_feed_fleet_dispatch_contract() {
+    let state = llama_cpp_state();
+    let metrics = state.metrics.clone();
+    let kv_blocks_total = u64::from(state.snapshot().session_config.kv_config.total_blocks);
+    let app = build_router(state);
+
+    let scrape = |app: &axum::Router| {
+        let app = app.clone();
+        async move {
+            let (status, _, body) = text_response(
+                &app,
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            body
+        }
+    };
+
+    let body = scrape(&app).await;
+    assert!(body.contains(&format!("ax_runtime_kv_pages_total {kv_blocks_total}\n")));
+    assert!(body.contains("ax_runtime_queue_depth 0\n"));
+    assert!(body.contains("ax_runtime_max_batch_size "));
+    // Measurement-derived series stay hidden before any step or request.
+    assert!(!body.contains("ax_runtime_kv_utilization"));
+    assert!(!body.contains("ax_engine_step_waiting_requests"));
+    assert!(!body.contains("ax_runtime_ttft_p95_ms"));
+    assert!(!body.contains("ax_runtime_decode_tok_per_sec"));
+    // The scrape itself is a counted HTTP request, so the error ratio is
+    // already exported — at exactly 0 while nothing has failed.
+    assert!(body.contains("ax_runtime_error_rate 0\n"));
+
+    metrics.record_step_report(
+        "qwen3",
+        &EngineStepReport {
+            kv_usage_blocks: 4,
+            waiting_requests: 2,
+            ..Default::default()
+        },
+    );
+    for ttft_us in [100_000, 200_000, 300_000] {
+        metrics.record_terminal_request(TerminalRequestStats {
+            ttft_us: Some(ttft_us),
+            decode_tok_per_sec: None,
+        });
+    }
+    metrics.record_terminal_request(TerminalRequestStats {
+        ttft_us: Some(400_000),
+        decode_tok_per_sec: Some(84.0),
+    });
+    metrics.begin_http_request();
+    metrics.finish_http_request(StatusCode::INTERNAL_SERVER_ERROR);
+
+    let body = scrape(&app).await;
+    assert!(body.contains("ax_engine_step_waiting_requests 2\n"));
+    assert!(body.contains("ax_engine_step_waiting_requests{model=\"qwen3\"} 2\n"));
+    // Queue depth combines worker command queue (0) and scheduler waiting (2).
+    assert!(body.contains("ax_runtime_queue_depth 2\n"));
+    #[allow(clippy::cast_precision_loss)]
+    let expected_kv_utilization = 4.0_f64 / kv_blocks_total as f64;
+    assert!(
+        body.contains(&format!(
+            "ax_runtime_kv_utilization {expected_kv_utilization}\n"
+        )),
+        "body must contain kv utilization {expected_kv_utilization}"
+    );
+    // Nearest-rank p95 over [100, 200, 300, 400] ms is 400.
+    assert!(body.contains("ax_runtime_ttft_p95_ms 400\n"));
+    // A single decode sample seeds the EWMA directly.
+    assert!(body.contains("ax_runtime_decode_tok_per_sec 84\n"));
+    // One failed request out of all counted requests (including the scrapes
+    // themselves): strictly positive ratio below 1.
+    assert!(body.contains("ax_runtime_error_rate 0."));
 }

@@ -278,6 +278,7 @@ dependencies = [
 name = "ax-engine-server"
 version = "6.13.1"
 dependencies = [
+ "ax-engine-core",
  "ax-engine-sdk",
  "axum",
  "base64 0.22.1",

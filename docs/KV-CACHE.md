@@ -535,6 +535,12 @@ layer's K and V. `peek_source_kv()` returns `last_k_view` / `last_v_view`
 from the source layer's `LayerKV`, avoiding a duplicate slice kernel dispatch
 for each shared layer (~0.5 ms/step at 42 shared layers).
 
+Continuous batched decode has no KV-source path: a model with KV-shared
+layers is rejected structurally at load (`kv_shared_layers`, see
+`StructuralCapabilities::batched_decode_structural_rejections`) and stays on
+the per-item path, so no request can reach the batched forward's
+`kv_source.is_none()` backstop assert.
+
 ### GLM MLA (compressed cross-attention)
 
 `GlmMlaLayerCache` stores:
@@ -649,7 +655,7 @@ gated runner-local sharing experiment:
 | Sharing mode | One pool per `MlxRunner`; pure standard-FA requests and native L1 entries share IDs |
 | Native prefix adoption | Exact-token longest compatible prefix, partial matches block-floored, non-consuming clone + trim; serialized L1/L2 remains fallback |
 | Pressure reclamation | Evicts runner-local native L1 entries before request-scoped exhaustion |
-| Unsupported layouts | Sliding / rotating / MLA / linear / diffusion, specialized multimodal, and target-MTP/assistant configurations remain on existing paths |
+| Unsupported layouts | Sliding / rotating / MLA / linear / diffusion, KV-shared, specialized multimodal, and target-MTP/assistant configurations remain on existing paths |
 | Decode attention | Fixed-slab row gather (`take` by same-slab run) feeds MLX SDPA; the third-flag kernel is attempted only for eligible one-slab decode |
 | Peek / serialize | Gather dense logical K/V for portable contracts; sharing mode serializes only the largest aligned prefix per store event |
 | Pool exhaustion | Demote the affected layer for graph safety, then fail only that request under the hard cap; never abort the process |

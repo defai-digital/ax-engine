@@ -6,6 +6,7 @@
 //! hybrid variants.
 
 use crate::generation::GenerationKind;
+use crate::support_tier::ModelSupportTier;
 
 /// Which MLX family forward implementation owns the layer graph.
 ///
@@ -68,6 +69,8 @@ pub struct ArchitectureRegistration {
     pub dense_batched_decode_candidate: bool,
     /// Human-readable cert / support note for docs and diagnostics.
     pub cert_gate_note: &'static str,
+    /// Three-tier model quality grade (see [`crate::support_tier`]).
+    pub support_tier: ModelSupportTier,
 }
 
 /// All statically registered architecture labels.
@@ -81,6 +84,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: true,
         cert_gate_note: "dense full-attention AR; batched decode when certified",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "qwen3_5",
@@ -88,6 +92,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "hybrid linear+full; structural rejections include linear_attention",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "qwen3_next",
@@ -95,6 +100,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "hybrid gated-delta / MoE; capability-gated, not name-allowlisted",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "minicpmv4_6",
@@ -102,6 +108,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "Qwen3.5 hybrid text backbone with MiniCPM-V vision prefill",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "llama3",
@@ -109,6 +116,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: true,
         cert_gate_note: "dense full-attention AR when structurally dense",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "gemma3",
@@ -116,6 +124,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "Gemma3 SWA text backbone; standard path",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "gemma4",
@@ -123,6 +132,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "interleaved SWA / optional MoE; dense pilot rejects SWA+MoE; SWA text may use gemma_swa structural helper + multi_token_window_views",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "gemma4_assistant",
@@ -130,6 +140,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "assistant MTP drafter; not dense-batch candidate",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "gemma4_unified",
@@ -137,6 +148,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "multimodal prefill adapters feed AR generation",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "gemma4_vl",
@@ -144,6 +156,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "Gemma 4 E2B/E4B ViT+Conformer towers into gemma4 AR backbone (WS-V1)",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "qwen3_vl",
@@ -151,6 +164,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: true,
         cert_gate_note: "Qwen3-VL dense: text path rides certified qwen3 batched decode when text-only",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "qwen3_vl_moe",
@@ -158,6 +172,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "Qwen3-VL-MoE; text decode shares qwen3-MoE graphs; batch cert separate",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "diffusion_gemma",
@@ -165,6 +180,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "block diffusion; generation kind BlockDiffusion",
+        support_tier: ModelSupportTier::Experimental,
     },
     ArchitectureRegistration {
         family_label: "embeddinggemma",
@@ -172,6 +188,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "encoder embed strategy; not a decode path",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "glm4_moe_lite",
@@ -179,6 +196,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::GlmMoeLite,
         dense_batched_decode_candidate: false,
         cert_gate_note: "MLA + MoE; structural rejections",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "deepseek_v3",
@@ -186,6 +204,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::DeepseekV3,
         dense_batched_decode_candidate: false,
         cert_gate_note: "MLA + MoE",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "deepseek_v32",
@@ -193,6 +212,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::DeepseekV3,
         dense_batched_decode_candidate: false,
         cert_gate_note: "MLA + MoE",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "mistral3",
@@ -200,6 +220,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Mistral3,
         dense_batched_decode_candidate: false,
         cert_gate_note: "uniform SWA; sliding_window rejection",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "mixtral",
@@ -207,6 +228,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Mixtral,
         dense_batched_decode_candidate: false,
         cert_gate_note: "MoE",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "llama4",
@@ -214,6 +236,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Llama4,
         dense_batched_decode_candidate: false,
         cert_gate_note: "iRoPE / MoE hybrid",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "gpt_oss",
@@ -221,6 +244,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::GptOss,
         dense_batched_decode_candidate: false,
         cert_gate_note: "MXFP4 MoE",
+        support_tier: ModelSupportTier::Certified,
     },
     ArchitectureRegistration {
         family_label: "nemotron_h",
@@ -228,6 +252,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::NemotronH,
         dense_batched_decode_candidate: false,
         cert_gate_note: "hybrid Mamba-2 + GQA + ReLU2 MoE; pattern-driven mixers",
+        support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
         family_label: "unlimited_ocr",
@@ -235,6 +260,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
         cert_gate_note: "Unlimited-OCR multimodal: dual vision + SWA MoE language tower",
+        support_tier: ModelSupportTier::Compatible,
     },
 ];
 

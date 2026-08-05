@@ -1847,7 +1847,10 @@ fn ffn_batched(
     // WS-T1 Decision A: per-row MoE for bit-exact B>1 certification.
     // Shared gather_qmm amortization is intentionally uncertified (see
     // docs/performance/batched-hybrid-moe-linear-decode.md).
-    if crate::batched_decode_policy::row_exact_moe_enabled(&cfg.model_family) {
+    if crate::batched_decode_policy::row_exact_moe_enabled(
+        &cfg.model_family,
+        cfg.moe_expert_count > 0,
+    ) {
         return ffn_batched_moe_row_exact(cfg, w, normed2);
     }
     let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {

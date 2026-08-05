@@ -36,12 +36,19 @@ impl BatchedMoECertMode {
     }
 }
 
-/// True when family is in the Decision A certification scope (Qwen 3.5 / 3.6).
-pub fn family_requires_decision_a_cert(model_family: &str) -> bool {
-    matches!(
+/// True when the model is in the Decision A certification scope: hybrid
+/// Qwen 3.5 / 3.6 families always, and plain Qwen 3 (`qwen3`) when the model
+/// is MoE (`has_moe`). Dense Qwen 3 is out of scope — HF `qwen3_moe` and
+/// dense `qwen3` share the manifest family label, so the MoE config
+/// disambiguates.
+pub fn family_requires_decision_a_cert(model_family: &str, has_moe: bool) -> bool {
+    if matches!(
         model_family,
         "qwen3_5" | "qwen3_next" | "qwen3.5" | "qwen3.6" | "qwen3_6"
-    )
+    ) {
+        return true;
+    }
+    has_moe && model_family == "qwen3"
 }
 
 /// Expert accumulation order for deterministic batched MoE reduction.
@@ -52,14 +59,27 @@ pub fn deterministic_expert_order(active_expert_ids: &mut [u32]) {
 }
 
 /// Env: `AX_MLX_BATCHED_MOE_ROW_EXACT` — when on (default for Decision A
-/// families), `ffn_batched` runs MoE per-row instead of shared `gather_qmm`.
+/// models), `ffn_batched` runs MoE per-row instead of shared `gather_qmm`.
 /// Opt out with `=0` for uncertified amortized throughput experiments.
 pub const ENV_BATCHED_MOE_ROW_EXACT: &str = "AX_MLX_BATCHED_MOE_ROW_EXACT";
 
 /// True when batched MoE must use per-row (RowExact) expert execution for
-/// bit-exact greedy parity (Decision A).
-pub fn row_exact_moe_enabled(model_family: &str) -> bool {
-    if let Ok(v) = std::env::var(ENV_BATCHED_MOE_ROW_EXACT) {
+/// bit-exact greedy parity (Decision A). `has_moe` comes from the model's
+/// MoE config (e.g. `ModelConfig::moe_expert_count > 0`).
+pub fn row_exact_moe_enabled(model_family: &str, has_moe: bool) -> bool {
+    row_exact_moe_enabled_with_env(
+        model_family,
+        has_moe,
+        std::env::var(ENV_BATCHED_MOE_ROW_EXACT).ok().as_deref(),
+    )
+}
+
+fn row_exact_moe_enabled_with_env(
+    model_family: &str,
+    has_moe: bool,
+    env_value: Option<&str>,
+) -> bool {
+    if let Some(v) = env_value {
         let v = v.trim().to_ascii_lowercase();
         if matches!(v.as_str(), "0" | "false" | "off" | "no") {
             return false;
@@ -68,8 +88,8 @@ pub fn row_exact_moe_enabled(model_family: &str) -> bool {
             return true;
         }
     }
-    // Default: Decision A families use RowExact so B>1 cert is achievable.
-    family_requires_decision_a_cert(model_family)
+    // Default: Decision A models use RowExact so B>1 cert is achievable.
+    family_requires_decision_a_cert(model_family, has_moe)
 }
 
 #[cfg(test)]
@@ -82,8 +102,45 @@ mod tests {
         assert_eq!(mode.required_batches(), &[2, 4, 8]);
         assert_eq!(mode.label(), "bit_exact_row_exact_fallback");
         assert!(!mode.allows_uncertified_public_default());
-        assert!(family_requires_decision_a_cert("qwen3_next"));
-        assert!(!family_requires_decision_a_cert("qwen3"));
+    }
+
+    #[test]
+    fn decision_a_scope_is_moe_aware_for_plain_qwen3() {
+        // Hybrid families are always in scope.
+        assert!(family_requires_decision_a_cert("qwen3_next", true));
+        assert!(family_requires_decision_a_cert("qwen3_5", true));
+        // Plain Qwen3-MoE joins the scope; dense Qwen3 stays out.
+        assert!(family_requires_decision_a_cert("qwen3", true));
+        assert!(!family_requires_decision_a_cert("qwen3", false));
+        // Other MoE families remain out of Decision A scope.
+        assert!(!family_requires_decision_a_cert("gemma4", true));
+    }
+
+    #[test]
+    fn row_exact_defaults_follow_decision_a_scope() {
+        assert!(row_exact_moe_enabled_with_env("qwen3", true, None));
+        assert!(!row_exact_moe_enabled_with_env("qwen3", false, None));
+        assert!(row_exact_moe_enabled_with_env("qwen3_next", true, None));
+        assert!(!row_exact_moe_enabled_with_env("gemma4", true, None));
+    }
+
+    #[test]
+    fn row_exact_env_override_wins_over_default() {
+        assert!(!row_exact_moe_enabled_with_env("qwen3", true, Some("0")));
+        assert!(!row_exact_moe_enabled_with_env(
+            "qwen3_next",
+            true,
+            Some("off")
+        ));
+        assert!(row_exact_moe_enabled_with_env("qwen3", false, Some("1")));
+        assert!(row_exact_moe_enabled_with_env("gemma4", true, Some("yes")));
+        // Unrecognized values fall through to the default.
+        assert!(row_exact_moe_enabled_with_env("qwen3", true, Some("maybe")));
+        assert!(!row_exact_moe_enabled_with_env(
+            "qwen3",
+            false,
+            Some("maybe")
+        ));
     }
 
     #[test]

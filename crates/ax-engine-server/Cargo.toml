@@ -14,6 +14,9 @@ delegated-server = []
 
 [dependencies]
 ax-engine-sdk = { path = "../ax-engine-sdk", features = ["tokenizer"] }
+# Direct dependency (already in the graph via sdk) for HF-snapshot manifest
+# auto-conversion during preset artifact validation.
+ax-engine-core = { path = "../ax-engine-core" }
 # Direct dependency (already in the graph via sdk) so build.rs receives
 # DEP_MLX_LIB_DIR and can embed the libmlx rpath in the server binary.
 mlx-sys = { path = "../mlx-sys", optional = true }

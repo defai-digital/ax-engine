@@ -206,6 +206,45 @@ model generation is retired, so an unloaded model cannot leave stale series.
 `/metrics` requires the API key when authentication is enabled and never
 exposes prompts, outputs, or credentials.
 
+### Node-saturation series (fleet dispatch contract)
+
+AX Serving's ax-runtime-agent scrapes `/metrics` and translates known series
+into the `CapacityObservation` it reports to the fleet gateway, which
+dispatches on real saturation rather than inflight counts. The recognized
+`ax_engine_*` series are exported natively (`ax_engine_jobs_in_flight` and
+`ax_engine_generation_jobs_pending` for active sequences,
+`ax_engine_generation_commands_queued` for queue depth,
+`ax_engine_step_scheduled_requests` for active batch size,
+`ax_engine_step_kv_usage_blocks` for KV blocks in use). Fields whose contract
+names have no `ax_engine_*` alias are exported under the agent's
+`ax_runtime_*` contract names:
+
+- `ax_runtime_queue_depth` — requests waiting for admission: the
+  generation-worker command queue plus scheduler-waiting requests
+  (`ax_engine_step_waiting_requests` is the per-model engine-side component).
+- `ax_runtime_kv_pages_total` — total KV cache blocks configured across
+  loaded models (from each model's `KvManagerConfig`).
+- `ax_runtime_kv_utilization` — KV block utilization (0.0–1.0) in the latest
+  observed engine step; hidden until a step is observed.
+- `ax_runtime_max_batch_size` — configured batched-decode cohort cap
+  (`AX_MLX_BATCHED_DECODE_MAX`, default 8); compare with
+  `ax_engine_step_scheduled_requests` for batch headroom.
+- `ax_runtime_ttft_p95_ms` — nearest-rank p95 of worker-measured
+  time-to-first-token (milliseconds) over the 512 most recent completed
+  native streams; hidden before the first measured request. Measured on the
+  generation worker, so SSE/client pacing is excluded.
+- `ax_runtime_decode_tok_per_sec` — EWMA (alpha 0.2) of worker-measured
+  decode throughput across completed native streams; hidden before the first
+  multi-token decode window. Single-flush responses (e.g. block-diffusion)
+  produce no decode sample.
+- `ax_runtime_error_rate` — cumulative server-side error ratio (HTTP 5xx
+  plus gRPC errors over all observed requests); hidden before the first
+  request. Client 4xx responses are excluded by design.
+
+TTFT and decode throughput cover the native HTTP serving path; gRPC stepwise
+clients drive the engine themselves and measure their own latencies. Do not
+rename the `ax_runtime_*` series without a coordinated ax-serving change.
+
 HTTP and gRPC health probes remain healthy while inference is active. They
 report unavailable if any loaded model's persistent worker is no longer alive;
 normal busy state is exposed through `/slots` and the metrics above. This keeps

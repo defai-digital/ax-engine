@@ -22,9 +22,10 @@ struct ModelProfile {
 }
 
 impl ModelProfile {
-    /// Product-managed downloads are intentionally restricted to the curated
-    /// AutomatosX Hub organization. Other profiles remain available as legacy
-    /// serve aliases for already-downloaded artifacts.
+    /// The download catalog (`download --list`, download options payloads)
+    /// intentionally surfaces only the curated AutomatosX Hub organization.
+    /// Downloads themselves accept any `downloadable` profile's repo id as
+    /// well as explicit Hugging Face repo ids (see `download_repo_id`).
     fn is_downloadable(self) -> bool {
         self.downloadable && self.repo_id.starts_with("AutomatosX/")
     }
@@ -2825,7 +2826,7 @@ fn download_repo_id(
     profile: Option<ModelProfile>,
 ) -> Result<(String, Option<ModelProfile>, Option<String>), String> {
     if let Some(profile) = profile {
-        if !profile.is_downloadable() {
+        if !profile.downloadable {
             return Err(format!(
                 "{} is not managed by ax-engine download; use an explicit repo id or one of these targets:\n{}",
                 profile.label,
@@ -3450,6 +3451,18 @@ mod tests {
         ] {
             assert!(download_repo_id(bad, None).is_err(), "{bad:?} must fail");
         }
+    }
+
+    #[test]
+    fn download_repo_id_accepts_downloadable_alias_outside_automatosx() {
+        // Legacy mlx-community aliases are `downloadable` even though the
+        // curated catalog only surfaces AutomatosX packs; the download gate
+        // must accept them (and any explicit HF repo id).
+        let profile = profile_for_model("gemma4-e2b").expect("alias should resolve");
+        let (repo, resolved, rev) = download_repo_id("gemma4-e2b", Some(profile)).unwrap();
+        assert_eq!(repo, "mlx-community/gemma-4-e2b-it-4bit");
+        assert_eq!(resolved.map(|profile| profile.label), Some("gemma4-e2b"));
+        assert_eq!(rev, None);
     }
 
     #[test]

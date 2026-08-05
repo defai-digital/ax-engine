@@ -4,10 +4,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::{
-    ConvertError, DroppedTensorLedger, MANIFEST_TEMP_FILE_PREFIX, NativeTensorDataType,
-    NativeTensorRole, compute_attention_value_from_key_layers, config_quantization,
-    convert_hf_model_dir, llama4_no_rope_layer_interval, match_tensor, model_family_for_type,
-    moe_config, parse_layer_types, parse_rope_params, tensor_name_looks_like_media_role,
+    AUTO_GENERATED_MANIFEST_NOTE, ConvertError, DroppedTensorLedger, MANIFEST_TEMP_FILE_PREFIX,
+    NativeTensorDataType, NativeTensorRole, compute_attention_value_from_key_layers,
+    config_quantization, convert_hf_model_dir, ensure_manifest_for_hf_model_dir,
+    llama4_no_rope_layer_interval, match_tensor, model_family_for_type, moe_config,
+    parse_layer_types, parse_rope_params, tensor_name_looks_like_media_role,
     tensor_quantization_override, validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling,
     with_real_model_manifest_lock, write_manifest,
 };
@@ -4794,5 +4795,149 @@ fn absent_axquant_runtime_json_leaves_kv_cache_quantization_unset() {
     let manifest = convert_hf_model_dir(&dir).expect("conversion should succeed");
 
     assert!(manifest.kv_cache_quantization.is_none());
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn ensure_manifest_generates_manifest_and_records_provenance() {
+    let dir = write_tiny_qwen3_dir("ensure-manifest");
+    let manifest_path = dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    assert!(!manifest_path.exists());
+
+    let created = ensure_manifest_for_hf_model_dir(&dir).expect("ensure should succeed");
+    assert!(created, "first ensure call should generate the manifest");
+    assert!(manifest_path.is_file());
+
+    let bytes = fs::read(&manifest_path).expect("generated manifest should be readable");
+    let json: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("generated manifest should parse");
+    let notes = json["runtime_status"]["notes"]
+        .as_array()
+        .expect("auto-generated manifest should record provenance notes");
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.as_str() == Some(AUTO_GENERATED_MANIFEST_NOTE)),
+        "provenance note missing from generated manifest: {notes:?}"
+    );
+
+    // A second ensure call must leave the existing manifest byte-identical.
+    let created = ensure_manifest_for_hf_model_dir(&dir).expect("ensure should succeed");
+    assert!(!created, "second ensure call should not regenerate");
+    let after = fs::read(&manifest_path).expect("manifest should still be readable");
+    assert_eq!(bytes, after, "existing manifest must stay untouched");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn ensure_manifest_fails_descriptively_without_config_json() {
+    let dir = unique_test_dir("ensure-manifest-no-config");
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[("model.embed_tokens.weight", "F16", &[64, 8])],
+    );
+
+    let error = ensure_manifest_for_hf_model_dir(&dir)
+        .expect_err("directory without config.json must fail");
+    assert!(
+        matches!(error, ConvertError::ReadFile { .. }),
+        "expected a read error for missing config.json, got {error:?}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn ensure_manifest_fails_descriptively_without_safetensors() {
+    let dir = unique_test_dir("ensure-manifest-no-safetensors");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "qwen3",
+            "hidden_size": 8,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "num_hidden_layers": 1,
+            "vocab_size": 64,
+        }),
+    );
+
+    let error = ensure_manifest_for_hf_model_dir(&dir)
+        .expect_err("directory without safetensors must fail");
+    assert!(
+        matches!(error, ConvertError::NoSafetensors { .. }),
+        "expected NoSafetensors, got {error:?}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn from_dir_or_convert_loads_raw_hf_snapshot() {
+    let dir = write_tiny_qwen3_dir("from-dir-or-convert");
+
+    let artifacts = crate::model::NativeModelArtifacts::from_dir_or_convert(&dir)
+        .expect("raw HF snapshot should auto-convert and load");
+
+    assert_eq!(artifacts.manifest().model_family, "qwen3");
+    assert!(
+        dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE)
+            .is_file()
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn from_dir_or_convert_stays_fail_closed_without_convertible_snapshot() {
+    let dir = unique_test_dir("from-dir-or-convert-empty");
+
+    let error = crate::model::NativeModelArtifacts::from_dir_or_convert(&dir)
+        .expect_err("empty directory must fail closed");
+
+    assert!(
+        matches!(error, crate::model::NativeModelError::AutoConvert { .. }),
+        "expected AutoConvert, got {error:?}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn from_dir_stays_fail_closed_on_missing_manifest() {
+    let dir = write_tiny_qwen3_dir("from-dir-strict");
+
+    let error = crate::model::NativeModelArtifacts::from_dir(&dir)
+        .expect_err("strict from_dir must not auto-convert");
+
+    assert!(
+        matches!(error, crate::model::NativeModelError::ReadManifest { .. }),
+        "expected ReadManifest, got {error:?}"
+    );
+    assert!(
+        !dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE)
+            .exists(),
+        "strict from_dir must not write a manifest"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn from_dir_or_convert_leaves_existing_manifest_untouched() {
+    let dir = write_tiny_qwen3_dir("from-dir-or-convert-existing");
+    let created = ensure_manifest_for_hf_model_dir(&dir).expect("ensure should succeed");
+    assert!(created);
+    let manifest_path = dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    let before = fs::read(&manifest_path).expect("manifest should be readable");
+
+    let artifacts = crate::model::NativeModelArtifacts::from_dir_or_convert(&dir)
+        .expect("existing manifest should load");
+    assert_eq!(artifacts.manifest().model_family, "qwen3");
+    let after = fs::read(&manifest_path).expect("manifest should be readable");
+    assert_eq!(before, after, "existing manifest must not be rewritten");
+
     let _ = fs::remove_dir_all(dir);
 }

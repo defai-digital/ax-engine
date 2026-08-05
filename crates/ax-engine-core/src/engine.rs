@@ -11,6 +11,7 @@ use crate::kv::{
 };
 use crate::metal::{MetalBringupRunner, MetalBringupSampler, MetalRuntimeError};
 use crate::request::RequestRecord;
+use crate::request::RequestState;
 use crate::request::RequestSubmission;
 use crate::request_manager::{RequestManager, RequestManagerError, RunnerApplySummary};
 #[cfg(test)]
@@ -52,6 +53,9 @@ pub struct StepMetrics {
     pub ttft_events: u32,
     pub prefix_hits: u32,
     pub kv_usage_blocks: u32,
+    /// Requests still waiting for scheduler admission (Waiting or
+    /// BlockedOnMemory) at the end of this step. Gauge, not a counter.
+    pub waiting_requests: u32,
     pub evictions: u32,
     pub preempted_requests: u32,
     pub preempted_tokens: u32,
@@ -386,6 +390,17 @@ impl EngineCore {
             ttft_events: runner_summary.ttft_events,
             prefix_hits,
             kv_usage_blocks: self.kv_manager.used_block_count(),
+            waiting_requests: self
+                .request_manager
+                .records_iter()
+                .filter(|record| {
+                    matches!(
+                        record.state,
+                        RequestState::Waiting | RequestState::BlockedOnMemory
+                    )
+                })
+                .count()
+                .min(u32::MAX as usize) as u32,
             evictions: self.kv_manager.take_recent_evictions(),
             preempted_requests: preemption_metrics.preempted_requests,
             preempted_tokens: preemption_metrics.preempted_tokens,

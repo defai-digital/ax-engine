@@ -1361,6 +1361,7 @@ impl EngineSession {
                 ttft_events: step.ttft_events,
                 prefix_hits: step.prefix_hits,
                 kv_usage_blocks: step.kv_usage_blocks,
+                waiting_requests: step.waiting_requests,
                 evictions: step.evictions,
                 preempted_requests: step.preempted_requests,
                 preempted_tokens: step.preempted_tokens,

@@ -138,6 +138,8 @@ bash scripts/check-qa.sh
   scripts/test_run_mlx_p2_latency_artifacts.py \
   scripts/run_native_generation_fault_soak.py \
   scripts/test_run_native_generation_fault_soak.py \
+  scripts/smoke_compatible_models.py \
+  scripts/test_smoke_compatible_models.py \
   scripts/test_run_mlx_artifact_wrappers.py \
   scripts/check_gateddelta_prefill_profile_artifact.py \
   scripts/test_gateddelta_prefill_profile_artifact.py \
@@ -314,3 +316,5 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/test_check_disk_prefix_cache_promotion.py
 "$PYTHON_BIN" scripts/check_disk_prefix_cache_promotion.py --help >/dev/null
 "$PYTHON_BIN" scripts/run_disk_prefix_cache_promotion.py --help >/dev/null
+"$PYTHON_BIN" scripts/test_smoke_compatible_models.py
+"$PYTHON_BIN" scripts/smoke_compatible_models.py --dry-run >/dev/null

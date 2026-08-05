@@ -182,6 +182,11 @@ jobs:
           set -o pipefail
           bash scripts/check-scripts.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-scripts.log"
 
+      - name: Run compatible-model smoke matrix dry run
+        run: |
+          set -o pipefail
+          python3 scripts/smoke_compatible_models.py --dry-run 2>&1 | tee "$AX_CI_LOG_DIR/smoke-compatible-models-dry-run.log"
+
       - name: Run benchmark doctor smoke check
         run: |
           set -o pipefail
@@ -396,6 +401,16 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/check-prefix-reuse-equivalence.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-prefix-reuse-equivalence.log"
+
+      # Real-weight run of the tiered smoke matrix against whatever curated
+      # checkpoints are mounted; missing snapshots are reported as skipped.
+      # Operators run the full matrix with `--download --required` (see
+      # docs/SUPPORTED-MODELS.md, "Support tiers").
+      - name: Run compatible-model smoke matrix
+        if: steps.mlx-artifacts.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          python3 scripts/smoke_compatible_models.py --models-dir "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" 2>&1 | tee "$AX_CI_LOG_DIR/smoke-compatible-models.log"
 
       - name: Upload model smoke logs
         if: failure()

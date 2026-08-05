@@ -852,6 +852,32 @@ impl NativeModelArtifacts {
         Ok(Self { root_dir, manifest })
     }
 
+    /// Load artifacts from `path`, auto-generating `model-manifest.json` from
+    /// a raw HuggingFace / MLX snapshot (`config.json` + safetensors headers)
+    /// when the manifest file is absent.
+    ///
+    /// `from_dir` semantics are unchanged everywhere else: an unparsable or
+    /// invalid manifest still fails closed, and a directory that is not a
+    /// convertible HF snapshot surfaces the convert failure via
+    /// `NativeModelError::AutoConvert`.
+    pub fn from_dir_or_convert(path: impl AsRef<Path>) -> Result<Self, NativeModelError> {
+        let root_dir = path.as_ref().to_path_buf();
+        match Self::from_dir(&root_dir) {
+            Err(NativeModelError::ReadManifest { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                crate::convert::ensure_manifest_for_hf_model_dir(&root_dir).map_err(|source| {
+                    NativeModelError::AutoConvert {
+                        path: root_dir.clone(),
+                        source,
+                    }
+                })?;
+                Self::from_dir(&root_dir)
+            }
+            result => result,
+        }
+    }
+
     pub fn root_dir(&self) -> &Path {
         &self.root_dir
     }
@@ -1006,6 +1032,12 @@ pub enum NativeModelError {
     },
     #[error("invalid native model manifest: {message}")]
     InvalidManifest { message: String },
+    #[error("failed to auto-generate native model manifest for {path}: {source}")]
+    AutoConvert {
+        path: PathBuf,
+        #[source]
+        source: crate::convert::ConvertError,
+    },
 }
 
 fn validate_native_model_manifest(

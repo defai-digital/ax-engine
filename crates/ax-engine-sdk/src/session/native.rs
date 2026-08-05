@@ -101,7 +101,7 @@ fn build_mlx_core(
         .mlx_model_artifacts_dir()
         .ok_or(EngineSessionError::MlxRuntimeArtifactsRequired)?;
 
-    let artifacts = NativeModelArtifacts::from_dir(model_dir)
+    let artifacts = NativeModelArtifacts::from_dir_or_convert(model_dir)
         .map_err(|e| EngineSessionError::MetalRuntime(e.into()))?;
 
     // Whisper is an encoder/decoder speech model with its own decoding loop,

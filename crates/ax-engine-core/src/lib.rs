@@ -27,6 +27,7 @@ pub mod request_manager;
 pub mod runner;
 pub mod sampling;
 pub mod scheduler;
+pub mod support_tier;
 pub mod unlimited_ocr;
 pub mod vl_geometry;
 
@@ -139,6 +140,7 @@ pub use scheduler::{
     SchedulerInput, plan_work_unit_for_snapshot, upsert_route_decision,
     work_unit_for_execution_mode,
 };
+pub use support_tier::{ModelSupportTier, support_tier_for_family, support_tier_for_manifest};
 pub use unlimited_ocr::{
     UNLIMITED_OCR_BASE_SOFT_TOKEN_COUNT, UNLIMITED_OCR_LOCAL_QUERY_GRID,
     UNLIMITED_OCR_LOCAL_TILE_SIZE, UNLIMITED_OCR_MAX_IMAGE_DIMENSION,

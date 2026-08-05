@@ -426,6 +426,14 @@ impl App {
                 } else {
                     Span::styled(" · preview direct", theme::label())
                 },
+                Span::styled(
+                    format!(" · {}", family.support_tier().as_str()),
+                    match family.support_tier() {
+                        ax_engine_core::ModelSupportTier::Certified => theme::ok(),
+                        ax_engine_core::ModelSupportTier::Compatible => theme::body_dim(),
+                        ax_engine_core::ModelSupportTier::Experimental => theme::warn(),
+                    },
+                ),
                 if family.has_mtp() {
                     Span::styled(
                         format!("  {} speed-up", theme::icon::speed()),

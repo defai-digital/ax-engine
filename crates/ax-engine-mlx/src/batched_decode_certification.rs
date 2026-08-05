@@ -99,6 +99,9 @@ pub fn required_batched_decode_certification_scenarios() -> Vec<BatchedDecodeCer
         (4, 128, 64, 1, false),
         (4, 512, 64, 0, false),
         (4, 128, 64, 0, true),
+        // Decision A batch coverage is [2, 4, 8]; the batch-8 case proves the
+        // largest certified cohort against the per-row oracle.
+        (8, 128, 64, 0, false),
         // Join before a 1,024-token Gemma SWA cache compacts, then cross the
         // boundary while resident. This exercises the per-layer window mask
         // instead of certifying only the full-attention-equivalent prefix.
@@ -303,6 +306,43 @@ mod tests {
         assert_eq!(
             validate_batched_decode_certification(&evidence(), &context()),
             BatchedDecodeCertificationStatus::Certified
+        );
+    }
+
+    #[test]
+    fn required_scenarios_cover_decision_a_batches() {
+        let required = required_batched_decode_certification_scenarios();
+        assert_eq!(required.len(), 8);
+        for batch in [2u32, 4, 8] {
+            assert!(
+                required.iter().any(|scenario| scenario.batch == batch),
+                "Decision A batch coverage missing batch={batch}"
+            );
+        }
+        // The batch-8 case is the largest certified cohort.
+        let batch8: Vec<(u32, u32, u64, bool, &str)> = required
+            .iter()
+            .filter(|scenario| scenario.batch == 8)
+            .map(|scenario| {
+                (
+                    scenario.prompt_len,
+                    scenario.gen_len,
+                    scenario.prompt_seed,
+                    scenario.ragged,
+                    scenario.sampling.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(batch8, vec![(128, 64, 0, false, "greedy")]);
+    }
+
+    #[test]
+    fn evidence_without_batch8_scenario_fails_coverage() {
+        let mut missing = evidence();
+        missing.scenarios.retain(|scenario| scenario.batch != 8);
+        assert_eq!(
+            validate_batched_decode_certification(&missing, &context()),
+            BatchedDecodeCertificationStatus::CoverageIncomplete
         );
     }
 

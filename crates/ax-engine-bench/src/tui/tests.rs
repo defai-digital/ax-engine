@@ -173,6 +173,47 @@ fn quant_and_family_parsing() {
 }
 
 #[test]
+fn catalog_families_map_to_registry_support_tiers() {
+    use ax_engine_core::ModelSupportTier;
+
+    assert_eq!(catalog::registry_family_label("gemma4-e2b"), "gemma4");
+    assert_eq!(catalog::registry_family_label("ax-qwen3.6-27b"), "qwen3_5");
+    assert_eq!(
+        catalog::registry_family_label("ax-qwen3-coder-next"),
+        "qwen3_next"
+    );
+    assert_eq!(catalog::registry_family_label("gpt-oss-20b"), "gpt_oss");
+    assert_eq!(catalog::registry_family_label("llama3.1-8b"), "llama3");
+    assert_eq!(catalog::registry_family_label("ministral-8b"), "mistral3");
+    assert_eq!(
+        catalog::registry_family_label("ax-diffusiongemma-26b"),
+        "diffusion_gemma"
+    );
+    // Unknown catalog keys pass through and resolve to Compatible.
+    assert_eq!(catalog::registry_family_label("mystery-7b"), "mystery-7b");
+
+    let families = build_families();
+    for family in &families {
+        let tier = family.support_tier();
+        if family.key.starts_with("ax-diffusiongemma") {
+            assert_eq!(
+                tier,
+                ModelSupportTier::Experimental,
+                "{} must surface as experimental",
+                family.key
+            );
+        } else {
+            assert_ne!(
+                tier,
+                ModelSupportTier::Experimental,
+                "{} must not surface as experimental",
+                family.key
+            );
+        }
+    }
+}
+
+#[test]
 fn automatosx_packs_are_primary_families_with_recipe_precisions() {
     let families = build_families();
     for key in [

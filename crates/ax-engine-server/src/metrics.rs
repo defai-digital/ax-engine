@@ -199,6 +199,14 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         );
         append_step_metric(
             &mut body,
+            "ax_engine_step_waiting_requests",
+            "Requests waiting for scheduler admission in the latest observed engine step (unlabeled: summed across loaded models).",
+            "gauge",
+            &step_models,
+            |step| step.waiting_requests,
+        );
+        append_step_metric(
+            &mut body,
             "ax_engine_step_prefix_hits_total",
             "Prefix cache hits accumulated across observed engine steps (unlabeled: summed across loaded models).",
             "counter",
@@ -206,6 +214,8 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             |step| step.prefix_hits_total,
         );
     }
+
+    append_saturation_metrics(&mut body, &lives, metrics, &step_models);
 
     let mut arbiter_models = state.execution_arbiter_stats();
     arbiter_models.retain(|(model_id, _, _)| loaded_model_ids.contains(model_id.as_str()));
@@ -493,6 +503,112 @@ fn append_memory_metrics(
     }
 }
 
+/// Node-saturation series consumed by the AX Serving fleet control plane
+/// (ax-runtime-agent's `parse_prometheus_telemetry`). Names with the
+/// `ax_runtime_` prefix are the dispatch contract the agent recognizes for
+/// fields that have no `ax_engine_*` alias; do not rename them without a
+/// coordinated ax-serving change.
+fn append_saturation_metrics(
+    body: &mut String,
+    lives: &[crate::app_state::LiveState],
+    metrics: &crate::app_state::ServerMetrics,
+    step_models: &[(String, crate::app_state::EngineStepGauges)],
+) {
+    let kv_blocks_total: u64 = lives
+        .iter()
+        .map(|live| u64::from(live.session_config.kv_config.total_blocks))
+        .sum();
+    append_gauge(
+        body,
+        "ax_runtime_kv_pages_total",
+        "Total KV cache blocks configured across loaded models (AX Serving fleet-dispatch contract).",
+        kv_blocks_total,
+    );
+    if !step_models.is_empty() && kv_blocks_total > 0 {
+        let kv_blocks_used: u64 = step_models
+            .iter()
+            .map(|(_, step)| step.kv_usage_blocks)
+            .sum();
+        #[allow(clippy::cast_precision_loss)]
+        let kv_utilization = (kv_blocks_used as f64 / kv_blocks_total as f64).clamp(0.0, 1.0);
+        append_gauge_f64(
+            body,
+            "ax_runtime_kv_utilization",
+            "KV cache block utilization in the latest observed engine step, 0.0-1.0 (AX Serving fleet-dispatch contract).",
+            kv_utilization,
+        );
+    }
+
+    let commands_queued: u64 = lives
+        .iter()
+        .map(|live| live.generation_service.queued_commands() as u64)
+        .sum();
+    let scheduler_waiting: u64 = step_models
+        .iter()
+        .map(|(_, step)| step.waiting_requests)
+        .sum();
+    append_gauge(
+        body,
+        "ax_runtime_queue_depth",
+        "Requests waiting for admission: generation-worker command queue plus scheduler-waiting requests (AX Serving fleet-dispatch contract).",
+        commands_queued.saturating_add(scheduler_waiting),
+    );
+
+    append_gauge(
+        body,
+        "ax_runtime_max_batch_size",
+        "Configured batched-decode cohort cap (AX_MLX_BATCHED_DECODE_MAX; AX Serving fleet-dispatch contract). Subtract the latest per-step scheduled-request gauge for batch headroom.",
+        batched_decode_cohort_cap(),
+    );
+
+    append_optional_gauge(
+        body,
+        "ax_runtime_ttft_p95_ms",
+        "Nearest-rank p95 of worker-measured time-to-first-token over recent completed native streams, milliseconds (AX Serving fleet-dispatch contract).",
+        metrics.ttft_p95_ms(),
+    );
+    if let Some(decode_tok_per_sec) = metrics.decode_tok_per_sec() {
+        append_gauge_f64(
+            body,
+            "ax_runtime_decode_tok_per_sec",
+            "EWMA of worker-measured decode throughput across completed native streams, tokens/second (AX Serving fleet-dispatch contract).",
+            decode_tok_per_sec,
+        );
+    }
+
+    let http_total = metrics.http_requests_total.load(Ordering::Relaxed);
+    let grpc_total = metrics.grpc_requests_total.load(Ordering::Relaxed);
+    let requests_total = http_total.saturating_add(grpc_total);
+    if requests_total > 0 {
+        let errors = metrics
+            .http_status_5xx_total
+            .load(Ordering::Relaxed)
+            .saturating_add(metrics.grpc_status_error_total.load(Ordering::Relaxed));
+        #[allow(clippy::cast_precision_loss)]
+        let error_rate = errors as f64 / requests_total as f64;
+        append_gauge_f64(
+            body,
+            "ax_runtime_error_rate",
+            "Cumulative server-side error ratio (HTTP 5xx plus gRPC errors over all observed requests), 0.0-1.0 (AX Serving fleet-dispatch contract).",
+            error_rate,
+        );
+    }
+}
+
+/// Mirrors the MLX runner's batched-decode cohort cap
+/// (`AX_MLX_BATCHED_DECODE_MAX`, default 8) so fleet consumers can derive
+/// batch headroom without scraping runner internals.
+fn batched_decode_cohort_cap() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_BATCHED_DECODE_MAX")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|cap| *cap >= 1)
+            .unwrap_or(8)
+    })
+}
+
 fn append_model_topology_info(
     body: &mut String,
     model_id: &str,
@@ -628,6 +744,24 @@ fn append_counter(body: &mut String, name: &str, help: &str, value: u64) {
 
 fn append_gauge(body: &mut String, name: &str, help: &str, value: u64) {
     append_metric(body, name, help, "gauge", value);
+}
+
+fn append_gauge_f64(body: &mut String, name: &str, help: &str, value: f64) {
+    if !value.is_finite() {
+        return;
+    }
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" gauge\n");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(&value.to_string());
+    body.push('\n');
 }
 
 fn append_optional_gauge(body: &mut String, name: &str, help: &str, value: Option<u64>) {

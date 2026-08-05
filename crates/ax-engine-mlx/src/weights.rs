@@ -588,17 +588,21 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     // applied here. The manifest's `weight_sanitize` field selects the path.
     //
     // When the manifest leaves `weight_sanitize=None` (the default emitted by
-    // `convert_hf_model_dir`), some mlx-community quantized hybrid models
-    // (e.g. `Qwen3-Coder-Next-4bit`) still ship unsanitized norm weights
-    // because mlx_lm runs `sanitize()` at load time rather than persisting
-    // the +1.0 baseline on disk. Re-running `mlx_lm.convert` on an already
-    // quantized checkpoint dequantizes → normalizes → re-quantizes and
-    // produces garbage weights, so auto-detection here is the only viable
-    // recovery path.
-    let effective_sanitize = match artifacts.manifest().weight_sanitize {
-        WeightSanitize::None => auto_detect_linear_attention_sanitize(specs, &name_map),
-        explicit => explicit,
-    };
+    // `convert_hf_model_dir`), auto-detection samples a block-level norm so raw
+    // HF snapshots still load correctly: some mlx-community quantized hybrid
+    // models (e.g. `Qwen3-Coder-Next-4bit`) ship unsanitized norm weights
+    // because mlx_lm runs `sanitize()` at load time rather than persisting the
+    // +1.0 baseline on disk, and raw HF snapshots of dense families (Qwen3,
+    // Gemma 4) keep the zero-centered deltas as well. Re-running
+    // `mlx_lm.convert` on an already quantized checkpoint dequantizes →
+    // normalizes → re-quantizes and produces garbage weights, so
+    // auto-detection here is the only viable recovery path.
+    let effective_sanitize = effective_weight_sanitize(
+        artifacts.manifest().model_family.as_str(),
+        artifacts.manifest().weight_sanitize,
+        specs,
+        &name_map,
+    );
     match effective_sanitize {
         WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true),
         WeightSanitize::HfNormOnly => apply_hf_sanitize_transforms(specs, &mut name_map, false),
@@ -1324,10 +1328,12 @@ pub fn load_pipeline_stage_weights(
         name_map.extend(tensors);
     }
 
-    let effective_sanitize = match manifest.weight_sanitize {
-        WeightSanitize::None => auto_detect_linear_attention_sanitize(specs, &name_map),
-        explicit => explicit,
-    };
+    let effective_sanitize = effective_weight_sanitize(
+        manifest.model_family.as_str(),
+        manifest.weight_sanitize,
+        specs,
+        &name_map,
+    );
     match effective_sanitize {
         WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true),
         WeightSanitize::HfNormOnly => apply_hf_sanitize_transforms(specs, &mut name_map, false),
@@ -3006,37 +3012,60 @@ fn norm_mean_abs(norm: &MlxArray) -> Option<f32> {
 }
 
 /// When the manifest sets `weight_sanitize=None`, peek at the lowest-indexed
-/// hybrid layer's ordinary RMSNorm and conv1d tensors to decide whether the
-/// weights on disk are actually pre-sanitized.
+/// block-level RMSNorm tensor (and, for hybrid models, the conv1d layout) to
+/// decide whether the weights on disk are actually pre-sanitized.
 ///
 /// Returns the sanitize mode to apply:
 /// - `None`: weights look sanitized (ordinary norm baseline near 1.0, conv1d in MLX layout)
 /// - `HfNormOnly`: ordinary norm needs +1.0 but conv1d is already MLX layout (mlx-community
-///   quantized hybrid models: Qwen3-Coder-Next-4bit, Qwen3.5-9B-4bit, …)
+///   quantized hybrid models: Qwen3-Coder-Next-4bit, Qwen3.5-9B-4bit, …) or the model
+///   has no conv1d at all (raw HF Gemma checkpoints)
 /// - `HfToMlx`: ordinary norm and conv1d are raw HF (rare for distributed mlx checkpoints)
 ///
-/// For non-hybrid models (no linear-attention layers) this returns `None`
-/// because there is no signal — and historically mlx-community pre-sanitizes
-/// the non-hybrid families before publishing, so leaving sanitize off is safe.
-fn auto_detect_linear_attention_sanitize(
+/// The norm sample is restricted to block-level roles (`AttentionNorm` /
+/// `FfnNorm` / `FinalNorm`): per-layer norms exist in every supported dense
+/// and hybrid family, so raw zero-centered HF deltas (mean_abs near 0) are
+/// detected uniformly. Family-specific adapter norms (MLA q/kv layernorms,
+/// per-layer projection norms, gated linear-attention scales) are excluded —
+/// several of those legitimately cluster near zero even in fully sanitized
+/// checkpoints, so sampling them would false-positive.
+///
+/// The +1.0 norm lift only exists for two checkpoint conventions: hybrid
+/// linear-attention families (mlx-community quantized hybrids ship raw norms
+/// on disk) and Gemma families (HF stores zero-centered gamma deltas). For
+/// every other dense family (Qwen, Llama, Mistral, …) HF and MLX store the
+/// same trained RMSNorm weights, which legitimately cluster near zero — a
+/// small mean_abs there carries no signal, so the probe is skipped entirely
+/// rather than risking a false-positive double lift.
+///
+/// The conv1d layout check only applies to hybrid linear-attention models:
+/// dense manifests carry no `LinearAttentionConv1d` specs, so the probe is
+/// structurally a no-op for them.
+fn auto_detect_weight_sanitize(
+    model_family: &str,
     specs: &[NativeTensorSpec],
     name_map: &HashMap<String, MlxArray>,
 ) -> WeightSanitize {
-    if !specs.iter().any(|s| {
-        matches!(
-            s.role,
-            NativeTensorRole::LinearAttentionNorm | NativeTensorRole::LinearAttentionConv1d
-        )
-    }) {
+    let has_linear_attention = specs
+        .iter()
+        .any(|s| matches!(s.role, NativeTensorRole::LinearAttentionConv1d));
+    if !has_linear_attention && !model_family.contains("gemma") {
         return WeightSanitize::None;
     }
-
-    // Sample the lowest-indexed ordinary RMSNorm rather than LinearAttentionNorm:
-    // Qwen3-Next's linear_attn.norm is a gated scale consumed raw by mlx_lm and
-    // can legitimately have mean_abs near zero.
+    // Sample the lowest-indexed block-level RMSNorm rather than adapter norms:
+    // Qwen3-Next's linear_attn.norm is a gated scale consumed raw by mlx_lm,
+    // and MLA q/kv adapter norms legitimately have small mean_abs — both can
+    // sit near zero in fully sanitized checkpoints.
     let norm_spec = specs
         .iter()
-        .filter(|s| is_hf_rmsnorm_lift_role(s.role))
+        .filter(|s| {
+            matches!(
+                s.role,
+                NativeTensorRole::AttentionNorm
+                    | NativeTensorRole::FfnNorm
+                    | NativeTensorRole::FinalNorm
+            )
+        })
         .min_by_key(|s| s.layer_index.unwrap_or(u32::MAX));
     let Some(norm_spec) = norm_spec else {
         return WeightSanitize::None;
@@ -3090,12 +3119,12 @@ fn auto_detect_linear_attention_sanitize(
             mean_abs = mean_abs,
             conv1d_needs_swap = conv1d_needs_swap,
             sanitize = ?chosen,
-            "manifest weight_sanitize=None but on-disk hybrid-model weights look unsanitized; \
+            "manifest weight_sanitize=None but on-disk weights look unsanitized; \
              applying {chosen:?}. Set weight_sanitize explicitly in model-manifest.json to silence \
              this warning."
         );
         eprintln!(
-            "[ax_mlx::weights] auto-detected unsanitized hybrid-model weights \
+            "[ax_mlx::weights] auto-detected unsanitized weights \
              (norm mean_abs={mean_abs:.6}, conv1d_hf_layout={conv1d_needs_swap}); \
              applying {chosen:?} sanitize transform. Set weight_sanitize in \
              model-manifest.json to silence this warning."
@@ -3103,6 +3132,37 @@ fn auto_detect_linear_attention_sanitize(
     }
 
     chosen
+}
+
+/// Resolve the sanitize transform to apply for a loaded `name_map`.
+///
+/// An explicit manifest `weight_sanitize` always wins; when it conflicts with
+/// what the on-disk weights look like (e.g. manifest declares `HfNormOnly`
+/// but the norms are still raw HF deltas *and* the conv1d is in HF layout),
+/// log a warning but honor the manifest. `None` delegates to
+/// `auto_detect_weight_sanitize`.
+fn effective_weight_sanitize(
+    model_family: &str,
+    manifest_mode: WeightSanitize,
+    specs: &[NativeTensorSpec],
+    name_map: &HashMap<String, MlxArray>,
+) -> WeightSanitize {
+    match manifest_mode {
+        WeightSanitize::None => auto_detect_weight_sanitize(model_family, specs, name_map),
+        explicit => {
+            let detected = auto_detect_weight_sanitize(model_family, specs, name_map);
+            if !matches!(detected, WeightSanitize::None) && detected != explicit {
+                tracing::warn!(
+                    target: "ax_mlx::weights",
+                    manifest = ?explicit,
+                    detected = ?detected,
+                    "manifest weight_sanitize conflicts with on-disk weight probe; \
+                     honoring the manifest setting"
+                );
+            }
+            explicit
+        }
+    }
 }
 
 /// Verify conv1d is in MLX layout `[conv_dim, kernel, 1]` (last dim = 1).
@@ -5100,7 +5160,7 @@ mod tests {
         let (specs, name_map) =
             fixture_layer0_linear_attention(&norm_data, &gated_norm_data, &[64, 4, 1]);
 
-        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+        let chosen = auto_detect_weight_sanitize("qwen3_next", &specs, &name_map);
 
         assert_eq!(
             chosen,
@@ -5118,7 +5178,7 @@ mod tests {
         let (specs, name_map) =
             fixture_layer0_linear_attention(&norm_data, &gated_norm_data, &[64, 1, 4]);
 
-        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+        let chosen = auto_detect_weight_sanitize("qwen3_next", &specs, &name_map);
 
         assert_eq!(
             chosen,
@@ -5135,16 +5195,17 @@ mod tests {
         let (specs, name_map) =
             fixture_layer0_linear_attention(&norm_data, &gated_norm_data, &[64, 4, 1]);
 
-        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+        let chosen = auto_detect_weight_sanitize("qwen3_next", &specs, &name_map);
 
         assert_eq!(chosen, WeightSanitize::None);
     }
 
     #[test]
     fn auto_detect_returns_none_for_non_hybrid_models() {
-        // GLM MLA has small q/kv adapter RMSNorms, but no Qwen-style
-        // linear-attention conv1d/gated norm. It must not be treated as a
-        // hybrid linear-attention checkpoint that needs HF norm lifting.
+        // GLM MLA has small q/kv adapter RMSNorms whose trained values
+        // legitimately cluster near zero. Adapter norms are excluded from the
+        // detection sample, so an MLA-only spec set yields no signal and no
+        // sanitize transform.
         let norm_data = vec![0.017_f32; 128];
         let norm = MlxArray::from_raw_data(
             norm_data.as_ptr().cast(),
@@ -5169,7 +5230,7 @@ mod tests {
             length_bytes: 512,
         }];
 
-        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+        let chosen = auto_detect_weight_sanitize("glm4_moe_lite", &specs, &name_map);
 
         assert_eq!(chosen, WeightSanitize::None);
     }
@@ -5184,9 +5245,118 @@ mod tests {
         let (specs, name_map) =
             fixture_layer0_linear_attention(&norm_data, &gated_norm_data, &[64, 1, 4]);
 
-        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+        let chosen = auto_detect_weight_sanitize("qwen3_next", &specs, &name_map);
 
         assert_eq!(chosen, WeightSanitize::None);
+    }
+
+    /// Dense (non-hybrid) fixture: one layer of ordinary block norms plus the
+    /// final norm, mirroring a dense checkpoint's block-level RMSNorm tensors
+    /// (used for both Gemma-family and non-Gemma family cases).
+    fn fixture_dense_norms(
+        norm_data: &[f32],
+    ) -> (Vec<NativeTensorSpec>, HashMap<String, MlxArray>) {
+        let make_norm = || {
+            MlxArray::from_raw_data(
+                norm_data.as_ptr().cast(),
+                std::mem::size_of_val(norm_data),
+                &[norm_data.len() as i32],
+                MlxDtype::Float32,
+            )
+        };
+        let make_spec =
+            |name: &str, role: NativeTensorRole, layer_index: Option<u32>| NativeTensorSpec {
+                name: name.to_string(),
+                role,
+                layer_index,
+                dtype: NativeTensorDataType::F32,
+                source_tensor_type: None,
+                source_quantized: false,
+                quantization: None,
+                quantized_source: None,
+                shape: vec![norm_data.len() as u64],
+                file: PathBuf::from("model.safetensors"),
+                offset_bytes: 0,
+                length_bytes: (norm_data.len() * 4) as u64,
+            };
+        let mut name_map = HashMap::new();
+        for name in ["layers.0.attn_norm", "layers.0.ffn_norm", "final_norm"] {
+            name_map.insert(name.to_string(), make_norm());
+        }
+        let specs = vec![
+            make_spec(
+                "layers.0.attn_norm",
+                NativeTensorRole::AttentionNorm,
+                Some(0),
+            ),
+            make_spec("layers.0.ffn_norm", NativeTensorRole::FfnNorm, Some(0)),
+            make_spec("final_norm", NativeTensorRole::FinalNorm, None),
+        ];
+        (specs, name_map)
+    }
+
+    #[test]
+    fn auto_detect_picks_hf_norm_only_for_raw_hf_dense_model() {
+        // Raw HF dense Gemma checkpoint: HF stores zero-centered gamma deltas
+        // and there are no conv1d tensors at all, so the transform is the norm
+        // lift only. (Dense Qwen/Llama families do not use zero-centered norms
+        // and are gated out before the probe — see the regression test below.)
+        let norm_data: Vec<f32> = (0..256).map(|i| 0.01 * ((i as f32).sin())).collect();
+        let (specs, name_map) = fixture_dense_norms(&norm_data);
+
+        let chosen = auto_detect_weight_sanitize("gemma4", &specs, &name_map);
+
+        assert_eq!(
+            chosen,
+            WeightSanitize::HfNormOnly,
+            "unsanitized dense norms + no conv1d ⇒ HfNormOnly"
+        );
+    }
+
+    #[test]
+    fn auto_detect_returns_none_for_dense_qwen_with_small_trained_norms() {
+        // Regression: real mlx-community Qwen3-4B block norms are fully
+        // sanitized yet average |w| ≈ 0.02 — trained RMSNorm weights carry no
+        // zero-centered signal for non-Gemma dense families. The probe must be
+        // skipped entirely; lifting these norms again corrupts every layer.
+        let norm_data = vec![0.024_f32; 256];
+        let (specs, name_map) = fixture_dense_norms(&norm_data);
+
+        let chosen = auto_detect_weight_sanitize("qwen3", &specs, &name_map);
+
+        assert_eq!(chosen, WeightSanitize::None);
+    }
+
+    #[test]
+    fn auto_detect_returns_none_for_sanitized_dense_model() {
+        // mlx-community dense checkpoints ship pre-sanitized norms near 1.0;
+        // auto-detection must leave them untouched.
+        let norm_data = vec![1.0_f32; 256];
+        let (specs, name_map) = fixture_dense_norms(&norm_data);
+
+        let chosen = auto_detect_weight_sanitize("gemma4", &specs, &name_map);
+
+        assert_eq!(chosen, WeightSanitize::None);
+    }
+
+    #[test]
+    fn effective_weight_sanitize_honors_explicit_manifest_mode() {
+        // The manifest wins even when the on-disk probe disagrees: a manifest
+        // declaring `HfToMlx` on weights that look fully raw is applied as
+        // declared, and a manifest declaring `None` semantics on sanitized
+        // weights runs no transform.
+        let raw_norm_data: Vec<f32> = (0..256).map(|i| 0.01 * ((i as f32).cos())).collect();
+        let (specs, name_map) = fixture_dense_norms(&raw_norm_data);
+
+        let chosen =
+            effective_weight_sanitize("gemma4", WeightSanitize::HfToMlx, &specs, &name_map);
+        assert_eq!(chosen, WeightSanitize::HfToMlx);
+
+        let sanitized_norm_data = vec![1.0_f32; 256];
+        let (specs, name_map) = fixture_dense_norms(&sanitized_norm_data);
+        let chosen =
+            effective_weight_sanitize("gemma4", WeightSanitize::HfNormOnly, &specs, &name_map);
+        assert_eq!(chosen, WeightSanitize::HfNormOnly);
     }
 
     #[test]

@@ -27,6 +27,60 @@ support work for a model family that has had no meaningful upstream release or
 artifact refresh within the last six months unless an owner records a specific
 exception.
 
+## Support tiers
+
+Every listed model family carries an explicit support tier so coverage claims
+stay honest instead of inflating a raw architecture count. Tiers are declared
+per family on the `ARCHITECTURE_REGISTRY` rows in
+`crates/ax-engine-core/src/architecture_registry.rs` and resolved by
+`crates/ax-engine-core/src/support_tier.rs`:
+
+| Tier | Meaning | What you can claim |
+| --- | --- | --- |
+| Certified | Repo-owned `ax-engine-mlx` graph plus current certification / benchmark evidence | AX-owned correctness and performance claims, backed by artifacts |
+| Compatible | Loads through the generic `standard` family path (or another registered route) with manifest capability probing | "Loads and generates"; no certification or performance guarantee |
+| Experimental | Feature-gated paths (block diffusion, pipeline-parallel, batched SWA pilots) | Shape and behavior may change without notice |
+
+This per-family quality grade is intentionally distinct from the runtime
+`support_tier` metadata field (`mlx_certified` / `mlx_preview` /
+`mlx_lm_delegated` / `llama_cpp`), which records *which backend runs a
+resolved session*, not how well a family is supported.
+
+The current Certified families are `qwen3` (dense and MoE), `qwen3_5` /
+`qwen3_next` (Qwen 3.5/3.6), `qwen3_vl`, `gemma4` / `gemma4_vl`,
+`glm4_moe_lite`, `gpt_oss`, and `deepseek_v3` / `deepseek_v32`. Registered
+families without certification evidence are Compatible; `diffusion_gemma` is
+Experimental. A manifest whose structural signals force a feature-gated
+generation kind (for example a diffusion canvas) resolves to Experimental even
+when its family label is otherwise Certified — the tier reflects the path that
+actually runs. Unknown family labels resolve to Compatible with the
+manifest-probing caveat: loadability is decided by
+`ArchitectureSpec::from_manifest`, never by name allowlists.
+
+A model moves between tiers by landing evidence, not by renaming:
+
+- Compatible → Certified: a repo-owned graph (or a registered route) plus
+  current certification/benchmark artifacts; flip the tier on the registry row
+  and link the evidence.
+- Certified → Compatible: evidence goes stale (no artifact refresh within the
+  policy window) or a regression invalidates the certification run.
+- Any → Experimental: the only working path is a feature-gated one; promotion
+  requires the gate to ship as a default path.
+
+The tiered smoke matrix (`scripts/smoke_compatible_models.py`) keeps the
+Compatible/Certified claims honest: it resolves a local snapshot, runs
+`ax-engine-bench generate-manifest` idempotently, loads the model through the
+normal server path, and asserts a short greedy generation. CI runs
+`--dry-run` on every push (matrix + tier cross-check against the registry
+source, no weights needed) and the artifact-gated real-weight run in the
+Model Smoke job. Operators run the full matrix against downloaded weights:
+
+```text
+python3 scripts/smoke_compatible_models.py --list
+python3 scripts/smoke_compatible_models.py --download --required
+python3 scripts/smoke_compatible_models.py --models qwen3-4b,llama3.2-1b
+```
+
 ## Native multimodal and speech support
 
 This table describes the repo-owned MLX implementations. AX selects high-use

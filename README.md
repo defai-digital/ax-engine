@@ -394,7 +394,7 @@ Crate layout and conventions: [AGENTS.md](AGENTS.md) ·
 ## Limitations
 
 - Qwen3.5 long-prompt prefill can trail upstream MLX references on longer prompts
-- Use pre-sanitized MLX community weights (or convert with `mlx_lm.convert` first)
+- Raw HuggingFace / mlx-community snapshots load directly: `model-manifest.json` is auto-generated from `config.json` + safetensors headers on first load and weight sanitization is auto-detected, so `mlx_lm.convert` is not required
 - N-gram acceleration is workload-dependent, not a raw kernel speedup
 - NVIDIA/CUDA serving requires the separate AX Serving product
 

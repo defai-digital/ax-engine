@@ -79,8 +79,48 @@ impl Family {
         is_primary_family_key(&self.key)
     }
 
+    /// Three-tier quality grade for the registry family behind this catalog
+    /// key (see `ax_engine_core::support_tier`).
+    pub fn support_tier(&self) -> ax_engine_core::ModelSupportTier {
+        ax_engine_core::support_tier_for_family(registry_family_label(&self.key))
+    }
+
     pub fn installed_count(&self) -> usize {
         self.variants.iter().filter(|v| v.installed).count()
+    }
+}
+
+/// Map a catalog family key (`gemma4-e2b`, `ax-qwen3.6-27b`, …) to the
+/// canonical manifest `model_family` label used by the architecture
+/// registry. Unknown keys pass through unchanged, so they resolve to
+/// `ModelSupportTier::Compatible` (manifest-probing caveat) by default.
+pub(super) fn registry_family_label(key: &str) -> &str {
+    let k = key.to_ascii_lowercase();
+    let k = k.strip_prefix("ax-").unwrap_or(&k);
+    if k.starts_with("gemma4") {
+        "gemma4"
+    } else if k.starts_with("qwen3.5") || k.starts_with("qwen3.6") {
+        "qwen3_5"
+    } else if k.starts_with("qwen3-coder-next") {
+        "qwen3_next"
+    } else if k.starts_with("qwen3-embedding") {
+        "qwen3"
+    } else if k.starts_with("glm") {
+        "glm4_moe_lite"
+    } else if k.starts_with("gpt-oss") {
+        "gpt_oss"
+    } else if k.starts_with("llama3") {
+        "llama3"
+    } else if k.starts_with("llama4") {
+        "llama4"
+    } else if k.starts_with("mistral") || k.starts_with("ministral") || k.starts_with("devstral") {
+        "mistral3"
+    } else if k.starts_with("embeddinggemma") {
+        "embeddinggemma"
+    } else if k.starts_with("diffusiongemma") {
+        "diffusion_gemma"
+    } else {
+        key
     }
 }
 

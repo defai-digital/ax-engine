@@ -92,6 +92,10 @@ pub struct EngineStepReport {
     pub ttft_events: u32,
     pub prefix_hits: u32,
     pub kv_usage_blocks: u32,
+    /// Requests still waiting for scheduler admission at the end of the step
+    /// (gauge; 0 for backends without an internal scheduler queue).
+    #[serde(default)]
+    pub waiting_requests: u32,
     pub evictions: u32,
     #[serde(default)]
     pub preempted_requests: u32,
@@ -209,6 +213,7 @@ impl EngineStepReport {
             ttft_events: metrics.ttft_events,
             prefix_hits: metrics.prefix_hits,
             kv_usage_blocks: metrics.kv_usage_blocks,
+            waiting_requests: metrics.waiting_requests,
             evictions: metrics.evictions,
             preempted_requests: metrics.preempted_requests,
             preempted_tokens: metrics.preempted_tokens,
@@ -234,6 +239,7 @@ impl EngineStepReport {
         self.ttft_events += other.ttft_events;
         self.prefix_hits += other.prefix_hits;
         self.kv_usage_blocks = self.kv_usage_blocks.max(other.kv_usage_blocks);
+        self.waiting_requests = self.waiting_requests.max(other.waiting_requests);
         self.evictions += other.evictions;
         self.preempted_requests += other.preempted_requests;
         self.preempted_tokens += other.preempted_tokens;

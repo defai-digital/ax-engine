@@ -163,10 +163,26 @@ contains an opt-in continuous dense-decode path behind
 `AX_MLX_BATCHED_DECODE`; unsupported or uncertified rows remain on the per-item
 path. Eligibility is resolved once at model load into typed structural
 capabilities plus a separate numerical certification. Dense full-attention
-Qwen 3 without MTP, diffusion, sliding attention, MoE, MLA, layer gating, or KV
-compression is structurally supported, but it is not numerically certified:
+Qwen 3 without MTP, diffusion, sliding attention, MoE, MLA, layer gating,
+KV-shared layers, or KV compression is structurally supported, but it is not
+numerically certified:
 real-weight sequential-oracle probes diverge for some prompt lengths because
 MLX batched and single-row numerical paths can select different greedy tokens.
+Gemma 4 models with KV-shared layers are rejected with the `kv_shared_layers`
+structural reason (the batched forward has no KV-source path), so they stay on
+the per-item route rather than reaching the batched forward's backstop assert.
+MoE models follow **Decision A** (`bit_exact_row_exact_fallback`): the batched
+FFN runs experts per-row (RowExact) so B>1 stays bit-exact against the per-row
+oracle — shared `gather_qmm` amortization is intentionally uncertified because
+its reduction order differs from per-row at B>1
+(`docs/performance/batched-hybrid-moe-linear-decode.md`). The scope is
+MoE-aware, not family-string-only: hybrid Qwen 3.5 / 3.6 families, and plain
+**Qwen3-MoE** (HF `qwen3_moe` maps to the same `qwen3` manifest family as dense
+Qwen 3, so the manifest MoE config disambiguates — dense Qwen 3 is unaffected).
+`AX_MLX_BATCHED_MOE_ROW_EXACT=0` opts out for uncertified throughput
+experiments only. Decision A certification covers batches 2, 4, and 8; the
+required scenario matrix includes a batch-8 greedy case alongside the batch-2/4
+prompt-length, seed, and ragged cases.
 Gemma 4 interleaved SWA is intentionally **not** that dense pilot; a separate
 `gemma_swa_decode_structural_rejections` helper tracks a future SWA-aware pilot
 (dense interleaved SWA only — MoE and per-layer gating still block). Assistant

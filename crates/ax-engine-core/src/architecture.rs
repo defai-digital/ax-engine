@@ -69,6 +69,10 @@ pub struct StructuralCapabilities {
     /// Gemma4, GPT-OSS (MXFP4), GLM, and DeepSeek routers stay false.
     pub batched_qwen3_moe_router: bool,
     pub has_layer_gating: bool,
+    /// True when any layer shares KV from a source layer (Gemma4 KV-shared
+    /// layers carry Q-only projections). The batched decode forward has no
+    /// KV-source path and asserts `kv_source.is_none()` as a backstop.
+    pub has_kv_shared_layers: bool,
     pub is_diffusion: bool,
     pub is_encoder_embed: bool,
     pub is_multimodal_capable: bool,
@@ -101,6 +105,9 @@ impl StructuralCapabilities {
             }
             if matches!(layer.ffn, FfnKind::MoE { .. } | FfnKind::Mxfp4MoE { .. }) {
                 caps.has_moe = true;
+            }
+            if layer.kv_source_layer.is_some() {
+                caps.has_kv_shared_layers = true;
             }
         }
         caps
@@ -142,6 +149,12 @@ impl StructuralCapabilities {
         }
         if self.has_layer_gating {
             reasons.push("layer_gating");
+        }
+        // KV-shared layers (Gemma4) have no own K/V projections; the batched
+        // forward asserts `kv_source.is_none()` only as an unreachable
+        // backstop — this structural gate must reject them first.
+        if self.has_kv_shared_layers {
+            reasons.push("kv_shared_layers");
         }
         if !self.has_full_attention && !self.has_sliding_window && !self.has_linear_attention {
             // Degenerate empty graph — treat as not structurally eligible.
@@ -585,6 +598,44 @@ mod tests {
         assert!(spec.capabilities.has_sliding_window);
         assert!(spec.capabilities.has_full_attention);
         assert!(matches!(spec.layers[0].ffn, FfnKind::DenseGeglu));
+    }
+
+    #[test]
+    fn gemma4_kv_shared_layers_rejected_from_batched_decode() {
+        // Gemma4 KV-shared layout: a layer whose KV comes from a source layer
+        // (`kv_shared_source_layers`) must fail closed for batched decode
+        // instead of reaching the `kv_source.is_none()` assert in the batched
+        // forward.
+        let mut m = base_manifest("gemma4", 4);
+        m.sliding_window_size = Some(512);
+        m.layer_types = vec![
+            "sliding_attention".into(),
+            "sliding_attention".into(),
+            "sliding_attention".into(),
+            "full_attention".into(),
+        ];
+        m.kv_shared_source_layers.insert(1, 0);
+        m.kv_shared_source_layers.insert(2, 0);
+
+        let spec = ArchitectureSpec::from_manifest(&m);
+        assert_eq!(spec.layers[1].kv_source_layer, Some(0));
+        assert_eq!(spec.layers[2].kv_source_layer, Some(0));
+        assert!(spec.capabilities.has_kv_shared_layers);
+        let reasons = spec.capabilities.batched_decode_structural_rejections();
+        assert!(
+            reasons.contains(&"kv_shared_layers"),
+            "KV-shared Gemma4 must be structurally rejected: {reasons:?}"
+        );
+
+        // Dense Gemma4 without KV sharing is unaffected.
+        let dense = ArchitectureSpec::from_manifest(&base_manifest("gemma4", 4));
+        assert!(!dense.capabilities.has_kv_shared_layers);
+        assert!(
+            !dense
+                .capabilities
+                .batched_decode_structural_rejections()
+                .contains(&"kv_shared_layers")
+        );
     }
 
     #[test]

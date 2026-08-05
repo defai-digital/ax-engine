@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::admission::{AdmissionController, AdmissionPermit};
 use crate::generation::service::{
     ExecutionWorkClass, GenerationPressureEvent, GenerationServiceStartError,
-    ModelExecutionArbiter, ModelExecutionStats, NativeGenerationService,
+    ModelExecutionArbiter, ModelExecutionStats, NativeGenerationService, TerminalRequestStats,
 };
 use crate::generation::streaming::StreamDeadlines;
 use crate::lan_advertise::ModelAdvertisement;
@@ -465,6 +465,13 @@ fn attach_live_state(
             metrics.record_generation_pressure(event);
         }
     });
+    let terminal_metrics = Arc::downgrade(metrics);
+    live.generation_service
+        .set_terminal_request_observer(move |stats| {
+            if let Some(metrics) = terminal_metrics.upgrade() {
+                metrics.record_terminal_request(stats);
+            }
+        });
 }
 
 fn record_terminal_request_owner(
@@ -551,6 +558,57 @@ pub(crate) struct ServerMetrics {
     /// engine worker per model; a single set of gauges would interleave
     /// last-writer-wins values from unrelated models.
     engine_step_stats: Mutex<BTreeMap<String, EngineStepStats>>,
+    /// Worker-measured serving latency/throughput samples (process-wide).
+    serving_stats: Mutex<ServingStats>,
+}
+
+/// Number of TTFT samples retained for the p95 gauge. Large enough to track
+/// recent load without unbounded growth; refreshed at request completion.
+const TTFT_SAMPLE_WINDOW: usize = 512;
+
+/// EWMA weight for decode-throughput samples at request completion.
+const DECODE_TOK_PER_SEC_EWMA_ALPHA: f64 = 0.2;
+
+/// Process-wide serving latency and decode-throughput samples reported by
+/// native generation workers when a stream reaches a terminal state.
+#[derive(Default)]
+struct ServingStats {
+    /// Recent TTFT samples in milliseconds (worker-measured); p95 is computed
+    /// from this window at scrape time.
+    ttft_ms_samples: VecDeque<u64>,
+    /// EWMA of per-request decode throughput (tokens/second).
+    decode_tok_per_sec_ewma: Option<f64>,
+}
+
+impl ServingStats {
+    fn record(&mut self, stats: TerminalRequestStats) {
+        if let Some(ttft_us) = stats.ttft_us {
+            self.ttft_ms_samples.push_back(ttft_us.div_ceil(1_000));
+            while self.ttft_ms_samples.len() > TTFT_SAMPLE_WINDOW {
+                self.ttft_ms_samples.pop_front();
+            }
+        }
+        if let Some(tok_per_sec) = stats.decode_tok_per_sec
+            && tok_per_sec.is_finite()
+            && tok_per_sec > 0.0
+        {
+            self.decode_tok_per_sec_ewma = Some(match self.decode_tok_per_sec_ewma {
+                Some(ewma) => DECODE_TOK_PER_SEC_EWMA_ALPHA.mul_add(tok_per_sec - ewma, ewma),
+                None => tok_per_sec,
+            });
+        }
+    }
+
+    /// Nearest-rank p95 of the retained TTFT window; `None` when empty.
+    fn ttft_p95_ms(&self) -> Option<u64> {
+        if self.ttft_ms_samples.is_empty() {
+            return None;
+        }
+        let mut samples = self.ttft_ms_samples.iter().copied().collect::<Vec<_>>();
+        samples.sort_unstable();
+        let rank = samples.len().saturating_mul(95).div_ceil(100).max(1);
+        samples.get(rank - 1).copied()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -559,6 +617,7 @@ struct EngineStepStats {
     scheduled_requests: u64,
     scheduled_tokens: u64,
     kv_usage_blocks: u64,
+    waiting_requests: u64,
     prefix_hits_total: u64,
     memory: Option<ModelMemoryGauges>,
 }
@@ -573,6 +632,7 @@ pub(crate) struct EngineStepGauges {
     pub(crate) scheduled_requests: u64,
     pub(crate) scheduled_tokens: u64,
     pub(crate) kv_usage_blocks: u64,
+    pub(crate) waiting_requests: u64,
     pub(crate) prefix_hits_total: u64,
 }
 
@@ -715,6 +775,7 @@ impl ServerMetrics {
         entry.scheduled_requests = report.scheduled_requests as u64;
         entry.scheduled_tokens = report.scheduled_tokens as u64;
         entry.kv_usage_blocks = report.kv_usage_blocks as u64;
+        entry.waiting_requests = report.waiting_requests as u64;
         entry.prefix_hits_total = entry
             .prefix_hits_total
             .saturating_add(report.prefix_hits as u64);
@@ -782,6 +843,7 @@ impl ServerMetrics {
                         scheduled_requests: entry.scheduled_requests,
                         scheduled_tokens: entry.scheduled_tokens,
                         kv_usage_blocks: entry.kv_usage_blocks,
+                        waiting_requests: entry.waiting_requests,
                         prefix_hits_total: entry.prefix_hits_total,
                     },
                 )
@@ -796,6 +858,33 @@ impl ServerMetrics {
             .iter()
             .filter_map(|(model_id, entry)| entry.memory.map(|memory| (model_id.clone(), memory)))
             .collect()
+    }
+
+    /// Record worker-measured timings for one terminally completed native
+    /// stream (see `TerminalRequestStats`).
+    pub(crate) fn record_terminal_request(&self, stats: TerminalRequestStats) {
+        self.serving_stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record(stats);
+    }
+
+    /// Nearest-rank p95 (ms) over the recent TTFT window; `None` before the
+    /// first measured request.
+    pub(crate) fn ttft_p95_ms(&self) -> Option<u64> {
+        self.serving_stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ttft_p95_ms()
+    }
+
+    /// EWMA decode throughput (tokens/second); `None` before the first
+    /// measured decode window.
+    pub(crate) fn decode_tok_per_sec(&self) -> Option<f64> {
+        self.serving_stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .decode_tok_per_sec_ewma
     }
 }
 
@@ -1107,6 +1196,7 @@ mod step_metrics_tests {
             ttft_events: 0,
             prefix_hits,
             kv_usage_blocks: 8,
+            waiting_requests: 0,
             evictions: 0,
             preempted_requests: 0,
             preempted_tokens: 0,
@@ -1149,6 +1239,66 @@ mod step_metrics_tests {
     fn step_metrics_are_empty_before_first_step() {
         let metrics = ServerMetrics::default();
         assert!(metrics.engine_step_gauges_per_model().is_empty());
+    }
+
+    #[test]
+    fn terminal_request_stats_drive_ttft_p95_and_decode_ewma() {
+        let metrics = ServerMetrics::default();
+        assert_eq!(metrics.ttft_p95_ms(), None);
+        assert_eq!(metrics.decode_tok_per_sec(), None);
+
+        metrics.record_terminal_request(TerminalRequestStats {
+            ttft_us: None,
+            decode_tok_per_sec: None,
+        });
+        assert_eq!(metrics.ttft_p95_ms(), None);
+        assert_eq!(metrics.decode_tok_per_sec(), None);
+
+        // Sub-millisecond TTFT rounds up to 1 ms, never 0.
+        metrics.record_terminal_request(TerminalRequestStats {
+            ttft_us: Some(1),
+            decode_tok_per_sec: Some(100.0),
+        });
+        assert_eq!(metrics.ttft_p95_ms(), Some(1));
+        assert_eq!(metrics.decode_tok_per_sec(), Some(100.0));
+
+        // EWMA blends a second sample with the configured alpha.
+        metrics.record_terminal_request(TerminalRequestStats {
+            ttft_us: Some(50_000),
+            decode_tok_per_sec: Some(50.0),
+        });
+        let ewma = metrics.decode_tok_per_sec().expect("decode ewma");
+        let expected = 0.2_f64.mul_add(50.0 - 100.0, 100.0);
+        assert!((ewma - expected).abs() < f64::EPSILON);
+        // Nearest-rank p95 over [1, 50] ms is 50.
+        assert_eq!(metrics.ttft_p95_ms(), Some(50));
+
+        // Non-finite and non-positive throughput samples are ignored.
+        metrics.record_terminal_request(TerminalRequestStats {
+            ttft_us: None,
+            decode_tok_per_sec: Some(f64::NAN),
+        });
+        metrics.record_terminal_request(TerminalRequestStats {
+            ttft_us: None,
+            decode_tok_per_sec: Some(0.0),
+        });
+        assert_eq!(metrics.decode_tok_per_sec(), Some(ewma));
+    }
+
+    #[test]
+    fn ttft_window_is_bounded() {
+        let metrics = ServerMetrics::default();
+        for _ in 0..(TTFT_SAMPLE_WINDOW + 64) {
+            metrics.record_terminal_request(TerminalRequestStats {
+                ttft_us: Some(1_000),
+                decode_tok_per_sec: None,
+            });
+        }
+        let stats = metrics
+            .serving_stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(stats.ttft_ms_samples.len(), TTFT_SAMPLE_WINDOW);
     }
 
     #[test]

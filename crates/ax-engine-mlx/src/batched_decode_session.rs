@@ -165,6 +165,9 @@ pub(crate) struct BatchedDecodeCapabilities {
     has_linear_attention: bool,
     has_mla: bool,
     has_layer_gating: bool,
+    /// Any layer shares KV from a source layer (Gemma4 KV-shared layers load
+    /// Q-only projections). The batched forward has no KV-source path.
+    has_kv_shared_layers: bool,
     /// Every layer has a usable attention projection layout for its kind
     /// (linear / MLA / split-QKV / packed-QKV), not a naive all-split-QKVO check.
     has_complete_attention_projections: bool,
@@ -187,10 +190,24 @@ pub(crate) fn layer_has_usable_attention_projections(weights: &LayerWeights) -> 
     // projection helper implements that fallback.
     let has_split = weights.q_proj.is_some() && weights.k_proj.is_some();
     let has_packed = weights.qkv_packed.is_some();
-    // Q-only layers that share KV from a source layer (assistant shared-KV).
-    let has_q_shared_kv =
-        weights.q_proj.is_some() && weights.k_proj.is_none() && weights.v_proj.is_none();
-    has_o && (has_split || has_packed || has_q_shared_kv)
+    // Q-only layers that share KV from a source layer (Gemma4 KV-shared) are
+    // NOT usable here: the batched forward asserts `kv_source.is_none()`. They
+    // are rejected structurally (`kv_shared_layers`) and must also fail this
+    // completeness gate so they can never be seeded into a batched cohort.
+    has_o && (has_split || has_packed)
+}
+
+/// Weight-level marker for KV-shared layers (Gemma4): full-attention layers
+/// that reuse K/V from a source layer load Q-only projections (see
+/// `full_attention_projection_layout` in `weights.rs`). Linear and MLA layers
+/// also lack split K/V but follow their own layouts, so they are excluded.
+pub(crate) fn layer_shares_kv_from_source(weights: &LayerWeights) -> bool {
+    weights.linear_attn.is_none()
+        && weights.glm_mla_attn.is_none()
+        && weights.q_proj.is_some()
+        && weights.k_proj.is_none()
+        && weights.v_proj.is_none()
+        && weights.qkv_packed.is_none()
 }
 
 /// Weight-level fail-closed check for the only MoE router the batched FFN runs
@@ -247,6 +264,7 @@ impl BatchedDecodeCapabilities {
             has_layer_gating: layers
                 .iter()
                 .any(|weights| weights.per_layer_gate.is_some()),
+            has_kv_shared_layers: layers.iter().any(layer_shares_kv_from_source),
             has_complete_attention_projections: layers.is_empty()
                 || layers.iter().all(layer_has_usable_attention_projections),
         }
@@ -275,6 +293,7 @@ impl BatchedDecodeCapabilities {
             has_moe: self.has_moe,
             batched_qwen3_moe_router: self.batched_qwen3_moe_router,
             has_layer_gating: self.has_layer_gating,
+            has_kv_shared_layers: self.has_kv_shared_layers,
             is_diffusion: self.is_diffusion,
             is_encoder_embed: false,
             is_multimodal_capable: false,
@@ -682,6 +701,44 @@ mod tests {
         assert!(
             !reasons.contains(&"no_attention"),
             "incomplete dense projections must not be labeled no_attention: {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn kv_shared_layers_fail_closed_before_any_decode() {
+        use crate::weights::QuantizedWeight;
+        use mlx_sys::{MlxDtype, zeros};
+
+        // Gemma4 KV-shared layer: Q + O projections only; K/V come from a
+        // source layer. The batched forward asserts `kv_source.is_none()` —
+        // eligibility must reject the model long before that backstop.
+        let mut shared = stub_layer_weights();
+        let dummy = QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
+        shared.q_proj = Some(dummy.clone());
+        shared.o_proj = Some(dummy);
+
+        let caps = BatchedDecodeCapabilities::from_loaded_model(
+            false,
+            &[],
+            &[dense_split_layer(), shared],
+            BatchedDecodeCertificationStatus::Certified,
+        );
+        let reasons = caps.rejection_reasons(false);
+        assert!(
+            reasons.contains(&"kv_shared_layers"),
+            "KV-shared layers must be a structural rejection: {reasons:?}"
+        );
+        assert!(
+            reasons.contains(&"missing_attention_projection"),
+            "Q-only shared-KV layers must also fail projection completeness: {reasons:?}"
+        );
+        assert!(!caps.eligible(false));
+        // Even the diagnostic ALLOW_UNCERTIFIED override cannot admit structure
+        // the batched forward cannot run.
+        assert!(
+            !caps.eligible(true),
+            "structural rejection must hold under ALLOW_UNCERTIFIED: {:?}",
+            caps.rejection_reasons(true)
         );
     }
 

@@ -280,6 +280,7 @@ pub(crate) fn step_report_dict<'py>(
     dict.set_item("ttft_events", report.ttft_events)?;
     dict.set_item("prefix_hits", report.prefix_hits)?;
     dict.set_item("kv_usage_blocks", report.kv_usage_blocks)?;
+    dict.set_item("waiting_requests", report.waiting_requests)?;
     dict.set_item("evictions", report.evictions)?;
     dict.set_item("preempted_requests", report.preempted_requests)?;
     dict.set_item("preempted_tokens", report.preempted_tokens)?;

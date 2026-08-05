@@ -21,6 +21,21 @@ type SessionResult<T> = Result<T, EngineSessionError>;
 type StepObserver = Arc<dyn Fn(&EngineStepReport) + Send + Sync + 'static>;
 type PressureObserver = Arc<dyn Fn(GenerationPressureEvent) + Send + Sync + 'static>;
 type StepwiseTerminalObserver = Arc<dyn Fn(u64) + Send + Sync + 'static>;
+type TerminalRequestObserver = Arc<dyn Fn(TerminalRequestStats) + Send + Sync + 'static>;
+
+/// Worker-side serving timings for one native stream that ran to a terminal
+/// state. Measured on the generation worker (not the SSE consumer), so client
+/// pacing does not leak into TTFT or decode throughput.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TerminalRequestStats {
+    /// Stream start to first flushed output token (µs). `None` when the
+    /// request terminated before any output (errors, empty completions).
+    pub(crate) ttft_us: Option<u64>,
+    /// Output tokens after the first flush divided by the worker-side decode
+    /// window. `None` for single-flush responses (no decode interval to
+    /// measure, e.g. block-diffusion or empty completions).
+    pub(crate) decode_tok_per_sec: Option<f64>,
+}
 
 /// Process-wide Metal/MLX turn arbiter.
 ///
@@ -511,6 +526,7 @@ struct ServiceState {
     step_observer: parking_lot::RwLock<Option<StepObserver>>,
     pressure_observer: parking_lot::RwLock<Option<PressureObserver>>,
     stepwise_terminal_observer: parking_lot::RwLock<Option<StepwiseTerminalObserver>>,
+    terminal_request_observer: parking_lot::RwLock<Option<TerminalRequestObserver>>,
     execution_target: parking_lot::RwLock<Option<ModelExecutionTarget>>,
     adaptive_prefill_isolation: AtomicBool,
     /// Last engine-step runner wall time (µs) used to feedback-control the
@@ -582,6 +598,7 @@ impl NativeGenerationService {
             step_observer: parking_lot::RwLock::new(None),
             pressure_observer: parking_lot::RwLock::new(None),
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
+            terminal_request_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
             adaptive_prefill_isolation: AtomicBool::new(false),
             last_step_runner_time_us: AtomicU64::new(0),
@@ -799,6 +816,13 @@ impl NativeGenerationService {
         F: Fn(u64) + Send + Sync + 'static,
     {
         *self.state.stepwise_terminal_observer.write() = Some(Arc::new(observer));
+    }
+
+    pub(crate) fn set_terminal_request_observer<F>(&self, observer: F)
+    where
+        F: Fn(TerminalRequestStats) + Send + Sync + 'static,
+    {
+        *self.state.terminal_request_observer.write() = Some(Arc::new(observer));
     }
 
     pub(crate) fn set_execution_arbiter(
@@ -1158,6 +1182,14 @@ struct ActiveStream {
     pending_step: Option<EngineStepReport>,
     pending_request: Option<SessionRequestReport>,
     first_output_emitted: bool,
+    /// Worker-side stream start; TTFT is measured against the first flushed
+    /// output so HTTP/SSE consumer pacing stays out of the measurement.
+    started_at: Instant,
+    first_output_at: Option<Instant>,
+    /// Total output tokens observed up to and including the first flush.
+    first_flush_tokens: usize,
+    /// Total output tokens observed across the whole stream.
+    output_tokens: usize,
 }
 
 /// After the first stream token, coalesce this many tokens per SSE frame.
@@ -1250,6 +1282,10 @@ fn handle_command(
                         pending_step: None,
                         pending_request: None,
                         first_output_emitted: false,
+                        started_at: Instant::now(),
+                        first_output_at: None,
+                        first_flush_tokens: 0,
+                        output_tokens: 0,
                     },
                 );
                 debug_assert!(previous.is_none(), "request IDs are process-unique");
@@ -1705,6 +1741,8 @@ fn apply_step_to_streams(
                     // Progress-only step with no new tokens; still forward.
                     (GenerateStreamEvent::Step(step), step_terminal)
                 } else {
+                    stream.output_tokens =
+                        stream.output_tokens.saturating_add(step.delta_tokens.len());
                     stream.pending_delta_tokens.extend(step.delta_tokens);
                     stream
                         .pending_delta_logprobs
@@ -1716,6 +1754,10 @@ fn apply_step_to_streams(
                         || stream.pending_delta_tokens.len() >= STREAM_TOKEN_EMIT_BATCH;
                     if !should_flush {
                         continue;
+                    }
+                    if stream.first_output_at.is_none() && !stream.pending_delta_tokens.is_empty() {
+                        stream.first_output_at = Some(Instant::now());
+                        stream.first_flush_tokens = stream.output_tokens;
                     }
                     stream.first_output_emitted = true;
                     let delta_tokens = std::mem::take(&mut stream.pending_delta_tokens);
@@ -1773,6 +1815,7 @@ fn apply_step_to_streams(
             }
         }
         if terminal {
+            record_terminal_request_stats(stream, service_state);
             let response_event = match session.next_stream_event(&mut stream.state) {
                 Ok(Some(event @ GenerateStreamEvent::Response(_))) => Ok(event),
                 Ok(_) => Err(EngineSessionError::RequestReportInvariantViolation {
@@ -1878,6 +1921,37 @@ fn discard_pending_events(stream: &mut ActiveStream, state: &ServiceState) {
     let pending_count = stream.pending_events.len();
     stream.pending_events.clear();
     decrement_buffered_stream_events(state, pending_count);
+}
+
+/// Sample worker-side serving timings for a stream that reached a terminal
+/// state and forward them to the terminal-request observer (metrics).
+fn record_terminal_request_stats(stream: &ActiveStream, state: &ServiceState) {
+    let observer = state.terminal_request_observer.read().clone();
+    let Some(observer) = observer else {
+        return;
+    };
+    let now = Instant::now();
+    let ttft_us = stream
+        .first_output_at
+        .map(|first_output_at| elapsed_us_between(stream.started_at, first_output_at));
+    let decode_tok_per_sec = stream.first_output_at.and_then(|first_output_at| {
+        let decode_us = elapsed_us_between(first_output_at, now);
+        let decode_tokens = stream
+            .output_tokens
+            .saturating_sub(stream.first_flush_tokens);
+        if decode_us == 0 || decode_tokens == 0 {
+            return None;
+        }
+        Some(decode_tokens as f64 * 1_000_000.0 / decode_us as f64)
+    });
+    observer(TerminalRequestStats {
+        ttft_us,
+        decode_tok_per_sec,
+    });
+}
+
+fn elapsed_us_between(start: Instant, end: Instant) -> u64 {
+    u64::try_from(end.saturating_duration_since(start).as_micros()).unwrap_or(u64::MAX)
 }
 
 fn detach_stream_with_error(
@@ -2493,6 +2567,7 @@ mod tests {
             step_observer: parking_lot::RwLock::new(None),
             pressure_observer: parking_lot::RwLock::new(None),
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
+            terminal_request_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
             adaptive_prefill_isolation: AtomicBool::new(false),
             last_step_runner_time_us: AtomicU64::new(0),

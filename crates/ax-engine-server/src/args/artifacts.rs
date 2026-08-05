@@ -229,13 +229,18 @@ fn validate_preset_model_artifacts(path: &Path, preset: &PresetDefinition) -> Re
         return Err("missing config.json".to_string());
     }
     if !path.join(MODEL_MANIFEST_FILE).is_file() {
-        return Err(format!(
-            "missing {MODEL_MANIFEST_FILE}; generate it with:\
-             \n  cargo run -p ax-engine-core --bin generate-manifest -- {}\
-             \nor use the download script which handles this step:\
-             \n  python scripts/download_model.py <org/repo-id>",
-            path.display()
-        ));
+        // Raw HuggingFace / MLX snapshots carry config.json + safetensors but
+        // no manifest; generate one in place (headers only, no tensor copies)
+        // instead of failing closed on the missing file.
+        if let Err(error) = ax_engine_core::convert::ensure_manifest_for_hf_model_dir(path) {
+            return Err(format!(
+                "missing {MODEL_MANIFEST_FILE} and auto-convert failed: {error}; generate it with:\
+                 \n  cargo run -p ax-engine-core --bin generate-manifest -- {}\
+                 \nor use the download script which handles this step:\
+                 \n  python scripts/download_model.py <org/repo-id>",
+                path.display()
+            ));
+        }
     }
     if !dir_contains_safetensors(path) {
         return Err("missing safetensors file".to_string());
