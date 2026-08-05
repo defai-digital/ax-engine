@@ -4602,6 +4602,7 @@ mod tests {
         cfg.n_heads = 2;
         cfg.n_kv_heads = 2;
         cfg.hidden_size = 1;
+        cfg.head_dim = 2;
         let head_dim = 2;
 
         // `out = x @ packed.T` with x=[[[1.0]]] and packed[i, 0]=i yields out[..]=[0..16].

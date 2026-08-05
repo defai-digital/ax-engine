@@ -46,6 +46,38 @@ and this project adheres to Semantic Versioning.
 - Download cancellation now terminates the complete child process group, and
   server rate limits reject non-finite values while keeping fractional request
   rates usable with a one-request minimum burst.
+- Download destinations staged via the atomic-swap path keep umask-derived
+  permissions instead of `mkdtemp`'s 0700 (a `--dest` written by one user is
+  readable by the services that consume it), a symlinked `--dest` directory
+  is followed to its target instead of being rejected when empty or silently
+  replaced by a real directory under `--force`, manifest regeneration
+  preserves a snapshot's existing manifest when no generator is available
+  instead of unlinking it first, a backup that cannot be removed after a
+  successful install is reported as a warning instead of failing the
+  download, and every failure path that strands the previous destination in
+  a uniquely named backup now says where it went.
+- Revisions are percent-decoded exactly once across every entry point:
+  the helper no longer re-decodes values embedded in the reference or
+  pre-normalized by `main()`, the Rust CLI, Python CLI, and SDK re-escape
+  literal `%` when invoking the helper, and stored provenance revisions are
+  validated without a second decode — so pinned revisions containing a
+  literal percent sign resolve, match, and report consistently.
+- `ax-engine` CLI options that take a value (`--dest`, `--output`, `--host`,
+  …) reject option-shaped values instead of consuming the next flag, so
+  `--dest --force` is an error rather than a download into a directory
+  literally named `--force`.
+- TUI modals size themselves from post-wrap line counts, so a pasted long
+  link or parser error in the download-by-link prompt no longer pushes the
+  confirm/cancel chips out of the popup, and the `d` shortcut works on the
+  Precision/Confirm wizard stages even when a stale family-filter flag is
+  set.
+- The manifest validator, the MLX packed-QKV slicer, and the Nemotron-H
+  shape checks now agree that the packed KV section width is
+  `kv_head_count × attention_head_dim` (the base geometry) on layers with a
+  wider per-layer head dim, and MoE router sidecars
+  (`ffn_gate_inp_correction_bias`, `ffn_gate_inp_expert_scale`) are
+  shape-checked and counted as MoE evidence even when `ffn_gate_inp` is
+  absent.
 - `docs/RELEASING.md` documents the fresh-notarization-ticket recovery for
   the publisher's final `-R=notarized` verification: standalone Mach-Os
   cannot staple tickets and `codesign` only consults locally registered
