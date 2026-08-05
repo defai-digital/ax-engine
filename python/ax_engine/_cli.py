@@ -698,6 +698,31 @@ def _parse_download_summary(stdout: str) -> dict | None:
     return summaries[-1] if summaries else None
 
 
+def _download_helper_command(
+    script,
+    repo_id: str,
+    *,
+    revision: str | None = None,
+    dest=None,
+    force: bool = False,
+) -> list[str]:
+    """Build the bundled download helper's argv.
+
+    Values use the --flag=value form so dash-led values survive argument
+    parsing. The resolved revision is already percent-decoded; the helper
+    decodes its --revision once more, so literal `%` is re-escaped to hand it
+    exactly this value.
+    """
+    command = [sys.executable, str(script), repo_id, "--json"]
+    if revision:
+        command.append(f"--revision={revision.replace('%', '%25')}")
+    if dest is not None:
+        command.append(f"--dest={dest}")
+    if force:
+        command.append("--force")
+    return command
+
+
 def _download_summary(
     model: str,
     *,
@@ -714,16 +739,9 @@ def _download_summary(
             "Reinstall ax-engine or run from a source checkout."
         )
 
-    command = [sys.executable, str(download_script), repo_id, "--json"]
-    if revision:
-        # The resolved revision is already percent-decoded; the helper decodes
-        # its --revision once more, so re-escape literal `%` to hand it
-        # exactly this value.
-        command.append(f"--revision={revision.replace('%', '%25')}")
-    if dest is not None:
-        command.append(f"--dest={dest}")
-    if force:
-        command.append("--force")
+    command = _download_helper_command(
+        download_script, repo_id, revision=revision, dest=dest, force=force
+    )
     if progress_json:
         command.append("--progress-json")
 
@@ -1041,7 +1059,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
             sys.stderr.write(stderr)
         if summary is None:
             raise SystemExit("download helper did not emit an ax.download_model.v1 summary")
-        print(json.dumps(summary, separators=(",", ":")))
+        _print_download_progress_terminal(summary)
         return code
     if args.json:
         if summary is not None:
@@ -1095,12 +1113,8 @@ def _run_streaming_capture_stdout(command: list[str]) -> subprocess.CompletedPro
                 payload = json.loads(line)
             except json.JSONDecodeError:
                 payload = None
-            is_summary = (
-                isinstance(payload, dict)
-                and payload.get("schema_version") == "ax.download_model.v1"
-            )
             is_progress = isinstance(payload, dict) and payload.get("event") == "progress"
-            if is_progress and not is_summary:
+            if is_progress:
                 sys.stdout.write(line)
                 sys.stdout.flush()
     return subprocess.CompletedProcess(

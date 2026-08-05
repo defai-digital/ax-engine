@@ -2269,8 +2269,9 @@ def download_model(
             return dest
 
     snapshot = _run_hf_snapshot_download(repo_id, revision=revision, force=force)
-    _validate_model_snapshot_destination(snapshot, dest)
 
+    # _replace_with_staged_snapshot re-validates the destination and its
+    # overlap with the snapshot before touching anything.
     _replace_with_staged_snapshot(
         snapshot,
         dest,
@@ -2304,9 +2305,7 @@ def _ensure_manifest(dest: Path) -> None:
             actually AX-ready.
     """
     manifest_path = dest / _MODEL_MANIFEST_FILE
-    manifest_valid = _manifest_is_structurally_valid(manifest_path)
-    rebuild_media_manifest = manifest_valid and _manifest_needs_media_rebuild(dest)
-    if manifest_valid and not rebuild_media_manifest:
+    if _manifest_is_structurally_valid(manifest_path) and not _manifest_needs_media_rebuild(dest):
         return
     if _try_generate_manifest(dest, force=manifest_path.exists()):
         if _manifest_is_structurally_valid(manifest_path) and not _manifest_needs_media_rebuild(

@@ -68,8 +68,14 @@ def _trim_standalone_reference(value: str) -> str:
     return value[start:end]
 
 
+_REPO_REF_MODULE: ModuleType | None | bool = False
+
+
 def _load_repo_ref_module() -> ModuleType | None:
     """Load the packaged parser without importing the native ``ax_engine`` package."""
+    global _REPO_REF_MODULE
+    if _REPO_REF_MODULE is not False:
+        return _REPO_REF_MODULE
     candidates = (
         REPO_ROOT / "python" / "ax_engine" / "_repo_ref.py",
         REPO_ROOT / "ax_engine" / "_repo_ref.py",
@@ -82,7 +88,9 @@ def _load_repo_ref_module() -> ModuleType | None:
             continue
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        _REPO_REF_MODULE = module
         return module
+    _REPO_REF_MODULE = None
     return None
 
 
@@ -881,19 +889,19 @@ def _write_download_provenance(dest: Path, repo_id: str, revision: str | None) -
     )
 
 
-def _destination_matches(dest: Path, repo_id: str, revision: str | None) -> bool:
+def _read_download_provenance(dest: Path) -> object | None:
     try:
-        payload = json.loads((dest / DOWNLOAD_PROVENANCE_FILE).read_bytes())
+        return json.loads((dest / DOWNLOAD_PROVENANCE_FILE).read_bytes())
     except (OSError, ValueError, TypeError):
-        return False
-    return payload == _download_provenance(repo_id, revision)
+        return None
+
+
+def _destination_matches(dest: Path, repo_id: str, revision: str | None) -> bool:
+    return _read_download_provenance(dest) == _download_provenance(repo_id, revision)
 
 
 def _destination_has_download_provenance(dest: Path) -> bool:
-    try:
-        payload = json.loads((dest / DOWNLOAD_PROVENANCE_FILE).read_bytes())
-    except (OSError, ValueError, TypeError):
-        return False
+    payload = _read_download_provenance(dest)
     return (
         isinstance(payload, dict)
         and payload.get("schema_version") == DOWNLOAD_PROVENANCE_SCHEMA_VERSION
@@ -910,6 +918,17 @@ def _destination_has_model_markers(dest: Path) -> bool:
         return any(path.is_file() for path in dest.glob("*.safetensors"))
     except OSError:
         return False
+
+
+def _is_unrelated_nonempty_dir(dest: Path) -> bool:
+    """A non-empty real directory that shows no sign of being a model download."""
+    return (
+        dest.is_dir()
+        and not dest.is_symlink()
+        and _destination_is_nonempty(dest)
+        and not _destination_has_download_provenance(dest)
+        and not _destination_has_model_markers(dest)
+    )
 
 
 def _destination_is_nonempty(dest: Path) -> bool:
@@ -937,13 +956,7 @@ def _validate_destination_before_activation(
     if not _path_exists(dest):
         return
     if force:
-        if (
-            dest.is_dir()
-            and not dest.is_symlink()
-            and _destination_is_nonempty(dest)
-            and not _destination_has_download_provenance(dest)
-            and not _destination_has_model_markers(dest)
-        ):
+        if _is_unrelated_nonempty_dir(dest):
             raise RuntimeError(
                 f"refusing to replace unrelated non-empty directory {dest}; "
                 "it appeared or changed while the model was being prepared"
@@ -1645,15 +1658,7 @@ def download(
             f"destination {dest} exists and is not a directory; pass --force to replace it"
         )
 
-    if (
-        dest is not None
-        and force
-        and dest.is_dir()
-        and not dest.is_symlink()
-        and _destination_is_nonempty(dest)
-        and not _destination_has_download_provenance(dest)
-        and not _destination_has_model_markers(dest)
-    ):
+    if dest is not None and force and _is_unrelated_nonempty_dir(dest):
         raise RuntimeError(
             f"refusing to replace unrelated non-empty directory {dest}; choose a dedicated "
             "model destination or remove its contents explicitly"
