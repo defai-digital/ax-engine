@@ -1821,6 +1821,59 @@ def _bundled_bench_bin() -> str | None:
     return None
 
 
+def _try_validate_manifest(dest: Path, *, quiet: bool = False) -> bool:
+    """Validate an existing manifest through the native runtime loader."""
+    if not (dest / MODEL_MANIFEST_FILE).is_file():
+        return False
+
+    manifest_dest = os.path.abspath(dest)
+    if (bundled := _bundled_bench_bin()) is not None:
+        return _run_manifest_command(
+            [bundled, "generate-manifest", "--validate", manifest_dest],
+            quiet=quiet,
+            label="bundled ax-engine-bench manifest validation",
+        )
+
+    if (REPO_ROOT / "Cargo.toml").is_file() and shutil.which("cargo"):
+        return _run_manifest_command(
+            [
+                "cargo",
+                "run",
+                "-q",
+                "-p",
+                "ax-engine-core",
+                "--bin",
+                "generate-manifest",
+                "--",
+                "--validate",
+                manifest_dest,
+            ],
+            quiet=quiet,
+            cwd=REPO_ROOT,
+            label="cargo run manifest validation",
+        )
+
+    for local_bin in (
+        REPO_ROOT / "target" / "release" / "generate-manifest",
+        REPO_ROOT / "target" / "debug" / "generate-manifest",
+    ):
+        if local_bin.is_file():
+            return _run_manifest_command(
+                [str(local_bin), "--validate", manifest_dest],
+                quiet=quiet,
+                label=f"{local_bin} manifest validation",
+            )
+
+    if shutil.which("ax-engine-bench"):
+        return _run_manifest_command(
+            ["ax-engine-bench", "generate-manifest", "--validate", manifest_dest],
+            quiet=quiet,
+            label="ax-engine-bench manifest validation",
+        )
+
+    return False
+
+
 def _try_generate_manifest(dest: Path, *, quiet: bool = False, force: bool = False) -> bool:
     """Try bundled, installed, and source-checkout manifest generators. Returns True on success."""
     manifest_path = dest / MODEL_MANIFEST_FILE
@@ -1959,7 +2012,7 @@ def _validation_errors(dest: Path) -> list[str]:
     return errors
 
 
-def _manifest_rebuild_plan(dest: Path) -> tuple[bool, bool]:
+def _manifest_rebuild_plan(dest: Path, *, quiet: bool = False) -> tuple[bool, bool]:
     """Return (rebuild_needed, force) for regenerating ``dest``'s manifest.
 
     ``force`` is set when an existing manifest must be replaced rather than
@@ -1971,9 +2024,14 @@ def _manifest_rebuild_plan(dest: Path) -> tuple[bool, bool]:
     rebuild_media_manifest = (
         not rebuild_manifest and manifest_path.exists() and manifest_needs_media_rebuild(dest)
     )
+    native_invalid_manifest = (
+        not rebuild_manifest
+        and not rebuild_media_manifest
+        and not _try_validate_manifest(dest, quiet=quiet)
+    )
     return (
-        rebuild_manifest or rebuild_media_manifest,
-        replace_invalid_manifest or rebuild_media_manifest,
+        rebuild_manifest or rebuild_media_manifest or native_invalid_manifest,
+        replace_invalid_manifest or rebuild_media_manifest or native_invalid_manifest,
     )
 
 
@@ -1988,7 +2046,7 @@ def _prepare_staged_destination(
     if errors:
         raise RuntimeError("staged model is invalid: " + "; ".join(errors))
 
-    rebuild_needed, force_rebuild = _manifest_rebuild_plan(dest)
+    rebuild_needed, force_rebuild = _manifest_rebuild_plan(dest, quiet=quiet)
     if not rebuild_needed:
         return
 
@@ -2005,7 +2063,11 @@ def _prepare_staged_destination(
             "model manifest is missing or invalid and regeneration failed; "
             "the previous destination was preserved"
         )
-    if _manifest_needs_rebuild(dest) or manifest_needs_media_rebuild(dest):
+    if (
+        _manifest_needs_rebuild(dest)
+        or manifest_needs_media_rebuild(dest)
+        or not _try_validate_manifest(dest, quiet=quiet)
+    ):
         raise RuntimeError(
             "manifest generator reported success but the staged manifest is still invalid; "
             "the previous destination was preserved"
@@ -2193,7 +2255,7 @@ def main() -> int:
     if not machine_json:
         print(f"  safetensors shards: {len(list(dest.glob('*.safetensors')))}")
 
-    rebuild_needed, force_rebuild = _manifest_rebuild_plan(dest)
+    rebuild_needed, force_rebuild = _manifest_rebuild_plan(dest, quiet=machine_json)
     if rebuild_needed:
         if not machine_json:
             print("  generating manifest...")
@@ -2219,7 +2281,11 @@ def main() -> int:
             # Return non-zero so automation/CI does not treat this as success.
             return 1
 
-    if _manifest_needs_rebuild(dest) or manifest_needs_media_rebuild(dest):
+    if (
+        _manifest_needs_rebuild(dest)
+        or manifest_needs_media_rebuild(dest)
+        or (rebuild_needed and not _try_validate_manifest(dest, quiet=machine_json))
+    ):
         error = "manifest generator reported success but the manifest is still invalid"
         if machine_json:
             summary = _summary(

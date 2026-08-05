@@ -2152,9 +2152,7 @@ def _manifest_is_structurally_valid(path: Path) -> bool:
                 return False
     # Structural fields alone are not enough for AX-ready: require the same
     # essential tensor roles the native loader enforces.
-    if _manifest_missing_required_roles(payload) is not None:
-        return False
-    return True
+    return _manifest_missing_required_roles(payload) is None
 
 
 def download_model(
@@ -2297,6 +2295,20 @@ def _bundled_binary(name: str) -> Path | None:
     return None
 
 
+def _source_workspace_root() -> Path | None:
+    """Return this package's source workspace root, if running from a checkout."""
+    for parent in Path(__file__).resolve().parents:
+        cargo_toml = parent / "Cargo.toml"
+        if not cargo_toml.is_file():
+            continue
+        try:
+            if "[workspace]" in cargo_toml.read_text():
+                return parent
+        except OSError:
+            pass
+    return None
+
+
 def _ensure_manifest(dest: Path) -> None:
     """Ensure ``dest`` contains a model-manifest.json, generating it if necessary.
 
@@ -2306,7 +2318,10 @@ def _ensure_manifest(dest: Path) -> None:
             actually AX-ready.
     """
     manifest_path = dest / _MODEL_MANIFEST_FILE
-    if _manifest_is_structurally_valid(manifest_path) and not _manifest_needs_media_rebuild(dest):
+    manifest_valid = _manifest_is_structurally_valid(
+        manifest_path
+    ) and not _manifest_needs_media_rebuild(dest)
+    if manifest_valid and _try_validate_manifest(dest):
         return
     if _try_generate_manifest(dest, force=manifest_path.exists()):
         if _manifest_is_structurally_valid(manifest_path) and not _manifest_needs_media_rebuild(
@@ -2316,12 +2331,84 @@ def _ensure_manifest(dest: Path) -> None:
         raise RuntimeError(
             f"manifest generator reported success but wrote an invalid manifest: {manifest_path}"
         )
-    if manifest_path.exists() and not manifest_valid:
+    if manifest_path.exists():
         raise RuntimeError(
             f"invalid {_MODEL_MANIFEST_FILE} in {dest}; regeneration failed, "
             "so the model is not AX-ready"
         )
     raise RuntimeError(_manifest_failure_message(dest))
+
+
+def _try_validate_manifest(dest: Path) -> bool:
+    """Validate an existing manifest through the native runtime loader."""
+    import shutil
+    import subprocess
+
+    if not (dest / _MODEL_MANIFEST_FILE).is_file():
+        return False
+
+    manifest_dest = os.path.abspath(dest)
+    bundled = _bundled_binary("ax-engine-bench")
+    if bundled is not None:
+        bench = str(bundled)
+        command = [bench, "generate-manifest", "--validate", manifest_dest]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            print(f"failed to launch {bench} manifest validation: {error}")
+        else:
+            if result.returncode == 0:
+                return True
+            print(f"{bench} manifest validation failed:\n{result.stderr.strip()}")
+            return False
+
+    repo_root = _source_workspace_root()
+    if repo_root is not None and shutil.which("cargo"):
+        try:
+            result = subprocess.run(
+                [
+                    "cargo",
+                    "run",
+                    "-q",
+                    "-p",
+                    "ax-engine-core",
+                    "--bin",
+                    "generate-manifest",
+                    "--",
+                    "--validate",
+                    manifest_dest,
+                ],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            print(f"failed to launch cargo manifest validation: {error}")
+            return False
+        return result.returncode == 0
+
+    if shutil.which("ax-engine-bench"):
+        bench = "ax-engine-bench"
+        command = [bench, "generate-manifest", "--validate", manifest_dest]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            print(f"failed to launch {bench} manifest validation: {error}")
+            return False
+        if result.returncode == 0:
+            return True
+        print(f"{bench} manifest validation failed:\n{result.stderr.strip()}")
+        return False
+
+    return False
 
 
 def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
@@ -2346,12 +2433,8 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
     # resolve to a stale ax-engine-bench from an unrelated install (e.g. an old
     # cargo-installed binary) that rejects newer model types, so the bundled binary wins.
     bundled = _bundled_binary("ax-engine-bench")
-    bench = (
-        str(bundled)
-        if bundled is not None
-        else ("ax-engine-bench" if shutil.which("ax-engine-bench") else None)
-    )
-    if bench is not None:
+    if bundled is not None:
+        bench = str(bundled)
         command = [bench, "generate-manifest"]
         if force:
             command.append("--force")
@@ -2366,8 +2449,6 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
                 text=True,
             )
         except OSError as error:
-            # A stale or non-executable PATH entry should not prevent the
-            # source-checkout cargo fallback below.
             print(f"failed to launch {bench} generate-manifest: {error}")
         else:
             if result.returncode == 0:
@@ -2379,48 +2460,60 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
             print(f"{bench} generate-manifest failed:\n{result.stderr.strip()}")
             return False
 
-    # Dev environment fallback: cargo run (slow on first call but works).
-    if shutil.which("cargo"):
-        # Walk up from dest to find the workspace root (contains Cargo.toml with [workspace]).
-        candidate = Path(__file__).resolve()
-        repo_root = None
-        for parent in candidate.parents:
-            if (parent / "Cargo.toml").exists():
-                try:
-                    if "[workspace]" in (parent / "Cargo.toml").read_text():
-                        repo_root = parent
-                        break
-                except OSError:
-                    pass
-        if repo_root:
-            generate_args = (
-                ["--force", "--validate", manifest_dest]
-                if force
-                else ["--validate", manifest_dest]
+    # In a source checkout, prefer the workspace's current Rust validator over
+    # a potentially stale ax-engine-bench on PATH.
+    repo_root = _source_workspace_root()
+    if repo_root is not None and shutil.which("cargo"):
+        generate_args = (
+            ["--force", "--validate", manifest_dest]
+            if force
+            else ["--validate", manifest_dest]
+        )
+        try:
+            result = subprocess.run(
+                [
+                    "cargo",
+                    "run",
+                    "-q",
+                    "-p",
+                    "ax-engine-core",
+                    "--bin",
+                    "generate-manifest",
+                    "--",
+                    *generate_args,
+                ],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
             )
-            try:
-                result = subprocess.run(
-                    [
-                        "cargo",
-                        "run",
-                        "-q",
-                        "-p",
-                        "ax-engine-core",
-                        "--bin",
-                        "generate-manifest",
-                        "--",
-                        *generate_args,
-                    ],
-                    cwd=str(repo_root),
-                    capture_output=True,
-                    text=True,
-                )
-            except OSError as error:
-                print(f"failed to launch cargo generate-manifest: {error}")
-                return False
+        except OSError as error:
+            print(f"failed to launch cargo generate-manifest: {error}")
+        else:
             if result.returncode == 0:
                 print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
                 return True
+            print(f"cargo generate-manifest failed:\n{result.stderr.strip()}")
+            return False
+
+    if shutil.which("ax-engine-bench"):
+        bench = "ax-engine-bench"
+        command = [bench, "generate-manifest"]
+        if force:
+            command.append("--force")
+        command.extend(["--validate", manifest_dest])
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            print(f"failed to launch {bench} generate-manifest: {error}")
+            return False
+        if result.returncode == 0:
+            print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
+            return True
+        print(f"{bench} generate-manifest failed:\n{result.stderr.strip()}")
 
     return False
 

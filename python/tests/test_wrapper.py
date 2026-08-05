@@ -25,16 +25,29 @@ def _minimal_ready_tensors() -> list[dict[str, object]]:
         ("ffn_gate_up_packed", 0),
         ("ffn_down", 0),
     ]
+    shapes = {
+        "token_embedding": [1, 1],
+        "final_norm": [1],
+        "attention_norm": [1],
+        "ffn_norm": [1],
+        "attention_qkv_packed": [3, 1],
+        "attention_o": [1, 1],
+        "ffn_gate_up_packed": [2, 1],
+        "ffn_down": [1, 1],
+    }
     tensors: list[dict[str, object]] = []
     for index, (role, layer_index) in enumerate(roles):
         tensor: dict[str, object] = {
             "name": f"t{index}_{role}",
             "role": role,
             "dtype": "f16",
-            "shape": [1],
+            "shape": shapes[role],
             "file": "model.safetensors",
-            "offset_bytes": index,
-            "length_bytes": 1,
+            # These unit fixtures use placeholder weight files. Binding every
+            # tensor to the same in-bounds bytes keeps native shape/readiness
+            # validation meaningful without constructing full safetensors.
+            "offset_bytes": 0,
+            "length_bytes": 2,
         }
         if layer_index is not None:
             tensor["layer_index"] = layer_index
@@ -1403,6 +1416,46 @@ class WrapperContractTests(unittest.TestCase):
                 self.ax_engine._manifest_is_structurally_valid(dest / "model-manifest.json")
             )
 
+    def test_ensure_manifest_regenerates_native_rejected_existing_manifest(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            manifest_path = model_dir / "model-manifest.json"
+            tensors = _minimal_ready_tensors()
+            qkv = next(
+                tensor
+                for tensor in tensors
+                if tensor["role"] == "attention_qkv_packed"
+            )
+            qkv["role"] = "attention_qa"
+            _write_valid_test_manifest(
+                manifest_path,
+                model_family="qwen3",
+                tensors=tensors,
+            )
+
+            self.assertTrue(self.ax_engine._manifest_is_structurally_valid(manifest_path))
+            with (
+                patch.object(
+                    self.ax_engine,
+                    "_try_validate_manifest",
+                    return_value=False,
+                ) as validate,
+                patch.object(
+                    self.ax_engine,
+                    "_try_generate_manifest",
+                    return_value=False,
+                ) as generate,
+                self.assertRaisesRegex(RuntimeError, "invalid model-manifest.json"),
+            ):
+                self.ax_engine._ensure_manifest(model_dir)
+
+            validate.assert_called_once_with(model_dir)
+            generate.assert_called_once_with(model_dir, force=True)
+            self.assertEqual(json.loads(manifest_path.read_text())["model_family"], "qwen3")
+
     def test_manifest_structure_allows_rank_zero_other_tensor_only(self) -> None:
         import tempfile
 
@@ -2154,6 +2207,78 @@ class WrapperContractTests(unittest.TestCase):
             # The bundled binary is used; the stale PATH binary is never invoked.
             self.assertEqual(
                 calls, [[str(bundled), "generate-manifest", "--validate", str(model_dir)]]
+            )
+
+    def test_try_validate_manifest_preserves_hub_symlink(self) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            blob = model_dir / "shared-blob"
+            blob.write_text("published manifest")
+            manifest = model_dir / "model-manifest.json"
+            manifest.symlink_to(blob)
+            bundled = Path("/wheel/ax_engine/_bin/ax-engine-bench")
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                self.assertTrue(manifest.is_symlink())
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with (
+                patch.object(self.ax_engine, "_bundled_binary", return_value=bundled),
+                patch("subprocess.run", fake_run),
+            ):
+                self.assertTrue(self.ax_engine._try_validate_manifest(model_dir))
+
+            self.assertEqual(
+                calls,
+                [[str(bundled), "generate-manifest", "--validate", str(model_dir)]],
+            )
+            self.assertTrue(manifest.is_symlink())
+            self.assertEqual(blob.read_text(), "published manifest")
+
+    def test_try_validate_manifest_prefers_source_workspace_over_path(self) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "model-manifest.json").write_text("{}")
+            source_root = Path("/source/ax-engine")
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                self.assertEqual(kwargs["cwd"], str(source_root))
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with (
+                patch.object(self.ax_engine, "_bundled_binary", return_value=None),
+                patch.object(
+                    self.ax_engine,
+                    "_source_workspace_root",
+                    return_value=source_root,
+                ),
+                patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"),
+                patch("subprocess.run", fake_run),
+            ):
+                self.assertTrue(self.ax_engine._try_validate_manifest(model_dir))
+
+            self.assertEqual(
+                calls[0][0:8],
+                [
+                    "cargo",
+                    "run",
+                    "-q",
+                    "-p",
+                    "ax-engine-core",
+                    "--bin",
+                    "generate-manifest",
+                    "--",
+                ],
             )
 
     def test_try_generate_manifest_force_replaces_existing_manifest(self) -> None:

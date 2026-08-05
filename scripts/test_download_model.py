@@ -38,21 +38,35 @@ _MINIMAL_READY_ROLES: list[tuple[str, int | None]] = [
 def write_safetensors(path: Path, payload: bytes | None = None) -> None:
     """Write a multi-tensor safetensors file matching ``write_manifest``.
 
-    ``payload`` is ignored for shape (kept for call-site compatibility); each
-    required role gets a single F32 element so binding checks stay exact.
+    ``payload`` is ignored (kept for call-site compatibility). The fixture uses
+    the smallest shapes accepted by the native runtime validator.
     """
-    del payload  # historical API; fixtures always use one F32 per role
+    del payload  # historical API
     element_bytes = 4
+    shapes = {
+        "token_embedding": [1, 1],
+        "final_norm": [1],
+        "attention_norm": [1],
+        "ffn_norm": [1],
+        "attention_qkv_packed": [3, 1],
+        "attention_o": [1, 1],
+        "ffn_gate_up_packed": [2, 1],
+        "ffn_down": [1, 1],
+    }
     header: dict[str, object] = {}
     body = bytearray()
     for index, (role, _layer) in enumerate(_MINIMAL_READY_ROLES):
         name = f"t{index}_{role}"
+        shape = shapes[role]
+        element_count = 1
+        for dimension in shape:
+            element_count *= dimension
         start = len(body)
-        body.extend(b"\0" * element_bytes)
+        body.extend(b"\0" * (element_count * element_bytes))
         end = len(body)
         header[name] = {
             "dtype": "F32",
-            "shape": [1],
+            "shape": shape,
             "data_offsets": [start, end],
         }
     header_bytes = json.dumps(header, separators=(",", ":")).encode()
@@ -90,9 +104,10 @@ def write_manifest(path: Path) -> None:
                 "model_family": "qwen3",
                 "tensor_format": "safetensors",
                 "layer_count": 1,
-                "hidden_size": 4,
+                "hidden_size": 1,
+                "intermediate_size": 1,
                 "attention_head_count": 1,
-                "attention_head_dim": 4,
+                "attention_head_dim": 1,
                 "kv_head_count": 1,
                 "vocab_size": 1,
                 "tie_word_embeddings": True,
@@ -1418,6 +1433,75 @@ class DownloadModelScriptTest(unittest.TestCase):
                 calls, [[bundled, "generate-manifest", "--validate", str(model_dir)]]
             )
 
+    def test_manifest_validation_is_read_only_and_uses_native_loader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp) / "model"
+            model_dir.mkdir()
+            manifest_blob = Path(tmp) / "manifest-blob"
+            manifest_blob.write_text("{}")
+            manifest_path = model_dir / "model-manifest.json"
+            manifest_path.symlink_to(manifest_blob)
+            bundled = "/wheel/ax_engine/_bin/ax-engine-bench"
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                self.assertTrue(manifest_path.is_symlink())
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with (
+                patch.object(download_model, "_bundled_bench_bin", return_value=bundled),
+                patch.object(download_model.subprocess, "run", fake_run),
+            ):
+                self.assertTrue(download_model._try_validate_manifest(model_dir, quiet=True))
+
+            self.assertEqual(
+                calls,
+                [[bundled, "generate-manifest", "--validate", str(model_dir)]],
+            )
+            self.assertTrue(manifest_path.is_symlink())
+            self.assertEqual(manifest_blob.read_text(), "{}")
+
+    def test_manifest_validation_prefers_source_workspace_over_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text("[workspace]\n")
+            model_dir = root / "model"
+            model_dir.mkdir()
+            (model_dir / "model-manifest.json").write_text("{}")
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                self.assertEqual(kwargs["cwd"], str(root))
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with (
+                patch.object(download_model, "REPO_ROOT", root),
+                patch.object(download_model, "_bundled_bench_bin", return_value=None),
+                patch.object(
+                    download_model.shutil,
+                    "which",
+                    side_effect=lambda name: f"/usr/bin/{name}",
+                ),
+                patch.object(download_model.subprocess, "run", fake_run),
+            ):
+                self.assertTrue(download_model._try_validate_manifest(model_dir, quiet=True))
+
+            self.assertEqual(
+                calls[0][0:8],
+                [
+                    "cargo",
+                    "run",
+                    "-q",
+                    "-p",
+                    "ax-engine-core",
+                    "--bin",
+                    "generate-manifest",
+                    "--",
+                ],
+            )
+
     def test_manifest_generation_absolutizes_option_like_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1667,6 +1751,60 @@ class DownloadModelScriptTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(force_values, [True])
             self.assertEqual(json.loads(stdout.getvalue())["status"], "ready")
+
+    def test_main_does_not_reuse_manifest_rejected_by_native_validator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text('{"model_type":"qwen3"}')
+            write_safetensors(model_dir / "model.safetensors")
+            write_manifest(model_dir / "model-manifest.json")
+            manifest_path = model_dir / "model-manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            qkv = next(
+                tensor
+                for tensor in manifest["tensors"]
+                if tensor["role"] == "attention_qkv_packed"
+            )
+            qkv["role"] = "attention_qa"
+            manifest_path.write_text(json.dumps(manifest))
+            write_provenance(model_dir, "owner/repo")
+
+            # The Python approximation accepts this partial MLA role, while
+            # NativeModelArtifacts rejects MLA tensors for the qwen3 family.
+            self.assertFalse(download_model._manifest_needs_rebuild(model_dir))
+            self.assertFalse(download_model._try_validate_manifest(model_dir, quiet=True))
+
+            stdout = io.StringIO()
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "download_model.py",
+                        "owner/repo",
+                        "--dest",
+                        str(model_dir),
+                        "--json",
+                    ],
+                ),
+                patch.object(
+                    download_model,
+                    "_try_validate_manifest",
+                    return_value=False,
+                ) as validate,
+                patch.object(
+                    download_model,
+                    "_try_generate_manifest",
+                    return_value=False,
+                ) as generate,
+                redirect_stdout(stdout),
+            ):
+                code = download_model.main()
+
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(stdout.getvalue())["status"], "manifest_missing")
+            validate.assert_called_once_with(model_dir, quiet=True)
+            generate.assert_called_once_with(model_dir, quiet=True, force=True)
 
     def test_main_does_not_report_ready_when_generator_writes_no_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
