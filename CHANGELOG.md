@@ -7,6 +7,8 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [6.13.1] - 2026-08-05
+
 ### Added
 
 - Model downloads accept Hugging Face links and pinned revisions everywhere:
@@ -35,7 +37,9 @@ and this project adheres to Semantic Versioning.
 - Model manifests now fail closed on missing or mismatched safetensors
   metadata, overlapping tensor ranges, invalid scalar roles, inconsistent
   attention geometry, and incorrect dense, MoE, or quantized projection
-  shapes. Manifest replacement is atomic and cannot overwrite a shared Hub
+  shapes. Python and standalone download paths admit cached manifests only
+  after native-loader validation, closing the remaining structural-check
+  drift. Manifest replacement is atomic and cannot overwrite a shared Hub
   blob through a symlink.
 - Model downloads now validate every cached snapshot entry before use,
   materialize only links into the requested snapshot or its Hub blob store,
