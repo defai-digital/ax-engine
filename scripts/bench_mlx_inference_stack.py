@@ -105,6 +105,22 @@ AX_PREFIX_CACHE_DISABLED_ENV = {
 }
 AX_PREFIX_CACHE_DISABLED_MODE = "disabled_for_cold_prefill_benchmark"
 AX_PREFIX_CACHE_ENABLED_MODE = "enabled_by_cli_for_prefix_cache_experiment"
+QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV = (
+    "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
+)
+
+
+def default_on_env_enabled(name: str, *, explicit_enable: bool = False) -> bool:
+    """Mirror the runtime's default-on environment kill-switch semantics."""
+    if explicit_enable:
+        return True
+    raw = os.environ.get(name)
+    if raw is None:
+        return True
+    trimmed = raw.strip()
+    if not trimmed:
+        return True
+    return trimmed.lower() not in {"0", "false", "no"}
 
 
 def build_public_claim_gate() -> dict[str, Any]:
@@ -2636,7 +2652,7 @@ def start_axengine(
     if pack_dense_ffn_gate_up:
         env["AX_MLX_PACK_DENSE_FFN_GATE_UP"] = "1"
     if qwen_dense_ffn_gate_up_matvec_metal:
-        env["AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"] = "1"
+        env[QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV] = "1"
     if direct_linear_attention_inputs_route:
         env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"] = "1"
     if direct_linear_attention_post_input_route:
@@ -5930,9 +5946,10 @@ def main() -> None:
         "--ax-qwen-dense-ffn-gate-up-matvec-metal",
         action="store_true",
         help=(
-            "Set AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL=1 for AX rows. "
-            "This enables the decode-only Qwen split gate/up custom Metal "
-            "matvec+SwiGLU route without loader-time row-concatenating the weights."
+            f"Explicitly set {QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV}=1 for AX "
+            "rows. The runtime defaults this feature on, so this flag overrides "
+            "an inherited kill switch for controlled experiments; model and "
+            "weight eligibility remain shape-gated."
         ),
     )
     parser.add_argument(
@@ -6851,8 +6868,15 @@ def main() -> None:
         "ax_dense_ffn_gate_up_pack_compare": bool(
             args.ax_compare_dense_ffn_gate_up_pack
         ),
-        "ax_qwen_dense_ffn_gate_up_matvec_metal": bool(
+        "ax_qwen_dense_ffn_gate_up_matvec_metal": default_on_env_enabled(
+            QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV,
+            explicit_enable=bool(args.ax_qwen_dense_ffn_gate_up_matvec_metal),
+        ),
+        "ax_qwen_dense_ffn_gate_up_matvec_metal_explicit_enable": bool(
             args.ax_qwen_dense_ffn_gate_up_matvec_metal
+        ),
+        "ax_qwen_dense_ffn_gate_up_matvec_metal_selection_contract": (
+            "default_on_shape_gated_server_route_telemetry_authoritative"
         ),
         "ax_direct_linear_attention_post_input_route_compare": bool(
             args.ax_compare_direct_linear_attention_post_input_route

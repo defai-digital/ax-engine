@@ -1,0 +1,1245 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "AX Engine vs MLXcel: Qwen 3.6 Loss Review and Fix",
+    "description": "Technical diagnosis and validated fix for the Qwen 3.6 27B 4-bit long-prompt decode loss, with historical benchmark context and promotion gates.",
+    "generatedAt": "2026-08-05T21:08:05Z",
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# AX Engine vs MLXcel: Qwen 3.6 Loss Review and Fix\n\nTechnical review, controlled route A/B, implementation, and validation for the Apple M3 Max Qwen 3.6 27B 4-bit decode loss."
+      },
+      {
+        "id": "technical-summary",
+        "type": "markdown",
+        "body": "## Technical summary\n\n**The 27B 4-bit loss is fixed.** The controlled route A/B isolated AX's default custom Qwen dense-FFN gate/up plus down 4-bit Metal matvec path as the causal regression for the model's 64-layer, 5120 → 17408 dense FFN geometry. With the custom route active, decode measured **19.33 tok/s median** and a **16.37% spread** across three repetitions. Disabling it and using MLX's split quantized-matmul FFN measured **22.74 tok/s** with a **2.94% spread**. All repetitions emitted the same 256 token IDs.\n\nThe implementation now bypasses the custom route only for that exact dense geometry. The patched default completed two warmups and five measured repetitions at **22.54 tok/s median**, a **2.98% spread**, and **+3.03% first-to-last drift**. That is **+19.9%** versus the overnight MLXcel 18.8 tok/s reference and **+35.0%** versus the reported AX 16.7 tok/s row. A separate route/provenance smoke explicitly forced the custom-kernel flag on; server telemetry still recorded zero attempts and zero hits, confirming the geometry guard—not an inherited kill switch—selected the faster path.\n\nThe original row was still methodologically confounded by fixed run order, three repetitions, and background load. Those weaknesses explain why its exact −11.2% effect size was not trustworthy, but they no longer prevent root-cause attribution: the route A/B and patched replication identify an AX-controlled performance defect. AX still won 7 of 8 overnight scenarios, with geometric-mean advantages of **11.1% decode**, **6.6% effective prefill**, and **6.9% TTFT** before this fix."
+      },
+      {
+        "id": "headline-strip",
+        "type": "metric-strip",
+        "cardIds": [
+          "patched-throughput",
+          "route-ab-gain",
+          "patched-stability",
+          "output-correctness"
+        ]
+      },
+      {
+        "id": "route-ab-finding",
+        "type": "markdown",
+        "body": "## Controlled FFN route A/B identifies the regression\n\nBoth arms used the same exact 2,048-token random prompt (`a7c9e08d17d2…`), direct greedy decode, 256 generated tokens, disabled prefix reuse, one warmup, three measurements, and five-second cooldowns. The custom route produced 64 gate/up kernel attempts and hits per request and tailed from 19.87 to 16.70 tok/s. The MLX split-FFN arm produced zero custom attempts, held between 22.28 and 22.95 tok/s, reduced accumulated asynchronous-evaluation time, and increased effective bandwidth from 310.3 to 365.0 GB/s at the median.\n\nThe final patched run strengthened the protocol to two warmups, five measurements, 15-second cooldowns, and per-repetition load gates. It reproduced the split-route result at 22.54 tok/s with stable classification. Because the A/B and patched arms emitted byte-identical token sequences, the change affects execution cost rather than model semantics."
+      },
+      {
+        "id": "route-ab-chart-block",
+        "type": "chart",
+        "chartId": "ffn-route-comparison",
+        "layout": "full"
+      },
+      {
+        "id": "route-ab-table-block",
+        "type": "table",
+        "tableId": "ffn-route-evidence",
+        "layout": "full"
+      },
+      {
+        "id": "overnight-finding",
+        "type": "markdown",
+        "body": "## Historical benchmark context\n\nThe first overnight AX repetition exactly matched MLXcel at 18.6 tok/s; separation appeared only in later AX repetitions. The controlled route A/B now explains why the AX custom FFN path could both match the reference initially and then tail under changing Metal state. Because the overnight harness ran AX before MLXcel for each model, then ran the 512-target rows before the 2K rows, its exact −11.2% effect size remains confounded even though the underlying AX route regression is real."
+      },
+      {
+        "id": "overnight-chart-block",
+        "type": "chart",
+        "chartId": "overnight-decode-reps",
+        "layout": "full"
+      },
+      {
+        "id": "loss-table-intro",
+        "type": "markdown",
+        "body": "### Only one loss is material\n\nThe 35B-A3B 4-bit p512 effective-prefill/TTFT dip is 2.3%, or about 15 ms. It is a low-confidence three-repetition difference: the sibling 35B-A3B 6-bit p512 AX row contained a 1.022 s TTFT outlier between 0.580 s and 0.590 s. AX still won that 35B 4-bit cell's decode comparison by 19.5%."
+      },
+      {
+        "id": "loss-table-block",
+        "type": "table",
+        "tableId": "losing-cells",
+        "layout": "full"
+      },
+      {
+        "id": "controlled-finding",
+        "type": "markdown",
+        "body": "## Earlier fixed-prompt diagnostics localized where to look\n\nThe first direct-policy diagnostic held the raw 2,048-token prompt, random seed, 256 generated token IDs, KV geometry, and process memory constant. Decode fell 12.8% from repetition 1 to 5. Over the same interval, MLX asynchronous-evaluation wall time rose 16.0%, from 12.70 s to 14.74 s, while AX forward/bookkeeping time stayed near 1.0 s. At the slow tail, asynchronous evaluation accounted for 93.5% of decode wall time.\n\nThe default n-gram process produced zero draft attempts and zero accepted tokens, so speculation could not explain the loss. A 15-second-cooldown run recovered from 15.9 to 18.4 tok/s as host load fell. Those observations correctly localized the problem to the evaluated op stream and its sensitivity to Metal state, but only the later route A/B separated the custom FFN matvec path from the MLX split-FFN fallback."
+      },
+      {
+        "id": "controlled-chart-block",
+        "type": "chart",
+        "chartId": "controlled-decode-reps",
+        "layout": "full"
+      },
+      {
+        "id": "localization-table-block",
+        "type": "table",
+        "tableId": "timing-localization",
+        "layout": "full"
+      },
+      {
+        "id": "scope-definitions",
+        "type": "markdown",
+        "body": "## Scope and metric definitions\n\nThe completed serving matrix covers four checkpoints—27B dense-hybrid and 35B-A3B mixture-of-experts, each at 4-bit and 6-bit—at nominal 512- and 2,048-token prompt targets. Every cell generated 256 tokens through streaming `/v1/chat/completions` with temperature 0.\n\n**TTFT** is client request-send to first content or reasoning chunk. **Effective prefill throughput** is the engine-reported prompt-token count divided by client-observed TTFT. **Decode throughput** is `(completion tokens - 1) / (last content chunk time - first content chunk time)`. A positive comparison means AX is faster; an AX loss is reported as `(AX / MLXcel - 1) × 100%`. **Relative spread** is `(maximum − minimum) / median × 100%`; **drift** is `(last / first − 1) × 100%`.\n\nThe two engines' overnight chat templates differed by roughly five prompt tokens, so that comparison is close but not token-identical. The route A/B and patched AX runs use an exact 2,048-token raw prompt with SHA-256 `a7c9e08d17d246…`, direct greedy decode, and captured output token IDs. The 18.8 tok/s MLXcel value is therefore a historical serving reference, not a same-process fixed-token control."
+      },
+      {
+        "id": "methodology",
+        "type": "markdown",
+        "body": "## Methodology and evidence chain\n\nThe overnight harness completed all 48 measurements with no request errors: 4 models × 2 prompt targets × 2 engines × 3 repetitions. It used fresh deterministic prompts per target/repetition, two-second gaps between repetitions, and five-second gaps between server processes. Execution order was model → engine (AX first) → prompt target (512 first).\n\nThe route A/B used the repository inference-stack harness against the current release build with direct AX decode, one warmup, three measured repetitions, a fixed 2,048-token prompt, five-second cooldowns, prefix reuse disabled, and output-ID capture. Arm A explicitly enabled the custom Qwen dense-FFN Metal matvec route; arm B explicitly disabled it. The patched validation used two warmups, five measured repetitions, 15-second cooldowns, and per-repetition gates of one-minute load ≤6 and top-process CPU ≤120%. The gate delayed samples during observed `fseventsd` and VM spikes. Host activity was not equivalent to an idle boot, but the run remained stable and records all conditions.\n\nA final one-measurement smoke explicitly enabled the custom route after the patch. It is correctness/provenance evidence only: the artifact records both the configured and explicit-enable flags as true, while server telemetry records zero route attempts/hits. This proves the model-geometry guard executes before the custom kernel. Its single throughput sample is excluded because the host did not meet the repeated-run stability conditions."
+      },
+      {
+        "id": "limitations",
+        "type": "markdown",
+        "body": "## Limitations, uncertainty, and robustness\n\n- The overnight comparison has only three repetitions, fixed engine order, fixed prompt-length order, short cooldowns, no fresh boot, and no captured output token IDs. Its −11.2% effect size remains exploratory.\n- Controlled runs diagnose AX only; there is no matched fixed-token MLXcel trace in the same process-order design. The patched +19.9% comparison uses the overnight MLXcel median as a historical reference.\n- The A/B arms were sequential rather than randomized. The effect is nevertheless replicated across the explicit custom-on tail, stable explicit custom-off measurements, and the patched default result. The forced-on smoke separately confirms guard selection and identical output IDs; its throughput is not used.\n- The patched run met the repetition and stability gates but ran from a dirty development tree by design and skipped the in-run `mlx_lm` reference. It is decision-grade implementation evidence, not a public release-claim artifact.\n- The geometry guard is intentionally exact. It preserves the measured Qwen3.5-9B custom-kernel win and cannot match the Qwen3.6-35B-A3B configuration, but the complete 27B/35B 4-bit/6-bit serving matrix should still be rerun before release.\n- Current evidence identifies the combined custom gate/up plus matching down-kernel route. It does not apportion the regression between the two kernels."
+      },
+      {
+        "id": "recommendations",
+        "type": "markdown",
+        "body": "## Ranked improvement plan\n\n**1. Keep the exact 27B geometry and quantization guard.** The patch clears the target-cell promotion thresholds: +16.6% versus the custom-route diagnostic median, 2.98% spread, 3.03% drift, and byte-identical output. The exception is restricted to 4-bit/group-64; do not disable the route globally because the smaller Qwen3.5-9B geometry has a measured 3–4% custom-kernel gain.\n\n**2. Rerun the complete serving matrix before release.** Alternate engine order, use two warmups plus at least five measurements, retain 15-second cooldowns and load gates, capture output IDs where the engines expose comparable tokens, and bind the measured binary SHA. Require no regression over 2% in the other seven scenarios.\n\n**3. Split-profile gate/up versus down only if broader shape coverage is needed.** The current evidence attributes the combined custom FFN route. A shape sweep with paired kernel-level timing can determine whether a tuned threshold or revised kernel should replace the exact deny rule. Until then, the narrow guard minimizes regression risk.\n\n**4. Keep upstream MLX-main evaluation as a separate opportunity.** Post-0.32 changes may add another 2–5% or reduce variance, but they are no longer required to close this loss. Test them only after the patched release baseline is established.\n\n**5. Preserve the benchmark provenance fix.** The harness now records configured default-on state separately from an explicit CLI override and declares server route telemetry authoritative. Raw runs in this review predate that metadata fix, so their route telemetry—not the old top-level boolean—determines whether the kernel executed."
+      },
+      {
+        "id": "improvement-table-block",
+        "type": "table",
+        "tableId": "improvement-plan",
+        "layout": "full"
+      },
+      {
+        "id": "decision-gates",
+        "type": "markdown",
+        "body": "### Decision gates\n\nThe patch passes the target-cell gates: more than 3% gain, drift below 5%, spread below 5%, and byte-identical greedy output. Release promotion still requires the other seven serving scenarios to remain within 2% and a clean, immutable binary artifact. Treat a fresh-boot, alternating-order full-matrix rerun as the publication result; use the overnight MLXcel median only as historical context."
+      },
+      {
+        "id": "further-questions",
+        "type": "markdown",
+        "body": "## Further questions\n\n1. Does the complete alternating-order 27B/35B matrix confirm no regression outside the fixed cell?\n2. Which half of the combined route—gate/up+SwiGLU or down projection—causes the large-geometry regression?\n3. Where is the shape crossover between the Qwen3.5-9B win at 4096 → 12288 and the Qwen3.6-27B loss at 5120 → 17408?\n4. Can the harness bind an immutable binary build SHA and distinguish explicit fast-path flags from effective server routes?\n5. Does current MLX main add a separate gain after this AX-controlled loss is removed?"
+      }
+    ],
+    "cards": [
+      {
+        "id": "patched-throughput",
+        "dataset": "headline_metrics",
+        "sourceId": "ffn-route-ab",
+        "description": "Patched default, two warmups and five measured repetitions.",
+        "metrics": [
+          {
+            "label": "Median decode tok/s",
+            "field": "patched_decode_tok_s",
+            "format": "number"
+          },
+          {
+            "label": "vs overnight AX (%)",
+            "field": "patched_vs_overnight_ax_pct",
+            "format": "number",
+            "signed": true
+          },
+          {
+            "label": "vs MLXcel reference (%)",
+            "field": "patched_vs_mlxcel_pct",
+            "format": "number",
+            "signed": true
+          }
+        ]
+      },
+      {
+        "id": "route-ab-gain",
+        "dataset": "headline_metrics",
+        "sourceId": "ffn-route-ab",
+        "description": "Fixed-prompt route A/B plus patched replication.",
+        "metrics": [
+          {
+            "label": "Patched vs fused (%)",
+            "field": "patched_vs_fused_pct",
+            "format": "number",
+            "signed": true
+          },
+          {
+            "label": "Fused median tok/s",
+            "field": "fused_decode_tok_s",
+            "format": "number"
+          },
+          {
+            "label": "Split-FFN median tok/s",
+            "field": "split_decode_tok_s",
+            "format": "number"
+          }
+        ]
+      },
+      {
+        "id": "patched-stability",
+        "dataset": "headline_metrics",
+        "sourceId": "ffn-route-ab",
+        "description": "Five measured repetitions with per-repetition load gates.",
+        "metrics": [
+          {
+            "label": "Relative spread (%)",
+            "field": "patched_spread_pct",
+            "format": "number"
+          },
+          {
+            "label": "First-to-last drift (%)",
+            "field": "patched_drift_pct",
+            "format": "number",
+            "signed": true
+          },
+          {
+            "label": "Measured repetitions",
+            "field": "patched_repetitions",
+            "format": "number"
+          }
+        ]
+      },
+      {
+        "id": "output-correctness",
+        "dataset": "headline_metrics",
+        "sourceId": "ffn-route-ab",
+        "description": "Correctness and forced-flag routing evidence.",
+        "metrics": [
+          {
+            "label": "Output mismatches",
+            "field": "output_mismatch_count",
+            "format": "number"
+          },
+          {
+            "label": "Generated tokens",
+            "field": "generated_tokens",
+            "format": "number"
+          },
+          {
+            "label": "Forced-on kernel hits",
+            "field": "forced_on_kernel_hits",
+            "format": "number"
+          }
+        ]
+      }
+    ],
+    "charts": [
+      {
+        "id": "ffn-route-comparison",
+        "title": "Qwen 27B 4-bit decode throughput by FFN configuration",
+        "subtitle": "The patched default reproduces the faster split-FFN route while removing the custom-route tail regression.",
+        "showDescription": true,
+        "type": "bar",
+        "dataset": "ffn_route_summary",
+        "sourceId": "ffn-route-ab",
+        "encodings": {
+          "x": {
+            "field": "configuration",
+            "type": "ordinal",
+            "label": "FFN configuration"
+          },
+          "y": {
+            "field": "median_decode_tok_s",
+            "type": "quantitative",
+            "label": "Median decode throughput",
+            "format": "number",
+            "unit": "tok/s"
+          },
+          "tooltip": [
+            {
+              "field": "relative_spread_pct",
+              "type": "quantitative",
+              "label": "Relative spread",
+              "format": "number",
+              "unit": "%"
+            },
+            {
+              "field": "drift_pct",
+              "type": "quantitative",
+              "label": "First-to-last drift",
+              "format": "number",
+              "unit": "%"
+            },
+            {
+              "field": "repetitions",
+              "type": "quantitative",
+              "label": "Measured repetitions",
+              "format": "number"
+            }
+          ]
+        },
+        "xAxisTitle": "FFN configuration",
+        "yAxisTitle": "Median decode tok/s",
+        "valueFormat": "number",
+        "unit": "tok/s",
+        "layout": "full",
+        "maxRows": 3
+      },
+      {
+        "id": "overnight-decode-reps",
+        "title": "Qwen 27B 4-bit, 2K decode throughput",
+        "subtitle": "AX matched MLXcel on repetition 1, then declined while MLXcel stayed flat.",
+        "showDescription": true,
+        "type": "bar",
+        "dataset": "overnight_decode_reps",
+        "sourceId": "overnight-benchmark",
+        "encodings": {
+          "x": {
+            "field": "rep_label",
+            "type": "ordinal",
+            "label": "Measured repetition"
+          },
+          "y": {
+            "field": "decode_tok_s",
+            "type": "quantitative",
+            "label": "Decode throughput",
+            "format": "number",
+            "unit": "tok/s"
+          },
+          "color": {
+            "field": "engine",
+            "type": "nominal",
+            "label": "Engine"
+          },
+          "tooltip": [
+            {
+              "field": "ttft_s",
+              "type": "quantitative",
+              "label": "TTFT",
+              "format": "number",
+              "unit": "s"
+            },
+            {
+              "field": "prompt_tokens",
+              "type": "quantitative",
+              "label": "Prompt tokens",
+              "format": "number"
+            }
+          ]
+        },
+        "xAxisTitle": "Measured repetition",
+        "yAxisTitle": "Decode tok/s",
+        "valueFormat": "number",
+        "unit": "tok/s",
+        "layout": "full",
+        "maxRows": 6
+      },
+      {
+        "id": "controlled-decode-reps",
+        "title": "Fixed-prompt AX direct decode throughput",
+        "subtitle": "Identical prompts and outputs still span 15.9–19.4 tok/s; cooldown and host state change the direction of movement.",
+        "showDescription": true,
+        "type": "bar",
+        "dataset": "controlled_decode_reps",
+        "sourceId": "controlled-ab",
+        "encodings": {
+          "x": {
+            "field": "rep_label",
+            "type": "ordinal",
+            "label": "Measured repetition"
+          },
+          "y": {
+            "field": "decode_tok_s",
+            "type": "quantitative",
+            "label": "Decode throughput",
+            "format": "number",
+            "unit": "tok/s"
+          },
+          "color": {
+            "field": "run",
+            "type": "nominal",
+            "label": "Controlled run"
+          },
+          "tooltip": [
+            {
+              "field": "prefill_tok_s",
+              "type": "quantitative",
+              "label": "Prefill throughput",
+              "format": "number",
+              "unit": "tok/s"
+            },
+            {
+              "field": "cooldown_s",
+              "type": "quantitative",
+              "label": "Cooldown",
+              "format": "number",
+              "unit": "s"
+            }
+          ]
+        },
+        "xAxisTitle": "Measured repetition",
+        "yAxisTitle": "Decode tok/s",
+        "valueFormat": "number",
+        "unit": "tok/s",
+        "layout": "full",
+        "maxRows": 10
+      }
+    ],
+    "tables": [
+      {
+        "id": "ffn-route-evidence",
+        "title": "Controlled FFN route evidence",
+        "subtitle": "Exact prompt and outputs across all arms; the patched row uses the stronger two-warmup, five-repetition protocol.",
+        "showDescription": true,
+        "dataset": "ffn_route_summary",
+        "sourceId": "ffn-route-ab",
+        "defaultSort": {
+          "field": "median_decode_tok_s",
+          "direction": "desc"
+        },
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          {
+            "field": "configuration",
+            "label": "Configuration",
+            "type": "text"
+          },
+          {
+            "field": "median_decode_tok_s",
+            "label": "Median tok/s",
+            "format": "number"
+          },
+          {
+            "field": "relative_spread_pct",
+            "label": "Spread (%)",
+            "format": "number"
+          },
+          {
+            "field": "drift_pct",
+            "label": "Drift (%)",
+            "format": "number",
+            "movement": true
+          },
+          {
+            "field": "repetitions",
+            "label": "Reps",
+            "format": "number"
+          },
+          {
+            "field": "route_evidence",
+            "label": "Route evidence",
+            "type": "text"
+          }
+        ]
+      },
+      {
+        "id": "losing-cells",
+        "title": "Losing benchmark cells",
+        "subtitle": "Median AX-versus-MLXcel differences from three repetitions per cell.",
+        "showDescription": true,
+        "dataset": "losing_cells",
+        "sourceId": "overnight-benchmark",
+        "defaultSort": {
+          "field": "ax_delta_pct",
+          "direction": "asc"
+        },
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          {
+            "field": "scenario",
+            "label": "Scenario",
+            "type": "text"
+          },
+          {
+            "field": "metric",
+            "label": "Metric",
+            "type": "text"
+          },
+          {
+            "field": "ax_delta_pct",
+            "label": "AX delta (%)",
+            "format": "number",
+            "movement": true
+          },
+          {
+            "field": "confidence",
+            "label": "Interpretation",
+            "type": "text"
+          }
+        ]
+      },
+      {
+        "id": "timing-localization",
+        "title": "Fixed-prompt AX direct timing decomposition",
+        "subtitle": "Five repetitions with two-second cooldown; output IDs, KV capacity, KV growth count, and RSS remain fixed or effectively fixed.",
+        "showDescription": true,
+        "dataset": "timing_localization",
+        "sourceId": "controlled-ab",
+        "defaultSort": {
+          "field": "rep",
+          "direction": "asc"
+        },
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          {
+            "field": "rep",
+            "label": "Rep",
+            "format": "number"
+          },
+          {
+            "field": "decode_tok_s",
+            "label": "Decode tok/s",
+            "format": "number"
+          },
+          {
+            "field": "async_eval_ms",
+            "label": "Async eval ms",
+            "format": "number"
+          },
+          {
+            "field": "forward_ms",
+            "label": "AX forward ms",
+            "format": "number"
+          },
+          {
+            "field": "async_eval_share_pct",
+            "label": "Async eval share (%)",
+            "format": "number"
+          }
+        ]
+      },
+      {
+        "id": "improvement-plan",
+        "title": "Post-fix validation and improvement priorities",
+        "subtitle": "The target cell is fixed; release promotion still depends on the full regression matrix.",
+        "showDescription": true,
+        "dataset": "improvement_plan",
+        "sourceId": "ffn-route-ab",
+        "defaultSort": {
+          "field": "priority",
+          "direction": "asc"
+        },
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          {
+            "field": "priority",
+            "label": "Priority",
+            "format": "number"
+          },
+          {
+            "field": "action",
+            "label": "Action",
+            "type": "text"
+          },
+          {
+            "field": "promotion_gate",
+            "label": "Promotion gate",
+            "type": "text"
+          }
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "ffn-route-ab",
+        "label": "Qwen 27B fixed-prompt FFN route A/B and patched validation",
+        "path": "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/",
+        "query": {
+          "engine": "DuckDB",
+          "language": "sql",
+          "description": "Read each AX inference-stack artifact, select the direct AX result, and compare decode median, spread, drift, route telemetry, and output IDs.",
+          "executed_at": "2026-08-05T21:08:05Z",
+          "sql": "WITH route_rows AS (\n  SELECT 'Custom fused route (A)' AS configuration, result\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/ffn-fused-a.json'), UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n  UNION ALL\n  SELECT 'MLX split FFN (B)' AS configuration, result\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/ffn-mlx-b.json'), UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n  UNION ALL\n  SELECT 'Patched default' AS configuration, result\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/patched-default-final.json'), UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n)\nSELECT\n  configuration,\n  result.decode_tok_s.median AS median_decode_tok_s,\n  result.run_stability.relative_spread_pct AS relative_spread_pct,\n  result.run_stability.last_vs_first_pct AS drift_pct,\n  result.run_stability.trial_count AS repetitions\nFROM route_rows\nORDER BY median_decode_tok_s DESC;",
+          "tables_used": [
+            "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/ffn-fused-a.json",
+            "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/ffn-mlx-b.json",
+            "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/patched-default-final.json",
+            "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/patched-forced-on-smoke.json"
+          ],
+          "filters": [
+            "AX direct greedy row only",
+            "Exact 2048-token prompt SHA-256 a7c9e08d17d246…",
+            "256 generated tokens with prefix reuse disabled",
+            "Output token IDs captured"
+          ],
+          "metric_definitions": [
+            "Decode median is the median of measured decode_tok_s trials.",
+            "Relative spread is (max - min) / median × 100%.",
+            "Drift is (last / first - 1) × 100%.",
+            "Historical MLXcel comparison uses the overnight 18.8 tok/s median and is not part of the fixed-token route A/B."
+          ]
+        }
+      },
+      {
+        "id": "runtime-fix",
+        "label": "Qwen dense-FFN route geometry guard",
+        "path": "crates/ax-engine-mlx/src/model/shared/mlp.rs",
+        "query": {
+          "description": "Exact Qwen3.6-27B dense geometry bypass plus regression coverage for the Qwen3.5-9B and Qwen3.6-35B-A3B configurations.",
+          "language": "rust"
+        }
+      },
+      {
+        "id": "overnight-benchmark",
+        "label": "Completed AX Engine vs MLXcel serving benchmark",
+        "path": "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/benchmark.json",
+        "query": {
+          "engine": "DuckDB",
+          "language": "sql",
+          "description": "Flatten the completed benchmark's reviewed per-repetition measurements; report metrics are medians and paired ratios derived from these rows.",
+          "executed_at": "2026-08-05T15:38:20Z",
+          "sql": "WITH artifact AS (\n  SELECT *\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/benchmark.json')\n), measurement_rows AS (\n  SELECT UNNEST(measurements) AS measurement\n  FROM artifact\n)\nSELECT\n  measurement.engine AS engine,\n  measurement.model AS model,\n  measurement.prompt_target AS prompt_target,\n  measurement.rep + 1 AS repetition,\n  measurement.prompt_tokens AS prompt_tokens,\n  measurement.completion_tokens AS completion_tokens,\n  measurement.ttft_s AS ttft_s,\n  measurement.prefill_tps AS effective_prefill_tok_s,\n  measurement.decode_tps AS decode_tok_s\nFROM measurement_rows\nORDER BY model, engine, prompt_target, repetition;",
+          "tables_used": [
+            "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/benchmark.json"
+          ],
+          "filters": [
+            "Completed measurements only",
+            "Temperature 0 and 256 generated tokens",
+            "Apple M3 Max serving run on 2026-08-05"
+          ],
+          "metric_definitions": [
+            "Cell values are medians across three repetitions.",
+            "AX delta is (AX median / MLXcel median - 1) × 100%.",
+            "Geometric-mean comparisons use the eight paired model, quantization, and prompt-target scenarios."
+          ]
+        }
+      },
+      {
+        "id": "controlled-ab",
+        "label": "Fixed-prompt AX direct versus n-gram-policy diagnostic",
+        "path": "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-fixed-prompt-policy-ab.json",
+        "query": {
+          "engine": "DuckDB",
+          "language": "sql",
+          "description": "Flatten the fixed-prompt diagnostic's direct AX repetitions and selected timing telemetry.",
+          "executed_at": "2026-08-05T16:00:00Z",
+          "sql": "WITH artifact AS (\n  SELECT *\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-fixed-prompt-policy-ab.json')\n), direct_row AS (\n  SELECT result\n  FROM artifact, UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n), trial_rows AS (\n  SELECT ROW_NUMBER() OVER () AS repetition, trial\n  FROM direct_row, UNNEST(result.trials) AS t(trial)\n)\nSELECT\n  repetition,\n  trial.decode_tok_s AS decode_tok_s,\n  trial.prefill_tok_s AS prefill_tok_s,\n  trial.ax_mlx_telemetry.ax_mlx_direct_pipeline_async_eval_wall_us / 1000.0 AS async_eval_ms,\n  trial.ax_mlx_telemetry.ax_mlx_direct_pipeline_forward_wall_us / 1000.0 AS forward_ms,\n  trial.ax_mlx_telemetry.ax_mlx_kv_capacity_kib / 1024.0 AS kv_capacity_mib,\n  trial.peak_memory_gb AS process_rss_gib\nFROM trial_rows\nORDER BY repetition;",
+          "tables_used": [
+            "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-fixed-prompt-policy-ab.json"
+          ],
+          "filters": [
+            "Direct AX row only",
+            "Fixed 2048-token prompt and 256 generated tokens",
+            "Two warmups, five measurements, two-second cooldown"
+          ],
+          "metric_definitions": [
+            "Async eval wall is MLX asynchronous graph-evaluation time accumulated by AX telemetry.",
+            "Forward wall is AX forward and graph/bookkeeping time.",
+            "First-to-last drift is (repetition 5 / repetition 1 - 1) × 100%."
+          ]
+        }
+      },
+      {
+        "id": "controlled-cooldown15",
+        "label": "Fixed-prompt AX direct 15-second-cooldown diagnostic",
+        "path": "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-direct-cooldown15.json",
+        "query": {
+          "engine": "DuckDB",
+          "language": "sql",
+          "description": "Flatten the publication-cooldown diagnostic's direct AX repetitions.",
+          "executed_at": "2026-08-05T16:38:48Z",
+          "sql": "WITH artifact AS (\n  SELECT *\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-direct-cooldown15.json')\n), direct_row AS (\n  SELECT result\n  FROM artifact, UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n), trial_rows AS (\n  SELECT ROW_NUMBER() OVER () AS repetition, trial\n  FROM direct_row, UNNEST(result.trials) AS t(trial)\n)\nSELECT repetition, trial.decode_tok_s AS decode_tok_s, trial.prefill_tok_s AS prefill_tok_s\nFROM trial_rows\nORDER BY repetition;",
+          "tables_used": [
+            "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-direct-cooldown15.json"
+          ],
+          "filters": [
+            "Direct AX row only",
+            "Fixed 2048-token prompt and 256 generated tokens",
+            "Two warmups, five measurements, 15-second cooldown"
+          ],
+          "metric_definitions": [
+            "First-to-last recovery is (repetition 5 / repetition 1 - 1) × 100%."
+          ]
+        }
+      },
+      {
+        "id": "prior-investigation",
+        "label": "Prior Metal steady-state investigation",
+        "path": ".internal/reports/prefill-regression-investigation-2026-07-28.md",
+        "query": {
+          "engine": "DuckDB",
+          "language": "sql",
+          "description": "Materialize the evidence-ranked improvement actions synthesized from the prior investigation and current diagnostics.",
+          "sql": "SELECT *\nFROM (VALUES\n  (1, 'Repair benchmark protocol', 'Benchmark protocol'),\n  (2, 'A/B current MLX main', 'Runtime dependency'),\n  (3, 'Capture paired Metal System Trace', 'Profiling'),\n  (4, 'Remove trace-proven redundant submissions', 'AX hot path'),\n  (5, 'Load-test idle worker recycle', 'Operations')\n) AS plan(priority, action, layer)\nORDER BY priority;",
+          "tables_used": [
+            ".internal/reports/prefill-regression-investigation-2026-07-28.md",
+            "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-fixed-prompt-policy-ab.json",
+            "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-direct-cooldown15.json"
+          ],
+          "metric_definitions": [
+            "Priority is ordinal and reflects evidence strength plus expected decision value, not forecasted percentage gain."
+          ]
+        }
+      },
+      {
+        "id": "runtime-adr",
+        "label": "MLX runtime and toolchain pinning ADR",
+        "path": ".internal/specs/ADR-RUNTIME-TOOLCHAIN-PINNING.md",
+        "query": {
+          "description": "Decision record for remaining on MLX 0.32.0, maintaining pin-ready plumbing, and using recycle/fresh-boot mitigations.",
+          "language": "markdown"
+        }
+      },
+      {
+        "id": "mlx-main-admission",
+        "label": "MLX main admission snapshot",
+        "path": "docs/performance/mlx-main-admission-2026-07-28.md",
+        "query": {
+          "description": "Source-built MLX main admission evidence: qmm parity and approximately 5% faster, three-times tighter steady probe.",
+          "language": "markdown"
+        }
+      },
+      {
+        "id": "ngram-contract",
+        "label": "AX n-gram acceleration contract",
+        "path": "docs/NGRAM-ACCELERATION.md",
+        "query": {
+          "description": "Policy semantics, workload caveats, telemetry requirements, and release-claim identity gates for n-gram acceleration.",
+          "language": "markdown"
+        }
+      },
+      {
+        "id": "worker-recycle",
+        "label": "AX server worker recycle implementation",
+        "path": "crates/ax-engine-server/src/generation/service.rs",
+        "query": {
+          "description": "Idle full-session rebuild controlled by AX_SERVER_WORKER_RECYCLE_AFTER_TICKS.",
+          "language": "rust"
+        }
+      },
+      {
+        "id": "mlx-releases",
+        "label": "MLX releases",
+        "href": "https://github.com/ml-explore/mlx/releases",
+        "query": {
+          "description": "Official MLX release list; v0.32.0 is the latest release as of 2026-08-05."
+        }
+      },
+      {
+        "id": "mlx-war-reuse",
+        "label": "MLX PR 3882: reuse Metal WAR tracking hash tables",
+        "href": "https://github.com/ml-explore/mlx/pull/3882",
+        "query": {
+          "description": "Merged post-0.32 Metal bookkeeping optimization with approximately 1.9% controlled Qwen throughput improvement."
+        }
+      },
+      {
+        "id": "mlx-regex",
+        "label": "MLX PR 3869: avoid regex in custom kernel names",
+        "href": "https://github.com/ml-explore/mlx/pull/3869",
+        "query": {
+          "description": "Merged post-0.32 optimization for repeated Qwen gated-delta custom-kernel invocation."
+        }
+      },
+      {
+        "id": "mlx-lm-residency",
+        "label": "MLX-LM issue 1332: DeepSeek live Metal-buffer residency",
+        "href": "https://github.com/ml-explore/mlx-lm/issues/1332",
+        "query": {
+          "description": "Open, model-specific issue documenting unbounded live Metal-buffer residency during DeepSeek decode; corroborating class only."
+        }
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-05T21:08:05Z",
+    "status": "ready",
+    "datasets": {
+      "headline_metrics": [
+        {
+          "patched_decode_tok_s": 22.5364,
+          "patched_vs_overnight_ax_pct": 34.95,
+          "patched_vs_mlxcel_pct": 19.87,
+          "patched_vs_fused_pct": 16.59,
+          "fused_decode_tok_s": 19.329,
+          "split_decode_tok_s": 22.7373,
+          "patched_spread_pct": 2.9821,
+          "patched_drift_pct": 3.0253,
+          "patched_repetitions": 5,
+          "output_mismatch_count": 0,
+          "generated_tokens": 256,
+          "forced_on_kernel_hits": 0
+        }
+      ],
+      "ffn_route_summary": [
+        {
+          "configuration": "Custom fused route (A)",
+          "median_decode_tok_s": 19.329,
+          "minimum_decode_tok_s": 16.701,
+          "maximum_decode_tok_s": 19.8658,
+          "relative_spread_pct": 16.3732,
+          "drift_pct": -15.9307,
+          "repetitions": 3,
+          "warmups": 1,
+          "cooldown_s": 5,
+          "route_evidence": "64 custom attempts and hits per request; tail regression"
+        },
+        {
+          "configuration": "MLX split FFN (B)",
+          "median_decode_tok_s": 22.7373,
+          "minimum_decode_tok_s": 22.2815,
+          "maximum_decode_tok_s": 22.9509,
+          "relative_spread_pct": 2.9442,
+          "drift_pct": -2.9168,
+          "repetitions": 3,
+          "warmups": 1,
+          "cooldown_s": 5,
+          "route_evidence": "Custom route explicitly disabled; stable"
+        },
+        {
+          "configuration": "Patched default",
+          "median_decode_tok_s": 22.5364,
+          "minimum_decode_tok_s": 22.2141,
+          "maximum_decode_tok_s": 22.8862,
+          "relative_spread_pct": 2.9821,
+          "drift_pct": 3.0253,
+          "repetitions": 5,
+          "warmups": 2,
+          "cooldown_s": 15,
+          "route_evidence": "Geometry guard; stable; forced-on smoke still 0 hits"
+        }
+      ],
+      "overnight_decode_reps": [
+        {
+          "rep": 1,
+          "rep_label": "Rep 1",
+          "engine": "AX Engine",
+          "decode_tok_s": 18.6,
+          "ttft_s": 14.6956,
+          "prefill_tok_s": 193.9,
+          "prompt_tokens": 2850
+        },
+        {
+          "rep": 1,
+          "rep_label": "Rep 1",
+          "engine": "MLXcel",
+          "decode_tok_s": 18.6,
+          "ttft_s": 16.7018,
+          "prefill_tok_s": 171.0,
+          "prompt_tokens": 2856
+        },
+        {
+          "rep": 2,
+          "rep_label": "Rep 2",
+          "engine": "AX Engine",
+          "decode_tok_s": 16.7,
+          "ttft_s": 15.514,
+          "prefill_tok_s": 183.4,
+          "prompt_tokens": 2845
+        },
+        {
+          "rep": 2,
+          "rep_label": "Rep 2",
+          "engine": "MLXcel",
+          "decode_tok_s": 18.8,
+          "ttft_s": 16.9124,
+          "prefill_tok_s": 168.5,
+          "prompt_tokens": 2850
+        },
+        {
+          "rep": 3,
+          "rep_label": "Rep 3",
+          "engine": "AX Engine",
+          "decode_tok_s": 15.4,
+          "ttft_s": 16.7606,
+          "prefill_tok_s": 169.0,
+          "prompt_tokens": 2833
+        },
+        {
+          "rep": 3,
+          "rep_label": "Rep 3",
+          "engine": "MLXcel",
+          "decode_tok_s": 18.8,
+          "ttft_s": 16.7875,
+          "prefill_tok_s": 169.1,
+          "prompt_tokens": 2839
+        }
+      ],
+      "controlled_decode_reps": [
+        {
+          "rep": 1,
+          "rep_label": "Rep 1",
+          "run": "AX direct, 2 s cooldown",
+          "cooldown_s": 2,
+          "decode_tok_s": 18.6393,
+          "prefill_tok_s": 195.1237
+        },
+        {
+          "rep": 1,
+          "rep_label": "Rep 1",
+          "run": "AX direct, 15 s cooldown",
+          "cooldown_s": 15,
+          "decode_tok_s": 15.9078,
+          "prefill_tok_s": 175.6854
+        },
+        {
+          "rep": 2,
+          "rep_label": "Rep 2",
+          "run": "AX direct, 2 s cooldown",
+          "cooldown_s": 2,
+          "decode_tok_s": 19.432,
+          "prefill_tok_s": 206.0353
+        },
+        {
+          "rep": 2,
+          "rep_label": "Rep 2",
+          "run": "AX direct, 15 s cooldown",
+          "cooldown_s": 15,
+          "decode_tok_s": 16.2129,
+          "prefill_tok_s": 175.256
+        },
+        {
+          "rep": 3,
+          "rep_label": "Rep 3",
+          "run": "AX direct, 2 s cooldown",
+          "cooldown_s": 2,
+          "decode_tok_s": 18.2877,
+          "prefill_tok_s": 195.4369
+        },
+        {
+          "rep": 3,
+          "rep_label": "Rep 3",
+          "run": "AX direct, 15 s cooldown",
+          "cooldown_s": 15,
+          "decode_tok_s": 17.0992,
+          "prefill_tok_s": 180.224
+        },
+        {
+          "rep": 4,
+          "rep_label": "Rep 4",
+          "run": "AX direct, 2 s cooldown",
+          "cooldown_s": 2,
+          "decode_tok_s": 16.7208,
+          "prefill_tok_s": 193.2354
+        },
+        {
+          "rep": 4,
+          "rep_label": "Rep 4",
+          "run": "AX direct, 15 s cooldown",
+          "cooldown_s": 15,
+          "decode_tok_s": 17.9251,
+          "prefill_tok_s": 189.1931
+        },
+        {
+          "rep": 5,
+          "rep_label": "Rep 5",
+          "run": "AX direct, 2 s cooldown",
+          "cooldown_s": 2,
+          "decode_tok_s": 16.2452,
+          "prefill_tok_s": 186.4067
+        },
+        {
+          "rep": 5,
+          "rep_label": "Rep 5",
+          "run": "AX direct, 15 s cooldown",
+          "cooldown_s": 15,
+          "decode_tok_s": 18.3948,
+          "prefill_tok_s": 197.3614
+        }
+      ],
+      "losing_cells": [
+        {
+          "scenario": "27B dense, 4-bit, p2048",
+          "metric": "Decode tok/s",
+          "ax_value": 16.7,
+          "mlxcel_value": 18.8,
+          "ax_delta_pct": -11.2,
+          "confidence": "AX custom FFN route regression fixed; exact overnight effect size confounded"
+        },
+        {
+          "scenario": "35B-A3B MoE, 4-bit, p512",
+          "metric": "Effective prefill tok/s",
+          "ax_value": 1120.3,
+          "mlxcel_value": 1146.6,
+          "ax_delta_pct": -2.3,
+          "confidence": "Low-confidence noise; about 15 ms TTFT"
+        }
+      ],
+      "timing_localization": [
+        {
+          "rep": 1,
+          "decode_tok_s": 18.6393,
+          "async_eval_ms": 12700.976,
+          "forward_ms": 994.539,
+          "async_eval_share_pct": 92.48,
+          "kv_capacity_mib": 144,
+          "kv_growth_count": 80,
+          "rss_gb": 13.19167
+        },
+        {
+          "rep": 2,
+          "decode_tok_s": 19.432,
+          "async_eval_ms": 12172.734,
+          "forward_ms": 963.947,
+          "async_eval_share_pct": 92.4,
+          "kv_capacity_mib": 144,
+          "kv_growth_count": 80,
+          "rss_gb": 13.19168
+        },
+        {
+          "rep": 3,
+          "decode_tok_s": 18.2877,
+          "async_eval_ms": 12992.997,
+          "forward_ms": 967.634,
+          "async_eval_share_pct": 92.82,
+          "kv_capacity_mib": 144,
+          "kv_growth_count": 80,
+          "rss_gb": 13.19173
+        },
+        {
+          "rep": 4,
+          "decode_tok_s": 16.7208,
+          "async_eval_ms": 14252.647,
+          "forward_ms": 1018.258,
+          "async_eval_share_pct": 93.09,
+          "kv_capacity_mib": 144,
+          "kv_growth_count": 80,
+          "rss_gb": 13.19176
+        },
+        {
+          "rep": 5,
+          "decode_tok_s": 16.2452,
+          "async_eval_ms": 14735.299,
+          "forward_ms": 983.825,
+          "async_eval_share_pct": 93.51,
+          "kv_capacity_mib": 144,
+          "kv_growth_count": 80,
+          "rss_gb": 13.19179
+        }
+      ],
+      "improvement_plan": [
+        {
+          "priority": 1,
+          "action": "Retain the exact 27B dense-geometry route guard",
+          "layer": "AX decode hot path",
+          "expected_value": "Validated 16.6% gain versus custom-route median with stable output",
+          "promotion_gate": "Target cell passed; full matrix pending",
+          "risk": "Low"
+        },
+        {
+          "priority": 2,
+          "action": "Rerun all eight serving scenarios with alternating order",
+          "layer": "Release validation",
+          "expected_value": "Confirms no collateral regression in 27B 6-bit or 35B-A3B rows",
+          "promotion_gate": "No other scenario regresses over 2%; clean binary SHA",
+          "risk": "Low"
+        },
+        {
+          "priority": 3,
+          "action": "Split-profile custom gate/up versus down kernels",
+          "layer": "Kernel profiling",
+          "expected_value": "Locates the regressing half and establishes the shape crossover",
+          "promotion_gate": "Paired exact-output shape sweep",
+          "risk": "Medium"
+        },
+        {
+          "priority": 4,
+          "action": "Evaluate current MLX main after the patched baseline",
+          "layer": "Runtime dependency",
+          "expected_value": "Potential independent throughput or variance gain",
+          "promotion_gate": "At least 3% gain with no scenario over 2% slower",
+          "risk": "Medium support and pinning burden"
+        },
+        {
+          "priority": 5,
+          "action": "Preserve separate configured, explicit, and effective route provenance",
+          "layer": "Benchmark provenance",
+          "expected_value": "Prevents default-on features from being mislabeled as disabled",
+          "promotion_gate": "Artifact schema and telemetry agree",
+          "risk": "Low"
+        }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "ffn-route-ab",
+      "label": "Qwen 27B fixed-prompt FFN route A/B and patched validation",
+      "path": "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/",
+      "query": {
+        "engine": "DuckDB",
+        "language": "sql",
+        "description": "Read each AX inference-stack artifact, select the direct AX result, and compare decode median, spread, drift, route telemetry, and output IDs.",
+        "executed_at": "2026-08-05T21:08:05Z",
+        "sql": "WITH route_rows AS (\n  SELECT 'Custom fused route (A)' AS configuration, result\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/ffn-fused-a.json'), UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n  UNION ALL\n  SELECT 'MLX split FFN (B)' AS configuration, result\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/ffn-mlx-b.json'), UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n  UNION ALL\n  SELECT 'Patched default' AS configuration, result\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/patched-default-final.json'), UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n)\nSELECT\n  configuration,\n  result.decode_tok_s.median AS median_decode_tok_s,\n  result.run_stability.relative_spread_pct AS relative_spread_pct,\n  result.run_stability.last_vs_first_pct AS drift_pct,\n  result.run_stability.trial_count AS repetitions\nFROM route_rows\nORDER BY median_decode_tok_s DESC;",
+        "tables_used": [
+          "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/ffn-fused-a.json",
+          "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/ffn-mlx-b.json",
+          "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/patched-default-final.json",
+          "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/improvement/patched-forced-on-smoke.json"
+        ],
+        "filters": [
+          "AX direct greedy row only",
+          "Exact 2048-token prompt SHA-256 a7c9e08d17d246…",
+          "256 generated tokens with prefix reuse disabled",
+          "Output token IDs captured"
+        ],
+        "metric_definitions": [
+          "Decode median is the median of measured decode_tok_s trials.",
+          "Relative spread is (max - min) / median × 100%.",
+          "Drift is (last / first - 1) × 100%.",
+          "Historical MLXcel comparison uses the overnight 18.8 tok/s median and is not part of the fixed-token route A/B."
+        ]
+      }
+    },
+    {
+      "id": "runtime-fix",
+      "label": "Qwen dense-FFN route geometry guard",
+      "path": "crates/ax-engine-mlx/src/model/shared/mlp.rs",
+      "query": {
+        "description": "Exact Qwen3.6-27B dense geometry bypass plus regression coverage for the Qwen3.5-9B and Qwen3.6-35B-A3B configurations.",
+        "language": "rust"
+      }
+    },
+    {
+      "id": "overnight-benchmark",
+      "label": "Completed AX Engine vs MLXcel serving benchmark",
+      "path": "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/benchmark.json",
+      "query": {
+        "engine": "DuckDB",
+        "language": "sql",
+        "description": "Flatten the completed benchmark's reviewed per-repetition measurements; report metrics are medians and paired ratios derived from these rows.",
+        "executed_at": "2026-08-05T15:38:20Z",
+        "sql": "WITH artifact AS (\n  SELECT *\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/benchmark.json')\n), measurement_rows AS (\n  SELECT UNNEST(measurements) AS measurement\n  FROM artifact\n)\nSELECT\n  measurement.engine AS engine,\n  measurement.model AS model,\n  measurement.prompt_target AS prompt_target,\n  measurement.rep + 1 AS repetition,\n  measurement.prompt_tokens AS prompt_tokens,\n  measurement.completion_tokens AS completion_tokens,\n  measurement.ttft_s AS ttft_s,\n  measurement.prefill_tps AS effective_prefill_tok_s,\n  measurement.decode_tps AS decode_tok_s\nFROM measurement_rows\nORDER BY model, engine, prompt_target, repetition;",
+        "tables_used": [
+          "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/benchmark.json"
+        ],
+        "filters": [
+          "Completed measurements only",
+          "Temperature 0 and 256 generated tokens",
+          "Apple M3 Max serving run on 2026-08-05"
+        ],
+        "metric_definitions": [
+          "Cell values are medians across three repetitions.",
+          "AX delta is (AX median / MLXcel median - 1) × 100%.",
+          "Geometric-mean comparisons use the eight paired model, quantization, and prompt-target scenarios."
+        ]
+      }
+    },
+    {
+      "id": "controlled-ab",
+      "label": "Fixed-prompt AX direct versus n-gram-policy diagnostic",
+      "path": "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-fixed-prompt-policy-ab.json",
+      "query": {
+        "engine": "DuckDB",
+        "language": "sql",
+        "description": "Flatten the fixed-prompt diagnostic's direct AX repetitions and selected timing telemetry.",
+        "executed_at": "2026-08-05T16:00:00Z",
+        "sql": "WITH artifact AS (\n  SELECT *\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-fixed-prompt-policy-ab.json')\n), direct_row AS (\n  SELECT result\n  FROM artifact, UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n), trial_rows AS (\n  SELECT ROW_NUMBER() OVER () AS repetition, trial\n  FROM direct_row, UNNEST(result.trials) AS t(trial)\n)\nSELECT\n  repetition,\n  trial.decode_tok_s AS decode_tok_s,\n  trial.prefill_tok_s AS prefill_tok_s,\n  trial.ax_mlx_telemetry.ax_mlx_direct_pipeline_async_eval_wall_us / 1000.0 AS async_eval_ms,\n  trial.ax_mlx_telemetry.ax_mlx_direct_pipeline_forward_wall_us / 1000.0 AS forward_ms,\n  trial.ax_mlx_telemetry.ax_mlx_kv_capacity_kib / 1024.0 AS kv_capacity_mib,\n  trial.peak_memory_gb AS process_rss_gib\nFROM trial_rows\nORDER BY repetition;",
+        "tables_used": [
+          "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-fixed-prompt-policy-ab.json"
+        ],
+        "filters": [
+          "Direct AX row only",
+          "Fixed 2048-token prompt and 256 generated tokens",
+          "Two warmups, five measurements, two-second cooldown"
+        ],
+        "metric_definitions": [
+          "Async eval wall is MLX asynchronous graph-evaluation time accumulated by AX telemetry.",
+          "Forward wall is AX forward and graph/bookkeeping time.",
+          "First-to-last drift is (repetition 5 / repetition 1 - 1) × 100%."
+        ]
+      }
+    },
+    {
+      "id": "controlled-cooldown15",
+      "label": "Fixed-prompt AX direct 15-second-cooldown diagnostic",
+      "path": "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-direct-cooldown15.json",
+      "query": {
+        "engine": "DuckDB",
+        "language": "sql",
+        "description": "Flatten the publication-cooldown diagnostic's direct AX repetitions.",
+        "executed_at": "2026-08-05T16:38:48Z",
+        "sql": "WITH artifact AS (\n  SELECT *\n  FROM read_json_auto('benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-direct-cooldown15.json')\n), direct_row AS (\n  SELECT result\n  FROM artifact, UNNEST(results) AS t(result)\n  WHERE result.engine = 'ax_engine_mlx'\n), trial_rows AS (\n  SELECT ROW_NUMBER() OVER () AS repetition, trial\n  FROM direct_row, UNNEST(result.trials) AS t(trial)\n)\nSELECT repetition, trial.decode_tok_s AS decode_tok_s, trial.prefill_tok_s AS prefill_tok_s\nFROM trial_rows\nORDER BY repetition;",
+        "tables_used": [
+          "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-direct-cooldown15.json"
+        ],
+        "filters": [
+          "Direct AX row only",
+          "Fixed 2048-token prompt and 256 generated tokens",
+          "Two warmups, five measurements, 15-second cooldown"
+        ],
+        "metric_definitions": [
+          "First-to-last recovery is (repetition 5 / repetition 1 - 1) × 100%."
+        ]
+      }
+    },
+    {
+      "id": "prior-investigation",
+      "label": "Prior Metal steady-state investigation",
+      "path": ".internal/reports/prefill-regression-investigation-2026-07-28.md",
+      "query": {
+        "engine": "DuckDB",
+        "language": "sql",
+        "description": "Materialize the evidence-ranked improvement actions synthesized from the prior investigation and current diagnostics.",
+        "sql": "SELECT *\nFROM (VALUES\n  (1, 'Repair benchmark protocol', 'Benchmark protocol'),\n  (2, 'A/B current MLX main', 'Runtime dependency'),\n  (3, 'Capture paired Metal System Trace', 'Profiling'),\n  (4, 'Remove trace-proven redundant submissions', 'AX hot path'),\n  (5, 'Load-test idle worker recycle', 'Operations')\n) AS plan(priority, action, layer)\nORDER BY priority;",
+        "tables_used": [
+          ".internal/reports/prefill-regression-investigation-2026-07-28.md",
+          "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-fixed-prompt-policy-ab.json",
+          "benchmarks/results/serving/single-client-mlxcel/2026-08-05-qwen36-27b-35b/diagnostics/27b4-p2048-direct-cooldown15.json"
+        ],
+        "metric_definitions": [
+          "Priority is ordinal and reflects evidence strength plus expected decision value, not forecasted percentage gain."
+        ]
+      }
+    },
+    {
+      "id": "runtime-adr",
+      "label": "MLX runtime and toolchain pinning ADR",
+      "path": ".internal/specs/ADR-RUNTIME-TOOLCHAIN-PINNING.md",
+      "query": {
+        "description": "Decision record for remaining on MLX 0.32.0, maintaining pin-ready plumbing, and using recycle/fresh-boot mitigations.",
+        "language": "markdown"
+      }
+    },
+    {
+      "id": "mlx-main-admission",
+      "label": "MLX main admission snapshot",
+      "path": "docs/performance/mlx-main-admission-2026-07-28.md",
+      "query": {
+        "description": "Source-built MLX main admission evidence: qmm parity and approximately 5% faster, three-times tighter steady probe.",
+        "language": "markdown"
+      }
+    },
+    {
+      "id": "ngram-contract",
+      "label": "AX n-gram acceleration contract",
+      "path": "docs/NGRAM-ACCELERATION.md",
+      "query": {
+        "description": "Policy semantics, workload caveats, telemetry requirements, and release-claim identity gates for n-gram acceleration.",
+        "language": "markdown"
+      }
+    },
+    {
+      "id": "worker-recycle",
+      "label": "AX server worker recycle implementation",
+      "path": "crates/ax-engine-server/src/generation/service.rs",
+      "query": {
+        "description": "Idle full-session rebuild controlled by AX_SERVER_WORKER_RECYCLE_AFTER_TICKS.",
+        "language": "rust"
+      }
+    },
+    {
+      "id": "mlx-releases",
+      "label": "MLX releases",
+      "href": "https://github.com/ml-explore/mlx/releases",
+      "query": {
+        "description": "Official MLX release list; v0.32.0 is the latest release as of 2026-08-05."
+      }
+    },
+    {
+      "id": "mlx-war-reuse",
+      "label": "MLX PR 3882: reuse Metal WAR tracking hash tables",
+      "href": "https://github.com/ml-explore/mlx/pull/3882",
+      "query": {
+        "description": "Merged post-0.32 Metal bookkeeping optimization with approximately 1.9% controlled Qwen throughput improvement."
+      }
+    },
+    {
+      "id": "mlx-regex",
+      "label": "MLX PR 3869: avoid regex in custom kernel names",
+      "href": "https://github.com/ml-explore/mlx/pull/3869",
+      "query": {
+        "description": "Merged post-0.32 optimization for repeated Qwen gated-delta custom-kernel invocation."
+      }
+    },
+    {
+      "id": "mlx-lm-residency",
+      "label": "MLX-LM issue 1332: DeepSeek live Metal-buffer residency",
+      "href": "https://github.com/ml-explore/mlx-lm/issues/1332",
+      "query": {
+        "description": "Open, model-specific issue documenting unbounded live Metal-buffer residency during DeepSeek decode; corroborating class only."
+      }
+    }
+  ]
+}

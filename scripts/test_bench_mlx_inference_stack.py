@@ -63,6 +63,33 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(bench.DEFAULT_REPETITIONS, 5)
         self.assertEqual(bench.DEFAULT_COOLDOWN, 15.0)
 
+    def test_default_on_env_enabled_matches_runtime_kill_switch(self) -> None:
+        name = bench.QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(bench.default_on_env_enabled(name))
+
+        for raw in ("", "  ", "1", "true", "YES", "unexpected"):
+            with self.subTest(raw=raw), patch.dict(
+                os.environ, {name: raw}, clear=True
+            ):
+                self.assertTrue(bench.default_on_env_enabled(name))
+
+        for raw in ("0", "false", "NO", " no "):
+            with self.subTest(raw=raw), patch.dict(
+                os.environ, {name: raw}, clear=True
+            ):
+                self.assertFalse(bench.default_on_env_enabled(name))
+
+    def test_default_on_env_explicit_enable_overrides_inherited_kill_switch(
+        self,
+    ) -> None:
+        name = bench.QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV
+        with patch.dict(os.environ, {name: "0"}, clear=True):
+            self.assertTrue(
+                bench.default_on_env_enabled(name, explicit_enable=True)
+            )
+
     def test_hf_cache_roots_follow_hugging_face_env_order(self) -> None:
         with patch.dict(
             os.environ,

@@ -1238,6 +1238,17 @@ fn qwen_dense_ffn_gate_up_swiglu_metal(
         || fastpath::qwen_linear_mtp_exact_enabled()
         || cfg.uses_geglu
         || !cfg.model_family.starts_with("qwen")
+        || (gate.bits == up.bits
+            && gate.group_size == up.group_size
+            && qwen_dense_ffn_gate_up_matvec_metal_regresses(
+                &cfg.model_family,
+                cfg.layer_count,
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                cfg.moe_expert_count,
+                gate.bits,
+                gate.group_size,
+            ))
     {
         return None;
     }
@@ -1256,6 +1267,30 @@ fn qwen_dense_ffn_gate_up_swiglu_metal(
         record_qwen_dense_ffn_gate_up_matvec_metal_fallback();
     }
     out
+}
+
+fn qwen_dense_ffn_gate_up_matvec_metal_regresses(
+    model_family: &str,
+    layer_count: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    moe_expert_count: usize,
+    bits: i32,
+    group_size: i32,
+) -> bool {
+    // Qwen3.6-27B publishes the Qwen3.5 model family in its config. On the
+    // 64-layer dense 5120 -> 17408 FFN at 4-bit/group-64, the custom gate/up and
+    // down matvec kernels measured 19.33 tok/s median with a 16.4% spread.
+    // Letting MLX use its split quantized-matmul FFN measured 22.74 tok/s with
+    // a 2.9% spread under the same fixed-token decode protocol. Keep the custom
+    // path for the smaller Qwen3.5-9B shape where it remains a measured win.
+    model_family == "qwen3_5"
+        && layer_count == 64
+        && hidden_size == 5120
+        && intermediate_size == 17_408
+        && moe_expert_count == 0
+        && bits == 4
+        && group_size == 64
 }
 
 fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
@@ -5336,6 +5371,33 @@ mod tests {
 
         assert!(qwen_dense_ffn_gate_up_swiglu_metal_impl(&batched, &weight, &weight).is_none());
         assert!(qwen_dense_ffn_gate_up_swiglu_metal_impl(&prefill, &weight, &weight).is_none());
+    }
+
+    #[test]
+    fn qwen_dense_ffn_gate_up_matvec_metal_skips_only_regressed_27b_quantization() {
+        assert!(qwen_dense_ffn_gate_up_matvec_metal_regresses(
+            "qwen3_5", 64, 5120, 17_408, 0, 4, 64
+        ));
+        assert!(
+            !qwen_dense_ffn_gate_up_matvec_metal_regresses("qwen3_5", 32, 4096, 12_288, 0, 4, 64),
+            "the measured Qwen3.5-9B win must remain eligible"
+        );
+        assert!(
+            !qwen_dense_ffn_gate_up_matvec_metal_regresses("qwen3_5", 64, 5120, 17_408, 256, 4, 64),
+            "the dense-model exception must not mask MoE configurations"
+        );
+        assert!(
+            !qwen_dense_ffn_gate_up_matvec_metal_regresses("qwen3_5", 40, 2048, 0, 256, 4, 64),
+            "the Qwen3.6-35B-A3B geometry must remain unaffected"
+        );
+        assert!(
+            !qwen_dense_ffn_gate_up_matvec_metal_regresses("qwen3_5", 64, 5120, 17_408, 0, 6, 64),
+            "the unmeasured 6-bit configuration must not inherit the 4-bit exception"
+        );
+        assert!(
+            !qwen_dense_ffn_gate_up_matvec_metal_regresses("qwen3_5", 64, 5120, 17_408, 0, 4, 32),
+            "the exception must remain specific to the measured group size"
+        );
     }
 
     #[test]

@@ -291,7 +291,8 @@ env_flag_default_on!(
     /// On M5 Max Qwen3.5-9B-MLX-4bit, this path with the split-FFN compile
     /// short-circuit below measures ~110–111 tok/s pure decode vs ~107 when the
     /// host-side compiled split-FFN graph wins the race and skips the kernel.
-    /// Unsupported shapes still fall back to two MLX quantized matmuls + SwiGLU.
+    /// Model-specific shapes that regress, and otherwise unsupported shapes,
+    /// fall back to two MLX quantized matmuls + SwiGLU.
     qwen_dense_ffn_gate_up_matvec_metal_enabled,
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
 );
