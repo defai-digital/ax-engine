@@ -16,8 +16,10 @@ throughput across those session modes.
 | Reproduction harness | [`bench_single_client_mlx_serving.py`](../../scripts/bench_single_client_mlx_serving.py) |
 
 Public docs use a generic peer label. The checked-in artifact records the peer
-binary version and SHA-256, model snapshot identities, commands, process logs,
-host conditions, and exact runner identity.
+binary version and SHA-256, model snapshot identities, commands, process-audit
+metadata, host conditions, and exact runner identity. Raw per-process logs
+remain on the benchmark worktree because repository policy excludes `*.log`
+files.
 
 ## Benchmark contract
 
@@ -116,4 +118,3 @@ should not be presented as a general prefill claim.
 - MTP packages can be used to serve these model families, but this session
   disables speculative decoding. Use the separate MTP session for speculative
   speedup claims.
-

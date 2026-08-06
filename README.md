@@ -28,8 +28,9 @@ memory).**
   MTPLX and lightning-mlx on Qwen3.6
 - **Faster single-model serving** — on the path users actually measure
   (streaming OpenAI chat), AX Engine **6.13.1** leads a peer MLX serving
-  engine **0.4.3** on Qwen 3.6 MoE by ~**16–20%** decode and wins **7/8**
-  overnight cells (2026-08-05, M3 Max) — see [Performance](#performance)
+  engine **0.4.3** in **8/8** Qwen 3.6 decode cells, with **+12.9%**
+  matrix-wide geometric-mean throughput and ~**21–24%** MoE wins
+  (2026-08-06, M5 Max) — see [Performance](#performance)
 - **Strong direct decode on Apple Silicon** — Gemma and Qwen paths compete with
   `mlx-lm` and llama.cpp Metal on published decode charts
 - **Multi-model on one process** — keep a scoped set of Qwen 3.5/3.6,
@@ -37,8 +38,8 @@ memory).**
   route by request `model` (chat + embeddings together), with fair Metal turn
   arbitration, memory preflight, and optional idle eviction. Exact-prompt
   **prefix reuse** is the S1 differentiator: official dual-model campaign
-  (Qwen stream + Gemma 13.8k prefill) clears **4/4 locked gates** at ~**5×**
-  throughput vs a multi-process peer MLX server — see
+  (Qwen stream + Gemma 13.8k prefill) clears **all locked gates** at
+  **5.03×** median throughput vs a multi-process peer MLX server — see
   [Performance](#performance) and
   [Server: Multi-model](docs/SERVER.md#multi-model-serving)
 - **You own the stack you serve** — AX runs the MLX graph, KV/runtime, and
@@ -423,7 +424,7 @@ Auth, streaming, embeddings, Ollama-shaped routes:
 | Models and MTP packages | [Supported Models](docs/SUPPORTED-MODELS.md) · [MTP Docs](docs/mtp/README.md) |
 | Hardware / FAQ | [FAQ](docs/FAQ.md) |
 | Full performance tables | [Performance Results](docs/PERFORMANCE-RESULTS.md) |
-| Serving peer (newest) | [Serving peer detail](docs/performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md) |
+| Serving peer (newest) | [Serving peer detail](docs/performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |
 | Reproduce benchmarks | [Benchmarks](docs/BENCHMARKS.md) |
 | Server / API / SDKs | [Server](docs/SERVER.md) · [API](docs/API-COMPATIBILITY.md) · [OpenClaw](docs/OPENCLAW.md) · [SDKs](docs/sdk/README.md) |
 | Fleet / NVIDIA (AX Serving) | [AX Serving](docs/AX-SERVING.md) |
