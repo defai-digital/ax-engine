@@ -40,6 +40,11 @@ memory).**
 - **You own the stack you serve** — AX runs the MLX graph, KV/runtime, and
   OpenAI-compatible server for supported Gemma / Qwen / GLM (and other direct
   families); `mlx-lm` and `llama.cpp` stay optional compatibility adapters
+- **Engine-owned scheduling and KV** — continuous batched decode
+  (certification-gated), chunked prefill, preempt-and-recompute, and a paged
+  KV ledger with cross-request prefix sharing run inside the engine, with a
+  published `ax_runtime_*` saturation contract for fleet routers — see
+  [Scheduling and KV runtime](#scheduling-and-kv-runtime)
 - **Native media and speech** — image/video chat, mixed image+audio reasoning,
   OCR, and Whisper transcription/translation run through repo-owned MLX graphs
   with capability-gated OpenAI endpoints (checkpoint-authoritative; see media
@@ -219,6 +224,37 @@ Full contract (load/unload, memory preflight, idle eviction, metrics labels):
 [Server: Multi-model serving](docs/SERVER.md#multi-model-serving) ·
 [Supported Models](docs/SUPPORTED-MODELS.md#multi-model-serving).
 
+## Scheduling and KV runtime
+
+Token-level scheduling is owned by the engine, not a gateway: each step the
+scheduler builds a decode-first, token-budgeted batch with chunked prefill and
+mixed prefill+decode routes, backed by a paged logical KV ledger. Full design:
+[Scheduler](docs/SCHEDULER.md) · [KV Cache](docs/KV-CACHE.md) ·
+[Serving Invariants](docs/SERVING-INVARIANTS.md).
+
+- **Continuous batched decode** — structurally eligible decode requests share
+  one batched forward (default on; `AX_MLX_BATCHED_DECODE=0` is the kill
+  switch) behind a fail-closed bit-exact certification gate; host-sampled
+  batching is a separate opt-in
+- **Paged KV ledger with prefix sharing** — per-request block tables,
+  ref-counted cross-request prefix reuse, tiered eviction, and an optional
+  disk-durable prefix cache that survives restarts
+- **Pressure handling** — KV memory-pressure throttling, preempt-and-recompute
+  (newest in-flight prefill only, never decode), and server admission control
+  (global and per-model concurrency caps → `429`)
+- **Fleet telemetry contract** — `/metrics` publishes versioned `ax_runtime_*`
+  saturation series (KV utilization, queue depth, batch headroom, TTFT p95,
+  decode tok/s, error rate) that [AX Serving](docs/AX-SERVING.md) and other
+  routers consume for node selection; token scheduling itself stays on-box
+
+**Open gate — batched-decode throughput.** The mechanism is wired and
+certification-gated, but on MLX the batched forward barely amortizes weight
+reads: measured **1.24×** aggregate at batch=8 (Llama-3.1-8B-4bit, M3 Max,
+MLX 0.32.0). Until that ceiling lifts, AX does not claim production continuous
+batching for concurrent long prompts — see
+[Batched decode ceiling](docs/performance/batched-decode-ceiling.md) and
+[Long Context claim boundaries](docs/LONG-CONTEXT.md#claim-boundaries).
+
 ## Performance
 
 Why people try AX Engine: **faster local decode** and **multi-model serving**
@@ -376,6 +412,7 @@ Auth, streaming, embeddings, Ollama-shaped routes:
 | Server / API / SDKs | [Server](docs/SERVER.md) · [API](docs/API-COMPATIBILITY.md) · [OpenClaw](docs/OPENCLAW.md) · [SDKs](docs/sdk/README.md) |
 | Fleet / NVIDIA (AX Serving) | [AX Serving](docs/AX-SERVING.md) |
 | Architecture | [Architecture](docs/ARCHITECTURE.md) |
+| Scheduler / KV internals | [Scheduler](docs/SCHEDULER.md) · [KV Cache](docs/KV-CACHE.md) · [Serving Invariants](docs/SERVING-INVARIANTS.md) |
 
 ## Development
 

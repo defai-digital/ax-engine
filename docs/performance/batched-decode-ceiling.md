@@ -14,8 +14,9 @@ throughput should grow toward B×. This is the highest-ceiling remaining lever
 
 ## What the current code supports (status as of Phase 3.7)
 
-`decode_batched_forward` / `BatchedDecodeSession` is **opt-in**
-(`AX_MLX_BATCHED_DECODE`, default OFF). Structural rejections live in
+`decode_batched_forward` / `BatchedDecodeSession` is **default ON**
+(`AX_MLX_BATCHED_DECODE=0` is the operator kill switch; it was still opt-in
+when this audit ran). Structural rejections live in
 `architecture.rs::batched_decode_structural_rejections` (formerly
 `dense_batched_decode_structural_rejections`):
 
