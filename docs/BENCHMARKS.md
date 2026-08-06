@@ -116,8 +116,8 @@ Publication requirements:
 - require authoritative streamed token usage, `[DONE]`, non-empty emitted
   content, and the full fixed-length completion;
 - measure TTFT from request dispatch, not response-header receipt;
-- retain per-process logs and record binary, model-snapshot, runner Git/blob,
-  power, load, and thermal provenance;
+- retain per-process logs on the benchmark host and record the process audit,
+  binary, model-snapshot, runner Git/blob, power, load, and thermal provenance;
 - exclude machine serial numbers and hardware UUIDs from artifacts;
 - keep effective prefill/TTFT separate from raw kernel-prefill claims.
 
@@ -157,6 +157,11 @@ Qwen3.6 35B-A3B, each at 4-bit and 6-bit.
 Rules for the current matrix:
 
 - Use MTP mode for all promoted runtime rows.
+- For AX Qwen linear-attention rows, explicitly select the validated exact
+  verifier profile with `--ax-qwen-linear-mtp-exact`. This profile preserves
+  the invariant projection/reduction contract and enables the recurrent-state
+  checkpoint; it does not enable optimistic acceptance. Current matrix runners
+  add the flag and reject an AX artifact that does not record it.
 - Report decode tok/s, prefill tok/s, TTFT ms, and MTP accept rate for every
   supported lane.
 - Include peer lanes only when the reference project has a matching Qwen3.6 MTP
@@ -182,6 +187,19 @@ The runner writes `plan.json`, `plan.md`, and, after execution,
 `summary.json` / `summary.md` under `benchmarks/results/mtp-qwen36-matrix/`.
 Unsupported Rapid-MLX and oMLX Qwen3.6 MTP lanes remain listed in `plan.md`
 with the current support reason instead of silently disappearing.
+
+Run the complete same-package 6-bit AX direct/MTP matrix with:
+
+```bash
+python3 scripts/bench_mtp_6bit_ax_refresh.py \
+  --output-dir benchmarks/results/speculative/mtp-6bit/<run-dir>
+```
+
+That runner covers Qwen 3.6 27B/35B-A3B and Gemma 4 12B/26B/31B across
+`flappy`, `long_code`, and `python_modules_long`. It selects the exact Qwen
+profile only for Qwen MTP rows, keeps Gemma assistant-MTP on its own contract,
+and fails README rendering unless all 15 direct/MTP pairs pass the exactness,
+coverage, no-fallback, no-ngram, warmup, repetition, and clean-build gates.
 
 To generate prefill rate and TTFT tables and charts from an older fair
 benchmark output directory:

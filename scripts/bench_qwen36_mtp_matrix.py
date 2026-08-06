@@ -402,6 +402,14 @@ def validate_ax_pure_mtp(artifact: dict[str, Any], artifact_path: Path) -> None:
     }
     if non_zero:
         raise RuntimeError(f"{artifact_path} is not pure MTP; n-gram telemetry={non_zero}")
+    if (
+        artifact.get("ax_qwen_linear_mtp_exact") is not True
+        or artifact.get("ax_qwen_linear_mtp_exact_explicit_enable") is not True
+    ):
+        raise RuntimeError(
+            f"{artifact_path} did not explicitly select the validated Qwen "
+            "linear-MTP exact verifier profile"
+        )
 
 
 def summarize_ax_artifact(artifact: dict[str, Any], artifact_path: Path) -> dict[str, Any]:

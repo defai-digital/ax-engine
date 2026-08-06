@@ -291,6 +291,8 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
 
     def test_summarize_ax_artifact_reports_all_required_metrics(self) -> None:
         artifact = {
+            "ax_qwen_linear_mtp_exact": True,
+            "ax_qwen_linear_mtp_exact_explicit_enable": True,
             "results": [
                 {
                     "engine": "ax_engine_mlx_pure_mtp",
@@ -322,6 +324,12 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertEqual(summary["prefill_tok_s"], 1000.0)
         self.assertEqual(summary["ttft_ms"], 123.0)
         self.assertEqual(summary["accept_rate"], 0.9)
+
+    def test_summarize_ax_artifact_requires_explicit_exact_profile(self) -> None:
+        artifact = {"results": []}
+
+        with self.assertRaisesRegex(RuntimeError, "exact verifier profile"):
+            matrix.summarize_ax_artifact(artifact, Path("ax.json"))
 
     def test_summarize_ax_artifact_rejects_ngram_telemetry(self) -> None:
         artifact = {
@@ -498,6 +506,8 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
 
     def test_summarize_ax_artifact_reports_client_wall_ttft(self) -> None:
         artifact = {
+            "ax_qwen_linear_mtp_exact": True,
+            "ax_qwen_linear_mtp_exact_explicit_enable": True,
             "results": [
                 {
                     "engine": "ax_engine_mlx_pure_mtp",

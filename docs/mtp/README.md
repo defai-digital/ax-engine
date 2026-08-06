@@ -11,6 +11,9 @@ validation, or MTP tuning reports.
   that publish 4-bit results.
 - Publish MTP rows in MTP mode only. Do not promote `mtp-ngram` rows in the
   current MTP matrix.
+- Current Qwen linear-attention publication rows must explicitly record the
+  validated exact-verifier profile (`--ax-qwen-linear-mtp-exact`). The profile
+  is an arithmetic/checkpoint contract, not optimistic acceptance.
 - Direct rows are allowed only as same-package denominators for AX MTP
   acceleration charts, not as cross-model speed evidence.
 
@@ -45,7 +48,10 @@ ax-engine download-mtp gemma-4-31b
 Artifacts should live under `benchmarks/results/speculative/mtp-6bit/` and record the exact
 prepared model path, model snapshot, sidecar or assistant provenance, route
 identity, sampler, prompt suite, repetitions, cooldown, prefill, decode, TTFT,
-and MTP accept rate.
+and MTP accept rate. Qwen rows must also record
+`ax_qwen_linear_mtp_exact=true` and
+`ax_qwen_linear_mtp_exact_explicit_enable=true`; the publication runners reject
+ambient or missing profile selection.
 
 ### 4-bit Comparison Lane
 

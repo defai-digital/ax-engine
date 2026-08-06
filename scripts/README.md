@@ -239,7 +239,17 @@ throughput baselines.
   `--ax-decode-profile` rows that expose direct-decode stage counters for
   Gemma per-layer-input, QKV projection, SDPA, post-attention/FFN, and lm-head
   diagnosis; those profile rows insert eval barriers and are not headline
-  throughput evidence.
+  throughput evidence. For publishable Qwen linear-attention MTP rows, pass
+  `--ax-qwen-linear-mtp-exact`; the artifact records both effective and
+  explicit profile selection.
+- `bench_mtp_6bit_ax_refresh.py`: complete AX-only, same-package direct/MTP
+  refresh for the five supported 6-bit Qwen/Gemma targets and three real-prompt
+  suites. Qwen MTP rows automatically select the validated exact-verifier
+  profile; the summary fails closed on missing profile provenance, incomplete
+  coverage, fallback, n-gram contamination, or non-publishable methodology.
+- `bench_qwen36_mtp_matrix.py`: Qwen 3.6 AX/MTPLX/lightning-mlx peer matrix.
+  AX commands automatically select and record the validated exact-verifier
+  profile. Unsupported peer lanes remain explicit in `plan.json` / `plan.md`.
 - `bench_qwen36_mtp_fair.py`: Qwen3.6 MTP prompt-suite harness for MTPLX and AX
   Engine. The default `--modes mtp mtp-ngram` path is a fixed-depth comparison.
   Add `--modes tuned` only for tuned best-of rows: MTPLX runs its public
