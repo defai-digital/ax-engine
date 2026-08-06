@@ -16,11 +16,13 @@ ship a fix before any public disclosure.
 
 ## Supported Versions
 
-AX Engine ships from a single, fast-moving line of development (see
-`CHANGELOG.md`). Security fixes are made against the latest release; we do
-not maintain parallel long-term-support branches. If you are running an
-older version, please upgrade before reporting an issue that may already be
-fixed.
+AX Engine ships from a single, fast-moving line of development. User-facing
+history lives on
+[GitHub Releases](https://github.com/defai-digital/ax-engine/releases)
+(see [release notes policy](docs/releases/README.md)). Security fixes are made
+against the latest release; we do not maintain parallel long-term-support
+branches. If you are running an older version, please upgrade before reporting
+an issue that may already be fixed.
 
 ## Scope
 

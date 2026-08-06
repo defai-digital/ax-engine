@@ -32,6 +32,7 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 | Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [CLI](CLI.md#ax-engine), [FAQ](FAQ.md) |
 | Decide whether a family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
 | Use MTP or compare 4-bit vs 6-bit rows | [MTP Docs](mtp/README.md) | [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Benchmarks: MTP](BENCHMARKS.md#mtp-matrix) |
+| Write or backfill GitHub release notes | [Release notes policy](releases/README.md) | [Releasing](RELEASING.md), [template](releases/TEMPLATE.md) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
 | Compare AX vs peer MLX server on chat serving | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md) | [Performance Results: serving](PERFORMANCE-RESULTS.md#session-mode-single-client-serving-ax-vs-peer-mlx) |
 | Choose a fast AutomatosX package | [Supported Models](SUPPORTED-MODELS.md) · [README Models](../README.md#models) | [Performance Results](PERFORMANCE-RESULTS.md) |

@@ -63,7 +63,10 @@ class NoTurboquantReferencesTest(unittest.TestCase):
         )
         self.write("docs/designs/turboquant-fused-decode.md", "TurboQuant design\n")
         self.write(".internal/notes.md", "turboquant planning\n")
-        self.write("CHANGELOG.md", "Retired the TurboQuant runtime path (ADR-002).\n")
+        self.write(
+            "docs/releases/historical.md",
+            "Retired the TurboQuant runtime path (ADR-002).\n",
+        )
         checker.check_no_turboquant_references(self.root)
 
     def test_checker_and_test_are_allowlisted(self) -> None:

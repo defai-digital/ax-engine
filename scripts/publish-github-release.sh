@@ -93,7 +93,9 @@ Options:
   --artifact-dir <dir>       Output directory. Default: target/release-artifacts/<tag>
   --repo <owner/name>        GitHub repository. Default: defai-digital/ax-engine
   --title <text>             Release title. Default: <tag>
-  --notes-file <path>        Release notes file. Default: gh --generate-notes.
+  --notes-file <path>        Operator-facing release notes (required for real
+                             publishes). See docs/releases/README.md. Dry-runs
+                             may omit this and fall back to gh --generate-notes.
   --draft                    Upload and verify the release, but leave it as a draft.
                              Re-running against an existing draft needs --clobber-assets
                              when asset names already exist on the draft.
@@ -1117,9 +1119,19 @@ fi
 release_args=("$TAG" --repo "$MAIN_REPO" --title "$TITLE")
 if [[ -n "$NOTES_FILE" ]]; then
     [[ -f "$NOTES_FILE" ]] || die "release notes file not found: $NOTES_FILE"
+    # Reject placeholder-only notes that reintroduce the empty auto-changelog problem.
+    if ! grep -qE '[[:alnum:]]' "$NOTES_FILE"; then
+        die "release notes file is empty: $NOTES_FILE"
+    fi
+    if ! grep -qiE "what's new|full changelog|### " "$NOTES_FILE"; then
+        echo "warning: notes file may be too thin (expected a What's New lead-in or section headings): $NOTES_FILE" >&2
+    fi
     release_args+=(--notes-file "$NOTES_FILE")
-else
+elif [[ "$DRY_RUN" = true ]]; then
+    echo "warning: --notes-file omitted on dry-run; using gh --generate-notes (not for real publishes)" >&2
     release_args+=(--generate-notes)
+else
+    die "real publishes require --notes-file (see docs/releases/README.md). Auto-generated compare-only bodies are not allowed."
 fi
 # Assemble every release as a draft. It is published only after the uploaded
 # bytes pass independent Minisign, checksum, Developer ID, and notarization checks.

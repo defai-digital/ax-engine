@@ -11,8 +11,17 @@ Commit and push the synchronized version change, then wait for the exact commit
 to pass the `CI` workflow. Run the canonical publisher from a clean checkout:
 
 ```bash
-scripts/publish-github-release.sh v6.9.0
+# Draft notes first (required for real publishes — not empty gh --generate-notes)
+cp docs/releases/TEMPLATE.md /tmp/ax-engine-notes-v6.9.0.md
+# edit /tmp/ax-engine-notes-v6.9.0.md — see docs/releases/README.md
+
+scripts/publish-github-release.sh v6.9.0 \
+  --notes-file /tmp/ax-engine-notes-v6.9.0.md
 ```
+
+**Release notes policy:** GitHub Releases are the sole public changelog. Do not
+reintroduce a root `CHANGELOG.md` that duplicates release bodies. Style guide
+and template: [docs/releases/](releases/README.md).
 
 The publisher performs this sequence:
 
@@ -112,8 +121,14 @@ worthwhile; state that clearly in the body):
 gh release create vX.Y.Z --title "vX.Y.Z" --notes-file path/to/notes.md --verify-tag
 ```
 
-Prefer notes from `CHANGELOG.md` and link
+Write operator-facing notes (required for real publishes). Use
+[docs/releases/TEMPLATE.md](releases/TEMPLATE.md) and the style guide in
+[docs/releases/README.md](releases/README.md). Pass them with
+`--notes-file /path/to/notes.md`. Always include a compare link:
 `https://github.com/defai-digital/ax-engine/compare/vPREV...vX.Y.Z`.
+
+Do **not** maintain a parallel root `CHANGELOG.md` — GitHub Releases are the
+only public changelog.
 
 **Full asset publish** for a tag that already exists at the intended commit:
 
