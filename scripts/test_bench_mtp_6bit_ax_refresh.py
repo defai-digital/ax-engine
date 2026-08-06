@@ -111,6 +111,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
             command[sampling_index + 1],
             '{"temperature":0.6,"top_p":0.95,"top_k":20}',
         )
+        self.assertIn("--ax-qwen-linear-mtp-exact", command)
 
     def test_exact_artifact_validation_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "not an exact MTP publication candidate"):
@@ -119,6 +120,21 @@ class BenchMtpRefreshTests(unittest.TestCase):
         bench.validate_exact_mtp_artifact(
             Path("artifact.json"),
             {"mtp_correctness_summary": {"publication_candidate": True}},
+        )
+        with self.assertRaisesRegex(ValueError, "exact verifier profile"):
+            bench.validate_exact_mtp_artifact(
+                Path("artifact.json"),
+                {"mtp_correctness_summary": {"publication_candidate": True}},
+                require_qwen_linear_exact=True,
+            )
+        bench.validate_exact_mtp_artifact(
+            Path("artifact.json"),
+            {
+                "mtp_correctness_summary": {"publication_candidate": True},
+                "ax_qwen_linear_mtp_exact": True,
+                "ax_qwen_linear_mtp_exact_explicit_enable": True,
+            },
+            require_qwen_linear_exact=True,
         )
 
     def test_exact_publication_methodology_requires_clean_two_by_five(self) -> None:
@@ -175,8 +191,10 @@ class BenchMtpRefreshTests(unittest.TestCase):
         )
 
         self.assertIn("--ax-direct", direct_command)
+        self.assertNotIn("--ax-qwen-linear-mtp-exact", direct_command)
         self.assertNotIn("--ax-mtp-approximate-optimistic", direct_command)
         self.assertIn("--ax-mtp-approximate-optimistic", mtp_command)
+        self.assertIn("--ax-qwen-linear-mtp-exact", mtp_command)
 
     def test_approximate_artifact_is_explicit_and_non_publishable(self) -> None:
         artifact = {

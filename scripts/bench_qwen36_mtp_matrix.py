@@ -602,6 +602,7 @@ def ax_command(args: argparse.Namespace, target: Target, suite: str, output: Pat
         "--ax-mtp-disable-ngram-stacking",
         "--ax-mtp-max-depth",
         str(target.mtp_depth),
+        "--ax-qwen-linear-mtp-exact",
         "--output",
         str(output),
     ]
@@ -916,6 +917,7 @@ def write_plan(args: argparse.Namespace, lanes: list[Lane]) -> None:
             ),
             "lightning_mtp_draft_temperature": args.lightning_mtp_draft_temperature,
             "ax_mtp_optimistic": args.ax_mtp_optimistic,
+            "ax_qwen_linear_mtp_exact": True,
             "degeneracy_gate": {
                 "max_cycle_len": DEGENERACY_MAX_CYCLE_LEN,
                 "coverage_threshold": DEGENERACY_COVERAGE_THRESHOLD,

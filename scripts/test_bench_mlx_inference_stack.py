@@ -4511,6 +4511,23 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"], "1")
 
+    def test_axengine_command_can_enable_qwen_linear_mtp_exact_profile(self) -> None:
+        with (
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                model_id="test-model",
+                direct_mode=False,
+                qwen_linear_mtp_exact=True,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_QWEN_LINEAR_MTP_EXACT"], "1")
+
     def test_axengine_command_can_enable_gemma4_assistant_mtp(self) -> None:
         with (
             patch.object(bench, "ensure_port_available"),

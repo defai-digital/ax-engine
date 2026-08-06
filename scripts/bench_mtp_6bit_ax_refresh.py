@@ -261,6 +261,7 @@ def bench_cmd(
                 "--ax-mtp-disable-ngram-stacking",
                 "--ax-mtp-max-depth",
                 str(target.mtp_depth),
+                "--ax-qwen-linear-mtp-exact",
             ]
         )
     if mode != "direct" and getattr(args, "approximate_speed_ceiling", False):
@@ -405,12 +406,25 @@ def load_artifact(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def validate_exact_mtp_artifact(path: Path, artifact: dict[str, Any]) -> None:
+def validate_exact_mtp_artifact(
+    path: Path,
+    artifact: dict[str, Any],
+    *,
+    require_qwen_linear_exact: bool = False,
+) -> None:
     correctness = artifact.get("mtp_correctness_summary") or {}
     if correctness.get("publication_candidate") is not True:
         raise ValueError(
             f"{path} is not an exact MTP publication candidate: "
             f"{correctness.get('ineligible_rows') or 'missing correctness summary'}"
+        )
+    if require_qwen_linear_exact and (
+        artifact.get("ax_qwen_linear_mtp_exact") is not True
+        or artifact.get("ax_qwen_linear_mtp_exact_explicit_enable") is not True
+    ):
+        raise ValueError(
+            f"{path} did not explicitly select the validated Qwen linear-MTP "
+            "exact verifier profile"
         )
 
 
@@ -500,7 +514,11 @@ def build_summary(
                 validate_approximate_mtp_artifact(mtp_path, mtp)
                 publication_reasons = ["approximate_optimistic_not_publishable"]
             else:
-                validate_exact_mtp_artifact(mtp_path, mtp)
+                validate_exact_mtp_artifact(
+                    mtp_path,
+                    mtp,
+                    require_qwen_linear_exact=not target.assistant_mtp,
+                )
                 validate_exact_seed_reproducibility(
                     direct_path, direct, mtp_path, mtp
                 )
@@ -580,6 +598,10 @@ def build_summary(
                 "explicit approximate optimistic speed ceiling; not exact and not publication eligible"
                 if args.approximate_speed_ceiling
                 else "distribution-exact MTP with deterministic-delta proposals, residual rejection correction, and per-mode seed reproducibility"
+            ),
+            "qwen_linear_mtp_verifier_profile": (
+                "explicit validated exact profile for every Qwen MTP row; "
+                "not applicable to Gemma assistant-MTP rows"
             ),
             "comparison": "AX MTP decode median divided by AX direct decode median for the same model package and prompt suite.",
             "mtp_ngram": "disabled; no MTP+n-gram rows are run or promoted",
@@ -802,8 +824,9 @@ def render_readme_section(summary: dict[str, Any]) -> str:
         "This AX Engine-only matrix compares each prepared 6-bit `download-mtp`",
         "package with MTP disabled and enabled. The enabled route uses",
         "distribution-exact sampled MTP with deterministic-delta proposals and",
-        "residual rejection correction; it is not an optimistic speed ceiling or a",
-        "cross-engine leaderboard.",
+        "residual rejection correction. Qwen rows explicitly select the validated",
+        "linear-attention exact-verifier profile; this is not an optimistic speed",
+        "ceiling or a cross-engine leaderboard.",
         "",
         f"All {len(rows)} target/suite rows accelerate decode by {min_speedup:.2f}x-{max_speedup:.2f}x.",
         "Every row has 100% MTP step coverage, zero direct-fallback prompts or",

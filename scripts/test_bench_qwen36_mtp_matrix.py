@@ -101,6 +101,7 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertIn("--ax-ngram-accel", cmd)
         self.assertIn("--ax-mtp-disable-ngram-stacking", cmd)
         self.assertIn("--ax-mtp-max-depth", cmd)
+        self.assertIn("--ax-qwen-linear-mtp-exact", cmd)
         self.assertEqual(cmd[cmd.index("--ax-mtp-max-depth") + 1], "3")
         self.assertEqual(cmd[cmd.index("--warmup-repetitions") + 1], "2")
         self.assertNotIn("--ax-direct", cmd)

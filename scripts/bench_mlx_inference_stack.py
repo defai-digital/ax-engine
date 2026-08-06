@@ -108,6 +108,7 @@ AX_PREFIX_CACHE_ENABLED_MODE = "enabled_by_cli_for_prefix_cache_experiment"
 QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV = (
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
 )
+QWEN_LINEAR_MTP_EXACT_ENV = "AX_MLX_QWEN_LINEAR_MTP_EXACT"
 
 
 def default_on_env_enabled(name: str, *, explicit_enable: bool = False) -> bool:
@@ -121,6 +122,16 @@ def default_on_env_enabled(name: str, *, explicit_enable: bool = False) -> bool:
     if not trimmed:
         return True
     return trimmed.lower() not in {"0", "false", "no"}
+
+
+def opt_in_env_enabled(name: str, *, explicit_enable: bool = False) -> bool:
+    """Mirror the runtime's opt-in environment-flag semantics."""
+    if explicit_enable:
+        return True
+    raw = os.environ.get(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes"}
 
 
 def build_public_claim_gate() -> dict[str, Any]:
@@ -2595,6 +2606,7 @@ def start_axengine(
     pack_linear_attention_projections: bool = False,
     pack_dense_ffn_gate_up: bool = False,
     qwen_dense_ffn_gate_up_matvec_metal: bool = False,
+    qwen_linear_mtp_exact: bool = False,
     direct_linear_attention_inputs_route: bool = False,
     direct_linear_attention_post_input_route: bool = False,
     gemma4_assistant_mtp: bool = False,
@@ -2653,6 +2665,8 @@ def start_axengine(
         env["AX_MLX_PACK_DENSE_FFN_GATE_UP"] = "1"
     if qwen_dense_ffn_gate_up_matvec_metal:
         env[QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV] = "1"
+    if qwen_linear_mtp_exact:
+        env[QWEN_LINEAR_MTP_EXACT_ENV] = "1"
     if direct_linear_attention_inputs_route:
         env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"] = "1"
     if direct_linear_attention_post_input_route:
@@ -2672,6 +2686,8 @@ def start_axengine(
         print(f"  [ax-engine] AX_MLX_MTP_MAX_DEPTH={mtp_max_depth}", file=sys.stderr)
     if mtp_disable_ngram_stacking:
         print("  [ax-engine] MTP n-gram stacking disabled", file=sys.stderr)
+    if qwen_linear_mtp_exact:
+        print(f"  [ax-engine] {QWEN_LINEAR_MTP_EXACT_ENV}=1", file=sys.stderr)
     if mtp_approximate_optimistic:
         print(
             "  [ax-engine] AX_MLX_MTP_OPTIMISTIC=1 (approximate speed ceiling)",
@@ -5899,6 +5915,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-qwen-linear-mtp-exact",
+        action="store_true",
+        help=(
+            f"Set {QWEN_LINEAR_MTP_EXACT_ENV}=1 for speculative AX rows. "
+            "This selects the validated Qwen linear-attention verifier arithmetic "
+            "and recurrent-state checkpoint contract; it does not enable "
+            "optimistic acceptance."
+        ),
+    )
+    parser.add_argument(
         "--ax-gemma4-assistant-mtp",
         action="store_true",
         help=(
@@ -6135,6 +6161,15 @@ def main() -> None:
     ):
         parser.error(
             "--ax-mtp-approximate-optimistic requires an MTP/speculative AX row"
+        )
+    if args.ax_qwen_linear_mtp_exact and (
+        args.ax_direct
+        or args.skip_ax_engine
+        or args.ax_gemma4_assistant_mtp
+        or not (args.ax_ngram_accel or args.ax_compare_policies)
+    ):
+        parser.error(
+            "--ax-qwen-linear-mtp-exact requires a Qwen MTP/speculative AX row"
         )
     if args.ax_gemma4_assistant_mtp and args.skip_ax_engine:
         parser.error("--ax-gemma4-assistant-mtp requires AX rows")
@@ -6605,6 +6640,9 @@ def main() -> None:
                     qwen_dense_ffn_gate_up_matvec_metal=(
                         args.ax_qwen_dense_ffn_gate_up_matvec_metal
                     ),
+                    qwen_linear_mtp_exact=(
+                        args.ax_qwen_linear_mtp_exact and not direct_mode
+                    ),
                     direct_linear_attention_inputs_route=(
                         direct_linear_attention_inputs_route
                     ),
@@ -6705,6 +6743,9 @@ def main() -> None:
                     )
                     results[-1]["ax_mtp_disable_ngram_stacking"] = bool(
                         mtp_disable_ngram_stacking
+                    )
+                    results[-1]["ax_qwen_linear_mtp_exact"] = bool(
+                        args.ax_qwen_linear_mtp_exact and not direct_mode
                     )
                     results[-1]["ax_direct_linear_attention_inputs_route"] = bool(
                         direct_linear_attention_inputs_route
@@ -6827,6 +6868,16 @@ def main() -> None:
         "ax_mtp_disable_ngram_stacking": bool(args.ax_mtp_disable_ngram_stacking),
         "ax_mtp_approximate_optimistic": bool(args.ax_mtp_approximate_optimistic),
         "ax_mtp_fast_tail_topk_sampling": bool(args.ax_mtp_fast_tail_topk_sampling),
+        "ax_qwen_linear_mtp_exact": opt_in_env_enabled(
+            QWEN_LINEAR_MTP_EXACT_ENV,
+            explicit_enable=bool(args.ax_qwen_linear_mtp_exact),
+        ),
+        "ax_qwen_linear_mtp_exact_explicit_enable": bool(
+            args.ax_qwen_linear_mtp_exact
+        ),
+        "ax_qwen_linear_mtp_exact_selection_contract": (
+            "explicit_validated_qwen_linear_attention_verifier_profile"
+        ),
         "ax_prefix_cache_mode": (
             AX_PREFIX_CACHE_ENABLED_MODE
             if args.ax_enable_prefix_cache
