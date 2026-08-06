@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import difflib
 import importlib.metadata
 import json
 import os
@@ -380,17 +382,36 @@ AUTOMATOSX_MODEL_PROFILES = (
     _automatosx_profile(
         "ax-qwen3.6-27b-4bit",
         "AX-Qwen3.6-27B-MLX-4bit-MTP",
-        ("ax-qwen36-27b-4bit",),
+        ("ax-qwen36-27b-4bit", "qwen3.6-27b:uniform-4bit"),
     ),
     _automatosx_profile(
         "ax-qwen3.6-27b-6bit",
         "AX-Qwen3.6-27B-MLX-6bit-MTP",
-        ("ax-qwen36-27b-6bit",),
+        ("ax-qwen36-27b-6bit", "qwen3.6-27b:uniform-6bit"),
     ),
     _automatosx_profile(
         "ax-qwen3.6-27b",
         "AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
-        ("ax-qwen36-27b", "ax-qwen3.6-27b-optiq-4bit"),
+        (
+            "ax-qwen36-27b",
+            "ax-qwen3.6-27b-optiq-4bit",
+            "qwen3.6-27b:optiq-4bit",
+        ),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.6-27b-axq-6bit",
+        "AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
+        (
+            "ax-qwen3.6-27b-axq",
+            "ax-qwen36-27b-axq-6bit",
+            "qwen3.6-27b:axq",
+            "qwen3.6-27b:axq-6bit",
+        ),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.6-27b-axq-4bit",
+        "AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
+        ("ax-qwen36-27b-axq-4bit", "qwen3.6-27b:axq-4bit"),
     ),
     _automatosx_profile(
         "ax-qwen3.6-35b-4bit",
@@ -410,6 +431,28 @@ AUTOMATOSX_MODEL_PROFILES = (
 )
 
 MODEL_PROFILES = (*MODEL_PROFILES, *AUTOMATOSX_MODEL_PROFILES)
+
+# AXQ is admitted to the catalog as an explicit, revision-pinned candidate.
+# The bare qwen3.6-27b alias must not point at either row until checkpoint-level
+# quality, runtime, and memory gates are published and pass.
+_PINNED_PROFILE_REVISIONS = {
+    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP": (
+        "6182ccbc41c7397ff90670f740c6d9eacfa4b09f"
+    ),
+    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP": (
+        "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"
+    ),
+}
+
+
+def _profile_revision(profile: ModelProfile) -> str | None:
+    return _PINNED_PROFILE_REVISIONS.get(profile.repo_id)
+
+
+def _profile_certification(profile: ModelProfile) -> str | None:
+    if profile.repo_id in _PINNED_PROFILE_REVISIONS:
+        return "candidate"
+    return None
 
 
 def _server_bin() -> pathlib.Path | str:
@@ -574,6 +617,8 @@ def _download_options_payload() -> dict:
             {
                 "alias": profile.label,
                 "repo_id": profile.repo_id,
+                "revision": _profile_revision(profile),
+                "certification": _profile_certification(profile),
                 "preset": profile.preset,
                 "aliases": list(profile.aliases),
                 "mtp_target": None,
@@ -601,7 +646,11 @@ def _format_download_options() -> str:
     ]
     for profile in _downloadable_profiles():
         mtp = "  [MTP included]" if "-mtp" in profile.repo_id.lower() else ""
-        lines.append(f"  {profile.label:<20} {profile.repo_id}{mtp}")
+        revision = _profile_revision(profile)
+        pinned = f"@{revision}" if revision is not None else ""
+        certification = _profile_certification(profile)
+        status = f"  [{certification}]" if certification is not None else ""
+        lines.append(f"  {profile.label:<30} {profile.repo_id}{pinned}{mtp}{status}")
     lines.extend(
         [
             "",
@@ -632,16 +681,20 @@ SERVER_PRESET_ALIASES = {
 }
 
 
-def _download_repo_id(value: str) -> tuple[str, ModelProfile | None, str | None]:
+def _download_repo_id(
+    value: str,
+    *,
+    allow_unmanaged_alias: bool = False,
+) -> tuple[str, ModelProfile | None, str | None]:
     profile = _profile_for_model(value)
     if profile is not None:
-        if not _is_managed_download_profile(profile):
+        if not allow_unmanaged_alias and not _is_managed_download_profile(profile):
             raise SystemExit(
                 f"{profile.label} is not managed by ax-engine download; "
                 "use an explicit repo id or one of these targets:\n"
                 f"{_format_download_options()}"
             )
-        return profile.repo_id, profile, None
+        return profile.repo_id, profile, _profile_revision(profile)
     if "/" in value or "huggingface.co" in value or "hf.co" in value:
         try:
             repo_id, revision = parse_repo_ref(value)
@@ -705,6 +758,7 @@ def _download_helper_command(
     revision: str | None = None,
     dest=None,
     force: bool = False,
+    local_only: bool = False,
 ) -> list[str]:
     """Build the bundled download helper's argv.
 
@@ -720,6 +774,8 @@ def _download_helper_command(
         command.append(f"--dest={dest}")
     if force:
         command.append("--force")
+    if local_only:
+        command.append("--local-only")
     return command
 
 
@@ -730,8 +786,14 @@ def _download_summary(
     force: bool = False,
     progress: bool = False,
     progress_json: bool = False,
+    local_only: bool = False,
+    allow_unmanaged_alias: bool = False,
+    hf_cache_root: str | None = None,
 ) -> tuple[int, dict | None, str]:
-    repo_id, profile, revision = _download_repo_id(model)
+    repo_id, profile, revision = _download_repo_id(
+        model,
+        allow_unmanaged_alias=allow_unmanaged_alias,
+    )
     download_script = _find_repo_script("download_model.py")
     if download_script is None:
         raise SystemExit(
@@ -740,20 +802,42 @@ def _download_summary(
         )
 
     command = _download_helper_command(
-        download_script, repo_id, revision=revision, dest=dest, force=force
+        download_script,
+        repo_id,
+        revision=revision,
+        dest=dest,
+        force=force,
+        local_only=local_only,
     )
     if progress_json:
         command.append("--progress-json")
 
+    environment = None
+    if hf_cache_root is not None:
+        environment = os.environ.copy()
+        environment["HF_HUB_CACHE"] = str(pathlib.Path(hf_cache_root).expanduser())
+
     if progress_json:
-        result = _run_streaming_capture_stdout(command)
+        result = (
+            _run_streaming_capture_stdout(command)
+            if environment is None
+            else _run_streaming_capture_stdout(command, env=environment)
+        )
     elif progress:
         # Let the helper render its live progress bar straight to our stderr while we
         # still capture the stdout JSON summary.
         command.append("--progress-bar")
-        result = _run_capture_stdout(command)
+        result = (
+            _run_capture_stdout(command)
+            if environment is None
+            else _run_capture_stdout(command, env=environment)
+        )
     else:
-        result = _run_capture(command)
+        result = (
+            _run_capture(command)
+            if environment is None
+            else _run_capture(command, env=environment)
+        )
     summary = _parse_download_summary(result.stdout)
     if summary is not None:
         summary["input"] = model
@@ -761,6 +845,7 @@ def _download_summary(
             summary["revision"] = revision
         if profile is not None:
             summary["alias"] = profile.label
+            summary["certification"] = _profile_certification(profile)
             if profile.preset is not None:
                 summary["preset"] = profile.preset
     return result.returncode, summary, result.stderr or ""
@@ -918,6 +1003,111 @@ def _cmd_tui(args: argparse.Namespace) -> int:
     return 0
 
 
+def _looks_like_repo_reference(value: str) -> bool:
+    return "/" in value or "huggingface.co" in value or "hf.co" in value
+
+
+def _unknown_serve_target_message(target: str) -> str:
+    aliases = sorted({alias for profile in MODEL_PROFILES for alias in profile.aliases})
+    matches = difflib.get_close_matches(target, aliases, n=3, cutoff=0.55)
+    suggestion = f"; did you mean {', '.join(repr(match) for match in matches)}?" if matches else ""
+    return (
+        f"unknown model alias or missing local directory: {target!r}{suggestion}; "
+        "pass a local directory, a Hugging Face owner/repo reference, or run "
+        "`ax-engine download --list`"
+    )
+
+
+def _serve_cache_root(explicit: str | None) -> pathlib.Path:
+    if explicit is not None:
+        return pathlib.Path(explicit).expanduser()
+    return _default_download_root()
+
+
+def _snapshot_has_complete_weights(snapshot: pathlib.Path) -> bool:
+    index_path = snapshot / "model.safetensors.index.json"
+    if index_path.is_file():
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+            weight_map = payload.get("weight_map")
+        except (OSError, UnicodeError, ValueError, AttributeError):
+            return False
+        if not isinstance(weight_map, dict) or not weight_map:
+            return False
+        shard_names = set(weight_map.values())
+        if not shard_names or not all(isinstance(name, str) and name for name in shard_names):
+            return False
+        for name in shard_names:
+            relative = pathlib.PurePosixPath(name)
+            if relative.is_absolute() or ".." in relative.parts:
+                return False
+            if not (snapshot / relative).is_file():
+                return False
+        return True
+    try:
+        return any(snapshot.glob("*.safetensors"))
+    except OSError:
+        return False
+
+
+def _cached_snapshot_path(
+    repo_id: str,
+    revision: str | None,
+    cache_root: pathlib.Path,
+) -> pathlib.Path | None:
+    repo_cache = cache_root / f"models--{repo_id.replace('/', '--')}"
+    snapshots = repo_cache / "snapshots"
+    candidates: list[pathlib.Path] = []
+    if revision is not None:
+        ref = repo_cache / "refs" / revision
+        try:
+            resolved_revision = ref.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            resolved_revision = ""
+        if resolved_revision:
+            candidates.append(snapshots / resolved_revision)
+        candidates.append(snapshots / revision)
+    else:
+        ref = repo_cache / "refs" / "main"
+        try:
+            resolved_revision = ref.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            resolved_revision = ""
+        if resolved_revision:
+            candidates.append(snapshots / resolved_revision)
+        with contextlib.suppress(OSError):
+            candidates.extend(
+                sorted(
+                    (path for path in snapshots.iterdir() if path.is_dir()),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+            )
+
+    for candidate in candidates:
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        if not (candidate / "config.json").is_file():
+            continue
+        if _snapshot_has_complete_weights(candidate):
+            return candidate.resolve()
+    return None
+
+
+def _preview_snapshot_path(
+    repo_id: str,
+    revision: str | None,
+    cache_root: pathlib.Path,
+) -> str:
+    cached = _cached_snapshot_path(repo_id, revision, cache_root)
+    if cached is not None:
+        return str(cached)
+    repo_cache = cache_root / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+    if revision is not None and re.fullmatch(r"[0-9a-fA-F]{40,64}", revision):
+        return str(repo_cache / revision)
+    return f"<resolved-hf-snapshot:{repo_id}>"
+
+
 def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
     server_bin = str(_server_bin())
     target = args.model
@@ -933,27 +1123,77 @@ def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
         argv.extend(["--mlx", "--mlx-model-artifacts-dir", resolved["model"]])
     else:
         profile = _profile_for_model(target)
+        if profile is None and not _looks_like_repo_reference(target):
+            raise SystemExit(_unknown_serve_target_message(target))
+
+        repo_id, profile, revision = _download_repo_id(
+            target,
+            allow_unmanaged_alias=True,
+        )
         preset = profile.preset if profile is not None else None
-        if args.download and not args.dry_run:
-            code, summary, stderr = _download_summary(target)
+        cache_root = _serve_cache_root(args.hf_cache_root)
+        if args.dry_run:
+            cached_snapshot = _cached_snapshot_path(repo_id, revision, cache_root)
+            model_dir = _preview_snapshot_path(repo_id, revision, cache_root)
+            resolved = {
+                "kind": "model_resolution_plan",
+                "model": target,
+                "repo_id": repo_id,
+                "revision": revision,
+                "preset": preset,
+                "certification": (
+                    _profile_certification(profile) if profile is not None else None
+                ),
+                "path": model_dir,
+                "resolution": "local_cache_then_download",
+                "download": {
+                    "required": cached_snapshot is None,
+                    "offline": args.offline,
+                    "compatibility_flag": args.download,
+                    "dry_run": True,
+                },
+            }
+            argv.append("--mlx")
+            if preset is not None:
+                argv.extend(["--preset", preset])
+            argv.extend(["--mlx-model-artifacts-dir", model_dir])
+        else:
+            code, summary, stderr = _download_summary(
+                target,
+                progress=True,
+                local_only=args.offline,
+                allow_unmanaged_alias=True,
+                hf_cache_root=args.hf_cache_root,
+            )
             if code != 0 or summary is None or summary.get("status") != "ready":
                 if stderr:
                     sys.stderr.write(stderr)
                 if summary is not None:
                     _print_download_summary(summary)
                 raise SystemExit(
-                    "model download did not produce ready AX artifacts; "
-                    f"run: ax-engine download {target}"
+                    "model resolution did not produce ready AX artifacts; "
+                    + (
+                        "disable --offline or download the pinned snapshot first"
+                        if args.offline
+                        else f"run: ax-engine download {target}"
+                    )
                 )
             model_dir = str(pathlib.Path(str(summary["dest"])).expanduser().resolve())
             resolved = {
-                "kind": "downloaded",
+                "kind": "resolved_snapshot",
                 "model": target,
-                "repo_id": summary.get("repo_id"),
+                "repo_id": summary.get("repo_id", repo_id),
+                "revision": summary.get("revision", revision),
+                "certification": (
+                    _profile_certification(profile) if profile is not None else None
+                ),
                 "path": model_dir,
+                "resolution": "local_cache_then_download",
                 "download": {
                     "status": summary.get("status"),
                     "manifest_present": summary.get("manifest_present"),
+                    "offline": args.offline,
+                    "compatibility_flag": args.download,
                 },
             }
             argv.append("--mlx")
@@ -961,30 +1201,6 @@ def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
                 resolved["preset"] = preset
                 argv.extend(["--preset", preset])
             argv.extend(["--mlx-model-artifacts-dir", model_dir])
-        elif preset is None:
-            download_hint = f" or run: ax-engine serve {target} --download" if "/" in target else ""
-            raise SystemExit(
-                "unknown model alias or missing local directory: "
-                f"{target!r}; pass a model directory or one of "
-                f"{', '.join(sorted(set(SERVER_PRESET_ALIASES.values())))}"
-                f"{download_hint}"
-            )
-        else:
-            resolved = {
-                "kind": "preset",
-                "model": target,
-                "preset": preset,
-                "resolution": "hf-cache",
-            }
-            if args.download:
-                resolved["download"] = {
-                    "enabled": True,
-                    "repo_id": profile.repo_id if profile is not None else None,
-                    "dry_run": True,
-                }
-            argv.extend(["--mlx", "--preset", preset, "--resolve-model-artifacts", "hf-cache"])
-            if args.hf_cache_root:
-                argv.extend(["--hf-cache-root", args.hf_cache_root])
 
     argv.extend(_strip_remainder_separator(args.extra_server_args))
     return argv, resolved
@@ -1023,6 +1239,8 @@ def _cmd_download(args: argparse.Namespace) -> int:
         raise SystemExit("download --progress-json cannot be combined with --list")
     if args.progress_json and args.interactive:
         raise SystemExit("download --progress-json cannot be combined with --interactive")
+    if args.force and args.local_only:
+        raise SystemExit("download --force cannot be combined with --local-only")
 
     if args.list:
         if args.json:
@@ -1053,6 +1271,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
         dest=args.dest,
         force=args.force,
         progress_json=args.progress_json,
+        local_only=args.local_only,
     )
     if args.progress_json:
         if stderr:
@@ -1088,16 +1307,28 @@ def _parse_output_dir(stdout: str, explicit_output: str | None) -> str | None:
     return None
 
 
-def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, capture_output=True, text=True)
+def _run_capture(
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, env=env)
 
 
-def _run_capture_stdout(command: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_capture_stdout(
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Capture stdout but let stderr pass through to the terminal (live progress)."""
-    return subprocess.run(command, stdout=subprocess.PIPE, stderr=None, text=True)
+    return subprocess.run(command, stdout=subprocess.PIPE, stderr=None, text=True, env=env)
 
 
-def _run_streaming_capture_stdout(command: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_streaming_capture_stdout(
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Forward progress NDJSON while retaining the helper's terminal summary."""
     stdout_lines: list[str] = []
     with subprocess.Popen(
@@ -1105,6 +1336,7 @@ def _run_streaming_capture_stdout(command: list[str]) -> subprocess.CompletedPro
         stdout=subprocess.PIPE,
         stderr=None,
         text=True,
+        env=env,
     ) as process:
         if process.stdout is not None:
             for line in process.stdout:
@@ -1460,7 +1692,7 @@ def _user_doctor_report(bench_report: dict) -> dict:
     elif model_selected:
         next_actions.append(f"ax-engine serve {model_path or '<model-dir>'} --port 31418")
     else:
-        next_actions.append("ax-engine serve qwen36-35b --download --port 31418")
+        next_actions.append("ax-engine serve qwen36-35b --port 31418")
         next_actions.append("ax-engine models list")
 
     host_detail = (
@@ -1741,7 +1973,14 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument(
         "--download",
         action="store_true",
-        help="Download missing alias/repo artifacts first",
+        help="Compatibility flag; serve already downloads missing artifacts by default",
+    )
+    serve_parser.add_argument(
+        "--offline",
+        "--local-only",
+        dest="offline",
+        action="store_true",
+        help="Use only a matching local Hugging Face snapshot; never access the network",
     )
     serve_parser.add_argument("--dry-run", action="store_true")
     serve_parser.add_argument("--json", action="store_true")
@@ -1763,6 +2002,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     download_parser.add_argument("--force", action="store_true")
+    download_parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Use only a matching local Hugging Face snapshot; never access the network",
+    )
     download_parser.add_argument(
         "--list", action="store_true", help="Show supported download targets"
     )

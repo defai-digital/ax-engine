@@ -21,6 +21,9 @@ pub(super) fn hf_cache_roots(explicit_root: Option<PathBuf>) -> Vec<PathBuf> {
     if let Some(home) = env::var_os("HF_HOME").map(PathBuf::from) {
         roots.push(home.join("hub"));
     }
+    if let Some(cache_home) = env::var_os("XDG_CACHE_HOME").map(PathBuf::from) {
+        roots.push(cache_home.join("huggingface").join("hub"));
+    }
     if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
         roots.push(home.join(".cache").join("huggingface").join("hub"));
     }
@@ -33,7 +36,8 @@ pub(super) fn resolve_hf_cache_model_artifacts(
 ) -> Result<PathBuf, String> {
     if roots.is_empty() {
         return Err(
-            "no Hugging Face cache root found; set HF_HUB_CACHE, HF_HOME, HOME, or pass --hf-cache-root"
+            "no Hugging Face cache root found; set HF_HUB_CACHE, HF_HOME, XDG_CACHE_HOME, \
+             HOME, or pass --hf-cache-root"
                 .to_string(),
         );
     }

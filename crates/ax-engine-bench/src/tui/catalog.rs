@@ -40,6 +40,9 @@ impl Variant {
         if lower.contains("-dwq") {
             tags.push("DWQ");
         }
+        if lower.contains("-axq-") {
+            tags.push("AXQ candidate");
+        }
         if tags.is_empty() {
             base
         } else {
@@ -82,6 +85,9 @@ impl Family {
     /// Three-tier quality grade for the registry family behind this catalog
     /// key (see `ax_engine_core::support_tier`).
     pub fn support_tier(&self) -> ax_engine_core::ModelSupportTier {
+        if self.key == "ax-qwen3.6-27b-axq" {
+            return ax_engine_core::ModelSupportTier::Compatible;
+        }
         ax_engine_core::support_tier_for_family(registry_family_label(&self.key))
     }
 
@@ -162,6 +168,7 @@ pub(super) fn family_display_name(key: &str) -> String {
         "gpt-oss-120b" => "GPT-OSS 120B".into(),
         "ax-qwen3.5-9b" => "AX Qwen 3.5 9B".into(),
         "ax-qwen3.6-27b" => "AX Qwen 3.6 27B".into(),
+        "ax-qwen3.6-27b-axq" => "AX Qwen 3.6 27B AXQ candidates".into(),
         "ax-qwen3.6-35b" => "AX Qwen 3.6 35B".into(),
         "ax-gemma4-12b" => "AX Gemma 4 12B".into(),
         "ax-gemma4-26b" => "AX Gemma 4 26B".into(),

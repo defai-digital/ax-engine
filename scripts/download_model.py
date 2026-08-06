@@ -1635,6 +1635,7 @@ def download(
     quiet: bool = False,
     progress_json: bool = False,
     progress_bar: bool = False,
+    local_only: bool = False,
     prepare_destination: Callable[[Path], None] | None = None,
 ) -> Path:
     parsed_repo_id, embedded_revision = _parse_repo_ref(repo_id)
@@ -1647,6 +1648,9 @@ def download(
         # Already normalized by the reference parse above; running it through
         # the parser again would percent-decode a second time.
         revision = embedded_revision
+
+    if force and local_only:
+        raise ValueError("--force cannot be combined with --local-only")
 
     if dest is not None:
         dest = _validate_explicit_destination(Path(dest))
@@ -1716,6 +1720,13 @@ def download(
             prepare_destination=prepare_destination,
         )
         return dest
+
+    if local_only:
+        revision_note = f" at revision {revision}" if revision else ""
+        raise RuntimeError(
+            f"no valid cached Hugging Face snapshot found for {repo_id}{revision_note}; "
+            "--local-only forbids network downloads"
+        )
 
     if not quiet:
         destination = (
@@ -2159,6 +2170,11 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true", help="Re-download even if present")
     parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Use only a matching local cache snapshot; never access the network",
+    )
+    parser.add_argument(
         "--revision",
         default=None,
         help="Branch, tag, or commit sha to download (default: the repo's main branch)",
@@ -2221,6 +2237,7 @@ def main() -> int:
             quiet=machine_json,
             progress_json=args.progress_json,
             progress_bar=args.progress_bar,
+            local_only=args.local_only,
             prepare_destination=prepare_explicit_destination if dest is not None else None,
         )
     except (RuntimeError, ValueError, OSError, shutil.Error) as error:

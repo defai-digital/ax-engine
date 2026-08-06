@@ -394,6 +394,58 @@ class DownloadModelScriptTest(unittest.TestCase):
             self.assertEqual(calls, [])
             self.assertEqual(resolved, snapshot)
 
+    def test_local_only_reuses_exact_cached_revision_without_network(self) -> None:
+        repo_id = "owner/repo"
+        revision = "a" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "hub" / "models--owner--repo" / "snapshots" / revision
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.json").write_text("{}")
+            write_safetensors(snapshot / "model.safetensors")
+
+            with (
+                patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True),
+                patch.object(download_model, "_run_hf_snapshot_download") as fetch,
+            ):
+                resolved = download_model.download(
+                    repo_id,
+                    None,
+                    revision=revision,
+                    local_only=True,
+                    quiet=True,
+                )
+
+            self.assertEqual(resolved, snapshot)
+            fetch.assert_not_called()
+
+    def test_local_only_cache_miss_fails_before_network(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(os.environ, {"HF_HOME": tmp}, clear=True),
+                patch.object(download_model, "_run_hf_snapshot_download") as fetch,
+                self.assertRaisesRegex(RuntimeError, "local-only forbids network downloads"),
+            ):
+                download_model.download(
+                    "owner/repo",
+                    None,
+                    revision="b" * 40,
+                    local_only=True,
+                    quiet=True,
+                )
+
+            fetch.assert_not_called()
+
+    def test_local_only_rejects_force(self) -> None:
+        with self.assertRaisesRegex(ValueError, "force cannot be combined"):
+            download_model.download(
+                "owner/repo",
+                None,
+                force=True,
+                local_only=True,
+                quiet=True,
+            )
+
     def test_download_forwards_revision_and_resolves_ref(self) -> None:
         repo_id = "owner/repo"
         with tempfile.TemporaryDirectory() as tmp:

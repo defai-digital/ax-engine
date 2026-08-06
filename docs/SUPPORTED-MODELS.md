@@ -147,14 +147,17 @@ Two recommended sources:
   `model-manifest.json`, so one download produces a serve-ready MTP directory
   with no separate `download-mtp` step. OptiQ variants carry mixed 4/8-bit
   per-tensor quantization; embedding packs cover EmbeddingGemma 300M and
-  Qwen3-Embedding 0.6B/4B/8B. The managed catalog contains all 25 public
+  Qwen3-Embedding 0.6B/4B/8B. The managed catalog contains all 27 public
   repositories in the organization; every currently published Qwen 3.5,
-  Qwen 3.6, and Gemma 4 variant is supported.
+  Qwen 3.6, and Gemma 4 variant is represented. The two AXQ Qwen 3.6 27B
+  snapshots are explicitly labeled `candidate` until their checkpoint
+  certification gates pass.
 - [mlx-community](https://huggingface.co/mlx-community) — community MLX
-  snapshots, already converted and validated. **Not download-managed**: their
-  aliases below stay serve aliases for artifacts you already have, and
-  downloads take the explicit raw `org/repo` form; two-repo MTP packaging
-  uses the `download-mtp` flow below.
+  snapshots, already converted and validated. **Not shown in the managed
+  download catalog**: their aliases below are serve conveniences and `serve`
+  can acquire the exact repo automatically; use an explicit raw `org/repo`
+  form for a separate download. Two-repo MTP packaging uses the
+  `download-mtp` flow below.
 
 `ax-engine download`, `download_model()`, and `scripts/download_model.py`
 download weights and auto-generate the manifest when a repo does not ship one.
@@ -183,9 +186,15 @@ ax-engine download ax-qwen3-embedding-4b --json
 Download and serve in one command:
 
 ```text
-ax-engine serve ax-qwen3.6-35b --download --port 31418
-ax-engine serve ax-qwen3-coder-next --download --port 31418
+ax-engine serve ax-qwen3.6-35b --port 31418
+ax-engine serve ax-qwen3-coder-next --port 31418
+ax-engine serve qwen3.6-27b:axq --port 31418
 ```
+
+`serve` resolves the exact matching Hub cache snapshot first and downloads it
+when absent. Add `--offline` (or `--local-only`) to prohibit network access.
+A local path always wins over an alias. Unknown shorthand fails with close
+suggestions rather than selecting a model fuzzily.
 
 Raw `mlx-community` repo IDs are also accepted:
 
@@ -211,8 +220,9 @@ path = download_model("mlx-community/Qwen3.6-35B-A3B-4bit")
 ```
 
 Built-in aliases. The AutomatosX tables are the managed download catalog; the
-mlx-community-backed tables are **serve aliases** — they resolve presets and
-already-downloaded artifacts, while their downloads take the raw repo id form:
+mlx-community-backed tables are **serve aliases** — they resolve the exact
+cache snapshot and acquire it when missing, while separate downloads use the
+raw repo id form:
 
 **Serve aliases — primary productivity (Gemma / Qwen / GLM)**
 
@@ -230,10 +240,10 @@ already-downloaded artifacts, while their downloads take the raw repo id form:
 **Managed download aliases — AutomatosX packs (MTP / assistant bundled,
 manifest included)**
 
-The bare alias selects the flagship OptiQ (Qwen/Gemma 4-bit) or DWQ
+The bare `ax-*` alias selects the flagship OptiQ (Qwen/Gemma 4-bit) or DWQ
 (embeddings) build; `-4bit` / `-6bit` variants select the plain quants. These
 aliases promise the exact AutomatosX repo, so serve them through the
-idempotent download flow: `ax-engine serve ax-qwen3.6-27b --download`.
+idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 
 | Alias | Repo |
 | --- | --- |
@@ -249,6 +259,19 @@ idempotent download flow: `ax-engine serve ax-qwen3.6-27b --download`.
 | `ax-qwen3-embedding-0.6b` | `AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit` |
 | `ax-qwen3-embedding-4b` | `AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ` |
 | `ax-qwen3-embedding-8b` | `AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ` |
+
+**AXQ flagship candidates — revision-pinned, not yet default**
+
+| Alias | Repo | Pinned revision | Status |
+| --- | --- | --- | --- |
+| `qwen3.6-27b:axq`, `qwen3.6-27b:axq-6bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP` | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` | Candidate; preferred quality/default candidate |
+| `qwen3.6-27b:axq-4bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP` | `6182ccbc41c7397ff90670f740c6d9eacfa4b09f` | Candidate; compact fallback |
+
+The unqualified `:axq` selector intentionally means 6-bit. The bare
+`qwen3.6-27b` alias remains `mlx-community/Qwen3.6-27B-4bit`, while
+`ax-qwen3.6-27b` remains the AutomatosX OptiQ pack. Promotion requires the
+quality, runtime, memory, provenance, and published-evidence checks in the
+[Qwen 3.6 27B AXQ certification record](model-certifications/qwen3.6-27b-axq.md).
 
 **Serve aliases — secondary research / enterprise Llama**
 

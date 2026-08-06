@@ -34,7 +34,7 @@ budget. That meets OpenClaw's 16K guided-setup minimum, but a 32K context and an
 8K output budget are more practical for tool-heavy agent sessions:
 
 ```bash
-ax-engine serve ax-qwen3.6-27b --download --port 31418 -- \
+ax-engine serve ax-qwen3.6-27b --port 31418 -- \
   --total-blocks 2048 \
   --max-batch-tokens 8192
 ```

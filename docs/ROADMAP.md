@@ -45,6 +45,7 @@ gate below is closed or explicitly descoped in this file (review of record:
 | AXQuant | Per-layer KV-cache quantization engages on the batched serving path (Gate 2 writeback wired into the runner) or is documented as single-sequence-only |
 | AXQuant | KV-cache quantization has runtime telemetry and a generation-quality gate on a real artifact (current evidence is synthetic-tensor error bounds only) |
 | AXQuant | AXQuant metadata integrity is verified at model load, or doctor-only verification is recorded as the explicit contract; MTP sidecar gains provenance parity with the vision sidecar |
+| AXQuant | The pinned Qwen 3.6 27B AXQ 6-bit flagship candidate clears the [checkpoint certification record](model-certifications/qwen3.6-27b-axq.md); architecture-prior evidence alone cannot promote it to a default |
 | Performance | The cross-family MTP prefill regression and the steady-state eval-wall drift are resolved or explicitly accepted in `PERFORMANCE-RESULTS.md` |
 | Positioning | The `docs/SERVER.md` "not yet a production server surface" caveat can be removed honestly |
 

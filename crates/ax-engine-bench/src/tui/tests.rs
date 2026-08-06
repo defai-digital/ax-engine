@@ -132,6 +132,16 @@ fn grouping_collapses_variants_into_families() {
     let q9 = families.iter().find(|f| f.key == "ax-qwen3.5-9b").unwrap();
     assert_eq!(q9.variants.len(), 3); // OptiQ-4bit / 4-bit / 6-bit
     assert!(q9.has_mtp(), "AX Qwen packs bundle mtp.safetensors");
+    let axq = families
+        .iter()
+        .find(|f| f.key == "ax-qwen3.6-27b-axq")
+        .unwrap();
+    assert_eq!(axq.variants.len(), 2);
+    assert!(
+        axq.variants
+            .iter()
+            .all(|variant| variant.precision().contains("AXQ candidate"))
+    );
     let embed = families
         .iter()
         .find(|f| f.key == "ax-embeddinggemma-300m")
@@ -195,7 +205,13 @@ fn catalog_families_map_to_registry_support_tiers() {
     let families = build_families();
     for family in &families {
         let tier = family.support_tier();
-        if family.key.starts_with("ax-diffusiongemma") {
+        if family.key == "ax-qwen3.6-27b-axq" {
+            assert_eq!(
+                tier,
+                ModelSupportTier::Compatible,
+                "checkpoint candidates must not inherit family certification"
+            );
+        } else if family.key.starts_with("ax-diffusiongemma") {
             assert_eq!(
                 tier,
                 ModelSupportTier::Experimental,

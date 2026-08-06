@@ -47,6 +47,8 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
@@ -71,7 +73,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 25)
+        self.assertEqual(len(targets), 27)
         self.assertTrue(all(target["alias"].startswith("ax-") for target in targets))
         self.assertTrue(
             all(not target["repo_id"].startswith("mlx-community/") for target in targets)
@@ -94,6 +96,32 @@ class AxEngineCliTests(unittest.TestCase):
             assert profile is not None
             self.assertEqual(profile.repo_id, repo_id, alias)
             self.assertIsNotNone(profile.preset, alias)
+
+    def test_qwen36_axq_candidates_are_explicit_and_revision_pinned(self) -> None:
+        cases = {
+            "qwen3.6-27b:axq": (
+                "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
+                "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc",
+            ),
+            "qwen3.6-27b:axq-4bit": (
+                "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
+                "6182ccbc41c7397ff90670f740c6d9eacfa4b09f",
+            ),
+        }
+        for alias, (repo_id, revision) in cases.items():
+            with self.subTest(alias=alias):
+                resolved_repo, profile, resolved_revision = _cli._download_repo_id(alias)
+                self.assertEqual(resolved_repo, repo_id)
+                self.assertEqual(resolved_revision, revision)
+                self.assertIsNotNone(profile)
+                assert profile is not None
+                self.assertEqual(_cli._profile_certification(profile), "candidate")
+
+        default_profile = _cli._profile_for_model("qwen3.6-27b")
+        self.assertIsNotNone(default_profile)
+        assert default_profile is not None
+        self.assertEqual(default_profile.repo_id, "mlx-community/Qwen3.6-27B-4bit")
+        self.assertIsNone(_cli._profile_certification(default_profile))
 
     def test_mxfp4_repo_quant_bits(self) -> None:
         profile = _cli._profile_for_model("gpt-oss-20b")
@@ -469,13 +497,18 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertNotIn("--dest", commands[0])
 
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
-        with mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
+        with (
+            tempfile.TemporaryDirectory() as cache,
+            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+        ):
             code, stdout = self.capture_main(
                 [
                     "serve",
                     "qwen36-35b",
                     "--port",
                     "9010",
+                    "--hf-cache-root",
+                    cache,
                     "--dry-run",
                     "--json",
                     "--",
@@ -487,7 +520,10 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         self.assertEqual(payload["schema_version"], "ax.local_serve_plan.v1")
+        self.assertEqual(payload["resolved"]["kind"], "model_resolution_plan")
         self.assertEqual(payload["resolved"]["preset"], "qwen3.6-35b")
+        self.assertEqual(payload["resolved"]["resolution"], "local_cache_then_download")
+        self.assertTrue(payload["resolved"]["download"]["required"])
         self.assertEqual(payload["server"]["url"], "http://127.0.0.1:9010")
         self.assertEqual(
             payload["server"]["argv"],
@@ -500,8 +536,8 @@ class AxEngineCliTests(unittest.TestCase):
                 "--mlx",
                 "--preset",
                 "qwen3.6-35b",
-                "--resolve-model-artifacts",
-                "hf-cache",
+                "--mlx-model-artifacts-dir",
+                "<resolved-hf-snapshot:mlx-community/Qwen3.6-35B-A3B-4bit>",
                 "--max-batch-tokens",
                 "1024",
             ],
@@ -522,10 +558,109 @@ class AxEngineCliTests(unittest.TestCase):
         path_index = payload["server"]["argv"].index("--mlx-model-artifacts-dir") + 1
         self.assertEqual(payload["server"]["argv"][path_index], str(model_dir.resolve()))
 
-    def test_serve_dry_run_json_uses_gemma4_12b_server_preset(self) -> None:
-        with mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
+    def test_serve_axq_dry_run_uses_pinned_candidate_snapshot(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as cache,
+            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+        ):
             code, stdout = self.capture_main(
-                ["serve", "gemma4-12b", "--port", "9010", "--dry-run", "--json"]
+                [
+                    "serve",
+                    "qwen3.6-27b:axq",
+                    "--hf-cache-root",
+                    cache,
+                    "--dry-run",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        resolved = payload["resolved"]
+        self.assertEqual(resolved["certification"], "candidate")
+        self.assertEqual(
+            resolved["repo_id"],
+            "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
+        )
+        self.assertEqual(
+            resolved["revision"],
+            "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc",
+        )
+        self.assertTrue(
+            resolved["path"].endswith(
+                "snapshots/8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"
+            )
+        )
+        self.assertTrue(resolved["download"]["required"])
+
+    def test_snapshot_cache_requires_every_indexed_weight_shard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = pathlib.Path(tmp)
+            (snapshot / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "model.a": "model-00001-of-00002.safetensors",
+                            "model.b": "model-00002-of-00002.safetensors",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (snapshot / "model-00001-of-00002.safetensors").touch()
+
+            self.assertFalse(_cli._snapshot_has_complete_weights(snapshot))
+
+            (snapshot / "model-00002-of-00002.safetensors").touch()
+            self.assertTrue(_cli._snapshot_has_complete_weights(snapshot))
+
+    def test_serve_offline_forwards_local_only_to_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = pathlib.Path(tmp) / "snapshot"
+            model_dir.mkdir()
+            summary = {
+                "schema_version": "ax.download_model.v1",
+                "repo_id": "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
+                "revision": "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc",
+                "dest": str(model_dir),
+                "manifest_present": True,
+                "status": "ready",
+            }
+            with (
+                mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+                mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as run,
+                mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")),
+                self.assertRaisesRegex(RuntimeError, "stop"),
+            ):
+                self.capture_main(["serve", "qwen3.6-27b:axq", "--offline"])
+
+        self.assertTrue(run.call_args.kwargs["local_only"])
+        self.assertTrue(run.call_args.kwargs["allow_unmanaged_alias"])
+
+    def test_serve_unknown_alias_suggests_close_match(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self.capture_main(["serve", "qwen3.6-27"])
+
+        message = str(raised.exception)
+        self.assertIn("unknown model alias", message)
+        self.assertIn("qwen3.6-27b", message)
+
+    def test_serve_dry_run_json_uses_gemma4_12b_server_preset(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as cache,
+            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+        ):
+            code, stdout = self.capture_main(
+                [
+                    "serve",
+                    "gemma4-12b",
+                    "--port",
+                    "9010",
+                    "--hf-cache-root",
+                    cache,
+                    "--dry-run",
+                    "--json",
+                ]
             )
 
         self.assertEqual(code, 0)
@@ -542,8 +677,8 @@ class AxEngineCliTests(unittest.TestCase):
                 "--mlx",
                 "--preset",
                 "gemma4-12b",
-                "--resolve-model-artifacts",
-                "hf-cache",
+                "--mlx-model-artifacts-dir",
+                "<resolved-hf-snapshot:mlx-community/gemma-4-12B-it-4bit>",
             ],
         )
 
@@ -925,7 +1060,7 @@ class AxEngineCliTests(unittest.TestCase):
             self.assertEqual(payload["alias"], "ax-gemma4-12b-6bit")
             self.assertNotIn("preset", payload)
 
-    def test_serve_download_uses_ready_downloaded_artifacts(self) -> None:
+    def test_serve_auto_download_uses_ready_artifacts_without_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             scripts = root / "scripts"
@@ -945,6 +1080,8 @@ class AxEngineCliTests(unittest.TestCase):
                     p.add_argument("--dest")
                     p.add_argument("--force", action="store_true")
                     p.add_argument("--json", action="store_true")
+                    p.add_argument("--progress-bar", action="store_true")
+                    p.add_argument("--local-only", action="store_true")
                     args = p.parse_args()
                     print(json.dumps({
                         "schema_version": "ax.download_model.v1",
@@ -973,7 +1110,7 @@ class AxEngineCliTests(unittest.TestCase):
                 mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
                 self.assertRaisesRegex(RuntimeError, "stop"),
             ):
-                self.capture_main(["serve", "ax-qwen3.6-35b", "--download"])
+                self.capture_main(["serve", "ax-qwen3.6-35b"])
 
             argv = execvp.call_args.args[1]
             self.assertNotIn("--preset", argv)
@@ -1157,7 +1294,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 18)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 20)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.

@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 #[path = "../tui/mod.rs"]
@@ -29,6 +29,22 @@ impl ModelProfile {
     fn is_downloadable(self) -> bool {
         self.downloadable && self.repo_id.starts_with("AutomatosX/")
     }
+}
+
+fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
+    match profile.repo_id {
+        "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP" => {
+            Some("6182ccbc41c7397ff90670f740c6d9eacfa4b09f")
+        }
+        "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP" => {
+            Some("8c37715c7b5f5ebca00eda6f73be47116a3e4ebc")
+        }
+        _ => None,
+    }
+}
+
+fn profile_certification(profile: ModelProfile) -> Option<&'static str> {
+    profile_revision(profile).map(|_| "candidate")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -231,9 +247,9 @@ const MODEL_PROFILES: &[ModelProfile] = &[
     // `ax-engine download <alias>` produces a serve-ready MTP directory —
     // no separate `download-mtp` step. `preset` stays `None` on purpose:
     // these aliases promise the exact AutomatosX repo, so serve resolves
-    // through the downloaded artifacts dir (`--download`, idempotent when
-    // cached) instead of loose hf-cache preset matching that could pick a
-    // different org's snapshot. Sizes: summed HF API file metadata, 2026-07-20.
+    // through exact Hub snapshot resolution instead of loose hf-cache preset
+    // matching that could pick a different org's snapshot. Sizes: summed HF
+    // API file metadata, 2026-07-20.
     ModelProfile {
         label: "ax-qwen3.5-9b",
         preset: None,
@@ -272,6 +288,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ax-qwen36-27b",
             "ax-qwen3.6-27b-optiq-4bit",
             "ax-qwen3.6-27b-mlx-optiq-4bit-mtp",
+            "qwen3.6-27b:optiq-4bit",
         ],
         downloadable: true,
         approx_size_bytes: Some(20_239_552_902),
@@ -280,7 +297,11 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         label: "ax-qwen3.6-27b-4bit",
         preset: None,
         repo_id: "AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP",
-        aliases: &["ax-qwen3.6-27b-4bit", "ax-qwen36-27b-4bit"],
+        aliases: &[
+            "ax-qwen3.6-27b-4bit",
+            "ax-qwen36-27b-4bit",
+            "qwen3.6-27b:uniform-4bit",
+        ],
         downloadable: true,
         approx_size_bytes: Some(16_931_255_394),
     },
@@ -288,9 +309,41 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         label: "ax-qwen3.6-27b-6bit",
         preset: None,
         repo_id: "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
-        aliases: &["ax-qwen3.6-27b-6bit", "ax-qwen36-27b-6bit"],
+        aliases: &[
+            "ax-qwen3.6-27b-6bit",
+            "ax-qwen36-27b-6bit",
+            "qwen3.6-27b:uniform-6bit",
+        ],
         downloadable: true,
         approx_size_bytes: Some(23_654_593_521),
+    },
+    // AXQ candidates are explicit and pinned. The bare qwen3.6-27b alias must
+    // not point here until checkpoint-level quality/runtime/memory gates pass.
+    ModelProfile {
+        label: "ax-qwen3.6-27b-axq-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
+        aliases: &[
+            "ax-qwen3.6-27b-axq-6bit",
+            "ax-qwen3.6-27b-axq",
+            "ax-qwen36-27b-axq-6bit",
+            "qwen3.6-27b:axq",
+            "qwen3.6-27b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(20_857_941_725),
+    },
+    ModelProfile {
+        label: "ax-qwen3.6-27b-axq-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
+        aliases: &[
+            "ax-qwen3.6-27b-axq-4bit",
+            "ax-qwen36-27b-axq-4bit",
+            "qwen3.6-27b:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(19_399_395_845),
     },
     ModelProfile {
         label: "ax-qwen3.6-35b",
@@ -765,7 +818,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json] [--progress-json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json] [--progress-json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
+        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--offline|--local-only] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force|--local-only] [--list] [--json] [--progress-json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json] [--progress-json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
     );
 }
 
@@ -929,7 +982,7 @@ fn user_doctor_report(bench: &Value) -> Value {
             next_actions.push("ax-engine serve <model-dir> --port 31418".to_string());
         }
     } else {
-        next_actions.push("ax-engine serve qwen36-35b --download --port 31418".to_string());
+        next_actions.push("ax-engine serve qwen36-35b --port 31418".to_string());
         next_actions.push("ax-engine models list".to_string());
     }
 
@@ -1389,9 +1442,161 @@ struct ServeArgs {
     port: String,
     hf_cache_root: Option<OsString>,
     download: bool,
+    offline: bool,
     dry_run: bool,
     json: bool,
     passthrough: Vec<OsString>,
+}
+
+fn looks_like_repo_reference(value: &str) -> bool {
+    value.contains('/') || value.contains("huggingface.co") || value.contains("hf.co")
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    for (left_index, left_character) in left.chars().enumerate() {
+        let mut current = Vec::with_capacity(right.len() + 1);
+        current.push(left_index + 1);
+        for (right_index, right_character) in right.iter().enumerate() {
+            let insertion = current[right_index] + 1;
+            let deletion = previous[right_index + 1] + 1;
+            let substitution =
+                previous[right_index] + usize::from(left_character != *right_character);
+            current.push(insertion.min(deletion).min(substitution));
+        }
+        previous = current;
+    }
+    previous[right.len()]
+}
+
+fn unknown_serve_target_message(target: &str) -> String {
+    let normalized = normalize_alias(target);
+    let threshold = normalized.chars().count().div_ceil(4).max(2);
+    let mut scored = MODEL_PROFILES
+        .iter()
+        .flat_map(|profile| profile.aliases.iter().copied())
+        .map(|alias| (edit_distance(&normalized, &normalize_alias(alias)), alias))
+        .filter(|(distance, _)| *distance <= threshold)
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
+    scored.dedup_by(|left, right| left.1 == right.1);
+    let suggestions = scored
+        .into_iter()
+        .take(3)
+        .map(|(_, alias)| format!("{alias:?}"))
+        .collect::<Vec<_>>();
+    let suggestion = if suggestions.is_empty() {
+        String::new()
+    } else {
+        format!("; did you mean {}?", suggestions.join(", "))
+    };
+    format!(
+        "unknown model alias or missing local directory: {target:?}{suggestion}; pass a local \
+         directory, a Hugging Face owner/repo reference, or run `ax-engine download --list`"
+    )
+}
+
+fn snapshot_has_complete_weights(snapshot: &Path) -> bool {
+    let index_path = snapshot.join("model.safetensors.index.json");
+    if index_path.is_file() {
+        let Ok(bytes) = fs::read(index_path) else {
+            return false;
+        };
+        let Ok(payload) = serde_json::from_slice::<Value>(&bytes) else {
+            return false;
+        };
+        let Some(weight_map) = payload.get("weight_map").and_then(Value::as_object) else {
+            return false;
+        };
+        if weight_map.is_empty() {
+            return false;
+        }
+        return weight_map.values().all(|value| {
+            let Some(shard) = value.as_str() else {
+                return false;
+            };
+            let relative = Path::new(shard);
+            !shard.is_empty()
+                && relative
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)))
+                && snapshot.join(relative).is_file()
+        });
+    }
+    fs::read_dir(snapshot).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("safetensors"))
+        })
+    })
+}
+
+fn cached_snapshot_path(
+    repo_id: &str,
+    revision: Option<&str>,
+    cache_root: &Path,
+) -> Option<PathBuf> {
+    let repo_cache = cache_root.join(format!("models--{}", repo_id.replace('/', "--")));
+    let snapshots = repo_cache.join("snapshots");
+    let mut candidates = Vec::new();
+    if let Some(revision) = revision {
+        let ref_path = repo_cache.join("refs").join(revision);
+        if let Ok(resolved) = fs::read_to_string(ref_path) {
+            let resolved = resolved.trim();
+            if !resolved.is_empty() {
+                candidates.push(snapshots.join(resolved));
+            }
+        }
+        candidates.push(snapshots.join(revision));
+    } else {
+        if let Ok(resolved) = fs::read_to_string(repo_cache.join("refs").join("main")) {
+            let resolved = resolved.trim();
+            if !resolved.is_empty() {
+                candidates.push(snapshots.join(resolved));
+            }
+        }
+        if let Ok(entries) = fs::read_dir(&snapshots) {
+            let mut by_modified = entries
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    let modified = entry.metadata().ok()?.modified().ok()?;
+                    path.is_dir().then_some((modified, path))
+                })
+                .collect::<Vec<_>>();
+            by_modified.sort_by_key(|(modified, _)| *modified);
+            candidates.extend(by_modified.into_iter().rev().map(|(_, path)| path));
+        }
+    }
+
+    candidates.into_iter().find_map(|path| {
+        if path.is_symlink() || !path.join("config.json").is_file() {
+            return None;
+        }
+        snapshot_has_complete_weights(&path).then(|| absolute_path(&path))
+    })
+}
+
+fn preview_snapshot_path(repo_id: &str, revision: Option<&str>, cache_root: &Path) -> PathBuf {
+    if let Some(path) = cached_snapshot_path(repo_id, revision, cache_root) {
+        return path;
+    }
+    if let Some(revision) = revision
+        && revision.len() >= 40
+        && revision
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return cache_root
+            .join(format!("models--{}", repo_id.replace('/', "--")))
+            .join("snapshots")
+            .join(revision);
+    }
+    PathBuf::from(format!("<resolved-hf-snapshot:{repo_id}>"))
 }
 
 fn cmd_serve(args: &[OsString]) -> Result<u8, String> {
@@ -1419,10 +1624,53 @@ fn cmd_serve(args: &[OsString]) -> Result<u8, String> {
         })
     } else {
         let profile = profile_for_model(&target);
+        if profile.is_none() && !looks_like_repo_reference(&target) {
+            return Err(unknown_serve_target_message(&target));
+        }
+        let (repo_id, profile, revision) = download_repo_id(&target, profile)?;
         let preset = profile.and_then(|profile| profile.preset);
-        if args.download && !args.dry_run {
-            let (code, mut summary, stderr) =
-                run_download_summary(&target, None, false, profile, false)?;
+        if args.dry_run {
+            let cache_root = args
+                .hf_cache_root
+                .as_ref()
+                .map(|root| expand_home(&root.to_string_lossy()))
+                .unwrap_or_else(default_hf_cache_root);
+            let cached = cached_snapshot_path(&repo_id, revision.as_deref(), &cache_root).is_some();
+            let model_dir = preview_snapshot_path(&repo_id, revision.as_deref(), &cache_root);
+            argv.push(OsString::from("--mlx"));
+            if let Some(preset) = preset {
+                argv.extend([OsString::from("--preset"), OsString::from(preset)]);
+            }
+            argv.extend([
+                OsString::from("--mlx-model-artifacts-dir"),
+                model_dir.clone().into_os_string(),
+            ]);
+            json!({
+                "kind": "model_resolution_plan",
+                "model": target.as_ref(),
+                "repo_id": repo_id,
+                "revision": revision,
+                "preset": preset,
+                "certification": profile.and_then(profile_certification),
+                "path": model_dir.to_string_lossy(),
+                "resolution": "local_cache_then_download",
+                "download": {
+                    "required": !cached,
+                    "offline": args.offline,
+                    "compatibility_flag": args.download,
+                    "dry_run": true,
+                },
+            })
+        } else {
+            let (code, mut summary, stderr) = run_download_summary(
+                &target,
+                None,
+                false,
+                profile,
+                DownloadProgress::Bar,
+                args.offline,
+                args.hf_cache_root.as_deref(),
+            )?;
             if code != 0 || summary.get("status").and_then(Value::as_str) != Some("ready") {
                 if !stderr.is_empty() {
                     eprint!("{stderr}");
@@ -1430,8 +1678,13 @@ fn cmd_serve(args: &[OsString]) -> Result<u8, String> {
                 if !summary.is_null() {
                     print_download_summary(&summary);
                 }
+                let hint = if args.offline {
+                    "disable --offline or download the pinned snapshot first".to_string()
+                } else {
+                    format!("run: ax-engine download {target}")
+                };
                 return Err(format!(
-                    "model download did not produce ready AX artifacts; run: ax-engine download {target}"
+                    "model resolution did not produce ready AX artifacts; {hint}"
                 ));
             }
             let Some(dest) = summary.get("dest").and_then(Value::as_str) else {
@@ -1448,55 +1701,19 @@ fn cmd_serve(args: &[OsString]) -> Result<u8, String> {
                 model_dir.clone().into_os_string(),
             ]);
             json!({
-                "kind": "downloaded",
+                "kind": "resolved_snapshot",
                 "model": target.as_ref(),
-                "repo_id": summary.get("repo_id").cloned().unwrap_or(Value::Null),
+                "repo_id": summary.get("repo_id").cloned().unwrap_or_else(|| json!(repo_id)),
+                "revision": summary.get("revision").cloned().unwrap_or_else(|| json!(revision)),
+                "certification": profile.and_then(profile_certification),
                 "path": model_dir.to_string_lossy(),
                 "preset": preset,
+                "resolution": "local_cache_then_download",
                 "download": {
                     "status": summary.get("status").cloned().unwrap_or(Value::Null),
                     "manifest_present": summary.get("manifest_present").cloned().unwrap_or(Value::Null),
-                },
-            })
-        } else {
-            let Some(preset) = preset else {
-                // A downloadable no-preset alias (e.g. the AutomatosX packs)
-                // serves through its exact downloaded artifacts dir, so point
-                // at the idempotent --download flow instead of a preset.
-                let hint =
-                    if target.contains('/') || profile.is_some_and(ModelProfile::is_downloadable) {
-                        format!(" or run: ax-engine serve {target} --download")
-                    } else {
-                        String::new()
-                    };
-                return Err(format!(
-                    "unknown model alias or missing local directory: {target:?}; pass a model directory or one of {}{hint}",
-                    server_preset_labels().join(", ")
-                ));
-            };
-            argv.extend([
-                OsString::from("--mlx"),
-                OsString::from("--preset"),
-                OsString::from(preset),
-                OsString::from("--resolve-model-artifacts"),
-                OsString::from("hf-cache"),
-            ]);
-            if let Some(root) = &args.hf_cache_root {
-                argv.extend([OsString::from("--hf-cache-root"), root.clone()]);
-            }
-            json!({
-                "kind": "preset",
-                "model": target.as_ref(),
-                "preset": preset,
-                "resolution": "hf-cache",
-                "download": if args.download {
-                    json!({
-                        "enabled": true,
-                        "repo_id": profile.map(|profile| profile.repo_id),
-                        "dry_run": true,
-                    })
-                } else {
-                    Value::Null
+                    "offline": args.offline,
+                    "compatibility_flag": args.download,
                 },
             })
         }
@@ -1552,6 +1769,7 @@ fn parse_serve_args(args: &[OsString]) -> Result<ServeArgs, String> {
     let mut port = "31418".to_string();
     let mut hf_cache_root = None;
     let mut download = false;
+    let mut offline = false;
     let mut dry_run = false;
     let mut json = false;
     let mut index = 0;
@@ -1576,6 +1794,7 @@ fn parse_serve_args(args: &[OsString]) -> Result<ServeArgs, String> {
                 );
             }
             "--download" => download = true,
+            "--offline" | "--local-only" => offline = true,
             "--dry-run" => dry_run = true,
             "--json" => json = true,
             flag if flag.starts_with('-') => return Err(format!("unknown serve option: {flag}")),
@@ -1594,6 +1813,7 @@ fn parse_serve_args(args: &[OsString]) -> Result<ServeArgs, String> {
         port,
         hf_cache_root,
         download,
+        offline,
         dry_run,
         json,
         passthrough,
@@ -1755,6 +1975,8 @@ fn model_profile_payload(profile: &ModelProfile) -> Value {
         "kind": "supported_alias",
         "label": profile.label,
         "repo_id": profile.repo_id,
+        "revision": profile_revision(*profile),
+        "certification": profile_certification(*profile),
         "preset": profile.preset,
         "downloadable": profile.is_downloadable(),
         "aliases": profile.aliases,
@@ -1974,6 +2196,7 @@ struct DownloadArgs {
     model: Option<String>,
     dest: Option<String>,
     force: bool,
+    local_only: bool,
     list: bool,
     json: bool,
     progress: bool,
@@ -1990,6 +2213,13 @@ struct DownloadMtpArgs {
     fair_base_only: bool,
     json: bool,
     progress: bool,
+}
+
+#[derive(Clone, Copy)]
+enum DownloadProgress {
+    Quiet,
+    Json,
+    Bar,
 }
 
 fn cmd_download(args: &[OsString]) -> Result<u8, String> {
@@ -2018,6 +2248,9 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
 }
 
 fn run_download(args: &DownloadArgs) -> Result<u8, String> {
+    if args.force && args.local_only {
+        return Err("download --force cannot be combined with --local-only".into());
+    }
     if args.list {
         if args.progress {
             return Err("download --progress-json cannot be combined with --list".into());
@@ -2051,7 +2284,13 @@ fn run_download(args: &DownloadArgs) -> Result<u8, String> {
         args.dest.as_deref(),
         args.force,
         profile,
-        args.progress,
+        if args.progress {
+            DownloadProgress::Json
+        } else {
+            DownloadProgress::Quiet
+        },
+        args.local_only,
+        None,
     )?;
     if args.progress {
         if !stderr.is_empty() {
@@ -2120,8 +2359,19 @@ fn run_download_mtp(args: &DownloadMtpArgs) -> Result<u8, String> {
     ensure_download_python_deps()?;
     let target = mtp_download_target_for_model(&args.model)
         .ok_or_else(|| format_unknown_download_mtp_target(&args.model))?;
-    let (download_code, download_summary, download_stderr) =
-        run_download_summary(target.repo_id, None, args.force, None, args.progress)?;
+    let (download_code, download_summary, download_stderr) = run_download_summary(
+        target.repo_id,
+        None,
+        args.force,
+        None,
+        if args.progress {
+            DownloadProgress::Json
+        } else {
+            DownloadProgress::Quiet
+        },
+        false,
+        None,
+    )?;
     if !download_stderr.is_empty() {
         eprint!("{download_stderr}");
     }
@@ -2215,6 +2465,7 @@ fn parse_download_args(args: &[OsString]) -> Result<DownloadArgs, String> {
     let mut model = None;
     let mut dest = None;
     let mut force = false;
+    let mut local_only = false;
     let mut list = false;
     let mut json = false;
     let mut progress = false;
@@ -2227,6 +2478,7 @@ fn parse_download_args(args: &[OsString]) -> Result<DownloadArgs, String> {
                 dest = Some(require_value(args, index, "--dest")?);
             }
             "--force" => force = true,
+            "--local-only" => local_only = true,
             "--list" => list = true,
             "--json" => json = true,
             "--progress-json" => progress = true,
@@ -2245,6 +2497,7 @@ fn parse_download_args(args: &[OsString]) -> Result<DownloadArgs, String> {
         model,
         dest,
         force,
+        local_only,
         list,
         json,
         progress,
@@ -2318,7 +2571,9 @@ fn run_download_summary(
     dest: Option<&str>,
     force: bool,
     profile: Option<ModelProfile>,
-    progress: bool,
+    progress: DownloadProgress,
+    local_only: bool,
+    hf_cache_root: Option<&OsStr>,
 ) -> Result<(u8, Value, String), String> {
     let (repo_id, profile, revision) = download_repo_id(model, profile)?;
     let helper = find_helper(
@@ -2337,8 +2592,14 @@ fn run_download_summary(
             &revision.replace('%', "%25"),
         ));
     }
-    if progress {
-        command.arg("--progress-json");
+    match progress {
+        DownloadProgress::Quiet => {}
+        DownloadProgress::Json => {
+            command.arg("--progress-json");
+        }
+        DownloadProgress::Bar => {
+            command.arg("--progress-bar");
+        }
     }
     if let Some(dest) = dest {
         command.arg(helper_value_option("--dest", dest));
@@ -2346,12 +2607,22 @@ fn run_download_summary(
     if force {
         command.arg("--force");
     }
-    let (code, stdout, stderr) = if progress {
+    if local_only {
+        command.arg("--local-only");
+    }
+    if let Some(root) = hf_cache_root {
+        command.env("HF_HUB_CACHE", root);
+    }
+    let (code, stdout, stderr) = if matches!(progress, DownloadProgress::Json) {
         run_streaming_progress(command)?
     } else {
         let output = command
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(if matches!(progress, DownloadProgress::Bar) {
+                Stdio::inherit()
+            } else {
+                Stdio::piped()
+            })
             .output()
             .map_err(|err| format!("failed to run download helper: {err}"))?;
         (
@@ -2368,6 +2639,10 @@ fn run_download_summary(
         }
         if let Some(profile) = profile {
             map.insert("alias".into(), json!(profile.label));
+            map.insert(
+                "certification".into(),
+                json!(profile_certification(profile)),
+            );
             if let Some(preset) = profile.preset {
                 map.insert("preset".into(), json!(preset));
             }
@@ -2446,8 +2721,19 @@ fn run_download_gemma_assistant_mtp(
     else {
         return Err("internal error: expected Gemma assistant MTP target".into());
     };
-    let (assistant_code, assistant_summary, assistant_stderr) =
-        run_download_summary(assistant_repo_id, None, args.force, None, args.progress)?;
+    let (assistant_code, assistant_summary, assistant_stderr) = run_download_summary(
+        assistant_repo_id,
+        None,
+        args.force,
+        None,
+        if args.progress {
+            DownloadProgress::Json
+        } else {
+            DownloadProgress::Quiet
+        },
+        false,
+        None,
+    )?;
     if !assistant_stderr.is_empty() {
         eprint!("{assistant_stderr}");
     }
@@ -2833,7 +3119,11 @@ fn download_repo_id(
                 format_download_options()
             ));
         }
-        return Ok((profile.repo_id.to_string(), Some(profile), None));
+        return Ok((
+            profile.repo_id.to_string(),
+            Some(profile),
+            profile_revision(profile).map(str::to_string),
+        ));
     }
     if value.contains('/') || value.contains("huggingface.co") || value.contains("hf.co") {
         let repo_ref = ax_engine_core::repo_ref::parse_repo_ref(value)?;
@@ -2894,6 +3184,8 @@ fn download_options_payload() -> Value {
             json!({
                 "alias": profile.label,
                 "repo_id": profile.repo_id,
+                "revision": profile_revision(profile),
+                "certification": profile_certification(profile),
                 "preset": profile.preset,
                 "aliases": profile.aliases,
                 "mtp_included": profile.repo_id.to_ascii_lowercase().contains("-mtp"),
@@ -2923,9 +3215,15 @@ fn format_download_options() -> String {
         .filter(|profile| profile.is_downloadable())
     {
         let aliases = profile.aliases.join(", ");
+        let revision = profile_revision(profile)
+            .map(|revision| format!("@{revision}"))
+            .unwrap_or_default();
+        let certification = profile_certification(profile)
+            .map(|status| format!("; {status}"))
+            .unwrap_or_default();
         lines.push(format!(
-            "  - {} -> {} (aliases: {})",
-            profile.label, profile.repo_id, aliases
+            "  - {} -> {}{} (aliases: {}{})",
+            profile.label, profile.repo_id, revision, aliases, certification
         ));
     }
     lines.push("Examples:".into());
@@ -2995,16 +3293,6 @@ fn profile_for_model(value: &str) -> Option<ModelProfile> {
             .iter()
             .any(|alias| normalize_alias(alias) == normalized)
     })
-}
-
-fn server_preset_labels() -> Vec<&'static str> {
-    let mut labels = MODEL_PROFILES
-        .iter()
-        .filter_map(|profile| profile.preset)
-        .collect::<Vec<_>>();
-    labels.sort_unstable();
-    labels.dedup();
-    labels
 }
 
 fn normalize_alias(value: &str) -> String {
@@ -3354,7 +3642,7 @@ fn _os_str(value: &str) -> &OsStr {
 mod tests {
     use super::*;
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 25] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 27] = [
         "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
         "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
         "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
@@ -3376,6 +3664,8 @@ mod tests {
         "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
         "AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP",
         "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
+        "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
+        "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
@@ -3402,7 +3692,7 @@ mod tests {
                 .iter()
                 .filter(|target| target["mtp_included"] == true)
                 .count(),
-            18
+            20
         );
     }
 
@@ -3568,6 +3858,28 @@ mod tests {
         assert_eq!(profile.repo_id, "mlx-community/Qwen3.6-35B-A3B-4bit");
         let profile = profile_for_model("gemma-4-12b-it").unwrap();
         assert_eq!(profile.preset, Some("gemma4-12b"));
+    }
+
+    #[test]
+    fn qwen36_axq_candidates_are_explicit_and_revision_pinned() {
+        let six = profile_for_model("qwen3.6-27b:axq").unwrap();
+        assert_eq!(six.repo_id, "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP");
+        assert_eq!(
+            profile_revision(six),
+            Some("8c37715c7b5f5ebca00eda6f73be47116a3e4ebc")
+        );
+        assert_eq!(profile_certification(six), Some("candidate"));
+
+        let four = profile_for_model("qwen3.6-27b:axq-4bit").unwrap();
+        assert_eq!(four.repo_id, "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP");
+        assert_eq!(
+            profile_revision(four),
+            Some("6182ccbc41c7397ff90670f740c6d9eacfa4b09f")
+        );
+
+        let default = profile_for_model("qwen3.6-27b").unwrap();
+        assert_eq!(default.repo_id, "mlx-community/Qwen3.6-27B-4bit");
+        assert_eq!(profile_certification(default), None);
     }
 
     #[test]
@@ -3801,6 +4113,45 @@ mod tests {
     }
 
     #[test]
+    fn serve_accepts_offline_and_local_only_synonyms() {
+        for flag in ["--offline", "--local-only"] {
+            let args = parse_serve_args(&[OsString::from("qwen3.6-27b:axq"), OsString::from(flag)])
+                .unwrap();
+            assert!(args.offline);
+        }
+    }
+
+    #[test]
+    fn unknown_serve_target_suggests_close_alias() {
+        let message = unknown_serve_target_message("qwen3.6-27b:axqq");
+        assert!(message.contains("did you mean"));
+        assert!(message.contains("qwen3.6-27b:axq"));
+    }
+
+    #[test]
+    fn snapshot_cache_requires_every_indexed_weight_shard() {
+        let snapshot = unique_temp_dir("ax-engine-partial-snapshot");
+        fs::create_dir_all(&snapshot).unwrap();
+        fs::write(
+            snapshot.join("model.safetensors.index.json"),
+            serde_json::to_vec(&json!({
+                "weight_map": {
+                    "model.a": "model-00001-of-00002.safetensors",
+                    "model.b": "model-00002-of-00002.safetensors",
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(snapshot.join("model-00001-of-00002.safetensors"), b"first").unwrap();
+        assert!(!snapshot_has_complete_weights(&snapshot));
+
+        fs::write(snapshot.join("model-00002-of-00002.safetensors"), b"second").unwrap();
+        assert!(snapshot_has_complete_weights(&snapshot));
+        let _ = fs::remove_dir_all(snapshot);
+    }
+
+    #[test]
     fn user_doctor_text_highlights_status_checks_and_next_steps() {
         let report = json!({
             "result": "ready",
@@ -3829,7 +4180,7 @@ mod tests {
             ],
             "issues": [],
             "model_issues": [],
-            "next_actions": ["ax-engine serve qwen36-35b --download --port 31418"],
+            "next_actions": ["ax-engine serve qwen36-35b --port 31418"],
             "details_command": "ax-engine-bench doctor"
         });
         let output = format_user_doctor_report(&report);
@@ -3841,7 +4192,7 @@ mod tests {
         assert!(output.contains("GPU cores: 40"));
         assert!(output.contains("server_binary: pass - ax-engine-server ok"));
         assert!(output.contains("model: not_selected"));
-        assert!(output.contains("ax-engine serve qwen36-35b --download --port 31418"));
+        assert!(output.contains("ax-engine serve qwen36-35b --port 31418"));
         assert!(output.contains("More details: ax-engine-bench doctor"));
     }
 

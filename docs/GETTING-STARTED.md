@@ -305,11 +305,19 @@ work via raw `org/repo` ids; raw Hugging Face checkpoints need
 ```text
 ax-engine tui                          # interactive: pick, download, serve, chat
 ax-engine download --list              # list managed aliases
-ax-engine download ax-qwen3.6-35b      # MTP-ready AutomatosX snapshot
-ax-engine serve ax-qwen3.6-35b --download --port 31418
+ax-engine serve ax-qwen3.6-35b --port 31418
+# Reuse the exact cached snapshot, or download it when absent
+ax-engine serve qwen3.6-27b:axq --port 31418
+# Require the pinned AXQ 6-bit candidate to be present locally
+ax-engine serve qwen3.6-27b:axq --offline --port 31418
 # Default is already 127.0.0.1:31418 if you omit --host/--port; see docs/PORTS.md
 ax-engine download ax-embeddinggemma-300m   # embedding sibling for /v1/embeddings
 ```
+
+`qwen3.6-27b:axq` is the explicit, revision-pinned AXQ 6-bit flagship
+candidate. It is intentionally not the bare Qwen 3.6 alias until the
+[checkpoint certification gates](model-certifications/qwen3.6-27b-axq.md)
+are complete.
 
 To keep a second allowlisted model resident while that server runs, use
 `POST /v1/model/load` with `load_mode=add` (Qwen 3.5 9B, Qwen 3.6 27B/35B,

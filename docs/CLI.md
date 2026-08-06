@@ -28,17 +28,41 @@ Use `serve` as the normal local-server entrypoint. Default listen is
 
 ```text
 ax-engine serve /path/to/mlx-model --port 31418
-ax-engine serve ax-qwen3.6-35b --download --port 31418
+ax-engine serve ax-qwen3.6-35b --port 31418
+ax-engine serve qwen3.6-27b:axq --port 31418
+ax-engine serve qwen3.6-27b:axq --offline --port 31418
 ax-engine serve qwen36-35b --dry-run --json
 ax-engine serve qwen36-35b -- --max-batch-tokens 1024
 ```
 
 `serve --dry-run --json` emits an `ax.local_serve_plan.v1` document with the
-resolved model/preset and exact `ax-engine-server` argv. A local filesystem path
-wins over alias lookup. Extra flags after `--` are passed through to
-`ax-engine-server`. `serve --download` is explicit: it downloads supported aliases
-or raw Hugging Face repo ids before launch, and fails closed if the downloader
-does not return ready AX artifacts.
+resolved model/preset and exact `ax-engine-server` argv. A local filesystem
+path wins over alias lookup. For an exact alias, `owner/repo`, Hugging Face
+URL, or pinned revision, `serve` first looks for the matching Hub snapshot and
+downloads it only when absent. `--offline` (also `--local-only`) disables
+network access and fails with an actionable cache-miss error. The former
+`--download` flag remains accepted as a compatibility no-op. Extra flags after
+`--` are passed through to `ax-engine-server`.
+
+Unknown shorthand never triggers a fuzzy model search or an accidental
+download; the CLI fails with close alias suggestions. Curated aliases can pin
+a repository revision. In list and resolution JSON, `revision` records that
+commit and `certification` distinguishes a `candidate` checkpoint from a
+certified/default target.
+
+The AXQ flagship candidate uses explicit aliases while checkpoint-level
+certification is still open:
+
+```text
+qwen3.6-27b:axq          # pinned AXQ 6-bit candidate
+qwen3.6-27b:axq-6bit     # same checkpoint, explicit precision
+qwen3.6-27b:axq-4bit     # smaller AXQ candidate
+```
+
+The bare `qwen3.6-27b` serve alias retains its current mlx-community 4-bit
+meaning, and `ax-qwen3.6-27b` retains its AutomatosX OptiQ meaning. This avoids
+silently changing existing deployments before AXQ promotion. See the
+[AXQ certification record](model-certifications/qwen3.6-27b-axq.md).
 
 Use `download` when you want model acquisition as a separate step. Managed
 aliases cover the curated [AutomatosX catalog](https://huggingface.co/AutomatosX)
@@ -52,6 +76,8 @@ ax-engine download --list
 ax-engine download ax-qwen3.5-9b
 ax-engine download ax-qwen3.6-27b
 ax-engine download ax-qwen3.6-27b-6bit
+ax-engine download qwen3.6-27b:axq
+ax-engine download qwen3.6-27b:axq-4bit
 ax-engine download ax-qwen3.6-35b
 ax-engine download ax-gemma4-12b
 ax-engine download ax-gemma4-26b
@@ -63,6 +89,7 @@ ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
 ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP
 ax-engine download owner/repo@revision
 ax-engine download ax-qwen3.6-35b --dest /path/to/explicit-copy
+ax-engine download qwen3.6-27b:axq --local-only
 ```
 
 Downloads verify free disk space against the repo size before fetching, copy
