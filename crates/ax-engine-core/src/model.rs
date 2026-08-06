@@ -1046,7 +1046,7 @@ pub enum NativeModelError {
     },
 }
 
-fn validate_native_model_manifest(
+pub(crate) fn validate_native_model_manifest(
     root_dir: &Path,
     manifest: &NativeModelManifest,
 ) -> Result<(), NativeModelError> {

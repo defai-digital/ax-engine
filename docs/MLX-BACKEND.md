@@ -200,6 +200,11 @@ batch/prompt/seed/ragged oracle case. The generator also requires telemetry
 proving that each scenario actually entered the shared forward, so a
 structurally rejected model cannot certify a vacuous sequential comparison.
 Missing, failed, incomplete, or stale evidence remains on per-item decode.
+The runtime contract is currently `ax.mlx.batched_decode.runtime.v4` (the
+required matrix gained the batch-8 cohort and the Gemma SWA window-boundary
+scenarios); evidence generated against an older contract reports
+`certification_runtime_mismatch` in the route reason and must be regenerated
+with the release probe below.
 The diagnostic route is not tied to a Qwen-only allowlist: a future dense model
 that passes the existing structural gates can exercise the oracle with the
 uncertified override. It becomes production-eligible only after evidence for

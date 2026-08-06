@@ -50,7 +50,7 @@ pub(super) fn resolve_hf_cache_model_artifacts(
         }
         for path in hf_cache_candidate_dirs(&root, preset) {
             match validate_preset_model_artifacts(&path, preset) {
-                Ok(()) => candidates.push(path),
+                Ok(has_manifest) => candidates.push((path, has_manifest)),
                 Err(message) => rejected.push(format!("{} ({message})", path.display())),
             }
         }
@@ -59,12 +59,29 @@ pub(super) fn resolve_hf_cache_model_artifacts(
     candidates.sort();
     candidates.dedup();
 
+    // Raw snapshots (no manifest yet) are valid candidates — the loader
+    // synthesizes the manifest at load time — but when both a
+    // manifest-bearing directory and raw snapshots match, the explicitly
+    // converted/downloaded one wins instead of turning a previously
+    // unambiguous resolution into a "multiple candidates" startup failure.
+    if candidates.len() > 1 {
+        let manifested = candidates
+            .iter()
+            .filter(|(_, has_manifest)| *has_manifest)
+            .count();
+        if manifested == 1 {
+            candidates.retain(|(_, has_manifest)| *has_manifest);
+        }
+    }
+    let mut candidates: Vec<PathBuf> = candidates.into_iter().map(|(path, _)| path).collect();
+
     match candidates.len() {
         1 => Ok(candidates.remove(0)),
         0 => {
             let mut message = format!(
                 "no valid AX model artifacts found in Hugging Face cache for preset {}; \
-                 expected config.json, {MODEL_MANIFEST_FILE}, safetensors, and model_type in {:?}",
+                 expected config.json, safetensors, and model_type in {:?} \
+                 ({MODEL_MANIFEST_FILE} is generated at load time when absent)",
                 preset.label, preset.model_types
             );
             if !rejected.is_empty() {
@@ -228,24 +245,18 @@ fn hf_cache_candidate_dirs(root: &Path, preset: &PresetDefinition) -> Vec<PathBu
     candidates
 }
 
-fn validate_preset_model_artifacts(path: &Path, preset: &PresetDefinition) -> Result<(), String> {
+/// Probe-only preset validation: returns whether the directory already
+/// carries a manifest. Raw HuggingFace / MLX snapshots (config.json +
+/// safetensors, no manifest) are accepted — the loader synthesizes the
+/// manifest at load time via `from_dir_or_convert`. Resolution must never
+/// write into candidate directories: synthesizing manifests mid-scan mutates
+/// the user's HF cache and changes which candidates other tooling considers
+/// usable.
+fn validate_preset_model_artifacts(path: &Path, preset: &PresetDefinition) -> Result<bool, String> {
     if !path.join("config.json").is_file() {
         return Err("missing config.json".to_string());
     }
-    if !path.join(MODEL_MANIFEST_FILE).is_file() {
-        // Raw HuggingFace / MLX snapshots carry config.json + safetensors but
-        // no manifest; generate one in place (headers only, no tensor copies)
-        // instead of failing closed on the missing file.
-        if let Err(error) = ax_engine_core::convert::ensure_manifest_for_hf_model_dir(path) {
-            return Err(format!(
-                "missing {MODEL_MANIFEST_FILE} and auto-convert failed: {error}; generate it with:\
-                 \n  cargo run -p ax-engine-core --bin generate-manifest -- {}\
-                 \nor use the download script which handles this step:\
-                 \n  python scripts/download_model.py <org/repo-id>",
-                path.display()
-            ));
-        }
-    }
+    let has_manifest = path.join(MODEL_MANIFEST_FILE).is_file();
     if !dir_contains_safetensors(path) {
         return Err("missing safetensors file".to_string());
     }
@@ -259,7 +270,7 @@ fn validate_preset_model_artifacts(path: &Path, preset: &PresetDefinition) -> Re
         ));
     }
 
-    Ok(())
+    Ok(has_manifest)
 }
 
 fn looks_like_artifact_dir(path: &Path) -> bool {

@@ -220,15 +220,19 @@ names have no `ax_engine_*` alias are exported under the agent's
 `ax_runtime_*` contract names:
 
 - `ax_runtime_queue_depth` — requests waiting for admission: the
-  generation-worker command queue plus scheduler-waiting requests
-  (`ax_engine_step_waiting_requests` is the per-model engine-side component).
+  generation-worker command queue plus engine-side backlog
+  (`ax_engine_step_waiting_requests` is the per-model engine-side component:
+  requests the scheduler deferred out of the latest step — token budget,
+  admission caps, fair-mode deferral — plus memory-blocked requests).
 - `ax_runtime_kv_pages_total` — total KV cache blocks configured across
   loaded models (from each model's `KvManagerConfig`).
 - `ax_runtime_kv_utilization` — KV block utilization (0.0–1.0) in the latest
   observed engine step; hidden until a step is observed.
 - `ax_runtime_max_batch_size` — configured batched-decode cohort cap
   (`AX_MLX_BATCHED_DECODE_MAX`, default 8); compare with
-  `ax_engine_step_scheduled_requests` for batch headroom.
+  `ax_engine_step_scheduled_requests` for batch headroom. Exported only while
+  at least one native MLX model is loaded — delegated-only (llama.cpp /
+  mlx-lm) nodes have no batched-decode capacity to advertise.
 - `ax_runtime_ttft_p95_ms` — nearest-rank p95 of worker-measured
   time-to-first-token (milliseconds) over the 512 most recent completed
   native streams; hidden before the first measured request. Measured on the

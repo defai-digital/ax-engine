@@ -4841,6 +4841,60 @@ fn ensure_manifest_generates_manifest_and_records_provenance() {
 }
 
 #[test]
+fn ensure_manifest_never_writes_a_manifest_that_fails_validation() {
+    let dir = write_tiny_qwen3_dir("ensure-manifest-invalid");
+    // Convertible snapshot whose config carries a loader-invalid value:
+    // conversion succeeds mechanically, but validation rejects rope_theta 0.
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "qwen3",
+            "hidden_size": 8,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "num_hidden_layers": 2,
+            "vocab_size": 64,
+            "tie_word_embeddings": true,
+            "rope_theta": 0,
+        }),
+    );
+    let manifest_path = dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+
+    let error = ensure_manifest_for_hf_model_dir(&dir)
+        .expect_err("a generated manifest that fails validation must fail ensure");
+    assert!(
+        matches!(error, ConvertError::GeneratedManifestInvalid { .. }),
+        "expected GeneratedManifestInvalid, got {error:?}"
+    );
+    assert!(
+        !manifest_path.exists(),
+        "an invalid manifest must never reach disk: its presence would stop \
+         from_dir_or_convert from ever retrying conversion"
+    );
+
+    // The directory stays convertible: fixing the config lets ensure succeed.
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "qwen3",
+            "hidden_size": 8,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "num_hidden_layers": 2,
+            "vocab_size": 64,
+            "tie_word_embeddings": true,
+            "rope_theta": 1000000,
+        }),
+    );
+    let created =
+        ensure_manifest_for_hf_model_dir(&dir).expect("ensure should succeed after the fix");
+    assert!(created, "fixed directory should generate a manifest");
+    assert!(manifest_path.is_file());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn ensure_manifest_fails_descriptively_without_config_json() {
     let dir = unique_test_dir("ensure-manifest-no-config");
     write_fake_safetensors(

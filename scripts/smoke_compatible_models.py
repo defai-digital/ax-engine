@@ -20,9 +20,12 @@ Modes:
              what CI runs on every push)
   (default)  full real-weight run; artifact-gated like the other model smoke
              checks. Models without a local snapshot are reported as skipped;
-             when every selected model is skipped the script prints a JSON
-             skip result and exits zero. `--required` turns missing artifacts
-             into a hard failure for release gates.
+             when every selected model is skipped the script prints the
+             summary table (plus JSON when `--json` is passed) and exits
+             zero. `--required` turns missing artifacts into a hard failure
+             for release gates; `--require-any` fails only when *no* selected
+             model ran at all (catches a mis-mounted --models-dir without
+             requiring the full matrix to be present).
 
 Exit codes: 0 = pass/skip, 1 = one or more models failed the matrix.
 
@@ -176,7 +179,7 @@ def validate_matrix(
 def render_table(rows: Sequence[Mapping[str, str]]) -> str:
     columns = ("model", "family", "tier", "status", "detail")
     widths = {
-        column: max(len(column), *(len(str(row.get(column, ""))) for row in rows))
+        column: max([len(column), *(len(str(row.get(column, ""))) for row in rows)])
         for column in columns
     }
     header = "  ".join(column.upper().ljust(widths[column]) for column in columns)
@@ -223,12 +226,28 @@ def latest_usable_snapshot(repo_cache: Path) -> Path | None:
     return candidates[-1][1]
 
 
+def snapshot_dir_name_matches(model: SmokeModel, name: str) -> bool:
+    """Exact-name match for a snapshot directory, in either the plain
+    `<repo-name>` layout or the HF-cache `models--<org>--<repo-name>` layout.
+
+    Substring matching is deliberately not used: a `...-4bit-DWQ` variant must
+    not stand in as smoke evidence for the curated `...-4bit` repo_id.
+    """
+    org, repo_name = model.repo_id.split("/", 1)
+    return name.lower() in {
+        repo_name.lower(),
+        f"models--{org}--{repo_name}".lower(),
+    }
+
+
 def resolve_snapshot(model: SmokeModel, models_dir: Path | None) -> Path | None:
     """Find a local snapshot for a matrix model without downloading."""
-    repo_name = model.repo_id.split("/", 1)[1].lower()
     if models_dir is not None and models_dir.is_dir():
-        for child in sorted(models_dir.iterdir()):
-            if not child.is_dir() or repo_name not in child.name.lower():
+        # Accept models_dir itself when it is a single-model snapshot named
+        # after the repo (config.json at top level), then scan children.
+        candidates = [models_dir, *sorted(models_dir.iterdir())]
+        for child in candidates:
+            if not child.is_dir() or not snapshot_dir_name_matches(model, child.name):
                 continue
             if (child / "config.json").is_file():
                 return child
@@ -238,6 +257,9 @@ def resolve_snapshot(model: SmokeModel, models_dir: Path | None) -> Path | None:
     return latest_usable_snapshot(hf_repo_cache_dir(model.repo_id))
 
 
+DOWNLOAD_TIMEOUT_SEC = 3600.0
+
+
 def download_snapshot(model: SmokeModel) -> Path:
     command = [
         sys.executable,
@@ -245,13 +267,19 @@ def download_snapshot(model: SmokeModel) -> Path:
         model.repo_id,
         "--json",
     ]
-    completed = subprocess.run(
-        command,
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DOWNLOAD_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise SmokeFailure(
+            f"download of {model.repo_id} exceeded {DOWNLOAD_TIMEOUT_SEC:.0f}s"
+        ) from error
     if completed.returncode != 0:
         raise SmokeFailure(
             f"download failed for {model.repo_id}: {completed.stderr.strip() or completed.stdout.strip()}"
@@ -500,6 +528,14 @@ def parser() -> argparse.ArgumentParser:
         help="fail when a selected model has no local snapshot",
     )
     parsed.add_argument(
+        "--require-any",
+        action="store_true",
+        help=(
+            "fail when every selected model is skipped (no snapshot ran); "
+            "catches a mis-mounted --models-dir without requiring the full matrix"
+        ),
+    )
+    parsed.add_argument(
         "--release",
         action="store_true",
         help="use/build target/release binaries instead of target/debug",
@@ -524,6 +560,8 @@ def select_models(args: argparse.Namespace) -> list[SmokeModel]:
         return list(SMOKE_MATRIX)
     requested = {slug.strip() for slug in args.models.split(",") if slug.strip()}
     known = {model.slug for model in SMOKE_MATRIX}
+    if not requested:
+        raise SmokeFailure(f"--models selected no model; known: {sorted(known)}")
     unknown = requested - known
     if unknown:
         raise SmokeFailure(
@@ -613,6 +651,14 @@ def main() -> int:
     failed = [row for row in results if row["status"] == "failed"]
     skipped = [row for row in results if row["status"] == "skipped"]
     if failed:
+        emit_summary("failed", results, args.json)
+        return 1
+    if args.require_any and results and len(skipped) == len(results):
+        print(
+            "--require-any: every selected model was skipped (no snapshot "
+            "resolved); check --models-dir",
+            file=sys.stderr,
+        )
         emit_summary("failed", results, args.json)
         return 1
     status = "skipped" if len(skipped) == len(results) else "passed"

@@ -53,8 +53,10 @@ pub struct StepMetrics {
     pub ttft_events: u32,
     pub prefix_hits: u32,
     pub kv_usage_blocks: u32,
-    /// Requests still waiting for scheduler admission (Waiting or
-    /// BlockedOnMemory) at the end of this step. Gauge, not a counter.
+    /// Requests that wanted to run this step but could not: scheduler-deferred
+    /// (admitted but left out of the batch by token budget / admission caps /
+    /// fair-mode deferral) plus memory-blocked, measured at the end of this
+    /// step. Gauge, not a counter.
     pub waiting_requests: u32,
     pub evictions: u32,
     pub preempted_requests: u32,
@@ -390,17 +392,24 @@ impl EngineCore {
             ttft_events: runner_summary.ttft_events,
             prefix_hits,
             kv_usage_blocks: self.kv_manager.used_block_count(),
-            waiting_requests: self
-                .request_manager
-                .records_iter()
-                .filter(|record| {
-                    matches!(
-                        record.state,
-                        RequestState::Waiting | RequestState::BlockedOnMemory
-                    )
-                })
-                .count()
-                .min(u32::MAX as usize) as u32,
+            // Scheduler-deferred requests stay `Runnable` (apply_schedule_plan
+            // only moves selected and memory-blocked ones), and `Waiting`
+            // drains at step start via admit_waiting(), so a state filter
+            // alone cannot see compute-bound backlog — count the plan's
+            // deferred set plus memory-blocked records. The two are disjoint:
+            // a request is in exactly one of the plan's lists.
+            waiting_requests: (schedule_plan.deferred_requests.len()
+                + self
+                    .request_manager
+                    .records_iter()
+                    .filter(|record| {
+                        matches!(
+                            record.state,
+                            RequestState::Waiting | RequestState::BlockedOnMemory
+                        )
+                    })
+                    .count())
+            .min(u32::MAX as usize) as u32,
             evictions: self.kv_manager.take_recent_evictions(),
             preempted_requests: preemption_metrics.preempted_requests,
             preempted_tokens: preemption_metrics.preempted_tokens,
@@ -2306,6 +2315,7 @@ mod tests {
         assert_eq!(outcome.metrics.scheduled_requests, 1);
         assert_eq!(outcome.metrics.scheduled_tokens, 3);
         assert_eq!(outcome.metrics.kv_usage_blocks, 1);
+        assert_eq!(outcome.metrics.waiting_requests, 0);
         assert!(outcome.runner_output.is_some());
 
         let snapshot = engine.request_manager().snapshot(RequestId(5)).unwrap();
@@ -2344,6 +2354,10 @@ mod tests {
         let outcome = engine.step(3, true).unwrap();
         assert!(outcome.schedule_plan.selected_requests.is_empty());
         assert_eq!(outcome.schedule_plan.deferred_requests, vec![RequestId(5)]);
+        // Scheduler-deferred requests stay Runnable, so the saturation gauge
+        // must count the plan's deferred set — a state filter alone reads 0
+        // under exactly this compute-bound backlog.
+        assert_eq!(outcome.metrics.waiting_requests, 1);
         assert!(outcome.runner_output.is_none());
         let snapshot = engine.request_manager().snapshot(RequestId(5)).unwrap();
         assert_eq!(snapshot.state, RequestState::Runnable);

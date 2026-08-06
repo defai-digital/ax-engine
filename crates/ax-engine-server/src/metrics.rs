@@ -554,12 +554,20 @@ fn append_saturation_metrics(
         commands_queued.saturating_add(scheduler_waiting),
     );
 
-    append_gauge(
-        body,
-        "ax_runtime_max_batch_size",
-        "Configured batched-decode cohort cap (AX_MLX_BATCHED_DECODE_MAX; AX Serving fleet-dispatch contract). Subtract the latest per-step scheduled-request gauge for batch headroom.",
-        batched_decode_cohort_cap(),
-    );
+    // The batched-decode cohort cap only governs native MLX models; exporting
+    // it from a node serving only delegated (llama.cpp) models would advertise
+    // fabricated batch headroom to the fleet dispatcher.
+    if lives
+        .iter()
+        .any(|live| live.runtime_report.selected_backend.is_mlx())
+    {
+        append_gauge(
+            body,
+            "ax_runtime_max_batch_size",
+            "Configured batched-decode cohort cap (AX_MLX_BATCHED_DECODE_MAX; AX Serving fleet-dispatch contract). Subtract the latest per-step scheduled-request gauge for batch headroom. Exported only while at least one native MLX model is loaded.",
+            batched_decode_cohort_cap(),
+        );
+    }
 
     append_optional_gauge(
         body,

@@ -187,7 +187,11 @@ fn catalog_families_map_to_registry_support_tiers() {
     use ax_engine_core::ModelSupportTier;
 
     assert_eq!(catalog::registry_family_label("gemma4-e2b"), "gemma4");
-    assert_eq!(catalog::registry_family_label("ax-qwen3.6-27b"), "qwen3_5");
+    assert_eq!(
+        catalog::registry_family_label("ax-qwen3.6-27b"),
+        "qwen3_next"
+    );
+    assert_eq!(catalog::registry_family_label("ax-qwen3.5-9b"), "qwen3_5");
     assert_eq!(
         catalog::registry_family_label("ax-qwen3-coder-next"),
         "qwen3_next"

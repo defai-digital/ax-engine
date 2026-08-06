@@ -306,6 +306,11 @@ jobs:
     env:
       AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
       AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR: ${{ inputs.mlx_model_artifacts_dir || vars.AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR }}
+      # Parent directory holding one snapshot per compatible-matrix model
+      # (plain `<repo-name>/` or HF-cache `models--org--name/` layout). This is
+      # deliberately distinct from AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR, which is
+      # a single model's snapshot everywhere in this repo.
+      AX_ENGINE_SMOKE_MODELS_DIR: ${{ vars.AX_ENGINE_SMOKE_MODELS_DIR }}
       AX_MODEL_SMOKE_REQUIRED: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) || (github.event_name == 'workflow_dispatch' && inputs.mlx_model_artifacts_dir != '') || vars.AX_REQUIRE_MODEL_SMOKE == '1' }}
 
     steps:
@@ -406,15 +411,29 @@ jobs:
           set -o pipefail
           bash scripts/check-prefix-reuse-equivalence.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-prefix-reuse-equivalence.log"
 
-      # Real-weight run of the tiered smoke matrix against whatever curated
-      # checkpoints are mounted; missing snapshots are reported as skipped.
-      # Operators run the full matrix with `--download --required` (see
-      # docs/SUPPORTED-MODELS.md, "Support tiers").
+      # Real-weight run of the tiered smoke matrix against the mounted
+      # AX_ENGINE_SMOKE_MODELS_DIR (a parent dir of matrix snapshots, NOT the
+      # single-model AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR). Partial mounts are
+      # fine — absent matrix models are reported as skipped — but resolving
+      # zero snapshots fails via --require-any so a bad mount cannot pass
+      # green silently. Operators run the full matrix with
+      # `--download --required` (see docs/SUPPORTED-MODELS.md, "Support
+      # tiers").
       - name: Run compatible-model smoke matrix
         if: steps.mlx-artifacts.outputs.available == 'true'
         run: |
           set -o pipefail
-          python3 scripts/smoke_compatible_models.py --models-dir "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" 2>&1 | tee "$AX_CI_LOG_DIR/smoke-compatible-models.log"
+          if [ -z "${AX_ENGINE_SMOKE_MODELS_DIR:-}" ] || [ ! -d "$AX_ENGINE_SMOKE_MODELS_DIR" ]; then
+            echo "AX_ENGINE_SMOKE_MODELS_DIR not mounted; skipping the compatible-model smoke matrix."
+            {
+              echo
+              echo "Compatible-model smoke matrix: smoke models dir not mounted, skipped."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          METAL_OUTPUT_DIR="$(mktemp -d)"
+          AX_METAL_OUTPUT_DIR="$METAL_OUTPUT_DIR" bash scripts/build-metal-kernels.sh >/dev/null
+          AX_ENGINE_METAL_BUILD_DIR="$METAL_OUTPUT_DIR" python3 scripts/smoke_compatible_models.py --models-dir "$AX_ENGINE_SMOKE_MODELS_DIR" --require-any 2>&1 | tee "$AX_CI_LOG_DIR/smoke-compatible-models.log"
 
       - name: Upload model smoke logs
         if: failure()

@@ -105,8 +105,13 @@ pub(super) fn registry_family_label(key: &str) -> &str {
     let k = k.strip_prefix("ax-").unwrap_or(&k);
     if k.starts_with("gemma4") {
         "gemma4"
-    } else if k.starts_with("qwen3.5") || k.starts_with("qwen3.6") {
+    } else if k.starts_with("qwen3.5") {
         "qwen3_5"
+    } else if k.starts_with("qwen3.6") {
+        // The converter canonicalizes qwen3_6 / qwen3.6 model types to the
+        // qwen3_next family (convert/model_family.rs) — grade against the
+        // registry row that actually runs these models.
+        "qwen3_next"
     } else if k.starts_with("qwen3-coder-next") {
         "qwen3_next"
     } else if k.starts_with("qwen3-embedding") {

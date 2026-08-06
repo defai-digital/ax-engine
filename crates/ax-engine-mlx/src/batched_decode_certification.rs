@@ -7,7 +7,16 @@ use sha2::{Digest, Sha256};
 
 pub const BATCHED_DECODE_CERTIFICATION_FILE: &str = "batched-decode-certification.json";
 pub const BATCHED_DECODE_CERTIFICATION_SCHEMA: &str = "ax.mlx.batched_decode_certification.v1";
-pub const BATCHED_DECODE_RUNTIME_CONTRACT: &str = "ax.mlx.batched_decode.runtime.v3";
+/// Version of the batched-decode runtime contract certification evidence is
+/// bound to. Bump this whenever the required scenario matrix (or the runtime
+/// behavior it certifies) changes, so pre-existing evidence fails with an
+/// explicit `certification_runtime_mismatch` (re-certify) instead of falling
+/// through the identity checks to a silent `certification_coverage_incomplete`
+/// demotion under an already-released version string.
+///
+/// v4: required matrix extended with the batch-8 Decision A cohort scenario
+/// and the 992-token Gemma SWA window-boundary scenario.
+pub const BATCHED_DECODE_RUNTIME_CONTRACT: &str = "ax.mlx.batched_decode.runtime.v4";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BatchedDecodeCertificationScenario {

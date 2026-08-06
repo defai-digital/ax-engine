@@ -964,7 +964,7 @@ fn preset_hf_cache_resolution_rejects_ambiguous_snapshots() {
 }
 
 #[test]
-fn preset_hf_cache_resolution_requires_ax_manifest() {
+fn preset_hf_cache_resolution_accepts_raw_snapshot_without_writing_manifest() {
     let root = unique_test_dir("hf-cache-no-manifest");
     let snapshot = root
         .join("models--mlx-community--gemma-4-e2b-it-4bit")
@@ -982,11 +982,54 @@ fn preset_hf_cache_resolution_requires_ax_manifest() {
         ..base_args()
     };
 
-    let error = args
+    let actual = args
         .session_config()
-        .expect_err("plain HF snapshot should fail closed without AX manifest");
+        .expect("raw snapshot should resolve; the loader synthesizes the manifest at load time");
 
-    assert!(error.contains("missing model-manifest.json"));
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(snapshot.as_path())
+    );
+    // Resolution must stay read-only: scanning candidates must not
+    // synthesize manifests into the user's HF cache.
+    assert!(!snapshot.join(artifacts::MODEL_MANIFEST_FILE).exists());
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn preset_hf_cache_resolution_prefers_manifest_bearing_candidate() {
+    let root = unique_test_dir("hf-cache-manifest-priority");
+    // Raw snapshot (e.g. a plain `hf download`) next to an explicitly
+    // converted/downloaded revision: the manifest-bearing one must win
+    // instead of failing with "multiple candidates".
+    let raw = root
+        .join("models--mlx-community--gemma-4-e2b-it-4bit")
+        .join("snapshots")
+        .join("raw999");
+    fs::create_dir_all(&raw).expect("raw snapshot dir should create");
+    fs::write(raw.join("config.json"), r#"{"model_type":"gemma4"}"#)
+        .expect("config should write");
+    fs::write(raw.join("model.safetensors"), b"placeholder")
+        .expect("safetensors marker should write");
+    let converted = write_hf_snapshot(
+        &root,
+        "models--mlx-community--gemma-4-e2b-it-4bit",
+        "abc123",
+        "gemma4",
+    );
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Gemma4E2b),
+        resolve_model_artifacts: ModelArtifactResolution::HfCache,
+        hf_cache_root: Some(root.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(converted.as_path())
+    );
     fs::remove_dir_all(root).expect("test dir should clean up");
 }
 

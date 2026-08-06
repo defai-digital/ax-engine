@@ -155,6 +155,8 @@ pub enum ConvertError {
     UnsupportedDtype { name: String, dtype: String },
     #[error("invalid {model_type} conversion contract: {message}")]
     InvalidModelContract { model_type: String, message: String },
+    #[error("generated manifest for {dir} failed loader validation and was not written: {message}")]
+    GeneratedManifestInvalid { dir: PathBuf, message: String },
     #[error(
         "convert dropped {count} unrecognised tensor(s) ({media_role_hits} media-role); \
 set {strict_env}=0 to allow, or map the tensors (sample: {sample})"
@@ -661,11 +663,14 @@ pub const AUTO_GENERATED_MANIFEST_NOTE: &str =
 /// safetensors headers when it is absent.
 ///
 /// Returns `Ok(false)` when the manifest already exists (left untouched) and
-/// `Ok(true)` after a successful generate + atomic write. Directories without
-/// `config.json` or without any `*.safetensors` fail with the descriptive
-/// `convert_hf_model_dir` error (`ReadFile` / `NoSafetensors`); conversion
-/// contract violations (dropped tensors under strict mode, invalid model
-/// contract) propagate unchanged so they stay fail-loud.
+/// `Ok(true)` after a successful generate + validate + atomic write.
+/// Directories without `config.json` or without any `*.safetensors` fail with
+/// the descriptive `convert_hf_model_dir` error (`ReadFile` /
+/// `NoSafetensors`); conversion contract violations (dropped tensors under
+/// strict mode, invalid model contract) propagate unchanged so they stay
+/// fail-loud. A generated manifest that fails loader validation is never
+/// written (`GeneratedManifestInvalid`), so the directory stays convertible
+/// instead of being poisoned by a permanently-invalid manifest file.
 pub fn ensure_manifest_for_hf_model_dir(model_dir: &Path) -> Result<bool, ConvertError> {
     let manifest_path = model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
     if manifest_path.exists() {
@@ -677,6 +682,16 @@ pub fn ensure_manifest_for_hf_model_dir(model_dir: &Path) -> Result<bool, Conver
         .runtime_status
         .notes
         .push(AUTO_GENERATED_MANIFEST_NOTE.to_string());
+    // Validate before writing: a manifest that fails loader validation must
+    // not reach disk, because its mere presence stops every later
+    // `from_dir_or_convert` from retrying conversion (only the NotFound arm
+    // converts) and flips AX-ready detection in other tools.
+    crate::model::validate_native_model_manifest(model_dir, &manifest).map_err(|error| {
+        ConvertError::GeneratedManifestInvalid {
+            dir: model_dir.to_path_buf(),
+            message: error.to_string(),
+        }
+    })?;
     write_manifest(model_dir, &manifest)?;
     Ok(true)
 }
@@ -796,7 +811,15 @@ fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, Convert
             dtype: entry.dtype,
             shape: entry.shape,
             file: file_name.clone(),
-            offset_bytes: data_base_offset + entry.data_offsets[0],
+            offset_bytes: data_base_offset
+                .checked_add(entry.data_offsets[0])
+                .ok_or_else(|| ConvertError::InvalidSafetensorsHeader {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "data offset overflow for tensor {name}: base {data_base_offset} + start {}",
+                        entry.data_offsets[0]
+                    ),
+                })?,
             length_bytes: entry.data_offsets[1]
                 .checked_sub(entry.data_offsets[0])
                 .ok_or_else(|| ConvertError::InvalidSafetensorsHeader {

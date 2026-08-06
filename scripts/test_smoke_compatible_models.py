@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -87,6 +88,64 @@ class CliTests(unittest.TestCase):
         completed = self.run_cli("--models", "nope", "--list")
         self.assertEqual(completed.returncode, 1)
         self.assertIn("unknown --models slugs", completed.stderr)
+
+    def test_empty_models_selection_fails_cleanly(self) -> None:
+        # `--models ","` used to crash render_table with a TypeError.
+        completed = self.run_cli("--models", ",", "--list")
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("selected no model", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+
+
+class SnapshotResolutionTests(unittest.TestCase):
+    def fake_model(self) -> smoke.SmokeModel:
+        # A repo_id that cannot exist in the developer's real HF cache, so
+        # resolve_snapshot's cache fallback stays inert during the test.
+        return smoke.SmokeModel(
+            slug="fake",
+            repo_id="example-org/Fake-Model-4bit",
+            family="qwen3",
+            tier="certified",
+        )
+
+    def test_name_matching_is_exact_not_substring(self) -> None:
+        model = self.fake_model()
+        self.assertTrue(smoke.snapshot_dir_name_matches(model, "Fake-Model-4bit"))
+        self.assertTrue(smoke.snapshot_dir_name_matches(model, "fake-model-4bit"))
+        self.assertTrue(
+            smoke.snapshot_dir_name_matches(model, "models--example-org--Fake-Model-4bit")
+        )
+        # A different quantization variant must not stand in as smoke
+        # evidence for the curated repo_id.
+        self.assertFalse(smoke.snapshot_dir_name_matches(model, "Fake-Model-4bit-DWQ"))
+
+    def test_models_dir_child_resolves_by_exact_name(self) -> None:
+        model = self.fake_model()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wrong = root / "Fake-Model-4bit-DWQ"
+            wrong.mkdir()
+            (wrong / "config.json").write_text("{}", encoding="utf-8")
+            self.assertIsNone(smoke.resolve_snapshot(model, root))
+
+            right = root / "Fake-Model-4bit"
+            right.mkdir()
+            (right / "config.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(smoke.resolve_snapshot(model, root), right)
+
+    def test_models_dir_itself_can_be_the_snapshot(self) -> None:
+        model = self.fake_model()
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "Fake-Model-4bit"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(smoke.resolve_snapshot(model, snapshot), snapshot)
+
+
+class RenderTableTests(unittest.TestCase):
+    def test_empty_rows_render_header_without_crash(self) -> None:
+        table = smoke.render_table([])
+        self.assertIn("MODEL", table)
 
 
 class CoherenceAssertionTests(unittest.TestCase):

@@ -72,8 +72,11 @@ Compatible/Certified claims honest: it resolves a local snapshot, runs
 `ax-engine-bench generate-manifest` idempotently, loads the model through the
 normal server path, and asserts a short greedy generation. CI runs
 `--dry-run` on every push (matrix + tier cross-check against the registry
-source, no weights needed) and the artifact-gated real-weight run in the
-Model Smoke job. Operators run the full matrix against downloaded weights:
+source, no weights needed) and the real-weight run in the Model Smoke job
+when the runner mounts `AX_ENGINE_SMOKE_MODELS_DIR` (a parent directory with
+one snapshot per matrix model; partial mounts run what is present, and
+`--require-any` fails the step if a mounted directory resolves no snapshot at
+all). Operators run the full matrix against downloaded weights:
 
 ```text
 python3 scripts/smoke_compatible_models.py --list

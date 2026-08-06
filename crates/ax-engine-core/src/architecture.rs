@@ -207,6 +207,12 @@ impl StructuralCapabilities {
         if self.has_layer_gating {
             reasons.push("layer_gating");
         }
+        // KV-shared layers have no own K/V projections; same unreachable
+        // `kv_source.is_none()` backstop as the batched predicate — a future
+        // SWA batch path must not admit them structurally.
+        if self.has_kv_shared_layers {
+            reasons.push("kv_shared_layers");
+        }
         if !self.has_full_attention && !self.has_sliding_window {
             reasons.push("no_attention");
         }

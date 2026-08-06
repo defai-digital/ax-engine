@@ -133,7 +133,9 @@ async fn metrics_saturation_series_feed_fleet_dispatch_contract() {
     let body = scrape(&app).await;
     assert!(body.contains(&format!("ax_runtime_kv_pages_total {kv_blocks_total}\n")));
     assert!(body.contains("ax_runtime_queue_depth 0\n"));
-    assert!(body.contains("ax_runtime_max_batch_size "));
+    // The batched-decode cohort cap governs only native MLX models; a
+    // delegated-only (llama.cpp) node must not advertise batch headroom.
+    assert!(!body.contains("ax_runtime_max_batch_size"));
     // Measurement-derived series stay hidden before any step or request.
     assert!(!body.contains("ax_runtime_kv_utilization"));
     assert!(!body.contains("ax_engine_step_waiting_requests"));
