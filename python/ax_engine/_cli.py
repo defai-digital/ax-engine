@@ -1099,30 +1099,30 @@ def _run_capture_stdout(command: list[str]) -> subprocess.CompletedProcess[str]:
 
 def _run_streaming_capture_stdout(command: list[str]) -> subprocess.CompletedProcess[str]:
     """Forward progress NDJSON while retaining the helper's terminal summary."""
-    process = subprocess.Popen(
+    stdout_lines: list[str] = []
+    with subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=None,
         text=True,
-    )
-    stdout_lines: list[str] = []
-    if process.stdout is not None:
-        for line in process.stdout:
-            stdout_lines.append(line)
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                payload = None
-            is_progress = isinstance(payload, dict) and payload.get("event") == "progress"
-            if is_progress:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-    return subprocess.CompletedProcess(
-        command,
-        process.wait(),
-        "".join(stdout_lines),
-        "",
-    )
+    ) as process:
+        if process.stdout is not None:
+            for line in process.stdout:
+                stdout_lines.append(line)
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    payload = None
+                is_progress = isinstance(payload, dict) and payload.get("event") == "progress"
+                if is_progress:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+        return subprocess.CompletedProcess(
+            command,
+            process.wait(),
+            "".join(stdout_lines),
+            "",
+        )
 
 
 def _value_at(value: dict, path: tuple[str, ...]) -> object | None:

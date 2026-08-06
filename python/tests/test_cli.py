@@ -328,13 +328,29 @@ class AxEngineCliTests(unittest.TestCase):
             "print('helper note');"
             f"print(json.dumps({summary!r}))"
         )
+        original_popen = subprocess.Popen
+        started_processes = []
+
+        def tracking_popen(*args: object, **kwargs: object) -> subprocess.Popen[str]:
+            process = original_popen(*args, **kwargs)
+            started_processes.append(process)
+            return process
+
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with (
+            mock.patch.object(_cli.subprocess, "Popen", side_effect=tracking_popen),
+            contextlib.redirect_stdout(stdout),
+        ):
             result = _cli._run_streaming_capture_stdout([sys.executable, "-c", script])
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual([json.loads(line) for line in stdout.getvalue().splitlines()], [progress])
         self.assertEqual(_cli._parse_download_summary(result.stdout), summary)
+        self.assertEqual(len(started_processes), 1)
+        process_stdout = started_processes[0].stdout
+        self.assertIsNotNone(process_stdout)
+        assert process_stdout is not None
+        self.assertTrue(process_stdout.closed)
 
     def test_download_progress_json_emits_compact_terminal_summary(self) -> None:
         summary = {
