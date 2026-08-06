@@ -796,6 +796,10 @@ struct ManifestKvGeometry {
     /// `attention_head_dim`.
     #[serde(default)]
     global_head_dim: Option<u32>,
+    /// Explicit KV head count for ISWA full-attention layers. Older manifests
+    /// omit this and retain the constant-total-KV-width rule.
+    #[serde(default)]
+    global_kv_head_count: Option<u32>,
     /// Per-layer annotations ("sliding_attention" / "full_attention");
     /// empty for homogeneous models.
     #[serde(default)]
@@ -854,7 +858,19 @@ fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) -> O
     let full_head_dim = geometry
         .global_head_dim
         .unwrap_or(geometry.attention_head_dim);
-    let full_bytes_per_token = kv_heads
+    let full_kv_heads = match geometry.global_kv_head_count {
+        Some(count) if count > 0 => u64::from(count),
+        Some(_) => return None,
+        None => {
+            let base_kv_width = kv_heads.saturating_mul(u64::from(geometry.attention_head_dim));
+            let full_head_dim = u64::from(full_head_dim);
+            if full_head_dim == 0 || !base_kv_width.is_multiple_of(full_head_dim) {
+                return None;
+            }
+            base_kv_width / full_head_dim
+        }
+    };
+    let full_bytes_per_token = full_kv_heads
         .saturating_mul(u64::from(full_head_dim))
         .saturating_mul(KV_CACHE_BYTES_PER_HEAD_ELEMENT);
 
@@ -1965,7 +1981,8 @@ mod tests {
     fn kv_pool_bytes_charges_sliding_layers_at_pool_and_skips_shared() {
         let geometry = kv_geometry(serde_json::json!({
             "layer_count": 6, "attention_head_dim": 128, "kv_head_count": 2,
-            "global_head_dim": 256, "sliding_window_size": 512,
+            "global_head_dim": 256, "global_kv_head_count": 1,
+            "sliding_window_size": 512,
             "layer_types": [
                 "sliding_attention", "sliding_attention", "full_attention",
                 "sliding_attention", "sliding_attention", "full_attention"
@@ -1974,7 +1991,7 @@ mod tests {
         }));
         let pool = 16384u64;
         let sliding_per_token = 2 * 128 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
-        let full_per_token = 2 * 256 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
+        let full_per_token = 256 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
         // Layers 0, 1, 4 are sliding: rings bound KV per request, so the
         // pool-wide worst case (many concurrent ≤window requests) is the
         // pool at the sliding head dim — the window never caps admission.
@@ -1982,6 +1999,29 @@ mod tests {
         // are full attention at the pool, using the ISWA global head dim.
         let expected = 3 * pool * sliding_per_token + 2 * pool * full_per_token;
         assert_eq!(estimated_kv_pool_bytes(&geometry, pool), Some(expected));
+    }
+
+    #[test]
+    fn kv_pool_bytes_honors_explicit_global_kv_heads_and_legacy_width() {
+        let explicit = kv_geometry(serde_json::json!({
+            "layer_count": 1, "attention_head_dim": 256, "kv_head_count": 8,
+            "global_head_dim": 512, "global_kv_head_count": 1,
+            "layer_types": ["full_attention"]
+        }));
+        let legacy = kv_geometry(serde_json::json!({
+            "layer_count": 1, "attention_head_dim": 256, "kv_head_count": 8,
+            "global_head_dim": 512,
+            "layer_types": ["full_attention"]
+        }));
+        let pool = 1000;
+        assert_eq!(
+            estimated_kv_pool_bytes(&explicit, pool),
+            Some(pool * 512 * KV_CACHE_BYTES_PER_HEAD_ELEMENT)
+        );
+        assert_eq!(
+            estimated_kv_pool_bytes(&legacy, pool),
+            Some(pool * (8 * 256) * KV_CACHE_BYTES_PER_HEAD_ELEMENT)
+        );
     }
 
     #[test]

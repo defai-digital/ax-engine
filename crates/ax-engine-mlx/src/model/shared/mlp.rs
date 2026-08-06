@@ -25,8 +25,8 @@ use super::super::profile::{
     record_qwen_dense_ffn_gate_up_matvec_metal_hit, saturating_profile_us,
 };
 use super::utils::{
-    ProjectionBatchPolicy, mlx_slice_last_dim, qkv_slices, qw, qw_gather, qw_with_policy,
-    scalar_like, scale_hidden, shape_element_count, squeeze_switch_singleton,
+    ProjectionBatchPolicy, mlx_slice_last_dim, packed_qkv_kv_head_count, qkv_slices, qw, qw_gather,
+    qw_with_policy, scalar_like, scale_hidden, shape_element_count, squeeze_switch_singleton,
 };
 
 static GELU_MUL_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -183,7 +183,6 @@ fn qkv_project_inner(
     projection_policy: ProjectionBatchPolicy,
     input_norm: Option<(&MlxArray, f32)>,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
-    let slices = qkv_slices(cfg, head_dim);
     let batch = x.shape().first().copied().unwrap_or(1);
     let seq = x.shape().get(1).copied().unwrap_or(1);
     let prefer_split = prefer_split_qkv_projection(
@@ -194,7 +193,14 @@ fn qkv_project_inner(
         seq,
         w.q_proj.is_some() && w.k_proj.is_some(),
     );
-    if !prefer_split && let Some(packed) = &w.qkv_packed {
+    let packed_kv_head_count = w.qkv_packed.as_ref().and_then(|packed| {
+        let packed_rows = packed.weight.shape().first().copied().unwrap_or(0) as usize;
+        packed_qkv_kv_head_count(cfg, head_dim, packed_rows)
+    });
+    if !prefer_split
+        && let (Some(packed), Some(kv_head_count)) = (&w.qkv_packed, packed_kv_head_count)
+    {
+        let slices = qkv_slices(cfg, head_dim, kv_head_count);
         let out = if let Some((norm_w, eps)) = input_norm
             && projection_policy == ProjectionBatchPolicy::Shared
             && fastpath::attn_norm_qkv_fuse_enabled()
@@ -259,7 +265,7 @@ fn qkv_project_inner(
             x
         };
         let q_full = qw_with_policy(x_in, w.q_proj.as_ref().unwrap(), projection_policy);
-        let (q, gate) = if slices.gate.is_some() {
+        let (q, gate) = if cfg.attn_output_gate {
             // attn_output_gate=true: q_proj output is [B, L, n_heads, 2*head_dim] interleaved.
             // Split by reshaping to [B, L, n_heads, 2*head_dim] and slicing last dim,
             // matching mlx-lm's `mx.split(q_proj_out.reshape(B, L, n_heads, -1), 2, axis=-1)`.

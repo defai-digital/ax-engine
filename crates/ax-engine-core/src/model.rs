@@ -739,6 +739,12 @@ pub struct NativeModelManifest {
     /// Sliding-attention layers use `attention_head_dim`; full-attention layers use this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global_head_dim: Option<u32>,
+    /// KV head count for full-attention layers in interleaved SWA models (e.g. Gemma4).
+    ///
+    /// Older manifests omit this field and preserve the legacy constant-total-KV-width
+    /// rule: `kv_head_count * attention_head_dim` is divided by `global_head_dim`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_kv_head_count: Option<u32>,
     /// Sliding-window size for SWA layers (None = global attention).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sliding_window_size: Option<u32>,
@@ -3259,6 +3265,29 @@ fn validate_interleaved_attention_metadata(
             });
         }
     }
+    if let Some(global_kv_head_count) = manifest.global_kv_head_count {
+        if global_kv_head_count == 0 {
+            return Err(NativeModelError::InvalidManifest {
+                message: "global_kv_head_count must be > 0".to_string(),
+            });
+        }
+        if manifest.global_head_dim.is_none() {
+            return Err(NativeModelError::InvalidManifest {
+                message: "global_kv_head_count requires global_head_dim".to_string(),
+            });
+        }
+        if !manifest
+            .attention_head_count
+            .is_multiple_of(global_kv_head_count)
+        {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "attention_head_count {} must be divisible by global_kv_head_count {}",
+                    manifest.attention_head_count, global_kv_head_count
+                ),
+            });
+        }
+    }
     if let Some(sliding_window_size) = manifest.sliding_window_size {
         if sliding_window_size == 0 {
             return Err(NativeModelError::InvalidManifest {
@@ -3462,18 +3491,30 @@ fn resolved_moe_dims(manifest: &NativeModelManifest) -> Result<NativeMoeDims, Na
 
 /// Per-layer attention projection widths as (q_rows, kv_rows).
 ///
-/// Q rows widen with the layer's configured head dim, while `kv_head_count`
-/// × the base head width fixes the total KV projection width even on layers
-/// with a wider per-layer head dim (Gemma4 global layers widen each KV head
-/// while preserving the total, e.g. 8×128 becomes 4×256). The MLX runtime's
-/// `qkv_slices` sizes packed tensors with the same rule.
+/// Q rows widen with the layer's configured head dim. Full-attention layers
+/// use `global_kv_head_count` when it is explicit. Older manifests preserve
+/// the legacy constant-total-KV-width rule, where `kv_head_count` × the base
+/// head width fixes the total even when the full-attention head dim is wider.
 fn configured_attention_projection_dims(
     manifest: &NativeModelManifest,
     layer_index: u32,
 ) -> (u64, u64) {
     let head_dim = configured_attention_head_dim(manifest, layer_index);
     let q_rows = u64::from(manifest.attention_head_count) * head_dim;
-    let kv_rows = u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
+    let is_full_attention = manifest
+        .layer_types
+        .get(layer_index as usize)
+        .is_some_and(|layer_type| layer_type == "full_attention");
+    let kv_rows = if is_full_attention {
+        manifest
+            .global_kv_head_count
+            .map(|count| u64::from(count) * head_dim)
+            .unwrap_or_else(|| {
+                u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim)
+            })
+    } else {
+        u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim)
+    };
     (q_rows, kv_rows)
 }
 
@@ -3627,8 +3668,8 @@ fn resolved_split_attention_dims(
     let q_heads = effective_q_rows / head_dim;
     let kv_heads = k_rows / head_dim;
     let expected_q_heads = u64::from(manifest.attention_head_count);
-    // Preserve the configured total KV projection width and derive the
-    // per-layer head count, matching the runtime's projection-shape inference.
+    // Resolve the per-layer KV head count from the explicit global geometry
+    // when available; legacy manifests derive it from their fixed total width.
     let (_, configured_kv_rows) = configured_attention_projection_dims(manifest, layer_index);
     if !configured_kv_rows.is_multiple_of(head_dim) {
         return Err(NativeModelError::InvalidManifest {
@@ -4416,6 +4457,7 @@ mod tests {
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             global_head_dim: None,
+            global_kv_head_count: None,
             sliding_window_size: None,
             layer_types: Vec::new(),
             kv_shared_source_layers: Default::default(),

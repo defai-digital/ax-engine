@@ -316,12 +316,9 @@ const INVARIANT_DENSE_PROJECTION_KERNEL_SOURCE: &str = r#"
     }
 "#;
 
-pub(crate) fn qkv_slices(cfg: &ModelConfig, head_dim: usize) -> QkvSlices {
+pub(crate) fn qkv_slices(cfg: &ModelConfig, head_dim: usize, kv_head_count: usize) -> QkvSlices {
     let q_size = (cfg.n_heads * head_dim) as i32;
-    // The KV section width is fixed by the base geometry (`kv_head_count` ×
-    // base head dim) even on layers whose per-layer `head_dim` is wider; the
-    // manifest validator sizes packed tensors with the same rule.
-    let kv_size = (cfg.n_kv_heads * cfg.head_dim) as i32;
+    let kv_size = (kv_head_count * head_dim) as i32;
     let gate = cfg.attn_output_gate.then_some((q_size, q_size * 2));
     let kv_start = if cfg.attn_output_gate {
         q_size * 2
@@ -334,6 +331,34 @@ pub(crate) fn qkv_slices(cfg: &ModelConfig, head_dim: usize) -> QkvSlices {
         k: (kv_start, kv_start + kv_size),
         v: (kv_start + kv_size, kv_start + kv_size * 2),
     }
+}
+
+/// Infer the KV head count encoded in one packed QKV projection.
+///
+/// This must use the projection's actual row count rather than the model's
+/// base KV geometry: Gemma 4 global-attention layers can use both a wider head
+/// dimension and a different KV head count than their sliding layers.
+pub(crate) fn packed_qkv_kv_head_count(
+    cfg: &ModelConfig,
+    head_dim: usize,
+    packed_rows: usize,
+) -> Option<usize> {
+    let q_rows = cfg.n_heads.checked_mul(head_dim)?;
+    let packed_q_rows = if cfg.attn_output_gate {
+        q_rows.checked_mul(2)?
+    } else {
+        q_rows
+    };
+    let remaining = packed_rows.checked_sub(packed_q_rows)?;
+    if !remaining.is_multiple_of(2) {
+        return None;
+    }
+    let kv_rows = remaining / 2;
+    if head_dim == 0 || !kv_rows.is_multiple_of(head_dim) {
+        return None;
+    }
+    let kv_head_count = kv_rows / head_dim;
+    (kv_head_count > 0).then_some(kv_head_count)
 }
 
 pub(crate) fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {

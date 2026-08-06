@@ -259,6 +259,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
+    let global_kv_head_count =
+        arch_u64(&config, &model_type, "num_global_key_value_heads").and_then(u64_to_u32);
     // Unlimited-OCR's value is interpreted by the MLX runtime as protected-prefix
     // R-SWA: the complete image/text prefill remains resident and only generated
     // tokens rotate through this many decode slots. Other uniform-SWA families
@@ -339,6 +341,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
             Vec::new()
         },
         global_head_dim,
+        global_kv_head_count,
         sliding_window_size,
         layer_types,
         kv_shared_source_layers,

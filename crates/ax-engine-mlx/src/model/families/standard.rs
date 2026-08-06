@@ -60,10 +60,10 @@ use super::super::shared::{
     flatten_gemma4_dual_path_inputs, full_precision_attention, linear_attention_forward_batched,
     moe_experts_forward, moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
-    moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
-    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project,
-    qkv_project_batched, qkv_project_with_input_norm, qw, rms_norm_opt, shape_element_count,
-    shared_expert_forward,
+    moe_router_qwen3, packed_qkv_kv_head_count, per_layer_input_gate_project,
+    prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route,
+    qkv_project, qkv_project_batched, qkv_project_with_input_norm, qw, rms_norm_opt,
+    shape_element_count, shared_expert_forward,
 };
 use crate::attention_mask::{batched_decode_validity_mask_with_window, create_ring_sliding_mask};
 use crate::batched_kv_cache::BatchedKvCache;
@@ -795,7 +795,6 @@ fn layer_forward_internal(
                 && qw.bits == o_proj.bits
                 && qw.scales.is_some()
         };
-        let kv_heads = cfg.n_kv_heads;
         let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
         if offset_chunk {
             let (Some(q_proj), Some(k_proj)) = (w.q_proj.as_ref(), w.k_proj.as_ref()) else {
@@ -957,6 +956,15 @@ fn layer_forward_internal(
             if !affine_matching(packed) {
                 break 'fused None;
             }
+            let packed_rows = packed.weight.shape().first().copied().unwrap_or(0) as usize;
+            let Some(kv_heads) = packed_qkv_kv_head_count(cfg, head_dim, packed_rows) else {
+                if dbg {
+                    eprintln!(
+                        "AX_PREFILL_TIME_DEBUG fused_prefill skip layer={layer_idx}: packed_qkv_geometry"
+                    );
+                }
+                break 'fused None;
+            };
             mlx_sys::ops::fused_causal_prefill_attention(
                 hidden,
                 &w.attn_norm,

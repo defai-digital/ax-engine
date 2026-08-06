@@ -3845,6 +3845,7 @@ mod tests {
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: vec![0],
             global_head_dim: Some(512),
+            global_kv_head_count: None,
             sliding_window_size: Some(512),
             layer_types: vec![
                 "sliding_attention".to_string(),
@@ -3904,6 +3905,7 @@ mod tests {
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             global_head_dim: None,
+            global_kv_head_count: None,
             sliding_window_size: None,
             layer_types: Vec::new(),
             kv_shared_source_layers: BTreeMap::new(),
@@ -4000,6 +4002,7 @@ mod tests {
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             global_head_dim: None,
+            global_kv_head_count: None,
             sliding_window_size: None,
             layer_types: Vec::new(),
             kv_shared_source_layers: BTreeMap::new(),
@@ -4538,7 +4541,7 @@ mod tests {
     #[test]
     fn qkv_slices_dense_attention_without_gate() {
         assert_eq!(
-            qkv_slices(&cfg(false), 8),
+            qkv_slices(&cfg(false), 8, 1),
             QkvSlices {
                 q: (0, 16),
                 gate: None,
@@ -4551,12 +4554,28 @@ mod tests {
     #[test]
     fn qkv_slices_dense_attention_with_output_gate() {
         assert_eq!(
-            qkv_slices(&cfg(true), 8),
+            qkv_slices(&cfg(true), 8, 1),
             QkvSlices {
                 q: (0, 16),
                 gate: Some((16, 32)),
                 k: (32, 40),
                 v: (40, 48),
+            }
+        );
+    }
+
+    #[test]
+    fn packed_qkv_geometry_uses_projection_rows_for_global_kv_heads() {
+        let cfg = cfg(false);
+        // 2 query heads × 16-wide heads, then one 16-wide K and V head.
+        assert_eq!(packed_qkv_kv_head_count(&cfg, 16, 64), Some(1));
+        assert_eq!(
+            qkv_slices(&cfg, 16, 1),
+            QkvSlices {
+                q: (0, 32),
+                gate: None,
+                k: (32, 48),
+                v: (48, 64),
             }
         );
     }

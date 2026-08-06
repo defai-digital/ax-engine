@@ -943,7 +943,7 @@ fn converts_gemma4_unified_text_without_tower_tensors() {
                 "hidden_size": 3072,
                 "num_attention_heads": 32,
                 "num_key_value_heads": 8,
-                "num_global_key_value_heads": 4,
+                "num_global_key_value_heads": 1,
                 "head_dim": 128,
                 "global_head_dim": 256,
                 "sliding_window": 1024,
@@ -1059,7 +1059,7 @@ fn converts_gemma4_unified_text_without_tower_tensors() {
             (
                 "language_model.model.layers.1.self_attn.k_proj.weight",
                 "BF16",
-                &[1024, 3072],
+                &[256, 3072],
             ),
             (
                 "language_model.model.layers.1.self_attn.o_proj.weight",
@@ -1119,6 +1119,7 @@ fn converts_gemma4_unified_text_without_tower_tensors() {
     assert_eq!(manifest.rope_theta_swa, Some(10000));
     assert_eq!(manifest.partial_rotary_factor, Some(0.25));
     assert_eq!(manifest.global_head_dim, Some(256));
+    assert_eq!(manifest.global_kv_head_count, Some(1));
     assert_eq!(manifest.sliding_window_size, Some(1024));
     assert_eq!(manifest.final_logit_softcapping, Some(30.0));
     assert_eq!(manifest.hidden_states_scale, Some((3072_f32).sqrt()));

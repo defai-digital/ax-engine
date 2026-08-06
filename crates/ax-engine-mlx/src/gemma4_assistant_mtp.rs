@@ -625,6 +625,7 @@ mod tests {
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             global_head_dim: None,
+            global_kv_head_count: None,
             sliding_window_size: None,
             layer_types: Vec::new(),
             kv_shared_source_layers: BTreeMap::new(),
