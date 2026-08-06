@@ -100,6 +100,46 @@ harness validation corpus, not a production claim. Public serving claims should
 use a larger corpus with a published prompt-mix table. See
 [SERVING-BENCHMARKS.md](SERVING-BENCHMARKS.md) for the full contract and rollout plan.
 
+### Single-client peer serving
+
+Use `scripts/bench_single_client_mlx_serving.py` when the question is
+single-client streaming chat performance against the pinned peer server. This
+session is narrower than `bench_ax_serving.py`: it fixes four Qwen3.6
+checkpoints, two prompt targets, one client, 256 completion tokens, and three
+repetitions.
+
+Publication requirements:
+
+- launch a fresh server for every engine/model/repetition and balance
+  engine-first order;
+- send identical deterministic prompt text and seed to both engines;
+- require authoritative streamed token usage, `[DONE]`, non-empty emitted
+  content, and the full fixed-length completion;
+- measure TTFT from request dispatch, not response-header receipt;
+- retain per-process logs and record binary, model-snapshot, runner Git/blob,
+  power, load, and thermal provenance;
+- exclude machine serial numbers and hardware UUIDs from artifacts;
+- keep effective prefill/TTFT separate from raw kernel-prefill claims.
+
+The peer-specific invocation and pinned target revision live in
+[the scripts guide](../scripts/README.md#benchmarking-rule). Current results
+and full claim boundaries are in
+[Performance Results](PERFORMANCE-RESULTS.md#session-mode-single-client-serving-ax-vs-peer-mlx).
+
+### Multi-model S1 peer campaign
+
+S1 compares one AX process co-serving Qwen3.5-9B and Gemma 4 12B against the
+peer's one-process-per-model topology. Run at least three cache-isolated
+repetitions with alternating target order and summarize with
+`scripts/summarize_qwen_gemma_flip_campaign.py` plus the checked-in gate
+manifest.
+
+A publishable decision must pass the exact comparison contract, throughput
+ratio, TTFT p95 ratio, interactive stream-gap ratio, absolute stream-gap, and
+availability gates. Keep S1 separate from single-client rows: its 13.8k-token
+Gemma replay intentionally measures AX exact-prefix restore in a multi-model
+schedule.
+
 ## MTP Matrix
 
 Use the MTP benchmark when the question is how Qwen3.6 MTP throughput,

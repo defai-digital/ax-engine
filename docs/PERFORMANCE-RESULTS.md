@@ -8,7 +8,7 @@ Canonical public **tables and charts** for AX Engine, grouped by session mode.
 | How to interpret a row / what it does not prove | [Performance](PERFORMANCE.md) |
 | How to reproduce or classify evidence | [Benchmarks](BENCHMARKS.md) |
 | Root README headline numbers | [Root README: Performance](../README.md#performance) |
-| Serving peer detail (AX vs peer MLX server) | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md) |
+| Serving peer detail (AX vs peer MLX server) | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |
 
 ## On this page
 
@@ -35,12 +35,12 @@ denominator.
 > admission check at throughput parity with 0.31.2 (56.3 TFLOP/s qmm,
 > 2026-07-15) and is the admitted build for new benchmark sessions.
 
-**Evidence freshness (as of 2026-08-05):**
+**Evidence freshness (as of 2026-08-06):**
 
 | Session | Engine / peers | Host | When |
 | --- | --- | --- | --- |
-| Single-client serving vs peer MLX serving engine | AX Engine **6.13.1** · peer MLX serving engine **0.4.3** | Apple **M3 Max** 128 GB | 2026-08-05 |
-| Multi-model S1 | AX Engine · multi-process peer MLX server | Apple **M5 Max** 128 GB | 2026-07-28 |
+| Single-client serving vs peer MLX serving engine | AX Engine **6.13.1** · peer MLX serving engine **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
+| Multi-model S1 | AX Engine · multi-process peer MLX server **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
 | 6-bit exact sampled-MTP acceleration | AX Engine **v6.12.1** AX-only | Apple **M5 Max** 128 GB | 2026-07-29 |
 | Qwen3.6 MTP peer (MTPLX / lightning-mlx) | Stitched peer matrix · MTPLX **2.0.1** | Apple M-series (see artifact) | 2026-07-09 |
 | Direct generation snapshot | AX Engine **v6.12.0** AX-only; retained `mlx-lm` **0.31.3** · `llama.cpp` **b9910** | Apple **M5 Max** 128 GB | 2026-07-27 |
@@ -328,27 +328,29 @@ Raw direct and MTP artifacts, route telemetry, and parity checks are in the
 
 The S1 contract serves **two models from one AX process** (Qwen3.5-9B
 interactive stream + Gemma 4 12B 13.8k-token long prefill, OpenAI SSE,
-greedy) against **a peer MLX serving engine (v0.4.2) running one process per model**, on the
+greedy) against **a peer MLX serving engine (v0.4.3) running one process per model**, on the
 same host, same models, fresh processes per trial, alternating order.
-Locked gates: throughput ratio >= 1.15x, TTFT p95 ratio <= 0.90,
-interactive stream-gap p95 ratio <= 0.90, zero candidate errors.
+Locked checks: exact comparison contract, throughput ratio >= 1.15x, TTFT p95
+ratio <= 0.90, interactive stream-gap p95 ratio <= 0.90, absolute interactive
+stream gap <= 50 ms, and zero candidate request/HTTP 503/lifecycle errors.
 
-#### Official 3-rep result (2026-07-28, Apple M5 Max 128 GB)
+#### Official 3-rep result (2026-08-06, Apple M5 Max 128 GB)
 
-Artifacts: [benchmarks/results/serving/s1-peer-flip/2026-07-28-prefix-reuse-official](../benchmarks/results/serving/s1-peer-flip/2026-07-28-prefix-reuse-official/README.md)
+Artifacts: [benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun](../benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/README.md)
 (run ledger, six raw trial artifacts, per-rep gate evaluations, and the
 token-equivalence audit set).
 
 | rep | thr ratio (>=1.15) | ttft p95 (<=0.90) | gap p95 (<=0.90) | errors |
 | --- | --- | --- | --- | --- |
-| 1 | **5.031** | 0.040 | 0.259 | 0 |
-| 2 | **4.989** | 0.041 | 0.261 | 0 |
-| 3 | **5.015** | 0.040 | 0.258 | 0 |
+| 1 | **5.001** | 0.041 | 0.253 | 0 |
+| 2 | **5.033** | 0.040 | 0.263 | 0 |
+| 3 | **5.049** | 0.040 | 0.254 | 0 |
 
-All four gates pass in every repetition; the throughput ratio is
-stable to <1%. Underlying single-trial anatomy: Gemma leg TTFT p95
-drops from ~8,200 ms (full prefill) to ~409 ms via exact-prompt prefix
-restore, freeing the process for the interactive stream.
+All locked gates pass in every repetition; the throughput ratio is
+stable to <1%. Median aggregate throughput is **93.71 vs 18.62 tok/s**
+(**5.033x**); TTFT p95 is **382.1 vs 9,604.0 ms** and interactive stream-gap
+p95 is **8.91 vs 35.13 ms**. Exact-prompt prefix restore avoids re-prefilling
+the 13.8k-token Gemma leg, freeing the process for the interactive stream.
 
 **Mechanism.** At model publish the server runs the exact S1 prompt as
 a warmup; its KV prefix snapshot (4.76 GB serialized at 13,824 tokens)
@@ -391,36 +393,34 @@ Streaming OpenAI `/v1/chat/completions` against one loaded model per process —
 the path users measure when they open a server and time chat completions. Full
 methodology, prefill/TTFT tables, FFN fix evidence, and claim boundaries:
 
-**[AX Engine vs peer MLX serving engine: Qwen 3.6 (2026-08-05)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md)**
+**[AX Engine vs peer MLX serving engine: Qwen 3.6 (2026-08-06)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md)**
 
 | Field | Value |
 | --- | --- |
-| Host | Apple **M3 Max** 128 GB · macOS 26.5.2 · MLX 0.32.0 |
+| Host | Apple **M5 Max** 128 GB · macOS 26.5.2 · MLX 0.32.0 |
 | AX Engine | **6.13.1** (`ax-engine-server`) |
 | Peer | peer MLX serving engine **0.4.3** |
 | Models | Qwen3.6 27B and 35B-A3B at 4-bit and 6-bit |
 | Workload | Prompt targets ~512 and ~2048 tokens · 256 gen · temp 0 · streaming |
-| Artifacts | `benchmarks/results/serving/` · 2026-08-05 Qwen 3.6 single-client peer session |
+| Artifacts | `benchmarks/results/serving/` · 2026-08-06 M5 Max Qwen 3.6 single-client peer session |
 
-#### Overnight decode summary (3-rep medians)
+#### Decode summary (3-repetition medians)
 
 | Model | p512 AX / peer | p2048 AX / peer | Readout |
 | --- | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 19.3 / 18.9 (+2%) | 16.7 / 18.8 (−11%) | Overnight loss isolated and fixed (below) |
-| Qwen3.6 27B 6-bit | **15.1 / 12.9 (+17%)** | **14.0 / 12.5 (+12%)** | AX leads both cells |
-| Qwen3.6 35B-A3B 4-bit | **99.4 / 83.2 (+19%)** | **97.0 / 81.1 (+20%)** | Strong MoE decode lead |
-| Qwen3.6 35B-A3B 6-bit | **80.9 / 69.5 (+16%)** | **80.0 / 68.3 (+17%)** | Strong MoE decode lead |
+| Qwen3.6 27B 4-bit | **34.40 / 32.32 (+6.4%)** | **33.88 / 32.01 (+5.9%)** | AX leads both cells |
+| Qwen3.6 27B 6-bit | **24.59 / 23.94 (+2.7%)** | **23.97 / 23.35 (+2.7%)** | Small, stable dense lead |
+| Qwen3.6 35B-A3B 4-bit | **159.10 / 129.06 (+23.3%)** | **156.89 / 126.60 (+23.9%)** | Strong MoE decode lead |
+| Qwen3.6 35B-A3B 6-bit | **128.79 / 106.67 (+20.7%)** | **126.90 / 105.04 (+20.8%)** | Strong MoE decode lead |
 
-AX won **7/8** overnight decode cells; geometric-mean decode advantage
-**~11%** (MoE-only **~18%**). Prefill GM **~+7%**, TTFT speedup GM **~+7%**.
-See the detail page for full prefill/TTFT tables.
-
-#### Post-fix 27B 4-bit p2048 cell
-
-Root cause: custom dense-FFN Metal matvec on 64×(5120→17408) 4-bit geometry.
-Patched default (geometry guard → MLX split FFN) measured **22.54 tok/s** median
-(2 warmups, 5 measurements, ~3% spread) versus overnight peer **18.8 tok/s**
-(~**+20%**). Output token IDs matched the controlled A/B arms byte-for-byte.
+AX wins **8/8** decode cells; geometric-mean decode advantage is **12.9%**
+(dense 27B **4.4%**, MoE **22.2%**). Effective prefill and TTFT each split
+4/8 and are approximately neutral in the matrix-wide geometric mean
+(-1.3% and -1.1%, respectively). The detail page contains every prefill/TTFT
+cell, exact metric definitions, repetition spread, process audit, and claim
+boundaries. The earlier
+[2026-08-05 M3 Max session](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md)
+remains an archive, not current headline evidence.
 
 ### Session Mode: Direct Generation
 

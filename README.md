@@ -282,8 +282,8 @@ serving, MTP, direct, or embedding rows, and do not mix **M3 Max** vs
 
 | Session | Peers | Headline | Host / when |
 | --- | --- | --- | --- |
-| **Single-client serving** | AX Engine · peer MLX serving engine **0.4.3** | **7/8** decode wins · MoE **~16–20%** faster · GM decode **~+11%** | M3 Max · 2026-08-05 · AX **6.13.1** |
-| **Multi-model (S1)** | AX one process · multi-process peer MLX server | **4/4** locked gates · thr **~5.0×** | M5 Max · 2026-07-28 |
+| **Single-client serving** | AX Engine · peer MLX serving engine **0.4.3** | **8/8** decode wins · MoE **~21–24%** faster · GM decode **+12.9%** | M5 Max · 2026-08-06 · AX **6.13.1** |
+| **Multi-model (S1)** | AX one process · multi-process peer MLX server | **All locked gates** · thr **5.03×** | M5 Max · 2026-08-06 |
 | **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | AX leads Qwen3.6 peer decode; **1.28×–2.64×** vs same-package direct | M5 Max · MTP accel 2026-07-29 |
 | **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Competitive decode; charts in docs | M5 Max · 2026-07-27 (peers retained) |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Ingest scale tables in docs | M5 Max · 2026-07-27 |
@@ -303,31 +303,30 @@ Full tables, charts, and methodology:
 
 Streaming OpenAI `/v1/chat/completions` — the comparison users run when they
 open a server and time chat. **AX Engine 6.13.1** vs peer MLX serving engine
-**0.4.3**, Apple **M3 Max** 128 GB, Qwen 3.6 27B / 35B-A3B at 4-bit and 6-bit,
+**0.4.3**, Apple **M5 Max** 128 GB, Qwen 3.6 27B / 35B-A3B at 4-bit and 6-bit,
 ~512 and ~2k prompt targets, 256 gen tokens, temperature 0.
 
 | Model | p512 decode (AX / peer) | p2048 decode (AX / peer) |
 | --- | ---: | ---: |
-| Qwen3.6 27B 4-bit | 19.3 / 18.9 (**+2%**) | 16.7 / 18.8 (overnight −11%; **fixed → 22.5**, ~**+20%** vs peer ref) |
-| Qwen3.6 27B 6-bit | **15.1 / 12.9 (+17%)** | **14.0 / 12.5 (+12%)** |
-| Qwen3.6 35B-A3B 4-bit | **99.4 / 83.2 (+19%)** | **97.0 / 81.1 (+20%)** |
-| Qwen3.6 35B-A3B 6-bit | **80.9 / 69.5 (+16%)** | **80.0 / 68.3 (+17%)** |
+| Qwen3.6 27B 4-bit | **34.40 / 32.32 (+6.4%)** | **33.88 / 32.01 (+5.9%)** |
+| Qwen3.6 27B 6-bit | **24.59 / 23.94 (+2.7%)** | **23.97 / 23.35 (+2.7%)** |
+| Qwen3.6 35B-A3B 4-bit | **159.10 / 129.06 (+23.3%)** | **156.89 / 126.60 (+23.9%)** |
+| Qwen3.6 35B-A3B 6-bit | **128.79 / 106.67 (+20.7%)** | **126.90 / 105.04 (+20.8%)** |
 
-Overnight matrix: **7 of 8** decode wins; geometric-mean decode **~+11%**,
-effective prefill **~+7%**, TTFT **~+7%**. The single overnight loss (27B 4-bit
-long prompt) was an AX custom dense-FFN path on that geometry; HEAD bypasses it
-and measures **22.54 tok/s** (2 warmups / 5 reps). Full prefill/TTFT tables,
-methodology, and caveats:
+AX wins **8 of 8** decode cells; geometric-mean decode advantage is **12.9%**
+(dense 27B **4.4%**, 35B-A3B MoE **22.2%**). Effective prefill and TTFT split
+4/8 and are roughly neutral in the matrix-wide geometric mean, so they are not
+headline wins. Full prefill/TTFT tables, methodology, provenance, and caveats:
 
-**[Serving peer detail](docs/performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md)** ·
+**[Serving peer detail](docs/performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md)** ·
 [Performance Results: serving](docs/PERFORMANCE-RESULTS.md#session-mode-single-client-serving-ax-vs-peer-mlx)
 
 ### Multi-model serving (S1)
 
 One AX process co-serves Qwen interactive stream + Gemma 13.8k prefill with
 exact-prompt **prefix reuse** against a multi-process peer MLX server
-(2026-07-28, M5 Max). **All four locked gates pass** every rep; throughput
-ratio **~5.0×** (TTFT and stream-gap p95 also win). Detail:
+(2026-08-06, M5 Max). **All locked gates pass** every rep; median
+throughput ratio **5.03×** (TTFT and stream-gap p95 also win). Detail:
 [S1 results](docs/PERFORMANCE-RESULTS.md#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer).
 
 ### MTP: AX Engine vs MTPLX vs lightning-mlx

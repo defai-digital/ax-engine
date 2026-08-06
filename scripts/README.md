@@ -31,6 +31,14 @@ streaming step intervals, E2E latency, request throughput, output-token
 throughput, queue delay, and SLO goodput over a JSONL prompt corpus. It is
 serving evidence, not a raw model-runtime throughput baseline.
 
+Use `bench_single_client_mlx_serving.py` for the isolated, streaming OpenAI
+chat comparison between AX Engine and the pinned mlxcel binary. It launches a
+fresh server per engine/model/repetition, balances engine order, requires
+authoritative streamed usage and the full fixed-length completion, and records
+binary/model/runner identities plus process logs. Host collection deliberately
+omits machine serial numbers and UUIDs. Keep this session separate from both
+multi-model S1 and offline direct-generation evidence.
+
 Use `bench_ax_multimodel_serving.py` for timed request/load/unload replay
 against one multi-model AX process. It adds per-model output identities,
 lifecycle latency, final route-counter contracts, and model-switch evidence.
@@ -41,7 +49,8 @@ memory budget, protocol, and runtime revision. For mlxcel it also supervises
 one process per model so load/unload events retain their lifecycle meaning;
 the AX target supervises one fresh multi-model process per artifact so repeated
 runs cannot inherit prompt-cache state.
-The checked-in mlxcel target pins the official v0.4.2 source revision.
+The newest checked-in mlxcel target pins the official v0.4.3 source revision;
+the v0.4.2 target remains only for reproducing its historical campaign.
 Use `run_qwen_gemma_flip_campaign.py` to alternate both targets across three or
 more S0-S3 repetitions with a cooldown, validate every artifact, and prove the
 prompt-token and package contract for each paired trial.
@@ -310,6 +319,13 @@ throughput baselines.
   `--min-goodput-ratio`, `--min-input-tokens-p95`, and
   `--require-route-decision-min KEY=MIN` before citing long-prompt or
   runtime-path-specific serving claims.
+- `bench_single_client_mlx_serving.py`: balanced-order, fresh-process OpenAI
+  chat benchmark for the current AX-vs-mlxcel Qwen3.6 serving matrix. It
+  reports request-dispatch TTFT, effective prefill, decode throughput, exact
+  model and binary identities, and a privacy-filtered host snapshot.
+- `test_bench_single_client_mlx_serving.py`: regression coverage for prompt
+  determinism, balanced ordering, request-origin SSE timing, fixed-generation
+  enforcement, process concurrency flags, and host-identifier redaction.
 - `bench_ax_multimodel_serving.py`: timed multi-model + lifecycle replay
   against a running AX server (`ax.multimodel_serving_benchmark.v1`). Emits
   focus-family tags for the Qwen 3 + Gemma 4 flip schedule, interactive

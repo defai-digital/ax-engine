@@ -1,0 +1,251 @@
+{
+  "comparison_contract": {
+    "hardware": "AKMBPM5MAXx/applegpu_g17s",
+    "id": "qwen3-gemma4-m5max-openai-v1",
+    "request_surface": "openai_completions_sse",
+    "sampling": "temperature=0,top_p=1,top_k=0,seed=0",
+    "scenario_suite": "S0-S3-text-v1",
+    "total_memory_cap_bytes": 103079215104
+  },
+  "created_at": "2026-08-06T20:19:33+00:00",
+  "methodology": {
+    "cooldown_s": 30.0,
+    "fresh_process_per_trial": true,
+    "repetitions": 3,
+    "reported_stat": "raw trials; aggregate median is computed by the flip report",
+    "target_order": "forward on odd repetitions, reverse on even repetitions"
+  },
+  "pair_contracts": [
+    {
+      "baseline_process_count": 2,
+      "baseline_runtime": "mlxcel",
+      "candidate_process_count": 1,
+      "candidate_runtime": "ax-engine",
+      "mismatches": [],
+      "passed": true,
+      "repetition": 1,
+      "scenario": "s1"
+    },
+    {
+      "baseline_process_count": 2,
+      "baseline_runtime": "mlxcel",
+      "candidate_process_count": 1,
+      "candidate_runtime": "ax-engine",
+      "mismatches": [],
+      "passed": true,
+      "repetition": 2,
+      "scenario": "s1"
+    },
+    {
+      "baseline_process_count": 2,
+      "baseline_runtime": "mlxcel",
+      "candidate_process_count": 1,
+      "candidate_runtime": "ax-engine",
+      "mismatches": [],
+      "passed": true,
+      "repetition": 3,
+      "scenario": "s1"
+    }
+  ],
+  "passed": true,
+  "runs": [
+    {
+      "artifact": "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/ax-engine-s1-r1.json",
+      "artifact_sha256": "f8294311574b7f990f36faed1f03eca2423cdf4c54fbbcf4ebdabfeef5168e3c",
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/.venv/bin/python",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/targets/ax-qwen-gemma-m5max-thr-quanta.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/logs/ax-engine-s1-r1",
+        "--output",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/ax-engine-s1-r1.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 1,
+      "runner_exit_code": 0,
+      "runtime": "ax-engine",
+      "runtime_revision": "85337d14d4bd0d0dacfae23082a650dfe6e7c0eb",
+      "scenario": "s1",
+      "target": "ax-engine"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/mlxcel-s1-r1.json",
+      "artifact_sha256": "2bdf0fb78fbaed2172d1bd150fcbd29596bc99c2121809df64c83eda74052da1",
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/.venv/bin/python",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/targets/mlxcel-v0.4.3-qwen-gemma-m5max.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/logs/mlxcel-s1-r1",
+        "--output",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/mlxcel-s1-r1.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 1,
+      "runner_exit_code": 0,
+      "runtime": "mlxcel",
+      "runtime_revision": "v0.4.3@ba9101bddaf26f48a88f40683a2d1c2f5cf17849",
+      "scenario": "s1",
+      "target": "mlxcel"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/mlxcel-s1-r2.json",
+      "artifact_sha256": "aa43821713152fabd59a52800b555f65c6b691621186438d21993a31f8d9affe",
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/.venv/bin/python",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/targets/mlxcel-v0.4.3-qwen-gemma-m5max.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/logs/mlxcel-s1-r2",
+        "--output",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/mlxcel-s1-r2.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 2,
+      "runner_exit_code": 0,
+      "runtime": "mlxcel",
+      "runtime_revision": "v0.4.3@ba9101bddaf26f48a88f40683a2d1c2f5cf17849",
+      "scenario": "s1",
+      "target": "mlxcel"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/ax-engine-s1-r2.json",
+      "artifact_sha256": "83b8d346e7b5df44c5c4bb75e9abbd25ccedb8b26f03b0551129b878c8866e43",
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/.venv/bin/python",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/targets/ax-qwen-gemma-m5max-thr-quanta.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/logs/ax-engine-s1-r2",
+        "--output",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/ax-engine-s1-r2.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 2,
+      "runner_exit_code": 0,
+      "runtime": "ax-engine",
+      "runtime_revision": "85337d14d4bd0d0dacfae23082a650dfe6e7c0eb",
+      "scenario": "s1",
+      "target": "ax-engine"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/ax-engine-s1-r3.json",
+      "artifact_sha256": "cdaa42d9363cd97265aaa5a95b4a806d24053f68fb07cdb53c249af175229557",
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/.venv/bin/python",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/targets/ax-qwen-gemma-m5max-thr-quanta.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/logs/ax-engine-s1-r3",
+        "--output",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/ax-engine-s1-r3.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 3,
+      "runner_exit_code": 0,
+      "runtime": "ax-engine",
+      "runtime_revision": "85337d14d4bd0d0dacfae23082a650dfe6e7c0eb",
+      "scenario": "s1",
+      "target": "ax-engine"
+    },
+    {
+      "artifact": "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/mlxcel-s1-r3.json",
+      "artifact_sha256": "5db86d342fff626033422c6793c1411a0a043cf057a45e441ee723527402f82a",
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/.venv/bin/python",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/scripts/bench_qwen_gemma_flip_target.py",
+        "--target",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/targets/mlxcel-v0.4.3-qwen-gemma-m5max.json",
+        "--scenario",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+        "--workers",
+        "16",
+        "--timeout",
+        "900.0",
+        "--log-dir",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/logs/mlxcel-s1-r3",
+        "--output",
+        "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/results/serving/s1-peer-flip/2026-08-06-m5max-v043-rerun/artifacts/mlxcel-s1-r3.json",
+        "--report-only"
+      ],
+      "error": null,
+      "passed": true,
+      "repetition": 3,
+      "runner_exit_code": 0,
+      "runtime": "mlxcel",
+      "runtime_revision": "v0.4.3@ba9101bddaf26f48a88f40683a2d1c2f5cf17849",
+      "scenario": "s1",
+      "target": "mlxcel"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "s1",
+      "path": "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/replay/multimodel_prefill_isolation.jsonl",
+      "sha256": "e17d3b74ef553779038b3cf4e0a2798b3cf024612c70effb46bd755407134826"
+    }
+  ],
+  "schema_version": "ax.qwen_gemma_flip_campaign.v1",
+  "targets": [
+    {
+      "label": "ax-engine",
+      "name": "ax-single-process-qwen-gemma-thr-quanta",
+      "path": "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/targets/ax-qwen-gemma-m5max-thr-quanta.json",
+      "runtime": "ax-engine",
+      "runtime_revision": "85337d14d4bd0d0dacfae23082a650dfe6e7c0eb"
+    },
+    {
+      "label": "mlxcel",
+      "name": "mlxcel-v0.4.3-multiprocess-qwen-gemma",
+      "path": "/Users/akiralam/code/ax-engine-readme-bench-20260806/benchmarks/manifests/targets/mlxcel-v0.4.3-qwen-gemma-m5max.json",
+      "runtime": "mlxcel",
+      "runtime_revision": "v0.4.3@ba9101bddaf26f48a88f40683a2d1c2f5cf17849"
+    }
+  ]
+}

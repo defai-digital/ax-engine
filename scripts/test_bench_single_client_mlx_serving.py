@@ -3,12 +3,19 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-import bench_single_client_mlx_serving as benchmark
+MODULE_PATH = Path(__file__).with_name("bench_single_client_mlx_serving.py")
+MODULE_SPEC = importlib.util.spec_from_file_location("bench_single_client_mlx_serving", MODULE_PATH)
+assert MODULE_SPEC and MODULE_SPEC.loader
+benchmark = importlib.util.module_from_spec(MODULE_SPEC)
+sys.modules[MODULE_SPEC.name] = benchmark
+MODULE_SPEC.loader.exec_module(benchmark)
 
 
 class SingleClientServingBenchmarkTests(unittest.TestCase):

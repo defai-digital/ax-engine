@@ -9,7 +9,7 @@ decide which result table, method, or investigation note applies to a claim.
 | --- | --- |
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
 | Root README headline numbers | [README Performance](../../README.md#performance) |
-| AX vs peer MLX single-client serving (2026-08-05) | [AX vs peer MLX serving (Qwen 3.6)](ax-vs-peer-mlx-serving-qwen36-2026-08-05.md) |
+| AX vs peer MLX single-client serving (2026-08-06) | [AX vs peer MLX serving (Qwen 3.6)](ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |
 | Interpretation and claim context | [Performance](../PERFORMANCE.md) |
 | MTP packages, 4-bit vs 6-bit lanes | [MTP Docs](../mtp/README.md) |
 | Methodology, commands, artifact schemas | [Benchmarks](../BENCHMARKS.md) |
@@ -53,7 +53,7 @@ provenance, and enough metadata to rerun or reject the claim.
 | Surface | Scope |
 | --- | --- |
 | [Performance Results](../PERFORMANCE-RESULTS.md) | Full public tables and charts (S1, serving, MTP, direct, embeddings) |
-| [AX vs peer MLX serving (Qwen 3.6)](ax-vs-peer-mlx-serving-qwen36-2026-08-05.md) | Single-client OpenAI streaming peer (2026-08-05, M3 Max) |
+| [AX vs peer MLX serving (Qwen 3.6)](ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) | Single-client OpenAI streaming peer (2026-08-06, M5 Max) |
 | [Performance](../PERFORMANCE.md) | Interpretation, long-context notes, MTP mode policy |
 | [MTP Docs](../mtp/README.md) | `download-mtp`, 6-bit vs 4-bit lanes, MTP validation |
 | [Long Context](../LONG-CONTEXT.md) | Prefix reuse and long-context boundaries (not short/mid README claims) |
