@@ -2386,13 +2386,22 @@ fn apply_draft_temperature_override(params: MlxSamplingParams) -> MlxSamplingPar
 /// `"INT8"`/`"8BIT"` → 8-bit; anything else present → 4-bit; the field absent
 /// entirely → `None` (caller infers from tensor shapes, defaulting to 4-bit
 /// in `mtp_take_weight`).
+/// Sidecar quantization bit widths the MTP loaders accept. Shared with the
+/// `ax-engine mtp-capability` CLI contract so capability reporting can never
+/// drift from what `mtp_take_weight` actually executes.
+pub const MTP_SIDECAR_SUPPORTED_BITS: [i32; 5] = [2, 4, 6, 8, 16];
+
+/// Layout id AXQuant stamps in `mtplx_runtime.json` for Qwen 3.6 MTP sidecars
+/// consumed by this loader (byte-preserved or MLX-packed quantized).
+pub const MTP_SIDECAR_QWEN36_LAYOUT: &str = "ax-engine-qwen36-v1";
+
 fn parse_mtp_sidecar_bits_hint(runtime_config: &serde_json::Value) -> Option<i32> {
     if let Some(structured) = runtime_config.get("mtp_sidecar_bits") {
         match structured
             .as_i64()
             .and_then(|bits| i32::try_from(bits).ok())
         {
-            Some(bits @ (2 | 4 | 6 | 8 | 16)) => return Some(bits),
+            Some(bits) if MTP_SIDECAR_SUPPORTED_BITS.contains(&bits) => return Some(bits),
             _ => tracing::warn!(
                 target: "ax_mlx::weights",
                 value = %structured,

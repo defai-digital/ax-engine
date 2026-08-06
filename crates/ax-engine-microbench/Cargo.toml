@@ -57,3 +57,7 @@ path = "src/bin/async_eval_overlap_probe.rs"
 [[bin]]
 name = "batched-decode-ceiling-probe"
 path = "src/bin/batched_decode_ceiling_probe.rs"
+
+[[bin]]
+name = "axquant-kernel-latency-probe"
+path = "src/bin/axquant_kernel_latency_probe.rs"

@@ -808,6 +808,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
         "download-mtp" => cmd_download_mtp(&args[1..]),
         "models" => cmd_models(&args[1..]),
         "doctor" => cmd_doctor(&args[1..]),
+        "mtp-capability" => cmd_mtp_capability(&args[1..]),
         "convert-mtplx" => cmd_convert_mtplx(&args[1..]),
         "tui" => tui::cmd_tui(&args[1..]),
         unknown => Err(format!(
@@ -818,8 +819,43 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--offline|--local-only] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force|--local-only] [--list] [--json] [--progress-json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json] [--progress-json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
+        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--offline|--local-only] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force|--local-only] [--list] [--json] [--progress-json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json] [--progress-json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine mtp-capability [--json]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
     );
+}
+
+/// One-line JSON capability contract consumed by AXQuant's
+/// `quantize-mtp-sidecar --capability-command` probe. Values derive from the
+/// same loader constants `mtp_take_weight` executes against, so the report
+/// cannot drift from actual runtime capability.
+fn mtp_capability_json() -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "mtp_enabled": true,
+        "layout": ax_engine_mlx::weights::MTP_SIDECAR_QWEN36_LAYOUT,
+        "quantized_sidecar": true,
+        "supported_bits": ax_engine_mlx::weights::MTP_SIDECAR_SUPPORTED_BITS,
+        "packing": "mlx-affine-packed-u32",
+        "ax_engine_version": env!("CARGO_PKG_VERSION"),
+    })
+}
+
+fn cmd_mtp_capability(args: &[OsString]) -> Result<u8, String> {
+    for arg in args {
+        match arg.to_string_lossy().as_ref() {
+            // Output is always one-line JSON; --json is accepted for
+            // consistency with the other subcommands.
+            "--json" => {}
+            "--help" | "-h" => {
+                println!(
+                    "Usage:\n  ax-engine mtp-capability [--json]\n\nPrints the one-line JSON MTP sidecar capability contract (layout,\nsupported quantization bits, packing) consumed by AXQuant's\n`quantize-mtp-sidecar --capability-command` probe."
+                );
+                return Ok(0);
+            }
+            flag => return Err(format!("unknown mtp-capability option: {flag}")),
+        }
+    }
+    println!("{}", mtp_capability_json());
+    Ok(0)
 }
 
 fn cmd_doctor(args: &[OsString]) -> Result<u8, String> {
@@ -3641,6 +3677,33 @@ fn _os_str(value: &str) -> &OsStr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Cross-repo contract: AXQuant's `probe_ax_engine_mtp_capability` parses
+    /// the last stdout line as JSON and requires exactly these four fields
+    /// (extra fields are ignored). Renaming or removing any of them breaks
+    /// the `quantize-mtp-sidecar --capability-command` gate.
+    #[test]
+    fn mtp_capability_contract_fields_are_stable() {
+        let value = mtp_capability_json();
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["mtp_enabled"], true);
+        assert_eq!(value["layout"], "ax-engine-qwen36-v1");
+        assert!(
+            !value["ax_engine_version"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        let bits: Vec<i64> = value["supported_bits"]
+            .as_array()
+            .expect("supported_bits array")
+            .iter()
+            .filter_map(serde_json::Value::as_i64)
+            .collect();
+        assert_eq!(bits, vec![2, 4, 6, 8, 16]);
+        // One-line output: the serialized form must contain no newlines.
+        assert!(!value.to_string().contains('\n'));
+    }
 
     const EXPECTED_AUTOMATOSX_REPOS: [&str; 27] = [
         "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
