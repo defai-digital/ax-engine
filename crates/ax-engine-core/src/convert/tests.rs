@@ -37,13 +37,14 @@ fn write_fake_safetensors(dir: &Path, filename: &str, tensors: &[(&str, &str, &[
 
     let header_json = serde_json::to_vec(&header).unwrap();
     let header_size = header_json.len() as u64;
-    let data = vec![0u8; offset as usize];
 
     let path = dir.join(filename);
     let mut file = fs::File::create(&path).unwrap();
     file.write_all(&header_size.to_le_bytes()).unwrap();
     file.write_all(&header_json).unwrap();
-    file.write_all(&data).unwrap();
+    // Conversion only reads tensor metadata, so keep large model-shaped
+    // fixtures sparse instead of materializing gigabytes of zero-filled data.
+    file.set_len(8 + header_size + offset).unwrap();
 }
 
 fn write_config(dir: &Path, config: serde_json::Value) {
@@ -304,8 +305,9 @@ fn converts_gemma4_assistant_q_only_external_kv_contract() {
         tensor.role,
         NativeTensorRole::AttentionK | NativeTensorRole::AttentionV
     )));
-    crate::model::NativeModelArtifacts::from_manifest_and_root(dir, manifest)
+    crate::model::NativeModelArtifacts::from_manifest_and_root(dir.clone(), manifest)
         .expect("Gemma4 assistant manifest should validate");
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -3672,6 +3674,8 @@ fn parse_think_token_ids_reads_added_tokens() {
     // defaults stay in charge for such models.
     let empty = unique_test_dir("think-token-ids-none");
     assert_eq!(super::parse_think_token_ids(&empty), (None, None));
+    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_dir_all(empty);
 }
 
 /// OptiQ / mlx-lm mixed-precision fixture: global 4-bit + named 8-bit overrides

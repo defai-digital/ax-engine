@@ -33,7 +33,8 @@ def _write_model(
     if manifest is not None:
         (model_dir / "model-manifest.json").write_text(json.dumps(manifest))
     if weight_bytes > 0:
-        (model_dir / "model.safetensors").write_bytes(b"\x00" * weight_bytes)
+        with (model_dir / "model.safetensors").open("wb") as weight_file:
+            weight_file.truncate(weight_bytes)
 
 
 class ReportQuantizationRecipeInventoryTests(unittest.TestCase):
