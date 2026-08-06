@@ -24,8 +24,12 @@ memory).**
 
 - **Faster speculative decode** — AutomatosX chat snapshots bundle their MTP
   sidecar or assistant weights, so one standard download is serve-ready; AX
-  shows measured speedups vs same-package direct and peer decode wins vs MTPLX
-  and lightning-mlx on Qwen3.6
+  shows **1.28×–2.64×** same-package MTP acceleration and peer decode wins vs
+  MTPLX and lightning-mlx on Qwen3.6
+- **Faster single-model serving** — on the path users actually measure
+  (streaming OpenAI chat), AX Engine **6.13.1** leads a peer MLX serving
+  engine **0.4.3** on Qwen 3.6 MoE by ~**16–20%** decode and wins **7/8**
+  overnight cells (2026-08-05, M3 Max) — see [Performance](#performance)
 - **Strong direct decode on Apple Silicon** — Gemma and Qwen paths compete with
   `mlx-lm` and llama.cpp Metal on published decode charts
 - **Multi-model on one process** — keep a scoped set of Qwen 3.5/3.6,
@@ -140,6 +144,16 @@ Omni, Unlimited-OCR, Whisper, MiniCPM-V) use the repo-owned runtime via serve
 aliases, presets, or manual model directories; they are not all AutomatosX-managed
 packages. Full matrix:
 [Supported Models](docs/SUPPORTED-MODELS.md).
+
+**Recommended starting packages** (serve-ready, match published benches):
+
+| Goal | Alias / family | Why |
+| --- | --- | --- |
+| Fastest MoE chat + MTP | `ax-qwen3.6-35b-a3b` (4-bit or 6-bit MTP) | Strongest serving and MTP peer decode rows |
+| Dense chat + MTP | `ax-qwen3.6-27b` (6-bit MTP preferred) | High same-package MTP speedup; solid serving |
+| Multimodal chat + MTP | `ax-gemma4-12b` / 26B / 31B Assistant-MTP | Image/audio/video + assistant draft package |
+| Coding agent | `ax-qwen3-coder-next` | Coding-focused MoE; multi-model friendly |
+| Embeddings | `ax-embeddinggemma-300m` or Qwen3-Embedding aliases | Batched ingest scale in [full results](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
 
 Repositories ending in `-MTP` or `-Assistant-MTP` already contain the prepared
 sidecar or assistant artifacts and `model-manifest.json`. Download them with
@@ -257,24 +271,21 @@ batching for concurrent long prompts — see
 
 ## Performance
 
-Why people try AX Engine: **faster local decode** and **multi-model serving**
-against engines they already know. Results are **session-separated** — do not
-mix multi-model (S1), MTP, direct, or embedding rows across sessions.
+Why people try AX Engine: **faster serving and speculative decode** on Apple
+Silicon, plus **multi-model** that peers usually need multiple processes for.
+Results are **session-separated** — do not mix multi-model (S1), single-client
+serving, MTP, direct, or embedding rows, and do not mix **M3 Max** vs
+**M5 Max** absolute tok/s.
 
-| Session | Peers | Headline metric |
-| --- | --- | --- |
-| **Multi-model serving (S1)** | AX single-process · multi-process peer MLX server | **4/4** locked gates; thr ratio **~5.0×** (2026-07-28) — [S1 results](docs/PERFORMANCE-RESULTS.md#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer) |
-| **MTP generation** | AX Engine · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | MTP decode tok/s |
-| **Direct generation** | AX Engine · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Decode / prefill / TTFT |
-| Embeddings | AX · mlx-lm / mlx-embeddings | Ingest tok/s — Qwen3 chart below; see [full results](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
+| Session | Peers | Headline | Host / when |
+| --- | --- | --- | --- |
+| **Single-client serving** | AX Engine · peer MLX serving engine **0.4.3** | **7/8** decode wins · MoE **~16–20%** faster · GM decode **~+11%** | M3 Max · 2026-08-05 · AX **6.13.1** |
+| **Multi-model (S1)** | AX one process · multi-process peer MLX server | **4/4** locked gates · thr **~5.0×** | M5 Max · 2026-07-28 |
+| **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | AX leads Qwen3.6 peer decode; **1.28×–2.64×** vs same-package direct | M5 Max · MTP accel 2026-07-29 |
+| **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Competitive decode; charts in docs | M5 Max · 2026-07-27 (peers retained) |
+| Embeddings | AX · mlx-lm / mlx-embeddings | Ingest scale tables in docs | M5 Max · 2026-07-27 |
 
-**Host:** Apple M5 Max · 128 GB · macOS 26.x · AX Engine **v6.12.0**.
-Generation charts: 2026-07-26/27 AX-only refresh (peer engines retained, not
-re-run). S1 multi-model: 2026-07-28 official 3-rep with prefix reuse. Retained
-peers: `mlx-lm` **0.31.3** · `llama.cpp` **b9910** / ggml **0.15.3** · MTPLX
-**2.0.1**.
-
-Methodology and artifacts:
+Full tables, charts, and methodology:
 [Performance Results](docs/PERFORMANCE-RESULTS.md) ·
 [Benchmarks](docs/BENCHMARKS.md) ·
 [Claim boundaries](docs/performance/README.md).
@@ -284,6 +295,37 @@ Methodology and artifacts:
 > Some Homebrew or low-deployment-target MLX builds omit M5 GEMM paths and look
 > ~3–4× slower. Details:
 > [Performance Results](docs/PERFORMANCE-RESULTS.md).
+
+### Single-client serving: AX vs peer MLX server (newest)
+
+Streaming OpenAI `/v1/chat/completions` — the comparison users run when they
+open a server and time chat. **AX Engine 6.13.1** vs peer MLX serving engine
+**0.4.3**, Apple **M3 Max** 128 GB, Qwen 3.6 27B / 35B-A3B at 4-bit and 6-bit,
+~512 and ~2k prompt targets, 256 gen tokens, temperature 0.
+
+| Model | p512 decode (AX / peer) | p2048 decode (AX / peer) |
+| --- | ---: | ---: |
+| Qwen3.6 27B 4-bit | 19.3 / 18.9 (**+2%**) | 16.7 / 18.8 (overnight −11%; **fixed → 22.5**, ~**+20%** vs peer ref) |
+| Qwen3.6 27B 6-bit | **15.1 / 12.9 (+17%)** | **14.0 / 12.5 (+12%)** |
+| Qwen3.6 35B-A3B 4-bit | **99.4 / 83.2 (+19%)** | **97.0 / 81.1 (+20%)** |
+| Qwen3.6 35B-A3B 6-bit | **80.9 / 69.5 (+16%)** | **80.0 / 68.3 (+17%)** |
+
+Overnight matrix: **7 of 8** decode wins; geometric-mean decode **~+11%**,
+effective prefill **~+7%**, TTFT **~+7%**. The single overnight loss (27B 4-bit
+long prompt) was an AX custom dense-FFN path on that geometry; HEAD bypasses it
+and measures **22.54 tok/s** (2 warmups / 5 reps). Full prefill/TTFT tables,
+methodology, and caveats:
+
+**[Serving peer detail](docs/performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md)** ·
+[Performance Results: serving](docs/PERFORMANCE-RESULTS.md#session-mode-single-client-serving-ax-vs-peer-mlx)
+
+### Multi-model serving (S1)
+
+One AX process co-serves Qwen interactive stream + Gemma 13.8k prefill with
+exact-prompt **prefix reuse** against a multi-process peer MLX server
+(2026-07-28, M5 Max). **All four locked gates pass** every rep; throughput
+ratio **~5.0×** (TTFT and stream-gap p95 also win). Detail:
+[S1 results](docs/PERFORMANCE-RESULTS.md#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer).
 
 ### MTP: AX Engine vs MTPLX vs lightning-mlx
 
@@ -301,70 +343,41 @@ Fairness notes: [Qwen3.6 MTP peer comparison](docs/mtp/qwen36-peer-comparison.md
 | Qwen3.6 35B-A3B 4-bit | **172.4** tok/s | 137.9 tok/s | 116.2 tok/s | AX leads production-config row |
 | Qwen3.6 35B-A3B 6-bit | **141.2** tok/s | 119.0 tok/s | 96.3 tok/s | AX leads production-config row |
 
-**Same-package AX acceleration** (exact sampled MTP — not a peer leaderboard):
-all 15 target/suite rows speed up decode by **1.28×–2.64×** over AX direct on
-the same 6-bit package, with 100% MTP step coverage.
+**Same-package AX acceleration** (exact sampled MTP, v6.12.1, M5 Max — not a
+peer leaderboard): all **15** target/suite rows speed up decode by
+**1.28×–2.64×** over AX direct on the same 6-bit package, with 100% MTP step
+coverage. Highlight rows: Qwen3.6 27B 6-bit flappy **2.64×** (23.7 → 62.6
+tok/s); Gemma 4 12B flappy **2.54×** (39.5 → 100.4 tok/s); Qwen3.6 35B-A3B
+still **1.28×–1.39×** on an already-fast MoE direct baseline.
 
 <img width="100%" src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit exact sampled-MTP acceleration vs same-package direct">
 
-### Direct: AX Engine vs mlx-lm vs llama.cpp
+Per-suite tables: [Performance Results: MTP](docs/PERFORMANCE-RESULTS.md#session-mode-mtp-generation).
 
-Non-speculative generation. Charts: **v6.12.0 AX-only snapshot (2026-07-27)**
-overlaid with **retained** historical `mlx-lm` and `llama.cpp` Metal rows
-(cross-run distribution view, not a same-session peer matrix). Peer engines
-were not re-run in this refresh. Exact AX numbers:
-[Performance Results: Direct](docs/PERFORMANCE-RESULTS.md#session-mode-direct-generation).
+### Direct generation, embeddings, and archives
 
-**Gemma 4** — decode / prefill / TTFT:
+Non-speculative decode/prefill/TTFT (Gemma 4 and Qwen 3.6 box plots vs retained
+`mlx-lm` / llama.cpp Metal), embedding ingest scale, DiffusionGemma, and
+historical composites live under **docs** so this README stays on the numbers
+that decide “is AX faster for me?”:
 
-<img width="100%" src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Gemma 4 direct decode: AX Engine vs mlx-lm vs llama.cpp">
+| Topic | Where |
+| --- | --- |
+| Direct: Gemma 4 / Qwen 3.6 charts | [Performance Results: Direct](docs/PERFORMANCE-RESULTS.md#session-mode-direct-generation) |
+| Embeddings (Qwen3 + EmbeddingGemma) | [Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings) |
+| Gemma 4 12B case study | [v6.8.2 case study](docs/PERFORMANCE-RESULTS.md#gemma-4-12b-retained-v682-case-study) |
+| How to interpret a row | [Performance](docs/PERFORMANCE.md) |
+| Reproduce a session | [Benchmarks](docs/BENCHMARKS.md) |
 
-<img width="100%" src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Gemma 4 direct prefill: AX Engine vs mlx-lm vs llama.cpp">
-
-<img width="100%" src="docs/assets/perf-gemma4-ttft-box-whisker.svg" alt="Gemma 4 direct TTFT: AX Engine vs mlx-lm vs llama.cpp">
-
-**Qwen 3.6** — decode / prefill / TTFT:
-
-<img width="100%" src="docs/assets/perf-qwen-decode-box-whisker.svg" alt="Qwen 3.6 direct decode: AX Engine vs mlx-lm vs llama.cpp">
-
-<img width="100%" src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Qwen 3.6 direct prefill: AX Engine vs mlx-lm vs llama.cpp">
-
-<img width="100%" src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Qwen 3.6 direct TTFT: AX Engine vs mlx-lm vs llama.cpp">
-
-### Embeddings: Qwen3-Embedding ingest scale
-
-Fresh AX-only Qwen3-Embedding 0.6B / 4B / 8B results (2026-07-27 AX-only
-refresh on the v6.12.0 line) are overlaid with retained 2026-07-12 `mlx-lm`
-medians. This is a cross-run directional view, not a paired engine-to-engine
-delta. Peer `mlx-lm` was not re-run. The uniform ingest corpus does not isolate
-the default-on mixed-length batching path. Full rows and methodology:
-[Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
-
-<img width="100%" src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Qwen3-Embedding batched ingest scale: retained mlx-lm reference and fresh AX Engine throughput across 0.6B, 4B, and 8B models">
-
-### Embeddings: EmbeddingGemma ingest scale
-
-Fresh AX-only EmbeddingGemma 300M results (2026-07-27 AX-only refresh on the
-v6.12.0 line) are overlaid with retained 2026-07-02 `mlx-embeddings` medians.
-This is a cross-run directional view, not a paired engine-to-engine delta. Peer
-`mlx-embeddings` was not re-run. Full rows and methodology:
-[Performance Results: Embeddings](docs/PERFORMANCE-RESULTS.md#session-mode-embeddings).
-
-<img width="100%" src="docs/assets/perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg" alt="EmbeddingGemma 300M batched ingest scale: retained mlx-embeddings reference and fresh AX Engine throughput">
-
-**How to read these charts**
+**How to read headline metrics**
 
 - **Decode** (tok/s, higher is better) is the main interactive metric.
-- **Prefill** and **TTFT** are cold-prompt cost; the historical composite is
-  mixed — AX does **not** claim a matrix-wide prefill/TTFT lead on current HEAD.
+- **Serving** and **MTP** sessions answer different questions; pick the table
+  that matches how you run the engine.
+- **Prefill** / **TTFT** are cold-prompt cost; AX does **not** claim a
+  matrix-wide prefill lead on every retained historical direct overlay.
 - `llama.cpp` rows are shape-compatible GGUF Metal references, not prompt-hash
-  parity with the MLX artifacts.
-- Gemma 4 12B is a separate case study (`gemma4_unified`; `mlx-lm` cannot load
-  it): [Performance Results](docs/PERFORMANCE-RESULTS.md#gemma-4-12b-retained-v682-case-study).
-
-Tables, embeddings, DiffusionGemma, and archives:
-**[Performance Results](docs/PERFORMANCE-RESULTS.md)** ·
-[Interpretation](docs/PERFORMANCE.md).
+  parity with MLX artifacts.
 
 ## SDKs
 
@@ -408,6 +421,7 @@ Auth, streaming, embeddings, Ollama-shaped routes:
 | Models and MTP packages | [Supported Models](docs/SUPPORTED-MODELS.md) · [MTP Docs](docs/mtp/README.md) |
 | Hardware / FAQ | [FAQ](docs/FAQ.md) |
 | Full performance tables | [Performance Results](docs/PERFORMANCE-RESULTS.md) |
+| Serving peer (newest) | [Serving peer detail](docs/performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md) |
 | Reproduce benchmarks | [Benchmarks](docs/BENCHMARKS.md) |
 | Server / API / SDKs | [Server](docs/SERVER.md) · [API](docs/API-COMPATIBILITY.md) · [OpenClaw](docs/OPENCLAW.md) · [SDKs](docs/sdk/README.md) |
 | Fleet / NVIDIA (AX Serving) | [AX Serving](docs/AX-SERVING.md) |

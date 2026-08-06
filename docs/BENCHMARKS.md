@@ -12,15 +12,18 @@ workload-contract paths.
 | Interpretation | [Performance](PERFORMANCE.md) |
 | Workload-contract design | [Benchmark Design](BENCH-DESIGN.md) |
 
-The root `README.md` keeps headline MTP takeaways only. Full session-mode
-tables and charts live in [Performance Results](PERFORMANCE-RESULTS.md). The
-current results snapshot is a provenance-tracked composite, not one
-same-session run: `mlx_lm` reference rows, AX direct overlays, the llama.cpp
-Metal sweep, AX 6-bit MTP package rows, Qwen3.6 peer MTP rows, and embedding
-ingest-scale rows are each labeled by session mode. Older result sets,
-including n-gram overlay runs, remain diagnostic history and should not be
-described as the current public results table unless that page is rolled back
-to those artifacts.
+The root `README.md` keeps **headline** takeaways only: single-client serving
+vs peer MLX serving engine, multi-model S1, MTP peer decode, and same-package MTP acceleration.
+Full session-mode tables and charts live in
+[Performance Results](PERFORMANCE-RESULTS.md). Direct box plots, embedding
+ingest scale, DiffusionGemma, and archives stay in docs (linked from the
+README). The public snapshot is a provenance-tracked composite, not one
+same-session run: serving peer rows, S1 multi-model, `mlx_lm` reference rows,
+AX direct overlays, the llama.cpp Metal sweep, AX 6-bit MTP package rows,
+Qwen3.6 peer MTP rows, and embedding ingest-scale rows are each labeled by
+session mode and host. Older result sets, including n-gram overlay runs, remain
+diagnostic history and should not be described as the current public results
+table unless that page is rolled back to those artifacts.
 
 A result is useful only when the workload, runtime route, reference engine,
 host, model, sampling policy, and artifact schema are explicit.

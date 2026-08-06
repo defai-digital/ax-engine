@@ -7,10 +7,13 @@ Canonical public **tables and charts** for AX Engine, grouped by session mode.
 | Claim boundaries and promotion rules | [Performance Docs Map](performance/README.md) |
 | How to interpret a row / what it does not prove | [Performance](PERFORMANCE.md) |
 | How to reproduce or classify evidence | [Benchmarks](BENCHMARKS.md) |
-| Root README peer charts (MTP + direct) | [Root README: Performance](../README.md#performance) |
+| Root README headline numbers | [Root README: Performance](../README.md#performance) |
+| Serving peer detail (AX vs peer MLX server) | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md) |
 
 ## On this page
 
+- [Session Mode: Multi-Model Serving (S1)](#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer)
+- [Session Mode: Single-client serving (AX vs peer MLX)](#session-mode-single-client-serving-ax-vs-peer-mlx)
 - [Session Mode: MTP Generation](#session-mode-mtp-generation)
 - [Session Mode: Direct Generation](#session-mode-direct-generation)
 - [Session Mode: Embeddings](#session-mode-embeddings)
@@ -32,15 +35,20 @@ denominator.
 > admission check at throughput parity with 0.31.2 (56.3 TFLOP/s qmm,
 > 2026-07-15) and is the admitted build for new benchmark sessions.
 
-**Benchmarking session baseline (27-Jul-2026):** New AX Engine benchmark rows
-use AX Engine `v6.12.0` on the admitted PyPI MLX `0.32.0` wheel (Apple M5 Max
-128 GB). Direct-mode peer columns remain **retained historical** references only:
-`llama.cpp` `b9910` / `ggml` `0.15.3` and `mlx-lm` `0.31.3` are not re-run in
-this refresh. MTP peer benchmarking still cites the retained local MTPLX
-release, `MTPLX 2.0.1`. The v6.8.2 direct high-water composite and prior AX-only
-snapshots remain below as archived audit evidence. Current headline AX-only
-tables and charts are regenerated from complete 2-warmup/5-measurement AX
-sweeps under v6.12.0.
+**Evidence freshness (as of 2026-08-05):**
+
+| Session | Engine / peers | Host | When |
+| --- | --- | --- | --- |
+| Single-client serving vs peer MLX serving engine | AX Engine **6.13.1** · peer MLX serving engine **0.4.3** | Apple **M3 Max** 128 GB | 2026-08-05 |
+| Multi-model S1 | AX Engine · multi-process peer MLX server | Apple **M5 Max** 128 GB | 2026-07-28 |
+| 6-bit exact sampled-MTP acceleration | AX Engine **v6.12.1** AX-only | Apple **M5 Max** 128 GB | 2026-07-29 |
+| Qwen3.6 MTP peer (MTPLX / lightning-mlx) | Stitched peer matrix · MTPLX **2.0.1** | Apple M-series (see artifact) | 2026-07-09 |
+| Direct generation snapshot | AX Engine **v6.12.0** AX-only; retained `mlx-lm` **0.31.3** · `llama.cpp` **b9910** | Apple **M5 Max** 128 GB | 2026-07-27 |
+| Embeddings | AX-only refresh + retained peer medians | Apple **M5 Max** 128 GB | 2026-07-27 |
+
+Direct-mode peer columns remain **retained historical** references only unless
+a later session says both engines re-ran. Do not mix absolute tok/s across
+hosts (M3 Max vs M5 Max) or across session modes.
 
 Performance results are grouped by **Session mode**. Read each mode as a
 separate benchmark session with its own route, workload shape, and headline
@@ -49,6 +57,8 @@ share a same-artifact denominator.
 
 | Session mode | What it measures | Headline metric | Keep separate from |
 | --- | --- | --- | --- |
+| Multi-model serving (S1) | One AX process, two models, exact-prompt prefix reuse vs multi-process peer | Throughput ratio, TTFT/gap p95 ratios, error count | Single-model serving rows |
+| Single-client serving | Streaming OpenAI chat against one model per process | Client decode / effective prefill / TTFT vs peer server | Offline MTP and direct harness rows |
 | MTP generation | Speculative generation with a draft/MTP package plus target verification | MTP decode tok/s, speedup over same-package direct, accept rate | Direct-mode peer rows and embedding ingest rows |
 | Direct generation | Non-speculative autoregressive generation through AX, mlx-lm, or llama.cpp routes | Decode tok/s, prefill tok/s, TTFT | MTP speedup rows; diffusion rows call out their own non-AR metric |
 | Embeddings | Encoder-style embedding throughput and ingest scale | Chunks/s, tokens/s, latency at batch/chunk settings | Text generation decode/prefill/TTFT |
@@ -374,6 +384,43 @@ reinforcing that the snapshot restore is the deterministic path).
 prefix-cache-favorable workload (identical replayed prompt — the
 scenario S1 defines). Ratios compare a single AX process against two
 peer-engine processes as the contract specifies.
+
+### Session Mode: Single-client serving (AX vs peer MLX)
+
+Streaming OpenAI `/v1/chat/completions` against one loaded model per process —
+the path users measure when they open a server and time chat completions. Full
+methodology, prefill/TTFT tables, FFN fix evidence, and claim boundaries:
+
+**[AX Engine vs peer MLX serving engine: Qwen 3.6 (2026-08-05)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md)**
+
+| Field | Value |
+| --- | --- |
+| Host | Apple **M3 Max** 128 GB · macOS 26.5.2 · MLX 0.32.0 |
+| AX Engine | **6.13.1** (`ax-engine-server`) |
+| Peer | peer MLX serving engine **0.4.3** |
+| Models | Qwen3.6 27B and 35B-A3B at 4-bit and 6-bit |
+| Workload | Prompt targets ~512 and ~2048 tokens · 256 gen · temp 0 · streaming |
+| Artifacts | `benchmarks/results/serving/` · 2026-08-05 Qwen 3.6 single-client peer session |
+
+#### Overnight decode summary (3-rep medians)
+
+| Model | p512 AX / peer | p2048 AX / peer | Readout |
+| --- | ---: | ---: | --- |
+| Qwen3.6 27B 4-bit | 19.3 / 18.9 (+2%) | 16.7 / 18.8 (−11%) | Overnight loss isolated and fixed (below) |
+| Qwen3.6 27B 6-bit | **15.1 / 12.9 (+17%)** | **14.0 / 12.5 (+12%)** | AX leads both cells |
+| Qwen3.6 35B-A3B 4-bit | **99.4 / 83.2 (+19%)** | **97.0 / 81.1 (+20%)** | Strong MoE decode lead |
+| Qwen3.6 35B-A3B 6-bit | **80.9 / 69.5 (+16%)** | **80.0 / 68.3 (+17%)** | Strong MoE decode lead |
+
+AX won **7/8** overnight decode cells; geometric-mean decode advantage
+**~11%** (MoE-only **~18%**). Prefill GM **~+7%**, TTFT speedup GM **~+7%**.
+See the detail page for full prefill/TTFT tables.
+
+#### Post-fix 27B 4-bit p2048 cell
+
+Root cause: custom dense-FFN Metal matvec on 64×(5120→17408) 4-bit geometry.
+Patched default (geometry guard → MLX split FFN) measured **22.54 tok/s** median
+(2 warmups, 5 measurements, ~3% spread) versus overnight peer **18.8 tok/s**
+(~**+20%**). Output token IDs matched the controlled A/B arms byte-for-byte.
 
 ### Session Mode: Direct Generation
 

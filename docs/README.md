@@ -7,9 +7,10 @@ extend the Mac-first Apple Silicon inference runtime.
 
 | Surface | What it is | Start here if you want… |
 | --- | --- | --- |
-| Root [README](../README.md) | Short product entry point | Install, first request, headline MTP numbers |
+| Root [README](../README.md) | Short product entry point | Install, first request, headline performance numbers |
 | This hub | Navigation by task and area | The right deep page without guessing layout |
 | [Performance Results](PERFORMANCE-RESULTS.md) | Full public tables and charts | Numbers, charts, session-mode evidence |
+| [AX vs peer MLX serving](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md) | Latest single-client peer (Qwen 3.6) | Serving-path decode / TTFT vs peer MLX server |
 | [Performance](PERFORMANCE.md) | Interpretation and claim context | What a row does *and does not* prove |
 | [Benchmarks](BENCHMARKS.md) | How to run and classify evidence | Reproduction commands and artifact contracts |
 
@@ -32,6 +33,8 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 | Decide whether a family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
 | Use MTP or compare 4-bit vs 6-bit rows | [MTP Docs](mtp/README.md) | [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Benchmarks: MTP](BENCHMARKS.md#mtp-matrix) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
+| Compare AX vs peer MLX server on chat serving | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-05.md) | [Performance Results: serving](PERFORMANCE-RESULTS.md#session-mode-single-client-serving-ax-vs-peer-mlx) |
+| Choose a fast AutomatosX package | [Supported Models](SUPPORTED-MODELS.md) · [README Models](../README.md#models) | [Performance Results](PERFORMANCE-RESULTS.md) |
 | Reproduce or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
 | Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md), [Multi-model](SERVER.md#multi-model-serving), [Ports](PORTS.md) |
 | Bind host, default port, Engine vs Serving | [Ports](PORTS.md) | [Server](SERVER.md), [AX Serving](AX-SERVING.md), [LAN Discovery](LAN-DISCOVERY.md) |
