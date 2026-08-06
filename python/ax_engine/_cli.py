@@ -1866,6 +1866,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         separator = argv.index("--")
         extra_server_args = argv[separator + 1 :]
         argv = argv[:separator]
+    # Forward tui arguments verbatim: argparse would otherwise intercept
+    # dash-led tokens (e.g. --help) meant for the native ax-engine tui.
+    tui_args: list[str] | None = None
+    if argv and argv[0] == "tui":
+        tui_args = _strip_remainder_separator(argv[1:])
+        argv = argv[:1]
 
     parser = build_parser()
     try:
@@ -1880,6 +1886,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         error.parser.exit(2, f"{message}\n")
     if args.command == "serve":
         args.extra_server_args = extra_server_args
+    if args.command == "tui" and tui_args is not None:
+        args.tui_args = tui_args
     try:
         return int(args.func(args))
     except SystemExit as error:

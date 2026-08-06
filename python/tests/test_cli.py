@@ -1114,6 +1114,33 @@ class AxEngineCliTests(unittest.TestCase):
         depth_index = payload["prepare_command"].index("--mtp-depth-max") + 1
         self.assertEqual(payload["prepare_command"][depth_index], "3")
 
+    def test_tui_forwards_dash_led_args_to_native_binary(self) -> None:
+        with (
+            mock.patch.object(_cli, "_native_bin", return_value="/opt/bin/ax-engine"),
+            mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+            self.assertRaisesRegex(RuntimeError, "stop"),
+        ):
+            self.capture_main(["tui", "--help"])
+
+        self.assertEqual(execvp.call_args.args[0], "/opt/bin/ax-engine")
+        self.assertEqual(
+            execvp.call_args.args[1],
+            ["/opt/bin/ax-engine", "tui", "--help"],
+        )
+
+    def test_tui_strips_leading_separator_before_forwarding(self) -> None:
+        with (
+            mock.patch.object(_cli, "_native_bin", return_value="/opt/bin/ax-engine"),
+            mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+            self.assertRaisesRegex(RuntimeError, "stop"),
+        ):
+            self.capture_main(["tui", "--", "--foo"])
+
+        self.assertEqual(
+            execvp.call_args.args[1],
+            ["/opt/bin/ax-engine", "tui", "--foo"],
+        )
+
 
 class AxEngineInteractiveDownloadTests(unittest.TestCase):
     def capture_main(self, argv: list[str]) -> tuple[int, str]:

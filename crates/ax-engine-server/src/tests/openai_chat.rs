@@ -155,6 +155,54 @@ fn openclaw_tool_choice_none_removes_qwen_tool_contract() {
 }
 
 #[test]
+fn openclaw_tool_choice_none_removes_gemma4_tool_contract() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Answer without tools"}
+    ]))
+    .expect("messages should deserialize");
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }
+        }
+    }]);
+
+    let enabled = render_openai_chat_prompt_with_tools(
+        "gemma4-e2b",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect("enabled gemma4 tool prompt should render");
+    assert!(enabled.contains("<|tool>"));
+
+    let disabled = render_openai_chat_prompt_with_tools(
+        "gemma4-e2b",
+        &messages,
+        Some(&tools),
+        Some(&json!("none")),
+    )
+    .expect("disabled gemma4 tool prompt should render");
+    assert!(
+        !disabled.contains("<|tool>"),
+        "tool_choice \"none\" must drop <|tool> declarations; got {disabled}"
+    );
+    assert!(
+        !disabled.contains("<|turn>system"),
+        "tool_choice \"none\" must drop the tools system turn; got {disabled}"
+    );
+    let baseline = render_openai_chat_prompt_with_tools("gemma4-e2b", &messages, None, None)
+        .expect("baseline prompt should render");
+    assert_eq!(disabled, baseline);
+}
+
+#[test]
 fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Read README.md"}

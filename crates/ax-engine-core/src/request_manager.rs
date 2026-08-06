@@ -641,7 +641,7 @@ impl RequestManager {
     fn terminal_snapshot_payload_bytes(snapshot: &RequestSnapshot) -> usize {
         snapshot.prompt_tokens.len() * size_of::<u32>()
             + snapshot.generated_tokens.len() * size_of::<u32>()
-            + snapshot.generated_token_logprobs.len() * size_of::<f32>()
+            + snapshot.generated_token_logprobs.len() * size_of::<Option<f32>>()
     }
 
     fn transition_request(
@@ -856,6 +856,70 @@ mod tests {
             RequestState::Cancelled
         );
         assert!(manager.snapshot(RequestId(1)).is_none());
+    }
+
+    #[test]
+    fn terminal_snapshot_payload_bytes_counts_option_logprob_slots() {
+        // generated_token_logprobs is Vec<Option<f32>>: each entry occupies a
+        // full Option<f32> slot (8 bytes), not the 4 bytes of a bare f32, so
+        // the byte budget must charge the wider size per logprob entry.
+        assert_eq!(size_of::<Option<f32>>(), 8);
+
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        {
+            let record = manager.records.get_mut(&RequestId(1)).unwrap();
+            record.processed_prompt_tokens = 3;
+            record.mark_runnable().unwrap();
+            record.start_running().unwrap();
+        }
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(2),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 1,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: None,
+                        error: None,
+                        diffusion_schedule: None,
+                    }],
+                    logits_handles: vec![RequestId(1)],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 1,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: crate::scheduler::RouteMetadata::empty(),
+                    execution_status: ExecutionStatus::Success,
+                },
+                &[crate::sampling::SampledToken {
+                    request_id: RequestId(1),
+                    token_id: 99,
+                    stop_reason: None,
+                    logprob: Some(0.0),
+                }],
+                &[RequestId(1)],
+            )
+            .unwrap();
+        manager.cancel(RequestId(1)).unwrap();
+        manager.mark_terminal_cleaned(RequestId(1)).unwrap();
+
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.generated_tokens, vec![99]);
+        assert_eq!(snapshot.generated_token_logprobs, vec![Some(0.0)]);
+        // 3 prompt tokens (12 bytes) + 1 generated token (4 bytes) + 1
+        // Option<f32> logprob slot (8 bytes) = 24 bytes; the old f32-sized
+        // accounting would have charged only 20.
+        let expected_bytes = 3 * size_of::<u32>() + size_of::<u32>() + size_of::<Option<f32>>();
+        assert_eq!(manager.terminal_snapshot_bytes, expected_bytes);
+        assert_eq!(
+            manager.terminal_snapshot_bytes,
+            RequestManager::terminal_snapshot_payload_bytes(&snapshot)
+        );
     }
 
     #[test]

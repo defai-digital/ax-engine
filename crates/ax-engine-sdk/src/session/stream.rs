@@ -378,10 +378,17 @@ impl GenerateStreamState {
     }
 
     /// True when this stream still owns a live native request that must be
-    /// cancelled if the consumer abandons the stream.
+    /// cancelled if the consumer abandons the stream. A request that already
+    /// reached a terminal state (e.g. the finishing Step event was delivered
+    /// but the terminal Response was not) must not be re-cancelled: the
+    /// finished record would otherwise be drained with `cancel_requested`
+    /// set, corrupting its final report.
     fn needs_native_cancel(&self) -> bool {
         match self {
-            Self::Native(state) => state.phase != GenerateStreamPhase::Done,
+            Self::Native(state) => {
+                state.phase != GenerateStreamPhase::Done
+                    && !is_terminal_request_state(state.current_report.state)
+            }
             Self::LlamaCpp(_) | Self::MlxLm(_) => false,
         }
     }

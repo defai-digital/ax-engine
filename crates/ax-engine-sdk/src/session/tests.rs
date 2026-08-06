@@ -1945,6 +1945,57 @@ fn dropping_native_generate_stream_cancels_in_flight_request() {
 }
 
 #[test]
+fn dropping_native_generate_stream_after_terminal_step_does_not_cancel_finished_request() {
+    // Regression: abandoning a native stream after the terminal Step event
+    // but before the terminal Response must not re-cancel the request — the
+    // record already reached a terminal state, and re-cancelling would drain
+    // it with cancel_requested set, corrupting its final report.
+    let mut session = EngineSession::new_deterministic_native_for_tests();
+    let request = GenerateRequest {
+        model_id: "qwen3".to_string(),
+        input_tokens: vec![1, 2],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 2,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    let request_id = {
+        let mut stream = session
+            .stream_generate(request)
+            .expect("native stream should start");
+        let mut terminal_step_seen = false;
+        for _ in 0..16 {
+            match stream.next_event().expect("stream event should apply") {
+                Some(GenerateStreamEvent::Step(ref step))
+                    if step.request.state == SessionRequestState::Finished =>
+                {
+                    terminal_step_seen = true;
+                    break;
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        assert!(
+            terminal_step_seen,
+            "deterministic stream should emit a terminal Step event"
+        );
+        // Drop without consuming the terminal Response.
+        stream.state.request_id()
+    };
+    let report = session
+        .request_report(request_id)
+        .expect("finished request should retain a terminal report");
+    assert_eq!(report.state, SessionRequestState::Finished);
+    assert!(
+        !report.cancel_requested,
+        "dropping after the terminal Step must not cancel the finished request; got {report:?}"
+    );
+}
+
+#[test]
 fn has_active_stepwise_requests_reflects_native_terminal_state() {
     // A caller about to discard this session (e.g. a model hot-swap) must be
     // able to tell whether doing so would orphan a non-terminal stepwise

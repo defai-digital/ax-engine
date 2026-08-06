@@ -202,6 +202,7 @@ pub(crate) fn render_openai_chat_prompt_with_options(
             model_id,
             messages,
             tools,
+            tool_choice,
             options.enable_thinking,
         );
     }
@@ -1107,6 +1108,7 @@ fn render_gemma4_openai_chat_prompt(
     model_id: &str,
     messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
+    tool_choice: Option<&Value>,
     enable_thinking: bool,
 ) -> Result<String, HttpErrorResponse> {
     if messages.is_empty() {
@@ -1115,7 +1117,11 @@ fn render_gemma4_openai_chat_prompt(
 
     let mut prompt = String::from("<bos>");
     let mut index = 0usize;
-    let has_tools = tools.map(openai_value_is_present).unwrap_or(false);
+    // Honor tool_choice: "none" (and friends) like the Qwen/GLM renderers do:
+    // the caller disabled tools, so the prompt must not embed declarations
+    // the response parser will never honor.
+    let has_tools = tools.map(openai_value_is_present).unwrap_or(false)
+        && !tool_choice.is_some_and(openai_tool_choice_disables_tools);
     let first_role = messages
         .first()
         .map(|message| message.role.trim())
@@ -1132,9 +1138,7 @@ fn render_gemma4_openai_chat_prompt(
             prompt.push_str(content.trim());
             index = 1;
         }
-        if let Some(tools) = tools
-            && openai_value_is_present(tools)
-        {
+        if has_tools && let Some(tools) = tools {
             for declaration in render_gemma4_tool_declarations(tools) {
                 prompt.push_str("<|tool>");
                 prompt.push_str(&declaration);
