@@ -107,12 +107,11 @@ def _paired_fair_artifact(**overrides):
 
 class EmbeddingPublishGateTests(unittest.TestCase):
     def _write(self, payload: dict) -> Path:
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False, encoding="utf-8"
-        )
-        path = Path(tmp.name)
+        with tempfile.NamedTemporaryFile(
+            suffix=".json", delete=False
+        ) as tmp:
+            path = Path(tmp.name)
         path.write_text(json.dumps(payload) + "\n")
-        tmp.close()
         return path
 
     def test_paired_v2_artifact_passes(self) -> None:

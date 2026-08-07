@@ -162,13 +162,17 @@ def validate_runtime_identity(
             f"{path}: paired_delta requires runtime_identity.reference_runtime",
         )
         ref_sources = set(_linked_sources(identity, "reference_runtime"))
-        if ax_sources and ref_sources and ax_sources.isdisjoint(ref_sources):
-            # Not always fatal (source_class can differ in labeling), but flag.
-            if "homebrew" in ax_sources and "pip_or_venv" in ref_sources:
-                raise PublishGateError(
-                    f"{path}: AX uses Homebrew libmlx while reference uses "
-                    "pip/venv MLX — reject paired_delta publication"
-                )
+        if (
+            ax_sources
+            and ref_sources
+            and ax_sources.isdisjoint(ref_sources)
+            and "homebrew" in ax_sources
+            and "pip_or_venv" in ref_sources
+        ):
+            raise PublishGateError(
+                f"{path}: AX uses Homebrew libmlx while reference uses "
+                "pip/venv MLX — reject paired_delta publication"
+            )
     return warnings
 
 
@@ -267,21 +271,20 @@ def validate_claim_shape(
             f"{path}: paired_delta claim requires ax_only=false "
             "(use same-session paired run, not AX-only overlay)",
         )
-    elif claim == CLAIM_AX_ONLY:
+    elif claim == CLAIM_AX_ONLY and not ax_only:
         # Prefer explicit ax_only, but also accept artifacts that only have AX
         # results if ax_only was omitted (legacy).
-        if not ax_only:
-            # Soft: still allow if no reference results exist at all.
-            ref_key = reference_key(artifact)
-            for model in artifact.get("models") or []:
-                for row in model.get("rows") or []:
-                    results = row.get("results") or {}
-                    if ref_key in results:
-                        raise PublishGateError(
-                            f"{path}: ax_absolute_trend claim but artifact "
-                            f"contains {ref_key} results with ax_only=false; "
-                            "use paired_delta or re-run with --ax-only"
-                        )
+        # Soft: still allow if no reference results exist at all.
+        ref_key = reference_key(artifact)
+        for model in artifact.get("models") or []:
+            for row in model.get("rows") or []:
+                results = row.get("results") or {}
+                if ref_key in results:
+                    raise PublishGateError(
+                        f"{path}: ax_absolute_trend claim but artifact "
+                        f"contains {ref_key} results with ax_only=false; "
+                        "use paired_delta or re-run with --ax-only"
+                    )
 
 
 def validate_artifact(
