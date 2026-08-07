@@ -37,9 +37,9 @@ class BenchMtpRefreshTests(unittest.TestCase):
                     }
                 )
         return {
-            "schema": "ax.mtp_6bit_ax_acceleration_summary.v3",
+            "schema": bench.MTP_6BIT_EXACT_SCHEMA,
             "publication_candidate": True,
-            "claim_type": "exact_mtp_acceleration",
+            "claim_type": bench.MTP_6BIT_EXACT_CLAIM_TYPE,
             "engine_version": "6.9.0",
             "run_dir": (
                 "benchmarks/results/speculative/mtp-6bit/"
@@ -346,7 +346,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
         self.assertIn("15.1%", table)
         self.assertIn("3/4", table)
 
-    def test_exact_table_labels_acceleration_and_context_metrics(self) -> None:
+    def test_exact_table_labels_comparison_and_context_metrics(self) -> None:
         row = self.exact_summary()["rows"][0]
 
         table = "\n".join(
@@ -354,12 +354,12 @@ class BenchMtpRefreshTests(unittest.TestCase):
         )
 
         self.assertIn("AX MTP decode", table)
-        self.assertIn("AX speedup", table)
+        self.assertIn("AX MTP/direct", table)
         self.assertIn("AX MTP prefill", table)
         self.assertIn("AX MTP TTFT", table)
         self.assertIn("2.00x", table)
 
-    def test_update_readme_replaces_legacy_diagnostic_section(self) -> None:
+    def test_update_readme_reports_wins_and_losses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             readme = Path(tmp) / "README.md"
             readme.write_text(
@@ -370,14 +370,23 @@ class BenchMtpRefreshTests(unittest.TestCase):
                 "peer section\n"
             )
 
-            bench.update_readme(readme, self.exact_summary())
+            summary = self.exact_summary()
+            summary["rows"][0].update(
+                ax_mtp_decode_tok_s=40.0,
+                ax_mtp_speedup_x=0.8,
+            )
+            bench.update_readme(readme, summary)
 
             updated = readme.read_text()
         self.assertIn(
-            "#### AX Engine v6.9.0 6-bit exact sampled-MTP acceleration (2026-07-13)",
+            "#### AX Engine v6.9.0 6-bit exact sampled-MTP comparison (2026-07-13)",
             updated,
         )
-        self.assertIn("All 15 target/suite rows accelerate decode", updated)
+        self.assertIn(
+            "Across 15 target/suite rows: 14 MTP wins, 0 ties, and 1 loss; "
+            "MTP/direct ratios span 0.80x-2.00x.",
+            updated,
+        )
         self.assertIn("perf-mtp-6bit-ax-acceleration.svg", updated)
         self.assertIn("#### Qwen3.6 MTP peer decode comparison", updated)
         self.assertNotIn("legacy diagnostic", updated)
@@ -388,9 +397,9 @@ class BenchMtpRefreshTests(unittest.TestCase):
             "summary publication": lambda summary: summary.update(
                 publication_candidate=False
             ),
-            "row speedup": lambda summary: summary["rows"][0].update(
+            "inconsistent ratio": lambda summary: summary["rows"][0].update(
                 ax_mtp_decode_tok_s=50.0,
-                ax_mtp_speedup_x=1.0,
+                ax_mtp_speedup_x=2.0,
             ),
             "fallback": lambda summary: summary["rows"][0].update(
                 ax_mtp_fallback_prompt_count=1

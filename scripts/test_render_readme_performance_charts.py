@@ -70,7 +70,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         return {
             "schema": charts.MTP_6BIT_EXACT_SCHEMA,
             "publication_candidate": True,
-            "claim_type": "exact_mtp_acceleration",
+            "claim_type": "exact_mtp_comparison",
             "engine_version": "6.9.0",
             "rows": rows,
         }
@@ -326,7 +326,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertIn("Source: benchmarks/results/speculative/mtp-6bit/", chart)
         self.assertNotIn(str(charts.REPO_ROOT), chart)
 
-    def test_mtp_exact_chart_requires_complete_all_winning_matrix(self) -> None:
+    def test_mtp_exact_chart_accepts_complete_matrix_with_a_loss(self) -> None:
         with tempfile.TemporaryDirectory() as root_name:
             summary_path = Path(root_name) / "summary.json"
             summary = self.exact_mtp_chart_summary()
@@ -337,11 +337,16 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             self.assertEqual(len(loaded["rows"]), 15)
 
             summary["rows"][0].update(
-                ax_mtp_decode_tok_s=50.0,
-                ax_mtp_speedup_x=1.0,
+                ax_mtp_decode_tok_s=40.0,
+                ax_mtp_speedup_x=0.8,
             )
             summary_path.write_text(json.dumps(summary))
-            with self.assertRaisesRegex(charts.ChartError, "does not win decode"):
+            loaded = charts.load_mtp_6bit_summary(summary_path)
+            self.assertEqual(loaded["rows"][0]["ax_mtp_speedup_x"], 0.8)
+
+            summary["rows"][0]["ax_mtp_speedup_x"] = 2.0
+            summary_path.write_text(json.dumps(summary))
+            with self.assertRaisesRegex(charts.ChartError, "inconsistent"):
                 charts.load_mtp_6bit_summary(summary_path)
 
     def test_mtp_exact_chart_rejects_partial_matrix(self) -> None:

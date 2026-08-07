@@ -280,7 +280,8 @@ MTP_CHART_OUTPUTS = {
 MTP_6BIT_APPROXIMATE_CHART_OUTPUT = "perf-mtp-6bit-ax-approximate-diagnostic.svg"
 MTP_6BIT_EXACT_CHART_OUTPUT = "perf-mtp-6bit-ax-acceleration.svg"
 MTP_6BIT_APPROXIMATE_SCHEMA = "ax.mtp_6bit_approximate_diagnostic_summary.v2"
-MTP_6BIT_EXACT_SCHEMA = "ax.mtp_6bit_ax_acceleration_summary.v3"
+MTP_6BIT_LEGACY_EXACT_SCHEMA = "ax.mtp_6bit_ax_acceleration_summary.v3"
+MTP_6BIT_EXACT_SCHEMA = "ax.mtp_6bit_ax_comparison_summary.v4"
 MTP_6BIT_EXACT_TARGET_IDS = (
     "qwen3.6-27b-6bit",
     "qwen3.6-35b-a3b",
@@ -1329,9 +1330,14 @@ def find_mtp_6bit_summary(readme: Path) -> Path | None:
 def load_mtp_6bit_summary(summary_path: Path) -> dict[str, Any]:
     summary = json.loads(summary_path.read_text())
     schema = summary.get("schema")
-    if schema not in {MTP_6BIT_APPROXIMATE_SCHEMA, MTP_6BIT_EXACT_SCHEMA}:
+    if schema not in {
+        MTP_6BIT_APPROXIMATE_SCHEMA,
+        MTP_6BIT_LEGACY_EXACT_SCHEMA,
+        MTP_6BIT_EXACT_SCHEMA,
+    }:
         raise ChartError(f"unsupported MTP 6-bit summary schema {schema!r}: {summary_path}")
     approximate = schema == MTP_6BIT_APPROXIMATE_SCHEMA
+    legacy_acceleration = schema == MTP_6BIT_LEGACY_EXACT_SCHEMA
     expected_publication_candidate = not approximate
     if summary.get("publication_candidate") is not expected_publication_candidate:
         raise ChartError(
@@ -1339,7 +1345,11 @@ def load_mtp_6bit_summary(summary_path: Path) -> dict[str, Any]:
             f"{summary_path}"
         )
     expected_claim_type = (
-        "approximate_optimistic_diagnostic" if approximate else "exact_mtp_acceleration"
+        "approximate_optimistic_diagnostic"
+        if approximate
+        else "exact_mtp_acceleration"
+        if legacy_acceleration
+        else "exact_mtp_comparison"
     )
     if summary.get("claim_type") != expected_claim_type:
         raise ChartError(
@@ -1409,9 +1419,19 @@ def load_mtp_6bit_summary(summary_path: Path) -> dict[str, Any]:
                 raise ChartError(
                     f"MTP exact acceleration row has invalid metrics: {row_key!r}"
                 ) from error
-            if direct <= 0.0 or mtp <= 0.0 or speedup <= 1.0:
+            if not all(
+                math.isfinite(value) for value in (direct, mtp, speedup, coverage)
+            ):
                 raise ChartError(
-                    f"MTP exact acceleration row does not win decode: {row_key!r}"
+                    f"MTP exact comparison row has non-finite metrics: {row_key!r}"
+                )
+            if direct <= 0.0 or mtp <= 0.0 or speedup <= 0.0:
+                raise ChartError(
+                    f"MTP exact comparison row has non-positive metrics: {row_key!r}"
+                )
+            if legacy_acceleration and speedup <= 1.0:
+                raise ChartError(
+                    f"MTP legacy exact acceleration row does not win decode: {row_key!r}"
                 )
             if abs(speedup - mtp / direct) > 0.001:
                 raise ChartError(

@@ -101,13 +101,14 @@ def write_mtp_exact_claim_fixture(root: Path) -> tuple[Path, Path]:
     rows = []
     for model_id in checker.MTP_6BIT_EXACT_TARGET_IDS:
         for suite_id in checker.MTP_6BIT_EXACT_SUITES:
+            mtp_decode = 40.0 if not rows else 100.0
             rows.append(
                 {
                     "model_id": model_id,
                     "suite_id": suite_id,
                     "ax_direct_decode_tok_s": 50.0,
-                    "ax_mtp_decode_tok_s": 100.0,
-                    "ax_mtp_speedup_x": 2.0,
+                    "ax_mtp_decode_tok_s": mtp_decode,
+                    "ax_mtp_speedup_x": mtp_decode / 50.0,
                     "ax_mtp_prefill_tok_s": 500.0,
                     "ax_mtp_ttft_ms": 250.0,
                     "ax_mtp_accept_rate_pct": 99.0,
@@ -127,7 +128,7 @@ def write_mtp_exact_claim_fixture(root: Path) -> tuple[Path, Path]:
             {
                 "schema": checker.MTP_6BIT_EXACT_SCHEMA_VERSION,
                 "publication_candidate": True,
-                "claim_type": "exact_mtp_acceleration",
+                "claim_type": "exact_mtp_comparison",
                 "run_dir": str(run_dir.relative_to(root)),
                 "methodology": {
                     "targets": list(checker.MTP_6BIT_EXACT_TARGET_IDS),
@@ -148,28 +149,35 @@ def write_mtp_exact_claim_fixture(root: Path) -> tuple[Path, Path]:
         + "\n"
     )
     table_lines = [
-        "| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |",
+        "| Target | Suite | AX direct decode | AX MTP decode | AX MTP/direct | "
+        "AX MTP prefill | AX MTP TTFT | AX accept |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         table_lines.append(
-            "| `{model_id}` | `{suite_id}` | 50.0 tok/s | 100.0 tok/s | 2.00x | 500.0 tok/s | 250 ms | 99.0% |".format(
+            (
+                "| `{model_id}` | `{suite_id}` | 50.0 tok/s | {mtp:.1f} tok/s | "
+                "{ratio:.2f}x | 500.0 tok/s | 250 ms | 99.0% |"
+            ).format(
                 model_id=row["model_id"],
                 suite_id=row["suite_id"],
+                mtp=row["ax_mtp_decode_tok_s"],
+                ratio=row["ax_mtp_speedup_x"],
             )
         )
     readme_path = root / "README.md"
     summary_link = summary_path.relative_to(root)
     readme_path.write_text(
-        "#### AX Engine 6-bit exact sampled-MTP acceleration (2026-07-13)\n\n"
-        "This uses distribution-exact sampled MTP. All 15 target/suite rows "
-        "accelerate decode. Every row has 100% MTP step coverage and zero "
+        "#### AX Engine v6.9.0 6-bit exact sampled-MTP comparison (2026-07-13)\n\n"
+        "This uses distribution-exact sampled MTP. Across 15 target/suite rows: "
+        "14 MTP wins, 0 ties, and 1 loss; MTP/direct ratios span 0.80x-2.00x. "
+        "Every row has 100% MTP step coverage and zero "
         "direct-fallback prompts or steps.\n\n"
-        '<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="MTP acceleration">\n\n'
+        '<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="MTP comparison">\n\n'
         + "\n".join(table_lines)
         + "\n\nMethodology: `temperature=0.6`, `top_p=0.95`, `top_k=20`, "
         "2 warmups, and 5 measured repetitions. Prefill and TTFT are reported "
-        "as context, not MTP acceleration claims.\n\n"
+        "as context, not decode-comparison claims.\n\n"
         f"[`summary.json`]({summary_link})\n"
     )
     return readme_path, summary_path
@@ -3258,7 +3266,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
         self.assertEqual(len(checked), 1)
         self.assertIn("nonpublishable", checked[0])
 
-    def test_readme_accepts_complete_exact_mtp_acceleration_contract(self) -> None:
+    def test_readme_accepts_exact_mtp_comparison_with_a_loss(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             readme_path, _summary_path = write_mtp_exact_claim_fixture(Path(tmp))
 
@@ -3272,9 +3280,9 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
     def test_readme_rejects_ineligible_exact_mtp_rows(self) -> None:
         mutations = {
-            "decode loss": lambda row: row.update(
+            "inconsistent ratio": lambda row: row.update(
                 ax_mtp_decode_tok_s=50.0,
-                ax_mtp_speedup_x=1.0,
+                ax_mtp_speedup_x=2.0,
             ),
             "fallback": lambda row: row.update(
                 ax_mtp_fallback_prompt_count=1

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import statistics
 import subprocess
@@ -30,6 +31,8 @@ COOLDOWN_S = 15.0
 INTER_CASE_COOLDOWN_S = 10.0
 MTP_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
 DEFAULT_SUITES = ("flappy", "long_code", "python_modules_long")
+MTP_6BIT_EXACT_SCHEMA = "ax.mtp_6bit_ax_comparison_summary.v4"
+MTP_6BIT_EXACT_CLAIM_TYPE = "exact_mtp_comparison"
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
     "ax_ngram_draft_tokens",
@@ -575,13 +578,13 @@ def build_summary(
         "schema": (
             "ax.mtp_6bit_approximate_diagnostic_summary.v2"
             if args.approximate_speed_ceiling
-            else "ax.mtp_6bit_ax_acceleration_summary.v3"
+            else MTP_6BIT_EXACT_SCHEMA
         ),
         "publication_candidate": publication_candidate,
         "claim_type": (
             "approximate_optimistic_diagnostic"
             if args.approximate_speed_ceiling
-            else "exact_mtp_acceleration"
+            else MTP_6BIT_EXACT_CLAIM_TYPE
         ),
         "engine_version": workspace_version(),
         "run_dir": str(output_dir.relative_to(REPO_ROOT)),
@@ -668,7 +671,8 @@ def table_lines(
         return lines
 
     lines = [
-        "| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |",
+        "| Target | Suite | AX direct decode | AX MTP decode | AX MTP/direct | "
+        "AX MTP prefill | AX MTP TTFT | AX accept |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
@@ -694,15 +698,15 @@ def write_summary_files(output_dir: Path, summary: dict[str, Any]) -> None:
     title = (
         "# 6-bit MTP AX approximate diagnostic"
         if approximate_diagnostic
-        else "# 6-bit MTP AX acceleration summary"
+        else "# 6-bit MTP AX comparison summary"
     )
     description = (
         "This non-publishable artifact records an explicit optimistic speed diagnostic. "
         "It does not establish exact-distribution MTP acceleration."
         if approximate_diagnostic
-        else "This artifact summarizes exact AX MTP acceleration."
+        else "This artifact compares exact AX MTP decode with AX direct decode."
     )
-    ratio_label = "diagnostic ratio" if approximate_diagnostic else "acceleration ratio"
+    ratio_label = "diagnostic ratio" if approximate_diagnostic else "comparison ratio"
     lines = [
         title,
         "",
@@ -723,12 +727,12 @@ def write_summary_files(output_dir: Path, summary: dict[str, Any]) -> None:
 
 
 def validate_readme_publication_summary(summary: dict[str, Any]) -> None:
-    if summary.get("schema") != "ax.mtp_6bit_ax_acceleration_summary.v3":
-        raise ValueError("README update requires the exact MTP acceleration schema")
+    if summary.get("schema") != MTP_6BIT_EXACT_SCHEMA:
+        raise ValueError("README update requires the exact MTP comparison schema")
     if summary.get("publication_candidate") is not True:
         raise ValueError("README update requires a publication-candidate MTP summary")
-    if summary.get("claim_type") != "exact_mtp_acceleration":
-        raise ValueError("README update requires an exact MTP acceleration claim")
+    if summary.get("claim_type") != MTP_6BIT_EXACT_CLAIM_TYPE:
+        raise ValueError("README update requires an exact MTP comparison claim")
     engine_version = summary.get("engine_version")
     if not isinstance(engine_version, str) or not re.fullmatch(
         r"\d+\.\d+\.\d+", engine_version
@@ -782,10 +786,15 @@ def validate_readme_publication_summary(summary: dict[str, Any]) -> None:
             raise ValueError(
                 f"README update found incomplete numeric MTP row {row_key!r}"
             ) from error
-        if not all(value > 0.0 for value in (direct, mtp, prefill, ttft, accept)):
+        metrics = (direct, mtp, speedup, prefill, ttft, accept, coverage)
+        if not all(math.isfinite(value) for value in metrics):
+            raise ValueError(f"README update found non-finite MTP metric for {row_key!r}")
+        if not all(value > 0.0 for value in (direct, mtp, speedup, prefill, ttft, accept)):
             raise ValueError(f"README update found non-positive MTP metric for {row_key!r}")
-        if speedup <= 1.0 or abs(speedup - mtp / direct) > 0.001:
-            raise ValueError(f"README update requires a verified decode win for {row_key!r}")
+        if abs(speedup - mtp / direct) > 0.001:
+            raise ValueError(
+                f"README update found an inconsistent MTP/direct ratio for {row_key!r}"
+            )
         if coverage != 100.0:
             raise ValueError(f"README update requires 100% MTP step coverage for {row_key!r}")
         if int(row.get("ax_mtp_fallback_prompt_count", -1)) != 0:
@@ -818,8 +827,14 @@ def render_readme_section(summary: dict[str, Any]) -> str:
     engine_version = summary["engine_version"]
     min_speedup = min(float(row["ax_mtp_speedup_x"]) for row in rows)
     max_speedup = max(float(row["ax_mtp_speedup_x"]) for row in rows)
+    wins = sum(float(row["ax_mtp_speedup_x"]) > 1.0 for row in rows)
+    ties = sum(float(row["ax_mtp_speedup_x"]) == 1.0 for row in rows)
+    losses = len(rows) - wins - ties
+    win_label = "win" if wins == 1 else "wins"
+    tie_label = "tie" if ties == 1 else "ties"
+    loss_label = "loss" if losses == 1 else "losses"
     lines = [
-        f"#### AX Engine v{engine_version} 6-bit exact sampled-MTP acceleration ({run_date})",
+        f"#### AX Engine v{engine_version} 6-bit exact sampled-MTP comparison ({run_date})",
         "",
         "This AX Engine-only matrix compares each prepared 6-bit `download-mtp`",
         "package with MTP disabled and enabled. The enabled route uses",
@@ -828,19 +843,27 @@ def render_readme_section(summary: dict[str, Any]) -> str:
         "linear-attention exact-verifier profile; this is not an optimistic speed",
         "ceiling or a cross-engine leaderboard.",
         "",
-        f"All {len(rows)} target/suite rows accelerate decode by {min_speedup:.2f}x-{max_speedup:.2f}x.",
+        (
+            f"Across {len(rows)} target/suite rows: {wins} MTP {win_label}, "
+            f"{ties} {tie_label}, and {losses} {loss_label}; MTP/direct ratios "
+            f"span {min_speedup:.2f}x-{max_speedup:.2f}x."
+        ),
         "Every row has 100% MTP step coverage, zero direct-fallback prompts or",
         "steps, and zero n-gram accepted, proposed, submitted, or hit-step",
         "telemetry.",
         "",
-        f'<img src="assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine v{engine_version} 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">',
+        (
+            '<img src="assets/perf-mtp-6bit-ax-acceleration.svg" '
+            f'alt="AX Engine v{engine_version} 6-bit exact sampled-MTP comparison '
+            'of same-package direct and MTP decode throughput">'
+        ),
         "",
         *table_lines(rows, approximate_diagnostic=False),
         "",
         "Methodology: sampled decode (`temperature=0.6`, `top_p=0.95`,",
         "`top_k=20`), 1,000 generated tokens, 2 warmups, 5 measured repetitions,",
         "and recorded cooldown. Prefill and TTFT are reported as context, not MTP",
-        "acceleration claims, because speculative decoding starts after prompt",
+        "decode-comparison claims, because speculative decoding starts after prompt",
         "prefill. Direct and MTP rows use the same package and prompt suite.",
         "",
         "Exactness is checked with per-mode seed reproducibility. Summary artifacts:",

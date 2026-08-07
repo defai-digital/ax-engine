@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -57,7 +58,8 @@ AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
 MTP_6BIT_APPROXIMATE_SCHEMA_VERSION = (
     "ax.mtp_6bit_approximate_diagnostic_summary.v2"
 )
-MTP_6BIT_EXACT_SCHEMA_VERSION = "ax.mtp_6bit_ax_acceleration_summary.v3"
+MTP_6BIT_LEGACY_EXACT_SCHEMA_VERSION = "ax.mtp_6bit_ax_acceleration_summary.v3"
+MTP_6BIT_EXACT_SCHEMA_VERSION = "ax.mtp_6bit_ax_comparison_summary.v4"
 MTP_6BIT_EXACT_TARGET_IDS = (
     "qwen3.6-27b-6bit",
     "qwen3.6-35b-a3b",
@@ -1348,11 +1350,15 @@ def validate_readme_boundary_claims(
 
 
 def extract_readme_section(
-    readme_text: str, *, heading_prefix: str
+    readme_text: str, *, heading_pattern: str
 ) -> tuple[str, str] | None:
     lines = readme_text.splitlines()
     start = next(
-        (index for index, line in enumerate(lines) if line.startswith(heading_prefix)),
+        (
+            index
+            for index, line in enumerate(lines)
+            if re.fullmatch(heading_pattern, line)
+        ),
         None,
     )
     if start is None:
@@ -1384,6 +1390,7 @@ def validate_mtp_6bit_summary_contract(
     schema = summary.get("schema")
     if schema not in {
         MTP_6BIT_APPROXIMATE_SCHEMA_VERSION,
+        MTP_6BIT_LEGACY_EXACT_SCHEMA_VERSION,
         MTP_6BIT_EXACT_SCHEMA_VERSION,
     }:
         raise ArtifactCheckError(
@@ -1391,6 +1398,7 @@ def validate_mtp_6bit_summary_contract(
             f"{summary_path}"
         )
     approximate = schema == MTP_6BIT_APPROXIMATE_SCHEMA_VERSION
+    legacy_acceleration = schema == MTP_6BIT_LEGACY_EXACT_SCHEMA_VERSION
     publication_candidate = not approximate
     if summary.get("publication_candidate") is not publication_candidate:
         raise ArtifactCheckError(
@@ -1401,6 +1409,8 @@ def validate_mtp_6bit_summary_contract(
         "approximate_optimistic_diagnostic"
         if approximate
         else "exact_mtp_acceleration"
+        if legacy_acceleration
+        else "exact_mtp_comparison"
     )
     if summary.get("claim_type") != claim_type:
         raise ArtifactCheckError(
@@ -1471,9 +1481,19 @@ def validate_mtp_6bit_summary_contract(
                 raise ArtifactCheckError(
                     f"README exact MTP row has invalid metrics: {row_key!r}"
                 ) from error
-            if direct <= 0.0 or mtp <= 0.0 or speedup <= 1.0:
+            if not all(
+                math.isfinite(value) for value in (direct, mtp, speedup, coverage)
+            ):
                 raise ArtifactCheckError(
-                    f"README exact MTP row does not accelerate decode: {row_key!r}"
+                    f"README exact MTP row has non-finite metrics: {row_key!r}"
+                )
+            if direct <= 0.0 or mtp <= 0.0 or speedup <= 0.0:
+                raise ArtifactCheckError(
+                    f"README exact MTP row has non-positive metrics: {row_key!r}"
+                )
+            if legacy_acceleration and speedup <= 1.0:
+                raise ArtifactCheckError(
+                    f"README legacy exact MTP row does not accelerate decode: {row_key!r}"
                 )
             if abs(speedup - mtp / direct) > 0.001:
                 raise ArtifactCheckError(
@@ -1592,7 +1612,10 @@ def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
     readme_text = readme_path.read_text()
     section = extract_readme_section(
         readme_text,
-        heading_prefix="#### AX Engine 6-bit",
+        heading_pattern=(
+            r"#### AX Engine(?: v\d+\.\d+\.\d+)? 6-bit .+ "
+            r"\(\d{4}-\d{2}-\d{2}\)"
+        ),
     )
     if section is None:
         return []
@@ -1623,14 +1646,43 @@ def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
         )
     if not approximate:
         normalized = normalized_markdown_text(section_text).lower()
-        if "exact sampled-mtp acceleration" not in heading.lower():
+        legacy_acceleration = (
+            summary["schema"] == MTP_6BIT_LEGACY_EXACT_SCHEMA_VERSION
+        )
+        expected_heading = (
+            "exact sampled-mtp acceleration"
+            if legacy_acceleration
+            else "exact sampled-mtp comparison"
+        )
+        if expected_heading not in heading.lower():
             raise ArtifactCheckError(
                 "README publishable MTP section heading must say "
-                "'exact sampled-MTP acceleration'"
+                f"{expected_heading!r}"
             )
+        ratios = [float(row["ax_mtp_speedup_x"]) for row in summary["rows"]]
+        wins = sum(ratio > 1.0 for ratio in ratios)
+        ties = sum(ratio == 1.0 for ratio in ratios)
+        losses = len(ratios) - wins - ties
+        win_label = "win" if wins == 1 else "wins"
+        tie_label = "tie" if ties == 1 else "ties"
+        loss_label = "loss" if losses == 1 else "losses"
+        outcome_snippet = (
+            f"all {len(ratios)} target/suite rows accelerate decode"
+            if legacy_acceleration
+            else (
+                f"across {len(ratios)} target/suite rows: {wins} mtp {win_label}, "
+                f"{ties} {tie_label}, and {losses} {loss_label}; mtp/direct ratios span "
+                f"{min(ratios):.2f}x-{max(ratios):.2f}x"
+            )
+        )
+        context_snippet = (
+            "prefill and ttft are reported as context, not mtp acceleration claims"
+            if legacy_acceleration
+            else "prefill and ttft are reported as context, not decode-comparison claims"
+        )
         for snippet in (
             "distribution-exact sampled mtp",
-            f"all {len(summary['rows'])} target/suite rows accelerate decode",
+            outcome_snippet,
             "100% mtp step coverage",
             "zero direct-fallback prompts or steps",
             # Accept either root-README or docs/PERFORMANCE-RESULTS asset paths.
@@ -1640,20 +1692,20 @@ def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
             "`top_k=20`",
             "2 warmups",
             "5 measured repetitions",
-            "prefill and ttft are reported as context, not mtp acceleration claims",
+            context_snippet,
         ):
             if snippet not in normalized:
                 raise ArtifactCheckError(
                     f"README exact MTP acceleration section is missing {snippet!r}"
                 )
 
-        table_lines = extract_table_lines(section_text, "#### AX Engine 6-bit")
+        table_lines = extract_table_lines(section_text, "#### AX Engine")
         expected_headers = [
             "Target",
             "Suite",
             "AX direct decode",
             "AX MTP decode",
-            "AX speedup",
+            "AX speedup" if legacy_acceleration else "AX MTP/direct",
             "AX MTP prefill",
             "AX MTP TTFT",
             "AX accept",
