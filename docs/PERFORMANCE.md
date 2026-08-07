@@ -266,10 +266,14 @@ best-practice values and the full sweep are in
 speculative decoding is not an option on the linear-attention models — see
 [`docs/mtp/tree-draft-phase-a.md`](mtp/tree-draft-phase-a.md).
 
-The global `0.90` default applies to multi-depth heads. A certified exact
-depth-one Qwen head uses a runner-scoped model default of `0`: there is no
+The global `0.90` default applies to Qwen/GLM multi-depth heads. A certified
+exact depth-one Qwen head uses a runner-scoped model default of `0`: there is no
 deeper draft tail to prune, and avoiding the confidence softmax is materially
-faster. An explicit env value or speculation profile still wins.
+faster. Gemma assistant MTP keeps its independent first/deep calibration. The
+runtime classifies every attached drafter explicitly and fails closed on an
+ineligible Qwen linear head or conflicting attachments; it does not propagate
+the Qwen exception to other families. An explicit env value or speculation
+profile still wins.
 
 ## Additional Testing Plan
 

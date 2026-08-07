@@ -105,6 +105,7 @@ use crate::weights::{LayerWeights, QuantizedWeight};
 use crate::weights::{ModelWeights, load_weights};
 
 mod manifest_validation;
+mod mtp_model_policy;
 mod mtp_ngram_gates;
 mod mtp_routing;
 mod mtp_tuning;
@@ -115,6 +116,7 @@ mod step_telemetry;
 mod util;
 
 use manifest_validation::*;
+use mtp_model_policy::*;
 use mtp_ngram_gates::*;
 use mtp_routing::*;
 use mtp_tuning::*;
@@ -799,11 +801,9 @@ pub struct MlxRunner {
     /// request sampling are available. Studio deliberately disables n-gram
     /// while leaving this enabled for validated MTP packages.
     mtp_requested: bool,
-    /// Whether a model-based MTP route is safe for this loaded artifact.
-    ///
-    /// Qwen linear-attention MTP requires the exact verifier profile. Other
-    /// MTP families are unaffected. The setter cannot bypass this hard gate.
-    mtp_model_route_safe: bool,
+    /// Immutable, model-scoped MTP family/default/safety policy. The setter
+    /// cannot bypass its hard route gate.
+    mtp_model_policy: MtpModelPolicy,
     /// Per-artifact Qwen linear-MTP exact capability and resolved selection.
     qwen_linear_mtp_exact_eligible: bool,
     qwen_linear_mtp_exact_enabled: bool,
@@ -1102,12 +1102,10 @@ fn reclaim_native_prefix_entries(
 }
 
 impl MlxRunner {
-    /// Whether the loaded target has a validated Qwen MTP head or Gemma
+    /// Whether the loaded target has a validated Qwen/GLM MTP head or Gemma
     /// assistant drafter attached.
     pub fn has_mtp(&self) -> bool {
-        self.weights.mtp.is_some()
-            || self.weights.glm_mtp.is_some()
-            || self.gemma4_assistant_mtp.is_some()
+        self.mtp_model_policy.has_attached_drafter()
     }
 
     /// Request or suppress model-based MTP independently from the n-gram
@@ -1115,7 +1113,7 @@ impl MlxRunner {
     /// authoritative and cannot be re-enabled through this setter.
     pub fn set_mtp_requested(&mut self, requested: bool) {
         self.mtp_requested = requested
-            && self.mtp_model_route_safe
+            && self.mtp_model_policy.route_safe()
             && !crate::fastpath::ngram_acceleration_disabled();
     }
 
@@ -1124,22 +1122,7 @@ impl MlxRunner {
     }
 
     fn mtp_max_depth(&self) -> usize {
-        if let Some(head) = &self.weights.mtp {
-            head.max_depth
-        } else if let Some(head) = &self.weights.glm_mtp {
-            head.max_depth
-        } else {
-            self.gemma4_assistant_mtp
-                .as_ref()
-                .map_or(0, |runtime| runtime.status.max_depth)
-        }
-    }
-
-    fn mtp_model_default_gate(&self) -> Option<f32> {
-        qwen_linear_mtp_model_default_gate(
-            self.qwen_linear_mtp_exact_enabled,
-            self.weights.mtp.as_ref().map_or(0, |head| head.max_depth),
-        )
+        self.mtp_model_policy.max_depth()
     }
 
     fn gemma4_assistant_mtp_status(&self) -> &Gemma4AssistantMtpStatus {
@@ -1426,6 +1409,15 @@ impl MlxRunner {
         );
         let (gemma4_assistant_mtp_status, gemma4_assistant_mtp) =
             load_gemma4_assistant_mtp_runtime(&cfg, &weights.gemma4_assistant_mtp);
+        let mtp_model_policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_depth: weights.mtp.as_ref().map(|head| head.max_depth),
+            glm_depth: weights.glm_mtp.as_ref().map(|head| head.max_depth),
+            gemma4_assistant_depth: gemma4_assistant_mtp
+                .as_ref()
+                .map(|runtime| runtime.status.max_depth),
+            qwen_linear_attention: cfg.linear_attention.is_some(),
+            qwen_linear_exact_enabled: qwen_linear_mtp_exact_enabled,
+        });
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
         let affine_quant_telemetry = AffineQuantBitsTelemetry::from_specs(artifacts.tensor_specs());
@@ -1607,11 +1599,9 @@ impl MlxRunner {
 
         let cfg_arc = Arc::new(cfg.clone());
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
-        let has_mtp =
-            weights.mtp.is_some() || weights.glm_mtp.is_some() || gemma4_assistant_mtp.is_some();
-        let qwen_linear_mtp_attached = cfg.linear_attention.is_some() && weights.mtp.is_some();
-        let mtp_model_route_safe = !qwen_linear_mtp_attached || qwen_linear_mtp_exact_enabled;
-        if qwen_linear_mtp_attached && !mtp_model_route_safe && !disable_ngram_acceleration {
+        let has_mtp = mtp_model_policy.has_attached_drafter();
+        let mtp_model_route_safe = mtp_model_policy.route_safe();
+        if mtp_model_policy.is_qwen_linear_direct_fallback() && !disable_ngram_acceleration {
             tracing::warn!(
                 target: "ax_engine_mlx::runner",
                 model_family = %cfg.model_family,
@@ -1619,6 +1609,12 @@ impl MlxRunner {
                 exact_profile_eligible = qwen_linear_mtp_exact_eligible,
                 exact_profile_selection = qwen_linear_mtp_exact_selection.route_code(),
                 "Qwen linear-attention MTP is not exact-profile eligible; using direct decode",
+            );
+        } else if mtp_model_policy.has_conflicting_drafters() {
+            tracing::error!(
+                target: "ax_engine_mlx::runner",
+                model_family = %cfg.model_family,
+                "multiple model-based MTP drafters are attached; using direct decode",
             );
         }
         let batched_decode_certification = load_batched_decode_certification(artifacts);
@@ -1723,7 +1719,7 @@ impl MlxRunner {
             // decode keeps the double-buffer pipeline instead of falling into
             // `run_non_ngram_decode` → single-decode.
             mtp_requested: !disable_ngram_acceleration && mtp_model_route_safe,
-            mtp_model_route_safe,
+            mtp_model_policy,
             qwen_linear_mtp_exact_eligible,
             qwen_linear_mtp_exact_enabled,
             qwen_linear_mtp_exact_selection: qwen_linear_mtp_exact_selection.route_code(),
@@ -2903,15 +2899,18 @@ impl ExecutionRunner for MlxRunner {
             "ax_mlx_qwen_linear_mtp_exact_selection",
             self.qwen_linear_mtp_exact_selection,
         );
+        {
+            let mut route_decisions =
+                IndexedRouteDecisions::new(&mut route_metadata.crossover_decisions);
+            self.mtp_model_policy
+                .append_route_decisions(self.mtp_requested, &mut route_decisions);
+        }
         upsert_route_decision(
             &mut route_metadata.crossover_decisions,
             "ax_mlx_qwen_linear_mtp_depth_one_gate_zero_model_default",
-            u32::from(self.mtp_requested && self.mtp_model_default_gate() == Some(0.0)),
+            u32::from(self.mtp_requested && self.mtp_model_policy.qwen_gate_default() == Some(0.0)),
         );
-        if self.cfg.linear_attention.is_some()
-            && self.weights.mtp.is_some()
-            && !self.mtp_model_route_safe
-        {
+        if self.mtp_model_policy.is_qwen_linear_direct_fallback() {
             upsert_route_decision(
                 &mut route_metadata.crossover_decisions,
                 "ax_mlx_qwen_linear_mtp_direct_fallback",
@@ -7724,7 +7723,7 @@ impl MlxRunner {
                 Some(sampling.temperature),
                 state.mtp_adaptive_gate.as_ref(),
                 mtp_optimistic_draft_min_confidence_override(),
-                self.mtp_model_default_gate(),
+                self.mtp_model_policy.qwen_gate_default(),
             );
             state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
             state.mtp_draft_gate_source = src.route_code();
@@ -8986,7 +8985,7 @@ impl MlxRunner {
                         Some(sampling.temperature),
                         state.mtp_adaptive_gate.as_ref(),
                         mtp_optimistic_draft_min_confidence_override(),
-                        self.mtp_model_default_gate(),
+                        self.mtp_model_policy.qwen_gate_default(),
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
@@ -9047,7 +9046,7 @@ impl MlxRunner {
                         Some(sampling.temperature),
                         state.mtp_adaptive_gate.as_ref(),
                         mtp_optimistic_draft_min_confidence_override(),
-                        self.mtp_model_default_gate(),
+                        self.mtp_model_policy.glm_gate_default(),
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
@@ -9996,18 +9995,6 @@ fn qwen_linear_mtp_exact_tensor_supported(
         // metadata is not a safe implicit capability.
         None => !source_quantized,
     }
-}
-
-/// A depth-one exact verifier has no low-confidence tail to prune. Leaving the
-/// generic gate enabled would still build a full-vocabulary draft softmax and
-/// can discard the only proposal after paying the MTP-head cost. Use the
-/// deterministic-delta proposal by default for this capability-scoped case;
-/// explicit env/profile/adaptive settings retain higher precedence.
-fn qwen_linear_mtp_model_default_gate(
-    exact_profile_enabled: bool,
-    mtp_depth: usize,
-) -> Option<f32> {
-    (exact_profile_enabled && mtp_depth == 1).then_some(0.0)
 }
 
 /// Runtime-owned capability gate for the exact Qwen linear-MTP verifier.
@@ -11557,15 +11544,6 @@ mod tests {
         assert!(linear_mtp_requires_singleton_replay(0, true, false));
         assert!(linear_mtp_requires_singleton_replay(2, false, false));
         assert!(linear_mtp_requires_singleton_replay(2, true, true));
-    }
-
-    #[test]
-    fn exact_depth_one_qwen_mtp_disables_the_default_confidence_gate() {
-        assert_eq!(qwen_linear_mtp_model_default_gate(true, 1), Some(0.0));
-        assert_eq!(qwen_linear_mtp_model_default_gate(false, 1), None);
-        assert_eq!(qwen_linear_mtp_model_default_gate(true, 0), None);
-        assert_eq!(qwen_linear_mtp_model_default_gate(true, 2), None);
-        assert_eq!(qwen_linear_mtp_model_default_gate(true, 3), None);
     }
 
     #[test]

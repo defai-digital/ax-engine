@@ -29,8 +29,40 @@ validation, or MTP tuning reports.
   discard the only proposal. Explicit
   `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`, speculation profiles, and the adaptive
   controller retain precedence.
+- The policy mechanism covers every model-based drafter, but the numeric
+  optimization does not. Qwen multi-depth and GLM heads retain the calibrated
+  global/profile/adaptive policy; Gemma 4 assistant MTP retains its independent
+  first/deep gates. An ineligible Qwen linear head or an invalid artifact with
+  conflicting drafters fails closed to direct decode.
 - Direct rows are allowed only as same-package denominators for AX MTP
   acceleration charts, not as cross-model speed evidence.
+
+## Runtime Model Policy
+
+The runner resolves one immutable MTP policy from validated, loaded components.
+It does not trust model names or an artifact-provided confidence threshold.
+Operator overrides keep the documented precedence, but model-owned defaults can
+only come from a runtime-certified policy:
+
+| Route code | Loaded drafter | Confidence policy | Route |
+| ---: | --- | --- | --- |
+| 0 | None | None | Direct |
+| 1 | Qwen dense/recurrent | Calibrated Qwen resolver | MTP |
+| 2 | Qwen linear, exact, depth 1 | Model default `0` | MTP |
+| 3 | Qwen linear, exact, depth 2-3 | Calibrated Qwen resolver | MTP |
+| 4 | Qwen linear without exact capability | None | Direct fallback |
+| 5 | GLM | Calibrated GLM resolver; no Qwen override | MTP |
+| 6 | Gemma 4 assistant | Independent first/deep calibrated gates | Assistant MTP |
+| 7 | Conflicting attached drafters | None | Direct fallback |
+
+Route telemetry exposes this decision through
+`ax_mlx_mtp_model_policy`, `ax_mlx_mtp_model_policy_depth`,
+`ax_mlx_mtp_model_policy_route_safe`, and
+`ax_mlx_mtp_model_policy_active`. A certified model default is separately
+reported by `ax_mlx_mtp_model_gate_default_present` and
+`ax_mlx_mtp_model_gate_default_x1000`. The existing
+`ax_mlx_qwen_linear_mtp_depth_one_gate_zero_model_default` key remains for
+backward-compatible Qwen benchmark checks.
 
 ## Where To Go
 

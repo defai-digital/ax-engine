@@ -110,6 +110,11 @@ shippable knob is the gate, not a fixed depth.
   unused full-vocabulary confidence softmax and always submits the sole draft
   under the deterministic-delta verifier. This is capability-scoped per loaded
   model; an explicit env value, profile preset, or adaptive controller wins.
+- **Apply policy classification to every family, not the Qwen number.** The
+  runtime records an explicit policy for Qwen, GLM, and Gemma assistant MTP.
+  Qwen exact multi-depth and GLM stay on their calibrated resolver, while Gemma
+  keeps separate first/deep gates. Only certified Qwen exact depth-one receives
+  the `0` model default; ambiguous or ineligible routes fail closed.
 - **Per-workload override** (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`), looser for harder
   content:
   - Repetitive / templated generation (boilerplate, structured code): **0.90**.
