@@ -187,59 +187,46 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         )
 
     def test_ax_direct_snapshot_charts_are_complete_and_ax_only(self) -> None:
-        snapshot_path = (
-            charts.REPO_ROOT
-            / "benchmarks/results/inference/ax-direct/"
-            "2026-07-27-v6.12.0-m5max-ax-direct-only/sweep_results.json"
-        )
-        legacy_snapshot = json.loads(snapshot_path.read_text())
-        with self.assertRaisesRegex(
-            charts.ChartError, "README publication eligible"
-        ):
-            charts.load_ax_direct_snapshot(snapshot_path)
+        readme = charts.REPO_ROOT / "docs/PERFORMANCE-RESULTS.md"
+        snapshot_path = charts.find_ax_direct_snapshot(readme)
+        self.assertIsNotNone(snapshot_path)
+        assert snapshot_path is not None
+        raw_snapshot = json.loads(snapshot_path.read_text())
+        snapshot = charts.load_ax_direct_snapshot(snapshot_path)
 
-        expected_slugs = [row["slug"] for row in legacy_snapshot["rows"]]
-        legacy_snapshot["readme_ax_direct_publication_candidate"] = True
-        legacy_snapshot["ax_direct_matrix"] = {
-            "schema_version": charts.AX_DIRECT_MATRIX_SCHEMA,
-            "expected_slugs": expected_slugs,
-            "expected_model_count": len(expected_slugs),
-            "publication_model_count": len(expected_slugs),
-            "expected_cell_count": len(expected_slugs) * len(charts.PROMPT_TOKENS),
-            "publication_cell_count": len(expected_slugs)
-            * len(charts.PROMPT_TOKENS),
-            "publication_candidate": True,
-        }
-        for row in legacy_snapshot["rows"]:
-            row["result_doc"]["build"]["git_tracked_dirty"] = False
-            row["result_doc"]["run_stability_summary"][
-                "publication_candidate"
-            ] = True
         with tempfile.TemporaryDirectory() as root_name:
             gated_snapshot_path = Path(root_name) / "sweep_results.json"
-            gated_snapshot_path.write_text(json.dumps(legacy_snapshot))
-            snapshot = charts.load_ax_direct_snapshot(gated_snapshot_path)
-            legacy_snapshot["rows"][0]["readme_model"] = "Gemma 4 E4B"
-            gated_snapshot_path.write_text(json.dumps(legacy_snapshot))
+            raw_snapshot["readme_ax_direct_publication_candidate"] = False
+            gated_snapshot_path.write_text(json.dumps(raw_snapshot))
+            with self.assertRaisesRegex(
+                charts.ChartError, "README publication eligible"
+            ):
+                charts.load_ax_direct_snapshot(gated_snapshot_path)
+
+            raw_snapshot["readme_ax_direct_publication_candidate"] = True
+            raw_snapshot["rows"][0]["readme_model"] = "Gemma 4 E4B"
+            gated_snapshot_path.write_text(json.dumps(raw_snapshot))
             with self.assertRaisesRegex(charts.ChartError, "display label"):
                 charts.load_ax_direct_snapshot(gated_snapshot_path)
 
-        self.assertEqual(snapshot["engine_version"], "6.12.0")
+        self.assertEqual(snapshot["engine_version"], "6.13.3")
         self.assertEqual(len(snapshot["rows"]), 12)
         chart_rows = charts.ax_direct_snapshot_chart_rows(snapshot, "decode")
         self.assertEqual(len(chart_rows), 36)
         self.assertAlmostEqual(
-            chart_rows[0]["decode_tok_s"]["median"], 232.1, places=1
+            chart_rows[0]["decode_tok_s"]["median"], 236.5, places=1
         )
         self.assertTrue(
             all(row["engine"] == "ax_engine_mlx" for row in chart_rows)
         )
 
-        readme = charts.REPO_ROOT / "docs/PERFORMANCE-RESULTS.md"
-        retained_mlx_rows = charts.load_retained_mlx_lm_rows(
-            readme, charts.readme_model_slugs(readme)
+        reference_path = charts.find_mlx_lm_direct_snapshot(readme)
+        self.assertIsNotNone(reference_path)
+        assert reference_path is not None
+        reference = charts.load_mlx_lm_direct_snapshot(reference_path)
+        self.assertTrue(
+            all(row["engine"] == "mlx_lm" for row in reference["rows"])
         )
-        self.assertTrue(all(row["engine"] == "mlx_lm" for row in retained_mlx_rows))
         gemma_decode_spec = next(
             spec
             for spec in charts.CHARTS
@@ -248,16 +235,17 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         boxplot = charts.render_family_chart(
             gemma_decode_spec,
             charts.collect_family_values(
-                retained_mlx_rows
+                reference["rows"]
                 + chart_rows
                 + charts.load_llama_rows_from_readme(readme),
                 gemma_decode_spec,
                 ax_engine_version=str(snapshot["engine_version"]),
             ),
             ax_engine_version=str(snapshot["engine_version"]),
+            mlx_lm_version=str(reference["version"]),
         )
-        self.assertIn("AX Engine v6.12.0", boxplot)
-        self.assertIn("retained mlx-lm 0.31.3", boxplot)
+        self.assertIn("AX Engine v6.13.3", boxplot)
+        self.assertIn("mlx-lm 0.31.3", boxplot)
         self.assertIn("cross-run distribution", boxplot)
 
         readme_text = readme.read_text()
