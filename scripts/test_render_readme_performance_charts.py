@@ -766,6 +766,55 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             "6.11.1",
         )
 
+    def test_embedding_box_chart_requires_six_unique_scale_shapes(self) -> None:
+        rows = [
+            charts.EmbeddingDeltaRow(
+                label="Qwen3 0.6B 8-bit",
+                detail=f"512 x 256 tok, batch {batch}",
+                reference_label="mlx-lm",
+                reference_tok_s=100.0 + index,
+                ax_tok_s=101.0 + index,
+                delta_pct=1.0,
+            )
+            for index, batch in enumerate((8, 16, 32, 48, 64))
+        ]
+        with self.assertRaisesRegex(charts.ChartError, "exactly six"):
+            charts.embedding_box_groups(rows)
+
+        rows.append(rows[-1])
+        with self.assertRaisesRegex(charts.ChartError, "duplicate"):
+            charts.embedding_box_groups(rows)
+
+    def test_embedding_box_chart_requires_expected_model_groups(self) -> None:
+        rows = [
+            charts.EmbeddingDeltaRow(
+                label="Qwen3 0.6B 8-bit",
+                detail=f"512 x {tokens} tok, batch {batch}",
+                reference_label="mlx-lm",
+                reference_tok_s=100.0 + index,
+                ax_tok_s=101.0 + index,
+                delta_pct=1.0,
+            )
+            for index, (tokens, batch) in enumerate(
+                (
+                    (256, 8),
+                    (256, 32),
+                    (256, 64),
+                    (512, 8),
+                    (512, 32),
+                    (512, 64),
+                )
+            )
+        ]
+        with self.assertRaisesRegex(charts.ChartError, "expected embedding groups"):
+            charts.render_embedding_box_chart(
+                rows,
+                title="test",
+                subtitle="test",
+                source_label="test",
+                expected_group_labels=charts.EMBEDDING_MODEL_CHART_ORDER[:3],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

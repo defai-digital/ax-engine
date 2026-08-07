@@ -3262,6 +3262,14 @@ def embedding_box_groups(rows: list[EmbeddingDeltaRow]) -> list[EmbeddingModelBo
     box_groups: list[EmbeddingModelBoxGroup] = []
     for label in order:
         model_rows = grouped[label]
+        if len(model_rows) != 6:
+            raise ChartError(
+                f"{label} must contain exactly six embedding scale shapes; "
+                f"found {len(model_rows)}"
+            )
+        details = [row.detail for row in model_rows]
+        if len(set(details)) != len(details):
+            raise ChartError(f"{label} contains duplicate embedding scale shapes")
         references = {row.reference_label for row in model_rows}
         if len(references) != 1:
             raise ChartError(f"{label} mixes embedding reference backends")
@@ -3312,10 +3320,19 @@ def render_embedding_box_chart(
     subtitle: str,
     source_label: str,
     ax_label: str | None = None,
+    expected_group_labels: tuple[str, ...] | None = None,
 ) -> str:
     box_groups = embedding_box_groups(rows)
     if not box_groups:
         raise ChartError(f"{title} has no rows")
+    if expected_group_labels is not None:
+        actual_group_labels = tuple(group.label for group in box_groups)
+        if actual_group_labels != expected_group_labels:
+            raise ChartError(
+                f"{title} expected embedding groups "
+                f"{', '.join(expected_group_labels)}; found "
+                f"{', '.join(actual_group_labels)}"
+            )
     ax_chart_label = ax_label or AX_ENGINE_CHART_LABEL
     all_maxima = [
         engine_row.stats.maximum
@@ -3729,6 +3746,7 @@ def main() -> int:
                 repo_root, EMBEDDING_SCALE_AX_ARTIFACT
             )
         ),
+        expected_group_labels=EMBEDDING_MODEL_CHART_ORDER[:3],
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)
@@ -3755,6 +3773,7 @@ def main() -> int:
                 repo_root, EMBEDDINGGEMMA_SCALE_AX_ARTIFACT
             )
         ),
+        expected_group_labels=(EMBEDDING_MODEL_CHART_ORDER[3],),
     )
     if not write_chart(
         embeddinggemma_scale_output_path, embeddinggemma_scale_content, args.check
