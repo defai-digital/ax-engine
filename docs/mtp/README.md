@@ -22,6 +22,13 @@ validation, or MTP tuning reports.
   `AX_MLX_QWEN_LINEAR_MTP_EXACT=0` as a kill switch; an ineligible or
   explicitly disabled Qwen linear-MTP package safely uses direct decode
   instead of the slow singleton-replay MTP path.
+- Certified depth-one Qwen exact profiles, including the current
+  `AX-Qwen3.5-9B-MLX-AXQ-4bit-MTP` package, default the draft confidence gate
+  to `0`. A depth-one sidecar has no low-confidence tail to prune, while the
+  generic `0.90` gate still pays for a full-vocabulary draft softmax and can
+  discard the only proposal. Explicit
+  `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`, speculation profiles, and the adaptive
+  controller retain precedence.
 - Direct rows are allowed only as same-package denominators for AX MTP
   acceleration charts, not as cross-model speed evidence.
 

@@ -1135,6 +1135,13 @@ impl MlxRunner {
         }
     }
 
+    fn mtp_model_default_gate(&self) -> Option<f32> {
+        qwen_linear_mtp_model_default_gate(
+            self.qwen_linear_mtp_exact_enabled,
+            self.weights.mtp.as_ref().map_or(0, |head| head.max_depth),
+        )
+    }
+
     fn gemma4_assistant_mtp_status(&self) -> &Gemma4AssistantMtpStatus {
         &self.gemma4_assistant_mtp_status
     }
@@ -2895,6 +2902,11 @@ impl ExecutionRunner for MlxRunner {
             &mut route_metadata.crossover_decisions,
             "ax_mlx_qwen_linear_mtp_exact_selection",
             self.qwen_linear_mtp_exact_selection,
+        );
+        upsert_route_decision(
+            &mut route_metadata.crossover_decisions,
+            "ax_mlx_qwen_linear_mtp_depth_one_gate_zero_model_default",
+            u32::from(self.mtp_requested && self.mtp_model_default_gate() == Some(0.0)),
         );
         if self.cfg.linear_attention.is_some()
             && self.weights.mtp.is_some()
@@ -7712,6 +7724,7 @@ impl MlxRunner {
                 Some(sampling.temperature),
                 state.mtp_adaptive_gate.as_ref(),
                 mtp_optimistic_draft_min_confidence_override(),
+                self.mtp_model_default_gate(),
             );
             state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
             state.mtp_draft_gate_source = src.route_code();
@@ -8973,6 +8986,7 @@ impl MlxRunner {
                         Some(sampling.temperature),
                         state.mtp_adaptive_gate.as_ref(),
                         mtp_optimistic_draft_min_confidence_override(),
+                        self.mtp_model_default_gate(),
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
@@ -9033,6 +9047,7 @@ impl MlxRunner {
                         Some(sampling.temperature),
                         state.mtp_adaptive_gate.as_ref(),
                         mtp_optimistic_draft_min_confidence_override(),
+                        self.mtp_model_default_gate(),
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
@@ -9981,6 +9996,18 @@ fn qwen_linear_mtp_exact_tensor_supported(
         // metadata is not a safe implicit capability.
         None => !source_quantized,
     }
+}
+
+/// A depth-one exact verifier has no low-confidence tail to prune. Leaving the
+/// generic gate enabled would still build a full-vocabulary draft softmax and
+/// can discard the only proposal after paying the MTP-head cost. Use the
+/// deterministic-delta proposal by default for this capability-scoped case;
+/// explicit env/profile/adaptive settings retain higher precedence.
+fn qwen_linear_mtp_model_default_gate(
+    exact_profile_enabled: bool,
+    mtp_depth: usize,
+) -> Option<f32> {
+    (exact_profile_enabled && mtp_depth == 1).then_some(0.0)
 }
 
 /// Runtime-owned capability gate for the exact Qwen linear-MTP verifier.
@@ -11530,6 +11557,15 @@ mod tests {
         assert!(linear_mtp_requires_singleton_replay(0, true, false));
         assert!(linear_mtp_requires_singleton_replay(2, false, false));
         assert!(linear_mtp_requires_singleton_replay(2, true, true));
+    }
+
+    #[test]
+    fn exact_depth_one_qwen_mtp_disables_the_default_confidence_gate() {
+        assert_eq!(qwen_linear_mtp_model_default_gate(true, 1), Some(0.0));
+        assert_eq!(qwen_linear_mtp_model_default_gate(false, 1), None);
+        assert_eq!(qwen_linear_mtp_model_default_gate(true, 0), None);
+        assert_eq!(qwen_linear_mtp_model_default_gate(true, 2), None);
+        assert_eq!(qwen_linear_mtp_model_default_gate(true, 3), None);
     }
 
     #[test]

@@ -296,7 +296,13 @@ pub fn maybe_init_state(
     }
 }
 
-/// Full resolution with optimistic override + adaptive (design A.2b).
+/// Full resolution with optimistic override, operator policy, adaptive state,
+/// and a capability-scoped model default (design A.2b).
+///
+/// Precedence is optimistic > explicit env > non-auto profile > adaptive >
+/// model default > global default. High-temperature `auto` skips adaptive but
+/// can still use the model default because Qwen rejection sampling remains
+/// distribution-exact.
 pub fn resolve_mtp_gate(
     profile: SpeculationProfile,
     temperature: Option<f32>,
@@ -304,6 +310,7 @@ pub fn resolve_mtp_gate(
     adaptive: Option<&MtpAdaptiveGateState>,
     optimistic_override: Option<f32>,
     explicit_env: Option<f32>,
+    model_default: Option<f32>,
 ) -> (f32, ResolutionSource) {
     if let Some(g) = optimistic_override {
         return (g, ResolutionSource::Optimistic);
@@ -320,11 +327,15 @@ pub fn resolve_mtp_gate(
     }
     // High-T auto: the diversity regime prescribes no Qwen gate (rejection
     // sampling is distribution-exact at any gate), and adaptive stays
-    // low-T-only — resolve straight to the shipped default.
+    // low-T-only — resolve to the capability-scoped model default when one is
+    // present, otherwise the shipped global default.
     if matches!(profile, SpeculationProfile::Auto)
         && SpeculationProfile::is_diversity_temperature(temperature)
     {
-        return (DEFAULT_MTP_DRAFT_MIN_CONFIDENCE, ResolutionSource::Default);
+        return model_default.map_or(
+            (DEFAULT_MTP_DRAFT_MIN_CONFIDENCE, ResolutionSource::Default),
+            |gate| (gate, ResolutionSource::Model),
+        );
     }
     // Low-T auto + adaptive: always use st.gate when present (including frozen).
     if adaptive_enabled && let Some(st) = adaptive {
@@ -332,6 +343,9 @@ pub fn resolve_mtp_gate(
     }
     if let Some(g) = profile.qwen_gate(temperature) {
         return (g, ResolutionSource::Profile);
+    }
+    if let Some(g) = model_default {
+        return (g, ResolutionSource::Model);
     }
     (DEFAULT_MTP_DRAFT_MIN_CONFIDENCE, ResolutionSource::Default)
 }
@@ -341,6 +355,7 @@ pub fn resolve_mtp_gate_from_env(
     temperature: Option<f32>,
     adaptive: Option<&MtpAdaptiveGateState>,
     optimistic_override: Option<f32>,
+    model_default: Option<f32>,
 ) -> (f32, ResolutionSource) {
     let profile = speculation_profile_from_env();
     let explicit = crate::mtp::mtp_draft_min_confidence_env_value();
@@ -351,6 +366,7 @@ pub fn resolve_mtp_gate_from_env(
         adaptive,
         optimistic_override,
         explicit,
+        model_default,
     )
 }
 
@@ -436,6 +452,7 @@ mod tests {
             Some(&st),
             None,
             None,
+            None,
         );
         assert_eq!(src, ResolutionSource::Adaptive);
         assert!((resolved - frozen_gate).abs() < 1e-6);
@@ -455,6 +472,7 @@ mod tests {
             Some(&st),
             None,
             None,
+            None,
         );
         assert_eq!(src, ResolutionSource::Default);
         assert!((g - DEFAULT_MTP_DRAFT_MIN_CONFIDENCE).abs() < 1e-5);
@@ -470,6 +488,7 @@ mod tests {
             Some(&st),
             None,
             None,
+            Some(0.0),
         );
         assert_eq!(src, ResolutionSource::Profile);
         assert!((g - 0.85).abs() < 1e-5);
@@ -484,8 +503,76 @@ mod tests {
             None,
             Some(0.0),
             Some(0.5),
+            Some(0.25),
         );
         assert_eq!(src, ResolutionSource::Optimistic);
+        assert_eq!(g, 0.0);
+    }
+
+    #[test]
+    fn model_default_applies_only_after_explicit_profile_and_adaptive_sources() {
+        let (g, src) = resolve_mtp_gate(
+            SpeculationProfile::Auto,
+            Some(0.0),
+            false,
+            None,
+            None,
+            None,
+            Some(0.0),
+        );
+        assert_eq!(src, ResolutionSource::Model);
+        assert_eq!(g, 0.0);
+
+        let (g, src) = resolve_mtp_gate(
+            SpeculationProfile::Auto,
+            Some(0.0),
+            false,
+            None,
+            None,
+            Some(0.75),
+            Some(0.0),
+        );
+        assert_eq!(src, ResolutionSource::Explicit);
+        assert_eq!(g, 0.75);
+
+        let (g, src) = resolve_mtp_gate(
+            SpeculationProfile::Coding,
+            Some(0.0),
+            false,
+            None,
+            None,
+            None,
+            Some(0.0),
+        );
+        assert_eq!(src, ResolutionSource::Profile);
+        assert_eq!(g, 0.85);
+
+        let st = MtpAdaptiveGateState::new(0.80);
+        let (g, src) = resolve_mtp_gate(
+            SpeculationProfile::Auto,
+            Some(0.0),
+            true,
+            Some(&st),
+            None,
+            None,
+            Some(0.0),
+        );
+        assert_eq!(src, ResolutionSource::Adaptive);
+        assert_eq!(g, 0.80);
+    }
+
+    #[test]
+    fn high_t_auto_can_use_model_default() {
+        let (g, src) = resolve_mtp_gate(
+            SpeculationProfile::Auto,
+            Some(0.7),
+            true,
+            Some(&MtpAdaptiveGateState::new(0.80)),
+            None,
+            None,
+            Some(0.0),
+        );
+        assert_eq!(src, ResolutionSource::Model);
         assert_eq!(g, 0.0);
     }
 

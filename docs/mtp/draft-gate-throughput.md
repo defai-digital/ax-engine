@@ -103,7 +103,13 @@ shippable knob is the gate, not a fixed depth.
 
 - **Default (shipped): `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE = 0.90`.** Best on
   repetitive workloads, strong everywhere, cleanly validated (+~8% vs 0.98 on
-  flappy, interleaved). Use this when the workload mix is unknown.
+  flappy, interleaved). Use this for multi-depth heads when the workload mix is
+  unknown.
+- **Exact depth-one exception: model default `0`.** A depth-one head has no
+  low-confidence tail to truncate. The runner therefore skips the otherwise
+  unused full-vocabulary confidence softmax and always submits the sole draft
+  under the deterministic-delta verifier. This is capability-scoped per loaded
+  model; an explicit env value, profile preset, or adaptive controller wins.
 - **Per-workload override** (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`), looser for harder
   content:
   - Repetitive / templated generation (boilerplate, structured code): **0.90**.

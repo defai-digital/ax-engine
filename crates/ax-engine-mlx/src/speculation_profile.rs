@@ -64,6 +64,8 @@ pub enum ResolutionSource {
     Adaptive,
     /// Optimistic draft-min-confidence override (often 0.0).
     Optimistic,
+    /// A capability-scoped default supplied by the loaded model contract.
+    Model,
 }
 
 impl ResolutionSource {
@@ -74,6 +76,7 @@ impl ResolutionSource {
             Self::Explicit => 2,
             Self::Adaptive => 3,
             Self::Optimistic => 4,
+            Self::Model => 5,
         }
     }
 }

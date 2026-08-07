@@ -266,6 +266,11 @@ best-practice values and the full sweep are in
 speculative decoding is not an option on the linear-attention models — see
 [`docs/mtp/tree-draft-phase-a.md`](mtp/tree-draft-phase-a.md).
 
+The global `0.90` default applies to multi-depth heads. A certified exact
+depth-one Qwen head uses a runner-scoped model default of `0`: there is no
+deeper draft tail to prune, and avoiding the confidence softmax is materially
+faster. An explicit env value or speculation profile still wins.
+
 ## Additional Testing Plan
 
 More testing is needed before making production-serving or long-context claims.
