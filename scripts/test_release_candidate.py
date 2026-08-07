@@ -25,7 +25,7 @@ class ReleaseCandidateTests(unittest.TestCase):
         for name in ("libmlx.dylib", "libjaccl.dylib", "mlx.metallib"):
             (runtime_dir / name).write_bytes(f"runtime:{name}".encode())
         (runtime_dir / "MLX-LICENSE.txt").write_text("MIT\n")
-        (wheel_dir / "ax_engine-6.9.0-cp310-abi3-macosx_26_0_arm64.whl").write_bytes(b"wheel")
+        (wheel_dir / "ax_engine-6.9.0-cp311-abi3-macosx_26_0_arm64.whl").write_bytes(b"wheel")
         return create_manifest(root, TAG, COMMIT, MLX_VERSION)
 
     def test_create_and_verify_each_asset_group(self) -> None:

@@ -39,7 +39,7 @@ class RepairMlxMetallibWheelTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
-        self.wheel = Path(self.tempdir.name) / "ax_engine-6.12.0-cp310-abi3-macosx_26_0_arm64.whl"
+        self.wheel = Path(self.tempdir.name) / "ax_engine-6.12.0-cp311-abi3-macosx_26_0_arm64.whl"
 
     def _write_wheel(
         self,

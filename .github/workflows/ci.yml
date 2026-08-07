@@ -155,7 +155,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
 
       - name: Cache Rust build artifacts
@@ -213,6 +213,10 @@ jobs:
   python-package:
     name: Python Package
     runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     timeout-minutes: 20
     env:
       AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
@@ -224,7 +228,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Cache Rust build artifacts
@@ -247,7 +251,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: ci-python-package-logs
+          name: ci-python-package-${{ matrix.python-version }}-logs
           path: ${{ github.workspace }}/ax-ci-logs
           if-no-files-found: ignore
 
@@ -344,7 +348,7 @@ jobs:
         if: steps.mlx-artifacts.outputs.available == 'true'
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
 
       - name: Cache Rust build artifacts

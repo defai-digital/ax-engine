@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "ax-engine"
 version = "6.13.3"
 description = "Python bindings for AX Engine"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 readme = "crates/ax-engine-py/README.md"
 license = "Apache-2.0"
 keywords = ["llm", "inference", "mlx", "apple-silicon", "local-ai"]
@@ -16,7 +16,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -109,6 +108,7 @@ exclude = [
 
 [tool.ruff]
 line-length = 100
+target-version = "py311"
 extend-exclude = ["scripts", "python/tests", "python/ax_engine/_ax_engine"]
 
 [tool.ruff.lint]
@@ -120,7 +120,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 "python/ax_engine/__init__.py" = ["E402", "SIM102"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 # Scope: runtime package only. Scripts/tests are out of scope.
 files = ["python/ax_engine"]
 exclude = ['python/ax_engine/_ax_engine/|python/ax_engine/_metal/build/']
