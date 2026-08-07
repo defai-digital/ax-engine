@@ -342,9 +342,11 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         ]
 
         self.assertEqual(sweep.failed_sweep_rows(rows), [])
-        with patch.object(sys, "stderr", io.StringIO()):
-            with self.assertRaises(SystemExit) as caught:
-                sweep.fail_if_sweep_incomplete(rows)
+        with (
+            patch.object(sys, "stderr", io.StringIO()),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            sweep.fail_if_sweep_incomplete(rows)
 
         self.assertEqual(caught.exception.code, 2)
 
