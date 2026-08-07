@@ -351,7 +351,9 @@ jobs:
           echo "Tap updated: ${TAP_REPO}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAP_PUSH_TOKEN: ${{ secrets.TAP_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}
+          # Prefer the dedicated tap credential. TAP_TOKEN is retained only as
+          # a compatibility fallback for repositories that have not migrated.
+          TAP_PUSH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.TAP_TOKEN }}
           TOOLING_SHA: ${{ github.workflow_sha }}
 
       - name: Step summary
