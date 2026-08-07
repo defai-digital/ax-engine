@@ -11,6 +11,70 @@ from scripts import bench_mtp_6bit_ax_refresh as bench
 
 class BenchMtpRefreshTests(unittest.TestCase):
     @staticmethod
+    def publication_artifact() -> dict[str, object]:
+        conditions = {
+            "load_average": {"one_minute": 1.0},
+            "power_source": "AC Power",
+            "thermal_warning_recorded": False,
+            "performance_warning_recorded": False,
+            "cpu_power_status_recorded": False,
+            "top_processes_cpu": [{"cpu_percent": 10.0}],
+        }
+        return {
+            "schema_version": bench.MLX_INFERENCE_STACK_SCHEMA,
+            "warmup_repetitions": 2,
+            "repetitions": 5,
+            "cooldown": 15.0,
+            "generation_tokens": 1000,
+            "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+            "build": {
+                "git_tracked_dirty": False,
+                "build_profile": "release",
+            },
+            "run_stability_summary": {"publication_candidate": True},
+            "benchmark_window": {
+                "performance_conditions_start": conditions,
+                "performance_conditions_end": conditions,
+            },
+        }
+
+    @staticmethod
+    def exact_artifact(
+        *,
+        engine: str,
+        suite: str = "flappy",
+        model_dir: str = "/models/test",
+    ) -> dict[str, object]:
+        row = {
+            "prompt_case_id": "case",
+            "engine": engine,
+            "prompt_source": "real",
+            "prompt_suite_id": suite,
+            "prompt_text_sha256": "a" * 64,
+            "prompt_token_ids_sha256": "b" * 64,
+            "prompt_tokens": 128,
+            "generation_tokens": 1000,
+            "sampler_settings": bench.MTP_SAMPLER_SIGNATURE,
+            "seed": 0,
+            "random_seed": 0,
+            "run_stability": {"classification": "stable_enough"},
+            "decode_tok_s": 50.0,
+            "prefill_tok_s": 500.0,
+            "ttft_ms": 250.0,
+            "trials": [
+                {
+                    "output_token_ids": list(range(1000)),
+                    "output_tokens": 1000.0,
+                }
+                for _ in range(5)
+            ],
+        }
+        return {
+            "model_dir": model_dir,
+            "results": [row],
+        }
+
+    @staticmethod
     def exact_summary() -> dict[str, object]:
         rows: list[dict[str, object]] = []
         for target in bench.SUPPORTED_TARGETS:
@@ -139,14 +203,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
         )
 
     def test_exact_publication_methodology_requires_clean_two_by_five(self) -> None:
-        valid = {
-            "warmup_repetitions": 2,
-            "repetitions": 5,
-            "build": {
-                "git_tracked_dirty": False,
-                "build_profile": "release",
-            },
-        }
+        valid = self.publication_artifact()
         self.assertEqual(
             bench.exact_publication_methodology_reasons(valid, valid), []
         )
@@ -161,6 +218,19 @@ class BenchMtpRefreshTests(unittest.TestCase):
         self.assertIn("mtp_requires_five_measurements", reasons)
         self.assertIn("mtp_requires_clean_tracked_build", reasons)
         self.assertIn("direct_requires_release_build", reasons)
+
+    def test_exact_publication_methodology_rejects_bad_run_conditions(self) -> None:
+        artifact = self.publication_artifact()
+        artifact["benchmark_window"]["performance_conditions_end"][
+            "load_average"
+        ]["one_minute"] = 2.1
+
+        reasons = bench.exact_publication_methodology_reasons(artifact, artifact)
+
+        self.assertIn(
+            "direct_performance_conditions_end_load_above_limit",
+            reasons,
+        )
 
     def test_build_identity_comes_from_measured_artifacts(self) -> None:
         build = {
@@ -196,6 +266,44 @@ class BenchMtpRefreshTests(unittest.TestCase):
         direct["build"]["commit"] = "bff75300"
         with self.assertRaisesRegex(ValueError, "full measured build commit"):
             bench.artifact_build_identity(Path("direct.json"), direct)
+
+    def test_exact_artifact_rows_require_complete_stable_trials(self) -> None:
+        artifact = self.exact_artifact(engine="ax_engine_mlx")
+        bench.validate_exact_artifact_rows(
+            Path("direct.json"),
+            artifact,
+            expected_engines={"ax_engine_mlx"},
+            expected_suite="flappy",
+        )
+
+        artifact["results"][0]["trials"][0]["output_token_ids"].pop()
+        with self.assertRaisesRegex(ValueError, "incomplete generated-token trial"):
+            bench.validate_exact_artifact_rows(
+                Path("direct.json"),
+                artifact,
+                expected_engines={"ax_engine_mlx"},
+                expected_suite="flappy",
+            )
+
+    def test_exact_prompt_parity_requires_same_package_and_prompt_hashes(self) -> None:
+        direct = self.exact_artifact(engine="ax_engine_mlx")
+        mtp = self.exact_artifact(engine="ax_engine_mlx_pure_mtp")
+        bench.validate_exact_prompt_parity(
+            Path("direct.json"), direct, Path("mtp.json"), mtp
+        )
+
+        mtp["results"][0]["prompt_token_ids_sha256"] = "c" * 64
+        with self.assertRaisesRegex(ValueError, "decode contract differs"):
+            bench.validate_exact_prompt_parity(
+                Path("direct.json"), direct, Path("mtp.json"), mtp
+            )
+
+        mtp["results"][0]["prompt_token_ids_sha256"] = "b" * 64
+        mtp["model_dir"] = "/models/other"
+        with self.assertRaisesRegex(ValueError, "model packages differ"):
+            bench.validate_exact_prompt_parity(
+                Path("direct.json"), direct, Path("mtp.json"), mtp
+            )
 
     def test_approximate_flag_is_only_added_to_mtp_rows(self) -> None:
         target = bench.Target(

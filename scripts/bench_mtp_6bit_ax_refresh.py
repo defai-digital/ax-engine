@@ -31,6 +31,10 @@ MTP_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
 DEFAULT_SUITES = ("flappy", "long_code", "python_modules_long")
 MTP_6BIT_EXACT_SCHEMA = "ax.mtp_6bit_ax_comparison_summary.v4"
 MTP_6BIT_EXACT_CLAIM_TYPE = "exact_mtp_comparison"
+MLX_INFERENCE_STACK_SCHEMA = "ax.mlx_inference_stack.v2"
+MAX_PUBLICATION_LOAD_AVERAGE = 2.0
+MAX_PUBLICATION_PROCESS_CPU_PERCENT = 50.0
+MTP_SAMPLER_SIGNATURE = "sampling[temperature=0.6,top_p=0.95,top_k=20]"
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
     "ax_ngram_draft_tokens",
@@ -437,16 +441,198 @@ def validate_approximate_mtp_artifact(path: Path, artifact: dict[str, Any]) -> N
 def exact_publication_methodology_reasons(direct: dict[str, Any], mtp: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     for label, artifact in (("direct", direct), ("mtp", mtp)):
+        if artifact.get("schema_version") != MLX_INFERENCE_STACK_SCHEMA:
+            reasons.append(f"{label}_requires_current_artifact_schema")
         if int(artifact.get("warmup_repetitions", 0) or 0) < 2:
             reasons.append(f"{label}_requires_two_warmups")
         if int(artifact.get("repetitions", 0) or 0) < 5:
             reasons.append(f"{label}_requires_five_measurements")
+        if float(artifact.get("cooldown", 0.0) or 0.0) < COOLDOWN_S:
+            reasons.append(f"{label}_requires_15s_cooldown")
+        if int(artifact.get("generation_tokens", 0) or 0) != GENERATED_TOKENS:
+            reasons.append(f"{label}_requires_1000_generated_tokens")
+        if artifact.get("ax_prefix_cache_mode") != "disabled_for_cold_prefill_benchmark":
+            reasons.append(f"{label}_requires_cold_prefix_mode")
         build = artifact.get("build") or {}
         if build.get("git_tracked_dirty") is not False:
             reasons.append(f"{label}_requires_clean_tracked_build")
         if build.get("build_profile") != "release":
             reasons.append(f"{label}_requires_release_build")
+        stability = artifact.get("run_stability_summary")
+        if not isinstance(stability, dict) or stability.get(
+            "publication_candidate"
+        ) is not True:
+            reasons.append(f"{label}_requires_stable_measurements")
+        reasons.extend(publication_condition_reasons(label, artifact))
     return reasons
+
+
+def publication_condition_reasons(label: str, artifact: dict[str, Any]) -> list[str]:
+    window = artifact.get("benchmark_window")
+    if not isinstance(window, dict):
+        return [f"{label}_requires_benchmark_window"]
+    reasons: list[str] = []
+    for boundary in ("performance_conditions_start", "performance_conditions_end"):
+        conditions = window.get(boundary)
+        prefix = f"{label}_{boundary}"
+        if not isinstance(conditions, dict):
+            reasons.append(f"{prefix}_missing")
+            continue
+        load_average = conditions.get("load_average")
+        one_minute = (
+            load_average.get("one_minute")
+            if isinstance(load_average, dict)
+            else None
+        )
+        if (
+            not isinstance(one_minute, (int, float))
+            or isinstance(one_minute, bool)
+            or not math.isfinite(float(one_minute))
+            or float(one_minute) > MAX_PUBLICATION_LOAD_AVERAGE
+        ):
+            reasons.append(f"{prefix}_load_above_limit")
+        if conditions.get("power_source") != "AC Power":
+            reasons.append(f"{prefix}_requires_ac_power")
+        for key in (
+            "thermal_warning_recorded",
+            "performance_warning_recorded",
+            "cpu_power_status_recorded",
+        ):
+            if conditions.get(key) is not False:
+                reasons.append(f"{prefix}_{key}_not_clear")
+        top_processes = conditions.get("top_processes_cpu")
+        cpu_values: list[float] = []
+        if isinstance(top_processes, list):
+            for process in top_processes:
+                if not isinstance(process, dict):
+                    continue
+                cpu = process.get("cpu_percent")
+                if (
+                    isinstance(cpu, (int, float))
+                    and not isinstance(cpu, bool)
+                    and math.isfinite(float(cpu))
+                ):
+                    cpu_values.append(float(cpu))
+        if (
+            not cpu_values
+            or max(cpu_values) > MAX_PUBLICATION_PROCESS_CPU_PERCENT
+        ):
+            reasons.append(f"{prefix}_process_cpu_above_limit")
+    return reasons
+
+
+def validate_exact_artifact_rows(
+    path: Path,
+    artifact: dict[str, Any],
+    *,
+    expected_engines: set[str],
+    expected_suite: str,
+) -> None:
+    rows = artifact.get("results")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(f"{path} has no exact benchmark rows")
+    case_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(f"{path} has a non-object benchmark row")
+        case_id = row.get("prompt_case_id")
+        if not isinstance(case_id, str) or not case_id or case_id in case_ids:
+            raise ValueError(f"{path} has a missing or duplicate prompt case")
+        case_ids.add(case_id)
+        if row.get("engine") not in expected_engines:
+            raise ValueError(f"{path} has an unexpected engine for {case_id}")
+        if row.get("prompt_source") != "real":
+            raise ValueError(f"{path} did not use a real prompt suite for {case_id}")
+        if row.get("prompt_suite_id") != expected_suite:
+            raise ValueError(f"{path} has the wrong prompt suite for {case_id}")
+        if row.get("generation_tokens") != GENERATED_TOKENS:
+            raise ValueError(f"{path} has the wrong generation length for {case_id}")
+        if row.get("sampler_settings") != MTP_SAMPLER_SIGNATURE:
+            raise ValueError(f"{path} has the wrong sampler for {case_id}")
+        for hash_key in ("prompt_text_sha256", "prompt_token_ids_sha256"):
+            value = row.get(hash_key)
+            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                raise ValueError(f"{path} has no full {hash_key} for {case_id}")
+        prompt_tokens = row.get("prompt_tokens")
+        if (
+            not isinstance(prompt_tokens, int)
+            or isinstance(prompt_tokens, bool)
+            or prompt_tokens <= 0
+        ):
+            raise ValueError(f"{path} has an invalid prompt length for {case_id}")
+        stability = row.get("run_stability")
+        if not isinstance(stability, dict) or stability.get(
+            "classification"
+        ) != "stable_enough":
+            raise ValueError(f"{path} has an unstable row for {case_id}")
+        for metric in ("decode_tok_s", "prefill_tok_s", "ttft_ms"):
+            value = row.get(metric)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or float(value) <= 0.0
+            ):
+                raise ValueError(f"{path} has an invalid {metric} for {case_id}")
+        trials = row.get("trials")
+        if not isinstance(trials, list) or len(trials) != REPETITIONS:
+            raise ValueError(f"{path} does not have five trials for {case_id}")
+        for trial in trials:
+            if not isinstance(trial, dict):
+                raise ValueError(f"{path} has an invalid trial for {case_id}")
+            token_ids = trial.get("output_token_ids")
+            output_tokens = trial.get("output_tokens")
+            if (
+                not isinstance(token_ids, list)
+                or len(token_ids) != GENERATED_TOKENS
+                or not isinstance(output_tokens, (int, float))
+                or isinstance(output_tokens, bool)
+                or float(output_tokens) != GENERATED_TOKENS
+            ):
+                raise ValueError(
+                    f"{path} has an incomplete generated-token trial for {case_id}"
+                )
+
+
+def validate_exact_prompt_parity(
+    direct_path: Path,
+    direct: dict[str, Any],
+    mtp_path: Path,
+    mtp: dict[str, Any],
+) -> None:
+    if direct.get("model_dir") != mtp.get("model_dir"):
+        raise ValueError(
+            f"direct/MTP model packages differ: {direct_path} vs {mtp_path}"
+        )
+    direct_rows = {
+        str(row.get("prompt_case_id")): row
+        for row in direct.get("results", [])
+        if isinstance(row, dict) and row.get("prompt_case_id") is not None
+    }
+    mtp_rows = {
+        str(row.get("prompt_case_id")): row
+        for row in mtp.get("results", [])
+        if isinstance(row, dict) and row.get("prompt_case_id") is not None
+    }
+    if not direct_rows or direct_rows.keys() != mtp_rows.keys():
+        raise ValueError(f"direct/MTP prompt cases differ: {direct_path} vs {mtp_path}")
+    parity_fields = (
+        "prompt_suite_id",
+        "prompt_text_sha256",
+        "prompt_token_ids_sha256",
+        "prompt_tokens",
+        "generation_tokens",
+        "sampler_settings",
+        "seed",
+        "random_seed",
+    )
+    for case_id, direct_row in direct_rows.items():
+        mtp_row = mtp_rows[case_id]
+        if any(direct_row.get(field) != mtp_row.get(field) for field in parity_fields):
+            raise ValueError(
+                f"direct/MTP prompt or decode contract differs for {case_id}: "
+                f"{direct_path} vs {mtp_path}"
+            )
 
 
 def artifact_build_identity(path: Path, artifact: dict[str, Any]) -> ArtifactBuildIdentity:
@@ -553,6 +739,23 @@ def build_summary(
                     mtp,
                     require_qwen_linear_exact=not target.assistant_mtp,
                 )
+                validate_exact_artifact_rows(
+                    direct_path,
+                    direct,
+                    expected_engines={"ax_engine_mlx"},
+                    expected_suite=suite,
+                )
+                validate_exact_artifact_rows(
+                    mtp_path,
+                    mtp,
+                    expected_engines=(
+                        {"ax_engine_gemma4_assistant_mtp"}
+                        if target.assistant_mtp
+                        else {"ax_engine_mlx_pure_mtp"}
+                    ),
+                    expected_suite=suite,
+                )
+                validate_exact_prompt_parity(direct_path, direct, mtp_path, mtp)
                 validate_exact_seed_reproducibility(direct_path, direct, mtp_path, mtp)
                 publication_reasons = exact_publication_methodology_reasons(direct, mtp)
             direct_decode = metric_median(direct, "decode_tok_s")
