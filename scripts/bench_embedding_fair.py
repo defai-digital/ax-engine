@@ -45,7 +45,7 @@ SHORT_QUERY_SENTENCES = [
 ]
 
 OUTPUT_CONTRACT = "contiguous_cpu_f32_batch_hidden"
-SCHEMA_VERSION = "ax.embedding_fair.v2"
+SCHEMA_VERSION = "ax.embedding_fair.v3"
 CLAIM_GATE = {
     "schema_version": "ax.embedding_claim_gate.v1",
     "scope": "embedding_in_process_publication",

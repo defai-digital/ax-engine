@@ -32,7 +32,7 @@ except ModuleNotFoundError:
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_CONTRACT = "contiguous_cpu_f32_batch_hidden"
-SCHEMA_VERSION = "ax.embedding_ingest_scale.v2"
+SCHEMA_VERSION = "ax.embedding_ingest_scale.v3"
 DEFAULT_MAX_LOAD_AVERAGE = 2.0
 DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT = 50.0
 DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS = 900.0

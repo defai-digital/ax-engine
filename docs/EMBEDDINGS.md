@@ -49,7 +49,9 @@ a replacement for the fair table; use it as the scale profile beside it.
 Harness artifacts now record **host**, **build** (commit + dirty flag),
 **runtime_identity** (AX cdylib path/sha plus `otool` libmlx/libmlxc install
 names, resolved paths, sha256, and source class), and **embed_env_flags**.
-Schema versions: `ax.embedding_fair.v2` and `ax.embedding_ingest_scale.v2`.
+Current schema versions are `ax.embedding_fair.v3` and
+`ax.embedding_ingest_scale.v3`. Retained v1/v2 artifacts predate the current
+completion and benchmark-condition boundaries and are historical context only.
 
 Rules for public claims:
 
@@ -100,7 +102,7 @@ Before wiring a new artifact into PERFORMANCE-RESULTS or charts, run:
   --claim ax_absolute_trend --require-clean-tree \
   path/to/embedding_ingest_scale.json
 
-# Retained historical v1 rows only
+# Retained historical v1/v2 rows only
 .venv/bin/python scripts/check_embedding_publish_gate.py --allow-legacy \
   path/to/legacy_embedding_ingest_scale.json
 ```
@@ -226,6 +228,10 @@ pattern, and do not mix cooled and hot-loop artifacts in one comparison.
 The current README scale snapshot is:
 
 `benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`
+
+This retained v2 artifact predates the v3 completion and benchmark-condition
+boundaries. It is kept as historical chart context through `--allow-legacy`;
+new public claims must use a v3 artifact.
 
 It runs Qwen3-Embedding 0.6B 8-bit plus Qwen3-Embedding 4B/8B 4-bit DWQ against
 `mlx-lm` in one same-session paired process, using last-token pooling and

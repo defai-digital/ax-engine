@@ -42,7 +42,7 @@ def _trials(tokens_per_sec: float, **metrics: float) -> list[dict[str, float]]:
 
 def _paired_fair_artifact(**overrides):
     payload = {
-        "schema_version": "ax.embedding_fair.v2",
+        "schema_version": "ax.embedding_fair.v3",
         "output_contract": "contiguous_cpu_f32_batch_hidden",
         "ax_only": False,
         "publication_claim": "paired_delta",
@@ -135,7 +135,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         path.write_text(json.dumps(payload) + "\n")
         return path
 
-    def test_paired_v2_artifact_passes(self) -> None:
+    def test_paired_v3_artifact_passes(self) -> None:
         path = self._write(_paired_fair_artifact())
         report = gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
         self.assertTrue(report["ok"])
@@ -145,12 +145,12 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.PublishGateError, "ax_only=false"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
-    def test_v2_requires_boolean_ax_only(self) -> None:
+    def test_v3_requires_boolean_ax_only(self) -> None:
         path = self._write(_paired_fair_artifact(ax_only="false"))
         with self.assertRaisesRegex(gate.PublishGateError, "boolean ax_only"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
-    def test_v2_requires_recognized_publication_claim(self) -> None:
+    def test_v3_requires_recognized_publication_claim(self) -> None:
         path = self._write(_paired_fair_artifact(publication_claim="directional"))
         with self.assertRaisesRegex(gate.PublishGateError, "recognized publication_claim"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
@@ -242,28 +242,41 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertTrue(any("legacy" in w for w in report["warnings"]))
 
-    def test_missing_runtime_identity_fails_v2(self) -> None:
+    def test_v2_artifact_is_retained_context_only(self) -> None:
+        payload = _paired_fair_artifact(schema_version="ax.embedding_fair.v2")
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "legacy schema"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+        report = gate.validate_artifact(
+            path,
+            claim=gate.CLAIM_PAIRED,
+            allow_legacy=True,
+        )
+        self.assertTrue(report["ok"])
+        self.assertTrue(any("historical context only" in w for w in report["warnings"]))
+
+    def test_missing_runtime_identity_fails_v3(self) -> None:
         payload = _paired_fair_artifact()
         del payload["runtime_identity"]
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "runtime_identity"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
-    def test_missing_v2_build_metadata_fails_cleanly(self) -> None:
+    def test_missing_v3_build_metadata_fails_cleanly(self) -> None:
         payload = _paired_fair_artifact()
         del payload["build"]
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "requires build metadata"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
-    def test_v2_requires_tracked_tree_status(self) -> None:
+    def test_v3_requires_tracked_tree_status(self) -> None:
         payload = _paired_fair_artifact()
         del payload["build"]["git_tracked_dirty"]
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "build.git_tracked_dirty"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
-    def test_v2_requires_full_build_identity_and_interleaved_trials(self) -> None:
+    def test_v3_requires_full_build_identity_and_interleaved_trials(self) -> None:
         short_commit = _paired_fair_artifact(
             build={
                 "commit": "abc123",
@@ -280,7 +293,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.PublishGateError, "interleaved_alternating"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
-    def test_v2_rejects_dirty_or_under_sampled_artifact(self) -> None:
+    def test_v3_rejects_dirty_or_under_sampled_artifact(self) -> None:
         dirty = _paired_fair_artifact(
             build={
                 "commit": "a" * 40,
@@ -303,7 +316,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
 
     def test_scale_requires_p95(self) -> None:
         payload = {
-            "schema_version": "ax.embedding_ingest_scale.v2",
+            "schema_version": "ax.embedding_ingest_scale.v3",
             "status": "complete",
             "output_contract": "contiguous_cpu_f32_batch_hidden",
             "ax_only": False,
@@ -392,14 +405,14 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.PublishGateError, "must be finite and positive"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
-    def test_v2_requires_all_declared_trial_rows(self) -> None:
+    def test_v3_requires_all_declared_trial_rows(self) -> None:
         payload = _paired_fair_artifact()
         payload["models"][0]["rows"][0]["results"]["ax_engine_py"]["trials"].pop()
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "exactly 5 trial rows"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
-    def test_v2_summary_must_match_trial_median(self) -> None:
+    def test_v3_summary_must_match_trial_median(self) -> None:
         payload = _paired_fair_artifact()
         trials = payload["models"][0]["rows"][0]["results"]["ax_engine_py"]["trials"]
         for trial in trials[:3]:
@@ -410,7 +423,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
 
     def test_scale_requires_publication_cooldown(self) -> None:
         payload = {
-            "schema_version": "ax.embedding_ingest_scale.v2",
+            "schema_version": "ax.embedding_ingest_scale.v3",
             "status": "complete",
             "output_contract": "contiguous_cpu_f32_batch_hidden",
             "ax_only": False,
@@ -480,7 +493,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
 
     def test_scale_requires_clean_benchmark_conditions(self) -> None:
         payload = _paired_fair_artifact(
-            schema_version="ax.embedding_ingest_scale.v2",
+            schema_version="ax.embedding_ingest_scale.v3",
             status="complete",
             cooldown_s=15.0,
             max_load_average=2.0,

@@ -12,8 +12,9 @@ Claim modes
   Requires ``ax_only=true`` (or only AX results), host + runtime identity,
   and build commit. Must **not** be used to invent a reference delta.
 
-Legacy v1 artifacts without runtime_identity are accepted only with
-``--allow-legacy`` (historical retained rows). New harnesses emit v2.
+Legacy v1/v2 artifacts are accepted only with ``--allow-legacy`` for retained
+historical rows. Current harnesses emit v3, whose provenance, trial summaries,
+completion state, and benchmark-condition boundaries fail closed.
 """
 
 from __future__ import annotations
@@ -27,13 +28,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
-FAIR_SCHEMAS = {"ax.embedding_fair.v1", "ax.embedding_fair.v2"}
+FAIR_SCHEMAS = {
+    "ax.embedding_fair.v1",
+    "ax.embedding_fair.v2",
+    "ax.embedding_fair.v3",
+}
 SCALE_SCHEMAS = {
     "ax.embedding_ingest_scale.v1",
     "ax.embedding_ingest_scale.v2",
+    "ax.embedding_ingest_scale.v3",
 }
 SUPPORTED_SCHEMAS = FAIR_SCHEMAS | SCALE_SCHEMAS
-V2_SCHEMAS = {"ax.embedding_fair.v2", "ax.embedding_ingest_scale.v2"}
+CURRENT_SCHEMAS = {"ax.embedding_fair.v3", "ax.embedding_ingest_scale.v3"}
 CLAIM_PAIRED = "paired_delta"
 CLAIM_AX_ONLY = "ax_absolute_trend"
 VALID_CLAIMS = {CLAIM_PAIRED, CLAIM_AX_ONLY}
@@ -108,21 +114,21 @@ def validate_build(
     if strict:
         require(
             isinstance(raw_build, dict),
-            f"{path}: v2 publication requires build metadata",
+            f"{path}: v3 publication requires build metadata",
         )
         require(
             re.fullmatch(r"[0-9a-f]{40}", commit) is not None,
-            f"{path}: v2 publication requires a full measured build commit",
+            f"{path}: v3 publication requires a full measured build commit",
         )
         engine_version = build.get("engine_version")
         require(
             isinstance(engine_version, str)
             and re.fullmatch(r"\d+\.\d+\.\d+", engine_version) is not None,
-            f"{path}: v2 publication requires a semantic engine version",
+            f"{path}: v3 publication requires a semantic engine version",
         )
         require(
             isinstance(build.get("git_tracked_dirty"), bool),
-            f"{path}: v2 publication requires build.git_tracked_dirty",
+            f"{path}: v3 publication requires build.git_tracked_dirty",
         )
     return warnings
 
@@ -342,12 +348,12 @@ def validate_rows(
     ref_key = reference_key(artifact)
     schema = str(artifact.get("schema_version", ""))
     is_fair = schema in FAIR_SCHEMAS
-    is_v2 = schema in V2_SCHEMAS
+    is_current = schema in CURRENT_SCHEMAS
     declared_trials = artifact.get("trials")
-    if is_v2:
+    if is_current:
         require(
             isinstance(declared_trials, int) and not isinstance(declared_trials, bool),
-            f"{path}: v2 publication requires an integer trials count",
+            f"{path}: v3 publication requires an integer trials count",
         )
 
     for model in models:
@@ -380,7 +386,7 @@ def validate_rows(
                 f"{path}: {label}/{workload} ax_engine_py "
                 "median_tokens_per_sec must be finite and positive",
             )
-            if is_v2:
+            if is_current:
                 validate_trial_summary(
                     ax,
                     path=path,
@@ -404,7 +410,7 @@ def validate_rows(
                     f"{path}: {label}/{workload} {ref_key} "
                     "median_tokens_per_sec must be finite and positive",
                 )
-                if is_v2:
+                if is_current:
                     validate_trial_summary(
                         ref,
                         path=path,
@@ -450,7 +456,7 @@ def validate_rows(
                             f"{path}: {label}/{workload} lacks median_ms_per_item "
                             "(short-query primary metric)"
                         )
-                    elif is_v2:
+                    elif is_current:
                         validate_trial_summary(
                             ax,
                             path=path,
@@ -484,7 +490,7 @@ def validate_rows(
                     f"{path}: {label}/{workload} ax_engine_py "
                     "median_batch_p95_ms must be finite and non-negative",
                 )
-                if is_v2:
+                if is_current:
                     validate_trial_summary(
                         ax,
                         path=path,
@@ -528,11 +534,11 @@ def validate_claim_shape(
     if strict:
         require(
             isinstance(raw_ax_only, bool),
-            f"{path}: v2 publication requires boolean ax_only",
+            f"{path}: v3 publication requires boolean ax_only",
         )
         require(
             declared in VALID_CLAIMS,
-            f"{path}: v2 publication requires a recognized publication_claim",
+            f"{path}: v3 publication requires a recognized publication_claim",
         )
     ax_only = bool(raw_ax_only)
     if declared in VALID_CLAIMS and declared != claim:
@@ -583,24 +589,26 @@ def validate_artifact(
     )
 
     warnings: list[str] = []
-    is_v2 = schema in V2_SCHEMAS
+    is_current = schema in CURRENT_SCHEMAS
     has_identity = isinstance(artifact.get("runtime_identity"), dict)
-    validate_claim_shape(artifact, path=path, claim=claim, strict=is_v2)
-
-    if is_v2 or has_identity:
-        warnings.extend(validate_host(artifact, path=path))
-        warnings.extend(validate_build(artifact, path=path, strict=is_v2))
-        warnings.extend(validate_runtime_identity(artifact, path=path, claim=claim))
-    else:
+    if not is_current:
         if not allow_legacy:
             raise PublishGateError(
-                f"{path}: legacy artifact without runtime_identity; "
-                "re-run the v2 harness or pass --allow-legacy for retained "
-                "historical rows"
+                f"{path}: legacy schema {schema} is retained for historical context only; "
+                "re-run the v3 harness or pass --allow-legacy"
             )
         warnings.append(
-            f"{path}: legacy schema {schema} accepted via --allow-legacy (no runtime_identity)"
+            f"{path}: legacy schema {schema} accepted via --allow-legacy "
+            "(historical context only)"
         )
+
+    validate_claim_shape(artifact, path=path, claim=claim, strict=is_current)
+
+    if is_current or has_identity:
+        warnings.extend(validate_host(artifact, path=path))
+        warnings.extend(validate_build(artifact, path=path, strict=is_current))
+        warnings.extend(validate_runtime_identity(artifact, path=path, claim=claim))
+    else:
         # Still require git_commit when present for basic provenance.
         if not artifact.get("git_commit"):
             warnings.append(f"{path}: legacy artifact missing git_commit")
@@ -612,36 +620,36 @@ def validate_artifact(
 
     warnings.extend(validate_rows(artifact, path=path, claim=claim))
 
-    # V2 schemas are current publication evidence, so provenance and
+    # V3 schemas are current publication evidence, so provenance and
     # methodology floors fail closed. Legacy artifacts remain explicitly
     # opt-in historical context and keep warning-only behavior.
     warmup = artifact.get("warmup")
     trials = artifact.get("trials")
-    if is_v2:
+    if is_current:
         if claim == CLAIM_PAIRED:
             require(
                 artifact.get("trial_order") == "interleaved_alternating",
-                f"{path}: paired v2 publication requires trial_order=interleaved_alternating",
+                f"{path}: paired v3 publication requires trial_order=interleaved_alternating",
             )
         require(
             isinstance(warmup, int) and warmup >= MIN_WARMUPS,
-            f"{path}: v2 publication requires warmup >= {MIN_WARMUPS}",
+            f"{path}: v3 publication requires warmup >= {MIN_WARMUPS}",
         )
         require(
             isinstance(trials, int) and trials >= MIN_TRIALS,
-            f"{path}: v2 publication requires trials >= {MIN_TRIALS}",
+            f"{path}: v3 publication requires trials >= {MIN_TRIALS}",
         )
         if schema in SCALE_SCHEMAS:
             require(
                 artifact.get("status") == "complete",
-                f"{path}: v2 ingest-scale artifact is not complete",
+                f"{path}: v3 ingest-scale artifact is not complete",
             )
             cooldown = artifact.get("cooldown_s")
             require(
                 isinstance(cooldown, (int, float))
                 and not isinstance(cooldown, bool)
                 and float(cooldown) >= MIN_SCALE_COOLDOWN_SECONDS,
-                f"{path}: v2 ingest-scale publication requires cooldown_s "
+                f"{path}: v3 ingest-scale publication requires cooldown_s "
                 f">= {MIN_SCALE_COOLDOWN_SECONDS:.0f}",
             )
             validate_benchmark_conditions(artifact, path=path)
@@ -678,7 +686,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-legacy",
         action="store_true",
-        help="Accept v1 artifacts without runtime_identity (historical only).",
+        help="Accept retained v1/v2 artifacts as historical context only.",
     )
     parser.add_argument(
         "--require-clean-tree",

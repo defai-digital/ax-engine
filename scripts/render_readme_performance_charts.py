@@ -3091,9 +3091,10 @@ def _assert_embedding_publish_gate(
 ) -> None:
     """Reject chart inputs that fail the embedding publication gate.
 
-    Historical v1 retained rows pass only with allow_legacy=True (default for
-    chart rendering of frozen artifacts). Fresh v2 paired artifacts are fully
-    validated including runtime_identity / libmlx fingerprints.
+    Historical v1/v2 retained rows pass only with allow_legacy=True (default
+    for chart rendering of frozen artifacts). Fresh v3 artifacts are fully
+    validated, including runtime identity, trial summaries, and host
+    performance-condition boundaries.
     """
     gate = _load_embedding_publish_gate()
     try:

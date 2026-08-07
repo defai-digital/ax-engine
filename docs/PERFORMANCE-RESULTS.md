@@ -974,7 +974,9 @@ sustained-ingest claim.
 The current-main Qwen3 AX-only refresh covers 0.6B / 4B / 8B (2026-07-27,
 `v6.11.1`). It is shown beside the retained 2026-07-12 `mlx-lm` medians as a
 **cross-run directional view**, not a same-session paired result. The current
-AX artifact passes `ax_absolute_trend`; retained-reference differences are
+chart inputs are retained pre-v3 artifacts and are accepted only through the
+historical `--allow-legacy` path; they predate the current completion and
+benchmark-condition boundaries. Retained-reference differences are
 intentionally ineligible for `paired_delta` claims because they come from
 separate runs. The percentages below describe direction against the retained
 reference only, not a locked engine-to-engine delta.
@@ -1027,10 +1029,10 @@ model; both series are batched encode, but their cross-run gap is directional.
 
 The current-main EmbeddingGemma AX-only refresh (2026-07-27, `v6.11.1`) is
 compared with the retained 2026-07-02 `mlx-embeddings` medians. It is a
-cross-run directional view, not a paired delta. The fresh AX artifact passes
-the `ax_absolute_trend` publication gate; do not interpret the percentages as
-an exact engine-to-engine claim because retained reference and fresh AX data
-are separate runs.
+cross-run directional view, not a paired delta. Both inputs are retained
+pre-v3 artifacts accepted only as historical context; do not interpret the
+percentages as an exact engine-to-engine claim because retained reference and
+fresh AX data are separate runs.
 
 EmbeddingGemma uses `mlx-embeddings` as the sustained reference because its
 full sentence-transformers route includes mean pooling, the Dense projection
@@ -1059,12 +1061,13 @@ EmbeddingGemma reference rows come from
 `benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`
 and fresh AX-only rows from
 `benchmarks/results/embedding/embedding-scale/2026-07-27-e13cb731-m5max-ax-only-embeddinggemma/2026-07-27-021706/`.
-Both fresh AX artifacts pass `ax_absolute_trend`; retained-reference
-differences remain directional because the references are separate runs, not a
-paired matrix. All scale runs use Hugging Face snapshot paths, median tok/s,
-batch sizes 8/32/64, 512 chunks per trial, l2-normalized output, 2 warmups, 5
-measured trials, and a 15-second cooldown between measured passes. Qwen uses AX
-last-token pooling; EmbeddingGemma uses AX mean pooling + Dense head.
+These pre-v3 artifacts pass only the explicit historical `--allow-legacy`
+validation path; retained-reference differences remain directional because the
+references are separate runs, not a paired matrix. All scale runs use Hugging
+Face snapshot paths, median tok/s, batch sizes 8/32/64, 512 chunks per trial,
+l2-normalized output, 2 warmups, 5 measured trials, and a 15-second cooldown
+between measured passes. Qwen uses AX last-token pooling; EmbeddingGemma uses
+AX mean pooling + Dense head.
 Single-batch cooled artifacts remain under
 `benchmarks/results/embedding/embedding-fair/` for latency diagnostics
 (short-query headlined as ms/item), but they are intentionally not published

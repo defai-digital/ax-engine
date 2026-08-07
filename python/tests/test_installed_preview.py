@@ -118,6 +118,12 @@ class InstalledPreviewTests(unittest.TestCase):
         runtime_dir = package_dir / ".dylibs"
         console = pathlib.Path(sys.prefix) / "bin" / "ax-engine"
 
+        source_package_dir = pathlib.Path(__file__).resolve().parents[1] / "ax_engine"
+        if package_dir == source_package_dir.resolve() and not bench.is_file():
+            self.skipTest(
+                "wheel-only runtime asset check is not applicable to a maturin editable install"
+            )
+
         self.assertTrue(bench.is_file(), f"wheel is missing {bench}")
         self.assertTrue(os.access(bench, os.X_OK), f"wheel binary is not executable: {bench}")
         self.assertTrue(console.is_file(), f"wheel console script is missing: {console}")
