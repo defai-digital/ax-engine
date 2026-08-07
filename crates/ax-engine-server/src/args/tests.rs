@@ -1007,8 +1007,7 @@ fn preset_hf_cache_resolution_prefers_manifest_bearing_candidate() {
         .join("snapshots")
         .join("raw999");
     fs::create_dir_all(&raw).expect("raw snapshot dir should create");
-    fs::write(raw.join("config.json"), r#"{"model_type":"gemma4"}"#)
-        .expect("config should write");
+    fs::write(raw.join("config.json"), r#"{"model_type":"gemma4"}"#).expect("config should write");
     fs::write(raw.join("model.safetensors"), b"placeholder")
         .expect("safetensors marker should write");
     let converted = write_hf_snapshot(
