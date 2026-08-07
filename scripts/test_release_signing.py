@@ -40,7 +40,18 @@ class ReleaseSigningTests(unittest.TestCase):
             text,
         )
         self.assertIn('codesign --verify --strict --verbose=2 -R="notarized"', text)
-        self.assertNotIn("spctl --assess", text)
+        self.assertIn("register_notarization_ticket", text)
+        self.assertIn("xattr -w com.apple.quarantine", text)
+        self.assertIn("spctl --assess --type install --ignore-cache", text)
+        self.assertIn("AX Engine release verifier", text)
+        self.assertLess(
+            text.index("xattr -w com.apple.quarantine"),
+            text.index("spctl --assess --type install --ignore-cache"),
+        )
+        self.assertLess(
+            text.index("spctl --assess --type install --ignore-cache"),
+            text.rindex('codesign --verify --strict --verbose=2 -R="notarized"'),
+        )
         self.assertIn("release_args+=(--draft)", text)
         self.assertIn(
             "release $TAG is already published; refusing to replace verified assets", text
