@@ -299,7 +299,10 @@ Rules for the current matrix:
   verifier profile with `--ax-qwen-linear-mtp-exact`. This profile preserves
   the invariant projection/reduction contract and enables the recurrent-state
   checkpoint; it does not enable optimistic acceptance. Current matrix runners
-  add the flag and reject an AX artifact that does not record it.
+  add the flag and reject an AX artifact that does not record it. Production
+  serving auto-selects the same profile per eligible Qwen3.5/Qwen3.6 model;
+  benchmark publication keeps the explicit flag so provenance remains
+  unambiguous.
 - Report decode tok/s, prefill tok/s, TTFT ms, and MTP accept rate for every
   supported lane.
 - Keep the default host-condition gates enabled. The matrix waits for an

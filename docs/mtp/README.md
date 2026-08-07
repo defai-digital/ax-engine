@@ -14,6 +14,14 @@ validation, or MTP tuning reports.
 - Current Qwen linear-attention publication rows must explicitly record the
   validated exact-verifier profile (`--ax-qwen-linear-mtp-exact`). The profile
   is an arithmetic/checkpoint contract, not optimistic acceptance.
+- Production runners automatically select that contract per loaded Qwen3.5 /
+  Qwen3.6 artifact when its MTP depth and dense or affine 4/6/8-bit tensor
+  layout are certified. This includes mixed 4/8-bit AXQ packages with group
+  sizes 32/64. The selection is runner-scoped, so one resident model cannot
+  change another model's arithmetic. Set
+  `AX_MLX_QWEN_LINEAR_MTP_EXACT=0` as a kill switch; an ineligible or
+  explicitly disabled Qwen linear-MTP package safely uses direct decode
+  instead of the slow singleton-replay MTP path.
 - Direct rows are allowed only as same-package denominators for AX MTP
   acceleration charts, not as cross-model speed evidence.
 

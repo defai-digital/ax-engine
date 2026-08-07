@@ -799,6 +799,15 @@ pub struct MlxRunner {
     /// request sampling are available. Studio deliberately disables n-gram
     /// while leaving this enabled for validated MTP packages.
     mtp_requested: bool,
+    /// Whether a model-based MTP route is safe for this loaded artifact.
+    ///
+    /// Qwen linear-attention MTP requires the exact verifier profile. Other
+    /// MTP families are unaffected. The setter cannot bypass this hard gate.
+    mtp_model_route_safe: bool,
+    /// Per-artifact Qwen linear-MTP exact capability and resolved selection.
+    qwen_linear_mtp_exact_eligible: bool,
+    qwen_linear_mtp_exact_enabled: bool,
+    qwen_linear_mtp_exact_selection: u32,
     /// When true, keep MTP enabled but do not use the n-gram-first draft source
     /// inside the MTP verify loop.
     disable_mtp_ngram_stacking: bool,
@@ -1105,7 +1114,9 @@ impl MlxRunner {
     /// speculation switch. The process-wide `AX_NO_SPEC` kill switch remains
     /// authoritative and cannot be re-enabled through this setter.
     pub fn set_mtp_requested(&mut self, requested: bool) {
-        self.mtp_requested = requested && !crate::fastpath::ngram_acceleration_disabled();
+        self.mtp_requested = requested
+            && self.mtp_model_route_safe
+            && !crate::fastpath::ngram_acceleration_disabled();
     }
 
     pub fn mtp_requested(&self) -> bool {
@@ -1392,6 +1403,20 @@ impl MlxRunner {
                 loaded
             }
         };
+        let qwen_linear_mtp_exact_eligible = qwen_linear_mtp_exact_model_eligible(
+            &cfg.model_family,
+            cfg.linear_attention.is_some(),
+            weights.mtp.as_ref().map_or(0, |head| head.max_depth),
+            artifacts.tensor_specs(),
+        );
+        let (qwen_linear_mtp_exact_enabled, qwen_linear_mtp_exact_selection) =
+            crate::fastpath::resolve_qwen_linear_mtp_exact(qwen_linear_mtp_exact_eligible);
+        // Cover load-time JIT warm-up with the same arithmetic contract used
+        // by production decode. The scope is runner-local and restores on
+        // every early return.
+        let _qwen_linear_mtp_exact_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(
+            qwen_linear_mtp_exact_enabled && !disable_ngram_acceleration,
+        );
         let (gemma4_assistant_mtp_status, gemma4_assistant_mtp) =
             load_gemma4_assistant_mtp_runtime(&cfg, &weights.gemma4_assistant_mtp);
 
@@ -1577,6 +1602,18 @@ impl MlxRunner {
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
         let has_mtp =
             weights.mtp.is_some() || weights.glm_mtp.is_some() || gemma4_assistant_mtp.is_some();
+        let qwen_linear_mtp_attached = cfg.linear_attention.is_some() && weights.mtp.is_some();
+        let mtp_model_route_safe = !qwen_linear_mtp_attached || qwen_linear_mtp_exact_enabled;
+        if qwen_linear_mtp_attached && !mtp_model_route_safe && !disable_ngram_acceleration {
+            tracing::warn!(
+                target: "ax_engine_mlx::runner",
+                model_family = %cfg.model_family,
+                mtp_depth = weights.mtp.as_ref().map_or(0, |head| head.max_depth),
+                exact_profile_eligible = qwen_linear_mtp_exact_eligible,
+                exact_profile_selection = qwen_linear_mtp_exact_selection.route_code(),
+                "Qwen linear-attention MTP is not exact-profile eligible; using direct decode",
+            );
+        }
         let batched_decode_certification = load_batched_decode_certification(artifacts);
         let batched_decode_capabilities = BatchedDecodeCapabilities::from_loaded_model(
             // This gates the model's actual decode dispatch, which is driven
@@ -1678,7 +1715,11 @@ impl MlxRunner {
             // requested only when speculation remains enabled so greedy direct
             // decode keeps the double-buffer pipeline instead of falling into
             // `run_non_ngram_decode` → single-decode.
-            mtp_requested: !disable_ngram_acceleration,
+            mtp_requested: !disable_ngram_acceleration && mtp_model_route_safe,
+            mtp_model_route_safe,
+            qwen_linear_mtp_exact_eligible,
+            qwen_linear_mtp_exact_enabled,
+            qwen_linear_mtp_exact_selection: qwen_linear_mtp_exact_selection.route_code(),
             disable_mtp_ngram_stacking,
             mtp_optimistic: mtp_optimistic_from_env(),
             mtp_skip_state: mtp_skip_state_from_env(),
@@ -2790,6 +2831,12 @@ struct StagedBatchedPrefill {
 
 impl ExecutionRunner for MlxRunner {
     fn run(&self, input: RunnerInput) -> RunnerOutput {
+        // Keep exact arithmetic model-scoped. This prevents one resident Qwen
+        // MTP model from changing the projection path of another model in the
+        // same server process.
+        let _qwen_linear_mtp_exact_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(
+            self.qwen_linear_mtp_exact_enabled && self.mtp_requested,
+        );
         let step_id = input.execution_batch.step_id;
         let mut request_updates = Vec::new();
         let logits_handles = Vec::new();
@@ -2832,6 +2879,31 @@ impl ExecutionRunner for MlxRunner {
                 &mut route_metadata.crossover_decisions,
                 ROUTE_DECISION_AX_MLX_GENERATION_WORK_UNIT,
                 work_unit.telemetry_code(),
+            );
+        }
+        upsert_route_decision(
+            &mut route_metadata.crossover_decisions,
+            "ax_mlx_qwen_linear_mtp_exact_eligible",
+            u32::from(self.qwen_linear_mtp_exact_eligible),
+        );
+        upsert_route_decision(
+            &mut route_metadata.crossover_decisions,
+            "ax_mlx_qwen_linear_mtp_exact_enabled",
+            u32::from(self.qwen_linear_mtp_exact_enabled && self.mtp_requested),
+        );
+        upsert_route_decision(
+            &mut route_metadata.crossover_decisions,
+            "ax_mlx_qwen_linear_mtp_exact_selection",
+            self.qwen_linear_mtp_exact_selection,
+        );
+        if self.cfg.linear_attention.is_some()
+            && self.weights.mtp.is_some()
+            && !self.mtp_model_route_safe
+        {
+            upsert_route_decision(
+                &mut route_metadata.crossover_decisions,
+                "ax_mlx_qwen_linear_mtp_direct_fallback",
+                1,
             );
         }
 
@@ -9896,6 +9968,51 @@ fn select_linear_mtp_correction_token(
 /// singleton replay.
 const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
 
+fn qwen_linear_mtp_exact_tensor_supported(
+    source_quantized: bool,
+    quantization: Option<(&str, u32, u32)>,
+) -> bool {
+    match quantization {
+        Some((mode, bits, group_size)) => {
+            mode == "affine" && matches!(bits, 4 | 6 | 8) && matches!(group_size, 32 | 64)
+        }
+        // Dense BF16/F16/F32 projections are covered by the invariant dense
+        // kernel. A tensor marked source-quantized without normalized affine
+        // metadata is not a safe implicit capability.
+        None => !source_quantized,
+    }
+}
+
+/// Runtime-owned capability gate for the exact Qwen linear-MTP verifier.
+///
+/// This intentionally derives from the loaded model contract rather than an
+/// artifact's marketing/runtime recommendation. Qwen3.5 and Qwen3.6 share the
+/// `qwen3_5` runtime family. The invariant kernels and recurrent checkpoint are
+/// certified for draft depths 1-3 and dense or affine 4/6/8-bit tensors with
+/// the production group sizes used by uniform, OptiQ, and AXQ artifacts.
+fn qwen_linear_mtp_exact_model_eligible(
+    model_family: &str,
+    has_linear_attention: bool,
+    mtp_depth: usize,
+    tensor_specs: &[ax_engine_core::NativeTensorSpec],
+) -> bool {
+    model_family == "qwen3_5"
+        && has_linear_attention
+        && (1..=QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS).contains(&mtp_depth)
+        && tensor_specs.iter().all(|tensor| {
+            qwen_linear_mtp_exact_tensor_supported(
+                tensor.source_quantized,
+                tensor.quantization.as_ref().map(|quantization| {
+                    (
+                        quantization.mode.as_str(),
+                        quantization.bits,
+                        quantization.group_size,
+                    )
+                }),
+            )
+        })
+}
+
 fn linear_mtp_requires_singleton_replay(
     pending_len: usize,
     exact_profile_enabled: bool,
@@ -11400,7 +11517,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_mtp_checkpoint_requires_explicit_exact_profile() {
+    fn linear_mtp_checkpoint_uses_resolved_exact_profile() {
         assert!(!linear_mtp_requires_singleton_replay(1, true, false));
         assert!(linear_mtp_requires_singleton_replay(1, false, false));
         assert!(linear_mtp_requires_singleton_replay(1, true, true));
@@ -11413,6 +11530,81 @@ mod tests {
         assert!(linear_mtp_requires_singleton_replay(0, true, false));
         assert!(linear_mtp_requires_singleton_replay(2, false, false));
         assert!(linear_mtp_requires_singleton_replay(2, true, true));
+    }
+
+    #[test]
+    fn qwen_linear_mtp_exact_capability_accepts_axq_mixed_affine_contract() {
+        assert!(qwen_linear_mtp_exact_tensor_supported(
+            true,
+            Some(("affine", 4, 32))
+        ));
+        assert!(qwen_linear_mtp_exact_tensor_supported(
+            true,
+            Some(("affine", 4, 64))
+        ));
+        assert!(qwen_linear_mtp_exact_tensor_supported(
+            true,
+            Some(("affine", 8, 64))
+        ));
+        assert!(qwen_linear_mtp_exact_tensor_supported(false, None));
+    }
+
+    #[test]
+    fn qwen_linear_mtp_exact_capability_rejects_uncertified_quantization() {
+        for quantization in [
+            Some(("affine", 2, 64)),
+            Some(("affine", 3, 64)),
+            Some(("affine", 5, 64)),
+            Some(("affine", 6, 128)),
+            Some(("mxfp4", 4, 32)),
+        ] {
+            assert!(
+                !qwen_linear_mtp_exact_tensor_supported(true, quantization),
+                "unexpectedly admitted {quantization:?}"
+            );
+        }
+        assert!(!qwen_linear_mtp_exact_tensor_supported(true, None));
+    }
+
+    #[test]
+    fn qwen_linear_mtp_exact_capability_is_family_and_depth_bounded() {
+        let no_tensors = [];
+        assert!(qwen_linear_mtp_exact_model_eligible(
+            "qwen3_5",
+            true,
+            1,
+            &no_tensors
+        ));
+        assert!(qwen_linear_mtp_exact_model_eligible(
+            "qwen3_5",
+            true,
+            3,
+            &no_tensors
+        ));
+        assert!(!qwen_linear_mtp_exact_model_eligible(
+            "qwen3_next",
+            true,
+            1,
+            &no_tensors
+        ));
+        assert!(!qwen_linear_mtp_exact_model_eligible(
+            "qwen3_5",
+            false,
+            1,
+            &no_tensors
+        ));
+        assert!(!qwen_linear_mtp_exact_model_eligible(
+            "qwen3_5",
+            true,
+            0,
+            &no_tensors
+        ));
+        assert!(!qwen_linear_mtp_exact_model_eligible(
+            "qwen3_5",
+            true,
+            4,
+            &no_tensors
+        ));
     }
 
     #[test]

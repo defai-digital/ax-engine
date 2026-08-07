@@ -1,4 +1,4 @@
-//! Process-wide environment flags for ax-engine-mlx optimization fast paths.
+//! Environment-backed optimization flags for ax-engine-mlx fast paths.
 //!
 //! Each accessor reads its environment variable once per process and caches
 //! the result in a `OnceLock`. For opt-in flags, the value is parsed
@@ -12,17 +12,26 @@
 //! opt-in or kill switch, and an explicit fallback. Co-locating the env-var
 //! names here gives a single grep target for "which optimization flags does the
 //! runtime expose?" and matches the W1.3 / W2.a audit conventions.
+//!
+//! Qwen linear-MTP exact arithmetic is the one model-scoped exception: its
+//! environment value is still cached, but production runners install a
+//! thread-local selection derived from the loaded artifact capability.
 
+use std::cell::Cell;
 use std::sync::OnceLock;
+
+fn parse_bool_value(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    trimmed.eq_ignore_ascii_case("1")
+        || trimmed.eq_ignore_ascii_case("true")
+        || trimmed.eq_ignore_ascii_case("yes")
+}
 
 fn parse_bool_env(var: &str) -> bool {
     let Ok(raw) = std::env::var(var) else {
         return false;
     };
-    let trimmed = raw.trim();
-    trimmed.eq_ignore_ascii_case("1")
-        || trimmed.eq_ignore_ascii_case("true")
-        || trimmed.eq_ignore_ascii_case("yes")
+    parse_bool_value(&raw)
 }
 
 /// Parse an env var as a kill switch. Returns `true` when unset or set to a
@@ -297,19 +306,118 @@ env_flag_default_on!(
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
 );
 
-env_flag!(
-    /// `AX_MLX_QWEN_LINEAR_MTP_EXACT` — select the Qwen3.6 linear-attention
-    /// speculative-verifier arithmetic contract validated against singleton
-    /// production decode.
-    ///
-    /// This profile keeps per-row projection/reduction order invariant for a
-    /// 1–4 token verifier, uses the matching multi-token post-input kernel and
-    /// split FFN layout, and disables singleton-only staging fast paths whose
-    /// arithmetic differs by graph shape. It does not enable optimistic
-    /// acceptance or otherwise weaken verification.
-    qwen_linear_mtp_exact_enabled,
-    "AX_MLX_QWEN_LINEAR_MTP_EXACT"
-);
+const QWEN_LINEAR_MTP_EXACT_ENV: &str = "AX_MLX_QWEN_LINEAR_MTP_EXACT";
+
+/// How the Qwen linear-MTP exact arithmetic profile was selected.
+///
+/// The route code is emitted by `MlxRunner` so benchmark artifacts distinguish
+/// the production auto-capability path from an explicit operator override.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum QwenLinearMtpExactSelection {
+    /// The loaded model does not satisfy the runtime's exact-profile contract.
+    Ineligible,
+    /// The model satisfies the runtime contract and the environment is unset.
+    Auto,
+    /// The model satisfies the contract and the operator explicitly enabled it.
+    ExplicitEnabled,
+    /// The operator explicitly disabled the profile.
+    ExplicitDisabled,
+}
+
+impl QwenLinearMtpExactSelection {
+    pub(crate) fn route_code(self) -> u32 {
+        match self {
+            Self::Ineligible => 0,
+            Self::Auto => 1,
+            Self::ExplicitEnabled => 2,
+            Self::ExplicitDisabled => 3,
+        }
+    }
+}
+
+fn qwen_linear_mtp_exact_env_override() -> Option<bool> {
+    static CACHED: OnceLock<Option<bool>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var(QWEN_LINEAR_MTP_EXACT_ENV)
+            .ok()
+            .map(|raw| parse_bool_value(&raw))
+    })
+}
+
+fn resolve_qwen_linear_mtp_exact_with_override(
+    model_eligible: bool,
+    explicit: Option<bool>,
+) -> (bool, QwenLinearMtpExactSelection) {
+    if !model_eligible {
+        return (false, QwenLinearMtpExactSelection::Ineligible);
+    }
+    match explicit {
+        Some(true) => (true, QwenLinearMtpExactSelection::ExplicitEnabled),
+        Some(false) => (false, QwenLinearMtpExactSelection::ExplicitDisabled),
+        None => (true, QwenLinearMtpExactSelection::Auto),
+    }
+}
+
+/// Resolve the per-model Qwen linear-MTP exact profile.
+///
+/// A truthy environment value records an explicit selection but cannot bypass
+/// the model capability gate. A falsy or malformed value is a kill switch.
+/// When the environment is unset, certified models select the profile
+/// automatically.
+pub(crate) fn resolve_qwen_linear_mtp_exact(
+    model_eligible: bool,
+) -> (bool, QwenLinearMtpExactSelection) {
+    resolve_qwen_linear_mtp_exact_with_override(
+        model_eligible,
+        qwen_linear_mtp_exact_env_override(),
+    )
+}
+
+thread_local! {
+    /// Runner-scoped selection. `None` preserves the legacy explicit-env
+    /// behavior for standalone probes that call model functions directly.
+    static QWEN_LINEAR_MTP_EXACT_SCOPE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Restores the previous thread-local exact-profile selection on drop.
+#[must_use]
+pub(crate) struct QwenLinearMtpExactScope {
+    previous: Option<bool>,
+}
+
+impl Drop for QwenLinearMtpExactScope {
+    fn drop(&mut self) {
+        QWEN_LINEAR_MTP_EXACT_SCOPE.with(|current| current.set(self.previous));
+    }
+}
+
+/// Select the exact arithmetic profile for one model-runner call.
+///
+/// MLX graph construction is synchronous on the runner thread, so a scoped
+/// thread-local keeps concurrent resident models isolated without mutating
+/// process-wide environment state.
+pub(crate) fn scoped_qwen_linear_mtp_exact(enabled: bool) -> QwenLinearMtpExactScope {
+    let previous = QWEN_LINEAR_MTP_EXACT_SCOPE.with(|current| {
+        let previous = current.get();
+        current.set(Some(enabled));
+        previous
+    });
+    QwenLinearMtpExactScope { previous }
+}
+
+/// Whether the current model call uses the Qwen linear-attention exact
+/// speculative-verifier arithmetic contract.
+///
+/// Production runners install a per-model scope. Standalone diagnostic probes
+/// that do not install a scope retain the historical
+/// `AX_MLX_QWEN_LINEAR_MTP_EXACT=1` opt-in behavior.
+pub fn qwen_linear_mtp_exact_enabled() -> bool {
+    QWEN_LINEAR_MTP_EXACT_SCOPE.with(|current| {
+        current
+            .get()
+            .unwrap_or_else(|| qwen_linear_mtp_exact_env_override().unwrap_or(false))
+    })
+}
 
 env_flag!(
     /// `AX_MLX_MTP_ASYNC_DRAFT` — schedule the greedy zero-gate MTP draft
@@ -2046,6 +2154,46 @@ mod tests {
         assert!(!parse_bool_env("AX_FASTPATH_TEST_DEFINITELY_UNSET"));
     }
 
+    #[test]
+    fn qwen_linear_mtp_exact_resolution_is_capability_bounded() {
+        assert_eq!(
+            resolve_qwen_linear_mtp_exact_with_override(false, None),
+            (false, QwenLinearMtpExactSelection::Ineligible)
+        );
+        assert_eq!(
+            resolve_qwen_linear_mtp_exact_with_override(false, Some(true)),
+            (false, QwenLinearMtpExactSelection::Ineligible),
+            "an env opt-in must not bypass the hard model gate"
+        );
+        assert_eq!(
+            resolve_qwen_linear_mtp_exact_with_override(true, None),
+            (true, QwenLinearMtpExactSelection::Auto)
+        );
+        assert_eq!(
+            resolve_qwen_linear_mtp_exact_with_override(true, Some(true)),
+            (true, QwenLinearMtpExactSelection::ExplicitEnabled)
+        );
+        assert_eq!(
+            resolve_qwen_linear_mtp_exact_with_override(true, Some(false)),
+            (false, QwenLinearMtpExactSelection::ExplicitDisabled)
+        );
+    }
+
+    #[test]
+    fn qwen_linear_mtp_exact_scope_is_nested_and_restored() {
+        let baseline = qwen_linear_mtp_exact_enabled();
+        {
+            let _outer = scoped_qwen_linear_mtp_exact(true);
+            assert!(qwen_linear_mtp_exact_enabled());
+            {
+                let _inner = scoped_qwen_linear_mtp_exact(false);
+                assert!(!qwen_linear_mtp_exact_enabled());
+            }
+            assert!(qwen_linear_mtp_exact_enabled());
+        }
+        assert_eq!(qwen_linear_mtp_exact_enabled(), baseline);
+    }
+
     fn probe_default_on(name: &str, value: &str) -> bool {
         // SAFETY: each test owns a disjoint set of env-var names. Remove
         // before asserting so a failing assert does not leak the var.
@@ -2580,7 +2728,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_linear_mtp_exact_uses_opt_in_contract() {
+    fn qwen_linear_mtp_exact_env_override_uses_truthy_contract() {
         assert!(!parse_bool_env(
             "AX_FASTPATH_TEST_QWEN_LINEAR_MTP_EXACT_UNSET"
         ));
