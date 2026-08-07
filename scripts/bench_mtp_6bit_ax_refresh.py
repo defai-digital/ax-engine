@@ -821,6 +821,7 @@ def render_readme_section(summary: dict[str, Any]) -> str:
     validate_readme_publication_summary(summary)
     rows = summary["rows"]
     run_dir = summary["run_dir"]
+    run_link = f"../{run_dir}"
     date_match = re.search(r"(?:^|/)(\d{4}-\d{2}-\d{2})", run_dir)
     assert date_match is not None
     run_date = date_match.group(1)
@@ -867,8 +868,8 @@ def render_readme_section(summary: dict[str, Any]) -> str:
         "prefill. Direct and MTP rows use the same package and prompt suite.",
         "",
         "Exactness is checked with per-mode seed reproducibility. Summary artifacts:",
-        f"[`summary.md`]({run_dir}/summary.md) and",
-        f"[`summary.json`]({run_dir}/summary.json).",
+        f"[`summary.md`]({run_link}/summary.md) and",
+        f"[`summary.json`]({run_link}/summary.json).",
     ]
     return "\n".join(lines)
 

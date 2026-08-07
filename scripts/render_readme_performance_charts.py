@@ -1314,7 +1314,7 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
 def find_mtp_6bit_summary(readme: Path) -> Path | None:
     text = readme.read_text()
     match = re.search(
-        r"\]\((benchmarks/results/(?:speculative/)?mtp-6bit/[^)]+/summary\.json)\)",
+        r"\]\(((?:\.\./)?benchmarks/results/(?:speculative/)?mtp-6bit/[^)]+/summary\.json)\)",
         text,
     )
     if match is None:
@@ -1697,7 +1697,8 @@ MTP_PEER_METRICS = {
 def find_mtp_peer_summary(readme: Path) -> Path | None:
     text = readme.read_text()
     match = re.search(
-        r"\]\((benchmarks/results/mtp-qwen36-matrix/[^)]+peer-comparison-apples-to-apples(?:-refresh)?/summary\.json)\)",
+        r"\]\(((?:\.\./)?benchmarks/results/mtp-qwen36-matrix/"
+        r"[^)]+peer-comparison-apples-to-apples(?:-refresh)?/summary\.json)\)",
         text,
     )
     if match is None:

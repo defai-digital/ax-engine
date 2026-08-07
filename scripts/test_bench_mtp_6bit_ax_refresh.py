@@ -388,6 +388,11 @@ class BenchMtpRefreshTests(unittest.TestCase):
             updated,
         )
         self.assertIn("perf-mtp-6bit-ax-acceleration.svg", updated)
+        self.assertIn(
+            "](../benchmarks/results/speculative/mtp-6bit/"
+            "2026-07-13-exact/summary.json)",
+            updated,
+        )
         self.assertIn("#### Qwen3.6 MTP peer decode comparison", updated)
         self.assertNotIn("legacy diagnostic", updated)
         self.assertNotIn("approximate-diagnostic.svg", updated)

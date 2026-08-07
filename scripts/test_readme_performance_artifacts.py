@@ -165,8 +165,9 @@ def write_mtp_exact_claim_fixture(root: Path) -> tuple[Path, Path]:
                 ratio=row["ax_mtp_speedup_x"],
             )
         )
-    readme_path = root / "README.md"
-    summary_link = summary_path.relative_to(root)
+    readme_path = root / "docs/PERFORMANCE-RESULTS.md"
+    readme_path.parent.mkdir()
+    summary_link = Path("..") / summary_path.relative_to(root)
     readme_path.write_text(
         "#### AX Engine v6.9.0 6-bit exact sampled-MTP comparison (2026-07-13)\n\n"
         "This uses distribution-exact sampled MTP. Across 15 target/suite rows: "

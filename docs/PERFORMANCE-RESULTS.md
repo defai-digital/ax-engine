@@ -213,8 +213,8 @@ acceleration claims, because speculative decoding starts after prompt
 prefill. Direct and MTP rows use the same package and prompt suite.
 
 Exactness is checked with per-mode seed reproducibility. Summary artifacts:
-[`summary.md`](benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/summary.md) and
-[`summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/summary.json).
+[`summary.md`](../benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/summary.md) and
+[`summary.json`](../benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/summary.json).
 
 Provenance vs the prior v6.9.0 (2026-07-16) matrix: this refresh runs the
 same contract after two intentional runtime changes. A speculation-profile
@@ -282,9 +282,9 @@ audit context.
 Full results, charts, artifact links, and fairness limitations:
 [`mtp/qwen36-peer-comparison.md`](mtp/qwen36-peer-comparison.md).
 Stitched chart source:
-[`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json).
+[`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json`](../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json).
 Decode and output-work diagnostic source:
-[`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json).
+[`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json`](../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json).
 For the older AX-only Qwen3.6 table across `flappy`, `long_code`, and
 `python_modules_long`, see
 [`mtp/qwen36-matrix-refresh.md`](mtp/qwen36-matrix-refresh.md). That
@@ -322,7 +322,7 @@ Prefill and TTFT are context only: assistant-MTP starts after prompt prefill.
 Depth-2 remains the default assistant configuration; set
 `AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH=1` to restore single-token drafting.
 Raw direct and MTP artifacts, route telemetry, and parity checks are in the
-[2026-07-16 Gemma 4 12B 4-bit refresh](benchmarks/results/speculative/gemma4-assistant-mtp/2026-07-16-gemma4-12b-4bit-ax-only-refresh/summary.json).
+[2026-07-16 Gemma 4 12B 4-bit refresh](../benchmarks/results/speculative/gemma4-assistant-mtp/2026-07-16-gemma4-12b-4bit-ax-only-refresh/summary.json).
 
 ### Session Mode: Multi-Model Serving (S1, single process vs multi-process peer)
 
@@ -439,7 +439,7 @@ and charts.
 | Evidence set | Coverage | Public interpretation |
 | --- | --- | --- |
 | Current HEAD | Incomplete clean paired sweep | No peer-performance claim |
-| 2026-07-12 AX-only validation | Gemma 4 E2B/31B and Qwen 3.6 27B 4-bit; one warmup and three measurements | Diagnostic only; [artifacts](benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/sweep_summary.md) |
+| 2026-07-12 AX-only validation | Gemma 4 E2B/31B and Qwen 3.6 27B 4-bit; one warmup and three measurements | Diagnostic only; [artifacts](../benchmarks/results/inference/mlx-inference/2026-07-12-direct-prefill-improve-validate/sweep_summary.md) |
 | 2026-07-11 v6.8.2 composite | Gemma 4 and Qwen 3.6, mixed historical sessions | Archived row-level evidence below; not current-head performance |
 
 #### v6.12.0 AX-only direct snapshot (2026-07-27 mbp-m5)
@@ -494,7 +494,7 @@ same-session peer benchmark; the exact AX values are in the table below.
 | Qwen 3.6 35B A3B | 6-bit | 141.3 | 139.7 | 136.0 | 369.2 | 1,120.0 | 1,907.5 | 346.7 | 457.1 | 1,073.7 |
 
 Decode and prefill values are tok/s; TTFT values are ms. Full raw results:
-[`sweep_results.json`](benchmarks/results/inference/ax-direct/2026-07-27-v6.12.0-m5max-ax-direct-only/sweep_results.json).
+[`sweep_results.json`](../benchmarks/results/inference/ax-direct/2026-07-27-v6.12.0-m5max-ax-direct-only/sweep_results.json).
 
 <!-- readme-ax-direct-snapshot: benchmarks/results/inference/ax-direct/2026-07-27-v6.12.0-m5max-ax-direct-only/sweep_results.json -->
 
@@ -611,19 +611,19 @@ block below. MTP methodology and artifacts live with
 
 The llama.cpp peer columns are measured on llama.cpp b9820 / ggml 0.15.3; full per-prompt
 llama.cpp data is in the verification artifact
-[`gemma-4-12b-it-4bit-b9820-verify.json`](benchmarks/results/inference/llama-cpp-metal/2026-06-27-llama-only-rerun/gemma-4-12b-it-4bit-b9820-verify.json).
+[`gemma-4-12b-it-4bit-b9820-verify.json`](../benchmarks/results/inference/llama-cpp-metal/2026-06-27-llama-only-rerun/gemma-4-12b-it-4bit-b9820-verify.json).
 The AX rows come from the current direct-only AX artifact below. The llama.cpp rows are retained
 from the earlier peer rerun, so these columns are a shape-compatible cross-run comparison, not a
 single-session A/B.
 
 Full artifacts:
-[`2026-07-04-gemma4-12b-ax-direct-mtp-refresh`](benchmarks/results/inference/mlx-inference/2026-07-04-gemma4-12b-ax-direct-mtp-refresh/gemma-4-12b-it-4bit-direct.json)
+[`2026-07-04-gemma4-12b-ax-direct-mtp-refresh`](../benchmarks/results/inference/mlx-inference/2026-07-04-gemma4-12b-ax-direct-mtp-refresh/gemma-4-12b-it-4bit-direct.json)
 (AX direct rerun; chart artifact with retained llama.cpp reference rows in
-[`gemma-4-12b-it-4bit-with-llama-reference.json`](benchmarks/results/inference/mlx-inference/2026-07-04-gemma4-12b-ax-direct-mtp-refresh/gemma-4-12b-it-4bit-with-llama-reference.json);
+[`gemma-4-12b-it-4bit-with-llama-reference.json`](../benchmarks/results/inference/mlx-inference/2026-07-04-gemma4-12b-ax-direct-mtp-refresh/gemma-4-12b-it-4bit-with-llama-reference.json);
 llama.cpp GGUF provenance in
-[`llama_cpp_gguf_provenance.json`](benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/llama_cpp_gguf_provenance.json)).
+[`llama_cpp_gguf_provenance.json`](../benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/llama_cpp_gguf_provenance.json)).
 The upstream 8-bit-FFN bandwidth row is backed by
-[`2026-06-26-gemma4-12b-upstream-8bit-ffn-ax-direct-only`](benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-12b-upstream-8bit-ffn-ax-direct-only/gemma-4-12b-it-4bit.json).
+[`2026-06-26-gemma4-12b-upstream-8bit-ffn-ax-direct-only`](../benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-12b-upstream-8bit-ffn-ax-direct-only/gemma-4-12b-it-4bit.json).
 
 Gemma 4 12B multimodal benchmark details now live in
 [Benchmarks](BENCHMARKS.md#gemma-4-12b-multimodal-benchmark).
@@ -710,7 +710,7 @@ whole-canvas matmul, so it is dispatch-, occupancy-, and kernel-mix-bound rather
 than weight-streaming-bound. Method, convergence signals, optimization toggles,
 and the bandwidth diagnostic live in
 [`DIFFUSIONGEMMA.md`](DIFFUSIONGEMMA.md); full artifact:
-[`2026-07-08-acceptance-075-first-block/summary.json`](benchmarks/results/inference/diffusion-gemma-direct/2026-07-08-acceptance-075-first-block/summary.json)
+[`2026-07-08-acceptance-075-first-block/summary.json`](../benchmarks/results/inference/diffusion-gemma-direct/2026-07-08-acceptance-075-first-block/summary.json)
 (release build, 1 warmup + 5 measured repetitions, 15 s cooldown, medians).
 
 <!-- readme-performance-artifacts: reference=benchmarks/results/inference/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-qwen36-direct-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; reference=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-11-ax-direct-only-v6.8.2-readme/ -->

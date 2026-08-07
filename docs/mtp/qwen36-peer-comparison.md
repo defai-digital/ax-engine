@@ -1,7 +1,7 @@
 # Qwen3.6 MTP Peer Benchmark
 
 This page holds the full Qwen3.6 MTP peer benchmark results for AX Engine,
-MTPLX, and lightning-mlx. The This page keeps only the decode-throughput view
+MTPLX, and lightning-mlx. This page keeps only the decode-throughput view
 because decode is the closest comparable metric across the three engines. The
 full result set belongs here because prefill, TTFT, accept rate, model artifact
 identity, seed policy, and output-quality gates all need more context than the

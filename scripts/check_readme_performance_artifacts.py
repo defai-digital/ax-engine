@@ -1621,7 +1621,7 @@ def validate_readme_mtp_6bit_claims(*, readme_path: Path) -> list[str]:
         return []
     heading, section_text = section
     summary_match = re.search(
-        r"\]\((benchmarks/results/(?:speculative/)?mtp-6bit/[^)]+/summary\.json)\)",
+        r"\]\(((?:\.\./)?benchmarks/results/(?:speculative/)?mtp-6bit/[^)]+/summary\.json)\)",
         section_text,
     )
     if summary_match is None:
