@@ -265,6 +265,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertIn("cross-run distribution", boxplot)
 
         readme_text = readme.read_text()
+        self.assertNotIn("compare the v6.9 AX snapshot", readme_text)
         for row in snapshot["rows"]:
             values = [
                 row["metrics"][metric][prompt_tokens]

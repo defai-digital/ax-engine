@@ -642,9 +642,9 @@ block below. MTP methodology and artifacts live with
 The llama.cpp peer columns are measured on llama.cpp b9820 / ggml 0.15.3; full per-prompt
 llama.cpp data is in the verification artifact
 [`gemma-4-12b-it-4bit-b9820-verify.json`](../benchmarks/results/inference/llama-cpp-metal/2026-06-27-llama-only-rerun/gemma-4-12b-it-4bit-b9820-verify.json).
-The AX rows come from the current direct-only AX artifact below. The llama.cpp rows are retained
-from the earlier peer rerun, so these columns are a shape-compatible cross-run comparison, not a
-single-session A/B.
+The AX rows come from the case-study direct-only artifact below. The llama.cpp
+rows are retained from the earlier peer rerun, so these columns are a
+shape-compatible cross-run comparison, not a single-session A/B.
 
 Full artifacts:
 [`2026-07-04-gemma4-12b-ax-direct-mtp-refresh`](../benchmarks/results/inference/mlx-inference/2026-07-04-gemma4-12b-ax-direct-mtp-refresh/gemma-4-12b-it-4bit-direct.json)
@@ -758,11 +758,12 @@ leads `mlx_lm`, while prefill and runner-time TTFT are mixed and are often
 materially worse, especially for longer prompts. No matrix-wide prefill or
 TTFT lead is claimed.
 
-The six restored family box-and-whisker charts above deliberately keep the
-same mixed-size/quantization distribution shape as the earlier presentation,
-but now label the limitation directly: they compare the v6.9 AX snapshot to
-retained cross-run peer rows. Use the exact table for a model-specific reading;
-do not infer prompt-hash-parity deltas from a family-level box median.
+The six family box-and-whisker charts above are current-snapshot charts, not
+visualizations of this archive. They use the v6.13.3 AX matrix and the fresh
+separate-run `mlx_lm` matrix; the chart itself labels its llama.cpp source.
+The historical tables below remain an audit trail only. Use the current exact
+table above for a model-specific reading, and do not infer prompt-hash-parity
+deltas from a family-level box median.
 
 > **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest Unsloth GGUF quant (4→Q4_K_M, 6→Q6_K), with explicit UD-* Unsloth Dynamic rows only when no standard root-level K-quant is published. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
