@@ -1407,6 +1407,10 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                 run_row.call_args.kwargs["max_top_process_cpu_percent"],
                 sweep.DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
             )
+            self.assertEqual(
+                run_row.call_args.kwargs["load_average_wait_timeout"],
+                sweep.DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS,
+            )
             sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
             self.assertEqual(
                 sweep_results["max_load_average"],
@@ -1415,6 +1419,10 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(
                 sweep_results["max_top_process_cpu_percent"],
                 sweep.DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+            )
+            self.assertEqual(
+                sweep_results["load_average_wait_timeout"],
+                sweep.DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS,
             )
 
     def test_main_can_disable_default_publication_load_gate(self) -> None:
@@ -1472,9 +1480,13 @@ class BenchAxOnlySweepTests(unittest.TestCase):
 
             self.assertIsNone(run_row.call_args.kwargs["max_load_average"])
             self.assertIsNone(run_row.call_args.kwargs["max_top_process_cpu_percent"])
+            self.assertIsNone(
+                run_row.call_args.kwargs["load_average_wait_timeout"]
+            )
             sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
             self.assertIsNone(sweep_results["max_load_average"])
             self.assertIsNone(sweep_results["max_top_process_cpu_percent"])
+            self.assertIsNone(sweep_results["load_average_wait_timeout"])
 
     def test_main_writes_non_candidate_summary_when_interrupted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

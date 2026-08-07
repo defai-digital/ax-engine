@@ -32,6 +32,7 @@ DEFAULT_MANIFEST = REPO_ROOT / "benchmarks" / "manifests" / "llama_cpp_metal" / 
 DEFAULT_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
 DEFAULT_MAX_LOAD_AVERAGE = 2.0
 DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT = 50.0
+DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS = 900.0
 PEER_WIN_MATRIX_SCHEMA_VERSION = "ax.ax_mlx_lm_peer_win_matrix.v1"
 PEER_WIN_SCHEMA_VERSION = "ax.ax_mlx_lm_peer_wins.v1"
 REFERENCE_MATRIX_SCHEMA_VERSION = "ax.mlx_lm_reference_matrix.v1"
@@ -1553,8 +1554,12 @@ def main() -> None:
     parser.add_argument(
         "--load-average-wait-timeout",
         type=float,
-        default=None,
-        help="Forwarded to bench_mlx_inference_stack.py when --max-load-average is set.",
+        default=DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS,
+        help=(
+            "Maximum seconds to wait for the publication performance gates "
+            "before failing a row. "
+            f"Default: {DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS:.0f}."
+        ),
     )
     parser.add_argument(
         "--load-average-poll-interval",
@@ -1589,6 +1594,7 @@ def main() -> None:
     if args.no_load_gate:
         args.max_load_average = None
         args.max_top_process_cpu_percent = None
+        args.load_average_wait_timeout = None
     if args.max_load_average is not None and args.max_load_average < 0.0:
         parser.error("--max-load-average must be non-negative")
     if (
