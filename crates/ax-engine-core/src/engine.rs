@@ -313,12 +313,14 @@ impl EngineCore {
         let retried_memory_blocked = self.request_manager.retry_memory_blocked()?;
         let admitted_requests = self.request_manager.admit_waiting()?;
         self.refresh_execution_plan_refs()?;
+        let prereclaimed_kv_blocks = self.reclaim_kv_for_pending_work(global_token_budget)?;
         let step_id = self.allocate_step_id()?;
         step_span.record("step_id", step_id.0);
         trace!(
             cleanup_results = cleanup_results.len(),
             retried_memory_blocked = retried_memory_blocked.len(),
             admitted_requests = admitted_requests.len(),
+            prereclaimed_kv_blocks,
             "prepared step state"
         );
 
@@ -829,6 +831,61 @@ impl EngineCore {
         }
 
         Ok((prefix_reuse, schedule_plan))
+    }
+
+    /// When the logical pool is exhausted but reclaimable prefix cache
+    /// exists, evict enough sole-owner cached blocks *before* planning that
+    /// the scheduler sees real free capacity instead of the
+    /// `kv_exhausted_reclaimable_cache` one-token throttle. Without this,
+    /// the throttle re-derives every step — allocate-time eviction frees
+    /// exactly one chunk's blocks, free returns to zero — and a fresh long
+    /// prompt prefills token by token (3,770 steps / 259 s TTFT for a
+    /// 4,280-token prompt against a full 1,024-block pool). Demand-bounded
+    /// so a step never evicts more cache than its own budget could consume;
+    /// if nothing is evictable (all cached blocks live-shared) the existing
+    /// one-token backstop and blocked-on-memory retry paths still own
+    /// progress.
+    fn reclaim_kv_for_pending_work(
+        &mut self,
+        global_token_budget: u32,
+    ) -> Result<u32, EngineCoreError> {
+        if self.kv_manager.available_block_count() > 0 {
+            return Ok(0);
+        }
+        let block_size = self.kv_manager.config().block_size_tokens.max(1);
+        let mut pending_prefill_tokens: u64 = 0;
+        let mut decode_candidates: u32 = 0;
+        for record in self.request_manager.records_iter() {
+            if record.state != RequestState::Runnable {
+                continue;
+            }
+            let prompt_len = record.prompt_tokens.len() as u64;
+            let processed = u64::from(record.processed_prompt_tokens);
+            if processed < prompt_len {
+                pending_prefill_tokens += prompt_len - processed;
+            } else if (record.generated_tokens.len() as u64) < u64::from(record.max_output_tokens) {
+                decode_candidates = decode_candidates.saturating_add(1);
+            }
+        }
+        let prefill_tokens = pending_prefill_tokens.min(u64::from(global_token_budget)) as u32;
+        let demand_blocks = prefill_tokens
+            .div_ceil(block_size)
+            .saturating_add(decode_candidates);
+        if demand_blocks == 0 {
+            return Ok(0);
+        }
+        let freed = self.kv_manager.reclaim_cached_blocks(demand_blocks)?;
+        if freed > 0 {
+            debug!(
+                demand_blocks,
+                freed_blocks = freed,
+                free_after = self.kv_manager.available_block_count(),
+                pending_prefill_tokens,
+                decode_candidates,
+                "reclaimed sole-owner cached KV blocks before scheduling under exhausted pool"
+            );
+        }
+        Ok(freed)
     }
 
     fn scheduler_input(
@@ -2475,6 +2532,105 @@ mod tests {
             after.available_kv_blocks, initial_available,
             "regression: scheduler_input returned a cached/stale available_kv_blocks"
         );
+    }
+
+    /// Regression for the 2026-08-07 AXQ endurance preflight failure: a
+    /// fresh prompt arriving while the logical pool is full but mostly
+    /// reclaimable prefix cache must prefill in budget-sized chunks. The
+    /// `kv_exhausted_reclaimable_cache` pressure label used to cap prefill
+    /// at one token per step while allocate-time eviction freed exactly one
+    /// chunk's blocks, so the label re-derived every step and a 4,280-token
+    /// prompt took 3,770 prefill steps (880.8/1k tokens vs the 64/1k soak
+    /// guardrail). The engine now reclaims sole-owner cached blocks up to
+    /// the step's demand before planning.
+    #[test]
+    fn full_pool_with_reclaimable_cache_prefills_in_chunks() {
+        // 8 blocks x 4 tokens. A and B run to completion and leave their
+        // full prompt blocks behind as sole-owner prefix cache.
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
+
+        for (request_id, arrival, first_token) in [(1u64, 1u64, 1u32), (2, 2, 101)] {
+            let prompt: Vec<u32> = (first_token..first_token + 16).collect();
+            engine
+                .submit(make_submission_with_prompt(request_id, arrival, prompt, 4))
+                .unwrap();
+            for _ in 0..16 {
+                let done = engine
+                    .request_manager()
+                    .snapshot(RequestId(request_id))
+                    .is_none_or(|snapshot| snapshot.state.is_terminal());
+                if done {
+                    break;
+                }
+                engine.step(64, true).unwrap();
+            }
+            assert!(
+                engine
+                    .request_manager()
+                    .snapshot(RequestId(request_id))
+                    .is_none_or(|snapshot| snapshot.state.is_terminal()),
+                "setup request {request_id} must complete"
+            );
+        }
+        // Drain terminal cleanup so B's prompt blocks reach the cache.
+        engine.step(64, true).unwrap();
+
+        let free_before = engine.kv_manager().available_block_count();
+        assert!(free_before > 0, "setup must leave at least one free block");
+        let first_chunk_tokens = free_before * 4;
+        assert!(
+            first_chunk_tokens < 16,
+            "setup must leave the fresh prompt a remainder beyond the free blocks"
+        );
+
+        // Fresh unique 24-token prompt. The first step's budget covers
+        // exactly the free blocks, leaving the pool in the failed-preflight
+        // entry state: free == 0 with reclaimable cache and prompt remaining.
+        let prompt_c: Vec<u32> = (201..=224).collect();
+        engine
+            .submit(make_submission_with_prompt(3, 3, prompt_c, 2))
+            .unwrap();
+        let outcome = engine.step(first_chunk_tokens, true).unwrap();
+        assert_eq!(outcome.schedule_plan.selected_requests, vec![RequestId(3)]);
+        let snapshot = engine.request_manager().snapshot(RequestId(3)).unwrap();
+        assert_eq!(snapshot.processed_prompt_tokens, first_chunk_tokens);
+        assert_eq!(engine.kv_manager().available_block_count(), 0);
+        assert_eq!(
+            engine.kv_manager().memory_pressure().as_deref(),
+            Some("kv_exhausted_reclaimable_cache"),
+            "test must start the next step from the reclaimable-exhausted state"
+        );
+
+        // The next step must pre-reclaim cached blocks and finish the whole
+        // remaining prompt in one chunk. Without demand-driven reclamation
+        // this step schedules exactly one token.
+        let remaining_prompt_tokens = 24 - first_chunk_tokens;
+        let outcome = engine.step(64, true).unwrap();
+        assert_eq!(outcome.metrics.scheduled_tokens, remaining_prompt_tokens);
+        assert_eq!(outcome.metrics.preempted_requests, 0);
+        let snapshot = engine.request_manager().snapshot(RequestId(3)).unwrap();
+        assert_eq!(
+            snapshot.processed_prompt_tokens, 24,
+            "prefill must complete in one budget-sized chunk, not token-by-token"
+        );
+
+        // Decode still completes against the saturated pool (the per-step
+        // decode reserve reclaims one block at a time as needed).
+        for _ in 0..8 {
+            let done = engine
+                .request_manager()
+                .snapshot(RequestId(3))
+                .is_none_or(|snapshot| snapshot.state.is_terminal());
+            if done {
+                break;
+            }
+            let outcome = engine.step(64, true).unwrap();
+            assert_eq!(outcome.metrics.preempted_requests, 0);
+        }
+        let snapshot = engine.request_manager().snapshot(RequestId(3)).unwrap();
+        assert!(snapshot.state.is_terminal());
+        assert_eq!(snapshot.generated_len, 2);
     }
 
     #[test]
