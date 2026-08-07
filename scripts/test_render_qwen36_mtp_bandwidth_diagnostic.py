@@ -35,6 +35,48 @@ class Qwen36MtpBandwidthDiagnosticTests(unittest.TestCase):
             summary_path.resolve().as_posix(),
         )
 
+    def test_lightning_row_uses_fresh_matching_package_proxy_label(self) -> None:
+        rows = [
+            {
+                "model_label": "Qwen3.6 35B-A3B 4-bit",
+                "engine": engine,
+                "artifact": f"{engine}.json",
+                "metrics": {"decode_tok_s": decode},
+            }
+            for engine, decode in (
+                ("ax_engine", 140.0),
+                ("mtplx", 145.0),
+                ("lightning_mlx", 124.0),
+            )
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_path = Path(tmp) / "summary.json"
+            summary_path.write_text(json.dumps({"rows": []}))
+            with (
+                patch.object(renderer, "peer_rows", return_value=rows),
+                patch.object(
+                    renderer,
+                    "ax_artifact_estimate",
+                    return_value=(1_700_000_000, "ax_estimate", {}),
+                ),
+                patch.object(
+                    renderer,
+                    "mtplx_artifact_estimate",
+                    return_value=(2_900_000_000, "mtplx_estimate", {}),
+                ),
+            ):
+                diagnostic = renderer.build_diagnostic(summary_path)
+
+        lightning_row = next(
+            row
+            for row in diagnostic["rows"]
+            if row["engine"] == "lightning_mlx"
+        )
+        self.assertEqual(
+            lightning_row["byte_estimate_source"],
+            "matching_peer_package_proxy_from_mtplx_estimate",
+        )
+
     def test_engine_labels_use_measured_summary_identities(self) -> None:
         labels = renderer.measured_engine_labels(
             {

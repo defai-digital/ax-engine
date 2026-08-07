@@ -110,7 +110,7 @@
       "active_target_bytes_per_output_token": 2943165152,
       "active_target_gb_per_output_token": 2.943,
       "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-4bit/flappy/lightning_mlx.json",
-      "byte_estimate_source": "retained_lightning_row_peer_package_proxy",
+      "byte_estimate_source": "matching_peer_package_proxy_from_mtplx_estimate",
       "cycle_summary": null,
       "decode_tok_s": 124.196,
       "effective_output_bandwidth_gb_s": 365.53,

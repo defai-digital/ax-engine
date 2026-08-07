@@ -34,8 +34,8 @@ PEAK_GBS = 577.0
 PEAK_SOURCE = "M5 Max MLX reduction probe"
 
 # Fallbacks keep this renderer reproducible when the local HF cache is absent.
-# The 35B peer value was computed from the 2026-07-09 Youssofal optimized
-# package safetensors headers: non-routed bytes + switch_mlp routed bytes * 8/256.
+# The 35B peer value was computed from the Youssofal optimized package
+# safetensors headers: non-routed bytes + switch_mlp routed bytes * 8/256.
 PEER_PACKAGE_ACTIVE_BYTE_FALLBACKS = {
     "Qwen3.6 35B-A3B 4-bit": {
         "bytes": 2_943_165_152,
@@ -286,7 +286,7 @@ def build_diagnostic(summary_path: Path) -> dict[str, Any]:
             if bytes_used is None:
                 fallback = PEER_PACKAGE_ACTIVE_BYTE_FALLBACKS[target]
                 bytes_used = int(fallback["bytes"])
-            source = "retained_lightning_row_peer_package_proxy"
+            source = "matching_peer_package_proxy_from_mtplx_estimate"
         built.append(
             build_output_row(
                 row,
