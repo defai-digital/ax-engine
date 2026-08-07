@@ -9,7 +9,7 @@ ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
 
 MODEL_DIR="${AX_GATEDDELTA_PROFILE_MODEL_DIR:-}"
-OUTPUT_ROOT="$ROOT_DIR/benchmarks/results/mlx-inference/gateddelta-prefill-runs"
+OUTPUT_ROOT="$ROOT_DIR/benchmarks/results/inference/mlx-inference/gateddelta-prefill-runs"
 GENERATION_TOKENS="${AX_GATEDDELTA_PROFILE_GENERATION_TOKENS:-128}"
 REPETITIONS="${AX_GATEDDELTA_PROFILE_REPETITIONS:-5}"
 COOLDOWN="${AX_GATEDDELTA_PROFILE_COOLDOWN:-15}"
@@ -26,7 +26,7 @@ Usage:
 
 Options:
   --model-dir PATH          Local Qwen/GatedDelta MLX model artifact directory. Required unless AX_GATEDDELTA_PROFILE_MODEL_DIR is set.
-  --output-root PATH        Output root. Defaults to benchmarks/results/mlx-inference/gateddelta-prefill-runs.
+  --output-root PATH        Output root. Defaults to benchmarks/results/inference/mlx-inference/gateddelta-prefill-runs.
   --generation-tokens N     Generated token count. Defaults to 128.
   --repetitions N           Timed repetitions. Defaults to 5.
   --cooldown SECONDS        Cooldown between repetitions. Defaults to 15.

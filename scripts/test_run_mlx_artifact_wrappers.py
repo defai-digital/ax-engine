@@ -13,8 +13,21 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
 PREFILL_RUNNER = SCRIPT_DIR / "run-mlx-prefill-scaling-artifact.sh"
 P2_RUNNER = SCRIPT_DIR / "run-mlx-p2-latency-artifacts.sh"
+INFERENCE_PATH_SOURCES = (
+    REPO_ROOT / "benchmarks/README.md",
+    REPO_ROOT / "crates/ax-engine-mlx/src/fastpath.rs",
+    SCRIPT_DIR / "render_mlx_prefill_profile_report.py",
+    SCRIPT_DIR / "render_qwen_coder_next_charts.py",
+    SCRIPT_DIR / "retest_server_with_stderr.sh",
+    SCRIPT_DIR / "run-gateddelta-prefill-profile.sh",
+    PREFILL_RUNNER,
+    P2_RUNNER,
+    SCRIPT_DIR / "run_gemma4_12b_full_bench.sh",
+    SCRIPT_DIR / "update_readme_from_bench.py",
+)
 
 
 def write_model(root: Path) -> Path:
@@ -62,6 +75,13 @@ class MlxArtifactWrapperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--repetitions 5", result.stdout)
         self.assertIn("--cooldown 15", result.stdout)
+
+    def test_inference_artifact_paths_use_current_namespace(self) -> None:
+        obsolete = "benchmarks/results/mlx-inference"
+
+        for path in INFERENCE_PATH_SOURCES:
+            with self.subTest(path=path):
+                self.assertNotIn(obsolete, path.read_text())
 
 
 if __name__ == "__main__":

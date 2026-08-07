@@ -430,6 +430,34 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             with self.assertRaisesRegex(charts.ChartError, "exactly one"):
                 charts.find_llama_cpp_build(readme)
 
+    def test_infer_llama_results_dir_uses_inference_artifact_root(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            repo_root = Path(root_name)
+            run_dir = (
+                repo_root
+                / "benchmarks"
+                / "results"
+                / "inference"
+                / "llama-cpp-metal"
+                / "2026-08-07-refresh"
+            )
+            run_dir.mkdir(parents=True)
+            (run_dir / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "readme_llama_cpp_publication_candidate": True,
+                        "llama_cpp_publication_matrix": {
+                            "publication_candidate": True,
+                        },
+                    }
+                )
+                + "\n"
+            )
+
+            inferred = charts.infer_llama_results_dir(repo_root)
+
+            self.assertEqual(inferred, run_dir.resolve())
+
     def test_gemma4_12b_decode_uses_llama_matched_depth(self) -> None:
         row = {
             "engine": "llama_cpp_metal",

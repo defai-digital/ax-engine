@@ -9,7 +9,7 @@ depending on `--layout`) with `%-of-forward` shares.
 
 Usage:
     python3 scripts/render_mlx_prefill_profile_report.py \\
-        --results-dir benchmarks/results/mlx-inference/2026-05-15-prefill-profile-baseline \\
+        --results-dir benchmarks/results/inference/mlx-inference/<run> \\
         --output /tmp/prefill-profile-report.md
 """
 from __future__ import annotations

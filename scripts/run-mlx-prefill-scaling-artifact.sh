@@ -9,7 +9,7 @@ ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
 
 MODEL_DIR="${AX_MLX_PREFILL_MODEL_DIR:-}"
-OUTPUT_ROOT="$ROOT_DIR/benchmarks/results/mlx-inference/prefill-scaling-runs"
+OUTPUT_ROOT="$ROOT_DIR/benchmarks/results/inference/mlx-inference/prefill-scaling-runs"
 PROMPT_TOKENS="${AX_MLX_PREFILL_PROMPT_TOKENS:-1024,2048,4096,8192}"
 GENERATION_TOKENS="${AX_MLX_PREFILL_GENERATION_TOKENS:-1}"
 REPETITIONS="${AX_MLX_PREFILL_REPETITIONS:-5}"
@@ -27,7 +27,7 @@ Usage:
 
 Options:
   --model-dir PATH          Local MLX model artifact directory. Required unless AX_MLX_PREFILL_MODEL_DIR is set.
-  --output-root PATH        Output root. Defaults to benchmarks/results/mlx-inference/prefill-scaling-runs.
+  --output-root PATH        Output root. Defaults to benchmarks/results/inference/mlx-inference/prefill-scaling-runs.
   --prompt-tokens LIST      Comma-separated context sizes. Defaults to 1024,2048,4096,8192.
   --generation-tokens N     Generated token count. Defaults to 1 for prefill/TTFT evidence.
   --repetitions N           Timed repetitions. Defaults to 5.

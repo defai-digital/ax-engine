@@ -7,10 +7,10 @@ inside each prompt group.
 
 Usage:
   python3 scripts/render_qwen_coder_next_charts.py \
-    --artifact benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p128-p2048-step4096.json \
-    --artifact benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p512-step4096.json \
-    --llama-artifact benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/qwen3-coder-next-4bit.json \
-    --llama-artifact benchmarks/results/llama-cpp-metal/2026-06-13-qwen3-coder-next-2048/qwen3-coder-next-4bit-p2048.json \
+    --artifact benchmarks/results/inference/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p128-p2048-step4096.json \
+    --artifact benchmarks/results/inference/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p512-step4096.json \
+    --llama-artifact benchmarks/results/inference/llama-cpp-metal/2026-05-13-full-sweep/qwen3-coder-next-4bit.json \
+    --llama-artifact benchmarks/results/inference/llama-cpp-metal/2026-06-13-qwen3-coder-next-9620-fa/qwen3-coder-next-4bit.json \
     --assets-dir docs/assets
 """
 

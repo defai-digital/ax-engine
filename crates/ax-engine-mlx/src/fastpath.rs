@@ -571,7 +571,7 @@ env_flag!(
     /// `check_direct_gemma4_ffn_route_promotion.py` decision: `not_promoted`.
     /// E2B/E4B (per-layer-embedding weights) and 26B-A4B (MoE router) cannot take
     /// the route at all. Artifacts:
-    /// `benchmarks/results/mlx-inference/2026-06-11-gemma4-ffn-route-ab/`.
+    /// `benchmarks/results/inference/mlx-inference/2026-06-11-gemma4-ffn-route-ab/`.
     /// The production route is guarded to dense packed-quantized Gemma4 layers
     /// without per-layer input gating, profiling, last-position slicing, or
     /// active weight rotation.

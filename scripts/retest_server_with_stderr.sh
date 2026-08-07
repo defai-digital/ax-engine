@@ -64,7 +64,7 @@ PYTHONUNBUFFERED=1 "$PYTHON_BIN" scripts/bench_mlx_inference_stack.py \
     --no-build-ax-engine \
     --axengine-port "$PORT" \
     --axengine-skip-server-launch \
-    --reuse-reference-results-from "benchmarks/results/mlx-inference/2026-05-13-full-fresh/${SLUG}.json" \
+    --reuse-reference-results-from "benchmarks/results/inference/mlx-inference/2026-05-13-full-fresh/${SLUG}.json" \
     --output "$OUTDIR/${SLUG}.json" \
     2>&1 | tee -a "$BENCH_LOG"
 BENCH_EXIT=${PIPESTATUS[0]}

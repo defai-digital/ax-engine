@@ -9,7 +9,7 @@ ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
 
 MODEL_DIR="${AX_MLX_P2_MODEL_DIR:-}"
-OUTPUT_ROOT="$ROOT_DIR/benchmarks/results/mlx-inference/p2-latency-runs"
+OUTPUT_ROOT="$ROOT_DIR/benchmarks/results/inference/mlx-inference/p2-latency-runs"
 CONTEXT_TOKENS="${AX_MLX_P2_CONTEXT_TOKENS:-8192}"
 STARTUP_GENERATION_TOKENS="${AX_MLX_P2_STARTUP_GENERATION_TOKENS:-128}"
 CONCURRENT_GENERATION_TOKENS="${AX_MLX_P2_CONCURRENT_GENERATION_TOKENS:-1}"
@@ -31,7 +31,7 @@ Usage:
 
 Options:
   --model-dir PATH                  Local MLX model artifact directory. Required unless AX_MLX_P2_MODEL_DIR is set.
-  --output-root PATH                Output root. Defaults to benchmarks/results/mlx-inference/p2-latency-runs.
+  --output-root PATH                Output root. Defaults to benchmarks/results/inference/mlx-inference/p2-latency-runs.
   --context-tokens N                Prompt/context token count. Defaults to 8192.
   --startup-generation-tokens N     Generated token count for cold/warm startup rows. Defaults to 128.
   --concurrent-generation-tokens N  Generated token count for concurrent-prefill rows. Defaults to 1.

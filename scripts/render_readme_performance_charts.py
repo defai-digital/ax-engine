@@ -710,7 +710,13 @@ def series_for_chart(
 
 
 def infer_llama_results_dir(repo_root: Path) -> Path:
-    root = repo_root / "benchmarks" / "results" / "llama-cpp-metal"
+    root = (
+        repo_root
+        / "benchmarks"
+        / "results"
+        / "inference"
+        / "llama-cpp-metal"
+    )
     if not root.exists():
         raise ChartError(
             f"could not infer llama.cpp Metal artifact directory; {root} does not exist"
@@ -724,14 +730,19 @@ def infer_llama_results_dir(repo_root: Path) -> Path:
         raise ChartError(
             f"could not infer llama.cpp Metal artifact directory; no sweep_results.json under {root}"
         )
-    complete = [
-        path
-        for path in candidates
-        if all(
-            (path / f"{slug}.json").exists()
-            for slug in readme_model_slugs(repo_root / "README.md")
-        )
-    ]
+    complete: list[Path] = []
+    for path in candidates:
+        try:
+            sweep = json.loads((path / "sweep_results.json").read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        matrix = sweep.get("llama_cpp_publication_matrix")
+        if (
+            sweep.get("readme_llama_cpp_publication_candidate") is True
+            and isinstance(matrix, dict)
+            and matrix.get("publication_candidate") is True
+        ):
+            complete.append(path)
     if complete:
         return max(complete, key=lambda path: path.name).resolve()
     return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
@@ -3572,8 +3583,9 @@ def main() -> int:
         "--llama-results-dir",
         type=Path,
         help=(
-            "llama.cpp Metal artifact directory. Defaults to the newest "
-            "benchmarks/results/llama-cpp-metal/*/sweep_results.json directory."
+            "Optional llama.cpp Metal artifact directory. When omitted, use "
+            "the llama.cpp cells and build marker already injected into the "
+            "performance results page."
         ),
     )
     parser.add_argument(

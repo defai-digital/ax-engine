@@ -3,7 +3,7 @@
 
 Usage:
     python3 scripts/update_readme_from_bench.py --slug gemma-4-e2b-it-4bit \
-        --json benchmarks/results/mlx-inference/.../gemma-4-e2b-it-4bit.json
+        --json benchmarks/results/inference/mlx-inference/.../gemma-4-e2b-it-4bit.json
 """
 import argparse
 import json

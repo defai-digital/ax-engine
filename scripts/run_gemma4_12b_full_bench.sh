@@ -34,7 +34,7 @@ if [ ! -f "$FFN4_DIR/model-manifest.json" ]; then
   cargo run -q --release -p ax-engine-core --bin generate-manifest -- --force --validate "$FFN4_DIR"
 fi
 
-DIRECT_DIR="benchmarks/results/mlx-inference/${DATE}-gemma-4-12b-it-4bit-direct"
+DIRECT_DIR="benchmarks/results/inference/mlx-inference/${DATE}-gemma-4-12b-it-4bit-direct"
 MTP_DIR="benchmarks/results/gemma4-assistant-mtp/${DATE}-gemma4-12b-ffn4-mtp-speedup"
 mkdir -p "$DIRECT_DIR"
 
