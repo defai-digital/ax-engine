@@ -67,8 +67,9 @@ Use `bench_batched_decode_ceiling.py` for the dense-model aggregate-decode
 ceiling shown in the public performance docs. It alternates the default Shared
 projection policy with the RowExact kill-switch, runs at least five repetitions
 per policy, preserves every Rust-probe log, checks full-cohort greedy-token
-hashes, and fails closed unless the clean-build and host-condition matrix is
-publication eligible.
+hashes, recomputes the published summary from a unique and internally
+consistent raw batch matrix, and fails closed unless the clean-build and
+host-condition matrix is publication eligible.
 
 Use `bench_embedding_fair.py` for published embedding comparisons between
 `mlx-lm` and ax-engine. Competitive README rows require a same-session paired
