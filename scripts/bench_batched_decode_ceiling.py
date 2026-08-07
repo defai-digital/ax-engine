@@ -519,7 +519,13 @@ def run_probe(
         check=False,
     )
     elapsed = time.perf_counter() - started
-    conditions_end = bench_support.collect_performance_condition_metadata()
+    conditions_end = bench_support.wait_for_performance_load(
+        max_one_minute=max_load_average,
+        max_top_process_cpu_percent_value=max_top_process_cpu_percent,
+        timeout_seconds=load_wait_timeout,
+        poll_interval_seconds=load_poll_interval,
+        context=f"{context} completion",
+    )
     log_path.write_text(
         f"AX_MLX_BATCHED_SHARED_PROJ={env['AX_MLX_BATCHED_SHARED_PROJ']}\n"
         f"AX_MLX_BATCHED_PROFILE={env['AX_MLX_BATCHED_PROFILE']}\n"

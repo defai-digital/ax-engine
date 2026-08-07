@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("bench_batched_decode_ceiling.py")
 MODULE_SPEC = importlib.util.spec_from_file_location(
@@ -204,6 +207,59 @@ batch  agg_tok_s  per_req_tok_s  step_us  scaling_vs_b1
 
         self.assertNotIn("AX_MLX_DENSE_FFN_COMPILE", env)
         self.assertEqual(env["AX_MLX_BATCHED_SHARED_PROJ"], "0")
+
+    def test_run_probe_waits_for_clean_start_and_completion_boundaries(
+        self,
+    ) -> None:
+        output = """\
+    1       50.0           50.0    20000   1.00x  cohort_fnv=1111111111111111
+    2       75.0           37.5    26667   1.50x  cohort_fnv=2222222222222222
+    4       90.0           22.5    44444   1.80x  cohort_fnv=4444444444444444
+    8      100.0           12.5    80000   2.00x  cohort_fnv=8888888888888888
+"""
+        start_conditions = conditions()
+        end_conditions = conditions()
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=output,
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(
+                bench.bench_support,
+                "wait_for_performance_load",
+                side_effect=[start_conditions, end_conditions],
+            ) as wait,
+            patch.object(bench.subprocess, "run", return_value=completed),
+        ):
+            trial = bench.run_probe(
+                probe=Path("/tmp/probe"),
+                model_dir=Path("/tmp/model"),
+                prefill_len=32,
+                policy="shared",
+                repetition=1,
+                log_path=Path(tmp) / "trial.log",
+                max_load_average=2.0,
+                max_top_process_cpu_percent=50.0,
+                load_wait_timeout=900.0,
+                load_poll_interval=5.0,
+            )
+
+        self.assertIs(
+            trial["performance_conditions_start"],
+            start_conditions,
+        )
+        self.assertIs(
+            trial["performance_conditions_end"],
+            end_conditions,
+        )
+        self.assertEqual(wait.call_count, 2)
+        self.assertEqual(
+            wait.call_args_list[1].kwargs["context"],
+            "repetition 1 shared completion",
+        )
 
 
 if __name__ == "__main__":
