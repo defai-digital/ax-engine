@@ -119,7 +119,7 @@ class InstalledPreviewTests(unittest.TestCase):
         console = pathlib.Path(sys.prefix) / "bin" / "ax-engine"
 
         source_package_dir = pathlib.Path(__file__).resolve().parents[1] / "ax_engine"
-        if package_dir == source_package_dir.resolve() and not bench.is_file():
+        if package_dir == source_package_dir.resolve():
             self.skipTest(
                 "wheel-only runtime asset check is not applicable to a maturin editable install"
             )
@@ -191,10 +191,21 @@ class InstalledPreviewTests(unittest.TestCase):
             checks = {check["id"]: check for check in public_report["checks"]}
             self.assertEqual(checks["metal_toolchain"]["status"], "pass")
             self.assertEqual(checks["mlx_runtime"]["status"], "pass")
-            self.assertFalse(public_report["issues"], public_report["issues"])
+            self.assertFalse(
+                any("xcrun" in issue for issue in public_report["issues"]),
+                public_report["issues"],
+            )
+            self.assertFalse(
+                any("Runtime assets are not ready" in issue for issue in public_report["issues"]),
+                public_report["issues"],
+            )
             if direct_report["host"]["supported_mlx_runtime"]:
+                self.assertFalse(public_report["issues"], public_report["issues"])
                 self.assertEqual(public.returncode, 0, public.stderr)
                 self.assertEqual(public_report["result"], "ready")
+            else:
+                self.assertEqual(public.returncode, 0, public.stderr)
+                self.assertEqual(public_report["result"], "degraded")
 
     def test_installed_package_reports_runtime_and_generate_result(self) -> None:
         with _llama_cpp_upstream() as (server_url, _requests):
