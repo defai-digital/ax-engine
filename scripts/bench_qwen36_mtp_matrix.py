@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import os
+import re
 import shlex
 import statistics
 import subprocess
@@ -16,6 +18,11 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
+
+try:
+    from scripts import bench_mtp_6bit_ax_refresh as exact_mtp_gate
+except ModuleNotFoundError:
+    import bench_mtp_6bit_ax_refresh as exact_mtp_gate
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AX_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
@@ -449,6 +456,7 @@ def summarize_ax_artifact(artifact: dict[str, Any], artifact_path: Path) -> dict
         "client_ttft_scope": "client_http_wall",
         "accept_source": "ax_engine_mtp_telemetry",
         "degeneracy_gate": degeneracy,
+        "build": artifact.get("build"),
     }
 
 
@@ -1066,10 +1074,212 @@ def execute_lanes(args: argparse.Namespace, lanes: list[Lane]) -> None:
             print(f"[error] {lane.target.key} {lane.suite} {lane.engine}: {exc}", flush=True)
 
 
+def expected_prompt_count(args: argparse.Namespace, suite: str) -> int:
+    source = suite_path(args, suite)
+    count = sum(bool(line.strip()) for line in source.read_text().splitlines())
+    return min(count, args.prompt_limit) if args.prompt_limit is not None else count
+
+
+def peer_artifact_publication_reasons(
+    args: argparse.Namespace,
+    lane: Lane,
+    artifact: dict[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    expected_top_level = {
+        "suite": lane.suite,
+        "max_tokens": args.max_tokens,
+        "repetitions": args.repetitions,
+        "warmup_repetitions": args.warmup_repetitions,
+        "cooldown_s": args.cooldown,
+    }
+    for key, expected in expected_top_level.items():
+        if artifact.get(key) != expected:
+            reasons.append(f"{key}_mismatch")
+    sampling = artifact.get("sampling")
+    if not isinstance(sampling, dict) or any(
+        sampling.get(key) != expected for key, expected in args.sampling.items()
+    ):
+        reasons.append("sampling_mismatch")
+
+    results = artifact.get("results")
+    if not isinstance(results, list):
+        return [*reasons, "missing_results"]
+    if len(results) != expected_prompt_count(args, lane.suite):
+        reasons.append("prompt_count_mismatch")
+    prompt_ids: set[str] = set()
+    for case in results:
+        if not isinstance(case, dict):
+            reasons.append("invalid_prompt_case")
+            continue
+        prompt_id = case.get("prompt_id")
+        if (
+            not isinstance(prompt_id, str)
+            or not prompt_id
+            or prompt_id in prompt_ids
+        ):
+            reasons.append("missing_or_duplicate_prompt_id")
+            continue
+        prompt_ids.add(prompt_id)
+        prompt_hash = case.get("prompt_sha256")
+        if not isinstance(prompt_hash, str) or re.fullmatch(
+            r"[0-9a-f]{64}", prompt_hash
+        ) is None:
+            reasons.append(f"{prompt_id}_missing_prompt_hash")
+        runs = case.get("runs")
+        if not isinstance(runs, list) or len(runs) != args.repetitions:
+            reasons.append(f"{prompt_id}_trial_count_mismatch")
+            continue
+        for run in runs:
+            if not isinstance(run, dict) or run.get("measured") is not True:
+                reasons.append(f"{prompt_id}_invalid_measured_trial")
+                continue
+            requested = run.get("requested_tokens")
+            generated = run.get("generated_tokens")
+            decode = run.get("decode_tok_s")
+            if (
+                run.get("fixed_token_complete") is not True
+                or not isinstance(requested, int)
+                or isinstance(requested, bool)
+                or requested <= 0
+                or not isinstance(generated, int)
+                or isinstance(generated, bool)
+                or generated != requested
+            ):
+                reasons.append(f"{prompt_id}_incomplete_fixed_token_trial")
+            if (
+                not isinstance(decode, (int, float))
+                or isinstance(decode, bool)
+                or not math.isfinite(float(decode))
+                or float(decode) <= 0.0
+            ):
+                reasons.append(f"{prompt_id}_invalid_decode_trial")
+            if lane.engine == "lightning_mlx" and (
+                run.get("rejected_reason") is not None
+                or run.get("silent_thinking_suspected") is True
+            ):
+                reasons.append(f"{prompt_id}_invalid_lightning_output")
+
+    if lane.engine == "mtplx":
+        if artifact.get("schema") != "ax.mtplx.prompt_suite_mtp.v1":
+            reasons.append("unexpected_mtplx_schema")
+        build = artifact.get("build")
+        commit = build.get("git_commit") if isinstance(build, dict) else None
+        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            reasons.append("missing_mtplx_build_commit")
+        if not isinstance(build, dict) or build.get("git_tracked_dirty") is not False:
+            reasons.append("dirty_mtplx_source")
+        summary = artifact.get("summary")
+        if not isinstance(summary, dict) or (
+            summary.get("validations_total") != summary.get("validations_passed")
+            or not isinstance(summary.get("validations_total"), int)
+            or int(summary["validations_total"]) <= 0
+        ):
+            reasons.append("mtplx_output_validation_failed")
+    elif lane.engine == "lightning_mlx":
+        if artifact.get("schema") != "ax.rapid_mlx.prompt_suite_mtp.v2":
+            reasons.append("unexpected_lightning_schema")
+        if artifact.get("server_profile") != "lightning_serve_preset":
+            reasons.append("lightning_profile_mismatch")
+        if artifact.get("require_full_output_tokens") is not True:
+            reasons.append("lightning_full_output_gate_disabled")
+        if artifact.get("ignore_eos") is not True:
+            reasons.append("lightning_ignore_eos_disabled")
+        identity = artifact.get("lightning_source_identity")
+        commit = identity.get("git_commit") if isinstance(identity, dict) else None
+        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            reasons.append("missing_lightning_build_commit")
+        if not isinstance(identity, dict) or identity.get("is_dirty") is not False:
+            reasons.append("dirty_lightning_source")
+    return sorted(set(reasons))
+
+
+def lane_publication_reasons(
+    args: argparse.Namespace,
+    lane: Lane,
+    metrics: dict[str, Any],
+) -> list[str]:
+    if lane.status != "supported":
+        return []
+    reasons: list[str] = []
+    if metrics.get("status") != "ok":
+        reasons.append(f"metrics_status_{metrics.get('status', 'missing')}")
+    for key in ("decode_tok_s", "accept_rate"):
+        value = metrics.get(key)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            reasons.append(f"invalid_{key}")
+    if int(metrics.get("case_count", 0) or 0) != expected_prompt_count(
+        args, lane.suite
+    ):
+        reasons.append("case_count_mismatch")
+    degeneracy = metrics.get("degeneracy_gate")
+    if isinstance(degeneracy, dict) and degeneracy.get("degenerate") is True:
+        reasons.append("degenerate_output")
+    if not lane.output_path.is_file():
+        return sorted({*reasons, "missing_artifact"})
+
+    artifact = json.loads(lane.output_path.read_text())
+    if lane.engine == "ax_engine":
+        try:
+            exact_mtp_gate.validate_exact_mtp_artifact(
+                lane.output_path,
+                artifact,
+                require_qwen_linear_exact=True,
+            )
+            exact_mtp_gate.validate_exact_artifact_rows(
+                lane.output_path,
+                artifact,
+                expected_engines=AX_MTP_ENGINES,
+                expected_suite=lane.suite,
+            )
+            identity = exact_mtp_gate.artifact_build_identity(
+                lane.output_path, artifact
+            )
+            if not identity.engine_version:
+                reasons.append("missing_ax_engine_version")
+        except ValueError as error:
+            reasons.append(f"ax_contract_error:{error}")
+        reasons.extend(
+            reason.removeprefix("direct_")
+            for reason in exact_mtp_gate.exact_publication_methodology_reasons(
+                artifact, artifact
+            )
+            if reason.startswith("direct_")
+        )
+    else:
+        reasons.extend(peer_artifact_publication_reasons(args, lane, artifact))
+    return sorted(set(reasons))
+
+
+def repo_relative_artifact(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(resolved)
+
+
 def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]:
     rows = []
+    supported_rows = 0
+    publication_failures: list[str] = []
     for lane in lanes:
         metrics = summarize_artifact(lane.engine, lane.output_path) if lane.status == "supported" else {"status": "unsupported"}
+        publication_reasons = lane_publication_reasons(args, lane, metrics)
+        publication_candidate = (
+            lane.status == "supported" and not publication_reasons
+        )
+        if lane.status == "supported":
+            supported_rows += 1
+            publication_failures.extend(
+                f"{lane.target.key}/{lane.suite}/{lane.engine}:{reason}"
+                for reason in publication_reasons
+            )
         rows.append(
             {
                 "target": lane.target.key,
@@ -1080,14 +1290,18 @@ def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]
                 "engine": lane.engine,
                 "status": lane.status,
                 "reason": lane.reason,
-                "artifact": str(lane.output_path),
+                "artifact": repo_relative_artifact(lane.output_path),
                 "metrics": metrics,
                 "metric_contract": lane.metric_contract,
                 "mtp_head": mtp_head_provenance(lane.target, lane.engine),
+                "publication_candidate": publication_candidate,
+                "publication_reasons": publication_reasons,
             }
         )
     return {
-        "schema": "ax.qwen36_mtp_matrix.summary.v1",
+        "schema": "ax.qwen36_mtp_matrix.summary.v2",
+        "publication_candidate": supported_rows > 0 and not publication_failures,
+        "publication_reasons": publication_failures,
         "created_at": date.today().isoformat(),
         "contract": {
             "models": args.models,
@@ -1140,6 +1354,10 @@ def fmt_percent(value: Any) -> str:
 def write_summary_markdown(path: Path, summary: dict[str, Any]) -> None:
     lines = [
         "# Qwen3.6 MTP Benchmark Matrix Summary",
+        "",
+        (
+            f"Publication candidate: **{str(summary['publication_candidate']).lower()}**"
+        ),
         "",
         "| Target | Suite | Engine | Decode | Prefill | TTFT | Accept | Status |",
         "|---|---|---|---:|---:|---:|---:|---|",
@@ -1383,6 +1601,7 @@ def main() -> int:
     if args.execute:
         execute_lanes(args, lanes)
 
+    summary: dict[str, Any] | None = None
     if args.execute or args.summarize_existing:
         summary = build_summary(args, lanes)
         (args.output_dir / "summary.json").write_text(
@@ -1393,7 +1612,7 @@ def main() -> int:
     print(f"Wrote plan to {args.output_dir / 'plan.md'}")
     if args.execute or args.summarize_existing:
         print(f"Wrote summary to {args.output_dir / 'summary.md'}")
-    return 0
+    return 0 if summary is None or summary["publication_candidate"] is True else 1
 
 
 if __name__ == "__main__":

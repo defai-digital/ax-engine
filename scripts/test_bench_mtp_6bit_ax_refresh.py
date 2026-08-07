@@ -58,9 +58,9 @@ class BenchMtpRefreshTests(unittest.TestCase):
             "seed": 0,
             "random_seed": 0,
             "run_stability": {"classification": "stable_enough"},
-            "decode_tok_s": 50.0,
-            "prefill_tok_s": 500.0,
-            "ttft_ms": 250.0,
+            "decode_tok_s": {"median": 50.0},
+            "prefill_tok_s": {"median": 500.0},
+            "ttft_ms": {"median": 250.0},
             "trials": [
                 {
                     "output_token_ids": list(range(1000)),

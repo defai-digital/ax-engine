@@ -566,7 +566,12 @@ def validate_exact_artifact_rows(
         ) != "stable_enough":
             raise ValueError(f"{path} has an unstable row for {case_id}")
         for metric in ("decode_tok_s", "prefill_tok_s", "ttft_ms"):
-            value = row.get(metric)
+            metric_doc = row.get(metric)
+            value = (
+                metric_doc.get("median")
+                if isinstance(metric_doc, dict)
+                else metric_doc
+            )
             if (
                 not isinstance(value, (int, float))
                 or isinstance(value, bool)

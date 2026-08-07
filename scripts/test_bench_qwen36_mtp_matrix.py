@@ -60,6 +60,21 @@ def make_args(root: Path) -> Namespace:
 
 
 class Qwen36MtpMatrixTests(unittest.TestCase):
+    @staticmethod
+    def write_single_prompt_suite(args: Namespace) -> None:
+        args.suites_dir.mkdir(parents=True, exist_ok=True)
+        (args.suites_dir / "flappy.jsonl").write_text(
+            json.dumps(
+                {
+                    "id": "case-1",
+                    "category": "code",
+                    "prompt": "write code",
+                    "max_tokens": 1000,
+                }
+            )
+            + "\n"
+        )
+
     def test_support_matrix_keeps_only_known_pure_mtp_peer_lanes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = make_args(Path(tmp))
@@ -76,6 +91,82 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertEqual(by_key[("27b-4bit", "rapid_mlx")], "unsupported")
         self.assertEqual(by_key[("27b-6bit", "rapid_mlx")], "unsupported")
         self.assertEqual(by_key[("27b-4bit", "omlx")], "unsupported")
+
+    def test_summary_fails_closed_when_a_supported_lane_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            self.write_single_prompt_suite(args)
+            lane = matrix.Lane(
+                target=matrix.TARGETS["27b-4bit"],
+                engine="mtplx",
+                suite="flappy",
+                status="supported",
+                output_path=args.output_dir / "missing.json",
+                command=["python3"],
+            )
+
+            summary = matrix.build_summary(args, [lane])
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertIn("missing_artifact", summary["rows"][0]["publication_reasons"])
+
+    def test_mtplx_publication_gate_requires_complete_clean_trials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            self.write_single_prompt_suite(args)
+            lane = matrix.Lane(
+                target=matrix.TARGETS["27b-4bit"],
+                engine="mtplx",
+                suite="flappy",
+                status="supported",
+                output_path=args.output_dir / "mtplx.json",
+                command=["python3"],
+            )
+            artifact = {
+                "schema": "ax.mtplx.prompt_suite_mtp.v1",
+                "suite": "flappy",
+                "max_tokens": 1000,
+                "repetitions": 5,
+                "warmup_repetitions": 2,
+                "cooldown_s": 30.0,
+                "sampling": args.sampling,
+                "build": {
+                    "git_commit": "a" * 40,
+                    "git_tracked_dirty": False,
+                },
+                "summary": {
+                    "validations_total": 1,
+                    "validations_passed": 1,
+                },
+                "results": [
+                    {
+                        "prompt_id": "case-1",
+                        "prompt_sha256": "b" * 64,
+                        "runs": [
+                            {
+                                "measured": True,
+                                "requested_tokens": 1000,
+                                "generated_tokens": 1000,
+                                "fixed_token_complete": True,
+                                "decode_tok_s": 50.0,
+                            }
+                            for _ in range(5)
+                        ],
+                    }
+                ],
+            }
+
+            reasons = matrix.peer_artifact_publication_reasons(
+                args, lane, artifact
+            )
+            self.assertEqual(reasons, [])
+
+            artifact["results"][0]["runs"][0]["generated_tokens"] = 999
+            reasons = matrix.peer_artifact_publication_reasons(
+                args, lane, artifact
+            )
+
+        self.assertIn("case-1_incomplete_fixed_token_trial", reasons)
 
     def test_ax_env_disables_optimistic_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
