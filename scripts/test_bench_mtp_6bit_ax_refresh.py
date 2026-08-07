@@ -41,6 +41,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
             "publication_candidate": True,
             "claim_type": bench.MTP_6BIT_EXACT_CLAIM_TYPE,
             "engine_version": "6.9.0",
+            "build_commit": "a" * 40,
             "run_dir": (
                 "benchmarks/results/speculative/mtp-6bit/"
                 "2026-07-13-exact"
@@ -141,7 +142,10 @@ class BenchMtpRefreshTests(unittest.TestCase):
         valid = {
             "warmup_repetitions": 2,
             "repetitions": 5,
-            "build": {"git_tracked_dirty": False},
+            "build": {
+                "git_tracked_dirty": False,
+                "build_profile": "release",
+            },
         }
         self.assertEqual(
             bench.exact_publication_methodology_reasons(valid, valid), []
@@ -156,6 +160,42 @@ class BenchMtpRefreshTests(unittest.TestCase):
         self.assertIn("direct_requires_two_warmups", reasons)
         self.assertIn("mtp_requires_five_measurements", reasons)
         self.assertIn("mtp_requires_clean_tracked_build", reasons)
+        self.assertIn("direct_requires_release_build", reasons)
+
+    def test_build_identity_comes_from_measured_artifacts(self) -> None:
+        build = {
+            "build": {
+                "engine_version": "6.13.1",
+                "commit": "b" * 40,
+            }
+        }
+        identity = bench.matching_build_identity(
+            Path("direct.json"),
+            build,
+            Path("mtp.json"),
+            copy.deepcopy(build),
+        )
+
+        self.assertEqual(identity.engine_version, "6.13.1")
+        self.assertEqual(identity.commit, "b" * 40)
+
+    def test_build_identity_rejects_mixed_or_abbreviated_commits(self) -> None:
+        direct = {
+            "build": {
+                "engine_version": "6.13.1",
+                "commit": "b" * 40,
+            }
+        }
+        mtp = copy.deepcopy(direct)
+        mtp["build"]["commit"] = "c" * 40
+        with self.assertRaisesRegex(ValueError, "build identity differs"):
+            bench.matching_build_identity(
+                Path("direct.json"), direct, Path("mtp.json"), mtp
+            )
+
+        direct["build"]["commit"] = "bff75300"
+        with self.assertRaisesRegex(ValueError, "full measured build commit"):
+            bench.artifact_build_identity(Path("direct.json"), direct)
 
     def test_approximate_flag_is_only_added_to_mtp_rows(self) -> None:
         target = bench.Target(
@@ -402,6 +442,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
             "summary publication": lambda summary: summary.update(
                 publication_candidate=False
             ),
+            "missing measured commit": lambda summary: summary.pop("build_commit"),
             "inconsistent ratio": lambda summary: summary["rows"][0].update(
                 ax_mtp_decode_tok_s=50.0,
                 ax_mtp_speedup_x=2.0,

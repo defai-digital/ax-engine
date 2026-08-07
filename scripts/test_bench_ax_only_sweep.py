@@ -123,6 +123,18 @@ class BenchAxOnlySweepTests(unittest.TestCase):
 
         self.assertEqual(sweep.filter_manifest_rows(rows, None), rows)
 
+    def test_publication_metadata_requires_full_build_commit(self) -> None:
+        artifact = self.ax_direct_result_doc()
+        artifact["build"]["commit"] = "abcdef12"
+
+        failures = sweep.publication_metadata_failure_reasons(
+            artifact,
+            max_load_average=sweep.DEFAULT_MAX_LOAD_AVERAGE,
+            max_top_process_cpu_percent=sweep.DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+        )
+
+        self.assertIn("missing_build_commit", failures)
+
     def test_default_manifest_uses_real_e4b_6bit_mlx_repo(self) -> None:
         manifest = json.loads(sweep.DEFAULT_MANIFEST.read_text())
         row = next(

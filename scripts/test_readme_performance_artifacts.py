@@ -129,6 +129,8 @@ def write_mtp_exact_claim_fixture(root: Path) -> tuple[Path, Path]:
                 "schema": checker.MTP_6BIT_EXACT_SCHEMA_VERSION,
                 "publication_candidate": True,
                 "claim_type": "exact_mtp_comparison",
+                "engine_version": "6.9.0",
+                "build_commit": "a" * 40,
                 "run_dir": str(run_dir.relative_to(root)),
                 "methodology": {
                     "targets": list(checker.MTP_6BIT_EXACT_TARGET_IDS),
@@ -3317,6 +3319,19 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 checker.ArtifactCheckError,
                 "complete supported matrix",
+            ):
+                checker.validate_readme_mtp_6bit_claims(readme_path=readme_path)
+
+    def test_readme_rejects_exact_mtp_without_full_measured_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme_path, summary_path = write_mtp_exact_claim_fixture(Path(tmp))
+            summary = json.loads(summary_path.read_text())
+            summary["build_commit"] = "abcdef12"
+            summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "full measured build_commit",
             ):
                 checker.validate_readme_mtp_6bit_claims(readme_path=readme_path)
 

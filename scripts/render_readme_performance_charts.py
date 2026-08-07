@@ -95,6 +95,13 @@ FAMILY_SLUGS: dict[str, list[str]] = {
         "qwen3_6-35b-a3b-6bit",
     ],
 }
+AX_DIRECT_EXPECTED_SLUGS = frozenset(
+    {
+        *FAMILY_SLUGS["gemma4"],
+        "gemma-4-e4b-it-6bit",
+        *FAMILY_SLUGS["qwen"],
+    }
+)
 
 FAMILY_LABELS: dict[str, str] = {
     "gemma4": "Gemma 4",
@@ -282,6 +289,8 @@ MTP_6BIT_EXACT_CHART_OUTPUT = "perf-mtp-6bit-ax-acceleration.svg"
 MTP_6BIT_APPROXIMATE_SCHEMA = "ax.mtp_6bit_approximate_diagnostic_summary.v2"
 MTP_6BIT_LEGACY_EXACT_SCHEMA = "ax.mtp_6bit_ax_acceleration_summary.v3"
 MTP_6BIT_EXACT_SCHEMA = "ax.mtp_6bit_ax_comparison_summary.v4"
+AX_DIRECT_MATRIX_SCHEMA = "ax.ax_direct_matrix.v1"
+MLX_LM_REFERENCE_MATRIX_SCHEMA = "ax.mlx_lm_reference_matrix.v1"
 MTP_6BIT_EXACT_TARGET_IDS = (
     "qwen3.6-27b-6bit",
     "qwen3.6-35b-a3b",
@@ -745,6 +754,84 @@ def find_ax_direct_snapshot(readme: Path) -> Path | None:
     return relative
 
 
+def find_mlx_lm_direct_snapshot(readme: Path) -> Path | None:
+    match = re.search(
+        r"readme-mlx-lm-direct-snapshot:\s*([^\s]+)",
+        readme.read_text(encoding="utf-8"),
+    )
+    if match is None:
+        return None
+    path_value = match.group(1)
+    relative = (readme.parent / path_value).resolve()
+    if relative.exists():
+        return relative
+    if path_value.startswith("benchmarks/"):
+        return (REPO_ROOT / path_value).resolve()
+    return relative
+
+
+def require_publication_matrix(
+    snapshot: dict[str, Any],
+    *,
+    matrix_key: str,
+    schema_version: str,
+    snapshot_candidate_key: str,
+    description: str,
+) -> dict[str, Any]:
+    if snapshot.get(snapshot_candidate_key) is not True:
+        raise ChartError(f"{description} is not README publication eligible")
+    matrix = snapshot.get(matrix_key)
+    if not isinstance(matrix, dict):
+        raise ChartError(f"{description} lacks {matrix_key}")
+    if matrix.get("schema_version") != schema_version:
+        raise ChartError(f"{description} has an invalid {matrix_key} schema")
+    if matrix.get("publication_candidate") is not True:
+        raise ChartError(f"{description} {matrix_key} is not publication eligible")
+    expected_slugs = matrix.get("expected_slugs")
+    if (
+        not isinstance(expected_slugs, list)
+        or not expected_slugs
+        or any(not isinstance(slug, str) or not slug for slug in expected_slugs)
+    ):
+        raise ChartError(f"{description} {matrix_key} has no expected slugs")
+    if len(set(expected_slugs)) != len(expected_slugs):
+        raise ChartError(f"{description} {matrix_key} has duplicate expected slugs")
+    publication_models = matrix.get("publication_model_count")
+    if (
+        not isinstance(publication_models, int)
+        or isinstance(publication_models, bool)
+        or publication_models != len(expected_slugs)
+    ):
+        raise ChartError(f"{description} {matrix_key} has incomplete model coverage")
+    expected_cells = matrix.get("expected_cell_count")
+    publication_cells = matrix.get("publication_cell_count")
+    if (
+        not isinstance(expected_cells, int)
+        or isinstance(expected_cells, bool)
+        or expected_cells <= 0
+        or not isinstance(publication_cells, int)
+        or isinstance(publication_cells, bool)
+        or publication_cells != expected_cells
+    ):
+        raise ChartError(f"{description} {matrix_key} has incomplete cell coverage")
+    return matrix
+
+
+def require_clean_release_result(
+    result_doc: dict[str, Any], *, description: str
+) -> None:
+    build = result_doc.get("build")
+    if not isinstance(build, dict):
+        raise ChartError(f"{description} has no build identity")
+    if build.get("build_profile") != "release":
+        raise ChartError(f"{description} was not measured with a release build")
+    if build.get("git_tracked_dirty") is not False:
+        raise ChartError(f"{description} was measured from a dirty tracked tree")
+    commit = build.get("commit")
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise ChartError(f"{description} has no full source commit")
+
+
 def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
     if not snapshot_path.exists():
         raise ChartError(f"AX-only direct snapshot is missing: {snapshot_path}")
@@ -753,21 +840,54 @@ def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
         raise ChartError("AX-only direct snapshot is not publication eligible")
     if snapshot.get("ax_direct_only") is not True:
         raise ChartError("AX-only direct snapshot is not AX-only")
+    matrix = require_publication_matrix(
+        snapshot,
+        matrix_key="ax_direct_matrix",
+        schema_version=AX_DIRECT_MATRIX_SCHEMA,
+        snapshot_candidate_key="readme_ax_direct_publication_candidate",
+        description="AX-only direct snapshot",
+    )
 
     rows = snapshot.get("rows")
-    if not isinstance(rows, list) or len(rows) != 12:
-        raise ChartError("AX-only direct snapshot must contain all 12 model rows")
+    expected_slugs = matrix["expected_slugs"]
+    if set(expected_slugs) != AX_DIRECT_EXPECTED_SLUGS:
+        raise ChartError(
+            "AX-only direct snapshot does not cover all README direct rows"
+        )
+    if not isinstance(rows, list) or len(rows) != len(expected_slugs):
+        raise ChartError("AX-only direct snapshot row count does not match its matrix")
 
     normalized_rows: list[dict[str, Any]] = []
     versions: set[str] = set()
     commits: set[str] = set()
     mlx_versions: set[str] = set()
+    observed_slugs: set[str] = set()
     for row in rows:
+        if not isinstance(row, dict):
+            raise ChartError("AX-only direct snapshot has an invalid model row")
         if row.get("status") != "ok":
             raise ChartError("AX-only direct snapshot has a non-successful model row")
+        slug = row.get("slug")
+        if not isinstance(slug, str) or slug not in expected_slugs:
+            raise ChartError("AX-only direct snapshot has an unexpected model slug")
+        if slug in observed_slugs:
+            raise ChartError("AX-only direct snapshot has a duplicate model slug")
+        observed_slugs.add(slug)
         result_doc = row.get("result_doc")
         if not isinstance(result_doc, dict):
             raise ChartError("AX-only direct snapshot row has no benchmark result")
+        require_clean_release_result(
+            result_doc, description=f"AX-only direct snapshot row {slug}"
+        )
+        if result_doc.get("ax_prefix_cache_mode") != (
+            "disabled_for_cold_prefill_benchmark"
+        ):
+            raise ChartError("AX-only direct snapshot did not use cold-prefix mode")
+        stability = result_doc.get("run_stability_summary")
+        if not isinstance(stability, dict) or stability.get(
+            "publication_candidate"
+        ) is not True:
+            raise ChartError("AX-only direct snapshot has unstable measurements")
         build = result_doc.get("build")
         host = result_doc.get("host")
         if not isinstance(build, dict) or not isinstance(host, dict):
@@ -775,7 +895,11 @@ def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
         version = build.get("engine_version")
         commit = build.get("commit")
         toolchain = host.get("toolchain")
-        if not isinstance(version, str) or not isinstance(commit, str):
+        if (
+            not isinstance(version, str)
+            or not re.fullmatch(r"\d+\.\d+\.\d+", version)
+            or not isinstance(commit, str)
+        ):
             raise ChartError("AX-only direct snapshot row has incomplete build identity")
         if not isinstance(toolchain, dict):
             raise ChartError("AX-only direct snapshot row has incomplete MLX identity")
@@ -810,9 +934,13 @@ def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
             short_model = model.removeprefix("Qwen 3.6 ")
         else:
             raise ChartError(f"AX-only direct snapshot has unsupported model: {model}")
-        slug = LABEL_TO_SLUG.get((model, quant))
-        if slug is None:
+        display_slug = LABEL_TO_SLUG.get((model, quant))
+        if display_slug is None:
             raise ChartError(f"AX-only direct snapshot model has no slug: {model}")
+        if display_slug != slug:
+            raise ChartError(
+                "AX-only direct snapshot display label does not match its model slug"
+            )
 
         metrics: dict[str, dict[int, float]] = {
             metric: {} for metric in AX_DIRECT_SNAPSHOT_METRICS
@@ -821,27 +949,43 @@ def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
         if not isinstance(results, list):
             raise ChartError("AX-only direct snapshot row has no prompt results")
         for result in results:
+            if not isinstance(result, dict) or result.get(
+                "engine"
+            ) != "ax_engine_mlx":
+                raise ChartError("AX-only direct snapshot contains a non-direct row")
             prompt_tokens = result.get("prompt_tokens")
             if prompt_tokens not in PROMPT_TOKENS:
-                continue
+                raise ChartError("AX-only direct snapshot has an unexpected prompt depth")
+            if result.get("generation_tokens") != 128:
+                raise ChartError("AX-only direct snapshot has an unexpected decode length")
+            if any(prompt_tokens in values for values in metrics.values()):
+                raise ChartError("AX-only direct snapshot has duplicate prompt coverage")
             for metric in AX_DIRECT_SNAPSHOT_METRICS:
                 value = result.get(metric)
-                if not isinstance(value, dict) or not isinstance(value.get("median"), (int, float)):
+                median = value.get("median") if isinstance(value, dict) else None
+                if (
+                    not isinstance(median, (int, float))
+                    or isinstance(median, bool)
+                    or not math.isfinite(float(median))
+                    or float(median) <= 0.0
+                ):
                     raise ChartError(
                         f"AX-only direct snapshot is missing {metric} median"
                     )
-                metrics[metric][prompt_tokens] = float(value["median"])
+                metrics[metric][prompt_tokens] = float(median)
         if any(set(values) != set(PROMPT_TOKENS) for values in metrics.values()):
             raise ChartError("AX-only direct snapshot row has incomplete prompt coverage")
         normalized_rows.append(
             {
                 "family": family,
-                "slug": slug,
+                "slug": display_slug,
                 "label": f"{short_model} {quant}",
                 "metrics": metrics,
             }
         )
 
+    if observed_slugs != set(expected_slugs):
+        raise ChartError("AX-only direct snapshot has incomplete model coverage")
     if len(versions) != 1 or len(commits) != 1 or len(mlx_versions) != 1:
         raise ChartError("AX-only direct snapshot has mixed benchmark provenance")
     return {
@@ -849,6 +993,111 @@ def load_ax_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
         "engine_version": versions.pop(),
         "commit": commits.pop(),
         "mlx_version": mlx_versions.pop(),
+        "date": str(snapshot.get("started_at", "unknown"))[:10],
+    }
+
+
+def load_mlx_lm_direct_snapshot(snapshot_path: Path) -> dict[str, Any]:
+    if not snapshot_path.exists():
+        raise ChartError(f"mlx-lm direct snapshot is missing: {snapshot_path}")
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    if snapshot.get("publication_candidate") is not True:
+        raise ChartError("mlx-lm direct snapshot is not publication eligible")
+    if snapshot.get("mlx_lm_reference_only") is not True:
+        raise ChartError("mlx-lm direct snapshot is not reference-only")
+    matrix = require_publication_matrix(
+        snapshot,
+        matrix_key="reference_matrix",
+        schema_version=MLX_LM_REFERENCE_MATRIX_SCHEMA,
+        snapshot_candidate_key="readme_reference_publication_candidate",
+        description="mlx-lm direct snapshot",
+    )
+    expected_slugs = matrix["expected_slugs"]
+    expected_chart_slugs = {
+        slug for slugs in FAMILY_SLUGS.values() for slug in slugs
+    }
+    if set(expected_slugs) != expected_chart_slugs:
+        raise ChartError(
+            "mlx-lm direct snapshot does not cover the chartable reference matrix"
+        )
+    rows = snapshot.get("rows")
+    if not isinstance(rows, list) or len(rows) != len(expected_slugs):
+        raise ChartError("mlx-lm direct snapshot row count does not match its matrix")
+
+    chart_rows: list[dict[str, Any]] = []
+    observed_slugs: set[str] = set()
+    versions: set[str] = set()
+    commits: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ChartError("mlx-lm direct snapshot has an invalid model row")
+        if row.get("status") != "ok":
+            raise ChartError("mlx-lm direct snapshot has a non-successful model row")
+        slug = row.get("slug")
+        if not isinstance(slug, str) or slug not in expected_slugs:
+            raise ChartError("mlx-lm direct snapshot has an unexpected model slug")
+        if slug in observed_slugs:
+            raise ChartError("mlx-lm direct snapshot has a duplicate model slug")
+        observed_slugs.add(slug)
+        result_doc = row.get("result_doc")
+        if not isinstance(result_doc, dict):
+            raise ChartError("mlx-lm direct snapshot row has no benchmark result")
+        require_clean_release_result(
+            result_doc, description=f"mlx-lm direct snapshot row {slug}"
+        )
+        build = result_doc["build"]
+        commits.add(str(build["commit"]))
+        host = result_doc.get("host")
+        toolchain = host.get("toolchain") if isinstance(host, dict) else None
+        version = (
+            toolchain.get("python_mlx_lm")
+            if isinstance(toolchain, dict)
+            else None
+        )
+        if not isinstance(version, str) or not version.strip():
+            raise ChartError("mlx-lm direct snapshot has no mlx-lm version")
+        versions.add(version.strip())
+        result_rows = result_doc.get("results")
+        if not isinstance(result_rows, list):
+            raise ChartError("mlx-lm direct snapshot row has no prompt results")
+        prompt_coverage: set[int] = set()
+        for result in result_rows:
+            if not isinstance(result, dict) or result.get("engine") != "mlx_lm":
+                raise ChartError("mlx-lm direct snapshot contains a non-reference row")
+            prompt_tokens = result.get("prompt_tokens")
+            if prompt_tokens not in PROMPT_TOKENS:
+                raise ChartError("mlx-lm direct snapshot has an unexpected prompt depth")
+            if prompt_tokens in prompt_coverage:
+                raise ChartError("mlx-lm direct snapshot has duplicate prompt coverage")
+            prompt_coverage.add(prompt_tokens)
+            if result.get("generation_tokens") != 128:
+                raise ChartError("mlx-lm direct snapshot has an unexpected decode length")
+            for metric in AX_DIRECT_SNAPSHOT_METRICS:
+                value = result.get(metric)
+                median = value.get("median") if isinstance(value, dict) else None
+                if (
+                    not isinstance(median, (int, float))
+                    or isinstance(median, bool)
+                    or not math.isfinite(float(median))
+                    or float(median) <= 0.0
+                ):
+                    raise ChartError(
+                        f"mlx-lm direct snapshot is missing {metric} median"
+                    )
+            row_copy = dict(result)
+            row_copy["_slug"] = slug
+            chart_rows.append(row_copy)
+        if prompt_coverage != set(PROMPT_TOKENS):
+            raise ChartError("mlx-lm direct snapshot row has incomplete prompt coverage")
+
+    if observed_slugs != set(expected_slugs):
+        raise ChartError("mlx-lm direct snapshot has incomplete model coverage")
+    if len(versions) != 1 or len(commits) != 1:
+        raise ChartError("mlx-lm direct snapshot has mixed benchmark provenance")
+    return {
+        "rows": chart_rows,
+        "version": versions.pop(),
+        "commit": commits.pop(),
         "date": str(snapshot.get("started_at", "unknown"))[:10],
     }
 
@@ -1360,6 +1609,14 @@ def load_mtp_6bit_summary(summary_path: Path) -> dict[str, Any]:
         r"\d+\.\d+\.\d+", engine_version
     ):
         raise ChartError(f"MTP 6-bit summary has no semantic engine_version: {summary_path}")
+    if schema == MTP_6BIT_EXACT_SCHEMA:
+        build_commit = summary.get("build_commit")
+        if not isinstance(build_commit, str) or re.fullmatch(
+            r"[0-9a-f]{40}", build_commit
+        ) is None:
+            raise ChartError(
+                f"MTP exact comparison has no full measured build_commit: {summary_path}"
+            )
     rows = summary.get("rows")
     if not isinstance(rows, list) or not rows:
         raise ChartError(f"MTP 6-bit summary has no rows: {summary_path}")
@@ -3107,13 +3364,16 @@ def main() -> int:
         if snapshot_path is None:
             raise ChartError("README does not declare an AX-only direct snapshot")
         snapshot = load_ax_direct_snapshot(snapshot_path)
-        readme_slugs = readme_model_slugs(args.readme)
+        reference_path = find_mlx_lm_direct_snapshot(args.readme)
+        if reference_path is None:
+            raise ChartError("README does not declare an mlx-lm direct snapshot")
+        reference = load_mlx_lm_direct_snapshot(reference_path)
         llama_rows = load_llama_rows_from_readme(args.readme)
         args.output_dir.mkdir(parents=True, exist_ok=True)
         mismatches = []
         for spec in CHARTS:
             rows = (
-                load_retained_mlx_lm_rows(args.readme, readme_slugs)
+                reference["rows"]
                 + ax_direct_snapshot_chart_rows(snapshot, spec.metric)
                 + llama_rows
             )
@@ -3244,9 +3504,16 @@ def main() -> int:
         mismatches.append(embeddinggemma_scale_output_path)
 
     ax_direct_snapshot = None
+    mlx_lm_direct_snapshot = None
     ax_direct_snapshot_path = find_ax_direct_snapshot(args.readme)
     if ax_direct_snapshot_path is not None:
         ax_direct_snapshot = load_ax_direct_snapshot(ax_direct_snapshot_path)
+        mlx_lm_direct_snapshot_path = find_mlx_lm_direct_snapshot(args.readme)
+        if mlx_lm_direct_snapshot_path is None:
+            raise ChartError("README does not declare an mlx-lm direct snapshot")
+        mlx_lm_direct_snapshot = load_mlx_lm_direct_snapshot(
+            mlx_lm_direct_snapshot_path
+        )
 
     for spec in CHARTS:
         if args.results_dir:
@@ -3257,9 +3524,11 @@ def main() -> int:
                     args.readme, spec.metric, readme_slugs
                 )
             else:
-                benchmark_rows = load_retained_mlx_lm_rows(
-                    args.readme, readme_slugs
-                ) + ax_direct_snapshot_chart_rows(ax_direct_snapshot, spec.metric)
+                if mlx_lm_direct_snapshot is None:
+                    raise ChartError("mlx-lm direct snapshot was not loaded")
+                benchmark_rows = mlx_lm_direct_snapshot[
+                    "rows"
+                ] + ax_direct_snapshot_chart_rows(ax_direct_snapshot, spec.metric)
         rows = benchmark_rows + llama_rows
         snapshot_version = (
             str(ax_direct_snapshot["engine_version"])

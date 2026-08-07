@@ -580,7 +580,7 @@ def publication_metadata_failure_reasons(
         failures.append("missing_build_metadata")
     else:
         commit = build.get("commit")
-        if not isinstance(commit, str) or not commit or commit == "unknown":
+        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
             failures.append("missing_build_commit")
         if build.get("build_profile") != "release":
             failures.append("non_release_build")

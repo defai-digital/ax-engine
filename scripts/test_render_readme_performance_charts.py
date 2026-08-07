@@ -10,7 +10,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 sys.path.insert(0, str(Path(__file__).parent))
 
 CHART_SCRIPT_PATH = Path(__file__).with_name("render_readme_performance_charts.py")
@@ -72,6 +71,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             "publication_candidate": True,
             "claim_type": "exact_mtp_comparison",
             "engine_version": "6.9.0",
+            "build_commit": "a" * 40,
             "rows": rows,
         }
 
@@ -95,7 +95,37 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             / "benchmarks/results/inference/ax-direct/"
             "2026-07-27-v6.12.0-m5max-ax-direct-only/sweep_results.json"
         )
-        snapshot = charts.load_ax_direct_snapshot(snapshot_path)
+        legacy_snapshot = json.loads(snapshot_path.read_text())
+        with self.assertRaisesRegex(
+            charts.ChartError, "README publication eligible"
+        ):
+            charts.load_ax_direct_snapshot(snapshot_path)
+
+        expected_slugs = [row["slug"] for row in legacy_snapshot["rows"]]
+        legacy_snapshot["readme_ax_direct_publication_candidate"] = True
+        legacy_snapshot["ax_direct_matrix"] = {
+            "schema_version": charts.AX_DIRECT_MATRIX_SCHEMA,
+            "expected_slugs": expected_slugs,
+            "expected_model_count": len(expected_slugs),
+            "publication_model_count": len(expected_slugs),
+            "expected_cell_count": len(expected_slugs) * len(charts.PROMPT_TOKENS),
+            "publication_cell_count": len(expected_slugs)
+            * len(charts.PROMPT_TOKENS),
+            "publication_candidate": True,
+        }
+        for row in legacy_snapshot["rows"]:
+            row["result_doc"]["build"]["git_tracked_dirty"] = False
+            row["result_doc"]["run_stability_summary"][
+                "publication_candidate"
+            ] = True
+        with tempfile.TemporaryDirectory() as root_name:
+            gated_snapshot_path = Path(root_name) / "sweep_results.json"
+            gated_snapshot_path.write_text(json.dumps(legacy_snapshot))
+            snapshot = charts.load_ax_direct_snapshot(gated_snapshot_path)
+            legacy_snapshot["rows"][0]["readme_model"] = "Gemma 4 E4B"
+            gated_snapshot_path.write_text(json.dumps(legacy_snapshot))
+            with self.assertRaisesRegex(charts.ChartError, "display label"):
+                charts.load_ax_direct_snapshot(gated_snapshot_path)
 
         self.assertEqual(snapshot["engine_version"], "6.12.0")
         self.assertEqual(len(snapshot["rows"]), 12)
@@ -149,6 +179,64 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             table_row += "".join(f" {value:,.1f} |" for value in values)
             self.assertIn(table_row, readme_text)
 
+    def test_mlx_lm_direct_snapshot_requires_clean_complete_reference_matrix(
+        self,
+    ) -> None:
+        source_path = (
+            charts.REPO_ROOT
+            / "benchmarks/results/inference/ax-direct/"
+            "2026-07-27-v6.12.0-m5max-ax-direct-only/sweep_results.json"
+        )
+        snapshot = json.loads(source_path.read_text())
+        expected_slugs = [
+            slug for slugs in charts.FAMILY_SLUGS.values() for slug in slugs
+        ]
+        snapshot["rows"] = [
+            row for row in snapshot["rows"] if row["slug"] in expected_slugs
+        ]
+        snapshot.update(
+            ax_direct_only=False,
+            mlx_lm_reference_only=True,
+            readme_reference_publication_candidate=True,
+        )
+        snapshot["reference_matrix"] = {
+            "schema_version": charts.MLX_LM_REFERENCE_MATRIX_SCHEMA,
+            "expected_slugs": expected_slugs,
+            "expected_model_count": len(expected_slugs),
+            "publication_model_count": len(expected_slugs),
+            "expected_cell_count": len(expected_slugs) * len(charts.PROMPT_TOKENS),
+            "publication_cell_count": len(expected_slugs)
+            * len(charts.PROMPT_TOKENS),
+            "publication_candidate": True,
+        }
+        for row in snapshot["rows"]:
+            result_doc = row["result_doc"]
+            result_doc["build"]["git_tracked_dirty"] = False
+            result_doc["host"]["toolchain"]["python_mlx_lm"] = "0.31.3"
+            for result in result_doc["results"]:
+                result["engine"] = "mlx_lm"
+
+        with tempfile.TemporaryDirectory() as root_name:
+            snapshot_path = Path(root_name) / "sweep_results.json"
+            snapshot_path.write_text(json.dumps(snapshot))
+            loaded = charts.load_mlx_lm_direct_snapshot(snapshot_path)
+            self.assertEqual(loaded["version"], "0.31.3")
+            self.assertEqual(
+                len(loaded["rows"]),
+                len(expected_slugs) * len(charts.PROMPT_TOKENS),
+            )
+
+            snapshot["rows"][0]["result_doc"]["build"]["git_tracked_dirty"] = True
+            snapshot_path.write_text(json.dumps(snapshot))
+            with self.assertRaisesRegex(charts.ChartError, "dirty tracked tree"):
+                charts.load_mlx_lm_direct_snapshot(snapshot_path)
+
+            snapshot["rows"][0]["result_doc"]["build"]["git_tracked_dirty"] = False
+            snapshot["rows"][0]["result_doc"]["build"]["commit"] = "abcdef12"
+            snapshot_path.write_text(json.dumps(snapshot))
+            with self.assertRaisesRegex(charts.ChartError, "full source commit"):
+                charts.load_mlx_lm_direct_snapshot(snapshot_path)
+
     def test_ax_direct_snapshot_marker_is_separate_from_legacy_sources(self) -> None:
         with tempfile.TemporaryDirectory() as root_name:
             root = Path(root_name)
@@ -162,6 +250,24 @@ class ReadmePerformanceChartTests(unittest.TestCase):
 
             self.assertEqual(
                 charts.find_ax_direct_snapshot(readme), snapshot_path.resolve()
+            )
+
+    def test_mlx_lm_direct_snapshot_marker_is_separate_from_legacy_sources(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            snapshot_path = root / "reference.json"
+            snapshot_path.write_text("{}\n")
+            readme = root / "README.md"
+            readme.write_text(
+                "<!-- readme-mlx-lm-direct-snapshot: reference.json -->\n"
+                "<!-- readme-performance-artifacts: reference=legacy/ -->\n"
+            )
+
+            self.assertEqual(
+                charts.find_mlx_lm_direct_snapshot(readme),
+                snapshot_path.resolve(),
             )
 
     def test_gemma4_12b_decode_uses_llama_matched_depth(self) -> None:
@@ -357,6 +463,16 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             summary_path.write_text(json.dumps(summary))
 
             with self.assertRaisesRegex(charts.ChartError, "complete supported matrix"):
+                charts.load_mtp_6bit_summary(summary_path)
+
+    def test_mtp_exact_chart_requires_full_measured_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            summary_path = Path(root_name) / "summary.json"
+            summary = self.exact_mtp_chart_summary()
+            summary["build_commit"] = "abcdef12"
+            summary_path.write_text(json.dumps(summary))
+
+            with self.assertRaisesRegex(charts.ChartError, "measured build_commit"):
                 charts.load_mtp_6bit_summary(summary_path)
 
     def test_embedding_scale_charts_use_embedding_results_tree(self) -> None:

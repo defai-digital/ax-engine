@@ -54,6 +54,12 @@ class Target:
     assistant_mtp: bool = False
 
 
+@dataclass(frozen=True)
+class ArtifactBuildIdentity:
+    engine_version: str
+    commit: str
+
+
 def _resolve_mtp_model_dir(*candidates: str) -> Path:
     """Prefer Ext4T publication paths; fall back to local HF hub cache.
 
@@ -147,18 +153,6 @@ SUPPORTED_TARGETS = (
     ),
 )
 TARGETS_BY_KEY = {target.key: target for target in SUPPORTED_TARGETS}
-
-
-def workspace_version() -> str:
-    cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
-    match = re.search(
-        r"\[workspace\.package\][\s\S]*?^version\s*=\s*\"([^\"]+)\"",
-        cargo_toml,
-        re.MULTILINE,
-    )
-    if match is None:
-        raise ValueError("could not determine workspace package version")
-    return match.group(1)
 
 
 def existing_artifact_ok(path: Path) -> bool:
@@ -447,9 +441,45 @@ def exact_publication_methodology_reasons(direct: dict[str, Any], mtp: dict[str,
             reasons.append(f"{label}_requires_two_warmups")
         if int(artifact.get("repetitions", 0) or 0) < 5:
             reasons.append(f"{label}_requires_five_measurements")
-        if (artifact.get("build") or {}).get("git_tracked_dirty") is not False:
+        build = artifact.get("build") or {}
+        if build.get("git_tracked_dirty") is not False:
             reasons.append(f"{label}_requires_clean_tracked_build")
+        if build.get("build_profile") != "release":
+            reasons.append(f"{label}_requires_release_build")
     return reasons
+
+
+def artifact_build_identity(path: Path, artifact: dict[str, Any]) -> ArtifactBuildIdentity:
+    build = artifact.get("build")
+    if not isinstance(build, dict):
+        raise ValueError(f"{path} has no build provenance")
+    engine_version = build.get("engine_version")
+    if not isinstance(engine_version, str) or re.fullmatch(
+        r"\d+\.\d+\.\d+", engine_version
+    ) is None:
+        raise ValueError(f"{path} has no semantic measured engine version")
+    commit = build.get("commit")
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise ValueError(f"{path} has no full measured build commit")
+    return ArtifactBuildIdentity(engine_version=engine_version, commit=commit)
+
+
+def matching_build_identity(
+    direct_path: Path,
+    direct: dict[str, Any],
+    mtp_path: Path,
+    mtp: dict[str, Any],
+) -> ArtifactBuildIdentity:
+    direct_identity = artifact_build_identity(direct_path, direct)
+    mtp_identity = artifact_build_identity(mtp_path, mtp)
+    if direct_identity != mtp_identity:
+        raise ValueError(
+            "direct/MTP measured build identity differs: "
+            f"{direct_path} "
+            f"({direct_identity.engine_version}, {direct_identity.commit}) vs "
+            f"{mtp_path} ({mtp_identity.engine_version}, {mtp_identity.commit})"
+        )
+    return direct_identity
 
 
 def validate_exact_seed_reproducibility(
@@ -494,12 +524,26 @@ def build_summary(
     suites: tuple[str, ...],
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
+    matrix_build_identity: ArtifactBuildIdentity | None = None
     for target in targets:
         for suite in suites:
             direct_path = output_dir / target.key / suite / "ax_direct.json"
             mtp_path = output_dir / target.key / suite / "ax_mtp.json"
             direct = load_artifact(direct_path)
             mtp = load_artifact(mtp_path)
+            row_build_identity = matching_build_identity(
+                direct_path, direct, mtp_path, mtp
+            )
+            if matrix_build_identity is None:
+                matrix_build_identity = row_build_identity
+            elif row_build_identity != matrix_build_identity:
+                raise ValueError(
+                    "MTP matrix mixes measured build identities: "
+                    f"expected ({matrix_build_identity.engine_version}, "
+                    f"{matrix_build_identity.commit}), found "
+                    f"({row_build_identity.engine_version}, {row_build_identity.commit}) "
+                    f"at {direct_path.parent}"
+                )
             if args.approximate_speed_ceiling:
                 validate_approximate_mtp_artifact(mtp_path, mtp)
                 publication_reasons = ["approximate_optimistic_not_publishable"]
@@ -554,6 +598,8 @@ def build_summary(
                 "lightning_mlx": "N/A",
             }
             rows.append(row)
+    if matrix_build_identity is None:
+        raise ValueError("MTP summary requires at least one measured build identity")
     publication_candidate = bool(rows) and all(row["publication_candidate"] for row in rows)
     return {
         "schema": (
@@ -567,7 +613,8 @@ def build_summary(
             if args.approximate_speed_ceiling
             else MTP_6BIT_EXACT_CLAIM_TYPE
         ),
-        "engine_version": workspace_version(),
+        "engine_version": matrix_build_identity.engine_version,
+        "build_commit": matrix_build_identity.commit,
         "run_dir": str(output_dir.relative_to(REPO_ROOT)),
         "methodology": {
             "targets": [target.key for target in targets],
@@ -689,6 +736,11 @@ def write_summary_files(output_dir: Path, summary: dict[str, Any]) -> None:
         "",
         description,
         "",
+        (
+            f"Measured binary: AX Engine v{summary['engine_version']} at "
+            f"`{summary['build_commit']}`."
+        ),
+        "",
         f"The {ratio_label} is `AX MTP decode tok/s / AX direct decode tok/s` for the same prepared `download-mtp` package and prompt suite. It is not a cross-model speed ranking.",
         "",
         *table_lines(summary["rows"], approximate_diagnostic=approximate_diagnostic),
@@ -711,6 +763,11 @@ def validate_readme_publication_summary(summary: dict[str, Any]) -> None:
     engine_version = summary.get("engine_version")
     if not isinstance(engine_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", engine_version):
         raise ValueError("README update requires a semantic engine_version")
+    build_commit = summary.get("build_commit")
+    if not isinstance(build_commit, str) or re.fullmatch(
+        r"[0-9a-f]{40}", build_commit
+    ) is None:
+        raise ValueError("README update requires a full measured build_commit")
 
     methodology = summary.get("methodology")
     if not isinstance(methodology, dict):
@@ -795,6 +852,7 @@ def render_readme_section(summary: dict[str, Any]) -> str:
     assert date_match is not None
     run_date = date_match.group(1)
     engine_version = summary["engine_version"]
+    build_commit = summary["build_commit"]
     min_speedup = min(float(row["ax_mtp_speedup_x"]) for row in rows)
     max_speedup = max(float(row["ax_mtp_speedup_x"]) for row in rows)
     wins = sum(float(row["ax_mtp_speedup_x"]) > 1.0 for row in rows)
@@ -812,6 +870,8 @@ def render_readme_section(summary: dict[str, Any]) -> str:
         "residual rejection correction. Qwen rows explicitly select the validated",
         "linear-attention exact-verifier profile; this is not an optimistic speed",
         "ceiling or a cross-engine leaderboard.",
+        "",
+        f"Measured binary provenance: AX Engine v{engine_version}, commit `{build_commit}`.",
         "",
         (
             f"Across {len(rows)} target/suite rows: {wins} MTP {win_label}, "

@@ -1421,6 +1421,15 @@ def validate_mtp_6bit_summary_contract(
         raise ArtifactCheckError(
             f"README MTP 6-bit summary run_dir does not match its link: {summary_path}"
         )
+    if schema == MTP_6BIT_EXACT_SCHEMA_VERSION:
+        build_commit = summary.get("build_commit")
+        if not isinstance(build_commit, str) or re.fullmatch(
+            r"[0-9a-f]{40}", build_commit
+        ) is None:
+            raise ArtifactCheckError(
+                "README exact MTP summary requires a full measured build_commit: "
+                f"{summary_path}"
+            )
     rows = summary.get("rows")
     if not isinstance(rows, list) or not rows:
         raise ArtifactCheckError(f"README MTP 6-bit summary has no rows: {summary_path}")
