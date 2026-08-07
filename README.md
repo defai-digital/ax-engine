@@ -33,8 +33,10 @@ memory).**
   engine **0.4.3** in **8/8** Qwen 3.6 decode cells, with **+12.9%**
   matrix-wide geometric-mean throughput and ~**21–24%** MoE wins
   (2026-08-06, M5 Max) — see [Performance](#performance)
-- **Strong direct decode on Apple Silicon** — Gemma and Qwen paths compete with
-  `mlx-lm` and llama.cpp Metal on published decode charts
+- **Strong direct decode on Apple Silicon** — the fresh v6.13.3 snapshot wins
+  **30/30** comparable decode cells against a separate-run `mlx_lm` 0.31.3
+  reference (**+4.6%** geometric mean); fresh llama.cpp Metal rows keep the
+  three-runtime charts current
 - **Multi-model on one process** — keep a scoped set of Qwen 3.5/3.6,
   Qwen3-Coder-Next, Gemma 4, and embedding models resident (`load_mode=add`),
   route by request `model` (chat + embeddings together), with fair Metal turn
@@ -288,7 +290,7 @@ serving, MTP, direct, or embedding rows, and do not mix **M3 Max** vs
 | **Single-client serving** | AX Engine · peer MLX serving engine **0.4.3** | **8/8** decode wins · MoE **~21–24%** faster · GM decode **+12.9%** | M5 Max · 2026-08-06 · AX **6.13.1** |
 | **Multi-model (S1)** | AX one process · multi-process peer MLX server | **All locked gates** · thr **5.03×** | M5 Max · 2026-08-06 |
 | **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | Exact 6-bit MTP: **14/15 wins**, **1.68× GM**; peer: AX trails MTPLX, beats lightning-mlx **2/3** | M5 Max · 2026-08-06/07 |
-| **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Competitive decode; charts in docs | M5 Max · 2026-07-27 (peers retained) |
+| **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | AX **30/30** decode wins vs separate-run mlx-lm · **+4.6% GM** | M5 Max · 2026-08-07 · separate runs |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Ingest scale tables in docs | M5 Max · 2026-07-27 |
 
 Full tables, charts, and methodology:
@@ -369,8 +371,8 @@ all 30 comparable decode cells (**+4.6%** geometric mean), while prefill is
 **10.6% lower** and TTFT is **11.9% higher**. This is cross-run evidence, not a
 same-session peer benchmark.
 
-Non-speculative decode/prefill/TTFT (Gemma 4 and Qwen 3.6 box plots vs fresh
-separate-run `mlx_lm` / retained llama.cpp Metal), embedding ingest scale,
+Non-speculative decode/prefill/TTFT (Gemma 4 and Qwen 3.6 box plots from fresh
+separate-run AX, `mlx_lm`, and llama.cpp **b10050** Metal snapshots), embedding ingest scale,
 DiffusionGemma, and historical composites live under **docs** so this README
 stays on the numbers that decide “is AX faster for me?”:
 

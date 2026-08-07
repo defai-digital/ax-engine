@@ -18,7 +18,7 @@ Public results are split by session mode in
 | Session mode | Current public source |
 | --- | --- |
 | MTP generation | AX 6-bit MTP package acceleration (exact sampled MTP) plus Qwen3.6 peer MTP decode rows; see [results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation) |
-| Direct generation | v6.13.3 AX-only direct snapshot plus a fresh separate-run `mlx_lm` 0.31.3 reference and retained llama.cpp rows; see [results: Direct](PERFORMANCE-RESULTS.md#session-mode-direct-generation) |
+| Direct generation | v6.13.3 AX-only direct snapshot plus fresh separate-run `mlx_lm` 0.31.3 and llama.cpp b10050 references; see [results: Direct](PERFORMANCE-RESULTS.md#session-mode-direct-generation) |
 | Embeddings | Qwen3-Embedding paired ingest-scale and EmbeddingGemma scale rows; see [results: Embeddings](PERFORMANCE-RESULTS.md#session-mode-embeddings) |
 
 These rows are a provenance-tracked composite, not one same-session benchmark.
