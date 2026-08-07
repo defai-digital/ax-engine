@@ -174,8 +174,9 @@ RUN_DATE=2026-08-07
 ```
 
 Validate each timestamped embedding artifact with
-`scripts/check_embedding_publish_gate.py --claim paired_delta`. Refresh the
-dense batched-decode ceiling with:
+`scripts/check_embedding_publish_gate.py` using
+`--claim paired_delta --require-clean-tree`. Refresh the dense batched-decode
+ceiling with:
 
 ```bash
 RUN_DATE=2026-08-07

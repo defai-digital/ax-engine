@@ -92,10 +92,12 @@ Before wiring a new artifact into PERFORMANCE-RESULTS or charts, run:
 ```bash
 # Paired reference delta (default)
 .venv/bin/python scripts/check_embedding_publish_gate.py \
+  --claim paired_delta --require-clean-tree \
   path/to/embedding_fair.json path/to/embedding_ingest_scale.json
 
 # AX-only absolute trend
-.venv/bin/python scripts/check_embedding_publish_gate.py --claim ax_absolute_trend \
+.venv/bin/python scripts/check_embedding_publish_gate.py \
+  --claim ax_absolute_trend --require-clean-tree \
   path/to/embedding_ingest_scale.json
 
 # Retained historical v1 rows only
@@ -103,10 +105,11 @@ Before wiring a new artifact into PERFORMANCE-RESULTS or charts, run:
   path/to/legacy_embedding_ingest_scale.json
 ```
 
-The gate rejects `paired_delta` when AX is linked to Homebrew `libmlx` while
-the reference uses a pip/venv wheel — that mismatch was the root of a false
-~3× AX-vs-mlx-lm gap. Prefer the venv/pip MLX wheel and the repo rpath wiring
-in `mlx-sys` / `ax-engine-py`.
+The gate rejects `paired_delta` unless AX and the reference resolve linked MLX
+binaries with identical SHA-256 fingerprints. It also recomputes recorded
+deltas and medians from the full declared trial set. A Homebrew / pip mismatch
+was the root of a false ~3× AX-vs-mlx-lm gap; prefer the venv/pip MLX wheel and
+the repo rpath wiring in `mlx-sys` / `ax-engine-py`.
 
 The public results tables only count throughput where the caller can actually
 *consume* the embedding (Python `list[float]`, NumPy ndarray, raw f32
