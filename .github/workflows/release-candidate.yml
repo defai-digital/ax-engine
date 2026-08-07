@@ -113,8 +113,10 @@ jobs:
 
       - name: Smoke-test built wheel
         run: |
-          python -m venv target/release-candidate-smoke
-          source target/release-candidate-smoke/bin/activate
+          SMOKE_DIR="$(mktemp -d "${RUNNER_TEMP}/ax-engine-release-candidate-smoke.XXXXXX")"
+          trap 'rm -rf -- "$SMOKE_DIR"' EXIT
+          python -m venv "$SMOKE_DIR"
+          source "$SMOKE_DIR/bin/activate"
           python -m pip install --upgrade pip
           python -m pip install target/wheels/delocated/ax_engine-*.whl
           python examples/python/basic.py
