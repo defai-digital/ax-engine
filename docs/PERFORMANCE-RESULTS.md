@@ -41,7 +41,7 @@ denominator.
 | --- | --- | --- | --- |
 | Single-client serving vs peer MLX serving engine | AX Engine **6.13.1** · peer MLX serving engine **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
 | Multi-model S1 | AX Engine · multi-process peer MLX server **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
-| 6-bit exact sampled-MTP acceleration | AX Engine **v6.12.1** AX-only | Apple **M5 Max** 128 GB | 2026-07-29 |
+| 6-bit exact sampled-MTP comparison | AX Engine **v6.13.1** AX-only | Apple **M5 Max** 128 GB | 2026-08-06 |
 | Qwen3.6 MTP peer (MTPLX / lightning-mlx) | Stitched peer matrix · MTPLX **2.0.1** | Apple M-series (see artifact) | 2026-07-09 |
 | Direct generation snapshot | AX Engine **v6.12.0** AX-only; retained `mlx-lm` **0.31.3** · `llama.cpp` **b9910** | Apple **M5 Max** 128 GB | 2026-07-27 |
 | Embeddings | AX-only refresh + retained peer medians | Apple **M5 Max** 128 GB | 2026-07-27 |
@@ -173,60 +173,62 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current PERFORMANCE-RESULTS / PERFORMANCE MTP evidence.
 
-#### AX Engine v6.12.1 6-bit exact sampled-MTP acceleration (2026-07-29)
+#### AX Engine v6.13.1 6-bit exact sampled-MTP comparison (2026-08-06)
 
 This AX Engine-only matrix compares each prepared 6-bit `download-mtp`
 package with MTP disabled and enabled. The enabled route uses
 distribution-exact sampled MTP with deterministic-delta proposals and
-residual rejection correction; it is not an optimistic speed ceiling or a
-cross-engine leaderboard.
+residual rejection correction. Qwen rows explicitly select the validated
+linear-attention exact-verifier profile; this is not an optimistic speed
+ceiling or a cross-engine leaderboard.
 
-All 15 target/suite rows accelerate decode by 1.28x-2.64x.
+Measured binary provenance: AX Engine v6.13.1, commit `bff75300b9854cadc675e0ac22955e4314f93dd3`.
+
+Across 15 target/suite rows: 14 MTP wins, 0 ties, and 1 loss; MTP/direct ratios span 0.88x-2.56x.
 Every row has 100% MTP step coverage, zero direct-fallback prompts or
 steps, and zero n-gram accepted, proposed, submitted, or hit-step
 telemetry.
 
-<img src="assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine v6.12.1 6-bit exact sampled-MTP acceleration comparing same-package direct and MTP decode throughput">
+<img src="assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine v6.13.1 6-bit exact sampled-MTP comparison of same-package direct and MTP decode throughput">
 
-| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
+| Target | Suite | AX direct decode | AX MTP decode | AX MTP/direct | AX MTP prefill | AX MTP TTFT | AX accept |
 |---|---|---:|---:|---:|---:|---:|---:|
-| `qwen3.6-27b-6bit` | `flappy` | 23.7 tok/s | 62.6 tok/s | 2.64x | 376.4 tok/s | 854 ms | 99.4% |
-| `qwen3.6-27b-6bit` | `long_code` | 23.6 tok/s | 52.3 tok/s | 2.21x | 503.0 tok/s | 1427 ms | 98.6% |
-| `qwen3.6-27b-6bit` | `python_modules_long` | 23.7 tok/s | 42.2 tok/s | 1.78x | 389.9 tok/s | 898 ms | 97.4% |
-| `qwen3.6-35b-a3b` | `flappy` | 104.1 tok/s | 144.6 tok/s | 1.39x | 516.9 tok/s | 626 ms | 99.8% |
-| `qwen3.6-35b-a3b` | `long_code` | 103.1 tok/s | 136.6 tok/s | 1.32x | 953.3 tok/s | 753 ms | 98.4% |
-| `qwen3.6-35b-a3b` | `python_modules_long` | 103.7 tok/s | 133.2 tok/s | 1.28x | 559.5 tok/s | 616 ms | 99.0% |
-| `gemma-4-12b` | `flappy` | 39.5 tok/s | 100.4 tok/s | 2.54x | 1032.0 tok/s | 337 ms | 99.9% |
-| `gemma-4-12b` | `long_code` | 39.2 tok/s | 99.1 tok/s | 2.53x | 1407.5 tok/s | 581 ms | 100.0% |
-| `gemma-4-12b` | `python_modules_long` | 39.6 tok/s | 79.8 tok/s | 2.01x | 1056.5 tok/s | 350 ms | 98.1% |
-| `gemma-4-26b` | `flappy` | 92.9 tok/s | 152.7 tok/s | 1.64x | 1027.4 tok/s | 339 ms | 99.9% |
-| `gemma-4-26b` | `long_code` | 91.9 tok/s | 150.1 tok/s | 1.63x | 1944.3 tok/s | 421 ms | 100.0% |
-| `gemma-4-26b` | `python_modules_long` | 92.1 tok/s | 133.6 tok/s | 1.45x | 868.3 tok/s | 426 ms | 98.0% |
-| `gemma-4-31b` | `flappy` | 18.7 tok/s | 47.8 tok/s | 2.55x | 379.5 tok/s | 918 ms | 100.0% |
-| `gemma-4-31b` | `long_code` | 18.4 tok/s | 46.8 tok/s | 2.55x | 527.1 tok/s | 1552 ms | 100.0% |
-| `gemma-4-31b` | `python_modules_long` | 18.9 tok/s | 42.0 tok/s | 2.22x | 388.5 tok/s | 942 ms | 98.2% |
+| `qwen3.6-27b-6bit` | `flappy` | 23.9 tok/s | 44.9 tok/s | 1.88x | 510.0 tok/s | 631 ms | 99.6% |
+| `qwen3.6-27b-6bit` | `long_code` | 23.8 tok/s | 37.6 tok/s | 1.58x | 648.4 tok/s | 1107 ms | 98.3% |
+| `qwen3.6-27b-6bit` | `python_modules_long` | 23.9 tok/s | 28.2 tok/s | 1.18x | 525.6 tok/s | 663 ms | 96.2% |
+| `qwen3.6-35b-a3b` | `flappy` | 110.2 tok/s | 120.2 tok/s | 1.09x | 874.8 tok/s | 368 ms | 99.9% |
+| `qwen3.6-35b-a3b` | `long_code` | 109.9 tok/s | 111.4 tok/s | 1.01x | 1627.3 tok/s | 441 ms | 98.6% |
+| `qwen3.6-35b-a3b` | `python_modules_long` | 110.0 tok/s | 96.9 tok/s | 0.88x | 968.8 tok/s | 359 ms | 98.4% |
+| `gemma-4-12b` | `flappy` | 39.5 tok/s | 100.4 tok/s | 2.54x | 1058.6 tok/s | 329 ms | 99.9% |
+| `gemma-4-12b` | `long_code` | 39.2 tok/s | 99.1 tok/s | 2.53x | 1428.4 tok/s | 573 ms | 100.0% |
+| `gemma-4-12b` | `python_modules_long` | 39.6 tok/s | 79.8 tok/s | 2.02x | 1069.8 tok/s | 345 ms | 98.1% |
+| `gemma-4-26b` | `flappy` | 91.8 tok/s | 153.2 tok/s | 1.67x | 1180.4 tok/s | 295 ms | 99.9% |
+| `gemma-4-26b` | `long_code` | 92.0 tok/s | 150.5 tok/s | 1.64x | 2173.1 tok/s | 376 ms | 100.0% |
+| `gemma-4-26b` | `python_modules_long` | 93.3 tok/s | 136.1 tok/s | 1.46x | 1285.4 tok/s | 294 ms | 98.0% |
+| `gemma-4-31b` | `flappy` | 18.7 tok/s | 47.8 tok/s | 2.56x | 436.0 tok/s | 829 ms | 100.0% |
+| `gemma-4-31b` | `long_code` | 18.5 tok/s | 46.8 tok/s | 2.52x | 551.3 tok/s | 1484 ms | 100.0% |
+| `gemma-4-31b` | `python_modules_long` | 18.8 tok/s | 41.4 tok/s | 2.20x | 413.7 tok/s | 879 ms | 98.2% |
+
+The loss is concentrated in Qwen3.6 35B-A3B's `python_modules_long`
+workload: exact MTP is 0.88x direct there, versus 1.09x on `flappy` and
+1.01x on `long_code`. In other words, exact MTP remains a large aggregate
+win but is not uniformly beneficial for this already-fast MoE target.
+
+The retained 2026-07-29 v3 matrix is not a like-for-like runtime regression
+baseline for these Qwen rows: it did not explicitly select and record the
+validated Qwen linear-attention exact-verifier profile now required by the
+publication gate. This v4 matrix supersedes its blanket 15/15 acceleration
+claim. Gemma assistant-MTP rows remain in the same performance band.
 
 Methodology: sampled decode (`temperature=0.6`, `top_p=0.95`,
 `top_k=20`), 1,000 generated tokens, 2 warmups, 5 measured repetitions,
-and recorded cooldown. Prefill and TTFT are reported as context, not MTP
-acceleration claims, because speculative decoding starts after prompt
+and recorded cooldown. Prefill and TTFT are reported as context, not
+decode-comparison claims, because speculative decoding starts after prompt
 prefill. Direct and MTP rows use the same package and prompt suite.
 
 Exactness is checked with per-mode seed reproducibility. Summary artifacts:
-[`summary.md`](../benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/summary.md) and
-[`summary.json`](../benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/summary.json).
-
-Provenance vs the prior v6.9.0 (2026-07-16) matrix: this refresh runs the
-same contract after two intentional runtime changes. A speculation-profile
-regression that pinned the Qwen draft gate to the chatbot threshold at the
-benchmark temperature (roughly doubling empty-draft steps) was fixed,
-restoring Qwen fused-sidecar MTP decode. Separately, the MTP skip-state
-fast path was removed as a correctness fix (it omitted emitted tail tokens
-from KV history); the v6.9.0 rows still benefited from that incorrect
-path, so the lower Qwen3.6 35B-A3B bound (1.28x vs 1.44x) reflects that
-removal rather than a speed regression in this refresh. Gemma
-assistant-MTP rows are unaffected by both changes and reproduce the prior
-matrix within run-to-run noise.
+[`summary.md`](../benchmarks/results/speculative/mtp-6bit/2026-08-06-v6.13.1-m5max-supported-mtp-ax-only/summary.md) and
+[`summary.json`](../benchmarks/results/speculative/mtp-6bit/2026-08-06-v6.13.1-m5max-supported-mtp-ax-only/summary.json).
 
 #### Qwen3.6 MTP peer decode comparison (2026-07-09)
 
@@ -898,7 +900,7 @@ Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refr
 ### Session Mode: Embeddings
 
 Embedding sessions use a separate pooling route from text generation. Public
-Public results rows focus on sustained **batched** ingest workloads, where callers
+results rows focus on sustained **batched** ingest workloads, where callers
 embed many chunks and the fixed per-call cost can be amortized. Treat these
 rows as embedding throughput and latency evidence, not as direct or MTP decode
 evidence.

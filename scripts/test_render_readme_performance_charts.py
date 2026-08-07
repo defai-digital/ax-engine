@@ -506,7 +506,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertEqual(
             charts.find_mtp_6bit_summary(performance_results),
             charts.REPO_ROOT
-            / "benchmarks/results/speculative/mtp-6bit/2026-07-29-v6.12.1-m5max-supported-mtp-ax-only/summary.json",
+            / "benchmarks/results/speculative/mtp-6bit/2026-08-06-v6.13.1-m5max-supported-mtp-ax-only/summary.json",
         )
 
     def test_mtp_6bit_refresh_defaults_to_speculative_results_tree(self) -> None:
