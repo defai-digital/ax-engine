@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,12 @@ def validate_host(artifact: dict[str, Any], *, path: Path) -> list[str]:
     return warnings
 
 
-def validate_build(artifact: dict[str, Any], *, path: Path) -> list[str]:
+def validate_build(
+    artifact: dict[str, Any],
+    *,
+    path: Path,
+    strict: bool,
+) -> list[str]:
     warnings: list[str] = []
     build = artifact.get("build")
     commit = None
@@ -92,6 +98,17 @@ def validate_build(artifact: dict[str, Any], *, path: Path) -> list[str]:
         isinstance(commit, str) and bool(commit) and commit != "unknown",
         f"{path}: missing build commit / git_commit",
     )
+    if strict:
+        require(
+            re.fullmatch(r"[0-9a-f]{40}", commit) is not None,
+            f"{path}: v2 publication requires a full measured build commit",
+        )
+        engine_version = build.get("engine_version")
+        require(
+            isinstance(engine_version, str)
+            and re.fullmatch(r"\d+\.\d+\.\d+", engine_version) is not None,
+            f"{path}: v2 publication requires a semantic engine version",
+        )
     return warnings
 
 
@@ -294,7 +311,7 @@ def validate_artifact(
 
     if is_v2 or has_identity:
         warnings.extend(validate_host(artifact, path=path))
-        warnings.extend(validate_build(artifact, path=path))
+        warnings.extend(validate_build(artifact, path=path, strict=is_v2))
         warnings.extend(validate_runtime_identity(artifact, path=path, claim=claim))
     else:
         if not allow_legacy:
@@ -326,6 +343,12 @@ def validate_artifact(
     warmup = artifact.get("warmup")
     trials = artifact.get("trials")
     if is_v2:
+        if claim == CLAIM_PAIRED:
+            require(
+                artifact.get("trial_order") == "interleaved_alternating",
+                f"{path}: paired v2 publication requires "
+                "trial_order=interleaved_alternating",
+            )
         require(
             isinstance(warmup, int) and warmup >= MIN_WARMUPS,
             f"{path}: v2 publication requires warmup >= {MIN_WARMUPS}",

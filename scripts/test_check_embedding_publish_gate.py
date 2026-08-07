@@ -34,8 +34,13 @@ def _paired_fair_artifact(**overrides):
         "reference": "mlx_lm",
         "warmup": 2,
         "trials": 5,
-        "git_commit": "abc123",
-        "build": {"commit": "abc123", "git_tracked_dirty": False},
+        "trial_order": "interleaved_alternating",
+        "git_commit": "a" * 40,
+        "build": {
+            "commit": "a" * 40,
+            "engine_version": "6.13.2",
+            "git_tracked_dirty": False,
+        },
         "host": {"chip": "Apple M5 Max", "memory_gb": 128, "platform": "darwin"},
         "runtime_identity": {
             "benchmark_surface": "embedding_in_process",
@@ -186,9 +191,32 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.PublishGateError, "runtime_identity"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
+    def test_v2_requires_full_build_identity_and_interleaved_trials(self) -> None:
+        short_commit = _paired_fair_artifact(
+            build={
+                "commit": "abc123",
+                "engine_version": "6.13.2",
+                "git_tracked_dirty": False,
+            }
+        )
+        path = self._write(short_commit)
+        with self.assertRaisesRegex(gate.PublishGateError, "full measured"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+        blocked_order = _paired_fair_artifact(trial_order="blocked")
+        path = self._write(blocked_order)
+        with self.assertRaisesRegex(
+            gate.PublishGateError, "interleaved_alternating"
+        ):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
     def test_v2_rejects_dirty_or_under_sampled_artifact(self) -> None:
         dirty = _paired_fair_artifact(
-            build={"commit": "abc123", "git_tracked_dirty": True}
+            build={
+                "commit": "a" * 40,
+                "engine_version": "6.13.2",
+                "git_tracked_dirty": True,
+            }
         )
         path = self._write(dirty)
         with self.assertRaisesRegex(gate.PublishGateError, "require-clean-tree"):
@@ -213,8 +241,13 @@ class EmbeddingPublishGateTests(unittest.TestCase):
             "warmup": 2,
             "trials": 5,
             "cooldown_s": 15.0,
-            "git_commit": "abc",
-            "build": {"commit": "abc", "git_tracked_dirty": False},
+            "trial_order": "interleaved_alternating",
+            "git_commit": "a" * 40,
+            "build": {
+                "commit": "a" * 40,
+                "engine_version": "6.13.2",
+                "git_tracked_dirty": False,
+            },
             "host": {"chip": "Apple M5 Max"},
             "runtime_identity": {
                 "ax_engine_native": {
@@ -266,7 +299,12 @@ class EmbeddingPublishGateTests(unittest.TestCase):
             "warmup": 2,
             "trials": 5,
             "cooldown_s": 0.0,
-            "build": {"commit": "abc", "git_tracked_dirty": False},
+            "trial_order": "interleaved_alternating",
+            "build": {
+                "commit": "a" * 40,
+                "engine_version": "6.13.2",
+                "git_tracked_dirty": False,
+            },
             "host": {"chip": "Apple M5 Max"},
             "runtime_identity": {
                 "ax_engine_native": {"linked_mlx": []},

@@ -3014,7 +3014,11 @@ def embedding_model_label(label: str) -> str:
 
 
 def _assert_embedding_publish_gate(
-    artifact_path: Path, *, claim: str, allow_legacy: bool = True
+    artifact_path: Path,
+    *,
+    claim: str,
+    allow_legacy: bool = True,
+    require_clean_tree: bool = False,
 ) -> None:
     """Reject chart inputs that fail the embedding publication gate.
 
@@ -3025,7 +3029,10 @@ def _assert_embedding_publish_gate(
     gate = _load_embedding_publish_gate()
     try:
         gate.validate_artifact(
-            artifact_path, claim=claim, allow_legacy=allow_legacy
+            artifact_path,
+            claim=claim,
+            allow_legacy=allow_legacy,
+            require_clean_tree=require_clean_tree,
         )
     except gate.PublishGateError as exc:
         raise ChartError(str(exc)) from exc
@@ -3106,7 +3113,10 @@ def load_embedding_paired_scale_delta_rows(
     if not artifact_path.exists():
         raise ChartError(f"missing embedding scale paired artifact: {artifact_path}")
     _assert_embedding_publish_gate(
-        artifact_path, claim="paired_delta", allow_legacy=True
+        artifact_path,
+        claim="paired_delta",
+        allow_legacy=False,
+        require_clean_tree=True,
     )
     artifact = json.loads(artifact_path.read_text())
     if artifact.get("ax_only"):
