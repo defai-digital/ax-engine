@@ -62,13 +62,16 @@ Each 20-request cycle contains:
 | 1 | 4,096-word unique prompt, 128 output tokens | Bounded long-prefill coverage |
 
 Warm-up prompts use a disjoint nonce range, so the first measured requests
-cannot obtain a false cache hit from warm-up. The first four hours form the
-baseline; no performance regression decision is made until that baseline is
-complete and it has sufficient same-shape measurements. The runner also checks
-whether the first and last quartiles show material growth *and* the latter
-half is still rising. A baseline that climbs by at least 1 GiB while its
-latter-half slope remains at least 256 MiB/hour is a `watch`, rather than a
-reference that could hide a leak.
+cannot obtain a false cache hit from warm-up. By default, warm-up is one full
+20-request workload cycle, including the long-prefill and shared-prefix
+probes; this settles expected first-use KV, allocator, and cache allocations
+before measured time begins. The first four hours then form the baseline; no
+performance regression decision is made until that baseline is complete and
+it has sufficient same-shape measurements. The runner also checks whether the
+first and last quartiles show material growth *and* the latter half is still
+rising. A baseline that climbs by at least 1 GiB while its latter-half slope
+remains at least 256 MiB/hour is a `watch`, rather than a reference that could
+hide a leak.
 
 ## Execution gates
 
@@ -101,7 +104,7 @@ env VIRTUAL_ENV="$stage/.venv" PYO3_PYTHON="$stage/.venv/bin/python" \
   --model-id qwen3.6-27b-axq-6bit \
   --output-dir "$pilot_dir" \
   --duration-hours 0.35 --baseline-hours 0.10 --report-interval-hours 0.05 \
-  --request-interval-seconds 30 --resource-interval-seconds 15 --warmup-requests 2
+  --request-interval-seconds 30 --resource-interval-seconds 15
 ```
 
 ## What is measured

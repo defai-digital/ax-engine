@@ -58,6 +58,15 @@ class AxqEnduranceTests(unittest.TestCase):
         self.assertEqual(shapes[6], "shared_prefix")
         self.assertEqual(shapes[13], "long_unique")
 
+    def test_default_warmup_covers_every_measured_shape(self) -> None:
+        self.assertEqual(runner.DEFAULT_WARMUP_REQUESTS, len(runner.WORKLOAD_SEQUENCE))
+        warmup_shapes = {
+            runner.select_shape(index).name
+            for index in range(1, runner.DEFAULT_WARMUP_REQUESTS + 1)
+        }
+
+        self.assertEqual(warmup_shapes, set(runner.WORKLOAD_SHAPES))
+
     def test_prompt_unique_and_shared_prefix_modes_have_intended_cache_shape(self) -> None:
         unique = runner.WORKLOAD_SHAPES["medium_unique"]
         shared = runner.WORKLOAD_SHAPES["shared_prefix"]

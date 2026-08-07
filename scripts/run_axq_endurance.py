@@ -52,7 +52,12 @@ DEFAULT_REQUEST_TIMEOUT_S = 300.0
 DEFAULT_STARTUP_TIMEOUT_S = 1_200.0
 DEFAULT_DRAIN_TIMEOUT_S = 10.0
 DEFAULT_MAX_BATCH_TOKENS = 2_048
-DEFAULT_WARMUP_REQUESTS = 10
+# The measured baseline must begin after each request class has caused its
+# normal first-use allocations.  One complete interleaved cycle includes the
+# long prefill and prefix-cache probes as well as the short steady-state
+# traffic; warming only the first few short prompts would make the first
+# baseline window absorb those expected allocation steps.
+DEFAULT_WARMUP_REQUESTS = 20
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
 DEFAULT_MAX_ERROR_RATE = 0.001
 DEFAULT_MAX_TTFT_P95_RATIO = 1.50
