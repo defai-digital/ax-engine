@@ -35,6 +35,7 @@ DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT = 50.0
 PEER_WIN_MATRIX_SCHEMA_VERSION = "ax.ax_mlx_lm_peer_win_matrix.v1"
 PEER_WIN_SCHEMA_VERSION = "ax.ax_mlx_lm_peer_wins.v1"
 REFERENCE_MATRIX_SCHEMA_VERSION = "ax.mlx_lm_reference_matrix.v1"
+AX_DIRECT_MATRIX_SCHEMA_VERSION = "ax.ax_direct_matrix.v1"
 PUBLICATION_MIN_COOLDOWN_SECONDS = 15.0
 PUBLICATION_MIN_MEASUREMENT_REPETITIONS = 5
 PUBLICATION_MIN_WARMUP_REPETITIONS = 2
@@ -1001,6 +1002,144 @@ def summarize_reference_matrix(
     return summary
 
 
+def summarize_ax_direct_matrix(
+    rows: list[dict[str, Any]],
+    *,
+    expected_slugs: list[str],
+    prompt_tokens: list[int],
+    generation_tokens: int,
+    max_load_average: float | None = DEFAULT_MAX_LOAD_AVERAGE,
+    max_top_process_cpu_percent: float | None = DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+) -> dict[str, Any]:
+    """Validate an AX-only direct sweep as publication evidence.
+
+    A successful subprocess is not enough: every model row must bind to a
+    clean release build, the locked performance conditions, complete trial
+    shapes, a cold-prefix route, and stable AX measurements.
+    """
+    expected_cells = {
+        (prompt_length, generation_tokens) for prompt_length in prompt_tokens
+    }
+    summary: dict[str, Any] = {
+        "schema_version": AX_DIRECT_MATRIX_SCHEMA_VERSION,
+        "scope": "readme_ax_direct_snapshot",
+        "expected_slugs": expected_slugs,
+        "expected_prompt_tokens": prompt_tokens,
+        "generation_tokens": generation_tokens,
+        "expected_model_count": len(expected_slugs),
+        "publication_model_count": 0,
+        "expected_cell_count": len(expected_slugs) * len(expected_cells),
+        "publication_cell_count": 0,
+        "performance_gate": {
+            "max_load_average": max_load_average,
+            "max_top_process_cpu_percent": max_top_process_cpu_percent,
+        },
+        "failure_reason_counts": {},
+        "models": [],
+        "publication_candidate": bool(expected_slugs and expected_cells),
+    }
+    if not expected_slugs:
+        _increment_reason(summary, "no_expected_models")
+    if not expected_cells:
+        _increment_reason(summary, "no_expected_cells")
+    if max_load_average is None or max_load_average > DEFAULT_MAX_LOAD_AVERAGE:
+        _increment_reason(summary, "missing_or_relaxed_load_gate")
+    if (
+        max_top_process_cpu_percent is None
+        or max_top_process_cpu_percent > DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT
+    ):
+        _increment_reason(summary, "missing_or_relaxed_top_process_cpu_gate")
+    publication_max_load = (
+        max_load_average
+        if max_load_average is not None
+        else DEFAULT_MAX_LOAD_AVERAGE
+    )
+    publication_max_top_cpu = (
+        max_top_process_cpu_percent
+        if max_top_process_cpu_percent is not None
+        else DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT
+    )
+
+    rows_by_slug: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        slug = row.get("slug")
+        if not isinstance(slug, str) or not slug:
+            _increment_reason(summary, "invalid_sweep_slug")
+            continue
+        if slug in rows_by_slug:
+            _increment_reason(summary, "duplicate_sweep_slug")
+            continue
+        rows_by_slug[slug] = row
+
+    unexpected_slugs = sorted(set(rows_by_slug) - set(expected_slugs))
+    if unexpected_slugs:
+        _increment_reason(summary, "unexpected_sweep_slug", len(unexpected_slugs))
+        summary["unexpected_slugs"] = unexpected_slugs
+
+    for slug in expected_slugs:
+        row = rows_by_slug.get(slug)
+        model_summary: dict[str, Any] = {
+            "slug": slug,
+            "classification": "not_publication_ready",
+            "failure_reasons": [],
+        }
+        failures = model_summary["failure_reasons"]
+        if row is None:
+            failures.append("missing_sweep_row")
+        else:
+            model_summary["status"] = row.get("status")
+            model_summary["output_path"] = row.get("output_path")
+            if row.get("status") != "ok":
+                failures.append("sweep_row_not_ok")
+            result_doc = row.get("result_doc")
+            if not isinstance(result_doc, dict):
+                failures.append("missing_result_doc")
+            else:
+                failures.extend(
+                    publication_metadata_failure_reasons(
+                        result_doc,
+                        max_load_average=publication_max_load,
+                        max_top_process_cpu_percent=publication_max_top_cpu,
+                    )
+                )
+                if result_doc.get("ax_prefix_cache_mode") != (
+                    "disabled_for_cold_prefill_benchmark"
+                ):
+                    failures.append("prefix_cache_not_disabled")
+                run_stability = result_doc.get("run_stability_summary")
+                if not isinstance(run_stability, dict):
+                    failures.append("missing_run_stability")
+                elif run_stability.get("publication_candidate") is not True:
+                    failures.append("unstable_ax_rows")
+                failures.extend(
+                    engine_trial_failure_reasons(
+                        result_doc,
+                        engine="ax_engine_mlx",
+                        expected_cells=expected_cells,
+                    )
+                )
+                results = result_doc.get("results")
+                if isinstance(results, list) and any(
+                    isinstance(result, dict) and result.get("engine") == "mlx_lm"
+                    for result in results
+                ):
+                    failures.append("unexpected_mlx_lm_rows")
+        if failures:
+            for reason in sorted(set(failures)):
+                _increment_reason(summary, reason)
+        else:
+            model_summary["classification"] = "publication_ready"
+            summary["publication_model_count"] += 1
+            summary["publication_cell_count"] += len(expected_cells)
+        summary["models"].append(model_summary)
+
+    if summary["publication_model_count"] != summary["expected_model_count"]:
+        summary["publication_candidate"] = False
+    if summary["publication_cell_count"] != summary["expected_cell_count"]:
+        summary["publication_candidate"] = False
+    return summary
+
+
 def fail_if_peer_win_matrix_not_publication_candidate(
     summary: dict[str, Any],
 ) -> None:
@@ -1023,6 +1162,20 @@ def fail_if_reference_matrix_not_publication_candidate(
         return
     print(
         "ERROR: mlx_lm reference matrix is not a publication candidate: "
+        + ", ".join(reasons),
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+def fail_if_ax_direct_matrix_not_publication_candidate(
+    summary: dict[str, Any],
+) -> None:
+    reasons = peer_win_matrix_failure_reasons(summary)
+    if not reasons:
+        return
+    print(
+        "ERROR: AX direct matrix is not a publication candidate: "
         + ", ".join(reasons),
         file=sys.stderr,
     )
@@ -1078,12 +1231,25 @@ def build_sweep_doc(
             max_load_average=args.max_load_average,
             max_top_process_cpu_percent=args.max_top_process_cpu_percent,
         )
+    ax_direct_matrix = None
+    if args.ax_direct_only:
+        ax_direct_matrix = summarize_ax_direct_matrix(
+            summary_rows,
+            expected_slugs=planned_slugs,
+            prompt_tokens=parse_prompt_token_csv(args.prompt_tokens),
+            generation_tokens=args.generation_tokens,
+            max_load_average=args.max_load_average,
+            max_top_process_cpu_percent=args.max_top_process_cpu_percent,
+        )
     publication_candidate = not failed_rows and (
         peer_win_matrix is None
         or peer_win_matrix.get("publication_candidate") is True
     ) and (
         reference_matrix is None
         or reference_matrix.get("publication_candidate") is True
+    ) and (
+        ax_direct_matrix is None
+        or ax_direct_matrix.get("publication_candidate") is True
     )
     sweep_doc = {
         "schema_version": "ax.ax_only_sweep.v1",
@@ -1146,6 +1312,11 @@ def build_sweep_doc(
             and args.sweep_scope == "readme_mlx_lm_reference"
             and publication_candidate
         ),
+        "readme_ax_direct_publication_candidate": bool(
+            args.ax_direct_only
+            and args.sweep_scope == "readme_direct_table"
+            and publication_candidate
+        ),
         "failed_row_count": len(failed_rows),
         "status_counts": status_counts(summary_rows),
         "rows": summary_rows,
@@ -1154,6 +1325,8 @@ def build_sweep_doc(
         sweep_doc["peer_win_matrix"] = peer_win_matrix
     if reference_matrix is not None:
         sweep_doc["reference_matrix"] = reference_matrix
+    if ax_direct_matrix is not None:
+        sweep_doc["ax_direct_matrix"] = ax_direct_matrix
     return sweep_doc
 
 
@@ -1206,6 +1379,8 @@ def write_sweep_outputs(
         f"{str(sweep_doc['readme_peer_win_publication_candidate']).lower()}",
         "- readme_reference_publication_candidate: "
         f"{str(sweep_doc['readme_reference_publication_candidate']).lower()}",
+        "- readme_ax_direct_publication_candidate: "
+        f"{str(sweep_doc['readme_ax_direct_publication_candidate']).lower()}",
         f"- failed_row_count: {sweep_doc['failed_row_count']}",
         f"- status_counts: {status_counts_text(sweep_doc['status_counts'])}",
         f"- completed_row_count: {sweep_doc['completed_row_count']}/{len(planned_slugs)}",
@@ -1233,6 +1408,18 @@ def write_sweep_outputs(
                 "- publication_reference_cells: "
                 f"{reference_matrix['publication_cell_count']}/"
                 f"{reference_matrix['expected_cell_count']}",
+            ]
+        )
+    ax_direct_matrix = sweep_doc.get("ax_direct_matrix")
+    if isinstance(ax_direct_matrix, dict):
+        md.extend(
+            [
+                "- publication_ax_direct_models: "
+                f"{ax_direct_matrix['publication_model_count']}/"
+                f"{ax_direct_matrix['expected_model_count']}",
+                "- publication_ax_direct_cells: "
+                f"{ax_direct_matrix['publication_cell_count']}/"
+                f"{ax_direct_matrix['expected_cell_count']}",
             ]
         )
     unavailable_rows = sweep_doc["mlx_lm_peer_unavailable_readme_rows"]
@@ -1577,6 +1764,10 @@ def main() -> None:
     if args.mlx_lm_reference_only:
         fail_if_reference_matrix_not_publication_candidate(
             sweep_doc["reference_matrix"]
+        )
+    if args.ax_direct_only:
+        fail_if_ax_direct_matrix_not_publication_candidate(
+            sweep_doc["ax_direct_matrix"]
         )
 
 

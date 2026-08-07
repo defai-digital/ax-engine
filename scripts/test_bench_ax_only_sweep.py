@@ -109,6 +109,15 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         ]
         return doc
 
+    def ax_direct_result_doc(self) -> dict[str, object]:
+        doc = self.peer_win_result_doc()
+        doc["results"] = [
+            row for row in doc["results"] if row["engine"] == "ax_engine_mlx"
+        ]
+        doc.pop("reference_contract")
+        doc.pop("ax_mlx_lm_peer_wins")
+        return doc
+
     def test_filter_manifest_rows_returns_all_rows_without_filter(self) -> None:
         rows = [{"slug": "a"}, {"slug": "b"}]
 
@@ -502,6 +511,73 @@ class BenchAxOnlySweepTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("mlx_lm reference matrix", stderr.getvalue())
+
+    def test_ax_direct_matrix_requires_clean_complete_stable_rows(self) -> None:
+        rows = [
+            {
+                "slug": slug,
+                "status": "ok",
+                "output_path": f"/tmp/{slug}.json",
+                "result_doc": self.ax_direct_result_doc(),
+            }
+            for slug in ("a", "b")
+        ]
+
+        summary = sweep.summarize_ax_direct_matrix(
+            rows,
+            expected_slugs=["a", "b"],
+            prompt_tokens=[128, 512, 2048],
+            generation_tokens=128,
+        )
+
+        self.assertEqual(
+            summary["schema_version"], sweep.AX_DIRECT_MATRIX_SCHEMA_VERSION
+        )
+        self.assertEqual(summary["publication_model_count"], 2)
+        self.assertEqual(summary["publication_cell_count"], 6)
+        self.assertTrue(summary["publication_candidate"])
+
+    def test_ax_direct_matrix_rejects_dirty_unstable_or_mixed_rows(self) -> None:
+        result_doc = json.loads(json.dumps(self.ax_direct_result_doc()))
+        result_doc["build"]["git_tracked_dirty"] = True
+        result_doc["run_stability_summary"]["publication_candidate"] = False
+        result_doc["results"].append(
+            {
+                "engine": "mlx_lm",
+                "prompt_tokens": 128,
+                "generation_tokens": 128,
+            }
+        )
+
+        summary = sweep.summarize_ax_direct_matrix(
+            [{"slug": "a", "status": "ok", "result_doc": result_doc}],
+            expected_slugs=["a"],
+            prompt_tokens=[128, 512, 2048],
+            generation_tokens=128,
+        )
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(summary["failure_reason_counts"]["dirty_tracked_build"], 1)
+        self.assertEqual(summary["failure_reason_counts"]["unstable_ax_rows"], 1)
+        self.assertEqual(
+            summary["failure_reason_counts"]["unexpected_mlx_lm_rows"], 1
+        )
+
+    def test_ax_direct_matrix_failure_exits_nonzero(self) -> None:
+        stderr = io.StringIO()
+        summary = {
+            "publication_candidate": False,
+            "failure_reason_counts": {"dirty_tracked_build": 1},
+        }
+
+        with (
+            patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            sweep.fail_if_ax_direct_matrix_not_publication_candidate(summary)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("AX direct matrix", stderr.getvalue())
 
     def test_peer_win_matrix_failure_exits_nonzero(self) -> None:
         stderr = io.StringIO()
@@ -990,6 +1066,7 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                     return_value={
                         "status": "ok",
                         "output_path": str(out_dir / "a.json"),
+                        "result_doc": self.ax_direct_result_doc(),
                     },
                 ) as run_row,
                 patch.object(
@@ -1008,6 +1085,13 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertTrue(run_row.call_args.kwargs["ax_direct_only"])
             sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
             self.assertTrue(sweep_results["ax_direct_only"])
+            self.assertTrue(sweep_results["publication_candidate"])
+            self.assertTrue(
+                sweep_results["readme_ax_direct_publication_candidate"]
+            )
+            self.assertTrue(
+                sweep_results["ax_direct_matrix"]["publication_candidate"]
+            )
             self.assertIsNone(sweep_results["reuse_reference_root"])
             self.assertEqual(
                 sweep_results["model_snapshot_reference_root"],
