@@ -12,6 +12,7 @@ The test target is:
 | Revision | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` |
 | AX Engine mode | Native MLX server, one loaded model |
 | Request concurrency | 1 |
+| Scheduler prefill budget | Explicitly pinned at 2,048 tokens per step; longer text probes are chunked |
 | Target duration | 72 hours |
 | Status cadence | 4 hours |
 
@@ -48,7 +49,8 @@ It uses a completion-paced, single-client workload: after every request has
 fully streamed and the native lifecycle has drained, it waits at least 60
 seconds before the next request. This intentionally leaves resource headroom;
 it avoids a request-rate catch-up burst after an unusually slow prefill or
-decode.
+decode. This is a reliability experiment under a stable, low duty-cycle load,
+not a throughput or saturation experiment.
 
 Each 20-request cycle contains:
 
@@ -90,7 +92,9 @@ increasing concurrency:
 
 ```bash
 pilot_dir="$stage/endurance/axq-6bit-pilot-$(date -u +%Y%m%dT%H%M%SZ)"
-caffeinate -dimsu "$stage/.venv/bin/python" \
+env VIRTUAL_ENV="$stage/.venv" PYO3_PYTHON="$stage/.venv/bin/python" \
+  PATH="$stage/source/target/release:$stage/.venv/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+  caffeinate -dimsu "$stage/.venv/bin/python" \
   "$stage/source/scripts/run_axq_endurance.py" \
   --server "$stage/source/target/release/ax-engine-server" \
   --model-dir "$stage/models/axq" \
@@ -103,7 +107,10 @@ caffeinate -dimsu "$stage/.venv/bin/python" \
 ## What is measured
 
 The runner emits `events.jsonl` continuously and samples the server and host
-independently every minute. Every four hours it atomically updates
+independently every minute. It retains both wall-clock and monotonic sample
+times: a prolonged sampling gap or sleep-like clock divergence makes the
+result a `watch`, rather than allowing paused time to look like uninterrupted
+endurance. Every four hours it atomically updates
 `summary.json` and adds immutable JSON and Markdown checkpoints.
 
 | Concern | Evidence |
@@ -113,8 +120,9 @@ independently every minute. Every four hours it atomically updates
 | Server corroboration | `ax_runtime_ttft_p95_ms`, `ax_runtime_decode_tok_per_sec`, `ax_runtime_error_rate`, queue depth and saturation counters |
 | Errors | Client failures, health failures, HTTP 5xx/saturation/backlog counter deltas |
 | Native drain/KV | Post-response jobs, pending commands, active streams and buffered events must be zero; target-model logical/physical KV and prefix-cache gauges are retained |
+| Prefix-cache exercise | The dedicated shared-prefix requests retain their physical-cache hit/miss/blocked/store/eviction route decisions separately in each checkpoint |
 | AX process memory | Server RSS, MLX active/cache/peak metrics and target-model logical/physical KV and prefix-cache memory |
-| macOS memory | `vm_stat` wired, compressor and active pages; swap; IOGPU driver alloc/in-use memory when exposed; disk and load |
+| macOS memory and confounders | `vm_stat` wired, compressor and active pages; swap; IOGPU driver alloc/in-use memory when exposed; disk, load, and `pmset` thermal state |
 
 `ax_engine_http_requests_in_flight` is recorded but excluded from the drain
 gate: `/metrics` correctly observes its own scrape as an in-flight HTTP
@@ -125,7 +133,9 @@ request. It would otherwise create a false lifecycle leak signal.
 A nonzero KV capacity, paged-pool slab, MLX cache, or prefix-cache payload is
 not by itself a memory leak. These allocations may intentionally remain warm.
 A memory concern requires evidence such as a post-baseline growth of at least
-4 GiB *and* a sustained slope of at least 256 MiB/hour. Separately, a host
+4 GiB *and* a sustained slope of at least 64 MiB/hour. The lower long-run
+slope is intentional: a 4 GiB leak spread through the 68 measured hours after
+the baseline is only about 60 MiB/hour. Separately, a host
 swap increase of 512 MiB after baseline is a watch condition. A post-response
 lifecycle drain timeout or unexpectedly large logical KV after the lifecycle
 is drained is separately reported as a KV-retirement concern.
@@ -146,7 +156,9 @@ leak attribution.
   failures.
 - Watch: any observed error, failed/inconclusive lifecycle drain, error rate
   over 0.1%, server 5xx/saturation/backlog counter growth, or a configured
-  memory/KV guardrail breach.
+  memory/KV guardrail breach. A resource-observation gap beyond the
+  cadence-derived threshold or a wall/monotonic divergence is also a watch:
+  the request results remain useful, but cannot prove a continuous run.
 - Baseline watch: fewer than eight successful same-shape samples for TTFT,
   decode, or effective-prefill evidence; missing native prompt length; or an
   unsettled baseline as defined above. This makes the run **inconclusive**,
@@ -158,7 +170,9 @@ leak attribution.
   serving measure rather than a pure kernel microbenchmark.
 - Pass: the server completed 72 hours without hard failure and no configured
   watch condition remained. A missing lifecycle, KV, or required client-metric
-  series is **inconclusive**, not a clean pass.
+  series is **inconclusive**, not a clean pass. A thermal warning is retained
+  as a performance confounder and must be considered when interpreting a
+  token/s or TTFT change.
 
 The values are configurable command-line arguments and are written verbatim to
 the run manifest, so later review can distinguish a real regression from a
@@ -176,7 +190,9 @@ run_id=$(date -u +%Y%m%dT%H%M%SZ)
 output_dir="$stage/endurance/axq-6bit-72h-$run_id"
 mkdir -p "$stage/endurance"
 
-nohup caffeinate -dimsu "$stage/.venv/bin/python" \
+nohup env VIRTUAL_ENV="$stage/.venv" PYO3_PYTHON="$stage/.venv/bin/python" \
+  PATH="$stage/source/target/release:$stage/.venv/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+  caffeinate -dimsu "$stage/.venv/bin/python" \
   "$stage/source/scripts/run_axq_endurance.py" \
   --server "$stage/source/target/release/ax-engine-server" \
   --model-dir "$stage/models/axq" \
@@ -194,7 +210,8 @@ python3 -m json.tool "$output_dir/summary.json"
 ```
 
 The operator should report the four-hour checkpoint's status, elapsed time,
-same PID result, request/error counts, p95 TTFT, p05 decode/effective-prefill
-rates, baseline quality, drain/KV findings, and resource growth/slope. The raw
-`events.jsonl`, `server.log`, and immutable checkpoint files remain the source
-of truth for final analysis.
+same PID result, request/error counts, **per-shape** p95 TTFT and p05
+decode/effective-prefill rates, shared-prefix cache-route evidence, baseline
+quality, drain/KV findings, and resource growth/slope. The raw `events.jsonl`,
+`server.log`, and immutable checkpoint files remain the source of truth for
+final analysis.

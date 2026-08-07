@@ -51,6 +51,7 @@ DEFAULT_RESOURCE_INTERVAL_S = 60.0
 DEFAULT_REQUEST_TIMEOUT_S = 300.0
 DEFAULT_STARTUP_TIMEOUT_S = 1_200.0
 DEFAULT_DRAIN_TIMEOUT_S = 10.0
+DEFAULT_MAX_BATCH_TOKENS = 2_048
 DEFAULT_WARMUP_REQUESTS = 10
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
 DEFAULT_MAX_ERROR_RATE = 0.001
@@ -59,10 +60,16 @@ DEFAULT_MIN_DECODE_P05_RATIO = 0.75
 DEFAULT_MIN_PREFILL_P05_RATIO = 0.75
 DEFAULT_MIN_PERFORMANCE_SAMPLES = 8
 DEFAULT_MEMORY_GROWTH_MIB = 4_096.0
-DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR = 256.0
+# A 4 GiB retained increase spread across the full 68-hour post-baseline
+# window is only about 60 MiB/hour.  The slope guard therefore cannot be as
+# high as the short-baseline settling guard or a slow, material leak would be
+# silently classified as normal allocator noise.
+DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR = 64.0
 DEFAULT_BASELINE_STABILITY_GROWTH_MIB = 1_024.0
+DEFAULT_BASELINE_STABILITY_SLOPE_MIB_PER_HOUR = 256.0
 DEFAULT_MAX_SWAP_GROWTH_MIB = 512.0
 DEFAULT_MAX_QUIESCENT_KV_LOGICAL_MIB = 1_024.0
+DEFAULT_MAX_SAMPLING_GAP_S = 140.0
 
 MEBIBYTE = 1024 * 1024
 SENSITIVE_HARDWARE_PREFIXES = (
@@ -147,6 +154,15 @@ MEMORY_SERIES_PATHS = {
         "ax_engine_model_memory_prefix_cache_payload_bytes",
     ),
 }
+PREFIX_CACHE_ROUTE_DECISION_KEYS = (
+    "ax_mlx_prefix_cache_hits",
+    "ax_mlx_prefix_cache_misses",
+    "ax_mlx_prefix_cache_blocked",
+    "ax_mlx_prefix_cache_stores",
+    "ax_mlx_prefix_cache_evictions",
+    "ax_mlx_prefix_cache_reused_tokens",
+    "ax_mlx_prefix_cache_warmup_tokens",
+)
 PROMPT_WORDS = (
     "adapter",
     "allocation",
@@ -248,6 +264,7 @@ class RunState:
     resource_baseline: dict[str, float] = field(default_factory=dict)
     baseline_coverage_concerns: list[str] = field(default_factory=list)
     baseline_stability_alerts: list[str] = field(default_factory=list)
+    sampling_continuity_concerns: list[str] = field(default_factory=list)
     counter_baseline: dict[str, float] = field(default_factory=dict)
     performance_alerts: int = 0
     memory_alerts: int = 0
@@ -395,6 +412,12 @@ def build_server_command(args: argparse.Namespace) -> list[str]:
         "1",
         "--max-concurrent-requests-per-model",
         "1",
+        # Pin the scheduler's prefill-step budget instead of depending on a
+        # server-version default. Text prompts above this limit are chunked,
+        # which keeps the periodic long probe bounded without turning this
+        # single-client soak into a batch-load experiment.
+        "--max-batch-tokens",
+        str(args.max_batch_tokens),
         *args.server_extra_arg,
     ]
 
@@ -716,7 +739,13 @@ def parse_int_output(text: str) -> int | None:
 
 
 def collect_light_host_snapshot(output_dir: Path) -> dict[str, Any]:
-    """Collect low-overhead OS memory/power context suitable for minute sampling."""
+    """Collect low-overhead OS context suitable for minute sampling.
+
+    Thermal state is deliberately captured with the memory gauges.  A thermal
+    limit is a competing explanation for a later token/s or TTFT change; it
+    should be visible in the same evidence stream instead of inferred after
+    the fact from an unrelated machine snapshot.
+    """
     page_size = parse_int_output(command_output("sysctl", "-n", "hw.pagesize", timeout_s=10.0))
     page_size = page_size or 16_384
     page_counts = parse_vm_stat(command_output("vm_stat", timeout_s=10.0))
@@ -726,6 +755,7 @@ def collect_light_host_snapshot(output_dir: Path) -> dict[str, Any]:
         "vm_pages": pages,
         "swap": parse_swap_usage(command_output("sysctl", "-n", "vm.swapusage", timeout_s=10.0)),
         "load_average": list(os.getloadavg()),
+        "thermal": command_output("pmset", "-g", "therm", timeout_s=10.0),
     }
     for page_key, value in pages.items():
         host[page_key.removesuffix("_pages") + "_bytes"] = value * page_size
@@ -784,9 +814,15 @@ class ResourceSampler:
 
     def sample_once(self) -> dict[str, Any]:
         """Capture one resource sample and synchronously persist it."""
+        sampled_wall_unix_s = time.time()
         sample = {
             "timestamp": utc_now(),
             "kind": "resource_sample",
+            # Keep an independent wall-clock marker in addition to elapsed
+            # monotonic time.  Their difference lets the checkpoint logic
+            # expose a sleep/scheduling gap rather than counting paused time
+            # as a continuous endurance interval.
+            "sampled_wall_unix_seconds": sampled_wall_unix_s,
             "elapsed_seconds": max(0.0, time.monotonic() - self.started_monotonic),
             "process": process_snapshot(self.server_pid),
             "host": collect_light_host_snapshot(self.output_dir),
@@ -1034,6 +1070,20 @@ def summarize_requests(records: list[dict[str, Any]], elapsed_s: float) -> dict[
         for record in successes
         if isinstance(record["request"].get("output_tokens"), (int, float))
     ]
+    by_shape = {
+        shape: summarize_group([record for record in records if record.get("shape") == shape])
+        for shape in shapes
+    }
+    shared_prefix = by_shape.get("shared_prefix", {})
+    shared_route_decisions = (
+        shared_prefix.get("route_decisions", {}) if isinstance(shared_prefix, dict) else {}
+    )
+    prefix_cache_route_evidence = {
+        key: shared_route_decisions[key]
+        for key in PREFIX_CACHE_ROUTE_DECISION_KEYS
+        if isinstance(shared_route_decisions, dict)
+        and isinstance(shared_route_decisions.get(key), (int, float))
+    }
     return {
         "requests": len(records),
         "successful_requests": len(successes),
@@ -1042,10 +1092,12 @@ def summarize_requests(records: list[dict[str, Any]], elapsed_s: float) -> dict[
         "request_throughput_rps": len(successes) / duration,
         "output_token_throughput_tok_s": sum(output_tokens) / duration,
         "overall": overall,
-        "by_shape": {
-            shape: summarize_group([record for record in records if record.get("shape") == shape])
-            for shape in shapes
-        },
+        "by_shape": by_shape,
+        # Only shared-prefix requests intentionally exercise cross-request
+        # reuse.  Keep their cache telemetry separate from all-route totals so
+        # a four-hour handoff can say whether this part of the workload really
+        # touched the cache, without treating a warm allocation as a leak.
+        "shared_prefix_cache_route_evidence": prefix_cache_route_evidence,
     }
 
 
@@ -1078,6 +1130,64 @@ def linear_slope_per_hour(points: Iterable[tuple[float, float]]) -> float | None
         return None
     numerator = sum((x - mean_x) * (y - mean_y) for x, y in clean)
     return numerator / denominator * 3_600.0
+
+
+def default_max_sampling_gap_seconds(resource_interval_s: float) -> float:
+    """Set a forgiving but finite continuity bound from the sample cadence."""
+    return max(60.0, resource_interval_s * 2.0 + 20.0)
+
+
+def evaluate_sampling_continuity(
+    samples: Iterable[dict[str, Any]], *, max_gap_seconds: float
+) -> list[str]:
+    """Find observation gaps that would weaken a non-stop endurance claim.
+
+    A resource sampler runs independently of the request loop, so a gap larger
+    than its bounded cadence signals a paused runner, host sleep, or severe
+    host scheduling stall.  Wall-minus-monotonic divergence catches a shorter
+    sleep-like gap on platforms whose monotonic counter pauses while asleep.
+    Both are watch conditions: the primary workload result is retained, but it
+    must not be reported as uninterrupted evidence.
+    """
+    ordered = list(samples)
+    messages: list[str] = []
+    for previous, current in zip(ordered, ordered[1:], strict=False):
+        previous_wall = previous.get("sampled_wall_unix_seconds")
+        current_wall = current.get("sampled_wall_unix_seconds")
+        if not isinstance(previous_wall, (int, float)) or not isinstance(
+            current_wall, (int, float)
+        ):
+            continue
+        wall_gap = float(current_wall) - float(previous_wall)
+        if not math.isfinite(wall_gap) or wall_gap < 0.0:
+            continue
+        previous_elapsed = previous.get("elapsed_seconds")
+        current_elapsed = current.get("elapsed_seconds")
+        monotonic_gap: float | None = None
+        if isinstance(previous_elapsed, (int, float)) and isinstance(current_elapsed, (int, float)):
+            candidate = float(current_elapsed) - float(previous_elapsed)
+            if math.isfinite(candidate) and candidate >= 0.0:
+                monotonic_gap = candidate
+
+        elapsed_label = (
+            f" near elapsed {float(current_elapsed) / 3600.0:.2f} h"
+            if isinstance(current_elapsed, (int, float))
+            else ""
+        )
+        if wall_gap > max_gap_seconds:
+            messages.append(
+                f"resource sampling gap {wall_gap:.1f} s exceeds "
+                f"{max_gap_seconds:.1f} s{elapsed_label}"
+            )
+        if monotonic_gap is not None:
+            divergence = wall_gap - monotonic_gap
+            sleep_threshold = max(15.0, max_gap_seconds / 4.0)
+            if divergence > sleep_threshold:
+                messages.append(
+                    f"wall/monotonic sampling divergence {divergence:.1f} s "
+                    f"suggests host sleep or clock change{elapsed_label}"
+                )
+    return messages
 
 
 def memory_analysis(
@@ -1489,6 +1599,7 @@ def assessment(
         concerns.append(f"{state.metric_scrape_failures} metric scrape(s) failed")
     if state.resource_sampler_stop_timeouts:
         concerns.append(f"{state.resource_sampler_stop_timeouts} resource sampler stop timed out")
+    concerns.extend(state.sampling_continuity_concerns)
     if state.quiescent_kv_logical_exceedances:
         concerns.append(
             f"{state.quiescent_kv_logical_exceedances} drained sample(s) exceeded "
@@ -1558,6 +1669,9 @@ def run_summary(
             "quiescent_kv_logical_exceedances": state.quiescent_kv_logical_exceedances,
         },
         "resource_sampler_stop_timeouts": state.resource_sampler_stop_timeouts,
+        "observation_continuity": {
+            "concerns": state.sampling_continuity_concerns,
+        },
         "baseline": {
             "completed_at": state.baseline_completed_at,
             "performance": state.baseline,
@@ -1602,11 +1716,21 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
         if isinstance(overall, dict)
         else None
     )
+    prefix_cache_evidence = (
+        window.get("shared_prefix_cache_route_evidence", {}) if isinstance(window, dict) else {}
+    )
+    prefix_cache_text = (
+        ", ".join(f"{key}={value:g}" for key, value in prefix_cache_evidence.items())
+        if isinstance(prefix_cache_evidence, dict) and prefix_cache_evidence
+        else "n/a"
+    )
     baseline = summary["baseline"]
     baseline_concerns = [
         *baseline.get("coverage_concerns", []),
         *baseline.get("stability_alerts", []),
     ]
+    continuity = summary.get("observation_continuity", {})
+    continuity_concerns = continuity.get("concerns", []) if isinstance(continuity, dict) else []
     lines = [
         f"# AXQ endurance checkpoint: {summary['status']}",
         "",
@@ -1621,8 +1745,10 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
         f"- Window p95 TTFT: `{format_metric(ttft, 'ms')}`; "
         f"p05 decode: `{format_metric(decode, 'tok/s')}`; "
         f"p05 effective prefill: `{format_metric(prefill, 'tok/s')}`",
+        f"- Shared-prefix cache route evidence: `{prefix_cache_text}`",
         f"- Baseline: `{'complete' if baseline['performance'] else 'pending'}`; "
         f"quality: `{'ready' if baseline['performance'] and not baseline_concerns else 'watch'}`",
+        f"- Observation continuity: `{'watch' if continuity_concerns else 'continuous'}`",
         "",
         "## Assessment",
         "",
@@ -1632,6 +1758,38 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
         lines.extend(f"- {concern}" for concern in concerns)
     else:
         lines.append("- No current endurance concern was detected by configured guardrails.")
+    by_shape = window.get("by_shape", {}) if isinstance(window, dict) else {}
+    if isinstance(by_shape, dict) and by_shape:
+        lines.extend(
+            [
+                "",
+                "## Per-shape serving metrics",
+                "",
+                "| Shape | Successful / attempted | p95 TTFT | p05 decode | "
+                "p05 effective prefill |",
+                "| --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for shape in WORKLOAD_SHAPES:
+            shape_summary = by_shape.get(shape)
+            if not isinstance(shape_summary, dict):
+                continue
+            successful = int(shape_summary.get("successful_requests", 0))
+            attempted = int(shape_summary.get("requests", 0))
+            shape_ttft = format_metric(
+                get_distribution_value(shape_summary, "ttft_ms", "p95"), "ms"
+            )
+            shape_decode = format_metric(
+                get_distribution_value(shape_summary, "client_decode_tok_s", "p05"), "tok/s"
+            )
+            shape_prefill = format_metric(
+                get_distribution_value(shape_summary, "effective_prefill_tok_s", "p05"),
+                "tok/s",
+            )
+            lines.append(
+                f"| `{shape}` | {successful} / {attempted} | "
+                f"{shape_ttft} | {shape_decode} | {shape_prefill} |"
+            )
     memory_series = summary.get("memory", {}).get("series", {})
     if isinstance(memory_series, dict) and memory_series:
         lines.extend(["", "## Memory trend", ""])
@@ -1681,8 +1839,16 @@ def write_checkpoint(
     performance_alerts: list[str],
     memory_alerts: list[str],
     alerts: list[str],
+    max_sampling_gap_seconds: float = DEFAULT_MAX_SAMPLING_GAP_S,
 ) -> dict[str, Any]:
     """Publish immutable JSON/Markdown checkpoint and update mutable summary.json."""
+    for concern in evaluate_sampling_continuity(
+        resource_samples,
+        max_gap_seconds=max_sampling_gap_seconds,
+    ):
+        if concern not in state.sampling_continuity_concerns:
+            state.sampling_continuity_concerns.append(concern)
+            add_alert(alerts, concern)
     window = summarize_requests(records, elapsed_s=max(window_elapsed_s, 0.001))
     values = latest_metrics.get("values", {}) if isinstance(latest_metrics, dict) else {}
     values = values if isinstance(values, dict) else {}
@@ -1768,7 +1934,7 @@ def maybe_finalize_baseline(
     baseline_s: float,
     min_performance_samples: int,
     baseline_stability_growth_mib: float,
-    memory_slope_mib_per_hour: float,
+    baseline_stability_slope_mib_per_hour: float,
     max_swap_growth_mib: float,
 ) -> bool:
     """Finalize stable references after the configured warm baseline window."""
@@ -1784,7 +1950,7 @@ def maybe_finalize_baseline(
         samples=resource_samples,
         baseline_s=baseline_s,
         baseline_growth_mib=baseline_stability_growth_mib,
-        max_slope_mib_per_hour=memory_slope_mib_per_hour,
+        max_slope_mib_per_hour=baseline_stability_slope_mib_per_hour,
         max_swap_growth_mib=max_swap_growth_mib,
     )
     state.baseline_completed_at = utc_now()
@@ -1850,6 +2016,11 @@ def _run_endurance(args: argparse.Namespace) -> int:
     target_duration_s = args.duration_hours * 3_600.0
     report_interval_s = args.report_interval_hours * 3_600.0
     baseline_s = args.baseline_hours * 3_600.0
+    max_sampling_gap_s = (
+        args.max_sampling_gap_seconds
+        if args.max_sampling_gap_seconds is not None
+        else default_max_sampling_gap_seconds(args.resource_interval_seconds)
+    )
     output_dir = args.output_dir
     server_command = build_server_command(args)
     server_log = output_dir / "server.log"
@@ -1878,6 +2049,7 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 "scope": "low-rate no-restart AX Engine MLX endurance/soak",
                 "server_lifetime": "one owned process; automatic restart is forbidden",
                 "concurrency": 1,
+                "max_batch_tokens": args.max_batch_tokens,
                 "minimum_idle_seconds_after_request": args.request_interval_seconds,
                 "resource_sample_seconds": args.resource_interval_seconds,
                 "workload_mix": (
@@ -1918,8 +2090,12 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 "memory_growth_mib": args.memory_growth_mib,
                 "memory_slope_mib_per_hour": args.memory_slope_mib_per_hour,
                 "baseline_stability_growth_mib": args.baseline_stability_growth_mib,
+                "baseline_stability_slope_mib_per_hour": (
+                    args.baseline_stability_slope_mib_per_hour
+                ),
                 "max_swap_growth_mib": args.max_swap_growth_mib,
                 "max_quiescent_kv_logical_mib": args.max_quiescent_kv_logical_mib,
+                "max_sampling_gap_seconds": max_sampling_gap_s,
             },
             "pre_server_host": collect_checkpoint_host_snapshot(output_dir),
             "runtime": runtime_metadata(args.server),
@@ -2016,6 +2192,7 @@ def _run_endurance(args: argparse.Namespace) -> int:
             performance_alerts=[],
             memory_alerts=[],
             alerts=alerts,
+            max_sampling_gap_seconds=max_sampling_gap_s,
         )
 
         request_index = 0
@@ -2105,7 +2282,7 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 baseline_s=baseline_s,
                 min_performance_samples=args.min_performance_samples,
                 baseline_stability_growth_mib=args.baseline_stability_growth_mib,
-                memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                baseline_stability_slope_mib_per_hour=(args.baseline_stability_slope_mib_per_hour),
                 max_swap_growth_mib=args.max_swap_growth_mib,
             ):
                 for message in [
@@ -2168,6 +2345,7 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     performance_alerts=last_performance_alerts,
                     memory_alerts=last_memory_alerts,
                     alerts=alerts,
+                    max_sampling_gap_seconds=max_sampling_gap_s,
                 )
                 window_records.clear()
                 last_checkpoint_monotonic = now
@@ -2214,7 +2392,9 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     baseline_s=baseline_s,
                     min_performance_samples=args.min_performance_samples,
                     baseline_stability_growth_mib=args.baseline_stability_growth_mib,
-                    memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                    baseline_stability_slope_mib_per_hour=(
+                        args.baseline_stability_slope_mib_per_hour
+                    ),
                     max_swap_growth_mib=args.max_swap_growth_mib,
                 ):
                     for message in [
@@ -2278,6 +2458,7 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     performance_alerts=last_performance_alerts,
                     memory_alerts=last_memory_alerts,
                     alerts=alerts,
+                    max_sampling_gap_seconds=max_sampling_gap_s,
                 )
             else:
                 write_json_atomic(
@@ -2332,6 +2513,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--resource-interval-seconds", type=positive_float, default=DEFAULT_RESOURCE_INTERVAL_S
     )
     parser.add_argument(
+        "--max-sampling-gap-seconds",
+        type=positive_float,
+        default=None,
+        help=(
+            "Maximum tolerated wall-clock gap between resource samples; defaults to "
+            "a cadence-derived value."
+        ),
+    )
+    parser.add_argument(
         "--request-timeout-seconds", type=positive_float, default=DEFAULT_REQUEST_TIMEOUT_S
     )
     parser.add_argument(
@@ -2340,6 +2530,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--drain-timeout-seconds", type=positive_float, default=DEFAULT_DRAIN_TIMEOUT_S
     )
+    parser.add_argument("--max-batch-tokens", type=positive_int, default=DEFAULT_MAX_BATCH_TOKENS)
     parser.add_argument("--warmup-requests", type=non_negative_int, default=DEFAULT_WARMUP_REQUESTS)
     parser.add_argument(
         "--max-consecutive-request-failures",
@@ -2378,6 +2569,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=positive_float,
         default=DEFAULT_BASELINE_STABILITY_GROWTH_MIB,
         help="Flag a baseline that rises by this much while still trending upward.",
+    )
+    parser.add_argument(
+        "--baseline-stability-slope-mib-per-hour",
+        type=positive_float,
+        default=DEFAULT_BASELINE_STABILITY_SLOPE_MIB_PER_HOUR,
+        help="Require this latter-half slope as well as baseline growth before flagging drift.",
     )
     parser.add_argument(
         "--max-swap-growth-mib",

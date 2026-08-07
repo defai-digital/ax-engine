@@ -269,6 +269,30 @@ class AxqEnduranceTests(unittest.TestCase):
 
         self.assertEqual(alerts, [])
 
+    def test_sampling_continuity_detects_gaps_and_sleep_like_clock_divergence(self) -> None:
+        samples = [
+            {
+                "elapsed_seconds": 0.0,
+                "sampled_wall_unix_seconds": 1_000.0,
+            },
+            {
+                "elapsed_seconds": 60.0,
+                "sampled_wall_unix_seconds": 1_060.0,
+            },
+            {
+                "elapsed_seconds": 120.0,
+                "sampled_wall_unix_seconds": 1_300.0,
+            },
+        ]
+
+        alerts = runner.evaluate_sampling_continuity(samples, max_gap_seconds=140.0)
+
+        self.assertEqual(runner.default_max_sampling_gap_seconds(60.0), 140.0)
+        self.assertEqual(runner.default_max_sampling_gap_seconds(15.0), 60.0)
+        self.assertEqual(len(alerts), 2)
+        self.assertIn("resource sampling gap", alerts[0])
+        self.assertIn("wall/monotonic", alerts[1])
+
     def test_swap_growth_has_a_tighter_host_safety_guardrail(self) -> None:
         analysis = {
             "series": {
@@ -510,6 +534,24 @@ class AxqEnduranceTests(unittest.TestCase):
         self.assertEqual(summary["overall"]["ttft_ms"]["p50"], 100.0)
         self.assertEqual(summary["overall"]["route_decisions"], {"accepted": 1})
 
+    def test_summary_keeps_shared_prefix_cache_route_evidence_separate(self) -> None:
+        record = request_record(shape="shared_prefix")
+        record["request"]["route_decisions"] = {
+            "ax_mlx_prefix_cache_hits": 1,
+            "ax_mlx_prefix_cache_reused_tokens": 1_024,
+            "unrelated_route_value": 7,
+        }
+
+        summary = runner.summarize_requests([record], elapsed_s=10.0)
+
+        self.assertEqual(
+            summary["shared_prefix_cache_route_evidence"],
+            {
+                "ax_mlx_prefix_cache_hits": 1,
+                "ax_mlx_prefix_cache_reused_tokens": 1_024,
+            },
+        )
+
     def test_prepare_output_dir_refuses_existing_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result"
@@ -575,6 +617,7 @@ class AxqEnduranceTests(unittest.TestCase):
 
         self.assertIn("--max-concurrent-requests", command)
         self.assertIn("--max-concurrent-requests-per-model", command)
+        self.assertEqual(command[command.index("--max-batch-tokens") + 1], "2048")
         self.assertIn("--some-flag", command)
 
     def test_cli_allows_zero_client_error_rate(self) -> None:
@@ -592,6 +635,21 @@ class AxqEnduranceTests(unittest.TestCase):
         )
 
         self.assertEqual(args.max_client_error_rate, 0.0)
+
+    def test_long_run_and_baseline_memory_slopes_are_independent(self) -> None:
+        args = runner.build_parser().parse_args(
+            [
+                "--server",
+                "/tmp/server",
+                "--model-dir",
+                "/tmp/model",
+                "--output-dir",
+                "/tmp/output",
+            ]
+        )
+
+        self.assertEqual(args.memory_slope_mib_per_hour, 64.0)
+        self.assertEqual(args.baseline_stability_slope_mib_per_hour, 256.0)
 
     def test_run_endurance_installs_and_restores_sigterm_handler(self) -> None:
         installed = []
