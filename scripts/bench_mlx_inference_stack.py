@@ -788,13 +788,20 @@ def one_minute_load_average(metadata: dict[str, Any]) -> float | None:
     return float(value)
 
 
-def max_top_process_cpu_percent(metadata: dict[str, Any]) -> float | None:
+def max_top_process_cpu_percent(
+    metadata: dict[str, Any],
+    *,
+    excluded_pids: Iterable[int] = (),
+) -> float | None:
     processes = metadata.get("top_processes_cpu")
     if not isinstance(processes, list):
         return None
+    excluded = frozenset(excluded_pids)
     max_cpu: float | None = None
     for process in processes:
         if not isinstance(process, dict):
+            continue
+        if process.get("pid") in excluded:
             continue
         value = process.get("cpu_percent")
         if isinstance(value, bool) or not isinstance(value, int | float):
@@ -803,12 +810,19 @@ def max_top_process_cpu_percent(metadata: dict[str, Any]) -> float | None:
     return max_cpu
 
 
-def top_process_cpu_label(metadata: dict[str, Any]) -> str:
+def top_process_cpu_label(
+    metadata: dict[str, Any],
+    *,
+    excluded_pids: Iterable[int] = (),
+) -> str:
     processes = metadata.get("top_processes_cpu")
     if not isinstance(processes, list):
         return "unknown process"
+    excluded = frozenset(excluded_pids)
     for process in processes:
         if not isinstance(process, dict):
+            continue
+        if process.get("pid") in excluded:
             continue
         value = process.get("cpu_percent")
         command = process.get("command")
@@ -827,12 +841,17 @@ def wait_for_performance_load(
     timeout_seconds: float,
     poll_interval_seconds: float,
     context: str | None = None,
+    excluded_top_process_pids: Iterable[int] = (),
 ) -> dict[str, Any]:
+    excluded_pids = frozenset(excluded_top_process_pids)
     deadline = time.monotonic() + timeout_seconds
     while True:
         metadata = collect_performance_condition_metadata()
         current = one_minute_load_average(metadata)
-        top_cpu = max_top_process_cpu_percent(metadata)
+        top_cpu = max_top_process_cpu_percent(
+            metadata,
+            excluded_pids=excluded_pids,
+        )
         if max_one_minute is not None and current is None:
             raise RuntimeError(
                 "load_average.one_minute is unavailable; cannot enforce "
@@ -874,7 +893,9 @@ def wait_for_performance_load(
                     )
                 elif top_cpu > max_top_process_cpu_percent_value:
                     reasons.append(
-                        f"top process {top_process_cpu_label(metadata)} exceeds "
+                        "top process "
+                        f"{top_process_cpu_label(metadata, excluded_pids=excluded_pids)} "
+                        "exceeds "
                         "--max-top-process-cpu-percent "
                         f"{max_top_process_cpu_percent_value:.1f}"
                     )
@@ -899,7 +920,8 @@ def wait_for_performance_load(
             and top_cpu > max_top_process_cpu_percent_value
         ):
             reasons.append(
-                f"top process {top_process_cpu_label(metadata)} exceeds "
+                "top process "
+                f"{top_process_cpu_label(metadata, excluded_pids=excluded_pids)} exceeds "
                 f"{max_top_process_cpu_percent_value:.1f}%"
             )
         if max_top_process_cpu_percent_value is not None and top_cpu is None:
@@ -6707,7 +6729,7 @@ def main() -> None:
                             prompt_source=prompt_doc.get("prompt_source", "random"),
                             load_gate=(
                                 (
-                                    lambda label: wait_for_performance_load(
+                                    lambda label, server_pid=proc.pid: wait_for_performance_load(
                                         max_one_minute=args.max_load_average,
                                         max_top_process_cpu_percent_value=(
                                             args.max_top_process_cpu_percent
@@ -6717,6 +6739,7 @@ def main() -> None:
                                             args.load_average_poll_interval
                                         ),
                                         context=label,
+                                        excluded_top_process_pids=(server_pid,),
                                     )
                                 )
                                 if (

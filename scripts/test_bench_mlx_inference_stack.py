@@ -243,6 +243,27 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             )
         )
 
+    def test_top_process_helpers_exclude_benchmark_server_pid(self) -> None:
+        metadata = {
+            "top_processes_cpu": [
+                {
+                    "pid": 501,
+                    "cpu_percent": 81.9,
+                    "command": "ax-engine-server",
+                },
+                {"pid": 502, "cpu_percent": 12.5, "command": "WindowServer"},
+            ]
+        }
+
+        self.assertEqual(
+            bench.max_top_process_cpu_percent(metadata, excluded_pids=(501,)),
+            12.5,
+        )
+        self.assertEqual(
+            bench.top_process_cpu_label(metadata, excluded_pids=(501,)),
+            "WindowServer at 12.5% CPU",
+        )
+
     def test_wait_for_performance_load_returns_when_under_threshold(self) -> None:
         metadata = {"load_average": {"one_minute": 0.75}}
 
@@ -322,6 +343,34 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertIs(result, samples[1])
         sleep.assert_called_once_with(2.0)
+
+    def test_wait_for_performance_load_ignores_benchmark_server_cpu(self) -> None:
+        metadata = {
+            "load_average": {"one_minute": 0.9},
+            "top_processes_cpu": [
+                {
+                    "pid": 501,
+                    "cpu_percent": 81.0,
+                    "command": "ax-engine-server",
+                },
+                {"pid": 502, "cpu_percent": 12.0, "command": "WindowServer"},
+            ],
+        }
+
+        with patch.object(
+            bench,
+            "collect_performance_condition_metadata",
+            return_value=metadata,
+        ):
+            result = bench.wait_for_performance_load(
+                max_one_minute=1.0,
+                max_top_process_cpu_percent_value=50.0,
+                timeout_seconds=0.0,
+                poll_interval_seconds=2.0,
+                excluded_top_process_pids=(501,),
+            )
+
+        self.assertIs(result, metadata)
 
     def test_wait_for_performance_load_rejects_unavailable_load(self) -> None:
         with patch.object(
