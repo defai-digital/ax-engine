@@ -1184,17 +1184,21 @@ def fail_if_ax_direct_matrix_not_publication_candidate(
 
 
 def failed_sweep_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [row for row in rows if row.get("status") != "ok"]
+    return [
+        row
+        for row in rows
+        if row.get("status") not in {"ok", "running"}
+    ]
 
 
 def fail_if_sweep_incomplete(rows: list[dict[str, Any]]) -> None:
-    failed = failed_sweep_rows(rows)
-    if not failed:
+    incomplete = [row for row in rows if row.get("status") != "ok"]
+    if not incomplete:
         return
     counts = status_counts(rows)
     print(
         "ERROR: AX-only sweep did not complete cleanly; "
-        f"{len(failed)} row(s) were not ok: {status_counts_text(counts)}",
+        f"{len(incomplete)} row(s) were not ok: {status_counts_text(counts)}",
         file=sys.stderr,
     )
     sys.exit(2)
@@ -1212,6 +1216,9 @@ def build_sweep_doc(
     finished_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     performance_conditions_end = collect_performance_condition_metadata()
     failed_rows = failed_sweep_rows(summary_rows)
+    incomplete_rows = [
+        row for row in summary_rows if row.get("status") != "ok"
+    ]
     peer_win_matrix = None
     if args.require_ax_multi_metric_peer_wins:
         peer_win_matrix = summarize_peer_win_matrix(
@@ -1242,7 +1249,7 @@ def build_sweep_doc(
             max_load_average=args.max_load_average,
             max_top_process_cpu_percent=args.max_top_process_cpu_percent,
         )
-    publication_candidate = not failed_rows and (
+    publication_candidate = not incomplete_rows and (
         peer_win_matrix is None
         or peer_win_matrix.get("publication_candidate") is True
     ) and (

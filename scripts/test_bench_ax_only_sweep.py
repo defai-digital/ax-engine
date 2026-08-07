@@ -335,6 +335,19 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         self.assertIn("bench_failed=1", stderr.getvalue())
         self.assertIn("model_dir_missing=1", stderr.getvalue())
 
+    def test_running_rows_are_incomplete_but_not_failed(self) -> None:
+        rows = [
+            {"slug": "a", "status": "ok"},
+            {"slug": "b", "status": "running"},
+        ]
+
+        self.assertEqual(sweep.failed_sweep_rows(rows), [])
+        with patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                sweep.fail_if_sweep_incomplete(rows)
+
+        self.assertEqual(caught.exception.code, 2)
+
     def test_peer_win_matrix_requires_every_model_and_cell(self) -> None:
         rows = [
             {
