@@ -303,9 +303,13 @@ def build_diagnostic(summary_path: Path) -> dict[str, Any]:
             ENGINE_ORDER.index(str(row["engine"])),
         )
     )
+    try:
+        source_summary = summary_path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        source_summary = summary_path.as_posix()
     return {
         "schema": "ax.qwen36_mtp_output_bandwidth_diagnostic.v1",
-        "source_summary": str(summary_path.relative_to(REPO_ROOT)),
+        "source_summary": source_summary,
         "run_date": summary_path.parent.name[:10],
         "peak_bandwidth_gb_s": PEAK_GBS,
         "peak_bandwidth_source": PEAK_SOURCE,

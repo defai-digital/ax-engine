@@ -23,6 +23,18 @@ class Qwen36MtpBandwidthDiagnosticTests(unittest.TestCase):
             relative_path.as_posix(),
         )
 
+    def test_build_diagnostic_accepts_summary_path_outside_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_path = Path(tmp) / "summary.json"
+            summary_path.write_text(json.dumps({"rows": []}))
+
+            diagnostic = renderer.build_diagnostic(summary_path)
+
+        self.assertEqual(
+            diagnostic["source_summary"],
+            summary_path.resolve().as_posix(),
+        )
+
     def test_engine_labels_use_measured_summary_identities(self) -> None:
         labels = renderer.measured_engine_labels(
             {
