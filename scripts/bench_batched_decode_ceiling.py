@@ -299,6 +299,8 @@ def publication_reasons(artifact: dict[str, Any]) -> list[str]:
         reasons.append("requires_apple_silicon_host")
     model = artifact.get("model")
     model_path = model.get("path") if isinstance(model, dict) else None
+    if not isinstance(model_path, str) or not model_path:
+        reasons.append("missing_model_path")
     if (
         not isinstance(model, dict)
         or not isinstance(model.get("manifest_sha256"), str)
@@ -370,9 +372,13 @@ def publication_reasons(artifact: dict[str, Any]) -> list[str]:
         except (KeyError, TypeError, ValueError):
             reasons.append(f"rep{repetition}_{policy}_invalid_rows")
             continue
-        if parsed_batches != set(EXPECTED_BATCHES):
+        if (
+            len(rows) != len(EXPECTED_BATCHES)
+            or parsed_batches != set(EXPECTED_BATCHES)
+        ):
             reasons.append(f"rep{repetition}_{policy}_batch_matrix_mismatch")
             continue
+        rows_by_batch: dict[int, dict[str, Any]] = {}
         for row in rows:
             batch = int(row["batch"])
             cohort = row.get("cohort_fnv")
@@ -395,7 +401,39 @@ def publication_reasons(artifact: dict[str, Any]) -> list[str]:
             ):
                 reasons.append(f"rep{repetition}_{policy}_invalid_batch{batch}")
                 continue
+            rows_by_batch[batch] = row
+            aggregate_tok_s = float(row["aggregate_tok_s"])
+            per_request_tok_s = float(row["per_request_tok_s"])
+            step_us = float(row["step_us"])
+            if not math.isclose(
+                aggregate_tok_s,
+                batch * 1_000_000.0 / step_us,
+                rel_tol=0.02,
+            ):
+                reasons.append(
+                    f"rep{repetition}_{policy}_batch{batch}_aggregate_mismatch"
+                )
+            if not math.isclose(
+                per_request_tok_s,
+                aggregate_tok_s / batch,
+                rel_tol=0.02,
+            ):
+                reasons.append(
+                    f"rep{repetition}_{policy}_batch{batch}_per_request_mismatch"
+                )
             hashes_by_batch[batch].add(cohort)
+        batch1 = rows_by_batch.get(1)
+        if batch1 is not None:
+            batch1_rate = float(batch1["aggregate_tok_s"])
+            for batch, row in rows_by_batch.items():
+                if not math.isclose(
+                    float(row["scaling_vs_batch1"]),
+                    float(row["aggregate_tok_s"]) / batch1_rate,
+                    rel_tol=0.03,
+                ):
+                    reasons.append(
+                        f"rep{repetition}_{policy}_batch{batch}_scaling_mismatch"
+                    )
     expected_keys = {
         (repetition, policy)
         for repetition in range(1, repetitions + 1)
@@ -417,6 +455,19 @@ def publication_reasons(artifact: dict[str, Any]) -> list[str]:
     for batch, hashes in hashes_by_batch.items():
         if len(hashes) != 1:
             reasons.append(f"batch{batch}_cohort_hash_divergence")
+    try:
+        expected_summary = summarize_trials(trials)
+    except (
+        BatchedDecodeBenchmarkError,
+        KeyError,
+        TypeError,
+        ValueError,
+        ZeroDivisionError,
+    ):
+        reasons.append("summary_recompute_failed")
+    else:
+        if artifact.get("summary") != expected_summary:
+            reasons.append("summary_mismatch")
     return sorted(set(reasons))
 
 

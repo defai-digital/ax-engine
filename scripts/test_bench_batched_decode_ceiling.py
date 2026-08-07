@@ -175,14 +175,38 @@ batch  agg_tok_s  per_req_tok_s  step_us  scaling_vs_b1
 
     def test_publication_gate_rejects_cross_policy_token_divergence(self) -> None:
         artifact = complete_artifact()
+        artifact["summary"] = bench.summarize_trials(artifact["trials"])
         artifact["trials"][0]["rows"][-1]["cohort_fnv"] = "9999999999999999"
 
         reasons = bench.publication_reasons(artifact)
 
         self.assertIn("batch8_cohort_hash_divergence", reasons)
 
+    def test_publication_gate_rejects_stale_summary(self) -> None:
+        artifact = complete_artifact()
+        artifact["summary"] = bench.summarize_trials(artifact["trials"])
+        artifact["summary"]["ratio_of_batch8_medians"] = 99.0
+
+        reasons = bench.publication_reasons(artifact)
+
+        self.assertIn("summary_mismatch", reasons)
+
+    def test_publication_gate_rejects_duplicate_or_inconsistent_rows(self) -> None:
+        artifact = complete_artifact()
+        artifact["summary"] = bench.summarize_trials(artifact["trials"])
+        artifact["trials"][0]["rows"].append(
+            dict(artifact["trials"][0]["rows"][-1])
+        )
+        artifact["trials"][1]["rows"][1]["per_request_tok_s"] = 999.0
+
+        reasons = bench.publication_reasons(artifact)
+
+        self.assertIn("rep1_shared_batch_matrix_mismatch", reasons)
+        self.assertIn("rep1_row_exact_batch2_per_request_mismatch", reasons)
+
     def test_publication_gate_rejects_relaxed_load_or_blocked_order(self) -> None:
         artifact = complete_artifact()
+        artifact["summary"] = bench.summarize_trials(artifact["trials"])
         artifact["max_load_average"] = 5.0
         artifact["trials"][0], artifact["trials"][1] = (
             artifact["trials"][1],
