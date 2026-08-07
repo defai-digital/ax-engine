@@ -55,6 +55,8 @@ PRERELEASE=false
 CLOBBER_ASSETS=false
 APPLE_API_KEY_TEMP=""
 RESOLVED_SIGN_IDENTITY=""
+NOTARIZATION_SUBMISSION_ID=""
+NOTARIZATION_LOG_PATH=""
 RELEASE_BIN_DIR="$ROOT_DIR/target/release"
 MLX_RUNTIME_DIR=""
 CANDIDATE_WORKFLOW="release-candidate.yml"
@@ -431,6 +433,85 @@ codesign_release_payload() {
     done
 }
 
+verify_notarization_log() {
+    local log_path="$1"
+    local payload_dir="$2"
+    local submission_id="$3"
+
+    python3 - \
+        "$log_path" \
+        "$payload_dir" \
+        "$submission_id" \
+        libmlx.dylib \
+        libjaccl.dylib \
+        ax-engine \
+        ax-engine-server \
+        ax-engine-bench <<'PY'
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+log_path = Path(sys.argv[1])
+payload_dir = Path(sys.argv[2])
+submission_id = sys.argv[3]
+expected_images = sys.argv[4:]
+notary_log = json.loads(log_path.read_text(encoding="utf-8"))
+
+if notary_log.get("jobId") != submission_id:
+    raise SystemExit("notarization log submission id does not match notarytool submit")
+if notary_log.get("status") != "Accepted" or notary_log.get("statusCode") != 0:
+    raise SystemExit("Apple notarization did not finish with Accepted status")
+if notary_log.get("issues") not in (None, []):
+    raise SystemExit("Apple notarization log contains issues")
+
+ticket_contents = notary_log.get("ticketContents")
+if not isinstance(ticket_contents, list):
+    raise SystemExit("Apple notarization log has no ticketContents array")
+if len(ticket_contents) != len(expected_images):
+    raise SystemExit(
+        "Apple notarization ticket item count does not match the release Mach-O set"
+    )
+
+for image_name in expected_images:
+    image_path = payload_dir / image_name
+    if not image_path.is_file():
+        raise SystemExit(f"notarization payload is missing {image_name}")
+    result = subprocess.run(
+        ["codesign", "-dv", "--verbose=4", str(image_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    details = f"{result.stdout}\n{result.stderr}"
+    match = re.search(r"^CDHash=([0-9a-f]+)$", details, flags=re.MULTILINE)
+    if match is None:
+        raise SystemExit(f"could not resolve the code directory hash for {image_name}")
+    cdhash = match.group(1)
+    matching_tickets = [
+        item
+        for item in ticket_contents
+        if isinstance(item, dict)
+        and Path(str(item.get("path") or "")).name == image_name
+        and item.get("cdhash") == cdhash
+        and item.get("digestAlgorithm") == "SHA-256"
+        and item.get("arch") == "arm64"
+    ]
+    if len(matching_tickets) != 1:
+        raise SystemExit(
+            f"Apple notarization ticket does not contain the exact arm64 CDHash for {image_name}"
+        )
+
+print(
+    f"Verified Apple notarization ticket {submission_id}: "
+    f"{len(expected_images)} exact Mach-O CDHashes"
+)
+PY
+}
+
 notarize_release_payload() {
     if [[ -z "$SIGN_IDENTITY" ]]; then
         return
@@ -445,37 +526,46 @@ notarize_release_payload() {
     fi
 
     local notarize_zip="$ARTIFACT_DIR/ax-engine-${TAG}-notarize.zip"
+    local submit_json="$ARTIFACT_DIR/ax-engine-${TAG}-notary-submit.json"
+    local submission_info
+    local submission_status
     rm -f "$notarize_zip"
+    rm -f "$submit_json"
     (
         cd "$STAGING_DIR"
         run zip -qry "$notarize_zip" .
     )
-    run xcrun notarytool submit "$notarize_zip" "${NOTARY_ARGS[@]}" --wait
+    echo ">> xcrun notarytool submit $notarize_zip ${NOTARY_ARGS[*]} --wait --output-format json"
+    xcrun notarytool submit \
+        "$notarize_zip" \
+        "${NOTARY_ARGS[@]}" \
+        --wait \
+        --output-format json > "$submit_json"
+    submission_info="$(python3 - "$submit_json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+submission = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(f"{submission.get('id', '')}\t{submission.get('status', '')}")
+PY
+)"
+    IFS=$'\t' read -r NOTARIZATION_SUBMISSION_ID submission_status <<<"$submission_info"
+    [[ -n "$NOTARIZATION_SUBMISSION_ID" && "$submission_status" == "Accepted" ]] || {
+        die "Apple notarization submission did not finish with Accepted status"
+    }
+
+    NOTARIZATION_LOG_PATH="$ARTIFACT_DIR/ax-engine-${TAG}-notary-log.json"
+    echo ">> xcrun notarytool log $NOTARIZATION_SUBMISSION_ID ${NOTARY_ARGS[*]}"
+    xcrun notarytool log \
+        "$NOTARIZATION_SUBMISSION_ID" \
+        "${NOTARY_ARGS[@]}" > "$NOTARIZATION_LOG_PATH"
+    verify_notarization_log \
+        "$NOTARIZATION_LOG_PATH" \
+        "$STAGING_DIR" \
+        "$NOTARIZATION_SUBMISSION_ID"
     rm -f "$notarize_zip"
-}
-
-register_notarization_ticket() {
-    local source_image="$1"
-    local ticket_dir
-    local ticket_probe
-    local quarantine_timestamp
-
-    ticket_dir="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-notary-ticket.XXXXXX")"
-    (
-        trap 'rm -rf "$ticket_dir"' EXIT
-        ticket_probe="$ticket_dir/$(basename "$source_image")"
-        cp "$source_image" "$ticket_probe"
-        chmod +x "$ticket_probe"
-
-        # Standalone command-line binaries cannot carry stapled tickets.
-        # Gatekeeper fetches their fresh ticket only when assessing a
-        # quarantined copy; the untouched uploaded bytes are verified below.
-        quarantine_timestamp="$(printf '%x' "$(date +%s)")"
-        run xattr -w com.apple.quarantine \
-            "0083;${quarantine_timestamp};AX Engine release verifier;https://github.com/${MAIN_REPO}/releases/tag/${TAG}" \
-            "$ticket_probe"
-        run spctl --assess --type install --ignore-cache --verbose=4 "$ticket_probe"
-    )
+    rm -f "$submit_json"
 }
 
 verify_uploaded_release() {
@@ -533,6 +623,7 @@ verify_uploaded_release() {
             "$EXPECTED_APPLE_TEAM_ID" \
             "$expect_signed" \
             "$expect_notarized" \
+            "$NOTARIZATION_SUBMISSION_ID" \
             "$MLX_PIN" \
             "--" \
             "${release_payload[@]}" <<'PY'
@@ -553,6 +644,7 @@ separator = sys.argv.index("--")
     expected_team,
     expect_signed_raw,
     expect_notarized_raw,
+    expected_notarization_submission_id,
     expected_mlx_version,
 ) = sys.argv[1:separator]
 expected_payload = sys.argv[separator + 1 :]
@@ -579,6 +671,10 @@ if bool(signing.get("apple_developer_id")) != expect_signed:
     raise SystemExit("release manifest Developer ID signing state is incorrect")
 if bool(signing.get("notarized")) != expect_notarized:
     raise SystemExit("release manifest notarization state is incorrect")
+if signing.get("notarization_submission_id") != (
+    expected_notarization_submission_id if expect_notarized else None
+):
+    raise SystemExit("release manifest notarization submission id is incorrect")
 if signing.get("disable_library_validation") is not False:
     raise SystemExit("standalone release must retain hardened-runtime library validation")
 if expect_signed:
@@ -650,17 +746,16 @@ PY
                 grep -F "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details" >/dev/null || {
                     die "uploaded $image has the wrong Apple team"
                 }
-                if [[ "$SKIP_NOTARIZATION" = false ]]; then
-                    # --check-notarization only modifies verification; it is not a
-                    # standalone codesign operation (see codesign(1)).
-                    run codesign --verify --strict --check-notarization --verbose=2 "$verify_dir/payload/$image"
-                    if ! run codesign --verify --strict --verbose=2 -R="notarized" "$verify_dir/payload/$image"; then
-                        echo "Registering fresh notarization ticket for uploaded $image"
-                        register_notarization_ticket "$verify_dir/payload/$image"
-                        run codesign --verify --strict --verbose=2 -R="notarized" "$verify_dir/payload/$image"
-                    fi
-                fi
             done
+            if [[ "$SKIP_NOTARIZATION" = false ]]; then
+                [[ -f "$NOTARIZATION_LOG_PATH" ]] || {
+                    die "Apple notarization log is missing from the publisher workspace"
+                }
+                verify_notarization_log \
+                    "$NOTARIZATION_LOG_PATH" \
+                    "$verify_dir/payload" \
+                    "$NOTARIZATION_SUBMISSION_ID"
+            fi
             for image in ax-engine ax-engine-server ax-engine-bench; do
                 entitlement_details="$(codesign -d --entitlements - "$verify_dir/payload/$image" 2>&1 || true)"
                 if grep -F "com.apple.security.cs.disable-library-validation" <<<"$entitlement_details" >/dev/null; then
@@ -812,8 +907,6 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     if [[ "$SKIP_NOTARIZATION" = false ]]; then
         check_cmd xcrun "xcrun notarytool is required for notarization"
         check_cmd zip "zip is required for notarization submission"
-        check_cmd xattr "xattr is required to register fresh notarization tickets"
-        check_cmd spctl "spctl is required to register fresh notarization tickets"
         if ! xcrun notarytool --help &>/dev/null; then
             die "xcrun notarytool is not available - install current Xcode Command Line Tools"
         fi
@@ -955,6 +1048,7 @@ printf '%s  %s\n' "$SHA256" "$ARCHIVE" > "$SHA256_PATH"
 
 AX_RELEASE_CODESIGN_IDENTITY="${RESOLVED_SIGN_IDENTITY:-$SIGN_IDENTITY}" \
 AX_RELEASE_NOTARIZED="$([[ -n "$SIGN_IDENTITY" && "$SKIP_NOTARIZATION" = false && "$DRY_RUN" = false ]] && echo true || echo false)" \
+AX_RELEASE_NOTARY_SUBMISSION_ID="$NOTARIZATION_SUBMISSION_ID" \
 python3 - \
     "$TAG" \
     "$VERSION" \
@@ -1085,6 +1179,9 @@ manifest = {
         "apple_developer_id": bool(os.environ.get("AX_RELEASE_CODESIGN_IDENTITY")),
         "identity": os.environ.get("AX_RELEASE_CODESIGN_IDENTITY") or None,
         "notarized": os.environ.get("AX_RELEASE_NOTARIZED") == "true",
+        "notarization_submission_id": (
+            os.environ.get("AX_RELEASE_NOTARY_SUBMISSION_ID") or None
+        ),
         "disable_library_validation": False,
     },
 }

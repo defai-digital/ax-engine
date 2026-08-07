@@ -162,45 +162,40 @@ gh api repos/defai-digital/ax-engine/releases/latest --jq .tag_name
 Do not push version tags outside `scripts/publish-github-release.sh` unless you
 immediately create the matching GitHub release.
 
-### Fresh notarization tickets and the `-R=notarized` check
+### Notarization evidence and Gatekeeper propagation
 
-The publisher's final verification asserts
-`codesign --verify --strict -R="notarized"` on every uploaded Mach-O.
-Standalone binaries cannot staple a notarization ticket, and `codesign` only
-consults tickets already registered with the local system — it never fetches
-them from Apple. A submission `notarytool` just reported **Accepted**
-therefore still fails this check (observed on the v6.13.0 publish: the
-ticket's cdhashes matched the binaries exactly, and the check kept failing
-40+ minutes later), while dylibs reused from earlier releases pass because
-their tickets were registered long ago.
+The publisher captures the JSON response from `notarytool submit --wait`, then
+downloads the corresponding notarization log. Publication fails unless the log
+reports `Accepted`, has no issues, and its `ticketContents` contains the exact
+arm64 CDHash for every signed release Mach-O. The same check is repeated against
+the independently downloaded GitHub archive, and the submission ID is recorded
+in the signed release manifest.
 
-The publisher handles this by copying each affected Mach-O to a disposable
-path, adding a quarantine attribute to that copy, and asking Gatekeeper for an
-uncached install assessment. The quarantine attribute is required: without it,
-Gatekeeper can report `Unnotarized Developer ID` without fetching the fresh
-ticket. After Gatekeeper accepts the disposable copy as `Notarized Developer
-ID`, the publisher deletes it and re-runs the fail-closed `codesign`
-requirement against the untouched uploaded bytes.
+This is intentionally independent of Gatekeeper's ticket CDN. Standalone
+command-line binaries cannot carry a stapled ticket, and a newly accepted ticket
+can take time to become visible through `codesign -R=notarized` or `spctl`.
+Treating that propagation delay as a notarization failure can strand an
+otherwise valid draft. The Apple notarization log is the fail-closed publication
+evidence; a clean-machine download and online Gatekeeper check remain required
+post-publication deployment tests.
 
-For a draft created by an older publisher, perform the same recovery manually
-for each affected binary, then finish the draft per "Recover stuck drafts"
-above:
+For a draft created by an older publisher, fetch the official log and compare
+its ticket CDHashes with the uploaded payload before publishing:
 
 ```bash
-probe_dir="$(mktemp -d /tmp/ax-engine-notary-ticket.XXXXXX)"
-cp payload/ax-engine "$probe_dir/ax-engine"
-xattr -w com.apple.quarantine \
-  "0083;$(printf '%x' "$(date +%s)");AX Engine release verifier;https://github.com/defai-digital/ax-engine/" \
-  "$probe_dir/ax-engine"
-spctl --assess --type install --ignore-cache "$probe_dir/ax-engine"
-codesign --verify --strict -R=notarized payload/ax-engine
-rm -rf "$probe_dir"
+xcrun notarytool log <submission-id> --keychain-profile ax-notary
+codesign -dv --verbose=4 payload/ax-engine
+codesign --verify --strict payload/ax-engine
 ```
 
-The Gatekeeper assessment is used only to fetch and register Apple's ticket;
-`codesign -R="notarized"` on the original uploaded bytes remains the final
-fail-closed publication gate (enforced by
-`scripts/test_release_signing.py`).
+Do not publish when the log is missing an image, reports any issue, or contains
+a different CDHash. After publication, verify the downloaded artifact on a
+separate Mac with:
+
+```bash
+codesign --verify --strict --check-notarization \
+  -R=notarized /path/to/ax-engine
+```
 
 ## Build-cache policy
 

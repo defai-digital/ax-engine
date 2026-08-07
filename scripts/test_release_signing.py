@@ -34,23 +34,19 @@ class ReleaseSigningTests(unittest.TestCase):
         self.assertIn("published releases require --sign-identity", text)
         self.assertIn("published releases must be notarized", text)
         self.assertIn("TeamIdentifier=$EXPECTED_APPLE_TEAM_ID", text)
-        # --check-notarization only modifies verification; it must ride on --verify.
-        self.assertIn(
-            "codesign --verify --strict --check-notarization --verbose=2",
-            text,
-        )
-        self.assertIn('codesign --verify --strict --verbose=2 -R="notarized"', text)
-        self.assertIn("register_notarization_ticket", text)
-        self.assertIn("xattr -w com.apple.quarantine", text)
-        self.assertIn("spctl --assess --type install --ignore-cache", text)
-        self.assertIn("AX Engine release verifier", text)
+        self.assertIn("verify_notarization_log", text)
+        self.assertIn("xcrun notarytool log", text)
+        self.assertIn('"ticketContents"', text)
+        self.assertIn(r"^CDHash=([0-9a-f]+)$", text)
+        self.assertIn("notarization_submission_id", text)
+        self.assertIn("Apple notarization log contains issues", text)
+        self.assertIn("exact arm64 CDHash", text)
+        self.assertNotIn("register_notarization_ticket", text)
+        self.assertNotIn("spctl --assess", text)
+        self.assertNotIn("xattr -w com.apple.quarantine", text)
         self.assertLess(
-            text.index("xattr -w com.apple.quarantine"),
-            text.index("spctl --assess --type install --ignore-cache"),
-        )
-        self.assertLess(
-            text.index("spctl --assess --type install --ignore-cache"),
-            text.rindex('codesign --verify --strict --verbose=2 -R="notarized"'),
+            text.index("notarize_release_payload"),
+            text.rindex("verify_uploaded_release"),
         )
         self.assertIn("release_args+=(--draft)", text)
         self.assertIn(
