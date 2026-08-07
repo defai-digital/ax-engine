@@ -130,7 +130,7 @@ MTP_HEAD_PROVENANCE: dict[str, dict[str, str]] = {
 }
 
 
-def mtp_head_provenance(target: "Target", engine: str) -> dict[str, str] | None:
+def mtp_head_provenance(target: Target, engine: str) -> dict[str, str] | None:
     return MTP_HEAD_PROVENANCE_BY_TARGET.get(target.key, {}).get(engine)
 
 
@@ -682,6 +682,14 @@ def ax_command(args: argparse.Namespace, target: Target, suite: str, output: Pat
         str(args.cooldown),
         "--inter-case-cooldown",
         str(args.inter_case_cooldown),
+        "--max-load-average",
+        str(args.max_load_average),
+        "--max-top-process-cpu-percent",
+        str(args.max_top_process_cpu_percent),
+        "--load-average-wait-timeout",
+        str(args.load_wait_timeout),
+        "--load-average-poll-interval",
+        str(args.load_poll_interval),
         "--ax-sampling",
         json.dumps(args.sampling, separators=(",", ":")),
         "--skip-mlx-lm",

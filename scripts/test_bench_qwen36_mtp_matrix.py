@@ -355,6 +355,19 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertIn("--ax-qwen-linear-mtp-exact", cmd)
         self.assertEqual(cmd[cmd.index("--ax-mtp-max-depth") + 1], "3")
         self.assertEqual(cmd[cmd.index("--warmup-repetitions") + 1], "2")
+        self.assertEqual(cmd[cmd.index("--max-load-average") + 1], "2.0")
+        self.assertEqual(
+            cmd[cmd.index("--max-top-process-cpu-percent") + 1],
+            "50.0",
+        )
+        self.assertEqual(
+            cmd[cmd.index("--load-average-wait-timeout") + 1],
+            "900.0",
+        )
+        self.assertEqual(
+            cmd[cmd.index("--load-average-poll-interval") + 1],
+            "5.0",
+        )
         self.assertNotIn("--ax-direct", cmd)
 
     def test_commands_forward_seed_when_configured(self) -> None:
@@ -794,7 +807,7 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
             args = make_args(Path(tmp))
             lanes = matrix.build_lanes(args)
 
-        ax_lane = next(l for l in lanes if l.engine == "ax_engine")
+        ax_lane = next(lane for lane in lanes if lane.engine == "ax_engine")
         lane_dict = matrix.lane_to_dict(ax_lane)
         self.assertIn("mtp_head", lane_dict)
         self.assertIsNotNone(lane_dict["mtp_head"])
