@@ -43,7 +43,7 @@ PEER_PACKAGE_ACTIVE_BYTE_FALLBACKS = {
     },
 }
 
-ENGINE_LABELS = {
+LEGACY_ENGINE_LABELS = {
     "ax_engine": "AX Engine v6.8.2 (2026-07-11)",
     "mtplx": "MTPLX",
     "lightning_mlx": "lightning-mlx",
@@ -198,9 +198,31 @@ def build_mtplx_cycle_summary(raw: dict[str, Any], bytes_per_cycle: int) -> dict
     }
 
 
+def measured_engine_labels(summary: dict[str, Any]) -> dict[str, str]:
+    labels = dict(LEGACY_ENGINE_LABELS)
+    identities = summary.get("engine_identities")
+    if not isinstance(identities, dict):
+        return labels
+    for engine in ENGINE_ORDER:
+        identity = identities.get(engine)
+        if not isinstance(identity, dict):
+            continue
+        name = identity.get("name")
+        version = identity.get("version")
+        if (
+            isinstance(name, str)
+            and name.strip()
+            and isinstance(version, str)
+            and version.strip()
+        ):
+            labels[engine] = f"{name} v{version}"
+    return labels
+
+
 def build_diagnostic(summary_path: Path) -> dict[str, Any]:
     summary = json.loads(summary_path.read_text())
     rows = peer_rows(summary)
+    engine_labels = measured_engine_labels(summary)
 
     ax_bytes_by_target: dict[str, int] = {}
     peer_bytes_by_target: dict[str, int] = {}
@@ -217,7 +239,15 @@ def build_diagnostic(summary_path: Path) -> dict[str, Any]:
             peer_bytes_by_target[target] = bytes_used
         else:
             continue
-        built.append(build_output_row(row, bytes_used, source, cycle_summary))
+        built.append(
+            build_output_row(
+                row,
+                bytes_used,
+                source,
+                cycle_summary,
+                engine_labels,
+            )
+        )
 
     for row in rows:
         target = str(row["model_label"])
@@ -233,7 +263,15 @@ def build_diagnostic(summary_path: Path) -> dict[str, Any]:
                 fallback = PEER_PACKAGE_ACTIVE_BYTE_FALLBACKS[target]
                 bytes_used = int(fallback["bytes"])
             source = "retained_lightning_row_peer_package_proxy"
-        built.append(build_output_row(row, bytes_used, source, None))
+        built.append(
+            build_output_row(
+                row,
+                bytes_used,
+                source,
+                None,
+                engine_labels,
+            )
+        )
 
     built.sort(
         key=lambda row: (
@@ -248,6 +286,7 @@ def build_diagnostic(summary_path: Path) -> dict[str, Any]:
         "peak_bandwidth_gb_s": PEAK_GBS,
         "peak_bandwidth_source": PEAK_SOURCE,
         "bandwidth_scope": "effective_output_not_gpu_counter",
+        "engine_labels": engine_labels,
         "caveat": (
             "Effective output bandwidth multiplies committed-token decode throughput "
             "by active target-weight bytes. It is useful for peer readout but can "
@@ -263,13 +302,14 @@ def build_output_row(
     bytes_used: int,
     estimate_source: str,
     cycle_summary: dict[str, Any] | None,
+    engine_labels: dict[str, str],
 ) -> dict[str, Any]:
     decode = float(peer_row["metrics"]["decode_tok_s"])
     output_bandwidth = bytes_used * decode / 1e9
     return {
         "target": peer_row["model_label"],
         "engine": peer_row["engine"],
-        "engine_label": ENGINE_LABELS[str(peer_row["engine"])],
+        "engine_label": engine_labels[str(peer_row["engine"])],
         "decode_tok_s": round(decode, 3),
         "active_target_bytes_per_output_token": bytes_used,
         "active_target_gb_per_output_token": round(bytes_used / 1e9, 3),
@@ -361,7 +401,7 @@ def render_27b_output_svg(diagnostic: dict[str, Any]) -> str:
         )
         y += bar_h + row_gap
 
-    parts.extend(render_legend(footer_y - 26))
+    parts.extend(render_legend(footer_y - 26, diagnostic["engine_labels"]))
     parts.append(
         f'<text x="{LEFT}" y="{footer_y}" font-family="{FONT}" font-size="9" fill="#9ca3af">Percentages can exceed 100% because MTP can commit multiple output tokens per target verifier pass.</text>'
     )
@@ -369,7 +409,7 @@ def render_27b_output_svg(diagnostic: dict[str, Any]) -> str:
     return "\n".join(parts) + "\n"
 
 
-def render_legend(legend_y: int) -> list[str]:
+def render_legend(legend_y: int, engine_labels: dict[str, str]) -> list[str]:
     parts: list[str] = []
     legend_x = LEFT
     for engine in ENGINE_ORDER:
@@ -377,7 +417,7 @@ def render_legend(legend_y: int) -> list[str]:
         parts.extend(
             [
                 f'<rect x="{legend_x}" y="{legend_y - 9}" width="10" height="10" rx="2" fill="{fill}" fill-opacity="0.82" stroke="{stroke}"/>',
-                f'<text x="{legend_x + 14}" y="{legend_y}" font-family="{FONT}" font-size="10" fill="#374151">{html.escape(ENGINE_LABELS[engine])}</text>',
+                f'<text x="{legend_x + 14}" y="{legend_y}" font-family="{FONT}" font-size="10" fill="#374151">{html.escape(engine_labels[engine])}</text>',
             ]
         )
         legend_x += 130
