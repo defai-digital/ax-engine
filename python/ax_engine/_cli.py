@@ -1664,6 +1664,10 @@ def _user_doctor_report(bench_report: dict) -> dict:
     model_selected = _value_bool(bench_report, ("model_artifacts", "selected"))
     model_path = _value_at(bench_report, ("model_artifacts", "path"))
     model_path = model_path if isinstance(model_path, str) else None
+    host_supported = _value_bool(bench_report, ("host", "supported_mlx_runtime"))
+    runtime_assets_ready = _value_str(bench_report, ("runtime_assets", "status")) == "ready"
+    metal_toolchain_ready = _value_bool(bench_report, ("metal_toolchain", "fully_available"))
+    runtime_available = mlx_ready or runtime_assets_ready or metal_toolchain_ready
 
     if (
         server_check["status"] != "pass"
@@ -1681,8 +1685,10 @@ def _user_doctor_report(bench_report: dict) -> dict:
         next_actions.append("Reinstall ax-engine so ax-engine-server is on PATH.")
     elif bench_check["status"] != "pass":
         next_actions.append("Reinstall ax-engine so ax-engine-bench is on PATH.")
-    elif not mlx_ready:
-        next_actions.append("Fix the host or Metal runtime issues listed below.")
+    elif not runtime_available:
+        next_actions.append("Fix the Metal runtime issues listed below.")
+    elif not host_supported:
+        next_actions.append("Use a supported Apple Silicon host for production MLX workloads.")
     elif model_status == "not_ready":
         if model_path:
             next_actions.append(f"ax-engine-bench generate-manifest {model_path} --json")
@@ -1699,8 +1705,6 @@ def _user_doctor_report(bench_report: dict) -> dict:
         f"{_value_str(bench_report, ('host', 'detected_soc'), 'unknown Apple Silicon')} "
         f"({_value_str(bench_report, ('host', 'os'))}/{_value_str(bench_report, ('host', 'arch'))})"
     )
-    runtime_assets_ready = _value_str(bench_report, ("runtime_assets", "status")) == "ready"
-    metal_toolchain_ready = _value_bool(bench_report, ("metal_toolchain", "fully_available"))
     if metal_toolchain_ready:
         metal_detail = "Metal compiler and metallib available"
     elif runtime_assets_ready:
@@ -1709,6 +1713,12 @@ def _user_doctor_report(bench_report: dict) -> dict:
         )
     else:
         metal_detail = "Metal compiler or metallib missing"
+    if runtime_assets_ready:
+        runtime_detail = "Bundled MLX runtime assets available"
+    elif metal_toolchain_ready:
+        runtime_detail = "Metal toolchain available for MLX runtime assets"
+    else:
+        runtime_detail = bench_status
     return {
         "schema_version": "ax.engine.doctor.v1",
         "result": result,
@@ -1724,7 +1734,7 @@ def _user_doctor_report(bench_report: dict) -> dict:
             bench_check,
             _doctor_check(
                 "host",
-                _value_bool(bench_report, ("host", "supported_mlx_runtime")),
+                host_supported,
                 host_detail,
             ),
             _doctor_check(
@@ -1732,7 +1742,7 @@ def _user_doctor_report(bench_report: dict) -> dict:
                 metal_toolchain_ready or runtime_assets_ready,
                 metal_detail,
             ),
-            _doctor_check("mlx_runtime", mlx_ready, bench_status),
+            _doctor_check("mlx_runtime", runtime_available, runtime_detail),
             {
                 "id": "model",
                 "status": model_status,

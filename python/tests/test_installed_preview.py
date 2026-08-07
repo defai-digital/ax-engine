@@ -191,10 +191,21 @@ class InstalledPreviewTests(unittest.TestCase):
             checks = {check["id"]: check for check in public_report["checks"]}
             self.assertEqual(checks["metal_toolchain"]["status"], "pass")
             self.assertEqual(checks["mlx_runtime"]["status"], "pass")
-            self.assertFalse(public_report["issues"], public_report["issues"])
+            self.assertFalse(
+                any("xcrun" in issue for issue in public_report["issues"]),
+                public_report["issues"],
+            )
+            self.assertFalse(
+                any("Runtime assets are not ready" in issue for issue in public_report["issues"]),
+                public_report["issues"],
+            )
             if direct_report["host"]["supported_mlx_runtime"]:
+                self.assertFalse(public_report["issues"], public_report["issues"])
                 self.assertEqual(public.returncode, 0, public.stderr)
                 self.assertEqual(public_report["result"], "ready")
+            else:
+                self.assertEqual(public.returncode, 0, public.stderr)
+                self.assertEqual(public_report["result"], "degraded")
 
     def test_installed_package_reports_runtime_and_generate_result(self) -> None:
         with _llama_cpp_upstream() as (server_url, _requests):

@@ -793,6 +793,53 @@ class AxEngineCliTests(unittest.TestCase):
             ],
         )
 
+    def test_doctor_keeps_bundled_runtime_ready_on_bringup_host(self) -> None:
+        bench_report = {
+            "schema_version": "ax.engine_bench.doctor.v1",
+            "status": "bringup_only",
+            "mlx_runtime_ready": False,
+            "workflow": {"mode": "python_package", "cwd": "/tmp"},
+            "host": {
+                "supported_mlx_runtime": False,
+                "detected_soc": "Apple M4",
+                "os": "macos",
+                "arch": "aarch64",
+            },
+            "runtime_assets": {
+                "status": "ready",
+                "source": "bundled_mlx_runtime",
+                "path": "/wheel/ax_engine/.dylibs",
+            },
+            "metal_toolchain": {"fully_available": False},
+            "model_artifacts": {
+                "selected": False,
+                "status": "not_selected",
+                "issues": [],
+            },
+            "issues": ["Host is outside the supported production MLX profile."],
+        }
+        passed_probe = {"id": "binary", "status": "pass", "detail": "ok"}
+
+        with (
+            mock.patch.object(_cli, "_probe_binary", return_value=passed_probe),
+            mock.patch.object(_cli, "_host_system_summary", return_value={}),
+        ):
+            payload = _cli._user_doctor_report(bench_report)
+
+        checks = {check["id"]: check for check in payload["checks"]}
+        self.assertEqual(payload["result"], "degraded")
+        self.assertEqual(checks["host"]["status"], "fail")
+        self.assertEqual(checks["metal_toolchain"]["status"], "pass")
+        self.assertEqual(checks["mlx_runtime"]["status"], "pass")
+        self.assertEqual(
+            checks["mlx_runtime"]["detail"],
+            "Bundled MLX runtime assets available",
+        )
+        self.assertEqual(
+            payload["next_actions"],
+            ["Use a supported Apple Silicon host for production MLX workloads."],
+        )
+
     def test_doctor_verbose_wraps_bench_doctor(self) -> None:
         with (
             mock.patch.object(_cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"),
