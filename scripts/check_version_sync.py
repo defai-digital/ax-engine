@@ -19,6 +19,9 @@ class VersionSyncError(ValueError):
 INSTALL_REQUIREMENT_PATTERN = re.compile(
     r"ax-engine(?:\[[^\]]+\])?>=(\d+\.\d+\.\d+),<\d+"
 )
+PYTHON_MIN_VERSION = "3.11"
+PYTHON_REQUIRES = f">={PYTHON_MIN_VERSION}"
+PYTHON_ABI3_FEATURE = "abi3-py311"
 
 
 def _required_match(root: pathlib.Path, relative_path: str, pattern: str) -> str:
@@ -102,6 +105,44 @@ def verify_versions(root: pathlib.Path, expected: str | None = None) -> str:
     return expected_version
 
 
+def verify_python_policy(root: pathlib.Path) -> str:
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    project = pyproject["project"]
+    classifiers = set(project.get("classifiers", []))
+    expected_classifiers = {
+        f"Programming Language :: Python :: {version}"
+        for version in ("3.11", "3.12", "3.13")
+    }
+    problems: list[str] = []
+
+    if project.get("requires-python") != PYTHON_REQUIRES:
+        problems.append(
+            f"pyproject.toml requires-python={project.get('requires-python')!r}, "
+            f"expected {PYTHON_REQUIRES!r}"
+        )
+    missing_classifiers = expected_classifiers - classifiers
+    if missing_classifiers:
+        problems.append(
+            "pyproject.toml missing classifiers: " + ", ".join(sorted(missing_classifiers))
+        )
+    if "Programming Language :: Python :: 3.10" in classifiers:
+        problems.append("pyproject.toml still advertises Python 3.10")
+    if pyproject.get("tool", {}).get("ruff", {}).get("target-version") != "py311":
+        problems.append("pyproject.toml Ruff target-version must be py311")
+    if pyproject.get("tool", {}).get("mypy", {}).get("python_version") != PYTHON_MIN_VERSION:
+        problems.append("pyproject.toml mypy python_version must be 3.11")
+
+    py_crate = (root / "crates/ax-engine-py/Cargo.toml").read_text(encoding="utf-8")
+    if PYTHON_ABI3_FEATURE not in py_crate:
+        problems.append(f"Python extension must enable {PYTHON_ABI3_FEATURE}")
+    if "abi3-py310" in py_crate:
+        problems.append("Python extension still enables abi3-py310")
+
+    if problems:
+        raise VersionSyncError("Python compatibility policy mismatch: " + "; ".join(problems))
+    return PYTHON_MIN_VERSION
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -121,11 +162,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         version = verify_versions(args.root.resolve(), args.expected)
+        python_min = verify_python_policy(args.root.resolve())
     except (KeyError, OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
         print(f"error: version consistency check failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Version verified: {version} (package metadata and install guides)")
+    print(
+        f"Version verified: {version}; Python >={python_min} "
+        "(package metadata, ABI, and install guides)"
+    )
     return 0
 
 

@@ -20,7 +20,7 @@ ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native"] }
 # Keep mlx-sys as a direct dependency so build.rs receives the authoritative
 # DEP_MLX_LIB_DIR selected by mlx-sys and can embed it in Python test binaries.
 mlx-sys = { path = "../mlx-sys" }
-pyo3 = { version = "0.29", features = ["abi3-py310"] }
+pyo3 = { version = "0.29", features = ["abi3-py311"] }
 serde.workspace = true
 serde_json.workspace = true
 
