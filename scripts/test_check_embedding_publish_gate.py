@@ -118,9 +118,7 @@ def _paired_fair_artifact(**overrides):
 
 class EmbeddingPublishGateTests(unittest.TestCase):
     def _write(self, payload: dict) -> Path:
-        with tempfile.NamedTemporaryFile(
-            suffix=".json", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             path = Path(tmp.name)
         path.write_text(json.dumps(payload) + "\n")
         return path
@@ -131,9 +129,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         self.assertTrue(report["ok"])
 
     def test_paired_rejects_ax_only(self) -> None:
-        path = self._write(
-            _paired_fair_artifact(ax_only=True, publication_claim="paired_delta")
-        )
+        path = self._write(_paired_fair_artifact(ax_only=True, publication_claim="paired_delta"))
         with self.assertRaisesRegex(gate.PublishGateError, "ax_only=false"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
@@ -188,9 +184,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "legacy"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
-        report = gate.validate_artifact(
-            path, claim=gate.CLAIM_PAIRED, allow_legacy=True
-        )
+        report = gate.validate_artifact(path, claim=gate.CLAIM_PAIRED, allow_legacy=True)
         self.assertTrue(report["ok"])
         self.assertTrue(any("legacy" in w for w in report["warnings"]))
 
@@ -199,6 +193,20 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         del payload["runtime_identity"]
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "runtime_identity"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_missing_v2_build_metadata_fails_cleanly(self) -> None:
+        payload = _paired_fair_artifact()
+        del payload["build"]
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "requires build metadata"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_v2_requires_tracked_tree_status(self) -> None:
+        payload = _paired_fair_artifact()
+        del payload["build"]["git_tracked_dirty"]
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "build.git_tracked_dirty"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
     def test_v2_requires_full_build_identity_and_interleaved_trials(self) -> None:
@@ -215,9 +223,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
 
         blocked_order = _paired_fair_artifact(trial_order="blocked")
         path = self._write(blocked_order)
-        with self.assertRaisesRegex(
-            gate.PublishGateError, "interleaved_alternating"
-        ):
+        with self.assertRaisesRegex(gate.PublishGateError, "interleaved_alternating"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
     def test_v2_rejects_dirty_or_under_sampled_artifact(self) -> None:
@@ -306,6 +312,22 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.PublishGateError, "median_batch_p95_ms"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
+    def test_paired_delta_must_match_recorded_medians(self) -> None:
+        payload = _paired_fair_artifact()
+        payload["models"][0]["rows"][0]["comparison"]["ax_vs_reference_tokens_pct"] = 99.0
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "is inconsistent"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_throughput_medians_must_be_finite_and_positive(self) -> None:
+        payload = _paired_fair_artifact()
+        payload["models"][0]["rows"][0]["results"]["ax_engine_py"]["median_tokens_per_sec"] = float(
+            "nan"
+        )
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "must be finite and positive"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
     def test_scale_requires_publication_cooldown(self) -> None:
         payload = {
             "schema_version": "ax.embedding_ingest_scale.v2",
@@ -350,9 +372,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
                                     "median_batch_p95_ms": 1.0,
                                 },
                             },
-                            "comparison": {
-                                "ax_vs_reference_tokens_pct": 0.0
-                            },
+                            "comparison": {"ax_vs_reference_tokens_pct": 0.0},
                         }
                     ],
                 }
@@ -382,9 +402,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         report = gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
         self.assertTrue(report["ok"])
 
-        payload["benchmark_window"]["performance_conditions_end"][
-            "thermal_warning_recorded"
-        ] = True
+        payload["benchmark_window"]["performance_conditions_end"]["thermal_warning_recorded"] = True
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "thermal_warning"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)

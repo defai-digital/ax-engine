@@ -86,14 +86,14 @@ def validate_build(
     strict: bool,
 ) -> list[str]:
     warnings: list[str] = []
-    build = artifact.get("build")
+    raw_build = artifact.get("build")
+    build = raw_build if isinstance(raw_build, dict) else {}
     commit = None
-    if isinstance(build, dict):
+    if build:
         commit = build.get("commit")
         if build.get("git_tracked_dirty"):
             warnings.append(
-                f"{path}: build.git_tracked_dirty=true "
-                "(publication prefers a clean tree)"
+                f"{path}: build.git_tracked_dirty=true (publication prefers a clean tree)"
             )
     if not commit or commit == "unknown":
         commit = artifact.get("git_commit")
@@ -103,6 +103,10 @@ def validate_build(
     )
     if strict:
         require(
+            isinstance(raw_build, dict),
+            f"{path}: v2 publication requires build metadata",
+        )
+        require(
             re.fullmatch(r"[0-9a-f]{40}", commit) is not None,
             f"{path}: v2 publication requires a full measured build commit",
         )
@@ -111,6 +115,10 @@ def validate_build(
             isinstance(engine_version, str)
             and re.fullmatch(r"\d+\.\d+\.\d+", engine_version) is not None,
             f"{path}: v2 publication requires a semantic engine version",
+        )
+        require(
+            isinstance(build.get("git_tracked_dirty"), bool),
+            f"{path}: v2 publication requires build.git_tracked_dirty",
         )
     return warnings
 
@@ -137,8 +145,7 @@ def validate_runtime_identity(
     identity = artifact.get("runtime_identity")
     require(
         isinstance(identity, dict) and bool(identity),
-        f"{path}: missing runtime_identity "
-        "(libmlx path/sha required for publication claims)",
+        f"{path}: missing runtime_identity (libmlx path/sha required for publication claims)",
     )
     ax_native = identity.get("ax_engine_native")
     require(
@@ -215,11 +222,7 @@ def validate_benchmark_conditions(
             f"{path}: benchmark_window.{boundary} must be an object",
         )
         load_average = conditions.get("load_average")
-        one_minute = (
-            load_average.get("one_minute")
-            if isinstance(load_average, dict)
-            else None
-        )
+        one_minute = load_average.get("one_minute") if isinstance(load_average, dict) else None
         require(
             isinstance(one_minute, (int, float))
             and not isinstance(one_minute, bool)
@@ -238,23 +241,24 @@ def validate_benchmark_conditions(
         ):
             require(
                 conditions.get(warning_key) is False,
-                f"{path}: benchmark_window.{boundary}.{warning_key} "
-                "must be false",
+                f"{path}: benchmark_window.{boundary}.{warning_key} must be false",
             )
         top_processes = conditions.get("top_processes_cpu")
-        cpu_values = [
-            float(process["cpu_percent"])
-            for process in top_processes
-            if isinstance(process, dict)
-            and isinstance(process.get("cpu_percent"), (int, float))
-            and not isinstance(process.get("cpu_percent"), bool)
-            and math.isfinite(float(process["cpu_percent"]))
-        ] if isinstance(top_processes, list) else []
+        cpu_values = (
+            [
+                float(process["cpu_percent"])
+                for process in top_processes
+                if isinstance(process, dict)
+                and isinstance(process.get("cpu_percent"), (int, float))
+                and not isinstance(process.get("cpu_percent"), bool)
+                and math.isfinite(float(process["cpu_percent"]))
+            ]
+            if isinstance(top_processes, list)
+            else []
+        )
         require(
-            bool(cpu_values)
-            and max(cpu_values) <= MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT,
-            f"{path}: benchmark_window.{boundary} top-process CPU "
-            "exceeds publication limit",
+            bool(cpu_values) and max(cpu_values) <= MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT,
+            f"{path}: benchmark_window.{boundary} top-process CPU exceeds publication limit",
         )
 
 
@@ -292,17 +296,58 @@ def validate_rows(
                 isinstance(ax, dict),
                 f"{path}: {label}/{workload} missing ax_engine_py results",
             )
+            ax_tokens_per_sec = ax.get("median_tokens_per_sec")
+            require(
+                isinstance(ax_tokens_per_sec, (int, float))
+                and not isinstance(ax_tokens_per_sec, bool)
+                and math.isfinite(float(ax_tokens_per_sec))
+                and float(ax_tokens_per_sec) > 0.0,
+                f"{path}: {label}/{workload} ax_engine_py "
+                "median_tokens_per_sec must be finite and positive",
+            )
             if claim == CLAIM_PAIRED:
                 ref = results.get(ref_key)
                 require(
                     isinstance(ref, dict),
-                    f"{path}: {label}/{workload} missing {ref_key} results "
-                    f"for paired_delta",
+                    f"{path}: {label}/{workload} missing {ref_key} results for paired_delta",
+                )
+                reference_tokens_per_sec = ref.get("median_tokens_per_sec")
+                require(
+                    isinstance(reference_tokens_per_sec, (int, float))
+                    and not isinstance(reference_tokens_per_sec, bool)
+                    and math.isfinite(float(reference_tokens_per_sec))
+                    and float(reference_tokens_per_sec) > 0.0,
+                    f"{path}: {label}/{workload} {ref_key} "
+                    "median_tokens_per_sec must be finite and positive",
                 )
                 comparison = row.get("comparison")
                 require(
                     isinstance(comparison, dict) and bool(comparison),
                     f"{path}: {label}/{workload} missing comparison for paired_delta",
+                )
+                recorded_delta = comparison.get("ax_vs_reference_tokens_pct")
+                require(
+                    isinstance(recorded_delta, (int, float))
+                    and not isinstance(recorded_delta, bool)
+                    and math.isfinite(float(recorded_delta)),
+                    f"{path}: {label}/{workload} comparison "
+                    "ax_vs_reference_tokens_pct must be finite",
+                )
+                expected_delta = (
+                    (float(ax_tokens_per_sec) - float(reference_tokens_per_sec))
+                    / float(reference_tokens_per_sec)
+                    * 100.0
+                )
+                require(
+                    math.isclose(
+                        float(recorded_delta),
+                        expected_delta,
+                        rel_tol=1e-9,
+                        abs_tol=1e-6,
+                    ),
+                    f"{path}: {label}/{workload} comparison "
+                    "ax_vs_reference_tokens_pct is inconsistent with "
+                    "the recorded medians",
                 )
             if is_fair:
                 # Short-query rows must carry latency metrics as primary.
@@ -318,18 +363,15 @@ def validate_rows(
                             f"{path}: {label}/{workload} primary_metric="
                             f"{primary!r} expected median_ms_per_item"
                         )
-                require(
-                    "median_tokens_per_sec" in ax,
-                    f"{path}: {label}/{workload} missing median_tokens_per_sec",
-                )
             else:
+                batch_p95_ms = ax.get("median_batch_p95_ms")
                 require(
-                    "median_tokens_per_sec" in ax,
-                    f"{path}: {label}/{workload} missing median_tokens_per_sec",
-                )
-                require(
-                    "median_batch_p95_ms" in ax,
-                    f"{path}: {label}/{workload} missing median_batch_p95_ms",
+                    isinstance(batch_p95_ms, (int, float))
+                    and not isinstance(batch_p95_ms, bool)
+                    and math.isfinite(float(batch_p95_ms))
+                    and float(batch_p95_ms) >= 0.0,
+                    f"{path}: {label}/{workload} ax_engine_py "
+                    "median_batch_p95_ms must be finite and non-negative",
                 )
     return warnings
 
@@ -406,8 +448,7 @@ def validate_artifact(
                 "historical rows"
             )
         warnings.append(
-            f"{path}: legacy schema {schema} accepted via --allow-legacy "
-            "(no runtime_identity)"
+            f"{path}: legacy schema {schema} accepted via --allow-legacy (no runtime_identity)"
         )
         # Still require git_commit when present for basic provenance.
         if not artifact.get("git_commit"):
@@ -416,9 +457,7 @@ def validate_artifact(
     if require_clean_tree:
         build = artifact.get("build") if isinstance(artifact.get("build"), dict) else {}
         if build.get("git_tracked_dirty"):
-            raise PublishGateError(
-                f"{path}: --require-clean-tree but build.git_tracked_dirty=true"
-            )
+            raise PublishGateError(f"{path}: --require-clean-tree but build.git_tracked_dirty=true")
 
     warnings.extend(validate_rows(artifact, path=path, claim=claim))
 
@@ -431,8 +470,7 @@ def validate_artifact(
         if claim == CLAIM_PAIRED:
             require(
                 artifact.get("trial_order") == "interleaved_alternating",
-                f"{path}: paired v2 publication requires "
-                "trial_order=interleaved_alternating",
+                f"{path}: paired v2 publication requires trial_order=interleaved_alternating",
             )
         require(
             isinstance(warmup, int) and warmup >= MIN_WARMUPS,
@@ -458,15 +496,9 @@ def validate_artifact(
             validate_benchmark_conditions(artifact, path=path)
     else:
         if isinstance(warmup, int) and warmup < MIN_WARMUPS:
-            warnings.append(
-                f"{path}: warmup={warmup} < {MIN_WARMUPS} "
-                "(publication convention)"
-            )
+            warnings.append(f"{path}: warmup={warmup} < {MIN_WARMUPS} (publication convention)")
         if isinstance(trials, int) and trials < MIN_TRIALS:
-            warnings.append(
-                f"{path}: trials={trials} < {MIN_TRIALS} "
-                "(publication convention)"
-            )
+            warnings.append(f"{path}: trials={trials} < {MIN_TRIALS} (publication convention)")
 
     return {
         "path": str(path),
