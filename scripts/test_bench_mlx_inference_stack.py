@@ -431,14 +431,30 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
     def test_collect_host_metadata_uses_supplied_performance_conditions(self) -> None:
         supplied = {"load_average": {"one_minute": 1.0}}
 
-        with patch.object(
-            bench,
-            "collect_performance_condition_metadata",
-            side_effect=AssertionError("should not resample"),
+        commands: list[list[str]] = []
+
+        def command_output(cmd: list[str]) -> None:
+            commands.append(cmd)
+            return None
+
+        with (
+            patch.object(
+                bench,
+                "collect_performance_condition_metadata",
+                side_effect=AssertionError("should not resample"),
+            ),
+            patch.object(bench, "_command_output", side_effect=command_output),
+            patch.object(bench, "_version_lines", return_value=None),
+            patch.object(bench, "_sysctl", return_value="unknown"),
+            patch.object(bench.subprocess, "check_output", return_value="unknown\n"),
         ):
             metadata = bench.collect_host_metadata(supplied)
 
         self.assertIs(metadata["performance_conditions"], supplied)
+        self.assertIn(
+            [sys.executable, "-c", "import mlx.core as mx; print(mx.__version__)"],
+            commands,
+        )
 
     def test_build_incomplete_output_marker_is_non_publication_candidate(self) -> None:
         marker = bench.build_incomplete_output_marker(
@@ -644,6 +660,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(len(row["discarded_warmup_trials"]), 1)
         self.assertEqual(len(row["trials"]), 2)
         cmd = run.call_args.args[0]
+        self.assertEqual(cmd[0], sys.executable)
         self.assertEqual(cmd[cmd.index("--num-trials") + 1], "3")
 
     def test_wait_for_server_returns_when_process_exits(self) -> None:

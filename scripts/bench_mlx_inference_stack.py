@@ -981,10 +981,10 @@ def collect_host_metadata(
     # The mlx_lm reference rows run on the Python mlx package, and the AX
     # server may link a pip-wheel libmlx rather than the Homebrew bottle, so
     # the Homebrew version alone is not the runtime identity. Record the
-    # version python3 actually imports (the same interpreter used to spawn
-    # `python3 -m mlx_lm.benchmark`).
+    # version the benchmark interpreter actually imports (the same interpreter
+    # used to spawn `python -m mlx_lm.benchmark`).
     python_mlx_version = _command_output(
-        ["python3", "-c", "import mlx.core as mx; print(mx.__version__)"]
+        [sys.executable, "-c", "import mlx.core as mx; print(mx.__version__)"]
     )
     if python_mlx_version:
         toolchain["python_mlx"] = python_mlx_version
@@ -2536,7 +2536,7 @@ def run_mlx_lm_benchmark(
         generation_tokens=generation_tokens,
     )
     cmd = [
-        "python3",
+        sys.executable,
         "-m",
         "mlx_lm.benchmark",
         "--model",
