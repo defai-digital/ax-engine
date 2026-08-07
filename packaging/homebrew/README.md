@@ -24,10 +24,13 @@ bytes into staging without changing either dylib's load commands. Production
 signing then replaces the dylibs' upstream ad-hoc signatures with the AX
 Developer ID signature required by hardened-runtime library validation. The
 release manifest records the before-signing upstream digests and final packaged
-digests separately. Homebrew must not rewrite the signed Mach-O files. It
-places the bundled runtime in the formula-private `libexec/` directory so a
-separately installed `mlx` formula cannot collide with AX Engine's pinned
-dylibs.
+digests separately. Homebrew must not rewrite the signed Mach-O files. The
+formula's `preserve_rpath` directive prevents Homebrew's formula installer from
+changing the `@rpath` dylib IDs to Cellar paths and replacing the Developer ID
+signatures with ad-hoc signatures. Installing under `libexec/` alone does not
+prevent that rewrite. The formula places the bundled runtime in its private
+`libexec/` directory so a separately installed `mlx` formula cannot collide
+with AX Engine's pinned dylibs.
 
 The standalone archive keeps binaries and runtime files colocated for
 backward-compatible direct extraction. Its two relative rpaths support both
@@ -46,10 +49,11 @@ The legacy `scripts/brew-release.sh` preview delegates to the canonical
 publisher. `.github/workflows/brew-release.yml` fails if the tap formula is
 missing:
 
+- `preserve_rpath`
 - `libexec.install "libmlx.dylib", "libjaccl.dylib", "mlx.metallib"`
 - `doc.install "MLX-LICENSE.txt"`
 
-The workflow also fails if obsolete install-time relinking or tap-local MLX
-dependencies return.
+The workflow also fails if `preserve_rpath` is disabled, or if obsolete
+install-time relinking or tap-local MLX dependencies return.
 
 When changing install logic, update both this mirror and the tap formula.

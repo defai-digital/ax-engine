@@ -9,6 +9,11 @@ class AxEngine < Formula
   depends_on arch: :arm64
   depends_on :macos
 
+  # Homebrew otherwise rewrites @rpath dylib IDs to opt-prefix paths during
+  # formula installation and replaces our Developer ID signatures with ad-hoc
+  # signatures. Preserve the signed load commands from the release archive.
+  preserve_rpath
+
   def install
     bin.install "ax-engine",
                 "ax-engine-server",

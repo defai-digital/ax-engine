@@ -299,6 +299,10 @@ jobs:
 
           # Fail closed on the self-contained bin/libexec install contract. Homebrew
           # must preserve the signed binaries instead of rewriting them.
+          if [[ "$(grep -Ec '^[[:space:]]*preserve_rpath[[:space:]]*$' "$FORMULA_PATH" || true)" -ne 1 ]]; then
+            echo "error: formula must enable preserve_rpath exactly once" >&2
+            exit 1
+          fi
           for required in \
             'libexec.install "libmlx.dylib", "libjaccl.dylib", "mlx.metallib"' \
             'doc.install "MLX-LICENSE.txt"' \
@@ -311,6 +315,7 @@ jobs:
           for forbidden in \
             'relink_release_binaries_to_tap_mlx!' \
             'change_install_name' \
+            'preserve_rpath value: false' \
             'defai-digital/ax-engine/mlx-c' \
             'defai-digital/ax-engine/mlx"'; do
             if grep -qF "$forbidden" "$FORMULA_PATH"; then

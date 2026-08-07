@@ -11,6 +11,7 @@ WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 NATIVE_DEPS_SCRIPT = ROOT / "scripts" / "install-native-build-deps.sh"
 PUBLISH_SCRIPT = ROOT / "scripts" / "publish-github-release.sh"
 RUST_TOOLCHAIN = ROOT / "rust-toolchain.toml"
+HOMEBREW_FORMULA = ROOT / "packaging" / "homebrew" / "Formula" / "ax-engine.rb"
 
 
 class CiWorkflowPolicyTests(unittest.TestCase):
@@ -122,6 +123,15 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("git pull --rebase origin main", brew)
         self.assertIn("git push origin HEAD:main", brew)
         self.assertIn("brew install defai-digital/tap/ax-engine", brew)
+        self.assertIn("formula must enable preserve_rpath exactly once", brew)
+        self.assertIn("'preserve_rpath value: false'", brew)
+
+        formula = HOMEBREW_FORMULA.read_text()
+        self.assertEqual(
+            ["  preserve_rpath"],
+            [line for line in formula.splitlines() if line.strip() == "preserve_rpath"],
+            "the formula must prevent Homebrew from invalidating signed @rpath dylib IDs",
+        )
 
         ci = workflow_texts["ci.yml"]
         for job_name in (
