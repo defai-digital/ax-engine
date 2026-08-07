@@ -433,8 +433,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         commands: list[list[str]] = []
 
-        def command_output(cmd: list[str]) -> None:
+        def command_output(cmd: list[str]) -> str | None:
             commands.append(cmd)
+            if "mx.__version__" in cmd[-1]:
+                return "0.32.0"
+            if "m.version('mlx-lm')" in cmd[-1]:
+                return "0.31.3"
             return None
 
         with (
@@ -455,6 +459,16 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             [sys.executable, "-c", "import mlx.core as mx; print(mx.__version__)"],
             commands,
         )
+        self.assertIn(
+            [
+                sys.executable,
+                "-c",
+                "import importlib.metadata as m; print(m.version('mlx-lm'))",
+            ],
+            commands,
+        )
+        self.assertEqual(metadata["toolchain"]["python_mlx"], "0.32.0")
+        self.assertEqual(metadata["toolchain"]["python_mlx_lm"], "0.31.3")
 
     def test_build_incomplete_output_marker_is_non_publication_candidate(self) -> None:
         marker = bench.build_incomplete_output_marker(

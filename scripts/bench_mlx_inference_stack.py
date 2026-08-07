@@ -988,6 +988,15 @@ def collect_host_metadata(
     )
     if python_mlx_version:
         toolchain["python_mlx"] = python_mlx_version
+    python_mlx_lm_version = _command_output(
+        [
+            sys.executable,
+            "-c",
+            "import importlib.metadata as m; print(m.version('mlx-lm'))",
+        ]
+    )
+    if python_mlx_lm_version:
+        toolchain["python_mlx_lm"] = python_mlx_lm_version
     if toolchain:
         metadata["toolchain"] = toolchain
     if performance_conditions is None:
