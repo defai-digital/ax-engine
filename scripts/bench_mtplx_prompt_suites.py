@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import platform
 import statistics
@@ -27,15 +28,48 @@ from mtplx.runtime import load
 from mtplx.sampling import SamplerConfig
 from mtplx.version import __version__ as MTPLX_VERSION
 
-
 DEFAULT_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
 
 
-def git_value(args: list[str]) -> str | None:
+def git_value(args: list[str], *, cwd: Path | None = None) -> str | None:
     try:
-        return subprocess.check_output(["git", *args], text=True).strip()
+        return subprocess.check_output(
+            ["git", *args],
+            cwd=cwd,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
     except Exception:
         return None
+
+
+def collect_build_metadata(source_dir: Path | None) -> dict[str, Any]:
+    if source_dir is not None:
+        resolved_source = source_dir.resolve()
+    else:
+        module_dir = Path(inspect.getfile(load)).resolve().parent
+        discovered_root = git_value(
+            ["rev-parse", "--show-toplevel"],
+            cwd=module_dir,
+        )
+        resolved_source = (
+            Path(discovered_root).resolve()
+            if discovered_root is not None
+            else module_dir
+        )
+    tracked_status = git_value(
+        ["status", "--porcelain", "--untracked-files=no"],
+        cwd=resolved_source,
+    )
+    return {
+        "host": platform.node(),
+        "platform": platform.platform(),
+        "source_dir": str(resolved_source),
+        "git_commit": git_value(["rev-parse", "HEAD"], cwd=resolved_source),
+        "git_tracked_dirty": (
+            bool(tracked_status) if tracked_status is not None else None
+        ),
+    }
 
 
 def file_sha256(path: Path) -> str:
@@ -312,12 +346,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "disable_thinking": bool(args.disable_thinking),
         "allow_unverified_model": bool(args.allow_unverified_model),
         "draft_lm_head": draft_lm_head_report,
-        "build": {
-            "host": platform.node(),
-            "platform": platform.platform(),
-            "git_commit": git_value(["rev-parse", "HEAD"]),
-            "git_tracked_dirty": bool(git_value(["status", "--porcelain"])),
-        },
+        "build": collect_build_metadata(args.source_dir),
         "results": case_results,
         "summary": {
             **summarize_runs(measured_runs),
@@ -331,6 +360,14 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--source-dir",
+        type=Path,
+        help=(
+            "MTPLX source checkout used by this runner. Build provenance is "
+            "collected from this checkout rather than the harness working tree."
+        ),
+    )
     parser.add_argument("--suite", required=True)
     parser.add_argument("--prompts", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

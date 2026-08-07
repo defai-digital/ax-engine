@@ -754,6 +754,8 @@ def mtplx_command(args: argparse.Namespace, target: Target, suite: str, output: 
         "cyankiwi",
         "--disable-thinking",
         "--allow-unverified-model",
+        "--source-dir",
+        str(args.mtplx_source),
     ]
     if policy := MTPLX_QUANT_POLICIES.get(target.key):
         cmd.extend(["--mtp-quant-policy", policy])

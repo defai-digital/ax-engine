@@ -414,6 +414,10 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         assert cmd is not None
         self.assertEqual(cmd[cmd.index("--model") + 1], "ax-local/Qwen3.6-27B-MTP")
         self.assertIn("--allow-unverified-model", cmd)
+        self.assertEqual(
+            cmd[cmd.index("--source-dir") + 1],
+            str(args.mtplx_source),
+        )
         self.assertIn("--ignore-eos", cmd)
         self.assertEqual(cmd[cmd.index("--mtp-quant-mode") + 1], "cyankiwi")
         self.assertNotIn("--mtp-quant-policy", cmd)
