@@ -54,6 +54,7 @@ DEFAULT_REQUIRED_GGUF_PUBLISHER = "unsloth"
 DEFAULT_REQUIRED_MLX_PUBLISHER = "mlx-community"
 DEFAULT_MAX_LOAD_AVERAGE = 2.0
 DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT = 50.0
+DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS = 900.0
 README_PUBLICATION_MODEL_COUNT = 12
 LLAMA_CPP_PUBLICATION_MATRIX_SCHEMA = "ax.llama_cpp_metal_publication_matrix.v1"
 
@@ -472,6 +473,8 @@ def run_bench_for_row(
     include_mlx_lm: bool = False,
     max_load_average: float | None = DEFAULT_MAX_LOAD_AVERAGE,
     max_top_process_cpu_percent: float | None = DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+    load_average_wait_timeout: float | None = DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS,
+    load_average_poll_interval: float | None = None,
 ) -> dict[str, Any]:
     """Invoke bench_mlx_inference_stack.py for one GGUF-mapped README row.
 
@@ -534,6 +537,20 @@ def run_bench_for_row(
             [
                 "--max-top-process-cpu-percent",
                 str(max_top_process_cpu_percent),
+            ]
+        )
+    if load_average_wait_timeout is not None:
+        cmd.extend(
+            [
+                "--load-average-wait-timeout",
+                str(load_average_wait_timeout),
+            ]
+        )
+    if load_average_poll_interval is not None:
+        cmd.extend(
+            [
+                "--load-average-poll-interval",
+                str(load_average_poll_interval),
             ]
         )
     if llama_cpp_extra_args:
@@ -1099,6 +1116,22 @@ def main() -> None:
             "percentage before benchmark phases."
         ),
     )
+    parser.add_argument(
+        "--load-average-wait-timeout",
+        type=float,
+        default=DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS,
+        help=(
+            "Maximum seconds to wait for the publication performance gates "
+            "before failing a row. "
+            f"Default: {DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS:.0f}."
+        ),
+    )
+    parser.add_argument(
+        "--load-average-poll-interval",
+        type=float,
+        default=None,
+        help="Forwarded to the benchmark harness when a load gate is enabled.",
+    )
     parser.add_argument("--n-gpu-layers", type=int, default=99)
     parser.add_argument(
         "--extra-args",
@@ -1206,6 +1239,21 @@ def main() -> None:
         parser.error(
             "--max-top-process-cpu-percent must be finite and non-negative"
         )
+    if (
+        not math.isfinite(args.load_average_wait_timeout)
+        or args.load_average_wait_timeout < 0.0
+    ):
+        parser.error(
+            "--load-average-wait-timeout must be finite and non-negative"
+        )
+    if (
+        args.load_average_poll_interval is not None
+        and (
+            not math.isfinite(args.load_average_poll_interval)
+            or args.load_average_poll_interval <= 0.0
+        )
+    ):
+        parser.error("--load-average-poll-interval must be finite and positive")
 
     try:
         with args.manifest.open() as fh:
@@ -1338,6 +1386,8 @@ def main() -> None:
             include_mlx_lm=args.include_mlx_lm,
             max_load_average=args.max_load_average,
             max_top_process_cpu_percent=args.max_top_process_cpu_percent,
+            load_average_wait_timeout=args.load_average_wait_timeout,
+            load_average_poll_interval=args.load_average_poll_interval,
         )
         record.update(bench_result)
 
@@ -1375,6 +1425,8 @@ def main() -> None:
         "cooldown": args.cooldown,
         "max_load_average": args.max_load_average,
         "max_top_process_cpu_percent": args.max_top_process_cpu_percent,
+        "load_average_wait_timeout": args.load_average_wait_timeout,
+        "load_average_poll_interval": args.load_average_poll_interval,
         "n_gpu_layers": args.n_gpu_layers,
         "extra_args": args.extra_args,
         "llama_cpp_flash_attn": args.llama_cpp_flash_attn,

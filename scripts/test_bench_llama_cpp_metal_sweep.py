@@ -172,6 +172,10 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
             cmd[cmd.index("--max-top-process-cpu-percent") + 1],
             str(sweep.DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT),
         )
+        self.assertEqual(
+            cmd[cmd.index("--load-average-wait-timeout") + 1],
+            str(sweep.DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS),
+        )
         self.assertNotIn("--ax-compare-policies", cmd)
 
     def test_full_stack_runs_mlx_lm_and_both_ax_modes(self) -> None:
