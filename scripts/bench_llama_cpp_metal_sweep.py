@@ -796,7 +796,12 @@ def llama_result_doc_publication_reasons(
         reasons.append("generation_tokens_mismatch")
     if doc.get("repetitions") != repetitions:
         reasons.append("repetitions_mismatch")
-    if int(doc.get("warmup_repetitions", 0) or 0) < 2:
+    warmup_repetitions = doc.get("warmup_repetitions")
+    if (
+        not isinstance(warmup_repetitions, int)
+        or isinstance(warmup_repetitions, bool)
+        or warmup_repetitions < 2
+    ):
         reasons.append("requires_two_warmups")
     if doc.get("cooldown") != cooldown:
         reasons.append("cooldown_mismatch")

@@ -229,6 +229,24 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
 
         self.assertIn("p128_invalid_depth_trials", reasons)
 
+    def test_llama_result_publication_gate_rejects_malformed_warmup_count(
+        self,
+    ) -> None:
+        doc = self._publication_result_doc()
+        doc["warmup_repetitions"] = "five"
+
+        reasons, _ = sweep.llama_result_doc_publication_reasons(
+            doc,
+            expected_prompt_tokens={128, 512, 2048},
+            generation_tokens=128,
+            repetitions=5,
+            cooldown=15.0,
+            require_flash_attn=True,
+            require_decode_at_depth=True,
+        )
+
+        self.assertIn("requires_two_warmups", reasons)
+
     def test_llama_publication_matrix_rejects_duplicate_sweep_row(self) -> None:
         manifest_rows = [
             {"slug": f"model-{index}"}

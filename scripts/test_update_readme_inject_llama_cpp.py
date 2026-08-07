@@ -117,6 +117,7 @@ class InjectorTests(unittest.TestCase):
             "readme_llama_cpp_publication_candidate": True,
             "llama_cpp_publication_matrix": {
                 "schema_version": inj.LLAMA_CPP_PUBLICATION_MATRIX_SCHEMA,
+                "scope": "readme_llama_cpp_metal_snapshot",
                 "expected_slugs": slugs,
                 "expected_model_count": len(slugs),
                 "publication_model_count": len(slugs),

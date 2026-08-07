@@ -95,6 +95,7 @@ def require_publication_sweep(sweep_doc: dict[str, Any]) -> None:
     } if isinstance(models, list) else set()
     if (
         matrix.get("schema_version") != LLAMA_CPP_PUBLICATION_MATRIX_SCHEMA
+        or matrix.get("scope") != "readme_llama_cpp_metal_snapshot"
         or sweep_doc.get("publication_candidate") is not True
         or sweep_doc.get("readme_llama_cpp_publication_candidate") is not True
         or matrix.get("publication_candidate") is not True
@@ -104,12 +105,21 @@ def require_publication_sweep(sweep_doc: dict[str, Any]) -> None:
         or len(expected_slugs) != len(expected_slug_set)
         or matrix.get("expected_model_count") != len(expected_slug_set)
         or matrix.get("publication_model_count") != len(expected_slug_set)
+        or not isinstance(models, list)
+        or len(models) != len(expected_slug_set)
+        or any(
+            not isinstance(model, dict)
+            or model.get("publication_candidate") is not True
+            or model.get("publication_reasons") != []
+            for model in models
+        )
         or observed_model_slugs != expected_slug_set
         or not isinstance(identity, dict)
         or not isinstance(identity.get("build_number"), int)
+        or isinstance(identity.get("build_number"), bool)
         or identity.get("build_number", 0) <= 0
         or not isinstance(identity.get("build_commit"), str)
-        or not identity["build_commit"]
+        or re.fullmatch(r"[0-9a-f]{7,40}", identity["build_commit"]) is None
         or not isinstance(identity.get("gpu_info"), str)
         or "Apple" not in identity["gpu_info"]
     ):
