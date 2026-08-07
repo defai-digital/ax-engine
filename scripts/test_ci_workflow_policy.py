@@ -120,6 +120,10 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("obsolete MLX relinking", brew)
         self.assertIn("packaging/homebrew/Formula/ax-engine.rb?ref=${TOOLING_SHA}", brew)
         self.assertIn("TAP_REPO: defai-digital/homebrew-tap", brew)
+        self.assertIn(
+            "TAP_PUSH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.TAP_TOKEN }}",
+            brew,
+        )
         self.assertIn("git pull --rebase origin main", brew)
         self.assertIn("git push origin HEAD:main", brew)
         self.assertIn("brew install defai-digital/tap/ax-engine", brew)
