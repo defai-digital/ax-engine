@@ -1158,9 +1158,11 @@ def evaluate_baseline_stability(
 ) -> list[str]:
     """Flag a baseline that is still climbing instead of treating it as a reference.
 
-    The first and last quartiles are summarized independently so a brief allocator
-    step does not become a false drift signal.  This is deliberately a watch
-    condition: it says the run needs investigation, not that a warm cache is a leak.
+    The first and last quartiles establish material growth, while a separate
+    latter-half slope establishes that the baseline is still rising.  This
+    avoids mistaking a one-time warm-cache allocation for ongoing drift.  It is
+    deliberately a watch condition: it says the run needs investigation, not
+    that a warm cache is a leak.
     """
     baseline_samples = [
         sample
@@ -1184,7 +1186,8 @@ def evaluate_baseline_stability(
         endpoint_count = max(1, len(points) // 4)
         initial = percentile([value for _elapsed, value in points[:endpoint_count]], 0.50)
         current = percentile([value for _elapsed, value in points[-endpoint_count:]], 0.50)
-        slope = _bytes_slope_to_mib(linear_slope_per_hour(points))
+        latter_half = points[len(points) // 2 :]
+        slope = _bytes_slope_to_mib(linear_slope_per_hour(latter_half))
         if initial is None or current is None:
             continue
         growth_mib = (current - initial) / MEBIBYTE

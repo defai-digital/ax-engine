@@ -63,9 +63,10 @@ Warm-up prompts use a disjoint nonce range, so the first measured requests
 cannot obtain a false cache hit from warm-up. The first four hours form the
 baseline; no performance regression decision is made until that baseline is
 complete and it has sufficient same-shape measurements. The runner also checks
-whether the first and last quartiles of the baseline are still rising. A
-baseline that climbs by at least 1 GiB while its slope remains at least 256
-MiB/hour is a `watch`, rather than a reference that could hide a leak.
+whether the first and last quartiles show material growth *and* the latter
+half is still rising. A baseline that climbs by at least 1 GiB while its
+latter-half slope remains at least 256 MiB/hour is a `watch`, rather than a
+reference that could hide a leak.
 
 ## Execution gates
 

@@ -232,12 +232,12 @@ class AxqEnduranceTests(unittest.TestCase):
                 "host": {},
                 "metrics": {"values": {}},
             }
-            for hour in range(4)
+            for hour in range(8)
         ]
 
         alerts = runner.evaluate_baseline_stability(
             samples=samples,
-            baseline_s=3 * 3600.0,
+            baseline_s=7 * 3600.0,
             baseline_growth_mib=1_024.0,
             max_slope_mib_per_hour=256.0,
             max_swap_growth_mib=512.0,
@@ -245,6 +245,29 @@ class AxqEnduranceTests(unittest.TestCase):
 
         self.assertEqual(len(alerts), 1)
         self.assertIn("baseline did not settle", alerts[0])
+
+    def test_baseline_stability_allows_an_early_warm_cache_step_that_settles(self) -> None:
+        samples = [
+            {
+                "elapsed_seconds": float(hour * 3600),
+                "process": {
+                    "rss_bytes": (1_000 if hour < 2 else 2_500) * runner.MEBIBYTE,
+                },
+                "host": {},
+                "metrics": {"values": {}},
+            }
+            for hour in range(8)
+        ]
+
+        alerts = runner.evaluate_baseline_stability(
+            samples=samples,
+            baseline_s=7 * 3600.0,
+            baseline_growth_mib=1_024.0,
+            max_slope_mib_per_hour=256.0,
+            max_swap_growth_mib=512.0,
+        )
+
+        self.assertEqual(alerts, [])
 
     def test_swap_growth_has_a_tighter_host_safety_guardrail(self) -> None:
         analysis = {
