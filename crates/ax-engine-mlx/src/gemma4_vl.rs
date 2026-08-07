@@ -204,6 +204,7 @@ pub fn load_gemma4_vl_vision_weights(
     config_json: Option<&Value>,
 ) -> Result<Option<Gemma4VlVisionWeights>, WeightLoadError> {
     let Some(vision_prefix) = find_prefix(
+        specs,
         name_map,
         &[
             "vision_tower.patch_embedder.input_proj.weight",
@@ -343,13 +344,16 @@ pub fn load_gemma4_vl_vision_weights(
 }
 
 fn find_prefix<'a>(
+    specs: &[NativeTensorSpec],
     name_map: &HashMap<String, MlxArray>,
     candidates: &[&'a str],
     suffix: &str,
 ) -> Option<&'a str> {
     candidates
         .iter()
-        .find(|candidate| name_map.contains_key(**candidate))
+        .find(|candidate| {
+            name_map.contains_key(**candidate) && specs.iter().any(|spec| spec.name == **candidate)
+        })
         .and_then(|candidate| candidate.strip_suffix(suffix))
 }
 
@@ -1117,6 +1121,23 @@ mod tests {
         assert_eq!(parsed.language_hidden_size, 1536);
         assert!(parsed.use_clipped_linears);
         assert!(!parsed.standardize);
+    }
+
+    #[test]
+    fn stale_text_manifest_does_not_trigger_vision_loading() {
+        let mut name_map = HashMap::from([(
+            "vision_tower.patch_embedder.input_proj.weight".to_string(),
+            MlxArray::from_f32_slice(&[1.0]),
+        )]);
+
+        let loaded = load_gemma4_vl_vision_weights(&[], &mut name_map, None)
+            .expect("undeclared tower tensors should be ignored for text-only compatibility");
+
+        assert!(loaded.is_none());
+        assert!(
+            name_map.contains_key("vision_tower.patch_embedder.input_proj.weight"),
+            "skipped tower data must remain untouched"
+        );
     }
 
     #[test]
