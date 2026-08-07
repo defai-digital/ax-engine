@@ -42,6 +42,7 @@ SLUG_TO_README = {
 
 LLAMA_HEADER_CELL = "llama.cpp Metal*"
 LLAMA_SEPARATOR_CELL = "---:"
+LLAMA_CPP_PUBLICATION_MATRIX_SCHEMA = "ax.llama_cpp_metal_publication_matrix.v1"
 
 DISCLAIMER_MARK = "<!-- llama-cpp-column-disclaimer -->"
 DISCLAIMER_PARAGRAPH = (
@@ -78,6 +79,45 @@ def fmt_num(val: float | None) -> str:
     return f"{val:.1f}"
 
 
+def require_publication_sweep(sweep_doc: dict[str, Any]) -> None:
+    matrix = sweep_doc.get("llama_cpp_publication_matrix")
+    if not isinstance(matrix, dict):
+        raise RuntimeError("llama.cpp sweep is missing its publication matrix")
+    expected_slugs = matrix.get("expected_slugs")
+    models = matrix.get("models")
+    identity = matrix.get("llama_cpp_identity")
+    expected_slug_set = set(SLUG_TO_README)
+    observed_model_slugs = {
+        model.get("slug")
+        for model in models
+        if isinstance(model, dict)
+        and model.get("publication_candidate") is True
+    } if isinstance(models, list) else set()
+    if (
+        matrix.get("schema_version") != LLAMA_CPP_PUBLICATION_MATRIX_SCHEMA
+        or sweep_doc.get("publication_candidate") is not True
+        or sweep_doc.get("readme_llama_cpp_publication_candidate") is not True
+        or matrix.get("publication_candidate") is not True
+        or matrix.get("publication_reasons") != []
+        or not isinstance(expected_slugs, list)
+        or set(expected_slugs) != expected_slug_set
+        or len(expected_slugs) != len(expected_slug_set)
+        or matrix.get("expected_model_count") != len(expected_slug_set)
+        or matrix.get("publication_model_count") != len(expected_slug_set)
+        or observed_model_slugs != expected_slug_set
+        or not isinstance(identity, dict)
+        or not isinstance(identity.get("build_number"), int)
+        or identity.get("build_number", 0) <= 0
+        or not isinstance(identity.get("build_commit"), str)
+        or not identity["build_commit"]
+        or not isinstance(identity.get("gpu_info"), str)
+        or "Apple" not in identity["gpu_info"]
+    ):
+        raise RuntimeError(
+            "llama.cpp sweep is not a complete README publication candidate"
+        )
+
+
 def build_llama_lookup(sweep_doc: dict[str, Any]) -> dict[tuple[str, str, int], dict[str, float]]:
     """Return {(model_name, quant, prompt_tokens): {prefill, decode, ttft}}."""
     out: dict[tuple[str, str, int], dict[str, float]] = {}
@@ -97,7 +137,11 @@ def build_llama_lookup(sweep_doc: dict[str, Any]) -> dict[tuple[str, str, int], 
             pt = int(cell["prompt_tokens"])
             prefill = cell["prefill_tok_s"].get("median")
             decode_source = cell.get("decode_at_depth_tok_s")
-            decode_metric = decode_source if isinstance(decode_source, dict) else cell["decode_tok_s"]
+            decode_metric = (
+                decode_source
+                if isinstance(decode_source, dict)
+                else cell["decode_tok_s"]
+            )
             decode = decode_metric.get("median")
             ttft_raw = cell.get("ttft_ms")
             ttft = ttft_raw.get("median") if isinstance(ttft_raw, dict) else None
@@ -187,13 +231,13 @@ def _strip_existing_llama_column(cells: list[str]) -> tuple[list[str], bool]:
     position, remove it. Returns (new_cells, was_present)."""
     if len(cells) > _LLAMA_COL_INDEX:
         candidate = cells[_LLAMA_COL_INDEX].strip()
-        if candidate == LLAMA_HEADER_CELL or candidate == LLAMA_SEPARATOR_CELL:
+        if candidate in (LLAMA_HEADER_CELL, LLAMA_SEPARATOR_CELL):
             return cells[:_LLAMA_COL_INDEX] + cells[_LLAMA_COL_INDEX + 1:], True
     # Also accept the legacy trailing position so previously-appended columns
     # get migrated to the new canonical slot.
     if cells:
         last = cells[-1].strip()
-        if last == LLAMA_HEADER_CELL or last == LLAMA_SEPARATOR_CELL:
+        if last in (LLAMA_HEADER_CELL, LLAMA_SEPARATOR_CELL):
             return cells[:-1], True
     return cells, False
 
@@ -241,7 +285,10 @@ def inject_column(
             if _HEADER_RE.match(row):
                 cells = _split_cells(row)
                 # Detect both canonical-position and legacy-trailing leftovers.
-                if len(cells) > _LLAMA_COL_INDEX and cells[_LLAMA_COL_INDEX].strip() == LLAMA_HEADER_CELL:
+                if (
+                    len(cells) > _LLAMA_COL_INDEX
+                    and cells[_LLAMA_COL_INDEX].strip() == LLAMA_HEADER_CELL
+                ):
                     cells = cells[:_LLAMA_COL_INDEX] + cells[_LLAMA_COL_INDEX + 1:]
                     strip_position = _LLAMA_COL_INDEX
                 elif cells and cells[-1].strip() == LLAMA_HEADER_CELL:
@@ -312,6 +359,7 @@ def main() -> None:
     args = parser.parse_args()
 
     sweep_doc = json.loads(args.sweep.read_text())
+    require_publication_sweep(sweep_doc)
     original = args.readme.read_text()
     updated, stats = apply(original, sweep_doc)
 

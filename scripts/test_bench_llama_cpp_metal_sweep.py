@@ -25,6 +25,90 @@ sys.modules["bench_llama_cpp_metal_sweep"] = sweep
 
 
 class BenchLlamaCppMetalSweepTests(unittest.TestCase):
+    @staticmethod
+    def _publication_conditions() -> dict[str, object]:
+        return {
+            "load_average": {"one_minute": 0.5},
+            "power_source": "AC Power",
+            "thermal_warning_recorded": False,
+            "performance_warning_recorded": False,
+            "cpu_power_status_recorded": False,
+            "top_processes_cpu": [{"pid": 1, "cpu_percent": 0.1}],
+        }
+
+    @classmethod
+    def _publication_result_doc(cls) -> dict[str, object]:
+        conditions = cls._publication_conditions()
+        rows = []
+        for prompt_tokens in (128, 512, 2048):
+            rows.append(
+                {
+                    "engine": "llama_cpp_metal",
+                    "prompt_tokens": prompt_tokens,
+                    "generation_tokens": 128,
+                    "prompt_token_ids_sha256": f"{prompt_tokens:064x}",
+                    "prefill_tok_s": {"median": 1000.0},
+                    "decode_tok_s": {"median": 50.0},
+                    "ttft_ms": {"median": 10.0},
+                    "prefill_trials": [
+                        {
+                            "trial": trial,
+                            "prefill_tok_s": 1000.0,
+                            "sample_ns": 1_000_000,
+                        }
+                        for trial in range(1, 6)
+                    ],
+                    "decode_trials": [
+                        {
+                            "trial": trial,
+                            "decode_tok_s": 50.0,
+                            "sample_ns": 1_000_000,
+                        }
+                        for trial in range(1, 6)
+                    ],
+                    "decode_at_depth_tok_s": {"median": 49.0},
+                    "decode_at_depth_trials": [
+                        {
+                            "trial": trial,
+                            "decode_at_depth_tok_s": 49.0,
+                            "sample_ns": 1_000_000,
+                        }
+                        for trial in range(1, 6)
+                    ],
+                    "llama_cpp": {
+                        "build_number": 10050,
+                        "build_commit": "abcdef123",
+                        "backends": "BLAS, MTL",
+                        "gpu_info": "Apple M5 Max",
+                        "flash_attn": 1,
+                    },
+                    "llama_cpp_depth": {
+                        "build_number": 10050,
+                        "build_commit": "abcdef123",
+                        "gpu_info": "Apple M5 Max",
+                        "n_depth": prompt_tokens,
+                        "flash_attn": 1,
+                    },
+                }
+            )
+        return {
+            "schema_version": "ax.mlx_inference_stack.v2",
+            "generation_tokens": 128,
+            "repetitions": 5,
+            "warmup_repetitions": 2,
+            "cooldown": 15.0,
+            "build": {
+                "commit": "a" * 40,
+                "build_profile": "release",
+                "git_tracked_dirty": False,
+            },
+            "benchmark_window": {
+                "performance_conditions_start": conditions,
+                "performance_conditions_end": conditions,
+            },
+            "results": rows,
+        }
+
     def _run_one(
         self,
         *,
@@ -80,6 +164,14 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
         self.assertIn("--skip-mlx-lm", cmd)
         self.assertIn("--skip-ax-engine", cmd)
         self.assertIn("--no-build-ax-engine", cmd)
+        self.assertEqual(
+            cmd[cmd.index("--max-load-average") + 1],
+            str(sweep.DEFAULT_MAX_LOAD_AVERAGE),
+        )
+        self.assertEqual(
+            cmd[cmd.index("--max-top-process-cpu-percent") + 1],
+            str(sweep.DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT),
+        )
         self.assertNotIn("--ax-compare-policies", cmd)
 
     def test_full_stack_runs_mlx_lm_and_both_ax_modes(self) -> None:
@@ -100,6 +192,76 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
         self.assertIn("--llama-cpp-extra-args", cmd)
         forwarded = cmd[cmd.index("--llama-cpp-extra-args") + 1]
         self.assertEqual(forwarded, "-fa 1 -ctk q8_0")
+
+    def test_llama_result_publication_gate_accepts_complete_matrix(self) -> None:
+        reasons, identities = sweep.llama_result_doc_publication_reasons(
+            self._publication_result_doc(),
+            expected_prompt_tokens={128, 512, 2048},
+            generation_tokens=128,
+            repetitions=5,
+            cooldown=15.0,
+            require_flash_attn=True,
+            require_decode_at_depth=True,
+        )
+
+        self.assertEqual(reasons, [])
+        self.assertEqual(identities, {(10050, "abcdef123", "Apple M5 Max")})
+
+    def test_llama_result_publication_gate_rejects_bad_depth_trial(self) -> None:
+        doc = self._publication_result_doc()
+        results = doc["results"]
+        assert isinstance(results, list)
+        first = results[0]
+        assert isinstance(first, dict)
+        depth_trials = first["decode_at_depth_trials"]
+        assert isinstance(depth_trials, list)
+        depth_trials[0]["decode_at_depth_tok_s"] = 0.0
+
+        reasons, _ = sweep.llama_result_doc_publication_reasons(
+            doc,
+            expected_prompt_tokens={128, 512, 2048},
+            generation_tokens=128,
+            repetitions=5,
+            cooldown=15.0,
+            require_flash_attn=True,
+            require_decode_at_depth=True,
+        )
+
+        self.assertIn("p128_invalid_depth_trials", reasons)
+
+    def test_llama_publication_matrix_rejects_duplicate_sweep_row(self) -> None:
+        manifest_rows = [
+            {"slug": f"model-{index}"}
+            for index in range(sweep.README_PUBLICATION_MODEL_COUNT)
+        ]
+        result_doc = self._publication_result_doc()
+        summary_rows = [
+            {"slug": row["slug"], "status": "ok", "result_doc": result_doc}
+            for row in manifest_rows
+        ]
+        summary_rows.append(summary_rows[0])
+
+        matrix = sweep.build_llama_publication_matrix(
+            manifest_rows=manifest_rows,
+            summary_rows=summary_rows,
+            prompt_tokens="128,512,2048",
+            generation_tokens=128,
+            repetitions=5,
+            cooldown=15.0,
+            require_flash_attn=True,
+            require_decode_at_depth=True,
+            max_load_average=sweep.DEFAULT_MAX_LOAD_AVERAGE,
+            max_top_process_cpu_percent=(
+                sweep.DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT
+            ),
+            full_scope=True,
+        )
+
+        self.assertFalse(matrix["publication_candidate"])
+        self.assertIn(
+            "model-0:missing_or_duplicate_sweep_row",
+            matrix["publication_reasons"],
+        )
 
     def test_filter_manifest_rows_returns_all_rows_without_filter(self) -> None:
         rows = [{"slug": "a"}, {"slug": "b"}]
@@ -174,9 +336,12 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
                 "--rows-filter",
                 "missing",
             ]
-            with patch.object(sys, "argv", argv), patch("sys.stdout", io.StringIO()):
-                with self.assertRaises(SystemExit) as caught:
-                    sweep.main()
+            with (
+                patch.object(sys, "argv", argv),
+                patch("sys.stdout", io.StringIO()),
+                self.assertRaises(SystemExit) as caught,
+            ):
+                sweep.main()
 
             self.assertEqual(caught.exception.code, 2)
             self.assertFalse(out_dir.exists())
@@ -312,15 +477,17 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
         self.assertIsNone(resolved)
 
     def test_download_gguf_cache_only_refuses_missing_shard(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(FileNotFoundError):
-                sweep.download_gguf(
-                    "unsloth/Qwen3.6-27B-GGUF",
-                    "Qwen3.6-27B-Q6_K.gguf",
-                    cache_dir=Path(tmp),
-                    hf_token=None,
-                    cache_only=True,
-                )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            self.assertRaises(FileNotFoundError),
+        ):
+            sweep.download_gguf(
+                "unsloth/Qwen3.6-27B-GGUF",
+                "Qwen3.6-27B-Q6_K.gguf",
+                cache_dir=Path(tmp),
+                hf_token=None,
+                cache_only=True,
+            )
 
     def test_full_stack_readme_update_refuses_partial_sweep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

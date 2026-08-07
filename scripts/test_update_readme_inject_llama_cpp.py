@@ -16,7 +16,14 @@ _spec.loader.exec_module(inj)  # type: ignore[union-attr]
 sys.modules["update_readme_inject_llama_cpp"] = inj
 
 
-def _row(slug: str, prefill_128: float, prefill_512: float, decode: float, ttft_128: float, ttft_512: float) -> dict:
+def _row(
+    slug: str,
+    prefill_128: float,
+    prefill_512: float,
+    decode: float,
+    ttft_128: float,
+    ttft_512: float,
+) -> dict:
     return {
         "slug": slug,
         "status": "ok",
@@ -103,6 +110,40 @@ class InjectorTests(unittest.TestCase):
         self.assertEqual(lookup[("Qwen 3.6 35B A3B", "4-bit", 512)]["decode"], 76.0)
         self.assertEqual(lookup[("Qwen 3.6 35B A3B", "4-bit", 512)]["ttft"], 204.0)
 
+    def test_publication_gate_accepts_complete_sweep(self) -> None:
+        slugs = list(inj.SLUG_TO_README)
+        doc = {
+            "publication_candidate": True,
+            "readme_llama_cpp_publication_candidate": True,
+            "llama_cpp_publication_matrix": {
+                "schema_version": inj.LLAMA_CPP_PUBLICATION_MATRIX_SCHEMA,
+                "expected_slugs": slugs,
+                "expected_model_count": len(slugs),
+                "publication_model_count": len(slugs),
+                "publication_candidate": True,
+                "publication_reasons": [],
+                "llama_cpp_identity": {
+                    "build_number": 10050,
+                    "build_commit": "abcdef123",
+                    "gpu_info": "Apple M5 Max",
+                },
+                "models": [
+                    {
+                        "slug": slug,
+                        "publication_candidate": True,
+                        "publication_reasons": [],
+                    }
+                    for slug in slugs
+                ],
+            },
+        }
+
+        inj.require_publication_sweep(doc)
+
+    def test_publication_gate_rejects_partial_sweep(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "publication matrix"):
+            inj.require_publication_sweep({"rows": []})
+
     def test_lookup_accepts_qwen_gguf_quant_rows(self) -> None:
         doc = {
             "rows": [
@@ -150,7 +191,9 @@ class InjectorTests(unittest.TestCase):
         self.assertEqual(stats["rows_in_lookup"], 4)
         # Disclaimer present
         self.assertIn(inj.DISCLAIMER_MARK, out)
-        header_rows = [l for l in out.splitlines() if l.startswith("| Model |")]
+        header_rows = [
+            line for line in out.splitlines() if line.startswith("| Model |")
+        ]
         self.assertEqual(len(header_rows), 3)
         # llama.cpp column sits directly after 'Prompt tok' (canonical
         # position 3) so it is BEFORE mlx_lm.
@@ -176,7 +219,9 @@ class InjectorTests(unittest.TestCase):
         twice, stats2 = inj.apply(once, self.sweep_doc)
         self.assertEqual(once, twice)
         self.assertFalse(stats2["inserted_disclaimer"])
-        header_rows = [l for l in twice.splitlines() if l.startswith("| Model |")]
+        header_rows = [
+            line for line in twice.splitlines() if line.startswith("| Model |")
+        ]
         self.assertEqual(len(header_rows), 3)
         # Each header should have exactly one llama.cpp column, at index 3.
         for row in header_rows:
@@ -188,12 +233,24 @@ class InjectorTests(unittest.TestCase):
         """A README with the llama column at the end (legacy layout) should
         be migrated to the canonical pre-mlx_lm position on the next run."""
         legacy = SAMPLE_README.replace(
-            "| Model | MLX quantization | Prompt tok | mlx_lm | ax engine |\n|---|---|---:|---:|---:|\n| Gemma 4 E2B | 4-bit | 128 | 2,615.9 | 3,938.8 (+67.6%) |",
-            "| Model | MLX quantization | Prompt tok | mlx_lm | ax engine | llama.cpp Metal* |\n|---|---|---:|---:|---:| ---: |\n| Gemma 4 E2B | 4-bit | 128 | 2,615.9 | 3,938.8 (+67.6%) | 9999.9 |",
+            "| Model | MLX quantization | Prompt tok | mlx_lm | ax engine |\n"
+            "|---|---|---:|---:|---:|\n"
+            "| Gemma 4 E2B | 4-bit | 128 | 2,615.9 | 3,938.8 (+67.6%) |",
+            "| Model | MLX quantization | Prompt tok | mlx_lm | ax engine | "
+            "llama.cpp Metal* |\n"
+            "|---|---|---:|---:|---:| ---: |\n"
+            "| Gemma 4 E2B | 4-bit | 128 | 2,615.9 | "
+            "3,938.8 (+67.6%) | 9999.9 |",
             1,
         )
         out, _ = inj.apply(legacy, self.sweep_doc)
-        prefill_header = next(l for l in out.splitlines() if l.startswith("| Model |") and "ax engine" in l and "n-gram" not in l)
+        prefill_header = next(
+            line
+            for line in out.splitlines()
+            if line.startswith("| Model |")
+            and "ax engine" in line
+            and "n-gram" not in line
+        )
         stripped = [c.strip() for c in prefill_header.split("|")[1:-1]]
         self.assertEqual(stripped[3], inj.LLAMA_HEADER_CELL)
         # Old value (9999.9) must be gone; new value (3,500.0) must be present
@@ -205,7 +262,9 @@ class InjectorTests(unittest.TestCase):
         injected value must be the 512 entry for ('Gemma 4 E2B', '4-bit') and
         land at canonical position 3."""
         out, _ = inj.apply(SAMPLE_README, self.sweep_doc)
-        prefill_512_line = next(l for l in out.splitlines() if "8,378.7" in l)
+        prefill_512_line = next(
+            line for line in out.splitlines() if "8,378.7" in line
+        )
         stripped = [c.strip() for c in prefill_512_line.split("|")[1:-1]]
         self.assertEqual(stripped[3], "7,000.0")
         self.assertEqual(stripped[4], "8,378.7")  # mlx_lm column shifted right
@@ -213,7 +272,9 @@ class InjectorTests(unittest.TestCase):
     def test_apply_strips_standalone_section_if_present(self) -> None:
         readme_with_standalone = SAMPLE_README.replace(
             "### Embedding throughput\nfoo\n",
-            "### External GGUF baseline — llama.cpp Metal (shape-compatible, not prompt-hash parity)\n\nold content\n\n### Embedding throughput\nfoo\n",
+            "### External GGUF baseline — llama.cpp Metal "
+            "(shape-compatible, not prompt-hash parity)\n\n"
+            "old content\n\n### Embedding throughput\nfoo\n",
         )
         out, stats = inj.apply(readme_with_standalone, self.sweep_doc)
         self.assertTrue(stats["removed_standalone_section"])
@@ -225,7 +286,9 @@ class InjectorTests(unittest.TestCase):
         # position the n/a sits at index 3, before mlx_lm.
         partial = {"rows": [_row("gemma-4-e2b-it-4bit", 3500.0, 7000.0, 160.0, 36.0, 73.0)]}
         out, _ = inj.apply(SAMPLE_README, partial)
-        qwen_128_line = next(l for l in out.splitlines() if "968.2" in l)
+        qwen_128_line = next(
+            line for line in out.splitlines() if "968.2" in line
+        )
         stripped = [c.strip() for c in qwen_128_line.split("|")[1:-1]]
         self.assertEqual(stripped[3], "n/a")
         self.assertEqual(stripped[4], "968.2")
@@ -236,11 +299,15 @@ class InjectorTests(unittest.TestCase):
 
         out, _ = inj.apply(full, partial)
 
-        gemma_128_line = next(l for l in out.splitlines() if "2,615.9" in l)
+        gemma_128_line = next(
+            line for line in out.splitlines() if "2,615.9" in line
+        )
         gemma_128 = [c.strip() for c in gemma_128_line.split("|")[1:-1]]
         self.assertEqual(gemma_128[3], "3,600.0")
 
-        qwen_128_line = next(l for l in out.splitlines() if "968.2" in l)
+        qwen_128_line = next(
+            line for line in out.splitlines() if "968.2" in line
+        )
         qwen_128 = [c.strip() for c in qwen_128_line.split("|")[1:-1]]
         self.assertEqual(qwen_128[3], "1,800.0")
 

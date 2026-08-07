@@ -28,9 +28,12 @@ baselines only. See inventory.json for the full disclaimer.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,12 +41,21 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts import bench_mtp_6bit_ax_refresh as publication_gate
+except ModuleNotFoundError:
+    import bench_mtp_6bit_ax_refresh as publication_gate
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "benchmarks" / "manifests" / "llama_cpp_metal" / "inventory.json"
 DEFAULT_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
 DEFAULT_LLAMA_BENCH = Path("/opt/homebrew/bin/llama-bench")
 DEFAULT_REQUIRED_GGUF_PUBLISHER = "unsloth"
 DEFAULT_REQUIRED_MLX_PUBLISHER = "mlx-community"
+DEFAULT_MAX_LOAD_AVERAGE = 2.0
+DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT = 50.0
+README_PUBLICATION_MODEL_COUNT = 12
+LLAMA_CPP_PUBLICATION_MATRIX_SCHEMA = "ax.llama_cpp_metal_publication_matrix.v1"
 
 
 class LlamaCppMetalSweepError(RuntimeError):
@@ -277,7 +289,11 @@ def resolve_cached_hf_file(repo: str, filename_pattern: str, cache_dir: Path) ->
         (
             path
             for path in snapshot.rglob("*.gguf")
-            if fnmatch.fnmatch(path.name, filename_pattern) or fnmatch.fnmatch(str(path.relative_to(snapshot)), filename_pattern)
+            if fnmatch.fnmatch(path.name, filename_pattern)
+            or fnmatch.fnmatch(
+                str(path.relative_to(snapshot)),
+                filename_pattern,
+            )
         ),
         key=lambda path: gguf_candidate_sort_key(str(path.relative_to(snapshot))),
     )
@@ -428,10 +444,8 @@ def _delete_cached_repo(repo: str, cache_dir: Path) -> int:
     freed = 0
     for root, _dirs, files in os.walk(repo_dir, followlinks=False):
         for name in files:
-            try:
+            with contextlib.suppress(OSError):
                 freed += os.lstat(os.path.join(root, name)).st_size
-            except OSError:
-                pass
     shutil.rmtree(repo_dir, ignore_errors=True)
     return freed
 
@@ -456,6 +470,8 @@ def run_bench_for_row(
     build_ax_engine: bool,
     skip_mlx_lm: bool = False,
     include_mlx_lm: bool = False,
+    max_load_average: float | None = DEFAULT_MAX_LOAD_AVERAGE,
+    max_top_process_cpu_percent: float | None = DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
 ) -> dict[str, Any]:
     """Invoke bench_mlx_inference_stack.py for one GGUF-mapped README row.
 
@@ -494,7 +510,11 @@ def run_bench_for_row(
     ]
     llama_cpp_extra_args = extra_args
     if flash_attn:
-        llama_cpp_extra_args = "-fa 1" if not llama_cpp_extra_args else f"-fa 1 {llama_cpp_extra_args}"
+        llama_cpp_extra_args = (
+            "-fa 1"
+            if not llama_cpp_extra_args
+            else f"-fa 1 {llama_cpp_extra_args}"
+        )
     if decode_at_depth:
         cmd.append("--llama-cpp-decode-at-depth")
     if full_stack:
@@ -507,6 +527,15 @@ def run_bench_for_row(
         cmd.extend(["--skip-ax-engine", "--no-build-ax-engine"])
         if not include_mlx_lm:
             cmd.append("--skip-mlx-lm")
+    if max_load_average is not None:
+        cmd.extend(["--max-load-average", str(max_load_average)])
+    if max_top_process_cpu_percent is not None:
+        cmd.extend(
+            [
+                "--max-top-process-cpu-percent",
+                str(max_top_process_cpu_percent),
+            ]
+        )
     if llama_cpp_extra_args:
         cmd.extend(["--llama-cpp-extra-args", llama_cpp_extra_args])
 
@@ -701,6 +730,317 @@ def update_readme_from_sweep(
         check_readme_performance_tables(readme)
 
 
+def positive_metric_median(row: dict[str, Any], key: str) -> float | None:
+    metric = row.get(key)
+    value = metric.get("median") if isinstance(metric, dict) else None
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or float(value) <= 0.0
+    ):
+        return None
+    return float(value)
+
+
+def valid_positive_trials(
+    row: dict[str, Any],
+    *,
+    trials_key: str,
+    metric_key: str,
+    repetitions: int,
+) -> bool:
+    trials = row.get(trials_key)
+    if not isinstance(trials, list) or len(trials) != repetitions:
+        return False
+    observed_trials: set[int] = set()
+    for trial in trials:
+        if not isinstance(trial, dict):
+            return False
+        trial_number = trial.get("trial")
+        metric = trial.get(metric_key)
+        sample_ns = trial.get("sample_ns")
+        if (
+            not isinstance(trial_number, int)
+            or isinstance(trial_number, bool)
+            or trial_number in observed_trials
+            or not isinstance(metric, (int, float))
+            or isinstance(metric, bool)
+            or not math.isfinite(float(metric))
+            or float(metric) <= 0.0
+            or not isinstance(sample_ns, (int, float))
+            or isinstance(sample_ns, bool)
+            or not math.isfinite(float(sample_ns))
+            or float(sample_ns) <= 0.0
+        ):
+            return False
+        observed_trials.add(trial_number)
+    return observed_trials == set(range(1, repetitions + 1))
+
+
+def llama_result_doc_publication_reasons(
+    doc: dict[str, Any],
+    *,
+    expected_prompt_tokens: set[int],
+    generation_tokens: int,
+    repetitions: int,
+    cooldown: float,
+    require_flash_attn: bool,
+    require_decode_at_depth: bool,
+) -> tuple[list[str], set[tuple[int, str, str]]]:
+    reasons: list[str] = []
+    identities: set[tuple[int, str, str]] = set()
+    if doc.get("schema_version") != "ax.mlx_inference_stack.v2":
+        reasons.append("unexpected_artifact_schema")
+    if doc.get("generation_tokens") != generation_tokens:
+        reasons.append("generation_tokens_mismatch")
+    if doc.get("repetitions") != repetitions:
+        reasons.append("repetitions_mismatch")
+    if int(doc.get("warmup_repetitions", 0) or 0) < 2:
+        reasons.append("requires_two_warmups")
+    if doc.get("cooldown") != cooldown:
+        reasons.append("cooldown_mismatch")
+
+    build = doc.get("build")
+    commit = build.get("commit") if isinstance(build, dict) else None
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        reasons.append("missing_harness_build_commit")
+    if not isinstance(build, dict) or build.get("build_profile") != "release":
+        reasons.append("non_release_harness_build")
+    if not isinstance(build, dict) or build.get("git_tracked_dirty") is not False:
+        reasons.append("dirty_harness_build")
+    reasons.extend(publication_gate.publication_condition_reasons("llama", doc))
+
+    results = doc.get("results")
+    if not isinstance(results, list):
+        return [*reasons, "missing_results"], identities
+    observed_prompt_tokens: set[int] = set()
+    for row in results:
+        if not isinstance(row, dict) or row.get("engine") != "llama_cpp_metal":
+            reasons.append("unexpected_non_llama_result")
+            continue
+        prompt_tokens = row.get("prompt_tokens")
+        if (
+            not isinstance(prompt_tokens, int)
+            or isinstance(prompt_tokens, bool)
+            or prompt_tokens in observed_prompt_tokens
+        ):
+            reasons.append("invalid_or_duplicate_prompt_tokens")
+            continue
+        observed_prompt_tokens.add(prompt_tokens)
+        if row.get("generation_tokens") != generation_tokens:
+            reasons.append(f"p{prompt_tokens}_generation_tokens_mismatch")
+        prompt_hash = row.get("prompt_token_ids_sha256")
+        if not isinstance(prompt_hash, str) or re.fullmatch(
+            r"[0-9a-f]{64}", prompt_hash
+        ) is None:
+            reasons.append(f"p{prompt_tokens}_missing_prompt_hash")
+        for metric in ("prefill_tok_s", "decode_tok_s", "ttft_ms"):
+            if positive_metric_median(row, metric) is None:
+                reasons.append(f"p{prompt_tokens}_invalid_{metric}")
+        if not valid_positive_trials(
+            row,
+            trials_key="prefill_trials",
+            metric_key="prefill_tok_s",
+            repetitions=repetitions,
+        ):
+            reasons.append(f"p{prompt_tokens}_invalid_prefill_trials")
+        if not valid_positive_trials(
+            row,
+            trials_key="decode_trials",
+            metric_key="decode_tok_s",
+            repetitions=repetitions,
+        ):
+            reasons.append(f"p{prompt_tokens}_invalid_decode_trials")
+        if require_decode_at_depth:
+            if positive_metric_median(row, "decode_at_depth_tok_s") is None:
+                reasons.append(f"p{prompt_tokens}_missing_depth_decode")
+            if not valid_positive_trials(
+                row,
+                trials_key="decode_at_depth_trials",
+                metric_key="decode_at_depth_tok_s",
+                repetitions=repetitions,
+            ):
+                reasons.append(f"p{prompt_tokens}_invalid_depth_trials")
+
+        llama = row.get("llama_cpp")
+        if not isinstance(llama, dict):
+            reasons.append(f"p{prompt_tokens}_missing_llama_identity")
+            continue
+        build_number = llama.get("build_number")
+        build_commit = llama.get("build_commit")
+        backends = llama.get("backends")
+        gpu_info = llama.get("gpu_info")
+        backend_names = (
+            {name.strip() for name in backends.split(",")}
+            if isinstance(backends, str)
+            else set()
+        )
+        if (
+            not isinstance(build_number, int)
+            or isinstance(build_number, bool)
+            or build_number <= 0
+            or not isinstance(build_commit, str)
+            or re.fullmatch(r"[0-9a-f]{7,40}", build_commit) is None
+            or "MTL" not in backend_names
+            or not isinstance(gpu_info, str)
+            or "Apple" not in gpu_info
+        ):
+            reasons.append(f"p{prompt_tokens}_invalid_llama_identity")
+            continue
+        if require_flash_attn and llama.get("flash_attn") != 1:
+            reasons.append(f"p{prompt_tokens}_flash_attention_disabled")
+        if require_decode_at_depth:
+            depth = row.get("llama_cpp_depth")
+            if (
+                not isinstance(depth, dict)
+                or depth.get("build_number") != build_number
+                or depth.get("build_commit") != build_commit
+                or depth.get("gpu_info") != gpu_info
+                or depth.get("n_depth") != prompt_tokens
+                or (
+                    require_flash_attn
+                    and depth.get("flash_attn") != 1
+                )
+            ):
+                reasons.append(f"p{prompt_tokens}_invalid_depth_identity")
+        identities.add((build_number, build_commit, gpu_info))
+
+    if observed_prompt_tokens != expected_prompt_tokens:
+        reasons.append("prompt_matrix_mismatch")
+    if len(identities) != 1:
+        reasons.append("mixed_or_missing_llama_identity")
+    return sorted(set(reasons)), identities
+
+
+def build_llama_publication_matrix(
+    *,
+    manifest_rows: list[dict[str, Any]],
+    summary_rows: list[dict[str, Any]],
+    prompt_tokens: str,
+    generation_tokens: int,
+    repetitions: int,
+    cooldown: float,
+    require_flash_attn: bool,
+    require_decode_at_depth: bool,
+    max_load_average: float | None,
+    max_top_process_cpu_percent: float | None,
+    full_scope: bool,
+) -> dict[str, Any]:
+    expected_slugs = [
+        _row_slug(row)
+        for row in manifest_rows
+        if row.get("readme_direct_table") is not False
+    ]
+    try:
+        expected_prompt_tokens = {
+            int(value.strip()) for value in prompt_tokens.split(",") if value.strip()
+        }
+    except ValueError:
+        expected_prompt_tokens = set()
+    rows_by_slug: dict[str, dict[str, Any]] = {}
+    row_counts: dict[str, int] = {}
+    for row in summary_rows:
+        if not isinstance(row, dict) or not isinstance(row.get("slug"), str):
+            continue
+        slug = str(row["slug"])
+        row_counts[slug] = row_counts.get(slug, 0) + 1
+        rows_by_slug[slug] = row
+    models: list[dict[str, Any]] = []
+    failure_reasons: list[str] = []
+    identities: set[tuple[int, str, str]] = set()
+    for slug in expected_slugs:
+        record = rows_by_slug.get(slug)
+        reasons: list[str] = []
+        if row_counts.get(slug, 0) != 1:
+            reasons.append("missing_or_duplicate_sweep_row")
+        elif not isinstance(record, dict):
+            reasons.append("missing_sweep_row")
+        elif record.get("status") != "ok":
+            reasons.append(f"sweep_status_{record.get('status', 'missing')}")
+        else:
+            result_doc = record.get("result_doc")
+            if not isinstance(result_doc, dict):
+                reasons.append("missing_result_doc")
+            else:
+                row_reasons, row_identities = llama_result_doc_publication_reasons(
+                    result_doc,
+                    expected_prompt_tokens=expected_prompt_tokens,
+                    generation_tokens=generation_tokens,
+                    repetitions=repetitions,
+                    cooldown=cooldown,
+                    require_flash_attn=require_flash_attn,
+                    require_decode_at_depth=require_decode_at_depth,
+                )
+                reasons.extend(row_reasons)
+                identities.update(row_identities)
+        failure_reasons.extend(f"{slug}:{reason}" for reason in reasons)
+        models.append(
+            {
+                "slug": slug,
+                "publication_candidate": not reasons,
+                "publication_reasons": reasons,
+            }
+        )
+
+    global_reasons: list[str] = []
+    if not full_scope:
+        global_reasons.append("filtered_scope_is_not_full_readme_matrix")
+    if len(expected_slugs) != README_PUBLICATION_MODEL_COUNT:
+        global_reasons.append(
+            f"publication_requires_{README_PUBLICATION_MODEL_COUNT}_readme_models"
+        )
+    if expected_prompt_tokens != {128, 512, 2048}:
+        global_reasons.append("publication_requires_prompt_tokens_128_512_2048")
+    if generation_tokens != 128:
+        global_reasons.append("publication_requires_generation_tokens_128")
+    if repetitions < 5:
+        global_reasons.append("publication_requires_five_repetitions")
+    if not math.isfinite(cooldown) or cooldown < 15.0:
+        global_reasons.append("publication_requires_15s_cooldown")
+    if not require_flash_attn:
+        global_reasons.append("publication_requires_flash_attention")
+    if not require_decode_at_depth:
+        global_reasons.append("publication_requires_depth_matched_decode")
+    if (
+        max_load_average is None
+        or not math.isfinite(max_load_average)
+        or max_load_average > DEFAULT_MAX_LOAD_AVERAGE
+    ):
+        global_reasons.append("publication_requires_default_load_gate")
+    if (
+        max_top_process_cpu_percent is None
+        or not math.isfinite(max_top_process_cpu_percent)
+        or max_top_process_cpu_percent > DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT
+    ):
+        global_reasons.append("publication_requires_default_process_cpu_gate")
+    if len(identities) != 1:
+        global_reasons.append("matrix_has_mixed_or_missing_llama_identity")
+    all_reasons = [*failure_reasons, *global_reasons]
+    identity = next(iter(identities)) if len(identities) == 1 else None
+    return {
+        "schema_version": LLAMA_CPP_PUBLICATION_MATRIX_SCHEMA,
+        "scope": "readme_llama_cpp_metal_snapshot",
+        "expected_slugs": expected_slugs,
+        "expected_model_count": len(expected_slugs),
+        "publication_model_count": sum(
+            model["publication_candidate"] for model in models
+        ),
+        "publication_candidate": bool(expected_slugs) and not all_reasons,
+        "publication_reasons": all_reasons,
+        "llama_cpp_identity": (
+            {
+                "build_number": identity[0],
+                "build_commit": identity[1],
+                "gpu_info": identity[2],
+            }
+            if identity is not None
+            else None
+        ),
+        "models": models,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
@@ -735,6 +1075,25 @@ def main() -> None:
     parser.add_argument("--generation-tokens", type=int, default=128)
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--cooldown", type=float, default=15.0)
+    parser.add_argument(
+        "--max-load-average",
+        type=float,
+        default=DEFAULT_MAX_LOAD_AVERAGE,
+        help=(
+            "Wait for the one-minute load average to be at or below this value "
+            "before benchmark phases. Use a negative value only to trigger an "
+            "argument error."
+        ),
+    )
+    parser.add_argument(
+        "--max-top-process-cpu-percent",
+        type=float,
+        default=DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+        help=(
+            "Wait until every sampled top process is at or below this CPU "
+            "percentage before benchmark phases."
+        ),
+    )
     parser.add_argument("--n-gpu-layers", type=int, default=99)
     parser.add_argument(
         "--extra-args",
@@ -809,7 +1168,11 @@ def main() -> None:
             "were skipped. By default, full-stack README updates fail closed."
         ),
     )
-    parser.add_argument("--readme", type=Path, default=REPO_ROOT / "docs" / "PERFORMANCE-RESULTS.md")
+    parser.add_argument(
+        "--readme",
+        type=Path,
+        default=REPO_ROOT / "docs" / "PERFORMANCE-RESULTS.md",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -829,6 +1192,15 @@ def main() -> None:
         help="HF token for gated repos. Defaults to $HF_TOKEN or $HUGGING_FACE_HUB_TOKEN.",
     )
     args = parser.parse_args()
+    if not math.isfinite(args.max_load_average) or args.max_load_average < 0.0:
+        parser.error("--max-load-average must be finite and non-negative")
+    if (
+        not math.isfinite(args.max_top_process_cpu_percent)
+        or args.max_top_process_cpu_percent < 0.0
+    ):
+        parser.error(
+            "--max-top-process-cpu-percent must be finite and non-negative"
+        )
 
     try:
         with args.manifest.open() as fh:
@@ -885,9 +1257,12 @@ def main() -> None:
 
         if resolved is None:
             record["status"] = "unresolved"
-            record["note"] = "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+            record["note"] = (
+                "No GGUF candidate matched on HF. Architecture may not yet "
+                "have a public GGUF conversion."
+            )
             summary_rows.append(record)
-            log(f"  -> unresolved")
+            log("  -> unresolved")
             continue
 
         repo, filename, probe_log = resolved
@@ -956,6 +1331,8 @@ def main() -> None:
             build_ax_engine=not args.no_build_ax_engine,
             skip_mlx_lm=args.skip_mlx_lm,
             include_mlx_lm=args.include_mlx_lm,
+            max_load_average=args.max_load_average,
+            max_top_process_cpu_percent=args.max_top_process_cpu_percent,
         )
         record.update(bench_result)
 
@@ -968,6 +1345,19 @@ def main() -> None:
         summary_rows.append(record)
 
     elapsed = time.time() - started
+    publication_matrix = build_llama_publication_matrix(
+        manifest_rows=raw_rows,
+        summary_rows=summary_rows,
+        prompt_tokens=args.prompt_tokens,
+        generation_tokens=args.generation_tokens,
+        repetitions=args.repetitions,
+        cooldown=args.cooldown,
+        require_flash_attn=args.llama_cpp_flash_attn,
+        require_decode_at_depth=args.llama_cpp_decode_at_depth,
+        max_load_average=args.max_load_average,
+        max_top_process_cpu_percent=args.max_top_process_cpu_percent,
+        full_scope=args.rows_filter is None,
+    )
     sweep_doc = {
         "schema_version": "ax.llama_cpp_metal_sweep.v1",
         "claim_boundary": manifest.get("claim_boundary"),
@@ -977,6 +1367,9 @@ def main() -> None:
         "prompt_tokens": args.prompt_tokens,
         "generation_tokens": args.generation_tokens,
         "repetitions": args.repetitions,
+        "cooldown": args.cooldown,
+        "max_load_average": args.max_load_average,
+        "max_top_process_cpu_percent": args.max_top_process_cpu_percent,
         "n_gpu_layers": args.n_gpu_layers,
         "extra_args": args.extra_args,
         "llama_cpp_flash_attn": args.llama_cpp_flash_attn,
@@ -990,6 +1383,11 @@ def main() -> None:
         "total_bytes_freed": total_bytes_freed,
         "keep_gguf": args.keep_gguf,
         "cache_only": args.cache_only,
+        "publication_candidate": publication_matrix["publication_candidate"],
+        "readme_llama_cpp_publication_candidate": publication_matrix[
+            "publication_candidate"
+        ],
+        "llama_cpp_publication_matrix": publication_matrix,
         "rows": summary_rows,
     }
     sweep_path = args.output_root / "sweep_results.json"
@@ -999,6 +1397,12 @@ def main() -> None:
     summary_md = args.output_root / "sweep_summary.md"
     summary_md.write_text(_render_summary_md(sweep_doc))
     log(f"wrote {summary_md}")
+
+    if args.update_readme and not publication_matrix["publication_candidate"]:
+        log("ERROR: refusing to update README from a non-publication sweep")
+        for reason in publication_matrix["publication_reasons"]:
+            log(f"  - {reason}")
+        sys.exit(2)
 
     if args.update_readme:
         update_readme_from_sweep(
@@ -1011,12 +1415,41 @@ def main() -> None:
         )
         log(f"updated {args.readme}")
 
+    if (
+        not args.dry_run
+        and not args.download_only
+        and args.rows_filter is None
+        and not publication_matrix["publication_candidate"]
+    ):
+        log("ERROR: llama.cpp README publication matrix is incomplete or ineligible")
+        for reason in publication_matrix["publication_reasons"]:
+            log(f"  - {reason}")
+        sys.exit(2)
+
 
 def _render_summary_md(doc: dict[str, Any]) -> str:
     lines = ["# llama.cpp Metal sweep summary", ""]
     lines.append(f"- elapsed: {doc['elapsed_seconds']:.0f}s")
     lines.append(f"- downloaded: {doc['total_bytes_downloaded'] / 1e9:.1f} GB")
     lines.append(f"- freed: {doc['total_bytes_freed'] / 1e9:.1f} GB")
+    matrix = doc["llama_cpp_publication_matrix"]
+    lines.append(
+        "- README publication candidate: "
+        f"{str(matrix['publication_candidate']).lower()} "
+        f"({matrix['publication_model_count']}/{matrix['expected_model_count']} models)"
+    )
+    identity = matrix.get("llama_cpp_identity")
+    if isinstance(identity, dict):
+        lines.append(
+            "- llama.cpp identity: "
+            f"build {identity['build_number']} ({identity['build_commit']}), "
+            f"{identity['gpu_info']}"
+        )
+    if matrix["publication_reasons"]:
+        lines.append(
+            "- publication blockers: "
+            + ", ".join(str(reason) for reason in matrix["publication_reasons"])
+        )
     lines.append("")
     lines.append("| slug | status | repo | quant | notes |")
     lines.append("|---|---|---|---|---|")
