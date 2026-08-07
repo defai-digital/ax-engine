@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SUMMARY = (
     REPO_ROOT
     / "benchmarks/results/mtp-qwen36-matrix/"
-    / "2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json"
+    / "2026-08-07-peer-comparison-apples-to-apples-refresh/summary.json"
 )
 DEFAULT_JSON = DEFAULT_SUMMARY.parent / "bandwidth_diagnostic.json"
 DEFAULT_SVG = REPO_ROOT / "docs/assets/perf-qwen36-mtp-bandwidth-diagnostic.svg"
@@ -155,19 +155,31 @@ def build_ax_verifier_summary(raw: dict[str, Any], bytes_per_cycle: int) -> dict
     }
 
 
-def mtplx_artifact_estimate(peer_row: dict[str, Any]) -> tuple[int, str, dict[str, Any] | None]:
+def mtplx_artifact_estimate(
+    peer_row: dict[str, Any],
+    *,
+    same_sidecar_bytes: int | None = None,
+) -> tuple[int, str, dict[str, Any] | None]:
     artifact = REPO_ROOT / str(peer_row["artifact"])
     raw = json.loads(artifact.read_text())
-    model_dir = Path(raw["model_inspection"]["model_dir"])
-    is_moe = "35B-A3B" in str(peer_row["model_label"])
-    try:
-        bytes_used, source = safetensor_header_byte_estimate(model_dir, moe_active=is_moe)
-    except (FileNotFoundError, ValueError):
-        fallback = PEER_PACKAGE_ACTIVE_BYTE_FALLBACKS.get(str(peer_row["model_label"]))
-        if fallback is None:
-            raise
-        bytes_used = int(fallback["bytes"])
-        source = str(fallback["source"])
+    if same_sidecar_bytes is not None:
+        bytes_used = same_sidecar_bytes
+        source = "same_ax_sidecar_bytes_from_committed_ax_artifact"
+    else:
+        model_dir = Path(raw["model_inspection"]["model_dir"])
+        is_moe = "35B-A3B" in str(peer_row["model_label"])
+        try:
+            bytes_used, source = safetensor_header_byte_estimate(
+                model_dir, moe_active=is_moe
+            )
+        except (FileNotFoundError, ValueError):
+            fallback = PEER_PACKAGE_ACTIVE_BYTE_FALLBACKS.get(
+                str(peer_row["model_label"])
+            )
+            if fallback is None:
+                raise
+            bytes_used = int(fallback["bytes"])
+            source = str(fallback["source"])
     return bytes_used, source, build_mtplx_cycle_summary(raw, bytes_used)
 
 
@@ -235,7 +247,18 @@ def build_diagnostic(summary_path: Path) -> dict[str, Any]:
             bytes_used, source, cycle_summary = ax_artifact_estimate(row)
             ax_bytes_by_target[target] = bytes_used
         elif engine == "mtplx":
-            bytes_used, source, cycle_summary = mtplx_artifact_estimate(row)
+            same_sidecar_bytes = None
+            if target == "Qwen3.6 27B 4-bit":
+                same_sidecar_bytes = ax_bytes_by_target.get(target)
+                if same_sidecar_bytes is None:
+                    raise ValueError(
+                        "27B MTPLX diagnostic requires the committed AX "
+                        "same-sidecar byte estimate"
+                    )
+            bytes_used, source, cycle_summary = mtplx_artifact_estimate(
+                row,
+                same_sidecar_bytes=same_sidecar_bytes,
+            )
             peer_bytes_by_target[target] = bytes_used
         else:
             continue

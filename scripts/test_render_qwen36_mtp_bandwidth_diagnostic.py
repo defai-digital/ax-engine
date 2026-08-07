@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from scripts import render_qwen36_mtp_bandwidth_diagnostic as renderer
 
@@ -35,6 +39,47 @@ class Qwen36MtpBandwidthDiagnosticTests(unittest.TestCase):
             renderer.measured_engine_labels({}),
             renderer.LEGACY_ENGINE_LABELS,
         )
+
+    def test_mtplx_same_sidecar_estimate_does_not_require_model_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "mtplx.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "model_inspection": {
+                            "model_dir": "/missing/private/model/cache"
+                        },
+                        "results": [
+                            {
+                                "runs": [
+                                    {
+                                        "measured": True,
+                                        "generated_tokens": 100,
+                                        "accepted_drafts": 75,
+                                        "decode_elapsed_s": 2.0,
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                )
+            )
+            with patch.object(renderer, "REPO_ROOT", root):
+                bytes_used, source, cycle_summary = renderer.mtplx_artifact_estimate(
+                    {
+                        "artifact": "mtplx.json",
+                        "model_label": "Qwen3.6 27B 4-bit",
+                    },
+                    same_sidecar_bytes=16_900_000_000,
+                )
+
+        self.assertEqual(bytes_used, 16_900_000_000)
+        self.assertEqual(
+            source,
+            "same_ax_sidecar_bytes_from_committed_ax_artifact",
+        )
+        self.assertEqual(cycle_summary["target_cycles_per_s"], 12.5)
 
 
 if __name__ == "__main__":
