@@ -1,0 +1,2618 @@
+{
+  "contract": {
+    "ax_mtp_optimistic": false,
+    "benchmark_contract": "apples-to-apples",
+    "bits": [
+      4,
+      6
+    ],
+    "cooldown_s": 15.0,
+    "degeneracy_gate": {
+      "coverage_threshold": 0.5,
+      "max_cycle_len": 8,
+      "periodic_coverage_threshold": 0.45
+    },
+    "engines": [
+      "ax_engine",
+      "mtplx",
+      "lightning_mlx",
+      "rapid_mlx",
+      "omlx"
+    ],
+    "inter_case_cooldown_s": 10.0,
+    "lightning_disable_prefix_cache": true,
+    "lightning_mtp_draft_temperature": 0.5,
+    "lightning_mtp_optimistic": false,
+    "lightning_prefix_cache_policy": "disabled_for_cold_prefill",
+    "max_tokens": 1000,
+    "metrics": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
+    "mode": "mtp",
+    "models": [
+      "27b",
+      "35b-a3b"
+    ],
+    "mtp_head_provenance": {
+      "27b-4bit": {
+        "ax_engine": {
+          "draft_lm_head": "bf16 (matching base)",
+          "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+          "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+          "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+        },
+        "lightning_mlx": {
+          "draft_lm_head": "bf16 (matching base)",
+          "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+          "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+          "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+        },
+        "mtplx": {
+          "draft_lm_head": "bf16 (matching base)",
+          "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+          "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+          "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+        }
+      },
+      "27b-6bit": {
+        "ax_engine": {
+          "draft_lm_head": "bf16 (matching base)",
+          "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+          "packaging": "ax-local/Qwen3.6-27B-6bit-MTP sidecar",
+          "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+        }
+      },
+      "35b-a3b-4bit": {
+        "ax_engine": {
+          "draft_lm_head": "bf16 (matching base)",
+          "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+          "packaging": "ax-local/Qwen3.6-35B-MTP sidecar",
+          "source": "Qwen/Qwen3.6-35B-A3B (official BF16 mtp.* tensors)"
+        },
+        "lightning_mlx": {
+          "draft_lm_head": "3-bit affine, group_size=64",
+          "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+          "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+          "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+        },
+        "mtplx": {
+          "draft_lm_head": "3-bit affine, group_size=64",
+          "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+          "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+          "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+        }
+      },
+      "35b-a3b-6bit": {
+        "ax_engine": {
+          "draft_lm_head": "bf16 (matching base)",
+          "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+          "packaging": "ax-local/Qwen3.6-35B-MTP sidecar",
+          "source": "Qwen/Qwen3.6-35B-A3B (official BF16 mtp.* tensors)"
+        },
+        "lightning_mlx": {
+          "draft_lm_head": "3-bit affine, group_size=64",
+          "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+          "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
+          "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+        },
+        "mtplx": {
+          "draft_lm_head": "3-bit affine, group_size=64",
+          "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+          "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
+          "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+        }
+      }
+    },
+    "mtplx_profile": "stable",
+    "prefill_step_size": null,
+    "prompt_limit": null,
+    "publication_load_gate": {
+      "load_poll_interval_seconds": 5.0,
+      "load_wait_timeout_seconds": 900.0,
+      "max_load_average": 2.0,
+      "max_top_process_cpu_percent": 50.0
+    },
+    "repetitions": 5,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "seed": 0,
+    "suites": [
+      "flappy"
+    ],
+    "warmup_repetitions": 2
+  },
+  "created_at": "2026-08-07",
+  "engine_identities": {
+    "ax_engine": {
+      "commit": "cdf80cf6c2d339d37be47f4dc1a81fde3eb20efd",
+      "name": "AX Engine",
+      "version": "6.13.3"
+    },
+    "lightning_mlx": {
+      "commit": "ec19b3d8b97ee002d706e06249163bf4347eb5df",
+      "git_describe": "ec19b3d",
+      "name": "lightning-mlx",
+      "version": "0.6.10"
+    },
+    "mtplx": {
+      "commit": "a3919738ab70b4277647177454dff3c1a30aad74",
+      "name": "MTPLX",
+      "version": "2.1.0"
+    }
+  },
+  "publication_candidate": true,
+  "publication_reasons": [],
+  "rows": [
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-4bit/flappy/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "client_ttft_scope": "client_http_wall",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured",
+        "ttft_scope": "runner_internal"
+      },
+      "metrics": {
+        "accept_rate": 0.9927310488058152,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "build": {
+          "build_profile": "release",
+          "commit": "cdf80cf6c2d339d37be47f4dc1a81fde3eb20efd",
+          "engine_version": "6.13.3",
+          "git_tracked_dirty": false,
+          "git_tracked_status": [],
+          "libmlx_rpaths": [
+            "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib"
+          ],
+          "linked_libraries": [
+            "@rpath/libmlx.dylib (compatibility version 0.0.0, current version 0.0.0)",
+            "/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 373.2.0)"
+          ],
+          "resolved_libmlx": "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib/libmlx.dylib",
+          "server_binary": "/Users/akiralam/code/ax-engine-readme-bench-20260806/target/release/ax-engine-server"
+        },
+        "case_count": 4,
+        "client_ttft_scope": "client_http_wall",
+        "client_wall_ttft_ms": 471.32433351362124,
+        "decode_tok_s": 56.117980258155356,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 687.1338493348981,
+        "random_seed": 0,
+        "seed": 0,
+        "status": "ok",
+        "ttft_ms": 467.9125,
+        "ttft_scope": "runner_internal",
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "mtp_head": {
+        "draft_lm_head": "bf16 (matching base)",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+        "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-4bit/flappy/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
+      "metrics": {
+        "accept_rate": 0.9767426624737946,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 59.86607608326949,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 6,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 6,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 6,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 6,
+              "sample_count": 1000
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 655.2996871280873,
+        "status": "ok",
+        "ttft_ms": 490.6323744216934,
+        "ttft_scope": "server_prompt_eval",
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "mtp_head": {
+        "draft_lm_head": "bf16 (matching base)",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+        "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-4bit/flappy/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
+      },
+      "metrics": {
+        "accept_rate": 0.9664031620553359,
+        "accept_source": "lightning_request_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 57.287111164250845,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 2,
+              "sample_count": 2419
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 3,
+              "sample_count": 2415
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 4,
+              "sample_count": 2415
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 5,
+              "sample_count": 2420
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 6,
+              "sample_count": 2419
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 2,
+              "sample_count": 2631
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 3,
+              "sample_count": 3049
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 4,
+              "sample_count": 2624
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 5,
+              "sample_count": 2819
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 6,
+              "sample_count": 2664
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 2,
+              "sample_count": 3201
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 3,
+              "sample_count": 3207
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 4,
+              "sample_count": 3188
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 5,
+              "sample_count": 3202
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 6,
+              "sample_count": 3207
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 2,
+              "sample_count": 3193
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 3,
+              "sample_count": 3196
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 4,
+              "sample_count": 3196
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 5,
+              "sample_count": 3196
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 6,
+              "sample_count": 3196
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "prompt_tokens_over_client_ttft_s",
+        "prefill_tok_s": 418.7013841092272,
+        "status": "ok",
+        "ttft_ms": 755.2935830317438,
+        "ttft_scope": "client_http_wall",
+        "ttft_source": "client_stream_ttft_s"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "mtp_head": {
+        "draft_lm_head": "bf16 (matching base)",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+        "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-4bit/flappy/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "Rapid-MLX starts with the shared Qwen3.6 artifacts, but its scheduler skips MTP install for this generation flow; running it would measure non-MTP decode.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-4bit/flappy/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable",
+        "ttft_scope": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-6bit/flappy/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "client_ttft_scope": "client_http_wall",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured",
+        "ttft_scope": "runner_internal"
+      },
+      "metrics": {
+        "accept_rate": 0.995578231292517,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "build": {
+          "build_profile": "release",
+          "commit": "cdf80cf6c2d339d37be47f4dc1a81fde3eb20efd",
+          "engine_version": "6.13.3",
+          "git_tracked_dirty": false,
+          "git_tracked_status": [],
+          "libmlx_rpaths": [
+            "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib"
+          ],
+          "linked_libraries": [
+            "@rpath/libmlx.dylib (compatibility version 0.0.0, current version 0.0.0)",
+            "/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 373.2.0)"
+          ],
+          "resolved_libmlx": "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib/libmlx.dylib",
+          "server_binary": "/Users/akiralam/code/ax-engine-readme-bench-20260806/target/release/ax-engine-server"
+        },
+        "case_count": 4,
+        "client_ttft_scope": "client_http_wall",
+        "client_wall_ttft_ms": 690.7021249644458,
+        "decode_tok_s": 44.761539245865684,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 514.5608828898183,
+        "random_seed": 0,
+        "seed": 0,
+        "status": "ok",
+        "ttft_ms": 648.7149999999999,
+        "ttft_scope": "runner_internal",
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "mtp_head": {
+        "draft_lm_head": "bf16 (matching base)",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "packaging": "ax-local/Qwen3.6-27B-6bit-MTP sidecar",
+        "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-6bit/flappy/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "mtplx catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-6bit/flappy/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "lightning_mlx catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-6bit/flappy/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "rapid_mlx catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/27b-6bit/flappy/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable",
+        "ttft_scope": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-4bit/flappy/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "client_ttft_scope": "client_http_wall",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured",
+        "ttft_scope": "runner_internal"
+      },
+      "metrics": {
+        "accept_rate": 0.9984886649874055,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "build": {
+          "build_profile": "release",
+          "commit": "cdf80cf6c2d339d37be47f4dc1a81fde3eb20efd",
+          "engine_version": "6.13.3",
+          "git_tracked_dirty": false,
+          "git_tracked_status": [],
+          "libmlx_rpaths": [
+            "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib"
+          ],
+          "linked_libraries": [
+            "@rpath/libmlx.dylib (compatibility version 0.0.0, current version 0.0.0)",
+            "/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 373.2.0)"
+          ],
+          "resolved_libmlx": "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib/libmlx.dylib",
+          "server_binary": "/Users/akiralam/code/ax-engine-readme-bench-20260806/target/release/ax-engine-server"
+        },
+        "case_count": 4,
+        "client_ttft_scope": "client_http_wall",
+        "client_wall_ttft_ms": 371.3382499990985,
+        "decode_tok_s": 140.8999695643967,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 869.3386501282362,
+        "random_seed": 0,
+        "seed": 0,
+        "status": "ok",
+        "ttft_ms": 370.831,
+        "ttft_scope": "runner_internal",
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "mtp_head": {
+        "draft_lm_head": "bf16 (matching base)",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "packaging": "ax-local/Qwen3.6-35B-MTP sidecar",
+        "source": "Qwen/Qwen3.6-35B-A3B (official BF16 mtp.* tensors)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-4bit/flappy/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
+      "metrics": {
+        "accept_rate": 0.9495806514530915,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 145.07680043017857,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 6,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 6,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 6,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 6,
+              "sample_count": 1000
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 1534.6642595739559,
+        "status": "ok",
+        "ttft_ms": 212.27720798924565,
+        "ttft_scope": "server_prompt_eval",
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "mtp_head": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-4bit/flappy/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "lightning_request_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 124.19633380644242,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 2,
+              "sample_count": 2656
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 3,
+              "sample_count": 2656
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 4,
+              "sample_count": 2656
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 5,
+              "sample_count": 2656
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 6,
+              "sample_count": 2656
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 2,
+              "sample_count": 2620
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 3,
+              "sample_count": 2620
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 4,
+              "sample_count": 2620
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 5,
+              "sample_count": 2620
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 6,
+              "sample_count": 2620
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 2,
+              "sample_count": 3411
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 3,
+              "sample_count": 3411
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 4,
+              "sample_count": 3411
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 5,
+              "sample_count": 3411
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 6,
+              "sample_count": 3411
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 2,
+              "sample_count": 3470
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 3,
+              "sample_count": 3470
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 4,
+              "sample_count": 3470
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 5,
+              "sample_count": 3470
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 6,
+              "sample_count": 3470
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "prompt_tokens_over_client_ttft_s",
+        "prefill_tok_s": 881.7508985011548,
+        "status": "ok",
+        "ttft_ms": 365.3007500106469,
+        "ttft_scope": "client_http_wall",
+        "ttft_source": "client_stream_ttft_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "mtp_head": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-4bit/flappy/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "Rapid-MLX starts with the shared Qwen3.6 artifacts, but its scheduler skips MTP install for this generation flow; running it would measure non-MTP decode.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-4bit/flappy/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable",
+        "ttft_scope": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-6bit/flappy/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "client_ttft_scope": "client_http_wall",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured",
+        "ttft_scope": "runner_internal"
+      },
+      "metrics": {
+        "accept_rate": 0.9989904088844018,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "build": {
+          "build_profile": "release",
+          "commit": "cdf80cf6c2d339d37be47f4dc1a81fde3eb20efd",
+          "engine_version": "6.13.3",
+          "git_tracked_dirty": false,
+          "git_tracked_status": [],
+          "libmlx_rpaths": [
+            "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib"
+          ],
+          "linked_libraries": [
+            "@rpath/libmlx.dylib (compatibility version 0.0.0, current version 0.0.0)",
+            "/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 373.2.0)"
+          ],
+          "resolved_libmlx": "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib/libmlx.dylib",
+          "server_binary": "/Users/akiralam/code/ax-engine-readme-bench-20260806/target/release/ax-engine-server"
+        },
+        "case_count": 4,
+        "client_ttft_scope": "client_http_wall",
+        "client_wall_ttft_ms": 334.4852705486119,
+        "decode_tok_s": 120.542106187918,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 969.5874092668116,
+        "random_seed": 0,
+        "seed": 0,
+        "status": "ok",
+        "ttft_ms": 333.548,
+        "ttft_scope": "runner_internal",
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "mtp_head": {
+        "draft_lm_head": "bf16 (matching base)",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "packaging": "ax-local/Qwen3.6-35B-MTP sidecar",
+        "source": "Qwen/Qwen3.6-35B-A3B (official BF16 mtp.* tensors)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-6bit/flappy/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
+      "metrics": {
+        "accept_rate": 0.9678086237448317,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 125.17411891369869,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 6,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 6,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 6,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 2,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 3,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 4,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 5,
+              "sample_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "token_ids",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 6,
+              "sample_count": 1000
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 1392.2784341744548,
+        "status": "ok",
+        "ttft_ms": 232.51145845279098,
+        "ttft_scope": "server_prompt_eval",
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "mtp_head": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
+        "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-6bit/flappy/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "lightning_request_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 102.00838670624711,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 2,
+              "sample_count": 2653
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 3,
+              "sample_count": 2653
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 4,
+              "sample_count": 2653
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 5,
+              "sample_count": 2653
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "repetition": 6,
+              "sample_count": 2653
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 2,
+              "sample_count": 2586
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 3,
+              "sample_count": 2586
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 4,
+              "sample_count": 2586
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 5,
+              "sample_count": 2586
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "repetition": 6,
+              "sample_count": 2586
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 2,
+              "sample_count": 3418
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 3,
+              "sample_count": 3418
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 4,
+              "sample_count": 3418
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 5,
+              "sample_count": 3418
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "repetition": 6,
+              "sample_count": 3418
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 2,
+              "sample_count": 3469
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 3,
+              "sample_count": 3469
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 4,
+              "sample_count": 3469
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 5,
+              "sample_count": 3469
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "evidence": "unicode_codepoints",
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "repetition": 6,
+              "sample_count": 3469
+            }
+          ],
+          "checked_runs": 20,
+          "degenerate": false,
+          "evidence_complete": true,
+          "expected_runs": 20,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
+        "prefill_source": "prompt_tokens_over_client_ttft_s",
+        "prefill_tok_s": 750.5746244003442,
+        "status": "ok",
+        "ttft_ms": 432.46731255203485,
+        "ttft_scope": "client_http_wall",
+        "ttft_source": "client_stream_ttft_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "mtp_head": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
+        "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+      },
+      "publication_candidate": true,
+      "publication_reasons": [],
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-6bit/flappy/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "Rapid-MLX starts with the shared Qwen3.6 artifacts, but its scheduler skips MTP install for this generation flow; running it would measure non-MTP decode.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/35b-a3b-6bit/flappy/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable",
+        "ttft_scope": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "mtp_head": null,
+      "publication_candidate": false,
+      "publication_reasons": [],
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    }
+  ],
+  "schema": "ax.qwen36_mtp_matrix.summary.v2"
+}

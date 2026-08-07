@@ -537,7 +537,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertEqual(
             charts.find_mtp_peer_summary(performance_results),
             charts.REPO_ROOT
-            / "benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json",
+            / "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/summary.json",
         )
 
     def test_mtp_peer_chart_uses_measured_engine_identities(self) -> None:

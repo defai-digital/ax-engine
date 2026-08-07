@@ -1,124 +1,70 @@
-# AX Engine Native MTP vs Youssofal MTPLX-Optimized Package
+# AX Native and Youssofal-Optimized MTP Packages
 
-When benchmarking Qwen3.6 27B 4-bit with MTP speculative decoding, two MTP
-artifact sources are commonly seen:
+Qwen3.6 peer benchmarks use two MTP packaging families. They serve different
+runtime contracts and must not be described as interchangeable weights.
 
-| Artifact | Publisher | MTP precision | Draft LM head |
+| Package | Normal use | MTP / draft-head precision | Current peer scope |
 | --- | --- | --- | --- |
-| `ax-local/Qwen3.6-27B-MTP` | AX Engine (extracted from official Qwen repo) | BF16 (RMSNorm +1.0 delta correction) | BF16 (matching base) |
-| `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` | Youssofal (community re-quantization) | INT4 prequantized sidecar | 3-bit affine, group_size=64 |
+| `ax-local/Qwen3.6-27B-MTP` | AX Engine; verified MTPLX contract and measured lightning-mlx compatibility | BF16 MTP tensors and BF16 matching LM head | Identical 27B 4-bit sidecar across all three engines |
+| AX 35B-A3B prepared sidecar | AX Engine | BF16 MTP tensors and BF16 matching LM head | AX side of the 35B-A3B rows |
+| `Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed` | MTPLX / lightning-mlx 35B 4-bit | INT4 MTP sidecar and 3-bit affine LM head | Peer side of the 35B-A3B 4-bit row |
+| `Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance` | MTPLX / lightning-mlx 35B 6-bit | INT4 MTP sidecar and 3-bit affine LM head | Peer side of the 35B-A3B 6-bit row |
 
-Both derive from the same official Qwen MTP tensors, but the quantization and
-packaging differ. This page explains the trade-offs so you can choose the right
-artifact for your use case.
+## Current Compatibility
 
-## Why Two Artifacts Exist
+The older statement that MTPLX only works with Youssofal packages is no longer
+true. The current `ax-local/Qwen3.6-27B-MTP` snapshot carries a verified
+`mtplx_runtime.json` contract. MTPLX 2.1.0 recognizes that contract, passes its
+tensor/layout checks, and achieves 97.7% measured draft acceptance in the
+2026-08-07 campaign. lightning-mlx 0.6.10 runs the same sidecar at 96.6%
+acceptance.
 
-MTPLX's `MTPContract` expects a specific fc concat order (`[embed; hidden]`)
-and post-norm hidden states. The standard Qwen MTP training convention uses
-`[hidden; embed]` and pre-norm states. The Youssofal bundle adapts the weights
-to MTPLX's conventions — swapped fc halves and post-norm inputs — which is why
-MTPLX only produces meaningful MTP accept rates with that bundle. Using
-standard Qwen MTP shards with MTPLX yields ~2% accept rate (speculation
-effectively disabled).
+That makes the 27B 4-bit row the closest engine comparison in the matrix:
+target weights, draft weights, prompt tokens, seed, sampler, repetitions, and
+cooldowns are shared. Runtime implementations and timing scopes still differ.
 
-AX Engine uses its own loader that reads the standard Qwen layout directly,
-so it works with the unmodified BF16 sidecar.
+The 35B-A3B rows are deliberately production-configuration comparisons, not
+identical-weight comparisons. AX uses its BF16 sidecar; MTPLX and lightning-mlx
+use Youssofal's optimized Speed or Balance package. Decode tok/s is useful
+operational evidence there, but the engine effect cannot be separated from the
+package/precision effect.
 
-## Pros and Cons
+## Fresh Peer Result
 
-### Youssofal MTPLX-Optimized-Speed
+Apple M5 Max 128 GB, 2026-08-07, seed 0, sampled decode, 2 warmups, 5 measured
+repetitions, clean tracked sources, passing lane-boundary condition gates:
 
-**Pros:**
+| Target | AX Engine 6.13.3 | MTPLX 2.1.0 | lightning-mlx 0.6.10 | Package boundary |
+| --- | ---: | ---: | ---: | --- |
+| Qwen3.6 27B 4-bit | 56.1 tok/s | **59.9 tok/s** | 57.3 tok/s | Same verified BF16 sidecar |
+| Qwen3.6 35B-A3B 4-bit | 140.9 tok/s | **145.1 tok/s** | 124.2 tok/s | AX BF16 vs Youssofal Speed |
+| Qwen3.6 35B-A3B 6-bit | 120.5 tok/s | **125.2 tok/s** | 102.0 tok/s | AX BF16 vs Youssofal Balance |
 
-1. **Out-of-the-box MTPLX compatibility.** Ships a pre-quantized
-   `mtp/weights.safetensors` that MTPLX can load and run without manual
-   sidecar preparation.
-2. **Higher 27B 4-bit decode throughput in the peer comparison.** MTPLX
-   with this bundle reaches 64.3 tok/s vs AX Engine's 61.0 tok/s on the
-   flappy suite (see [peer comparison](qwen36-peer-comparison.md)).
-3. **Only MTP bundle that works with MTPLX.** Standard Qwen shards produce
-   near-zero accept rates in MTPLX without the fc/norm adaptation.
-4. **MoE variants available.** 35B-A3B Speed and Balance profiles exist.
+AX trails MTPLX by 2.9%–6.3% on all three comparable rows. AX trails
+lightning-mlx by 2.0% on the identical-sidecar 27B row and leads it by
+13.4%–18.2% on the production-configuration 35B rows. Across all three,
+AX is 4.3% lower than MTPLX and 9.5% higher than lightning-mlx by geometric
+mean.
 
-**Cons:**
+These results supersede the old claims that AX led every peer row and that the
+Youssofal package could not give MTPLX an MoE lead. They do not prove that one
+MTP precision is higher quality: draft acceptance is a speculation-efficiency
+metric, not an output-quality score.
 
-1. **Not apples-to-apples with AX Engine.** Different MTP precision (INT4
-   vs BF16) and draft LM head precision (3-bit vs BF16) means the
-   throughput gap conflates engine differences with artifact differences.
-2. **Excluded from fair benchmarks.** The repo's fair benchmark harness
-   (`scripts/bench_qwen36_mtp_fair.py`) and sidecar provenance checker
-   (`scripts/check_mtp_sidecar_provenance.py`) explicitly reject Youssofal
-   bundles from the fair base track.
-3. **Precision loss.** INT4 quantization and 3-bit draft LM head are
-   lossy transforms. Accept rate impact is negligible (AX 100.0% vs MTPLX
-   99.99% on 27B 4-bit), but BF16 remains the cleaner reference for
-   quality-sensitive work.
-4. **Locks you into MTPLX conventions.** The swapped fc halves and
-   post-norm inputs are MTPLX-specific. Running the same weights through
-   AX Engine or lightning-mlx requires a different artifact.
-5. **Third-party provenance.** Community re-quantization, not an official
-   Qwen release. Supply-chain trust is lower than first-party artifacts.
-6. **AX significantly faster on MoE.** On 35B-A3B 4-bit, AX leads with
-   169.9 tok/s vs MTPLX 138.1 tok/s (~23% gap). The Youssofal bundle
-   does not give MTPLX an edge on MoE models.
+## Which Package to Use
 
-### AX Engine Native MTP (ax-local/Qwen3.6-27B-MTP)
-
-**Pros:**
-
-1. **BF16 precision.** MTP weights extracted with RMSNorm +1.0 delta
-   correction; draft LM head matches the base model at BF16. No
-   quantization-induced precision loss.
-2. **100% accept rate.** On 27B 4-bit, the BF16 sidecar achieves perfect
-   MTP draft acceptance, maximizing speculation efficiency.
-3. **Auditable and reproducible.** AX peer rows pass the
-   output-degeneracy gate, use fixed seeds (seed 44), and carry full
-   artifact provenance tracking.
-4. **Fair benchmark baseline.** All fair benchmark scripts use the AX
-   sidecar as the reference artifact. Cross-engine results are directly
-   comparable.
-5. **Strong overall performance.** 61.0 tok/s decode, 812.3 tok/s
-   prefill, 396 ms TTFT on 27B 4-bit. On 35B-A3B, AX leads all peer
-   engines at both 4-bit and 6-bit.
-6. **First-party provenance.** Extracted directly from the official
-   Qwen repository with documented extraction methodology.
-
-**Cons:**
-
-1. **27B 4-bit decode slightly below MTPLX.** 61.0 tok/s vs 64.3 tok/s
-   (~5% gap). However, this comparison conflates engine and artifact
-   differences — the gap cannot be attributed to either factor alone.
-2. **Requires AX Engine loader.** The BF16 sidecar uses standard Qwen
-   layout conventions. Only AX Engine's native loader reads it correctly;
-   MTPLX needs the adapted Youssofal variant.
-
-## Recommendation
-
-| Use case | Recommended artifact |
+| Use case | Recommendation |
 | --- | --- |
-| Running **AX Engine** as inference runtime | `ax-local/Qwen3.6-27B-MTP` (BF16 sidecar) |
-| Running **MTPLX** as inference runtime | `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` |
-| Cross-engine **fair benchmark** | `ax-local/Qwen3.6-27B-MTP` with AX Engine |
-| **Quality-sensitive** work (precision matters) | `ax-local/Qwen3.6-27B-MTP` (BF16) |
-| **MoE models** (35B-A3B) | `ax-local` variants — AX leads all peers |
+| Serve with AX Engine | Use the matching AX/AutomatosX prepared MTP package |
+| Serve 27B 4-bit with MTPLX | Use the verified `ax-local/Qwen3.6-27B-MTP` contract |
+| Serve 35B-A3B with MTPLX or lightning-mlx | Use the runtime's documented Youssofal Speed/Balance package |
+| Compare engines at 27B 4-bit | Use the same verified BF16 sidecar across engines |
+| Compare engines at 35B-A3B | First produce an identical-weight sidecar accepted by every engine; until then label rows production-configuration |
+| Quality-sensitive evaluation | Run a separate output-quality suite; do not infer quality from accept rate or quantization labels alone |
 
-For AX Engine users, the native BF16 sidecar is the recommended choice:
-it preserves full MTP weight precision, achieves 100% draft accept rate,
-and produces auditable benchmark results that are directly comparable
-across engines. The MTPLX 5% throughput advantage on 27B 4-bit comes
-from a different artifact, not a controlled engine-only measurement.
+## Evidence
 
-The only scenario where the Youssofal bundle is required is when you
-specifically use **MTPLX** as your inference runtime — standard Qwen
-MTP shards produce near-zero accept rates in MTPLX due to fc/norm
-layout incompatibility.
-
-## Related
-
-- [Qwen3.6 MTP peer comparison](qwen36-peer-comparison.md) — full peer
-  benchmark results with artifact provenance and fairness limitations
-- [MTP draft gate throughput](draft-gate-throughput.md) — gate tuning
-  and throughput analysis
-- [Supported Models: MTP Downloads](../SUPPORTED-MODELS.md#mtp-downloads) —
-  how to download AX Engine MTP packages
+- [Qwen3.6 MTP peer comparison](qwen36-peer-comparison.md)
+- [Clean 2026-08-07 summary](../../benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/summary.json)
+- [Output-work diagnostic](../../benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json)
+- [Supported Models: MTP Downloads](../SUPPORTED-MODELS.md#mtp-downloads)

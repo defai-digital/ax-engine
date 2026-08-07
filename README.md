@@ -24,8 +24,10 @@ memory).**
 
 - **Faster speculative decode** — AutomatosX chat snapshots bundle their MTP
   sidecar or assistant weights, so one standard download is serve-ready; AX
-  shows **1.28×–2.64×** same-package MTP acceleration and peer decode wins vs
-  MTPLX and lightning-mlx on Qwen3.6
+  speeds up **14 of 15** exact same-package 6-bit MTP rows (**1.68×**
+  geometric mean; **0.88×–2.56×** range). In the newest Qwen3.6 peer campaign,
+  AX beats lightning-mlx on both 35B-A3B rows but trails MTPLX on all three
+  comparable rows
 - **Faster single-model serving** — on the path users actually measure
   (streaming OpenAI chat), AX Engine **6.13.1** leads a peer MLX serving
   engine **0.4.3** in **8/8** Qwen 3.6 decode cells, with **+12.9%**
@@ -285,7 +287,7 @@ serving, MTP, direct, or embedding rows, and do not mix **M3 Max** vs
 | --- | --- | --- | --- |
 | **Single-client serving** | AX Engine · peer MLX serving engine **0.4.3** | **8/8** decode wins · MoE **~21–24%** faster · GM decode **+12.9%** | M5 Max · 2026-08-06 · AX **6.13.1** |
 | **Multi-model (S1)** | AX one process · multi-process peer MLX server | **All locked gates** · thr **5.03×** | M5 Max · 2026-08-06 |
-| **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | AX leads Qwen3.6 peer decode; **1.28×–2.64×** vs same-package direct | M5 Max · MTP accel 2026-07-29 |
+| **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | Exact 6-bit MTP: **14/15 wins**, **1.68× GM**; peer: AX trails MTPLX, beats lightning-mlx **2/3** | M5 Max · 2026-08-06/07 |
 | **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | Competitive decode; charts in docs | M5 Max · 2026-07-27 (peers retained) |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Ingest scale tables in docs | M5 Max · 2026-07-27 |
 
@@ -334,24 +336,25 @@ throughput ratio **5.03×** (TTFT and stream-gap p95 also win). Detail:
 
 Qwen3.6 peer decode (closest fair metric across engines). 27B 4-bit uses the
 **same** AX sidecar on all three; 35B-A3B rows are production-configuration
-packages. Stitched peer session — not one interleaved physical run.
+packages. All rows come from one clean, serialized physical-host campaign.
 Fairness notes: [Qwen3.6 MTP peer comparison](docs/mtp/qwen36-peer-comparison.md).
 
 <img width="100%" src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison: AX Engine, MTPLX, and lightning-mlx decode throughput">
 
 | Target | AX Engine | MTPLX | lightning-mlx | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | **63.0** tok/s | 58.5 tok/s | 55.7 tok/s | Same sidecar; AX leads |
-| Qwen3.6 27B 6-bit | 41.8 tok/s | — | — | No official peer 27B 6-bit MTP artifact |
-| Qwen3.6 35B-A3B 4-bit | **172.4** tok/s | 137.9 tok/s | 116.2 tok/s | AX leads production-config row |
-| Qwen3.6 35B-A3B 6-bit | **141.2** tok/s | 119.0 tok/s | 96.3 tok/s | AX leads production-config row |
+| Qwen3.6 27B 4-bit | 56.1 tok/s | **59.9** tok/s | 57.3 tok/s | Same sidecar; AX trails MTPLX 6.3% and lightning-mlx 2.0% |
+| Qwen3.6 27B 6-bit | 44.8 tok/s | — | — | No official peer 27B 6-bit MTP artifact |
+| Qwen3.6 35B-A3B 4-bit | 140.9 tok/s | **145.1** tok/s | 124.2 tok/s | AX trails MTPLX 2.9%; leads lightning-mlx 13.4% |
+| Qwen3.6 35B-A3B 6-bit | 120.5 tok/s | **125.2** tok/s | 102.0 tok/s | AX trails MTPLX 3.7%; leads lightning-mlx 18.2% |
 
-**Same-package AX acceleration** (exact sampled MTP, v6.12.1, M5 Max — not a
-peer leaderboard): all **15** target/suite rows speed up decode by
-**1.28×–2.64×** over AX direct on the same 6-bit package, with 100% MTP step
-coverage. Highlight rows: Qwen3.6 27B 6-bit flappy **2.64×** (23.7 → 62.6
-tok/s); Gemma 4 12B flappy **2.54×** (39.5 → 100.4 tok/s); Qwen3.6 35B-A3B
-still **1.28×–1.39×** on an already-fast MoE direct baseline.
+**Same-package AX acceleration** (exact sampled MTP, v6.13.1, M5 Max — not a
+peer leaderboard): **14 of 15** target/suite rows speed up decode, with a
+**1.68×** geometric mean and **0.88×–2.56×** range over AX direct on the same
+6-bit package. Every row has 100% MTP step coverage. The one regression is
+Qwen3.6 35B-A3B `python_modules_long` at **0.88×**; Qwen3.6 35B-A3B reaches
+**1.01×–1.09×** on the other two suites, while Gemma 4 12B reaches
+**2.02×–2.54×**.
 
 <img width="100%" src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit exact sampled-MTP acceleration vs same-package direct">
 

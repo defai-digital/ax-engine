@@ -1,64 +1,64 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="672" viewBox="0 0 1120 672" role="img" aria-labelledby="title desc">
-<title id="title">Qwen3.6 MTP peer comparison prefill (2026-07-09) apples to apples</title>
+<title id="title">Qwen3.6 MTP peer comparison prefill (2026-08-07) apples to apples</title>
 <desc id="desc">Grouped horizontal bar chart comparing AX Engine, MTPLX, and lightning-mlx tok/s on the flappy prompt suite. Degenerate rows are shown muted and are not eligible for best-row highlighting.</desc>
 <rect width="1120" height="672" fill="#f8fafc"/>
-<text x="32" y="34" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison prefill (2026-07-09)</text>
+<text x="32" y="34" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison prefill (2026-08-07)</text>
 <text x="32" y="60" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 15s cooldown · apples to apples</text>
 <text x="32" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#6b7280">Prefill throughput, tokens per second.</text>
 <text x="1052.0" y="80" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#dc2626">Higher is better</text>
 <line x1="248.0" y1="86.0" x2="248.0" y2="606" stroke="#cbd5e1" stroke-width="1"/>
 <text x="248.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">0</text>
 <line x1="449.0" y1="86.0" x2="449.0" y2="606" stroke="#e5e7eb" stroke-width="1"/>
-<text x="449.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">625</text>
+<text x="449.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">500</text>
 <line x1="650.0" y1="86.0" x2="650.0" y2="606" stroke="#e5e7eb" stroke-width="1"/>
-<text x="650.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">1.2k</text>
+<text x="650.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">1k</text>
 <line x1="851.0" y1="86.0" x2="851.0" y2="606" stroke="#e5e7eb" stroke-width="1"/>
-<text x="851.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">1.9k</text>
+<text x="851.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">1.5k</text>
 <line x1="1052.0" y1="86.0" x2="1052.0" y2="606" stroke="#e5e7eb" stroke-width="1"/>
-<text x="1052.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">2.5k</text>
+<text x="1052.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">2k</text>
 <rect x="648.0" y="25" width="13" height="13" rx="2" fill="#2eaf5f"/>
-<text x="667.0" y="37" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#374151">AX Engine v6.9.0</text>
+<text x="667.0" y="37" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#374151">AX Engine v6.13.3</text>
 <rect x="784.0" y="25" width="13" height="13" rx="2" fill="#f2b705"/>
-<text x="803.0" y="37" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#374151">MTPLX</text>
+<text x="803.0" y="37" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#374151">MTPLX v2.1.0</text>
 <rect x="920.0" y="25" width="13" height="13" rx="2" fill="#2563eb"/>
-<text x="939.0" y="37" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#374151">lightning-mlx</text>
+<text x="939.0" y="37" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#374151">lightning-mlx v0.6.10</text>
 <text x="32" y="130.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">27B 4-bit</text>
-<text x="234.0" y="159.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine v6.9.0</text>
-<rect x="248.0" y="144.0" width="261.2" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
-<text x="517.2" y="159.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">812.2</text>
-<text x="234.0" y="189.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
-<rect x="248.0" y="174.0" width="217.4" height="20.0" rx="3" fill="#f2b705" opacity="1"/>
-<text x="473.4" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">676.1</text>
-<text x="234.0" y="219.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
-<rect x="248.0" y="204.0" width="133.4" height="20.0" rx="3" fill="#2563eb" opacity="1"/>
-<text x="389.4" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">414.9</text>
+<text x="234.0" y="159.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine v6.13.3</text>
+<rect x="248.0" y="144.0" width="276.2" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
+<text x="532.2" y="159.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">687.1</text>
+<text x="234.0" y="189.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX v2.1.0</text>
+<rect x="248.0" y="174.0" width="263.4" height="20.0" rx="3" fill="#f2b705" opacity="1"/>
+<text x="519.4" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">655.3</text>
+<text x="234.0" y="219.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx v0.6.10</text>
+<rect x="248.0" y="204.0" width="168.3" height="20.0" rx="3" fill="#2563eb" opacity="1"/>
+<text x="424.3" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">418.7</text>
 <text x="32" y="248.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">27B 6-bit</text>
-<text x="234.0" y="277.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine v6.9.0</text>
-<rect x="248.0" y="262.0" width="243.5" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
-<text x="499.5" y="277.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">757.3</text>
-<text x="234.0" y="307.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
+<text x="234.0" y="277.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine v6.13.3</text>
+<rect x="248.0" y="262.0" width="206.9" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
+<text x="462.9" y="277.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">514.6</text>
+<text x="234.0" y="307.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX v2.1.0</text>
 <text x="248.0" y="307.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#9ca3af">unsupported</text>
-<text x="234.0" y="337.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
+<text x="234.0" y="337.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx v0.6.10</text>
 <text x="248.0" y="337.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#9ca3af">unsupported</text>
 <text x="32" y="366.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">35B-A3B 4-bit</text>
-<text x="234.0" y="395.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine v6.9.0</text>
-<rect x="248.0" y="380.0" width="674.3" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
-<text x="930.3" y="395.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">2096.7</text>
-<text x="234.0" y="425.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
-<rect x="248.0" y="410.0" width="527.3" height="20.0" rx="3" fill="#f2b705" opacity="1"/>
-<text x="783.3" y="425.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">1639.7</text>
-<text x="234.0" y="455.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
-<rect x="248.0" y="440.0" width="471.6" height="20.0" rx="3" fill="#2563eb" opacity="1"/>
-<text x="727.6" y="455.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">1466.5</text>
+<text x="234.0" y="395.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine v6.13.3</text>
+<rect x="248.0" y="380.0" width="349.5" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
+<text x="605.5" y="395.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">869.3</text>
+<text x="234.0" y="425.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX v2.1.0</text>
+<rect x="248.0" y="410.0" width="616.9" height="20.0" rx="3" fill="#f2b705" opacity="1"/>
+<text x="872.9" y="425.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">1534.7</text>
+<text x="234.0" y="455.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx v0.6.10</text>
+<rect x="248.0" y="440.0" width="354.5" height="20.0" rx="3" fill="#2563eb" opacity="1"/>
+<text x="610.5" y="455.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">881.8</text>
 <text x="32" y="484.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">35B-A3B 6-bit</text>
-<text x="234.0" y="513.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine v6.9.0</text>
-<rect x="248.0" y="498.0" width="588.1" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
-<text x="844.1" y="513.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">1828.8</text>
-<text x="234.0" y="543.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
-<rect x="248.0" y="528.0" width="476.2" height="20.0" rx="3" fill="#f2b705" opacity="1"/>
-<text x="732.2" y="543.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">1480.6</text>
-<text x="234.0" y="573.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
-<rect x="248.0" y="558.0" width="391.0" height="20.0" rx="3" fill="#2563eb" opacity="1"/>
-<text x="647.0" y="573.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">1215.8</text>
-<text x="32" y="654" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Source: 2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json   ·   Versions: AX Engine v6.9.0 6.9.0 · MTPLX 2.0.1 · lightning-mlx 0.7.0</text>
+<text x="234.0" y="513.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine v6.13.3</text>
+<rect x="248.0" y="498.0" width="389.8" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
+<text x="645.8" y="513.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">969.6</text>
+<text x="234.0" y="543.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX v2.1.0</text>
+<rect x="248.0" y="528.0" width="559.7" height="20.0" rx="3" fill="#f2b705" opacity="1"/>
+<text x="815.7" y="543.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">1392.3</text>
+<text x="234.0" y="573.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx v0.6.10</text>
+<rect x="248.0" y="558.0" width="301.7" height="20.0" rx="3" fill="#2563eb" opacity="1"/>
+<text x="557.7" y="573.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">750.6</text>
+<text x="32" y="654" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Source: benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/summary.json   ·   Versions: AX Engine v6.13.3 (cdf80cf6) · MTPLX v2.1.0 (a3919738) · lightning-mlx v0.6.10 (ec19b3d8)</text>
 </svg>

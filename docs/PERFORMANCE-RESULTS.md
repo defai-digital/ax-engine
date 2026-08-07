@@ -35,14 +35,14 @@ denominator.
 > admission check at throughput parity with 0.31.2 (56.3 TFLOP/s qmm,
 > 2026-07-15) and is the admitted build for new benchmark sessions.
 
-**Evidence freshness (as of 2026-08-06):**
+**Evidence freshness (as of 2026-08-07):**
 
 | Session | Engine / peers | Host | When |
 | --- | --- | --- | --- |
 | Single-client serving vs peer MLX serving engine | AX Engine **6.13.1** · peer MLX serving engine **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
 | Multi-model S1 | AX Engine · multi-process peer MLX server **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
 | 6-bit exact sampled-MTP comparison | AX Engine **v6.13.1** AX-only | Apple **M5 Max** 128 GB | 2026-08-06 |
-| Qwen3.6 MTP peer (MTPLX / lightning-mlx) | Stitched peer matrix · MTPLX **2.0.1** | Apple M-series (see artifact) | 2026-07-09 |
+| Qwen3.6 MTP peer (MTPLX / lightning-mlx) | AX **6.13.3** · MTPLX **2.1.0** · lightning-mlx **0.6.10** | Apple **M5 Max** 128 GB | 2026-08-07 |
 | Direct generation snapshot | AX Engine **v6.12.0** AX-only; retained `mlx-lm` **0.31.3** · `llama.cpp` **b9910** | Apple **M5 Max** 128 GB | 2026-07-27 |
 | Embeddings | AX-only refresh + retained peer medians | Apple **M5 Max** 128 GB | 2026-07-27 |
 
@@ -230,7 +230,7 @@ Exactness is checked with per-mode seed reproducibility. Summary artifacts:
 [`summary.md`](../benchmarks/results/speculative/mtp-6bit/2026-08-06-v6.13.1-m5max-supported-mtp-ax-only/summary.md) and
 [`summary.json`](../benchmarks/results/speculative/mtp-6bit/2026-08-06-v6.13.1-m5max-supported-mtp-ax-only/summary.json).
 
-#### Qwen3.6 MTP peer decode comparison (2026-07-09)
+#### Qwen3.6 MTP peer decode comparison (2026-08-07)
 
 This page keeps only the decode-throughput view for the Qwen3.6 MTP peer
 comparison because decode is the closest comparable metric across AX Engine,
@@ -239,25 +239,35 @@ accept rate, seed policy, model-artifact identity, and output-degeneracy checks
 need separate interpretation:
 [`mtp/qwen36-peer-comparison.md`](mtp/qwen36-peer-comparison.md).
 
-This is a stitched peer comparison, not one interleaved physical-session
-benchmark. AX Engine rows were refreshed on the current code; MTPLX rows were
-refreshed with MTPLX 2.0.1; lightning-mlx rows are retained from the prior
-peer artifacts and called out as retained rows in the stitched chart source.
-The 27B 4-bit rows load the same
-`ax-local/Qwen3.6-27B-MTP` sidecar across AX Engine, MTPLX, and lightning-mlx;
-the 35B-A3B peer rows remain production-configuration rows with the peer
-engines' Youssofal MTPLX-optimized packages. The AX 27B 4-bit row uses strict
-MTP verification and passes the output-degeneracy gate; older optimistic
-artifacts remain useful only as audit/debug evidence.
+All supported rows were rerun serially on one Apple M5 Max 128 GB host with
+the same seed-0 prompt/sampling contract, 2 warmups, 5 measurements, 15-second
+cooldowns, disabled cross-request prefix caches, clean tracked source
+checkouts, and passing start/end host-condition gates. Measured identities are
+AX Engine 6.13.3 (`cdf80cf6`), MTPLX 2.1.0 (`a3919738`), and lightning-mlx
+0.6.10 (`ec19b3d8`).
+
+The 27B 4-bit rows load the same verified
+`ax-local/Qwen3.6-27B-MTP` BF16 sidecar across all three engines. The 35B-A3B
+rows remain production-configuration comparisons: AX uses its BF16 sidecar,
+while MTPLX and lightning-mlx use the matching Youssofal optimized package.
+AX uses strict distribution-exact verification and every supported row passes
+the output-degeneracy gate.
 
 <img src="assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison production-configuration chart showing decode throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
 
 | Target | AX Engine decode | MTPLX decode | lightning-mlx decode | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 63.0 tok/s | 58.5 tok/s | 55.7 tok/s | Same AX sidecar across all three engines; AX leads this row |
-| Qwen3.6 27B 6-bit | 41.8 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
-| Qwen3.6 35B-A3B 4-bit | 172.4 tok/s | 137.9 tok/s | 116.2 tok/s | AX leads this production-config row |
-| Qwen3.6 35B-A3B 6-bit | 141.2 tok/s | 119.0 tok/s | 96.3 tok/s | AX leads this production-config row |
+| Qwen3.6 27B 4-bit | 56.1 tok/s | **59.9 tok/s** | 57.3 tok/s | Same BF16 sidecar; AX trails MTPLX 6.3% and lightning-mlx 2.0% |
+| Qwen3.6 27B 6-bit | 44.8 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
+| Qwen3.6 35B-A3B 4-bit | 140.9 tok/s | **145.1 tok/s** | 124.2 tok/s | AX trails MTPLX 2.9%; leads lightning-mlx 13.4% |
+| Qwen3.6 35B-A3B 6-bit | 120.5 tok/s | **125.2 tok/s** | 102.0 tok/s | AX trails MTPLX 3.7%; leads lightning-mlx 18.2% |
+
+Across the three comparable rows, AX is **4.3% lower** than MTPLX and
+**9.5% higher** than lightning-mlx by geometric mean. This reverses the
+ranking in the superseded 2026-07-09 stitched artifact. It is a dated-artifact
+regression, not an isolated code-regression measurement: the old matrix mixed
+sessions and dirty builds, while this campaign uses the current exact verifier,
+new peer versions, one clean host session, and a stricter publication schema.
 
 **27B effective output work (same sidecar):** On the identical 27B dense
 sidecar, active bytes match across engines, so output work tracks the decode
@@ -268,25 +278,24 @@ same for every row, so the chart omits that column.
 
 Read output-work percentages above 100% as MTP output leverage, not impossible
 memory bandwidth. For the 27B 4-bit rows, each target verifier pass reads about
-16.9 GB of weights, but a successful MTP pass can commit several accepted draft
-tokens. AX, for example, runs about 16.5 verifier passes/s and emits about
-3.8 output tokens/pass, so the physical target-cycle estimate is about
-279 GB/s while the output-scaled diagnostic is about 1065 GB/s. The latter is
-useful for explaining committed-token work per second, but it is not a claim
-that the GPU exceeded the 577 GB/s physical-memory reference.
+16.9 GB of weights, but a successful MTP pass can commit several accepted
+draft tokens. AX runs about 14.8 verifier passes/s and emits about 3.8 output
+tokens/pass, so its physical verifier-cycle estimate is about 251 GB/s while
+the output-scaled diagnostic is about 949 GB/s. MTPLX's output-scaled value is
+about 1,012 GB/s. These are committed-token work diagnostics, not claims that
+the GPU exceeded the 577 GB/s physical-memory reference.
 
 35B-A3B is intentionally not charted as an output-work diagnostic because the
 peer rows are production-configuration MoE package rows with different
-active-byte estimates. AX leads that row on the fair speed metric, decode
-tok/s; active bytes and output work are retained in the detailed table only as
-audit context.
+active-byte estimates. MTPLX leads those rows on the fair speed metric, decode
+tok/s; active bytes and output work remain detailed-table audit context.
 
 Full results, charts, artifact links, and fairness limitations:
 [`mtp/qwen36-peer-comparison.md`](mtp/qwen36-peer-comparison.md).
-Stitched chart source:
-[`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json`](../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json).
+Clean campaign source:
+[`benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/summary.json`](../benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/summary.json).
 Decode and output-work diagnostic source:
-[`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json`](../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json).
+[`benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json`](../benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json).
 For the older AX-only Qwen3.6 table across `flappy`, `long_code`, and
 `python_modules_long`, see
 [`mtp/qwen36-matrix-refresh.md`](mtp/qwen36-matrix-refresh.md). That
