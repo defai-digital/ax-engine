@@ -250,12 +250,12 @@ pub(super) struct ProjectionSlots {
     pub(super) params: u64,
 }
 
+const _: () = assert!(!super::build::PROJECTION_KERNEL_SIGNATURES.is_empty());
+
 pub(super) static PROJECTION_SLOTS: std::sync::LazyLock<ProjectionSlots> =
     std::sync::LazyLock::new(|| {
         let signatures = super::build::PROJECTION_KERNEL_SIGNATURES;
-        let first = signatures
-            .first()
-            .expect("projection expectation table must not be empty");
+        let first = &signatures[0];
         // One slot layout serves the family: every kernel must bind the
         // same four indices in the same declaration order. The AST gate
         // proves table == shader; this proves table == dispatch.
@@ -384,10 +384,8 @@ pub(super) fn encode_gate_product_elementwise(
     inputs: &[&Buffer],
     output: &Buffer,
     element_count: u32,
-) {
-    let slots = GATE_PRODUCT_SLOTS
-        .get(kernel_name)
-        .unwrap_or_else(|| panic!("kernel {kernel_name} is not in the gate-product table"));
+) -> Option<()> {
+    let slots = GATE_PRODUCT_SLOTS.get(kernel_name)?;
     assert_eq!(
         inputs.len(),
         slots.inputs.len(),
@@ -414,6 +412,7 @@ pub(super) fn encode_gate_product_elementwise(
             1,
         ),
     );
+    Some(())
 }
 
 pub(super) fn set_cache_dispatch_params(

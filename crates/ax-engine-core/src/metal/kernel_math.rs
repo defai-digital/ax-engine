@@ -2441,14 +2441,19 @@ pub(super) fn apply_model_gate_up_product_with_optional_native_path(
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.ffn_gate_product.compute");
 
-            encode_gate_product_elementwise(
+            if encode_gate_product_elementwise(
                 encoder,
                 pipeline,
                 kernel_name,
                 &[&gate_buffer, &up_buffer],
                 &output_buffer,
                 saturating_usize_to_u32(gate.len()),
-            );
+            )
+            .is_none()
+            {
+                encoder.end_encoding();
+                return None;
+            }
 
             encoder.end_encoding();
             command_buffer.commit();

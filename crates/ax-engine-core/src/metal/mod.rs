@@ -11843,14 +11843,19 @@ fn compute_linear_attention_beta_rows_with_optional_native_path(
             command_buffer.set_label("ax.phase1.linear_attention_beta");
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.linear_attention_beta.compute");
-            encode_gate_product_elementwise(
+            if encode_gate_product_elementwise(
                 encoder,
                 pipeline,
                 kernel_name,
                 &[&beta_buffer],
                 &output_buffer,
                 saturating_usize_to_u32(element_count),
-            );
+            )
+            .is_none()
+            {
+                encoder.end_encoding();
+                return None;
+            }
             encoder.end_encoding();
             command_buffer.commit();
             command_buffer.wait_until_completed();
@@ -12006,14 +12011,19 @@ fn compute_linear_attention_decay_rows_with_optional_native_path(
             command_buffer.set_label("ax.phase1.linear_attention_decay");
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.linear_attention_decay.compute");
-            encode_gate_product_elementwise(
+            if encode_gate_product_elementwise(
                 encoder,
                 pipeline,
                 kernel_name,
                 &[&a_buffer, &a_log_buffer, &dt_bias_buffer],
                 &output_buffer,
                 saturating_usize_to_u32(element_count),
-            );
+            )
+            .is_none()
+            {
+                encoder.end_encoding();
+                return None;
+            }
             encoder.end_encoding();
             command_buffer.commit();
             command_buffer.wait_until_completed();
@@ -12227,14 +12237,19 @@ fn apply_attention_output_gate_with_optional_native_path(
             command_buffer.set_label("ax.phase1.attention_output_gate");
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.attention_output_gate.compute");
-            encode_gate_product_elementwise(
+            if encode_gate_product_elementwise(
                 encoder,
                 pipeline,
                 kernel_name,
                 &[&gate_buffer, &row_buffer],
                 &output_buffer,
                 saturating_usize_to_u32(element_count),
-            );
+            )
+            .is_none()
+            {
+                encoder.end_encoding();
+                return None;
+            }
             encoder.end_encoding();
             command_buffer.commit();
             command_buffer.wait_until_completed();
@@ -12361,14 +12376,19 @@ fn apply_linear_attention_gate_with_optional_native_path(
             command_buffer.set_label("ax.phase1.linear_attention_gate");
             let encoder = command_buffer.new_compute_command_encoder();
             encoder.set_label("ax.phase1.linear_attention_gate.compute");
-            encode_gate_product_elementwise(
+            if encode_gate_product_elementwise(
                 encoder,
                 pipeline,
                 kernel_name,
                 &[&z_buffer, &output_in_buffer],
                 &output_buffer,
                 saturating_usize_to_u32(element_count),
-            );
+            )
+            .is_none()
+            {
+                encoder.end_encoding();
+                return None;
+            }
             encoder.end_encoding();
             command_buffer.commit();
             command_buffer.wait_until_completed();
@@ -13097,14 +13117,19 @@ fn fused_linear_attn_tail_on_gpu(
         );
 
         // 2. Linear gate: normed × silu(z) → gated
-        encode_gate_product_elementwise(
+        if encode_gate_product_elementwise(
             encoder,
             gate_pipeline,
             gate_kernel_name,
             &[&z_buf, &normed_buf],
             &gated_buf,
             value_dim_u32,
-        );
+        )
+        .is_none()
+        {
+            encoder.end_encoding();
+            return None;
+        }
 
         // 3. Out projection: gated → hidden
         encode_fused_projection(
