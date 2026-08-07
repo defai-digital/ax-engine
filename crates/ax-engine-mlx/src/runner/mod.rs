@@ -225,6 +225,11 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_HITS: &str = "ax_mlx_prefix_cach
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_STORES: &str = "ax_mlx_prefix_cache_native_stores";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_EVICTIONS: &str =
     "ax_mlx_prefix_cache_native_evictions";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTIONS: &str = "ax_mlx_prefix_cache_demotions";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTED_BYTES_KIB: &str =
+    "ax_mlx_prefix_cache_demoted_bytes_kib";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTION_SKIPS: &str =
+    "ax_mlx_prefix_cache_demotion_skips";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS: &str = "ax_mlx_prefix_cache_disk_hits";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES: &str = "ax_mlx_prefix_cache_disk_misses";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS: &str = "ax_mlx_prefix_cache_disk_inserts";
@@ -1077,14 +1082,113 @@ fn prefix_snapshot_start_tokens(
     }
 }
 
+/// ADR-016 demote-on-evict kill switch. Default ON;
+/// `AX_MLX_PREFIX_DEMOTE_ON_EVICT=0` restores the pre-change behavior of
+/// dropping evicted native prefix snapshots instead of demoting them into
+/// the portable host-RAM store. Read live (like `AX_KV_QUANT`) so tests and
+/// A/B harnesses can toggle it without a process restart.
+pub(crate) const AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV: &str = "AX_MLX_PREFIX_DEMOTE_ON_EVICT";
+
+fn prefix_demote_on_evict_enabled() -> bool {
+    !std::env::var(AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV).is_ok_and(|value| value == "0")
+}
+
+/// ADR-016 demote-on-evict. Serialize an evicted native prefix snapshot into
+/// the portable host-RAM L1 store instead of dropping it, subject to that
+/// store's existing budgets (`insert` runs `evict_until_within_policy`, so
+/// overflow evicts per policy). Restore is unchanged: the portable tier is
+/// already consulted between native L1 and disk L2. Runs on the runner owner
+/// thread; the caller still drops the native snapshot after releasing the
+/// native-cache lock (ADR-006 lock-order contract).
+fn demote_native_prefix_snapshot(
+    portable_cache: &Mutex<MlxPrefixCache>,
+    key: &MlxPrefixCacheKey,
+    snapshot: &MlxNativePrefixSnapshot,
+    telemetry: &mut MlxPrefixCacheTelemetry,
+) {
+    if !prefix_demote_on_evict_enabled() {
+        telemetry.record_demotion_skip();
+        return;
+    }
+    // The wire (v4) does serialize rotating_window; it is the runner's
+    // restore path that refuses slot-ordered rotating payloads as misses.
+    // Never publish a snapshot restore would reject. Native snapshots are
+    // all-Paged, so this is dead defense rather than an expected skip.
+    if snapshot.token_count == 0 || snapshot.cache.has_rotated_sliding_layers() {
+        telemetry.record_demotion_skip();
+        return;
+    }
+    if !portable_cache.lock().enabled() {
+        telemetry.record_demotion_skip();
+        return;
+    }
+    let payload: Arc<[u8]> = snapshot.cache.serialize_to_bytes().into();
+    let demoted = MlxPrefixSnapshot::from_shared_payload(
+        payload,
+        snapshot.tokens.clone(),
+        snapshot.token_count,
+        snapshot.greedy_prefill_output_token,
+    );
+    let demoted_bytes = demoted.bytes;
+    let mut cache = portable_cache.lock();
+    // An entry the byte budget could never hold would flush every healthy
+    // entry before self-evicting; refuse it up front so one huge demote
+    // cannot wipe a healthy portable cache.
+    if demoted_bytes > cache.policy.max_bytes {
+        telemetry.record_demotion_skip();
+        return;
+    }
+    // The superseding check and the insert share this one lock acquisition:
+    // a boundary store that already covers the prefix makes the demote a
+    // pure re-serialize, and a full store racing the O(prefix) serialize
+    // above must not be overwritten by this staler snapshot.
+    let Some(outcome) = cache.insert_unless_superseded(key.clone(), demoted) else {
+        telemetry.record_demotion_skip();
+        return;
+    };
+    telemetry.record_stats(cache.stats());
+    drop(cache);
+    if outcome.stored {
+        telemetry.record_demotion(demoted_bytes, outcome.evictions);
+    } else {
+        // The portable budget refused the entry outright; the drop stands.
+        telemetry.evictions = telemetry.evictions.saturating_add(outcome.evictions);
+        telemetry.record_demotion_skip();
+    }
+}
+
+/// Demote entries evicted by a native-tier insert (ADR-016). Suppressed
+/// when the portable store itself would not publish for this boundary
+/// (`portable_store_phase == false` during scheduler-split prefills):
+/// portable serialization is deferred until prompt completion there because
+/// per-boundary publishes turn an O(N) prefill into O(N²) memory traffic —
+/// a partial-boundary demote would reintroduce exactly that hazard.
+fn demote_native_insert_evictions(
+    portable_cache: &Mutex<MlxPrefixCache>,
+    evicted: &[(MlxPrefixCacheKey, Arc<MlxNativePrefixSnapshot>)],
+    portable_store_phase: bool,
+    telemetry: &mut MlxPrefixCacheTelemetry,
+) {
+    if !portable_store_phase {
+        return;
+    }
+    for (key, snapshot) in evicted {
+        demote_native_prefix_snapshot(portable_cache, key, snapshot, telemetry);
+    }
+}
+
 /// Evict native snapshots until the pool can satisfy the caller's current
 /// demand. Recompute demand after every eviction: dropping a snapshot can
 /// make an active adopter the unique owner of its tail block, eliminating a
 /// pending COW allocation even when `available_blocks` itself did not grow.
+///
+/// Each evicted snapshot is offered to `on_evicted` (ADR-016 demotion into
+/// the portable store) before it is dropped.
 fn reclaim_native_prefix_entries(
     native_cache: &Mutex<MlxNativePrefixCache>,
     pool: &SharedFaBlockPool,
     mut required_blocks: impl FnMut() -> Option<u32>,
+    mut on_evicted: impl FnMut(MlxPrefixCacheKey, &MlxNativePrefixSnapshot),
 ) -> u32 {
     let mut evictions = 0u32;
     while let Some(required) = required_blocks() {
@@ -1092,9 +1196,10 @@ fn reclaim_native_prefix_entries(
             break;
         }
         let retired = { native_cache.lock().take_lru() };
-        let Some(retired) = retired else {
+        let Some((key, retired)) = retired else {
             break;
         };
+        on_evicted(key, &retired);
         drop(retired);
         evictions = evictions.saturating_add(1);
     }
@@ -4487,8 +4592,10 @@ impl MlxRunner {
                     media_key.as_deref(),
                 )
             };
-        prefix_cache.native_evictions = prefix_cache.native_evictions.saturating_add(
-            self.reclaim_native_prefix_capacity(&state.cache, item.input_token_slice.len()),
+        self.reclaim_native_prefix_capacity(
+            &state.cache,
+            item.input_token_slice.len(),
+            &mut prefix_cache,
         );
 
         // Phase 3b: per-layer KV-cache quantization from the model manifest.
@@ -5485,26 +5592,48 @@ impl MlxRunner {
             && self.weights.nemotron_omni.is_none()
     }
 
-    fn reclaim_native_prefix_capacity(&self, cache: &MlxKVCache, new_tokens: usize) -> u32 {
+    fn reclaim_native_prefix_capacity(
+        &self,
+        cache: &MlxKVCache,
+        new_tokens: usize,
+        telemetry: &mut MlxPrefixCacheTelemetry,
+    ) {
         if !self.native_fa_prefix_sharing_enabled() {
-            return 0;
+            return;
         }
         let Some(pool) = self.shared_fa_block_pool.as_ref() else {
-            return 0;
+            return;
         };
         if !cache.uses_fa_block_pool(pool) {
-            return 0;
+            return;
         }
-        reclaim_native_prefix_entries(&self.native_prefix_cache, pool, || {
-            cache.additional_fa_blocks_for_append(new_tokens)
-        })
+        let evictions = reclaim_native_prefix_entries(
+            &self.native_prefix_cache,
+            pool,
+            || cache.additional_fa_blocks_for_append(new_tokens),
+            |key, snapshot| {
+                demote_native_prefix_snapshot(&self.prefix_cache, &key, snapshot, telemetry);
+            },
+        );
+        telemetry.native_evictions = telemetry.native_evictions.saturating_add(evictions);
     }
 
-    fn reclaim_native_prefix_blocks(&self, required: u32) -> u32 {
+    fn reclaim_native_prefix_blocks(
+        &self,
+        required: u32,
+        telemetry: &mut MlxPrefixCacheTelemetry,
+    ) -> u32 {
         let Some(pool) = self.shared_fa_block_pool.as_ref() else {
             return 0;
         };
-        reclaim_native_prefix_entries(&self.native_prefix_cache, pool, || Some(required))
+        reclaim_native_prefix_entries(
+            &self.native_prefix_cache,
+            pool,
+            || Some(required),
+            |key, snapshot| {
+                demote_native_prefix_snapshot(&self.prefix_cache, &key, snapshot, telemetry);
+            },
+        )
     }
 
     /// Restore portable dense snapshots back under the runner-wide physical
@@ -5513,22 +5642,18 @@ impl MlxRunner {
     fn prepare_portable_prefix_restore(
         &self,
         restored: MlxKVCache,
-    ) -> (Result<MlxKVCache, FaBlockPoolError>, u32) {
+        telemetry: &mut MlxPrefixCacheTelemetry,
+    ) -> Result<MlxKVCache, FaBlockPoolError> {
         if !self.native_fa_prefix_sharing_enabled() {
-            return (Ok(restored), 0);
+            return Ok(restored);
         }
         let Some(pool) = self.shared_fa_block_pool.as_ref() else {
-            return (Ok(restored), 0);
+            return Ok(restored);
         };
-        let required = match restored.fa_blocks_required_for_repage(pool) {
-            Ok(required) => required,
-            Err(error) => return (Err(error), 0),
-        };
-        let evictions = self.reclaim_native_prefix_blocks(required);
-        (
-            restored.clone_repage_into_shared_fa_pool(pool.clone()),
-            evictions,
-        )
+        let required = restored.fa_blocks_required_for_repage(pool)?;
+        let evictions = self.reclaim_native_prefix_blocks(required, telemetry);
+        telemetry.native_evictions = telemetry.native_evictions.saturating_add(evictions);
+        restored.clone_repage_into_shared_fa_pool(pool.clone())
     }
 
     fn prefix_cache_route_policy(&self) -> String {
@@ -6076,11 +6201,8 @@ impl MlxRunner {
                             "L1 prefix-cache payload is structurally incomplete; treating as miss",
                         );
                     } else {
-                        let (prepared, pressure_evictions) =
-                            self.prepare_portable_prefix_restore(restored_cache);
-                        telemetry.native_evictions = telemetry
-                            .native_evictions
-                            .saturating_add(pressure_evictions);
+                        let prepared =
+                            self.prepare_portable_prefix_restore(restored_cache, &mut telemetry);
                         match prepared {
                             Ok(restored_cache) => {
                                 state.cache = restored_cache;
@@ -6193,11 +6315,8 @@ impl MlxRunner {
                              treating as miss and recomputing",
                         );
                     } else {
-                        let (prepared, pressure_evictions) =
-                            self.prepare_portable_prefix_restore(restored.cache);
-                        telemetry.native_evictions = telemetry
-                            .native_evictions
-                            .saturating_add(pressure_evictions);
+                        let prepared =
+                            self.prepare_portable_prefix_restore(restored.cache, &mut telemetry);
                         match prepared {
                             Ok(restored_cache) => {
                                 state.cache = restored_cache;
@@ -6754,9 +6873,20 @@ impl MlxRunner {
                 telemetry.native_evictions = telemetry
                     .native_evictions
                     .saturating_add(native_outcome.evictions);
-                // Release pool references only after the native-cache lock is
-                // gone (ADR-006 lock-order contract).
+                // Demote live evictions into the portable host-RAM store
+                // (ADR-016) before releasing their pool references, and only
+                // after the native-cache lock is gone (ADR-006 lock-order
+                // contract): both serialization and `MlxKVCache::drop` may
+                // touch the shared pool. The demote honors the same
+                // portable-store phase gate as the portable publish below.
+                demote_native_insert_evictions(
+                    &self.prefix_cache,
+                    &native_outcome.evicted,
+                    portable_store_phase,
+                    &mut telemetry,
+                );
                 drop(native_outcome.retired);
+                drop(native_outcome.evicted);
             }
             if !portable_store_phase && native_snapshot_ready {
                 Self::pfx_dbg(
@@ -11083,6 +11213,11 @@ mod tests {
 
     #[test]
     fn native_pressure_recomputes_cow_demand_after_eviction() {
+        // Exercises the reclaim seam the demote tests mutate the environment
+        // around; hold the read lock so a concurrent kill-switch scope can
+        // never race this test (its demote closure is a no-op today, but the
+        // lock keeps that contract if it ever changes).
+        let _env_read = DEMOTE_ON_EVICT_ENV_LOCK.read().expect("env lock");
         let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
             block_size_tokens: 4,
             max_blocks: 1,
@@ -11125,15 +11260,271 @@ mod tests {
 
         assert_eq!(pool.snapshot().available_blocks, 0);
         assert_eq!(active.additional_fa_blocks_for_append(1), Some(1));
-        let evictions = reclaim_native_prefix_entries(&native, &pool, || {
-            active.additional_fa_blocks_for_append(1)
-        });
+        let evictions = reclaim_native_prefix_entries(
+            &native,
+            &pool,
+            || active.additional_fa_blocks_for_append(1),
+            |_, _| {},
+        );
         assert_eq!(evictions, 1);
         assert_eq!(native.lock().stats().entries, 0);
         assert_eq!(active.additional_fa_blocks_for_append(1), Some(0));
         assert_eq!(pool.snapshot().allocated_blocks, 1);
         drop(active);
         assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    // ── ADR-016 demote-on-evict ──
+
+    /// Guards `AX_MLX_PREFIX_DEMOTE_ON_EVICT` across concurrently-running
+    /// tests (same contract as the `AX_KV_QUANT` guard in kv_cache tests).
+    /// The kill switch is read live, so every test that can reach a demote
+    /// path holds the lock for its whole scope: mutating tests (set/remove)
+    /// take the write lock through [`DemoteOnEvictEnvGuard`], pure readers
+    /// take a read lock so they cannot race a mutation.
+    static DEMOTE_ON_EVICT_ENV_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+    struct DemoteOnEvictEnvGuard {
+        previous: Option<String>,
+        _write_guard: std::sync::RwLockWriteGuard<'static, ()>,
+    }
+
+    impl DemoteOnEvictEnvGuard {
+        fn set(value: &str) -> Self {
+            let guard = Self::lock();
+            // SAFETY: the write lock is held for the whole test scope, so no
+            // demote test observes a mid-mutation environment.
+            unsafe { std::env::set_var(AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV, value) };
+            guard
+        }
+
+        /// Remove the variable for the test scope, restoring its prior state
+        /// on drop. Makes demote tests deterministic even when the ambient
+        /// environment has `AX_MLX_PREFIX_DEMOTE_ON_EVICT=0` set.
+        fn removed() -> Self {
+            let guard = Self::lock();
+            // SAFETY: the write lock is held for the whole test scope, so no
+            // demote test observes a mid-mutation environment.
+            unsafe { std::env::remove_var(AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV) };
+            guard
+        }
+
+        fn lock() -> Self {
+            let write_guard = DEMOTE_ON_EVICT_ENV_LOCK.write().expect("env lock");
+            let previous = std::env::var(AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV).ok();
+            Self {
+                previous,
+                _write_guard: write_guard,
+            }
+        }
+    }
+
+    impl Drop for DemoteOnEvictEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: the write lock is still held; it releases after this
+            // drop via `_write_guard`.
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV, value),
+                    None => std::env::remove_var(AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV),
+                }
+            }
+        }
+    }
+
+    fn demote_test_key(tag: u32) -> MlxPrefixCacheKey {
+        MlxPrefixCacheKey {
+            model_id: "demote-test".to_string(),
+            route_policy: "direct".to_string(),
+            layer_layout: "standard-fa".to_string(),
+            block_size_tokens: 4,
+            token_count: 3,
+            token_hash: u64::from(tag),
+            media_key: String::new(),
+        }
+    }
+
+    fn demote_test_snapshot(pool: &SharedFaBlockPool, tokens: Vec<u32>) -> MlxNativePrefixSnapshot {
+        let mut cache = MlxKVCache::new_with_shared_fa_block_pool(1, pool.clone());
+        let k = mlx_sys::zeros(&[1, 1, 3, 2], mlx_sys::MlxDtype::Float32, None);
+        let v = mlx_sys::zeros(&[1, 1, 3, 2], mlx_sys::MlxDtype::Float32, None);
+        let _ = cache.append(0, k, v);
+        cache.advance(3);
+        MlxNativePrefixSnapshot::new(cache, tokens, 64, Some(11))
+    }
+
+    #[test]
+    fn native_eviction_demotes_into_portable_store() {
+        let _env = DemoteOnEvictEnvGuard::removed();
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 1,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let native = Mutex::new(MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 1,
+        }));
+        let portable = Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1 << 20,
+            max_entries: 8,
+        }));
+
+        let tokens = vec![1, 2, 3];
+        let key = demote_test_key(7);
+        let snapshot = demote_test_snapshot(&pool, tokens.clone());
+        let producer = snapshot.cache.clone();
+        let outcome = native.lock().insert(key.clone(), snapshot);
+        assert!(outcome.stored);
+        drop(outcome.retired);
+        drop(outcome.evicted);
+        let (hit, _) = native
+            .lock()
+            .get_longest_prefix(&key, &tokens)
+            .expect("native hit");
+        let active = hit.cache.clone();
+        drop(hit);
+        drop(producer);
+
+        assert_eq!(pool.snapshot().available_blocks, 0);
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        let evictions = reclaim_native_prefix_entries(
+            &native,
+            &pool,
+            || active.additional_fa_blocks_for_append(1),
+            |key, evicted| {
+                demote_native_prefix_snapshot(&portable, &key, evicted, &mut telemetry);
+            },
+        );
+        assert_eq!(evictions, 1);
+        assert!(native.lock().is_empty());
+        assert_eq!(telemetry.demotions, 1);
+        assert_eq!(telemetry.demotion_skips, 0);
+        assert!(telemetry.demoted_bytes > 0);
+        assert_eq!(telemetry.entries, 1);
+
+        // The demoted payload round-trips through the portable store's lookup
+        // path — same key plus exact tokens — and rehydrates into a cache
+        // holding the evicted prefix length.
+        let demoted = portable
+            .lock()
+            .get(&key, &tokens)
+            .expect("demoted snapshot must be a portable hit");
+        assert_eq!(demoted.tokens, tokens);
+        assert_eq!(demoted.greedy_prefill_output_token, Some(11));
+        let restored = demoted.rehydrate_cache().expect("rehydrate");
+        assert_eq!(restored.seq_len(), tokens.len());
+
+        drop(active);
+        assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn demote_on_evict_kill_switch_restores_drop_behavior() {
+        let _guard = DemoteOnEvictEnvGuard::set("0");
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 1,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let portable = Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1 << 20,
+            max_entries: 8,
+        }));
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        let snapshot = demote_test_snapshot(&pool, vec![1, 2, 3]);
+        demote_native_prefix_snapshot(&portable, &demote_test_key(7), &snapshot, &mut telemetry);
+        assert_eq!(telemetry.demotions, 0);
+        assert_eq!(telemetry.demotion_skips, 1);
+        assert_eq!(portable.lock().stats().entries, 0);
+    }
+
+    #[test]
+    fn native_insert_eviction_demote_respects_portable_store_phase() {
+        let _env = DemoteOnEvictEnvGuard::removed();
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 4,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let native = Mutex::new(MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 1,
+        }));
+        let portable = Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1 << 20,
+            max_entries: 8,
+        }));
+
+        let first = demote_test_snapshot(&pool, vec![1, 2, 3]);
+        let outcome_a = native.lock().insert(demote_test_key(7), first);
+        drop(outcome_a.retired);
+        drop(outcome_a.evicted);
+        let second = demote_test_snapshot(&pool, vec![4, 5, 6]);
+        let outcome_b = native.lock().insert(demote_test_key(8), second);
+        assert_eq!(outcome_b.evicted.len(), 1);
+
+        // A native insert that evicts a live entry during a scheduler-split
+        // prefill (portable store phase disallowed) must not publish the
+        // evicted snapshot to the portable store — the same O(N²) hazard the
+        // phase gate exists to avoid.
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        demote_native_insert_evictions(&portable, &outcome_b.evicted, false, &mut telemetry);
+        assert_eq!(portable.lock().stats().entries, 0);
+        assert_eq!(telemetry.demotions, 0);
+        assert_eq!(telemetry.demotion_skips, 0);
+
+        // The completing phase demotes the same evicted entry.
+        demote_native_insert_evictions(&portable, &outcome_b.evicted, true, &mut telemetry);
+        assert_eq!(telemetry.demotions, 1);
+        assert_eq!(portable.lock().stats().entries, 1);
+
+        drop(outcome_b.retired);
+        drop(outcome_b.evicted);
+    }
+
+    #[test]
+    fn demote_overflow_evicts_per_portable_policy() {
+        let _env = DemoteOnEvictEnvGuard::removed();
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 4,
+            hard_cap: true,
+        })
+        .expect("pool");
+
+        // Entry larger than the whole byte budget: the demote is refused up
+        // front (counted as a skip) instead of flushing every healthy entry
+        // before self-evicting; nothing is inserted, nothing panics.
+        let tight = Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 32,
+            max_entries: 8,
+        }));
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        let snapshot = demote_test_snapshot(&pool, vec![1, 2, 3]);
+        demote_native_prefix_snapshot(&tight, &demote_test_key(7), &snapshot, &mut telemetry);
+        assert_eq!(telemetry.demotions, 0);
+        assert_eq!(telemetry.demotion_skips, 1);
+        assert_eq!(telemetry.evictions, 0);
+        assert_eq!(tight.lock().stats().entries, 0);
+
+        // Entry budget of one: the second demotion stores and evicts the
+        // first per LRU policy.
+        let capped = Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1 << 20,
+            max_entries: 1,
+        }));
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        let first = demote_test_snapshot(&pool, vec![1, 2, 3]);
+        demote_native_prefix_snapshot(&capped, &demote_test_key(7), &first, &mut telemetry);
+        let second = demote_test_snapshot(&pool, vec![4, 5, 6]);
+        demote_native_prefix_snapshot(&capped, &demote_test_key(8), &second, &mut telemetry);
+        assert_eq!(telemetry.demotions, 2);
+        assert_eq!(telemetry.evictions, 1);
+        assert_eq!(capped.lock().stats().entries, 1);
     }
 
     #[test]
@@ -13109,6 +13500,9 @@ mod tests {
             native_hits: 11,
             native_stores: 12,
             native_evictions: 13,
+            demotions: 3,
+            demoted_bytes: 4096,
+            demotion_skips: 2,
             disk_hits: 6,
             disk_misses: 7,
             disk_inserts: 8,
@@ -13137,6 +13531,9 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_native_hits".into(), 11)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_native_stores".into(), 12)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_native_evictions".into(), 13)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_demotions".into(), 3)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_demoted_bytes_kib".into(), 4)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_demotion_skips".into(), 2)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_hits".into(), 6)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_misses".into(), 7)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_inserts".into(), 8)));

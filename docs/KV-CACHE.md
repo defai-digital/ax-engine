@@ -249,6 +249,9 @@ MLX runner route metadata keeps that distinction visible:
 | `ax_mlx_prefix_cache_evictions` | Prefix snapshots evicted by the runner LRU policy |
 | `ax_mlx_prefix_cache_entries` | Current runner prefix snapshot entries |
 | `ax_mlx_prefix_cache_bytes_kib` | Current runner prefix snapshot footprint |
+| `ax_mlx_prefix_cache_demotions` | Native L1 removals (evictions and same-key replacements) demoted (serialized) into the portable in-memory store instead of dropped (ADR-016) |
+| `ax_mlx_prefix_cache_demoted_bytes_kib` | Serialized bytes retained via demote-on-evict, rounded to KiB |
+| `ax_mlx_prefix_cache_demotion_skips` | Native removals that kept the drop behavior (kill switch off, portable policy disabled, oversized or unserializable snapshot, already-resident snapshot, or portable budget refusal) |
 
 ## Disk-Durable Prefix Cache (Opt-In)
 
@@ -652,7 +655,8 @@ gated runner-local sharing experiment:
 | Private mode | One pool per request cache; clones share within that ownership domain and COW on write |
 | Sharing mode | One pool per `MlxRunner`; pure standard-FA requests and native L1 entries share IDs |
 | Native prefix adoption | Exact-token longest compatible prefix, partial matches block-floored, non-consuming clone + trim; serialized L1/L2 remains fallback |
-| Pressure reclamation | Evicts runner-local native L1 entries before request-scoped exhaustion |
+| Pressure reclamation | Evicts runner-local native L1 entries before request-scoped exhaustion; evicted entries demote into the portable serialized store (below) instead of being dropped |
+| Demote-on-evict `AX_MLX_PREFIX_DEMOTE_ON_EVICT` | Present (**default ON**); `=0` restores the pre-ADR-016 drop behavior for A/B measurement |
 | Unsupported layouts | Sliding / rotating / MLA / linear / diffusion, KV-shared, specialized multimodal, and target-MTP/assistant configurations remain on existing paths |
 | Decode attention | Fixed-slab row gather (`take` by same-slab run) feeds MLX SDPA; the third-flag kernel is attempted only for eligible one-slab decode |
 | Peek / serialize | Gather dense logical K/V for portable contracts; sharing mode serializes only the largest aligned prefix per store event |
@@ -691,7 +695,18 @@ all rows are in one slab; multi-slab and failed geometry use gather + SDPA. Disk
 serialization emits portable contiguous tensor payloads (optionally split into
 immutable L2 payload pages).
 Native MLX handles never enter the cross-runner `MlxPrefixCacheStore` or the
-disk writer.
+disk writer directly. Instead, when a native L1 entry is evicted (LRU pressure
+or reclaim-for-restore), demote-on-evict (ADR-016, default ON) serializes the
+evicted snapshot and inserts it into the portable in-memory store, subject to
+that store's existing `AX_MLX_PREFIX_CACHE_MAX_BYTES` / `_MAX_ENTRIES` budgets
+and eviction policy. During scheduler-split prefills, insert-site demotion is
+deferred to prompt completion under the same phase gate as portable stores,
+and an entry larger than the portable byte budget is refused up front so it
+cannot flush healthy entries. Rotated sliding rings and other unserializable
+layouts keep the drop behavior. Restore is unchanged: the portable tier is
+already consulted between native L1 and disk L2, so a demoted prefix is
+restored from a host-RAM copy rather than recomputed on its next reference.
+`AX_MLX_PREFIX_DEMOTE_ON_EVICT=0` restores the pre-ADR-016 drop behavior.
 
 On a sharing-enabled store, only the largest block-aligned prompt prefix is
 serialized and pinned. A later compatible shorter prompt can clone the larger

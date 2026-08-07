@@ -191,6 +191,27 @@ impl MlxPrefixCache {
         }
     }
 
+    /// Insert `snapshot` unless the entry already stored for `key` supersedes
+    /// it (same tokens, and a greedy prefill-output token when the new
+    /// snapshot carries none). Running the check inside the caller's lock
+    /// acquisition keeps a concurrent full store from being overwritten by a
+    /// staler snapshot (ADR-016 demote path). Returns `None` when the
+    /// resident entry supersedes and nothing was inserted.
+    pub(crate) fn insert_unless_superseded(
+        &mut self,
+        key: MlxPrefixCacheKey,
+        snapshot: MlxPrefixSnapshot,
+    ) -> Option<MlxPrefixCacheInsertOutcome> {
+        if self.contains_superseding_snapshot(
+            &key,
+            &snapshot.tokens,
+            snapshot.greedy_prefill_output_token,
+        ) {
+            return None;
+        }
+        Some(self.insert(key, snapshot))
+    }
+
     pub(crate) fn stats(&self) -> MlxPrefixCacheStats {
         MlxPrefixCacheStats {
             entries: saturating_u32(self.entries.len()),
@@ -301,6 +322,12 @@ pub(crate) struct MlxNativePrefixCacheInsertOutcome {
     /// Removed snapshots must be dropped after the caller releases the native
     /// cache lock because `MlxKVCache::drop` acquires the shared pool lock.
     pub(crate) retired: Vec<Arc<MlxNativePrefixSnapshot>>,
+    /// Live entries this insert removed from the cache (same-key replacement
+    /// or LRU pressure), with their keys, so the runner can demote them into
+    /// the portable serialized store before dropping (ADR-016). Only the
+    /// LRU-pressure kind bumps `evictions`; a same-key replacement does not.
+    /// Subject to the same post-unlock drop contract as `retired`.
+    pub(crate) evicted: Vec<(MlxPrefixCacheKey, Arc<MlxNativePrefixSnapshot>)>,
 }
 
 pub(crate) struct MlxNativePrefixCache {
@@ -415,6 +442,7 @@ impl MlxNativePrefixCache {
     ) -> MlxNativePrefixCacheInsertOutcome {
         let snapshot = Arc::new(snapshot);
         let mut retired = Vec::new();
+        let mut evicted = Vec::new();
         if !self.policy.enabled()
             || snapshot.token_count == 0
             || snapshot.cache.seq_len() != snapshot.token_count
@@ -425,6 +453,7 @@ impl MlxNativePrefixCache {
                 stored: false,
                 evictions: 0,
                 retired,
+                evicted,
             };
         }
 
@@ -432,7 +461,7 @@ impl MlxNativePrefixCache {
             self.logical_bytes = self
                 .logical_bytes
                 .saturating_sub(previous.snapshot.logical_bytes);
-            retired.push(previous.snapshot);
+            evicted.push((key.clone(), previous.snapshot));
         }
 
         let touch_tick = self.allocate_touch_tick();
@@ -451,10 +480,10 @@ impl MlxNativePrefixCache {
         while self.logical_bytes > self.policy.max_bytes
             || self.entries.len() > self.policy.max_entries
         {
-            let Some(evicted) = self.take_lru() else {
+            let Some(lru_evicted) = self.take_lru() else {
                 break;
             };
-            retired.push(evicted);
+            evicted.push(lru_evicted);
             evictions = evictions.saturating_add(1);
         }
 
@@ -462,12 +491,15 @@ impl MlxNativePrefixCache {
             stored: self.entries.contains_key(&key),
             evictions,
             retired,
+            evicted,
         }
     }
 
-    /// Remove one live LRU entry. The caller drops the returned snapshot only
-    /// after releasing the mutex that guards this cache.
-    pub(crate) fn take_lru(&mut self) -> Option<Arc<MlxNativePrefixSnapshot>> {
+    /// Remove one live LRU entry, returning its key so the caller can demote
+    /// the snapshot into the portable store (ADR-016). The caller drops the
+    /// returned snapshot only after releasing the mutex that guards this
+    /// cache.
+    pub(crate) fn take_lru(&mut self) -> Option<(MlxPrefixCacheKey, Arc<MlxNativePrefixSnapshot>)> {
         while let Some((key, touch_tick)) = self.lru.pop_front() {
             let Some(entry) = self.entries.get(&key) else {
                 continue;
@@ -479,7 +511,7 @@ impl MlxNativePrefixCache {
             self.logical_bytes = self
                 .logical_bytes
                 .saturating_sub(removed.snapshot.logical_bytes);
-            return Some(removed.snapshot);
+            return Some((key, removed.snapshot));
         }
         None
     }
@@ -995,6 +1027,19 @@ pub(crate) struct MlxPrefixCacheTelemetry {
     pub(crate) native_hits: u32,
     pub(crate) native_stores: u32,
     pub(crate) native_evictions: u32,
+    // ADR-016 demote-on-evict counters. Native L1 removals are offered to
+    // the portable host-RAM store instead of dropped. Offered removals are
+    // LRU/pressure evictions (which also bump `native_evictions`) and
+    // same-key replacements (which do not), so `demotions + demotion_skips`
+    // can exceed `native_evictions`. `demotion_skips` counts removals that
+    // kept the pre-change drop behavior: kill switch off, empty or rotated
+    // snapshot, portable policy disabled, entry oversized for the portable
+    // byte budget, an already-resident superseding snapshot, or the portable
+    // budget refusing the demoted entry. Demotions suppressed by the
+    // split-prefill portable-store phase gate are not counted either way.
+    pub(crate) demotions: u32,
+    pub(crate) demoted_bytes: u64,
+    pub(crate) demotion_skips: u32,
     // F3 M2 — L2 disk cache counters. These count operations performed
     // by the durable file-backed prefix-cache layer, distinct from the
     // in-memory counters above. `disk_*` events fire only when the
@@ -1090,6 +1135,9 @@ impl MlxPrefixCacheTelemetry {
         self.native_hits = self.native_hits.saturating_add(other.native_hits);
         self.native_stores = self.native_stores.saturating_add(other.native_stores);
         self.native_evictions = self.native_evictions.saturating_add(other.native_evictions);
+        self.demotions = self.demotions.saturating_add(other.demotions);
+        self.demoted_bytes = self.demoted_bytes.saturating_add(other.demoted_bytes);
+        self.demotion_skips = self.demotion_skips.saturating_add(other.demotion_skips);
         self.disk_hits = self.disk_hits.saturating_add(other.disk_hits);
         self.disk_misses = self.disk_misses.saturating_add(other.disk_misses);
         self.disk_inserts = self.disk_inserts.saturating_add(other.disk_inserts);
@@ -1205,6 +1253,15 @@ impl MlxPrefixCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_NATIVE_EVICTIONS,
                 self.native_evictions,
+            ),
+            (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTIONS, self.demotions),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTED_BYTES_KIB,
+                kib_ceil(self.demoted_bytes),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTION_SKIPS,
+                self.demotion_skips,
             ),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS, self.disk_hits),
             (
@@ -1379,6 +1436,20 @@ impl MlxPrefixCacheTelemetry {
         self.restore_source_code = code;
     }
 
+    /// ADR-016: an evicted native snapshot was serialized into the portable
+    /// host-RAM store. Portable-budget evictions triggered by the demote
+    /// insert count as ordinary L1 evictions.
+    pub(crate) fn record_demotion(&mut self, bytes: u64, portable_evictions: u32) {
+        self.demotions = self.demotions.saturating_add(1);
+        self.demoted_bytes = self.demoted_bytes.saturating_add(bytes);
+        self.evictions = self.evictions.saturating_add(portable_evictions);
+    }
+
+    /// ADR-016: an evicted native snapshot kept the pre-change drop behavior.
+    pub(crate) fn record_demotion_skip(&mut self) {
+        self.demotion_skips = self.demotion_skips.saturating_add(1);
+    }
+
     pub(crate) fn record_disk_admission(
         &mut self,
         reason: crate::disk_prefix_cache::DiskAdmissionReason,
@@ -1485,6 +1556,7 @@ mod tests {
         assert!(outcome.stored);
         assert_eq!(outcome.evictions, 0);
         assert!(outcome.retired.is_empty());
+        assert!(outcome.evicted.is_empty());
         assert_eq!(cache.stats().entries, 1);
         assert_eq!(cache.stats().logical_bytes, 80);
         assert!(
@@ -1500,7 +1572,7 @@ mod tests {
         assert_eq!(pool.snapshot().shared_blocks, 1);
 
         drop(producer);
-        let retired = cache.take_lru().expect("evict native entry");
+        let (_, retired) = cache.take_lru().expect("evict native entry");
         drop(hit);
         drop(retired);
         assert_eq!(pool.snapshot().allocated_blocks, 1);
@@ -1690,7 +1762,7 @@ mod tests {
         drop(adopted);
         drop(snapshot);
         drop(producer);
-        let retired = cache.take_lru().expect("retire source");
+        let (_, retired) = cache.take_lru().expect("retire source");
         drop(retired);
         assert_eq!(pool.snapshot().allocated_blocks, 0);
     }
@@ -1723,13 +1795,15 @@ mod tests {
         );
         assert!(second_outcome.stored);
         assert_eq!(second_outcome.evictions, 1);
-        // The retired Arc still pins the first physical block until the caller
+        assert!(second_outcome.retired.is_empty());
+        assert_eq!(second_outcome.evicted.len(), 1);
+        // The evicted Arc still pins the first physical block until the caller
         // has released its native-cache mutex and drops it.
         assert_eq!(pool.snapshot().allocated_blocks, 2);
-        drop(second_outcome.retired);
+        drop(second_outcome.evicted);
         assert_eq!(pool.snapshot().allocated_blocks, 1);
 
-        let retired = cache.take_lru().expect("second entry");
+        let (_, retired) = cache.take_lru().expect("second entry");
         drop(retired);
         assert_eq!(pool.snapshot().allocated_blocks, 0);
     }
@@ -1754,9 +1828,12 @@ mod tests {
         );
         assert!(!outcome.stored);
         assert_eq!(outcome.evictions, 1);
+        assert!(outcome.retired.is_empty());
+        assert_eq!(outcome.evicted.len(), 1);
         assert_eq!(cache.stats().entries, 0);
         assert_eq!(pool.snapshot().allocated_blocks, 1);
         drop(outcome.retired);
+        drop(outcome.evicted);
         assert_eq!(pool.snapshot().allocated_blocks, 0);
     }
 
