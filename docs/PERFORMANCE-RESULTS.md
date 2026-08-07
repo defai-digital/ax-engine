@@ -460,6 +460,11 @@ shared-KV geometry.
 | 2026-08-07 llama.cpp b10050 Metal snapshot | 12/12 models, 36/36 cells, zero failures | Separate-run, shape-compatible runtime reference |
 | 2026-07-11 v6.8.2 composite | Gemma 4 and Qwen 3.6, mixed historical sessions | Archived row-level evidence below; not current-head performance |
 
+Relative to the previous b9910 llama.cpp reference, b10050 raises its 36-cell
+geometric means by **6.3% for matched-depth decode** and **1.6% for prefill**
+while lowering TTFT by **1.6%**; matched-depth decode improves in 29/36 cells.
+That is a llama.cpp reference refresh, not an AX Engine change.
+
 #### v6.13.3 AX-only direct snapshot (2026-08-07 mbp-m5)
 
 This complete AX-only direct sweep is published as a dated snapshot: AX Engine
@@ -801,7 +806,7 @@ Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refr
 
 <!-- readme-llama-cpp-build: b10050 -->
 
-#### Prefill throughput (archived v6.8.2 composite; tok/s)
+#### Prefill throughput (archived AX / mlx v6.8.2 composite + llama.cpp b10050; tok/s)
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -842,7 +847,7 @@ Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refr
 |  |  | 512 | 2,998.7 | 1,394.4 | 1,035.6 (-25.7%) |
 |  |  | 2048 | 3,434.4 | 2,494.3 | 1,577.0 (-36.8%) |
 
-#### Decode throughput (archived v6.8.2 composite; tok/s)
+#### Decode throughput (archived AX / mlx v6.8.2 composite + llama.cpp b10050; tok/s)
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -885,7 +890,7 @@ Qwen 3.6 direct-mode decode verdict: AX is faster against `mlx_lm` in every refr
 
 > Qwen 3.6 27B 4-bit at prompt=2,048 originally produced zero decode tokens because 4-bit quantization noise pushed an EOS token to argmax at decode step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness now sends `sampling.ignore_eos=true` for AX throughput runs, matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput. Production requests default to `ignore_eos=false`. Source: `benchmarks/results/inference/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
 
-#### Time to first token (archived v6.8.2 composite; ms)
+#### Time to first token (archived AX / mlx v6.8.2 composite + llama.cpp b10050; ms)
 
 **Lower is better.** `mlx_lm` values are derived from reported prefill throughput. AX values are measured directly from per-step runner timing in the SSE event stream.
 
