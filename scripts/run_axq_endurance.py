@@ -1177,6 +1177,51 @@ def get_nested_number(value: dict[str, Any], path: tuple[str, ...]) -> float | N
     return None
 
 
+def resource_sample_is_quiescent(sample: dict[str, Any]) -> bool | None:
+    """Classify a resource sample using the same native drain gauges as requests.
+
+    On Apple unified memory, wired pages and MLX active memory can legitimately
+    rise while a request is executing and fall after it drains.  Comparing an
+    active sample with an idle baseline would look like a multi-gigabyte leak.
+    A definitive quiescent classification therefore needs every lifecycle
+    gauge; unknown instrumentation remains unclassified rather than assumed
+    idle.
+    """
+    metrics = sample.get("metrics", {})
+    values = metrics.get("values", {}) if isinstance(metrics, dict) else {}
+    if not isinstance(values, dict):
+        return None
+    lifecycle_values: list[float] = []
+    for name in LIFECYCLE_METRICS:
+        value = values.get(name)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+        if not math.isfinite(float(value)):
+            return None
+        lifecycle_values.append(float(value))
+    return all(value <= 0.0 for value in lifecycle_values)
+
+
+def memory_points(
+    samples: Iterable[dict[str, Any]],
+    path: tuple[str, ...],
+    *,
+    quiescent: bool | None = None,
+) -> list[tuple[float, float]]:
+    """Select chronologically ordered memory points, optionally by lifecycle phase."""
+    points: list[tuple[float, float]] = []
+    for sample in samples:
+        if quiescent is not None and resource_sample_is_quiescent(sample) is not quiescent:
+            continue
+        elapsed = sample.get("elapsed_seconds")
+        value = get_nested_number(sample, path)
+        if not isinstance(elapsed, (int, float)) or value is None:
+            continue
+        if math.isfinite(float(elapsed)):
+            points.append((float(elapsed), value))
+    return points
+
+
 def linear_slope_per_hour(points: Iterable[tuple[float, float]]) -> float | None:
     """Return ordinary-least-squares value slope per hour, or inconclusive."""
     clean = [(float(x), float(y)) for x, y in points if math.isfinite(x) and math.isfinite(y)]
@@ -1259,13 +1304,7 @@ def memory_analysis(
     """Report memory current/peak/growth/slope without mistaking capacity for a leak."""
     analysis: dict[str, Any] = {"sample_count": len(samples), "series": {}}
     for name, path in MEMORY_SERIES_PATHS.items():
-        points = [
-            (float(sample["elapsed_seconds"]), value)
-            for sample in samples
-            if isinstance(sample.get("elapsed_seconds"), (int, float))
-            for value in [get_nested_number(sample, path)]
-            if value is not None
-        ]
+        points = memory_points(samples, path)
         if not points:
             continue
         values = [point[1] for point in points]
@@ -1291,6 +1330,42 @@ def memory_analysis(
         if baseline is not None:
             entry["baseline_median_bytes"] = baseline
             entry["growth_mib"] = (current - baseline) / MEBIBYTE
+
+        # Keep active/all-sample observations for forensic diagnosis, but
+        # assess retained growth with like-for-like idle samples whenever
+        # native lifecycle instrumentation allows it.
+        quiescent_points = memory_points(samples, path, quiescent=True)
+        active_points = memory_points(samples, path, quiescent=False)
+        entry["quiescent_samples"] = len(quiescent_points)
+        entry["active_samples"] = len(active_points)
+        if active_points:
+            entry["active_peak_bytes"] = max(value for _elapsed, value in active_points)
+        if quiescent_points:
+            quiescent_values = [value for _elapsed, value in quiescent_points]
+            quiescent_recent = [
+                point for point in quiescent_points if point[0] >= window_start_elapsed_s
+            ]
+            quiescent_after_baseline = [
+                point
+                for point in quiescent_points
+                if baseline is None
+                or baseline_end_elapsed_s is None
+                or point[0] >= baseline_end_elapsed_s
+            ]
+            entry.update(
+                {
+                    "quiescent_current_bytes": quiescent_values[-1],
+                    "quiescent_peak_bytes": max(quiescent_values),
+                    "quiescent_window_slope_mib_per_hour": _bytes_slope_to_mib(
+                        linear_slope_per_hour(quiescent_recent)
+                    ),
+                    "quiescent_lifetime_slope_mib_per_hour": _bytes_slope_to_mib(
+                        linear_slope_per_hour(quiescent_after_baseline)
+                    ),
+                }
+            )
+            if baseline is not None:
+                entry["quiescent_growth_mib"] = (quiescent_values[-1] - baseline) / MEBIBYTE
         analysis["series"][name] = entry
     return analysis
 
@@ -1302,12 +1377,25 @@ def _bytes_slope_to_mib(slope: float | None) -> float | None:
 def build_resource_baseline(samples: list[dict[str, Any]], baseline_s: float) -> dict[str, float]:
     """Use baseline-window medians to avoid classifying normal allocator noise as drift."""
     baseline: dict[str, float] = {}
+    baseline_samples = [
+        sample
+        for sample in samples
+        if isinstance(sample.get("elapsed_seconds"), (int, float))
+        and float(sample["elapsed_seconds"]) <= baseline_s
+    ]
+    quiescent_baseline_samples = [
+        sample for sample in baseline_samples if resource_sample_is_quiescent(sample) is True
+    ]
+    # A 4-hour run has many idle samples. A short pilot or an observability
+    # gap may not, in which case retaining all samples is more honest than
+    # dropping the memory reference entirely.
+    selected_samples = (
+        quiescent_baseline_samples if len(quiescent_baseline_samples) >= 3 else baseline_samples
+    )
     for name, path in MEMORY_SERIES_PATHS.items():
         values = [
             value
-            for sample in samples
-            if isinstance(sample.get("elapsed_seconds"), (int, float))
-            and float(sample["elapsed_seconds"]) <= baseline_s
+            for sample in selected_samples
             for value in [get_nested_number(sample, path)]
             if value is not None
         ]
@@ -1339,14 +1427,20 @@ def evaluate_baseline_stability(
         if isinstance(sample.get("elapsed_seconds"), (int, float))
         and float(sample["elapsed_seconds"]) <= baseline_s
     ]
-    if len(baseline_samples) < 3:
+    quiescent_baseline_samples = [
+        sample for sample in baseline_samples if resource_sample_is_quiescent(sample) is True
+    ]
+    trend_samples = (
+        quiescent_baseline_samples if len(quiescent_baseline_samples) >= 3 else baseline_samples
+    )
+    if len(trend_samples) < 3:
         return ["baseline has fewer than three resource samples; resource trend is inconclusive"]
 
     messages: list[str] = []
     for name, path in MEMORY_SERIES_PATHS.items():
         points = [
             (float(sample["elapsed_seconds"]), value)
-            for sample in baseline_samples
+            for sample in trend_samples
             for value in [get_nested_number(sample, path)]
             if value is not None
         ]
@@ -1518,20 +1612,26 @@ def evaluate_memory_alerts(
             continue
         if not isinstance(value, dict):
             continue
-        growth = value.get("growth_mib")
-        slope = value.get("lifetime_slope_mib_per_hour")
+        quiescent_growth = value.get("quiescent_growth_mib")
+        quiescent_slope = value.get("quiescent_lifetime_slope_mib_per_hour")
+        uses_quiescent = isinstance(quiescent_growth, (int, float)) and isinstance(
+            quiescent_slope, (int, float)
+        )
+        growth = quiescent_growth if uses_quiescent else value.get("growth_mib")
+        slope = quiescent_slope if uses_quiescent else value.get("lifetime_slope_mib_per_hour")
         if (
             isinstance(growth, (int, float))
             and isinstance(slope, (int, float))
             and growth >= max_growth_mib
             and slope >= max_slope_mib_per_hour
         ):
+            scope = "quiescent " if uses_quiescent else ""
             messages.append(
-                f"{name} rose {growth:.1f} MiB with {slope:.1f} MiB/h slope after baseline"
+                f"{scope}{name} rose {growth:.1f} MiB with {slope:.1f} MiB/h slope after baseline"
             )
     swap = series.get("host_swap_used_bytes")
     if isinstance(swap, dict):
-        swap_growth = swap.get("growth_mib")
+        swap_growth = swap.get("quiescent_growth_mib", swap.get("growth_mib"))
         if isinstance(swap_growth, (int, float)) and swap_growth >= max_swap_growth_mib:
             messages.append(
                 f"host swap used rose {swap_growth:.1f} MiB after baseline "
@@ -1855,11 +1955,15 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
         for name, values in memory_series.items():
             if not isinstance(values, dict):
                 continue
-            growth = values.get("growth_mib")
-            slope = values.get("lifetime_slope_mib_per_hour")
+            growth = values.get("quiescent_growth_mib", values.get("growth_mib"))
+            slope = values.get(
+                "quiescent_lifetime_slope_mib_per_hour",
+                values.get("lifetime_slope_mib_per_hour"),
+            )
             lines.append(
-                f"- `{name}`: current `{format_bytes(values.get('current_bytes'))}`, "
-                f"growth `{format_metric(growth, 'MiB')}`, "
+                f"- `{name}`: current `{format_bytes(values.get('current_bytes'))}`; "
+                f"quiescent current `{format_bytes(values.get('quiescent_current_bytes'))}`; "
+                f"growth `{format_metric(growth, 'MiB')}`; "
                 f"slope `{format_metric(slope, 'MiB/h')}`"
             )
     lines.append("")

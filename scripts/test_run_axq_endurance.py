@@ -313,6 +313,49 @@ class AxqEnduranceTests(unittest.TestCase):
         )
         self.assertEqual(len(alerts), 1)
 
+    def test_memory_guardrails_compare_quiescent_samples_not_active_wired_spikes(self) -> None:
+        samples = []
+        for index, wired_mib in enumerate(
+            (2_000, 24_000, 2_000, 24_000, 2_000, 24_000, 2_000, 24_000)
+        ):
+            active = index % 2 == 1
+            samples.append(
+                {
+                    "elapsed_seconds": float(index * 3_600),
+                    "process": {"rss_bytes": 1_000 * runner.MEBIBYTE},
+                    "host": {"wired_bytes": wired_mib * runner.MEBIBYTE},
+                    "metrics": {
+                        "values": {
+                            name: (1.0 if active and name == "ax_engine_jobs_in_flight" else 0.0)
+                            for name in runner.LIFECYCLE_METRICS
+                        }
+                    },
+                }
+            )
+
+        self.assertFalse(runner.resource_sample_is_quiescent(samples[1]))
+        self.assertTrue(runner.resource_sample_is_quiescent(samples[2]))
+        baseline = runner.build_resource_baseline(samples[:3], baseline_s=2 * 3_600)
+        analysis = runner.memory_analysis(
+            samples=samples,
+            resource_baseline=baseline,
+            window_start_elapsed_s=0.0,
+            baseline_end_elapsed_s=2 * 3_600,
+        )
+        wired = analysis["series"]["host_wired_bytes"]
+
+        self.assertEqual(wired["growth_mib"], 22_000.0)
+        self.assertEqual(wired["quiescent_growth_mib"], 0.0)
+        self.assertEqual(wired["quiescent_samples"], 4)
+        self.assertEqual(
+            runner.evaluate_memory_alerts(
+                analysis=analysis,
+                max_growth_mib=4_096.0,
+                max_slope_mib_per_hour=64.0,
+            ),
+            [],
+        )
+
     def test_baseline_stability_rejects_a_still_climbing_reference(self) -> None:
         samples = [
             {

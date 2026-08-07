@@ -177,6 +177,15 @@ allocation is not visible in RSS. Where macOS exposes IOGPU
 alloc/in-use counters. They are corroborating host evidence, not a per-process
 leak attribution.
 
+The runner additionally compares retained memory using resource samples whose
+native lifecycle gauges are all zero. On this Apple unified-memory host,
+`vm_stat` wired pages can rise materially while a request is active and fall
+once model pages are no longer pinned. The report preserves those active peaks
+for diagnosis, but it uses like-for-like quiescent samples for leak slopes and
+growth guardrails when enough such samples exist. This avoids calling normal
+request-phase pinning a slow leak while still detecting memory that remains
+after the lifecycle drains.
+
 ## Default guardrails
 
 - Hard failure: server exits/PID disappears, or three consecutive stream
