@@ -1,0 +1,946 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+    "shape_only_external_rows": [
+      "llama_cpp_metal"
+    ],
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "requires_clean_build_commit": true,
+    "minimum_warmup_repetitions": 2,
+    "minimum_measurement_repetitions": 5,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.5.2",
+    "platform": "darwin",
+    "os_build": "25F84",
+    "toolchain": {
+      "macos_sdk_version": "26.5",
+      "xcodebuild_version": [
+        "Xcode 26.6",
+        "Build version 17F113"
+      ],
+      "python_mlx": "0.32.0",
+      "python_mlx_lm": "0.31.3"
+    },
+    "performance_conditions": {
+      "load_average": {
+        "one_minute": 0.585,
+        "five_minutes": 0.563,
+        "fifteen_minutes": 0.515
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 1,
+          "state": "Rs",
+          "cpu_percent": 15.6,
+          "command": "launchd"
+        },
+        {
+          "pid": 941,
+          "state": "Ss",
+          "cpu_percent": 1.2,
+          "command": "loginwindow"
+        },
+        {
+          "pid": 88192,
+          "state": "Ss",
+          "cpu_percent": 0.4,
+          "command": "Python"
+        },
+        {
+          "pid": 931,
+          "state": "Ss",
+          "cpu_percent": 0.3,
+          "command": "notifyd"
+        },
+        {
+          "pid": 938,
+          "state": "Ss",
+          "cpu_percent": 0.2,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 1279,
+          "state": "S",
+          "cpu_percent": 0.1,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 88443,
+          "state": "S",
+          "cpu_percent": 0.0,
+          "command": "contactsd"
+        },
+        {
+          "pid": 88441,
+          "state": "S",
+          "cpu_percent": 0.0,
+          "command": "contactsd"
+        }
+      ]
+    }
+  },
+  "benchmark_window": {
+    "started_at": "2026-08-07T05:21:19-0400",
+    "finished_at": "2026-08-07T05:27:02-0400",
+    "elapsed_seconds": 342.9,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 0.459,
+        "five_minutes": 0.482,
+        "fifteen_minutes": 0.489
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 931,
+          "state": "Ss",
+          "cpu_percent": 0.9,
+          "command": "notifyd"
+        },
+        {
+          "pid": 905,
+          "state": "Ss",
+          "cpu_percent": 0.8,
+          "command": "opendirectoryd"
+        },
+        {
+          "pid": 864,
+          "state": "Ss",
+          "cpu_percent": 0.5,
+          "command": "logd"
+        },
+        {
+          "pid": 1,
+          "state": "Ss",
+          "cpu_percent": 0.5,
+          "command": "launchd"
+        },
+        {
+          "pid": 1210,
+          "state": "S",
+          "cpu_percent": 0.4,
+          "command": "SystemUIServer"
+        },
+        {
+          "pid": 1159,
+          "state": "S",
+          "cpu_percent": 0.4,
+          "command": "cfprefsd"
+        },
+        {
+          "pid": 940,
+          "state": "Ss",
+          "cpu_percent": 0.2,
+          "command": "cfprefsd"
+        },
+        {
+          "pid": 88151,
+          "state": "S",
+          "cpu_percent": 0.0,
+          "command": "contactsd"
+        }
+      ]
+    },
+    "performance_conditions_end": {
+      "load_average": {
+        "one_minute": 0.585,
+        "five_minutes": 0.563,
+        "fifteen_minutes": 0.515
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 1,
+          "state": "Rs",
+          "cpu_percent": 15.6,
+          "command": "launchd"
+        },
+        {
+          "pid": 941,
+          "state": "Ss",
+          "cpu_percent": 1.2,
+          "command": "loginwindow"
+        },
+        {
+          "pid": 88192,
+          "state": "Ss",
+          "cpu_percent": 0.4,
+          "command": "Python"
+        },
+        {
+          "pid": 931,
+          "state": "Ss",
+          "cpu_percent": 0.3,
+          "command": "notifyd"
+        },
+        {
+          "pid": 938,
+          "state": "Ss",
+          "cpu_percent": 0.2,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 1279,
+          "state": "S",
+          "cpu_percent": 0.1,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 88443,
+          "state": "S",
+          "cpu_percent": 0.0,
+          "command": "contactsd"
+        },
+        {
+          "pid": 88441,
+          "state": "S",
+          "cpu_percent": 0.0,
+          "command": "contactsd"
+        }
+      ]
+    }
+  },
+  "build": {
+    "commit": "6b9a6c9ede7824c510438155ebc63cefeee33087",
+    "engine_version": "6.13.3",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine-readme-bench-20260806/target/release/ax-engine-server",
+    "git_tracked_dirty": false,
+    "git_tracked_status": [],
+    "linked_libraries": [
+      "@rpath/libmlx.dylib (compatibility version 0.0.0, current version 0.0.0)",
+      "/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 373.2.0)"
+    ],
+    "libmlx_rpaths": [
+      "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib"
+    ],
+    "resolved_libmlx": "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib/libmlx.dylib"
+  },
+  "model": "mlx-community/gemma-4-26b-a4b-it-6bit",
+  "model_repo_id": "mlx-community/gemma-4-26b-a4b-it-6bit",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-6bit/snapshots/968a9faa4b69230f3fc316b5755cb937a29c7ddc",
+  "model_dir_source": "huggingface_cache",
+  "hf_cache_root": "/Users/akiralam/.cache/huggingface/hub",
+  "model_config": {
+    "model_type": "gemma4",
+    "quantization": {
+      "group_size": 64,
+      "bits": 6,
+      "mode": "affine",
+      "language_model.model.layers.0.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.1.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.2.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.3.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.4.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.5.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.6.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.7.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.8.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.9.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.10.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.11.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.12.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.13.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.14.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.15.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.16.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.17.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.18.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.19.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.20.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.21.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.22.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.23.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.24.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.25.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.26.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.27.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.28.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.29.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      }
+    },
+    "model_family": "gemma4",
+    "linear_attention_enabled": false,
+    "linear_attention": {}
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "mlx_lm_warmup_contract": {
+      "requested_warmup_repetitions": 2,
+      "upstream_builtin_warmup_repetitions": 1,
+      "additional_discarded_trial_count": 1,
+      "measurement_repetitions": 5
+    },
+    "external_gguf_reference": "llama.cpp Metal llama-bench",
+    "external_gguf_reference_present": false,
+    "external_gguf_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback. llama_cpp_metal rows are shape-compatible external GGUF rows, not prompt-hash parity or repo-owned MLX throughput evidence.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/gemma-4-26b-a4b-it-6bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+          "token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+          "token_count": 128,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/gemma-4-26b-a4b-it-6bit-prompts/prompt-512-gen-128-846109be82df.json",
+          "token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+          "token_count": 512,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 2048,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/gemma-4-26b-a4b-it-6bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+          "token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
+          "token_count": 2048,
+          "prompt_source": "random"
+        }
+      ]
+    },
+    "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only"
+  },
+  "prompt_tokens": [
+    128,
+    512,
+    2048
+  ],
+  "generation_tokens": 128,
+  "seed": 0,
+  "repetitions": 5,
+  "warmup_repetitions": 2,
+  "cooldown": 15.0,
+  "prefill_step_size": 2048,
+  "ax_mtp_max_depth": null,
+  "ax_mtp_disable_ngram_stacking": false,
+  "ax_mtp_approximate_optimistic": false,
+  "ax_mtp_fast_tail_topk_sampling": false,
+  "ax_qwen_linear_mtp_exact": false,
+  "ax_qwen_linear_mtp_exact_explicit_enable": false,
+  "ax_qwen_linear_mtp_exact_selection_contract": "explicit_validated_qwen_linear_attention_verifier_profile",
+  "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+  "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+  "prefill_timing_scope_contract": {
+    "mlx_lm": "upstream_mlx_lm_response_stats",
+    "ax_engine_primary_prefill": "server_sse_runner_time_us",
+    "ax_engine_client_wall_ttft": "http_sse_first_output_token_observed_by_client",
+    "long_greedy_ax_prefill_work": "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+  },
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 0,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 0,
+    "cache_bytes_kib": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "run_stability_summary": {
+    "schema_version": "ax.benchmark_run_stability_summary.v1",
+    "scope": "ax_engine_rows",
+    "row_count": 0,
+    "stable_enough_count": 0,
+    "unstable_count": 0,
+    "missing_count": 0,
+    "classification_counts": {},
+    "unstable_rows": [],
+    "publication_candidate": false
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "ax_linear_attention_projection_pack": false,
+  "ax_linear_attention_projection_pack_compare": false,
+  "ax_dense_ffn_gate_up_pack": false,
+  "ax_dense_ffn_gate_up_pack_compare": false,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal": true,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal_explicit_enable": false,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal_selection_contract": "default_on_shape_gated_server_route_telemetry_authoritative",
+  "ax_direct_linear_attention_post_input_route_compare": false,
+  "ax_prefill_profile": false,
+  "ax_decode_profile": false,
+  "results": [
+    {
+      "prefill_tok_s": {
+        "mean": 597.2328,
+        "median": 599.122,
+        "min": 588.49,
+        "max": 600.662
+      },
+      "decode_tok_s": {
+        "mean": 109.92559999999999,
+        "median": 109.94,
+        "min": 109.85,
+        "max": 109.95
+      },
+      "peak_memory_gb": {
+        "mean": 20.6528,
+        "median": 20.653,
+        "min": 20.652,
+        "max": 20.654
+      },
+      "trials": [
+        {
+          "trial": 2,
+          "prefill_tok_s": 598.342,
+          "decode_tok_s": 109.939,
+          "peak_memory_gb": 20.652,
+          "total_time_s": 1.52,
+          "ttft_ms": 213.9244779741352
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 599.548,
+          "decode_tok_s": 109.949,
+          "peak_memory_gb": 20.652,
+          "total_time_s": 1.52,
+          "ttft_ms": 213.49416560475558
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 599.122,
+          "decode_tok_s": 109.95,
+          "peak_memory_gb": 20.653,
+          "total_time_s": 1.512,
+          "ttft_ms": 213.64596860071907
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 588.49,
+          "decode_tok_s": 109.94,
+          "peak_memory_gb": 20.653,
+          "total_time_s": 1.525,
+          "ttft_ms": 217.50581997994865
+        },
+        {
+          "trial": 6,
+          "prefill_tok_s": 600.662,
+          "decode_tok_s": 109.85,
+          "peak_memory_gb": 20.654,
+          "total_time_s": 1.517,
+          "ttft_ms": 213.09821496948368
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.5188,
+        "median": 1.52,
+        "min": 1.512,
+        "max": 1.525
+      },
+      "upstream_reported_averages_all_trials": {
+        "prefill_tok_s": 595.815,
+        "decode_tok_s": 109.921,
+        "peak_memory_gb": 20.652
+      },
+      "discarded_warmup_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 588.724,
+          "decode_tok_s": 109.895,
+          "peak_memory_gb": 20.651,
+          "total_time_s": 1.524
+        }
+      ],
+      "warmup_repetitions_requested": 2,
+      "warmup_repetitions_upstream_builtin": 1,
+      "warmup_repetitions_discarded_trials": 1,
+      "warmup_repetitions_effective": 2,
+      "reported_averages": {
+        "prefill_tok_s": 597.2328,
+        "decode_tok_s": 109.92559999999999,
+        "peak_memory_gb": 20.6528
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/gemma-4-26b-a4b-it-6bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+      "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+      "prompt_source": "random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 214.33372942580846,
+        "median": 213.64596860071907,
+        "min": 213.09821496948368,
+        "max": 217.50581997994865
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 1830.4317999999998,
+        "median": 1825.085,
+        "min": 1820.176,
+        "max": 1842.547
+      },
+      "decode_tok_s": {
+        "mean": 107.10940000000001,
+        "median": 107.081,
+        "min": 107.066,
+        "max": 107.166
+      },
+      "peak_memory_gb": {
+        "mean": 21.0642,
+        "median": 21.064,
+        "min": 21.063,
+        "max": 21.065
+      },
+      "trials": [
+        {
+          "trial": 2,
+          "prefill_tok_s": 1825.085,
+          "decode_tok_s": 107.161,
+          "peak_memory_gb": 21.063,
+          "total_time_s": 1.616,
+          "ttft_ms": 280.53487919740724
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 1842.547,
+          "decode_tok_s": 107.073,
+          "peak_memory_gb": 21.064,
+          "total_time_s": 1.614,
+          "ttft_ms": 277.8762224247197
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 1822.064,
+          "decode_tok_s": 107.066,
+          "peak_memory_gb": 21.064,
+          "total_time_s": 1.614,
+          "ttft_ms": 281.00000878125024
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 1842.287,
+          "decode_tok_s": 107.166,
+          "peak_memory_gb": 21.065,
+          "total_time_s": 1.607,
+          "ttft_ms": 277.91543879970925
+        },
+        {
+          "trial": 6,
+          "prefill_tok_s": 1820.176,
+          "decode_tok_s": 107.081,
+          "peak_memory_gb": 21.065,
+          "total_time_s": 1.621,
+          "ttft_ms": 281.29147950527863
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.6144000000000003,
+        "median": 1.614,
+        "min": 1.607,
+        "max": 1.621
+      },
+      "upstream_reported_averages_all_trials": {
+        "prefill_tok_s": 1978.895,
+        "decode_tok_s": 107.104,
+        "peak_memory_gb": 21.064
+      },
+      "discarded_warmup_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 2721.209,
+          "decode_tok_s": 107.076,
+          "peak_memory_gb": 21.063,
+          "total_time_s": 1.606
+        }
+      ],
+      "warmup_repetitions_requested": 2,
+      "warmup_repetitions_upstream_builtin": 1,
+      "warmup_repetitions_discarded_trials": 1,
+      "warmup_repetitions_effective": 2,
+      "reported_averages": {
+        "prefill_tok_s": 1830.4317999999998,
+        "decode_tok_s": 107.10940000000001,
+        "peak_memory_gb": 21.0642
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/gemma-4-26b-a4b-it-6bit-prompts/prompt-512-gen-128-846109be82df.json",
+      "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+      "prompt_source": "random",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 279.723605741673,
+        "median": 280.53487919740724,
+        "min": 277.8762224247197,
+        "max": 281.29147950527863
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 3733.8974000000003,
+        "median": 3595.847,
+        "min": 3570.685,
+        "max": 4300.742
+      },
+      "decode_tok_s": {
+        "mean": 100.7642,
+        "median": 100.805,
+        "min": 100.661,
+        "max": 100.819
+      },
+      "peak_memory_gb": {
+        "mean": 21.7792,
+        "median": 21.779,
+        "min": 21.778,
+        "max": 21.78
+      },
+      "trials": [
+        {
+          "trial": 2,
+          "prefill_tok_s": 4300.742,
+          "decode_tok_s": 100.805,
+          "peak_memory_gb": 21.778,
+          "total_time_s": 1.977,
+          "ttft_ms": 476.1968981166506
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 3570.685,
+          "decode_tok_s": 100.819,
+          "peak_memory_gb": 21.779,
+          "total_time_s": 1.978,
+          "ttft_ms": 573.5594150702177
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 3595.847,
+          "decode_tok_s": 100.807,
+          "peak_memory_gb": 21.779,
+          "total_time_s": 1.982,
+          "ttft_ms": 569.5459233944047
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 3594.962,
+          "decode_tok_s": 100.661,
+          "peak_memory_gb": 21.78,
+          "total_time_s": 1.982,
+          "ttft_ms": 569.6861329827688
+        },
+        {
+          "trial": 6,
+          "prefill_tok_s": 3607.251,
+          "decode_tok_s": 100.729,
+          "peak_memory_gb": 21.78,
+          "total_time_s": 1.975,
+          "ttft_ms": 567.7453551194525
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.9788000000000001,
+        "median": 1.978,
+        "min": 1.975,
+        "max": 1.982
+      },
+      "upstream_reported_averages_all_trials": {
+        "prefill_tok_s": 3828.063,
+        "decode_tok_s": 100.769,
+        "peak_memory_gb": 21.779
+      },
+      "discarded_warmup_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 4298.889,
+          "decode_tok_s": 100.791,
+          "peak_memory_gb": 21.777,
+          "total_time_s": 1.979
+        }
+      ],
+      "warmup_repetitions_requested": 2,
+      "warmup_repetitions_upstream_builtin": 1,
+      "warmup_repetitions_discarded_trials": 1,
+      "warmup_repetitions_effective": 2,
+      "reported_averages": {
+        "prefill_tok_s": 3733.8974000000003,
+        "decode_tok_s": 100.7642,
+        "peak_memory_gb": 21.7792
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/gemma-4-26b-a4b-it-6bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+      "prompt_token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
+      "prompt_source": "random",
+      "prompt_tokens": 2048,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 551.3467449366988,
+        "median": 569.5459233944047,
+        "min": 476.1968981166506,
+        "max": 573.5594150702177
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    }
+  ],
+  "ax_mlx_lm_peer_wins": {
+    "schema_version": "ax.ax_mlx_lm_peer_wins.v1",
+    "scope": "ax_engine_mlx_vs_mlx_lm_matching_prompt_generation",
+    "required_wins": {
+      "prefill_tok_s": "ax_strictly_greater",
+      "decode_tok_s": "ax_strictly_greater",
+      "ttft_ms": "ax_strictly_lower"
+    },
+    "row_count": 3,
+    "pair_count": 0,
+    "strict_win_count": 0,
+    "failure_count": 3,
+    "missing_ax_count": 3,
+    "missing_mlx_lm_count": 0,
+    "duplicate_ax_count": 0,
+    "duplicate_mlx_lm_count": 0,
+    "failure_reason_counts": {
+      "missing_ax": 3
+    },
+    "rows": [
+      {
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "classification": "not_strict_win",
+        "failure_reasons": [
+          "missing_ax"
+        ]
+      },
+      {
+        "prompt_tokens": 512,
+        "generation_tokens": 128,
+        "classification": "not_strict_win",
+        "failure_reasons": [
+          "missing_ax"
+        ]
+      },
+      {
+        "prompt_tokens": 2048,
+        "generation_tokens": 128,
+        "classification": "not_strict_win",
+        "failure_reasons": [
+          "missing_ax"
+        ]
+      }
+    ],
+    "publication_candidate": false,
+    "required_by_cli": false
+  },
+  "bandwidth_accounting": {
+    "safetensor_bytes": 21647423449,
+    "moe_block": {
+      "expert_count": 128,
+      "experts_per_token": 8,
+      "expert_intermediate_size": 704,
+      "sigmoid_routing": false
+    },
+    "moe_active_bytes": 2870476860,
+    "bytes_used_for_estimate": 2870476860,
+    "estimate_kind": "moe_active_estimate",
+    "peak_bandwidth_gb_s": null,
+    "peak_bandwidth_source": null,
+    "ax_bandwidth_peak_source": null,
+    "per_row": []
+  }
+}

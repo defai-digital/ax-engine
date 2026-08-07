@@ -1,0 +1,842 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+    "shape_only_external_rows": [
+      "llama_cpp_metal"
+    ],
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "requires_clean_build_commit": true,
+    "minimum_warmup_repetitions": 2,
+    "minimum_measurement_repetitions": 5,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.5.2",
+    "platform": "darwin",
+    "os_build": "25F84",
+    "toolchain": {
+      "macos_sdk_version": "26.5",
+      "xcodebuild_version": [
+        "Xcode 26.6",
+        "Build version 17F113"
+      ],
+      "python_mlx": "0.32.0",
+      "python_mlx_lm": "0.31.3"
+    },
+    "performance_conditions": {
+      "load_average": {
+        "one_minute": 0.818,
+        "five_minutes": 0.9,
+        "fifteen_minutes": 0.955
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 90228,
+          "state": "S",
+          "cpu_percent": 11.1,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90231,
+          "state": "S",
+          "cpu_percent": 10.6,
+          "command": "contactsd"
+        },
+        {
+          "pid": 916,
+          "state": "Rs",
+          "cpu_percent": 10.6,
+          "command": "dasd"
+        },
+        {
+          "pid": 90229,
+          "state": "S",
+          "cpu_percent": 10.5,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90223,
+          "state": "S",
+          "cpu_percent": 10.4,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90226,
+          "state": "S",
+          "cpu_percent": 10.4,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90227,
+          "state": "S",
+          "cpu_percent": 10.2,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90225,
+          "state": "S",
+          "cpu_percent": 9.7,
+          "command": "contactsd"
+        }
+      ]
+    }
+  },
+  "benchmark_window": {
+    "started_at": "2026-08-07T05:50:41-0400",
+    "finished_at": "2026-08-07T05:58:05-0400",
+    "elapsed_seconds": 444.2,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.051,
+        "five_minutes": 1.069,
+        "fifteen_minutes": 1.033
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 89840,
+          "state": "Ss",
+          "cpu_percent": 7.9,
+          "command": "Python"
+        },
+        {
+          "pid": 87335,
+          "state": "Ss",
+          "cpu_percent": 1.7,
+          "command": "Python"
+        },
+        {
+          "pid": 931,
+          "state": "Ss",
+          "cpu_percent": 1.4,
+          "command": "notifyd"
+        },
+        {
+          "pid": 89023,
+          "state": "Ss",
+          "cpu_percent": 1.3,
+          "command": "NANDTaskScheduler"
+        },
+        {
+          "pid": 864,
+          "state": "Ss",
+          "cpu_percent": 0.9,
+          "command": "logd"
+        },
+        {
+          "pid": 905,
+          "state": "Ss",
+          "cpu_percent": 0.9,
+          "command": "opendirectoryd"
+        },
+        {
+          "pid": 1,
+          "state": "Ss",
+          "cpu_percent": 0.7,
+          "command": "launchd"
+        },
+        {
+          "pid": 940,
+          "state": "Ss",
+          "cpu_percent": 0.5,
+          "command": "cfprefsd"
+        }
+      ]
+    },
+    "performance_conditions_end": {
+      "load_average": {
+        "one_minute": 0.818,
+        "five_minutes": 0.9,
+        "fifteen_minutes": 0.955
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 90228,
+          "state": "S",
+          "cpu_percent": 11.1,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90231,
+          "state": "S",
+          "cpu_percent": 10.6,
+          "command": "contactsd"
+        },
+        {
+          "pid": 916,
+          "state": "Rs",
+          "cpu_percent": 10.6,
+          "command": "dasd"
+        },
+        {
+          "pid": 90229,
+          "state": "S",
+          "cpu_percent": 10.5,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90223,
+          "state": "S",
+          "cpu_percent": 10.4,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90226,
+          "state": "S",
+          "cpu_percent": 10.4,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90227,
+          "state": "S",
+          "cpu_percent": 10.2,
+          "command": "contactsd"
+        },
+        {
+          "pid": 90225,
+          "state": "S",
+          "cpu_percent": 9.7,
+          "command": "contactsd"
+        }
+      ]
+    }
+  },
+  "build": {
+    "commit": "6b9a6c9ede7824c510438155ebc63cefeee33087",
+    "engine_version": "6.13.3",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine-readme-bench-20260806/target/release/ax-engine-server",
+    "git_tracked_dirty": false,
+    "git_tracked_status": [],
+    "linked_libraries": [
+      "@rpath/libmlx.dylib (compatibility version 0.0.0, current version 0.0.0)",
+      "/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 373.2.0)"
+    ],
+    "libmlx_rpaths": [
+      "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib"
+    ],
+    "resolved_libmlx": "/Users/akiralam/code/ax-engine-readme-bench-20260806/crates/mlx-sys/../../.venv/lib/python3.14/site-packages/mlx/lib/libmlx.dylib"
+  },
+  "model": "mlx-community/Qwen3.6-27B-6bit",
+  "model_repo_id": "mlx-community/Qwen3.6-27B-6bit",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-6bit/snapshots/9bf976157e09080fbc11ccd971d4e9c57554889d",
+  "model_dir_source": "huggingface_cache",
+  "hf_cache_root": "/Users/akiralam/.cache/huggingface/hub",
+  "model_config": {
+    "model_type": "qwen3_5",
+    "quantization": {
+      "group_size": 64,
+      "bits": 6,
+      "mode": "affine"
+    },
+    "model_family": "qwen3_5",
+    "linear_attention_enabled": true,
+    "linear_attention": {
+      "full_attention_interval": 4,
+      "num_value_heads": 48,
+      "num_key_heads": 16,
+      "key_head_dim": 128,
+      "value_head_dim": 128,
+      "conv_kernel_dim": 4
+    },
+    "linear_attention_projection_layout": {
+      "schema_version": "ax.linear_attention_projection_layout.v1",
+      "layout": "split_qkv_z_a_b",
+      "linear_layers": 48,
+      "packed_layers": 0,
+      "split_layers": 48,
+      "role_counts": {
+        "linear_attention_in_proj_a": 48,
+        "linear_attention_in_proj_b": 48,
+        "linear_attention_in_proj_qkv": 48,
+        "linear_attention_in_proj_z": 48
+      },
+      "offline_pack_candidate": true
+    }
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "mlx_lm_warmup_contract": {
+      "requested_warmup_repetitions": 2,
+      "upstream_builtin_warmup_repetitions": 1,
+      "additional_discarded_trial_count": 1,
+      "measurement_repetitions": 5
+    },
+    "external_gguf_reference": "llama.cpp Metal llama-bench",
+    "external_gguf_reference_present": false,
+    "external_gguf_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback. llama_cpp_metal rows are shape-compatible external GGUF rows, not prompt-hash parity or repo-owned MLX throughput evidence.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/qwen3_6-27b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+          "token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+          "token_count": 128,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/qwen3_6-27b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+          "token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+          "token_count": 512,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 2048,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/qwen3_6-27b-6bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+          "token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
+          "token_count": 2048,
+          "prompt_source": "random"
+        }
+      ]
+    },
+    "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only"
+  },
+  "prompt_tokens": [
+    128,
+    512,
+    2048
+  ],
+  "generation_tokens": 128,
+  "seed": 0,
+  "repetitions": 5,
+  "warmup_repetitions": 2,
+  "cooldown": 15.0,
+  "prefill_step_size": 2048,
+  "ax_mtp_max_depth": null,
+  "ax_mtp_disable_ngram_stacking": false,
+  "ax_mtp_approximate_optimistic": false,
+  "ax_mtp_fast_tail_topk_sampling": false,
+  "ax_qwen_linear_mtp_exact": false,
+  "ax_qwen_linear_mtp_exact_explicit_enable": false,
+  "ax_qwen_linear_mtp_exact_selection_contract": "explicit_validated_qwen_linear_attention_verifier_profile",
+  "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+  "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+  "prefill_timing_scope_contract": {
+    "mlx_lm": "upstream_mlx_lm_response_stats",
+    "ax_engine_primary_prefill": "server_sse_runner_time_us",
+    "ax_engine_client_wall_ttft": "http_sse_first_output_token_observed_by_client",
+    "long_greedy_ax_prefill_work": "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+  },
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 0,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 0,
+    "cache_bytes_kib": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "run_stability_summary": {
+    "schema_version": "ax.benchmark_run_stability_summary.v1",
+    "scope": "ax_engine_rows",
+    "row_count": 0,
+    "stable_enough_count": 0,
+    "unstable_count": 0,
+    "missing_count": 0,
+    "classification_counts": {},
+    "unstable_rows": [],
+    "publication_candidate": false
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "ax_linear_attention_projection_pack": false,
+  "ax_linear_attention_projection_pack_compare": false,
+  "ax_dense_ffn_gate_up_pack": false,
+  "ax_dense_ffn_gate_up_pack_compare": false,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal": true,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal_explicit_enable": false,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal_selection_contract": "default_on_shape_gated_server_route_telemetry_authoritative",
+  "ax_direct_linear_attention_post_input_route_compare": false,
+  "ax_prefill_profile": false,
+  "ax_decode_profile": false,
+  "results": [
+    {
+      "prefill_tok_s": {
+        "mean": 361.2776,
+        "median": 361.223,
+        "min": 360.962,
+        "max": 361.707
+      },
+      "decode_tok_s": {
+        "mean": 24.9254,
+        "median": 24.927,
+        "min": 24.91,
+        "max": 24.936
+      },
+      "peak_memory_gb": {
+        "mean": 22.358600000000003,
+        "median": 22.359,
+        "min": 22.357,
+        "max": 22.36
+      },
+      "trials": [
+        {
+          "trial": 2,
+          "prefill_tok_s": 361.325,
+          "decode_tok_s": 24.933,
+          "peak_memory_gb": 22.357,
+          "total_time_s": 5.624,
+          "ttft_ms": 354.25171244724277
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 361.223,
+          "decode_tok_s": 24.936,
+          "peak_memory_gb": 22.358,
+          "total_time_s": 5.624,
+          "ttft_ms": 354.35174393657104
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 361.171,
+          "decode_tok_s": 24.927,
+          "peak_memory_gb": 22.359,
+          "total_time_s": 5.628,
+          "ttft_ms": 354.4027621265273
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 360.962,
+          "decode_tok_s": 24.91,
+          "peak_memory_gb": 22.359,
+          "total_time_s": 5.621,
+          "ttft_ms": 354.6079642732476
+        },
+        {
+          "trial": 6,
+          "prefill_tok_s": 361.707,
+          "decode_tok_s": 24.921,
+          "peak_memory_gb": 22.36,
+          "total_time_s": 5.621,
+          "ttft_ms": 353.8775860019297
+        }
+      ],
+      "total_time_s": {
+        "mean": 5.623600000000001,
+        "median": 5.624,
+        "min": 5.621,
+        "max": 5.628
+      },
+      "upstream_reported_averages_all_trials": {
+        "prefill_tok_s": 361.365,
+        "decode_tok_s": 24.93,
+        "peak_memory_gb": 22.358
+      },
+      "discarded_warmup_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 361.8,
+          "decode_tok_s": 24.956,
+          "peak_memory_gb": 22.357,
+          "total_time_s": 5.622
+        }
+      ],
+      "warmup_repetitions_requested": 2,
+      "warmup_repetitions_upstream_builtin": 1,
+      "warmup_repetitions_discarded_trials": 1,
+      "warmup_repetitions_effective": 2,
+      "reported_averages": {
+        "prefill_tok_s": 361.2776,
+        "decode_tok_s": 24.9254,
+        "peak_memory_gb": 22.358600000000003
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/qwen3_6-27b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_source": "random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 354.29835375710365,
+        "median": 354.35174393657104,
+        "min": 353.8775860019297,
+        "max": 354.6079642732476
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 667.7206,
+        "median": 668.05,
+        "min": 665.415,
+        "max": 669.823
+      },
+      "decode_tok_s": {
+        "mean": 24.8456,
+        "median": 24.846,
+        "min": 24.841,
+        "max": 24.849
+      },
+      "peak_memory_gb": {
+        "mean": 23.0542,
+        "median": 23.054,
+        "min": 23.053,
+        "max": 23.055
+      },
+      "trials": [
+        {
+          "trial": 2,
+          "prefill_tok_s": 665.415,
+          "decode_tok_s": 24.849,
+          "peak_memory_gb": 23.053,
+          "total_time_s": 6.06,
+          "ttft_ms": 769.4446322971379
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 669.823,
+          "decode_tok_s": 24.843,
+          "peak_memory_gb": 23.054,
+          "total_time_s": 6.053,
+          "ttft_ms": 764.381037975704
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 668.05,
+          "decode_tok_s": 24.841,
+          "peak_memory_gb": 23.054,
+          "total_time_s": 6.057,
+          "ttft_ms": 766.4096998727641
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 666.132,
+          "decode_tok_s": 24.846,
+          "peak_memory_gb": 23.055,
+          "total_time_s": 6.048,
+          "ttft_ms": 768.6164303771625
+        },
+        {
+          "trial": 6,
+          "prefill_tok_s": 669.183,
+          "decode_tok_s": 24.849,
+          "peak_memory_gb": 23.055,
+          "total_time_s": 6.049,
+          "ttft_ms": 765.1120844372915
+        }
+      ],
+      "total_time_s": {
+        "mean": 6.0534,
+        "median": 6.053,
+        "min": 6.048,
+        "max": 6.06
+      },
+      "upstream_reported_averages_all_trials": {
+        "prefill_tok_s": 683.246,
+        "decode_tok_s": 24.846,
+        "peak_memory_gb": 23.054
+      },
+      "discarded_warmup_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 760.872,
+          "decode_tok_s": 24.849,
+          "peak_memory_gb": 23.053,
+          "total_time_s": 6.055
+        }
+      ],
+      "warmup_repetitions_requested": 2,
+      "warmup_repetitions_upstream_builtin": 1,
+      "warmup_repetitions_discarded_trials": 1,
+      "warmup_repetitions_effective": 2,
+      "reported_averages": {
+        "prefill_tok_s": 667.7206,
+        "decode_tok_s": 24.8456,
+        "peak_memory_gb": 23.0542
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/qwen3_6-27b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+      "prompt_source": "random",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 766.792776992012,
+        "median": 766.4096998727641,
+        "min": 764.381037975704,
+        "max": 769.4446322971379
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 854.8531999999999,
+        "median": 855.126,
+        "min": 853.796,
+        "max": 855.252
+      },
+      "decode_tok_s": {
+        "mean": 24.695,
+        "median": 24.7,
+        "min": 24.684,
+        "max": 24.702
+      },
+      "peak_memory_gb": {
+        "mean": 24.9302,
+        "median": 24.93,
+        "min": 24.929,
+        "max": 24.931
+      },
+      "trials": [
+        {
+          "trial": 2,
+          "prefill_tok_s": 855.188,
+          "decode_tok_s": 24.689,
+          "peak_memory_gb": 24.929,
+          "total_time_s": 7.712,
+          "ttft_ms": 2394.795062606117
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 855.252,
+          "decode_tok_s": 24.702,
+          "peak_memory_gb": 24.93,
+          "total_time_s": 7.704,
+          "ttft_ms": 2394.6158559114742
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 853.796,
+          "decode_tok_s": 24.7,
+          "peak_memory_gb": 24.93,
+          "total_time_s": 7.717,
+          "ttft_ms": 2398.6994551391663
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 855.126,
+          "decode_tok_s": 24.7,
+          "peak_memory_gb": 24.931,
+          "total_time_s": 7.708,
+          "ttft_ms": 2394.9686946718966
+        },
+        {
+          "trial": 6,
+          "prefill_tok_s": 854.904,
+          "decode_tok_s": 24.684,
+          "peak_memory_gb": 24.931,
+          "total_time_s": 7.72,
+          "ttft_ms": 2395.5906160223835
+        }
+      ],
+      "total_time_s": {
+        "mean": 7.7122,
+        "median": 7.712,
+        "min": 7.704,
+        "max": 7.72
+      },
+      "upstream_reported_averages_all_trials": {
+        "prefill_tok_s": 854.641,
+        "decode_tok_s": 24.696,
+        "peak_memory_gb": 24.93
+      },
+      "discarded_warmup_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 853.582,
+          "decode_tok_s": 24.7,
+          "peak_memory_gb": 24.929,
+          "total_time_s": 7.721
+        }
+      ],
+      "warmup_repetitions_requested": 2,
+      "warmup_repetitions_upstream_builtin": 1,
+      "warmup_repetitions_discarded_trials": 1,
+      "warmup_repetitions_effective": 2,
+      "reported_averages": {
+        "prefill_tok_s": 854.8531999999999,
+        "decode_tok_s": 24.695,
+        "peak_memory_gb": 24.9302
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/inference/mlx-lm-reference/2026-08-07-mlx-lm-0.31.3-m5max/qwen3_6-27b-6bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+      "prompt_token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
+      "prompt_source": "random",
+      "prompt_tokens": 2048,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 2395.733936870208,
+        "median": 2394.9686946718966,
+        "min": 2394.6158559114742,
+        "max": 2398.6994551391663
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    }
+  ],
+  "ax_mlx_lm_peer_wins": {
+    "schema_version": "ax.ax_mlx_lm_peer_wins.v1",
+    "scope": "ax_engine_mlx_vs_mlx_lm_matching_prompt_generation",
+    "required_wins": {
+      "prefill_tok_s": "ax_strictly_greater",
+      "decode_tok_s": "ax_strictly_greater",
+      "ttft_ms": "ax_strictly_lower"
+    },
+    "row_count": 3,
+    "pair_count": 0,
+    "strict_win_count": 0,
+    "failure_count": 3,
+    "missing_ax_count": 3,
+    "missing_mlx_lm_count": 0,
+    "duplicate_ax_count": 0,
+    "duplicate_mlx_lm_count": 0,
+    "failure_reason_counts": {
+      "missing_ax": 3
+    },
+    "rows": [
+      {
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "classification": "not_strict_win",
+        "failure_reasons": [
+          "missing_ax"
+        ]
+      },
+      {
+        "prompt_tokens": 512,
+        "generation_tokens": 128,
+        "classification": "not_strict_win",
+        "failure_reasons": [
+          "missing_ax"
+        ]
+      },
+      {
+        "prompt_tokens": 2048,
+        "generation_tokens": 128,
+        "classification": "not_strict_win",
+        "failure_reasons": [
+          "missing_ax"
+        ]
+      }
+    ],
+    "publication_candidate": false,
+    "required_by_cli": false
+  },
+  "bandwidth_accounting": {
+    "safetensor_bytes": 22777879765,
+    "moe_block": null,
+    "moe_active_bytes": null,
+    "bytes_used_for_estimate": 22777879765,
+    "estimate_kind": "dense_safetensor_total",
+    "peak_bandwidth_gb_s": null,
+    "peak_bandwidth_source": null,
+    "ax_bandwidth_peak_source": null,
+    "per_row": []
+  }
+}
