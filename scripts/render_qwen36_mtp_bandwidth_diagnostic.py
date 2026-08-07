@@ -232,6 +232,7 @@ def measured_engine_labels(summary: dict[str, Any]) -> dict[str, str]:
 
 
 def build_diagnostic(summary_path: Path) -> dict[str, Any]:
+    summary_path = summary_path.resolve()
     summary = json.loads(summary_path.read_text())
     rows = peer_rows(summary)
     engine_labels = measured_engine_labels(summary)

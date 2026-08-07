@@ -10,6 +10,19 @@ from scripts import render_qwen36_mtp_bandwidth_diagnostic as renderer
 
 
 class Qwen36MtpBandwidthDiagnosticTests(unittest.TestCase):
+    def test_build_diagnostic_accepts_repo_relative_summary_path(self) -> None:
+        with tempfile.TemporaryDirectory(dir=renderer.REPO_ROOT) as tmp:
+            summary_path = Path(tmp) / "summary.json"
+            summary_path.write_text(json.dumps({"rows": []}))
+            relative_path = summary_path.relative_to(renderer.REPO_ROOT)
+
+            diagnostic = renderer.build_diagnostic(relative_path)
+
+        self.assertEqual(
+            diagnostic["source_summary"],
+            relative_path.as_posix(),
+        )
+
     def test_engine_labels_use_measured_summary_identities(self) -> None:
         labels = renderer.measured_engine_labels(
             {
