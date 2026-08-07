@@ -110,6 +110,7 @@ def _run(args, fixture, env=None):
         ["bash", SCRIPT, *args],
         cwd=REPO_ROOT,
         env=full_env,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
     )
