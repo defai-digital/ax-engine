@@ -397,6 +397,14 @@ class ReadmePerformanceChartTests(unittest.TestCase):
                 ),
             )
 
+            readme.write_text(
+                "<!-- readme-llama-cpp-build: b10050 -->\n"
+                "<!-- readme-llama-cpp-build: malformed -->\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(charts.ChartError, "exactly one"):
+                charts.find_llama_cpp_build(readme)
+
     def test_gemma4_12b_decode_uses_llama_matched_depth(self) -> None:
         row = {
             "engine": "llama_cpp_metal",

@@ -790,7 +790,7 @@ def find_llama_cpp_build(readme: Path) -> str | None:
     if marker not in text:
         return None
     matches = re.findall(r"readme-llama-cpp-build:\s*(b\d+)", text)
-    if len(matches) != 1:
+    if text.count(marker) != 1 or len(matches) != 1:
         raise ChartError("README must declare exactly one valid llama.cpp build marker")
     return matches[0]
 
