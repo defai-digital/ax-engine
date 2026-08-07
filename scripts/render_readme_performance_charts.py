@@ -1982,9 +1982,9 @@ def render_ngram_opportunity_chart(artifact: dict) -> str:
         f' viewBox="0 0 {NGRAM_CHART_WIDTH} {NGRAM_CHART_HEIGHT}"'
         f' role="img" aria-labelledby="title desc">',
         f"<title>{escape(title)}</title>",
-        f"<desc>Grouped bar chart comparing ax direct, ax n-gram, lightning (temp=0.6), and oracle"
-        f" upper-bound decode throughput (tok/s) across high, med, and low repeat prompt"
-        f" categories for Qwen3-4B 4-bit.</desc>",
+        "<desc>Grouped bar chart comparing ax direct, ax n-gram, lightning (temp=0.6), and oracle"
+        " upper-bound decode throughput (tok/s) across high, med, and low repeat prompt"
+        " categories for Qwen3-4B 4-bit.</desc>",
         f'<rect width="{NGRAM_CHART_WIDTH}" height="{NGRAM_CHART_HEIGHT}" fill="#ffffff"/>',
         f'<text x="{NGRAM_LEFT}" y="22" font-family="{FONT}"'
         f' font-size="15" font-weight="700" fill="#111827">{escape(title)}</text>',
@@ -2023,7 +2023,7 @@ def render_ngram_opportunity_chart(artifact: dict) -> str:
         group_center = NGRAM_LEFT + (gi + 0.5) * group_step
         bar0_left = group_center - group_block / 2
 
-        for bi, (s_key, s_label, color, dot_color) in enumerate(series):
+        for bi, (s_key, _s_label, color, dot_color) in enumerate(series):
             bar_center = bar0_left + bi * (bar_w + bar_gap) + bar_w / 2
             bar_left = bar_center - bar_w / 2
             val = data[s_key][cat_id]
@@ -2454,11 +2454,13 @@ def render_ngram_models_accept_chart(artifacts: dict[str, dict]) -> str:
         a = _ngram_category_median(
             art.get("ax_ngram", []), "high_repeat", "ngram_accept_rate"
         )
-        l = _ngram_category_median(
+        lightning_accept = _ngram_category_median(
             art.get("lightning", []), "high_repeat", "lightning_accept_rate"
         )
         ax_vals.append((a * 100.0) if a is not None else 0.0)
-        lt_val = (l * 100.0) if l is not None else 0.0
+        lt_val = (
+            lightning_accept * 100.0 if lightning_accept is not None else 0.0
+        )
         lt_vals.append(lt_val)
         if lt_val > 0:
             has_lightning = True

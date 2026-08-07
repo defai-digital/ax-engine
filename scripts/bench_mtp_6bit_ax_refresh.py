@@ -18,9 +18,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
-DEFAULT_OUTPUT_BASE = (
-    REPO_ROOT / "benchmarks" / "results" / "speculative" / "mtp-6bit"
-)
+DEFAULT_OUTPUT_BASE = REPO_ROOT / "benchmarks" / "results" / "speculative" / "mtp-6bit"
 DEFAULT_SUITES_DIR = REPO_ROOT / "benchmarks" / "prompts" / "mtp-suites"
 README_PATH = REPO_ROOT / "docs" / "PERFORMANCE-RESULTS.md"
 
@@ -68,7 +66,6 @@ def _resolve_mtp_model_dir(*candidates: str) -> Path:
         path = Path(raw).expanduser()
         expanded.append(path)
         # Also try HF hub cache sibling when given an Ext4T hub path.
-        name = path.name
         # If path looks like .../models--X/snapshots/v1, try hub/models--X/snapshots/*
         parts = path.parts
         if "models--" in str(path):
@@ -89,9 +86,11 @@ def _resolve_mtp_model_dir(*candidates: str) -> Path:
                             expanded.extend(snaps)
                     break
     for path in expanded:
-        if path.is_dir() and (path / "config.json").is_file() and (
-            path / "model-manifest.json"
-        ).is_file():
+        if (
+            path.is_dir()
+            and (path / "config.json").is_file()
+            and (path / "model-manifest.json").is_file()
+        ):
             return path
     # Return first candidate for error messages in validate_model_dir
     return Path(candidates[0]).expanduser()
@@ -301,8 +300,7 @@ def metric_median(artifact: dict[str, Any], metric: str) -> float:
     values = [
         float(row[metric]["median"])
         for row in artifact.get("results", [])
-        if row.get("prompt_case_id") is not None
-        and row.get(metric, {}).get("median") is not None
+        if row.get("prompt_case_id") is not None and row.get(metric, {}).get("median") is not None
     ]
     if not values:
         raise ValueError(f"artifact has no {metric} prompt-case medians")
@@ -383,9 +381,7 @@ def mtp_coverage(artifact: dict[str, Any]) -> dict[str, float | int]:
         1
         for row in rows
         if int(
-            (row.get("ngram_acceleration_telemetry") or {}).get(
-                "ax_mtp_direct_fallback_steps", 0
-            )
+            (row.get("ngram_acceleration_telemetry") or {}).get("ax_mtp_direct_fallback_steps", 0)
             or 0
         )
         > 0
@@ -426,30 +422,25 @@ def validate_exact_mtp_artifact(
         or artifact.get("ax_qwen_linear_mtp_exact_explicit_enable") is not True
     ):
         raise ValueError(
-            f"{path} did not explicitly select the validated Qwen linear-MTP "
-            "exact verifier profile"
+            f"{path} did not explicitly select the validated Qwen linear-MTP exact verifier profile"
         )
 
 
 def validate_approximate_mtp_artifact(path: Path, artifact: dict[str, Any]) -> None:
-    rows = [
-        row
-        for row in artifact.get("results", [])
-        if row.get("prompt_case_id") is not None
-    ]
+    rows = [row for row in artifact.get("results", []) if row.get("prompt_case_id") is not None]
     allowed_modes = {"approximate_optimistic", "direct_fallback"}
     if not rows or any(
         (row.get("ax_mtp_correctness") or {}).get("effective_mode") not in allowed_modes
         for row in rows
     ):
-        raise ValueError(f"{path} is not an effective approximate MTP speed ceiling or direct fallback")
+        raise ValueError(
+            f"{path} is not an effective approximate MTP speed ceiling or direct fallback"
+        )
     if any(row.get("publication_candidate") is True for row in rows):
         raise ValueError(f"{path} incorrectly marks an approximate row publishable")
 
 
-def exact_publication_methodology_reasons(
-    direct: dict[str, Any], mtp: dict[str, Any]
-) -> list[str]:
+def exact_publication_methodology_reasons(direct: dict[str, Any], mtp: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     for label, artifact in (("direct", direct), ("mtp", mtp)):
         if int(artifact.get("warmup_repetitions", 0) or 0) < 2:
@@ -478,13 +469,9 @@ def validate_exact_seed_reproducibility(
         if row.get("prompt_case_id") is not None
     }
     if not direct_rows or direct_rows.keys() != mtp_rows.keys():
-        raise ValueError(
-            f"direct/MTP prompt cases differ: {direct_path} vs {mtp_path}"
-        )
+        raise ValueError(f"direct/MTP prompt cases differ: {direct_path} vs {mtp_path}")
     for case_id, direct_row in direct_rows.items():
-        direct_tokens = [
-            trial.get("output_token_ids") for trial in direct_row.get("trials", [])
-        ]
+        direct_tokens = [trial.get("output_token_ids") for trial in direct_row.get("trials", [])]
         mtp_tokens = [
             trial.get("output_token_ids") for trial in mtp_rows[case_id].get("trials", [])
         ]
@@ -522,15 +509,11 @@ def build_summary(
                     mtp,
                     require_qwen_linear_exact=not target.assistant_mtp,
                 )
-                validate_exact_seed_reproducibility(
-                    direct_path, direct, mtp_path, mtp
-                )
+                validate_exact_seed_reproducibility(direct_path, direct, mtp_path, mtp)
                 publication_reasons = exact_publication_methodology_reasons(direct, mtp)
             direct_decode = metric_median(direct, "decode_tok_s")
             mtp_decode = metric_median(mtp, "decode_tok_s")
-            quality_pct, quality_kind = draft_quality(
-                mtp, assistant_mtp=target.assistant_mtp
-            )
+            quality_pct, quality_kind = draft_quality(mtp, assistant_mtp=target.assistant_mtp)
             coverage = mtp_coverage(mtp)
             row = {
                 "model_id": target.key,
@@ -571,9 +554,7 @@ def build_summary(
                 "lightning_mlx": "N/A",
             }
             rows.append(row)
-    publication_candidate = bool(rows) and all(
-        row["publication_candidate"] for row in rows
-    )
+    publication_candidate = bool(rows) and all(row["publication_candidate"] for row in rows)
     return {
         "schema": (
             "ax.mtp_6bit_approximate_diagnostic_summary.v2"
@@ -639,16 +620,12 @@ def fmt_pct(value: float) -> str:
 
 def draft_quality_label(row: dict[str, Any]) -> str:
     suffix = (
-        "match"
-        if row["ax_mtp_draft_quality_kind"] == "target_argmax_match_ewma"
-        else "verified"
+        "match" if row["ax_mtp_draft_quality_kind"] == "target_argmax_match_ewma" else "verified"
     )
     return f"{float(row['ax_mtp_draft_quality_pct']):.1f}% {suffix}"
 
 
-def table_lines(
-    rows: list[dict[str, Any]], *, approximate_diagnostic: bool
-) -> list[str]:
+def table_lines(rows: list[dict[str, Any]], *, approximate_diagnostic: bool) -> list[str]:
     if approximate_diagnostic:
         lines = [
             "| Target | Suite | AX direct decode | Approx. MTP decode | Diagnostic ratio | Draft quality | MTP step coverage | Fallback prompts |",
@@ -714,9 +691,7 @@ def write_summary_files(output_dir: Path, summary: dict[str, Any]) -> None:
         "",
         f"The {ratio_label} is `AX MTP decode tok/s / AX direct decode tok/s` for the same prepared `download-mtp` package and prompt suite. It is not a cross-model speed ranking.",
         "",
-        *table_lines(
-            summary["rows"], approximate_diagnostic=approximate_diagnostic
-        ),
+        *table_lines(summary["rows"], approximate_diagnostic=approximate_diagnostic),
         "",
         "This is an AX Engine only artifact. Peer engines are intentionally not run here; each row compares the prepared AX 6-bit `download-mtp` package against the same package with MTP disabled.",
         "",
@@ -734,9 +709,7 @@ def validate_readme_publication_summary(summary: dict[str, Any]) -> None:
     if summary.get("claim_type") != MTP_6BIT_EXACT_CLAIM_TYPE:
         raise ValueError("README update requires an exact MTP comparison claim")
     engine_version = summary.get("engine_version")
-    if not isinstance(engine_version, str) or not re.fullmatch(
-        r"\d+\.\d+\.\d+", engine_version
-    ):
+    if not isinstance(engine_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", engine_version):
         raise ValueError("README update requires a semantic engine_version")
 
     methodology = summary.get("methodology")
@@ -750,17 +723,13 @@ def validate_readme_publication_summary(summary: dict[str, Any]) -> None:
     }
     for key, expected in expected_methodology.items():
         if methodology.get(key) != expected:
-            raise ValueError(
-                f"README update requires methodology {key}={expected!r}"
-            )
+            raise ValueError(f"README update requires methodology {key}={expected!r}")
 
     rows = summary.get("rows")
     if not isinstance(rows, list) or not rows:
         raise ValueError("README update requires non-empty exact MTP rows")
     expected_rows = {
-        (target.key, suite)
-        for target in SUPPORTED_TARGETS
-        for suite in DEFAULT_SUITES
+        (target.key, suite) for target in SUPPORTED_TARGETS for suite in DEFAULT_SUITES
     }
     actual_rows: set[tuple[str, str]] = set()
     for row in rows:
@@ -877,9 +846,7 @@ def render_readme_section(summary: dict[str, Any]) -> str:
 def update_readme(readme: Path, summary: dict[str, Any]) -> None:
     section = render_readme_section(summary)
     text = readme.read_text()
-    section_match = re.search(
-        r"^#### AX Engine(?: v\d+\.\d+\.\d+)? 6-bit", text, re.MULTILINE
-    )
+    section_match = re.search(r"^#### AX Engine(?: v\d+\.\d+\.\d+)? 6-bit", text, re.MULTILINE)
     if section_match is None:
         raise ValueError("README has no AX Engine 6-bit MTP section")
     section_start = section_match.start()
@@ -904,8 +871,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_BASE
-        / f"{date.today().isoformat()}-supported-mtp-ax-only-refresh",
+        default=DEFAULT_OUTPUT_BASE / f"{date.today().isoformat()}-supported-mtp-ax-only-refresh",
     )
     parser.add_argument("--suites-dir", type=Path, default=DEFAULT_SUITES_DIR)
     parser.add_argument(
@@ -920,13 +886,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--generated-tokens", type=int, default=GENERATED_TOKENS)
     parser.add_argument("--repetitions", type=int, default=REPETITIONS)
-    parser.add_argument(
-        "--warmup-repetitions", type=int, default=WARMUP_REPETITIONS
-    )
+    parser.add_argument("--warmup-repetitions", type=int, default=WARMUP_REPETITIONS)
     parser.add_argument("--cooldown", type=float, default=COOLDOWN_S)
-    parser.add_argument(
-        "--inter-case-cooldown", type=float, default=INTER_CASE_COOLDOWN_S
-    )
+    parser.add_argument("--inter-case-cooldown", type=float, default=INTER_CASE_COOLDOWN_S)
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument(
         "--approximate-speed-ceiling",
@@ -995,4 +957,4 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from None

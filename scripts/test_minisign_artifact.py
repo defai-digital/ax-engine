@@ -10,7 +10,6 @@ suite in spirit.
 import os
 import pty
 import subprocess
-import sys
 import tempfile
 import unittest
 
