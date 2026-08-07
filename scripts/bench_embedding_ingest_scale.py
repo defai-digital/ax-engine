@@ -15,20 +15,28 @@ import gc
 import importlib.util
 import json
 import math
-import os
 import statistics
-import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+try:
+    from scripts import bench_mlx_inference_stack as bench_support
+except ModuleNotFoundError:
+    import bench_mlx_inference_stack as bench_support
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_CONTRACT = "contiguous_cpu_f32_batch_hidden"
 SCHEMA_VERSION = "ax.embedding_ingest_scale.v2"
+DEFAULT_MAX_LOAD_AVERAGE = 2.0
+DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT = 50.0
+DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS = 900.0
+DEFAULT_LOAD_POLL_INTERVAL_SECONDS = 5.0
 
 
 def load_fair_bench():
@@ -188,6 +196,7 @@ def run_trials_interleaved(
     warmup: int,
     trials: int,
     cooldown: float,
+    load_gate: Callable[[str], None] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Run each engine's measured trials interleaved within a single trial loop.
 
@@ -199,7 +208,12 @@ def run_trials_interleaved(
     """
     for runner in engines:
         print(f"    [{runner.label}] warmup x {warmup}", file=sys.stderr)
-        for _ in range(warmup):
+        for warmup_index in range(warmup):
+            if load_gate is not None:
+                load_gate(
+                    f"{workload.name} {runner.label} warmup "
+                    f"{warmup_index + 1}/{warmup}"
+                )
             run_one_pass(runner.step_fn, workload)
     rows_by_engine: dict[str, list[dict[str, Any]]] = {r.key: [] for r in engines}
     for idx in range(1, trials + 1):
@@ -209,6 +223,10 @@ def run_trials_interleaved(
         for runner in trial_engines:
             if cooldown > 0:
                 time.sleep(cooldown)
+            if load_gate is not None:
+                load_gate(
+                    f"{workload.name} {runner.label} trial {idx}/{trials}"
+                )
             row = run_one_pass(runner.step_fn, workload)
             rows_by_engine[runner.key].append(row)
             print(
@@ -250,6 +268,7 @@ def run_model(
     reference: str,
     pooling: str,
     ax_only: bool,
+    load_gate: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     model_dir = spec.path.resolve()
     manifest_path = model_dir / "model-manifest.json"
@@ -277,7 +296,12 @@ def run_model(
                 engines.append(EngineRunner(ref_key, ref_label, ref_step))
             engines.append(EngineRunner("ax_engine_py", "ax-engine-py", ax_step))
             results = run_trials_interleaved(
-                engines, workload, warmup, trials, cooldown
+                engines,
+                workload,
+                warmup,
+                trials,
+                cooldown,
+                load_gate,
             )
             rows.append(
                 {
@@ -316,7 +340,8 @@ def render_summary(artifact: dict[str, Any]) -> str:
             f"Output contract: `{artifact['output_contract']}`. "
             f"Total chunks per trial: `{artifact['total_chunks']}`.",
             "",
-            "| Model | Chunk tokens | Batch | Batches/trial | AX tok/s | AX chunks/s | AX p95 batch ms |",
+            "| Model | Chunk tokens | Batch | Batches/trial | AX tok/s | "
+            "AX chunks/s | AX p95 batch ms |",
             "|---|---:|---:|---:|---:|---:|---:|",
         ]
         for model in artifact["models"]:
@@ -336,7 +361,8 @@ def render_summary(artifact: dict[str, Any]) -> str:
         f"Output contract: `{artifact['output_contract']}`. "
         f"Reference: `{ref_label}`. Total chunks per trial: `{artifact['total_chunks']}`.",
         "",
-        f"| Model | Chunk tokens | Batch | Batches/trial | {ref_label} tok/s | AX tok/s | AX vs {ref_label} | AX chunks/s | AX p95 batch ms |",
+        f"| Model | Chunk tokens | Batch | Batches/trial | {ref_label} tok/s | "
+        f"AX tok/s | AX vs {ref_label} | AX chunks/s | AX p95 batch ms |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for model in artifact["models"]:
@@ -384,6 +410,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--cooldown", type=float, default=15.0)
+    parser.add_argument(
+        "--max-load-average",
+        type=float,
+        default=DEFAULT_MAX_LOAD_AVERAGE,
+    )
+    parser.add_argument(
+        "--max-top-process-cpu-percent",
+        type=float,
+        default=DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+    )
+    parser.add_argument(
+        "--load-wait-timeout",
+        type=float,
+        default=DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--load-poll-interval",
+        type=float,
+        default=DEFAULT_LOAD_POLL_INTERVAL_SECONDS,
+    )
     parser.add_argument("--ax-only", action="store_true")
     parser.add_argument(
         "--output-dir",
@@ -406,14 +452,39 @@ def main() -> int:
         chunk_lengths = fair.parse_csv_ints(args.chunk_tokens, name="chunk-tokens")
         if args.total_chunks <= 0:
             raise ValueError("total-chunks must be positive")
+        for field in (
+            "max_load_average",
+            "max_top_process_cpu_percent",
+            "load_wait_timeout",
+            "load_poll_interval",
+        ):
+            value = float(getattr(args, field))
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(
+                    f"{field.replace('_', '-')} must be finite and positive"
+                )
     except ValueError as error:
         parser.error(str(error))
 
     run_dir = args.output_dir / datetime.now().strftime("%Y-%m-%d-%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = run_dir / "embedding_ingest_scale.json"
+    summary_path = run_dir / "summary.md"
     build = fair.collect_build_metadata()
+    conditions_start = (
+        bench_support.collect_benchmark_boundary_performance_conditions(
+            max_one_minute=args.max_load_average,
+            max_top_process_cpu_percent_value=(
+                args.max_top_process_cpu_percent
+            ),
+            timeout_seconds=args.load_wait_timeout,
+            poll_interval_seconds=args.load_poll_interval,
+            context="embedding ingest benchmark start",
+        )
+    )
     artifact = {
         "schema_version": SCHEMA_VERSION,
+        "status": "running",
         "timestamp": datetime.now().isoformat(),
         "git_commit": build["commit"] if build["commit"] != "unknown" else git_commit(),
         "build": build,
@@ -431,6 +502,16 @@ def main() -> int:
         "warmup": args.warmup,
         "trials": args.trials,
         "cooldown_s": args.cooldown,
+        "max_load_average": args.max_load_average,
+        "max_top_process_cpu_percent": (
+            args.max_top_process_cpu_percent
+        ),
+        "load_wait_timeout_seconds": args.load_wait_timeout,
+        "load_poll_interval_seconds": args.load_poll_interval,
+        "benchmark_window": {
+            "performance_conditions_start": conditions_start,
+            "performance_conditions_end": None,
+        },
         "batch_sizes": batch_sizes,
         "chunk_tokens": chunk_lengths,
         "total_chunks": args.total_chunks,
@@ -439,25 +520,59 @@ def main() -> int:
         "ax_only": args.ax_only,
         "models": [],
     }
+    artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
 
-    for spec in model_specs:
-        artifact["models"].append(
-            run_model(
-                spec,
-                chunk_lengths,
-                batch_sizes,
-                args.total_chunks,
-                args.warmup,
-                args.trials,
-                args.cooldown,
-                args.reference,
-                args.pooling,
-                args.ax_only,
-            )
+    def enforce_load_gate(context: str) -> None:
+        bench_support.wait_for_performance_load(
+            max_one_minute=args.max_load_average,
+            max_top_process_cpu_percent_value=(
+                args.max_top_process_cpu_percent
+            ),
+            timeout_seconds=args.load_wait_timeout,
+            poll_interval_seconds=args.load_poll_interval,
+            context=context,
         )
 
-    artifact_path = run_dir / "embedding_ingest_scale.json"
-    summary_path = run_dir / "summary.md"
+    try:
+        for spec in model_specs:
+            artifact["models"].append(
+                run_model(
+                    spec,
+                    chunk_lengths,
+                    batch_sizes,
+                    args.total_chunks,
+                    args.warmup,
+                    args.trials,
+                    args.cooldown,
+                    args.reference,
+                    args.pooling,
+                    args.ax_only,
+                    enforce_load_gate,
+                )
+            )
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+        conditions_end = (
+            bench_support.collect_benchmark_boundary_performance_conditions(
+                max_one_minute=args.max_load_average,
+                max_top_process_cpu_percent_value=(
+                    args.max_top_process_cpu_percent
+                ),
+                timeout_seconds=args.load_wait_timeout,
+                poll_interval_seconds=args.load_poll_interval,
+                context="embedding ingest benchmark end",
+            )
+        )
+        artifact["benchmark_window"][
+            "performance_conditions_end"
+        ] = conditions_end
+        artifact["status"] = "complete"
+        artifact["completed_at"] = datetime.now().isoformat()
+    except Exception as error:
+        artifact["status"] = "failed"
+        artifact["failure"] = f"{type(error).__name__}: {error}"
+        artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+        raise
+
     artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
     summary_path.write_text(render_summary(artifact) + "\n")
     print(f"Wrote {artifact_path}", file=sys.stderr)

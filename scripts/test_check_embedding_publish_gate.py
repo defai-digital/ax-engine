@@ -25,6 +25,17 @@ def load_script(name: str, filename: str):
 gate = load_script("check_embedding_publish_gate", "check_embedding_publish_gate.py")
 
 
+def _performance_conditions() -> dict:
+    return {
+        "load_average": {"one_minute": 0.5},
+        "power_source": "AC Power",
+        "thermal_warning_recorded": False,
+        "performance_warning_recorded": False,
+        "cpu_power_status_recorded": False,
+        "top_processes_cpu": [{"cpu_percent": 0.1, "command": "test"}],
+    }
+
+
 def _paired_fair_artifact(**overrides):
     payload = {
         "schema_version": "ax.embedding_fair.v2",
@@ -233,6 +244,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
     def test_scale_requires_p95(self) -> None:
         payload = {
             "schema_version": "ax.embedding_ingest_scale.v2",
+            "status": "complete",
             "output_contract": "contiguous_cpu_f32_batch_hidden",
             "ax_only": False,
             "publication_claim": "paired_delta",
@@ -241,6 +253,12 @@ class EmbeddingPublishGateTests(unittest.TestCase):
             "trials": 5,
             "cooldown_s": 15.0,
             "trial_order": "interleaved_alternating",
+            "max_load_average": 2.0,
+            "max_top_process_cpu_percent": 50.0,
+            "benchmark_window": {
+                "performance_conditions_start": _performance_conditions(),
+                "performance_conditions_end": _performance_conditions(),
+            },
             "git_commit": "a" * 40,
             "build": {
                 "commit": "a" * 40,
@@ -291,6 +309,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
     def test_scale_requires_publication_cooldown(self) -> None:
         payload = {
             "schema_version": "ax.embedding_ingest_scale.v2",
+            "status": "complete",
             "output_contract": "contiguous_cpu_f32_batch_hidden",
             "ax_only": False,
             "publication_claim": "paired_delta",
@@ -299,6 +318,12 @@ class EmbeddingPublishGateTests(unittest.TestCase):
             "trials": 5,
             "cooldown_s": 0.0,
             "trial_order": "interleaved_alternating",
+            "max_load_average": 2.0,
+            "max_top_process_cpu_percent": 50.0,
+            "benchmark_window": {
+                "performance_conditions_start": _performance_conditions(),
+                "performance_conditions_end": _performance_conditions(),
+            },
             "build": {
                 "commit": "a" * 40,
                 "engine_version": "6.13.2",
@@ -335,6 +360,33 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         }
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "cooldown_s >= 15"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_scale_requires_clean_benchmark_conditions(self) -> None:
+        payload = _paired_fair_artifact(
+            schema_version="ax.embedding_ingest_scale.v2",
+            status="complete",
+            cooldown_s=15.0,
+            max_load_average=2.0,
+            max_top_process_cpu_percent=50.0,
+            benchmark_window={
+                "performance_conditions_start": _performance_conditions(),
+                "performance_conditions_end": _performance_conditions(),
+            },
+        )
+        for model in payload["models"]:
+            for row in model["rows"]:
+                for result in row["results"].values():
+                    result["median_batch_p95_ms"] = 1.0
+        path = self._write(payload)
+        report = gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+        self.assertTrue(report["ok"])
+
+        payload["benchmark_window"]["performance_conditions_end"][
+            "thermal_warning_recorded"
+        ] = True
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "thermal_warning"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
 

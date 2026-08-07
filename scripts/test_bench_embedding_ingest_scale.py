@@ -53,6 +53,7 @@ class EmbeddingIngestScaleBenchmarkTests(unittest.TestCase):
 
     def test_interleaved_trials_alternate_engine_order(self) -> None:
         calls = []
+        load_gate_calls = []
         workload = bench.ScaleWorkload(
             name="scale_1x1_b1",
             chunk_tokens=1,
@@ -77,6 +78,7 @@ class EmbeddingIngestScaleBenchmarkTests(unittest.TestCase):
             warmup=1,
             trials=3,
             cooldown=0.0,
+            load_gate=load_gate_calls.append,
         )
 
         self.assertEqual(
@@ -93,11 +95,15 @@ class EmbeddingIngestScaleBenchmarkTests(unittest.TestCase):
             ],
         )
         self.assertEqual(set(results), {"ref", "ax_engine_py"})
+        self.assertEqual(len(load_gate_calls), 8)
+        self.assertIn("trial 3/3", load_gate_calls[-1])
 
     def test_parser_defaults_to_publication_cooldown(self) -> None:
         args = bench.build_parser().parse_args(["--model", "qwen=/tmp/model"])
 
         self.assertEqual(args.cooldown, 15.0)
+        self.assertEqual(args.max_load_average, 2.0)
+        self.assertEqual(args.max_top_process_cpu_percent, 50.0)
 
     def test_render_summary_includes_scale_metrics(self) -> None:
         summary = bench.render_summary(

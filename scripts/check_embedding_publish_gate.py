@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -38,6 +39,8 @@ VALID_CLAIMS = {CLAIM_PAIRED, CLAIM_AX_ONLY}
 MIN_WARMUPS = 2
 MIN_TRIALS = 5
 MIN_SCALE_COOLDOWN_SECONDS = 15.0
+MAX_PUBLICATION_LOAD_AVERAGE = 2.0
+MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT = 50.0
 
 
 class PublishGateError(ValueError):
@@ -174,6 +177,85 @@ def validate_runtime_identity(
                 "pip/venv MLX — reject paired_delta publication"
             )
     return warnings
+
+
+def validate_benchmark_conditions(
+    artifact: dict[str, Any],
+    *,
+    path: Path,
+) -> None:
+    max_load = artifact.get("max_load_average")
+    require(
+        isinstance(max_load, (int, float))
+        and not isinstance(max_load, bool)
+        and math.isfinite(float(max_load))
+        and float(max_load) <= MAX_PUBLICATION_LOAD_AVERAGE,
+        f"{path}: missing or relaxed max_load_average publication gate",
+    )
+    max_top_cpu = artifact.get("max_top_process_cpu_percent")
+    require(
+        isinstance(max_top_cpu, (int, float))
+        and not isinstance(max_top_cpu, bool)
+        and math.isfinite(float(max_top_cpu))
+        and float(max_top_cpu) <= MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT,
+        f"{path}: missing or relaxed max_top_process_cpu_percent publication gate",
+    )
+    window = artifact.get("benchmark_window")
+    require(
+        isinstance(window, dict),
+        f"{path}: missing benchmark_window",
+    )
+    for boundary in (
+        "performance_conditions_start",
+        "performance_conditions_end",
+    ):
+        conditions = window.get(boundary)
+        require(
+            isinstance(conditions, dict),
+            f"{path}: benchmark_window.{boundary} must be an object",
+        )
+        load_average = conditions.get("load_average")
+        one_minute = (
+            load_average.get("one_minute")
+            if isinstance(load_average, dict)
+            else None
+        )
+        require(
+            isinstance(one_minute, (int, float))
+            and not isinstance(one_minute, bool)
+            and math.isfinite(float(one_minute))
+            and float(one_minute) <= MAX_PUBLICATION_LOAD_AVERAGE,
+            f"{path}: benchmark_window.{boundary} load exceeds publication limit",
+        )
+        require(
+            conditions.get("power_source") == "AC Power",
+            f"{path}: benchmark_window.{boundary} requires AC Power",
+        )
+        for warning_key in (
+            "thermal_warning_recorded",
+            "performance_warning_recorded",
+            "cpu_power_status_recorded",
+        ):
+            require(
+                conditions.get(warning_key) is False,
+                f"{path}: benchmark_window.{boundary}.{warning_key} "
+                "must be false",
+            )
+        top_processes = conditions.get("top_processes_cpu")
+        cpu_values = [
+            float(process["cpu_percent"])
+            for process in top_processes
+            if isinstance(process, dict)
+            and isinstance(process.get("cpu_percent"), (int, float))
+            and not isinstance(process.get("cpu_percent"), bool)
+            and math.isfinite(float(process["cpu_percent"]))
+        ] if isinstance(top_processes, list) else []
+        require(
+            bool(cpu_values)
+            and max(cpu_values) <= MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT,
+            f"{path}: benchmark_window.{boundary} top-process CPU "
+            "exceeds publication limit",
+        )
 
 
 def validate_rows(
@@ -361,6 +443,10 @@ def validate_artifact(
             f"{path}: v2 publication requires trials >= {MIN_TRIALS}",
         )
         if schema in SCALE_SCHEMAS:
+            require(
+                artifact.get("status") == "complete",
+                f"{path}: v2 ingest-scale artifact is not complete",
+            )
             cooldown = artifact.get("cooldown_s")
             require(
                 isinstance(cooldown, (int, float))
@@ -369,6 +455,7 @@ def validate_artifact(
                 f"{path}: v2 ingest-scale publication requires cooldown_s "
                 f">= {MIN_SCALE_COOLDOWN_SECONDS:.0f}",
             )
+            validate_benchmark_conditions(artifact, path=path)
     else:
         if isinstance(warmup, int) and warmup < MIN_WARMUPS:
             warnings.append(
