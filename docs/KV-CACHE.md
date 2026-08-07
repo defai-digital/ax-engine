@@ -610,11 +610,12 @@ Historical quality and microbench artifacts remain under
 
 `Scheduler.plan()` reads `SchedulerInput.memory_pressure`:
 
-- `kv_low_free_blocks:*` preserves decode progress and caps new prefill to
-  `MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP` token per step.
-- `kv_exhausted_reclaimable_cache` preserves decode progress and caps new
-  prefill to one token per step so concrete allocation can trigger retained-cache
-  eviction.
+- `kv_low_free_blocks:*` preserves decode progress and caps new prefill to a
+  soft 256-token budget per step, keeping fair multi-prefill active.
+- `kv_exhausted_reclaimable_cache` preserves decode progress and defers new
+  prefill for the step. The engine reclaims sole-owner cached blocks before
+  planning, so this label means no cache was evictable; a bounded 1-token
+  allocation opportunity cannot succeed and is no longer offered.
 - `kv_exhausted` preserves decode progress but defers new prefill work.
 
 This is a front-line throttle, not a complete admission guarantee: a decode or

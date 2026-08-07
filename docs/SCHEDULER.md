@@ -46,10 +46,11 @@ more than one model; neither layer creates a mixed-model batch.
            → decode-first ordering within the sorted list
 5. Walk sorted list, for each candidate:
    a. Check token budget (remaining_budget > 0)
-   b. If memory_pressure is low/reclaimable and mode is Prefill,
-      limit to MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP (= 1)
-      If memory_pressure is kv_exhausted and mode is Prefill,
-      defer the prefill request
+   b. If memory_pressure is kv_low_free_blocks:* and mode is Prefill,
+      cap at the soft MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP (= 256)
+      budget with fair multi-prefill still active
+      If memory_pressure is kv_exhausted or kv_exhausted_reclaimable_cache
+      and mode is Prefill, defer the prefill request
    c. Check batch route compatibility (route_seed_can_join_batch)
    d. If all checks pass: add to selected, deduct tokens from budget
       Otherwise: add to deferred
@@ -120,14 +121,16 @@ Telemetry (on `RouteMetadata.crossover_decisions` when fair is active):
 ### Memory pressure throttle
 
 When `memory_pressure` is `Some("kv_low_free_blocks:<free>/<total>")`, prefill
-slots are limited to one token per step
-(`MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP = 1`). This slows prompt ingestion
-to reduce new KV block demand while existing decode requests drain.
+is capped at a soft 256-token budget per step
+(`MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP`) and fair multi-prefill stays
+active. This slows prompt ingestion to reduce new KV block demand while
+existing decode requests drain, without stalling long prefills.
 
 When `memory_pressure` is `Some("kv_exhausted_reclaimable_cache")`, prefill is
-also limited to one token per step. Although no block is currently free, the
-engine may be able to satisfy the allocation by evicting retained prefix cache,
-so the scheduler gives the KV manager a bounded allocation opportunity.
+deferred for the step, exactly like `kv_exhausted`. The engine reclaims
+sole-owner cached blocks before planning, so the label reaching the scheduler
+means nothing was evictable; trickling one token per step cannot allocate
+blocks that do not exist and only delays the decode drain that frees capacity.
 
 When `memory_pressure` is `Some("kv_exhausted")`, prefill requests are deferred
 for the step. Decode requests are still eligible, because they may be able to

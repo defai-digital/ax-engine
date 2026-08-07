@@ -836,15 +836,17 @@ impl EngineCore {
     /// When the logical pool is exhausted but reclaimable prefix cache
     /// exists, evict enough sole-owner cached blocks *before* planning that
     /// the scheduler sees real free capacity instead of the
-    /// `kv_exhausted_reclaimable_cache` one-token throttle. Without this,
-    /// the throttle re-derives every step — allocate-time eviction frees
-    /// exactly one chunk's blocks, free returns to zero — and a fresh long
-    /// prompt prefills token by token (3,770 steps / 259 s TTFT for a
-    /// 4,280-token prompt against a full 1,024-block pool). Demand-bounded
+    /// `kv_exhausted_reclaimable_cache` label. Without this, the label used
+    /// to re-derive every step with a one-token prefill cap — allocate-time
+    /// eviction freed exactly one chunk's blocks, free returned to zero —
+    /// and a fresh long prompt prefilled token by token (3,770 steps /
+    /// 259 s TTFT for a 4,280-token prompt against a full 1,024-block
+    /// pool). Demand-bounded
     /// so a step never evicts more cache than its own budget could consume;
-    /// if nothing is evictable (all cached blocks live-shared) the existing
-    /// one-token backstop and blocked-on-memory retry paths still own
-    /// progress.
+    /// if nothing is evictable (all cached blocks live-shared) the
+    /// reclaimable-exhausted label defers prefill outright (budget 0, the
+    /// same shape as `kv_exhausted`) and the blocked-on-memory retry and
+    /// preempt-and-recompute paths still own progress.
     fn reclaim_kv_for_pending_work(
         &mut self,
         global_token_budget: u32,

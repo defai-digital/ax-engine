@@ -348,7 +348,9 @@ impl TokenBudgetTelemetry {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scheduler;
 
-/// Hard pressure (exhausted / unknown): one token so decode can still progress.
+/// Fallback budget for *unrecognized* pressure labels only: one token so
+/// decode can still progress. No current label maps here — `kv_exhausted`
+/// and `kv_exhausted_reclaimable_cache` both defer (budget 0).
 const MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP: u32 = 1;
 /// Soft pressure (`kv_low_free_blocks:*`): keep prefill productive. Forcing 1
 /// token here made multi-model long-prefill (flip S1 Gemma ~14k tok) take ~35s
@@ -437,7 +439,7 @@ impl Scheduler {
         // ~350–500 ms (2026-07-24). Soft pressure still caps via
         // `pressure_prefill_budget` (min with fair_chunk below); only hard
         // exhausted / reclaimable-hard policies turn fair off so the
-        // one-token / defer path remains the sole throttle.
+        // defer path remains the sole throttle.
         let fair_active = input.multi_prefill_fair
             && !is_hard_memory_pressure_prefill_budget(pressure_prefill_budget);
         let mut admitted_prefill_requests: u32 = 0;
@@ -755,9 +757,12 @@ fn prefill_budget_for_memory_pressure(memory_pressure: Option<&str>) -> Option<u
     match memory_pressure {
         None => None,
         Some(MEMORY_PRESSURE_KV_EXHAUSTED) => Some(0),
-        Some(MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE) => {
-            Some(MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP)
-        }
+        // Defer, never trickle. The engine reclaims sole-owner cached blocks
+        // before planning, so this label reaching the scheduler means nothing
+        // was evictable (every cached block is live-shared); a 1-token chunk
+        // cannot allocate blocks that do not exist and only burns scheduler
+        // turns while decode drain is what actually frees capacity.
+        Some(MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE) => Some(0),
         Some(label) if label.starts_with(MEMORY_PRESSURE_KV_LOW_PREFIX) => {
             Some(MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP)
         }
@@ -766,7 +771,7 @@ fn prefill_budget_for_memory_pressure(memory_pressure: Option<&str>) -> Option<u
 }
 
 /// Hard pressure budgets that must disable fair multi-prefill so the
-/// exhausted / one-token reclaim path is the sole throttle. Soft
+/// exhausted defer path is the sole throttle. Soft
 /// `kv_low_free_blocks:*` (budget == SOFT) keeps fair active.
 fn is_hard_memory_pressure_prefill_budget(pressure_prefill_budget: Option<u32>) -> bool {
     match pressure_prefill_budget {
@@ -1540,7 +1545,7 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_reclaimable_cache_pressure_caps_prefill_without_starving_decode() {
+    fn exhausted_reclaimable_cache_pressure_defers_prefill_without_starving_decode() {
         let scheduler = Scheduler::new();
         let schedule_plan = scheduler.plan(&SchedulerInput::new(
             StepId(17),
@@ -1552,16 +1557,15 @@ mod tests {
             8,
         ));
 
-        assert_eq!(
-            schedule_plan.selected_requests,
-            vec![RequestId(2), RequestId(1)]
-        );
+        // Same shape as `kv_exhausted`: the engine already reclaimed every
+        // evictable block before planning, so prefill defers whole and
+        // decode keeps the step.
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(2)]);
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
         let execution_batch = schedule_plan.execution_batch.unwrap();
-        assert_eq!(execution_batch.total_scheduled_tokens, 2);
+        assert_eq!(execution_batch.total_scheduled_tokens, 1);
         assert_eq!(execution_batch.items[0].mode, ExecutionMode::Decode);
         assert_eq!(execution_batch.items[0].scheduled_token_count, 1);
-        assert_eq!(execution_batch.items[1].mode, ExecutionMode::Prefill);
-        assert_eq!(execution_batch.items[1].scheduled_token_count, 1);
     }
 
     #[test]
