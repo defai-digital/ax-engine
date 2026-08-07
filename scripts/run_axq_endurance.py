@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Run a low-rate, no-restart AX Engine MLX endurance workload.
+"""Run a light, no-restart AX Engine MLX endurance/soak workload.
 
-The runner owns one AX Engine server process for the entire test.  It sends a
-deterministic, single-client streaming request every fixed interval, persists
-each outcome as JSONL, and writes an atomic checkpoint every four hours by
-default.  It deliberately does not automatically restart a failed server:
-that would hide the availability failure this test is intended to detect.
+This runner is designed for evidence, not peak throughput.  It owns one AX
+Engine server process for the entire run, sends one bounded native streaming
+request at a fixed cadence, and never restarts the server after a failure.  It
+writes raw request/resource evidence continuously and an atomic, human-readable
+status report every four hours by default.
 
-This is an endurance/soak test, not a maximum-throughput benchmark.  The
-default workload is intentionally light: one in-flight request, 30-second
-cadence, short prompts most of the time, and bounded medium/long prompt
-coverage to exercise prefill and allocator cleanup over a long server lifetime.
+The default workload deliberately uses one in-flight request.  It combines
+unique prompts (allocator/KV retirement coverage) with a small shared-prefix
+slice (prefix-cache coverage), while leaving headroom so that a queueing stress
+test cannot mask an endurance defect.
 """
 
 from __future__ import annotations
@@ -23,47 +23,119 @@ import json
 import math
 import os
 import platform
+import re
 import shutil
 import signal
+import socket
+import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import bench_ax_serving as serving_bench
 
-SCHEMA_VERSION = "ax.axq_endurance_soak.v1"
-CHECKPOINT_SCHEMA_VERSION = "ax.axq_endurance_checkpoint.v1"
+SCHEMA_VERSION = "ax.axq_endurance_soak.v2"
+CHECKPOINT_SCHEMA_VERSION = "ax.axq_endurance_checkpoint.v2"
 DEFAULT_DURATION_HOURS = 72.0
 DEFAULT_REPORT_INTERVAL_HOURS = 4.0
-DEFAULT_REQUEST_INTERVAL_S = 30.0
-DEFAULT_REQUEST_TIMEOUT_S = 180.0
+DEFAULT_BASELINE_HOURS = 4.0
+DEFAULT_REQUEST_INTERVAL_S = 60.0
+DEFAULT_RESOURCE_INTERVAL_S = 60.0
+DEFAULT_REQUEST_TIMEOUT_S = 300.0
 DEFAULT_STARTUP_TIMEOUT_S = 1_200.0
-DEFAULT_WARMUP_REQUESTS = 2
+DEFAULT_DRAIN_TIMEOUT_S = 10.0
+DEFAULT_WARMUP_REQUESTS = 10
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
-DEFAULT_MAX_RSS_GROWTH_MIB = 4_096.0
+DEFAULT_MAX_ERROR_RATE = 0.001
+DEFAULT_MAX_TTFT_P95_RATIO = 1.50
+DEFAULT_MIN_DECODE_P05_RATIO = 0.75
+DEFAULT_MIN_PREFILL_P05_RATIO = 0.75
+DEFAULT_MIN_PERFORMANCE_SAMPLES = 8
+DEFAULT_MEMORY_GROWTH_MIB = 4_096.0
+DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR = 256.0
+DEFAULT_MAX_QUIESCENT_KV_LOGICAL_MIB = 1_024.0
 
+MEBIBYTE = 1024 * 1024
 SENSITIVE_HARDWARE_PREFIXES = (
     "Serial Number",
     "Hardware UUID",
     "Provisioning UDID",
     "Activation Lock Status",
 )
-INTERESTING_METRICS = (
+
+# These lifecycle gauges must all be zero once a completed response has drained.
+# A missing gauge makes the drain verdict inconclusive, rather than silently
+# claiming that KV/cache cleanup was verified.
+LIFECYCLE_METRICS = (
     "ax_engine_jobs_in_flight",
-    "ax_engine_http_requests_in_flight",
     "ax_engine_generation_jobs_pending",
     "ax_engine_generation_commands_queued",
     "ax_engine_generation_active_streams",
     "ax_engine_generation_buffered_stream_events",
+)
+SERVER_METRICS = (
+    *LIFECYCLE_METRICS,
+    # `/metrics` reports its own HTTP request as in flight, so this stays
+    # observable but is deliberately not a post-request drain condition.
+    "ax_engine_http_requests_in_flight",
+    "ax_engine_generation_worker_ready",
     "ax_engine_generation_saturated_commands_total",
     "ax_engine_generation_stream_backlog_overflows_total",
-    "ax_engine_memory_pressure_level",
+    "ax_engine_http_status_2xx_total",
+    "ax_engine_http_status_4xx_total",
+    "ax_engine_http_status_5xx_total",
+    "ax_engine_memory_mlx_active_bytes",
+    "ax_engine_memory_mlx_cache_bytes",
+    "ax_engine_memory_mlx_peak_bytes",
+    "ax_engine_memory_host_resident_bytes",
+    "ax_engine_memory_unattributed_active_bytes",
+    "ax_engine_memory_attribution_excess_bytes",
+    "ax_runtime_ttft_p95_ms",
+    "ax_runtime_decode_tok_per_sec",
+    "ax_runtime_error_rate",
+    "ax_runtime_kv_pages_total",
+    "ax_runtime_kv_utilization",
+    "ax_runtime_queue_depth",
 )
+MODEL_METRICS = (
+    "ax_engine_model_memory_kv_report_available",
+    "ax_engine_model_memory_kv_logical_bytes",
+    "ax_engine_model_memory_kv_capacity_bytes",
+    "ax_engine_model_memory_kv_linear_state_bytes",
+    "ax_engine_model_memory_kv_paged_pool_slab_bytes",
+    "ax_engine_model_memory_kv_physical_bytes",
+    "ax_engine_model_memory_prefix_cache_payload_bytes",
+)
+COUNTER_METRICS = (
+    "ax_engine_generation_saturated_commands_total",
+    "ax_engine_generation_stream_backlog_overflows_total",
+    "ax_engine_http_status_2xx_total",
+    "ax_engine_http_status_4xx_total",
+    "ax_engine_http_status_5xx_total",
+)
+MEMORY_SERIES_PATHS = {
+    "server_rss_bytes": ("process", "rss_bytes"),
+    "host_wired_bytes": ("host", "wired_bytes"),
+    "mlx_active_bytes": ("metrics", "values", "ax_engine_memory_mlx_active_bytes"),
+    "mlx_cache_bytes": ("metrics", "values", "ax_engine_memory_mlx_cache_bytes"),
+    "model_kv_physical_bytes": (
+        "metrics",
+        "values",
+        "ax_engine_model_memory_kv_physical_bytes",
+    ),
+    "model_prefix_cache_payload_bytes": (
+        "metrics",
+        "values",
+        "ax_engine_model_memory_prefix_cache_payload_bytes",
+    ),
+}
 PROMPT_WORDS = (
     "adapter",
     "allocation",
@@ -96,53 +168,105 @@ PROMPT_WORDS = (
 
 @dataclass(frozen=True)
 class WorkloadShape:
-    """One bounded request shape in the deterministic endurance mix."""
+    """A bounded deterministic request shape in the endurance mix."""
 
     name: str
-    nominal_input_words: int
+    mode: str
+    unique_words: int
+    shared_prefix_words: int
     max_output_tokens: int
+
+    @property
+    def nominal_input_words(self) -> int:
+        return self.unique_words + self.shared_prefix_words
 
 
 WORKLOAD_SHAPES = {
-    "short": WorkloadShape("short", nominal_input_words=96, max_output_tokens=48),
-    "medium": WorkloadShape("medium", nominal_input_words=512, max_output_tokens=64),
-    "long": WorkloadShape("long", nominal_input_words=2_048, max_output_tokens=64),
+    "short_unique": WorkloadShape("short_unique", "unique", 128, 0, 96),
+    "medium_unique": WorkloadShape("medium_unique", "unique", 1_024, 0, 128),
+    "shared_prefix": WorkloadShape("shared_prefix", "shared_prefix", 96, 1_024, 96),
+    "long_unique": WorkloadShape("long_unique", "unique", 4_096, 0, 128),
 }
+# One 20-request cycle is 70% short, 15% medium, 10% deliberate prefix reuse,
+# and 5% long prefill.  The cases are interleaved rather than bursty.
+WORKLOAD_SEQUENCE = (
+    "short_unique",
+    "short_unique",
+    "short_unique",
+    "medium_unique",
+    "short_unique",
+    "short_unique",
+    "shared_prefix",
+    "short_unique",
+    "short_unique",
+    "medium_unique",
+    "short_unique",
+    "short_unique",
+    "short_unique",
+    "long_unique",
+    "short_unique",
+    "short_unique",
+    "medium_unique",
+    "short_unique",
+    "short_unique",
+    "shared_prefix",
+)
 
 
 @dataclass
 class RunState:
-    """Mutable state kept compact enough for a multi-day run."""
+    """Small mutable state; detailed evidence lives in JSONL artifacts."""
 
     started_wall: str
     started_monotonic: float
     server_pid: int
-    baseline_rss_kb: int | None = None
-    max_rss_kb: int | None = None
     requests_attempted: int = 0
     requests_ok: int = 0
     requests_failed: int = 0
     health_failures: int = 0
     consecutive_request_failures: int = 0
-    rss_growth_alerts: int = 0
+    lifecycle_timeouts: int = 0
+    lifecycle_inconclusive: int = 0
+    kv_report_unavailable: int = 0
+    metric_scrape_failures: int = 0
+    resource_sampler_stop_timeouts: int = 0
+    quiescent_kv_logical_exceedances: int = 0
+    baseline_completed_at: str | None = None
+    baseline_completed_elapsed_s: float | None = None
+    baseline: dict[str, Any] | None = None
+    resource_baseline: dict[str, float] = field(default_factory=dict)
+    counter_baseline: dict[str, float] = field(default_factory=dict)
+    performance_alerts: int = 0
+    memory_alerts: int = 0
     last_error: str | None = None
 
 
+JSONL_LOCK = threading.Lock()
+
+
 def utc_now() -> str:
-    """Return a stable, timezone-explicit timestamp for artifacts."""
+    """Return a stable, timezone-explicit timestamp for evidence."""
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
 def utc_run_id() -> str:
-    """Return a filesystem-safe default run id."""
+    """Return a filesystem-safe default run identifier."""
     return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def positive_float(value: str) -> float:
-    """Parse a strictly positive CLI float."""
+    """Parse a strictly positive finite CLI float."""
     parsed = float(value)
     if not math.isfinite(parsed) or parsed <= 0.0:
         raise argparse.ArgumentTypeError("value must be a finite positive number")
+    return parsed
+
+
+def non_negative_float(value: str) -> float:
+    """Parse a non-negative finite CLI float."""
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0.0:
+        raise argparse.ArgumentTypeError("value must be a finite non-negative number")
     return parsed
 
 
@@ -163,7 +287,7 @@ def positive_int(value: str) -> int:
 
 
 def sha256_file(path: Path) -> str:
-    """Hash a small identity file without loading it all into memory."""
+    """Hash an identity file without loading it all into memory."""
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -172,7 +296,7 @@ def sha256_file(path: Path) -> str:
 
 
 def model_identity(model_dir: Path) -> dict[str, Any]:
-    """Return cheap, auditable identity data for a local AX model package."""
+    """Return compact, auditable identity data for a local AX model package."""
     required = ("config.json", "model-manifest.json")
     missing = [name for name in required if not (model_dir / name).is_file()]
     weights = sorted(model_dir.glob("*.safetensors"))
@@ -192,15 +316,15 @@ def model_identity(model_dir: Path) -> dict[str, Any]:
     }
 
 
-def command_output(*command: str) -> str:
-    """Collect non-sensitive diagnostic command output without failing a run."""
+def command_output(*command: str, timeout_s: float = 30.0) -> str:
+    """Collect a diagnostic command result without obscuring test evidence."""
     try:
         result = subprocess.run(
             command,
             check=False,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout_s,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         return f"unavailable: {error}"
@@ -209,7 +333,7 @@ def command_output(*command: str) -> str:
 
 def sanitized_hardware_profile() -> str:
     """Collect hardware context while excluding durable machine identifiers."""
-    profile = command_output("system_profiler", "SPHardwareDataType")
+    profile = command_output("system_profiler", "SPHardwareDataType", timeout_s=45.0)
     return "\n".join(
         line
         for line in profile.splitlines()
@@ -218,7 +342,7 @@ def sanitized_hardware_profile() -> str:
 
 
 def runtime_metadata(server_path: Path) -> dict[str, Any]:
-    """Capture versions relevant to a reproducible endurance result."""
+    """Capture reproducibility context once, before the server starts."""
     packages: dict[str, str | None] = {}
     for package in ("mlx", "mlx-lm", "huggingface-hub"):
         try:
@@ -233,6 +357,7 @@ def runtime_metadata(server_path: Path) -> dict[str, Any]:
         "macos": command_output("sw_vers"),
         "hardware": sanitized_hardware_profile(),
         "power": command_output("pmset", "-g", "batt"),
+        "power_settings": command_output("pmset", "-g"),
         "mlx_packages": packages,
         "server_path": str(server_path),
         "server_sha256": sha256_file(server_path),
@@ -241,7 +366,7 @@ def runtime_metadata(server_path: Path) -> dict[str, Any]:
 
 
 def build_server_command(args: argparse.Namespace) -> list[str]:
-    """Build the one-server command used for the full test lifetime."""
+    """Build the one-server command used for the complete endurance lifetime."""
     return [
         str(args.server),
         "--model-id",
@@ -259,6 +384,16 @@ def build_server_command(args: argparse.Namespace) -> list[str]:
         "1",
         *args.server_extra_arg,
     ]
+
+
+def assert_port_available(host: str, port: int) -> None:
+    """Avoid accidentally accepting a different pre-existing server as ours."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind((host, port))
+    except OSError as error:
+        raise RuntimeError(f"refusing to use occupied endpoint {host}:{port}: {error}") from error
 
 
 def request_json(url: str, timeout_s: float) -> tuple[int, dict[str, Any]]:
@@ -282,9 +417,11 @@ def health_check(base_url: str, timeout_s: float) -> dict[str, Any]:
             "http_status": status,
             "reported_status": reported_status,
             "elapsed_ms": (time.perf_counter() - started) * 1000.0,
-            "error": None if ok else f"health returned status={status}, body_status={reported_status}",
+            "error": (
+                None if ok else f"health returned status={status}, body_status={reported_status}"
+            ),
         }
-    except Exception as error:  # noqa: BLE001 - preserve endpoint errors in artifacts.
+    except Exception as error:  # noqa: BLE001 - endpoint failures are evidence.
         return {
             "ok": False,
             "http_status": None,
@@ -295,12 +432,9 @@ def health_check(base_url: str, timeout_s: float) -> dict[str, Any]:
 
 
 def wait_for_server(
-    process: subprocess.Popen[bytes],
-    *,
-    base_url: str,
-    timeout_s: float,
+    process: subprocess.Popen[bytes], *, base_url: str, timeout_s: float
 ) -> dict[str, Any]:
-    """Wait for the owned server to report ready, or preserve its early exit."""
+    """Wait for the owned process to report ready, preserving early exits."""
     deadline = time.monotonic() + timeout_s
     last_health: dict[str, Any] | None = None
     while time.monotonic() < deadline:
@@ -316,65 +450,179 @@ def wait_for_server(
 
 
 def stop_server(process: subprocess.Popen[bytes], timeout_s: float = 60.0) -> dict[str, Any]:
-    """Stop the owned server gracefully, escalating only after a bounded wait."""
+    """Stop only the process group created by this runner, then record outcome."""
     forced = False
     if process.poll() is None:
-        process.terminate()
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
         try:
             process.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             forced = True
-            process.kill()
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=30.0)
     return {"exit_code": process.returncode, "forced": forced}
 
 
-def parse_prometheus_metrics(text: str) -> dict[str, float]:
-    """Parse unlabeled Prometheus samples while ignoring comments and labels."""
-    metrics: dict[str, float] = {}
+def parse_prometheus_labels(raw: str) -> dict[str, str]:
+    """Parse the simple quoted-label form emitted by AX Engine metrics."""
+    labels: dict[str, str] = {}
+    for match in re.finditer(r'([A-Za-z_][A-Za-z0-9_]*)="((?:\\.|[^"\\])*)"', raw):
+        labels[match.group(1)] = bytes(match.group(2), "utf-8").decode("unicode_escape")
+    return labels
+
+
+def parse_prometheus_samples(text: str) -> list[dict[str, Any]]:
+    """Parse numeric Prometheus samples, retaining labels needed for model KV."""
+    samples: list[dict[str, Any]] = []
     for line in text.splitlines():
         fields = line.strip().split()
-        if len(fields) != 2 or not fields[0] or fields[0].startswith("#"):
+        if len(fields) < 2 or not fields[0] or fields[0].startswith("#"):
             continue
-        if "{" in fields[0]:
-            continue
+        metric_and_labels = fields[0]
         try:
-            metrics[fields[0]] = float(fields[1])
+            value = float(fields[1])
         except ValueError:
             continue
-    return metrics
+        if not math.isfinite(value):
+            continue
+        if "{" in metric_and_labels:
+            name, remainder = metric_and_labels.split("{", 1)
+            if not remainder.endswith("}"):
+                continue
+            labels = parse_prometheus_labels(remainder[:-1])
+        else:
+            name = metric_and_labels
+            labels = {}
+        samples.append({"name": name, "labels": labels, "value": value})
+    return samples
 
 
-def collect_metrics(base_url: str, timeout_s: float) -> dict[str, Any]:
-    """Read a compact subset of server metrics without making it a hard gate."""
+def parse_prometheus_metrics(text: str) -> dict[str, float]:
+    """Backward-compatible unlabeled metric view used by focused unit tests."""
+    return {
+        str(sample["name"]): float(sample["value"])
+        for sample in parse_prometheus_samples(text)
+        if not sample["labels"]
+    }
+
+
+def select_ax_metrics(samples: Iterable[dict[str, Any]], model_id: str) -> dict[str, float]:
+    """Select server-wide values plus model-labelled KV/cache values."""
+    values: dict[str, float] = {}
+    for sample in samples:
+        name = sample.get("name")
+        labels = sample.get("labels")
+        value = sample.get("value")
+        if not isinstance(name, str) or not isinstance(labels, dict):
+            continue
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            continue
+        is_server_metric = name in SERVER_METRICS and not labels
+        is_target_model_metric = name in MODEL_METRICS and labels.get("model") == model_id
+        if is_server_metric or is_target_model_metric:
+            values[name] = float(value)
+    return values
+
+
+def collect_metrics(base_url: str, model_id: str, timeout_s: float) -> dict[str, Any]:
+    """Read relevant metrics; a failed scrape is evidence, not a thrown error."""
+    started = time.perf_counter()
     try:
         with urllib.request.urlopen(f"{base_url}/metrics", timeout=timeout_s) as response:
-            values = parse_prometheus_metrics(response.read().decode("utf-8"))
+            body = response.read().decode("utf-8")
+        values = select_ax_metrics(parse_prometheus_samples(body), model_id)
         return {
             "ok": True,
-            "values": {name: values[name] for name in INTERESTING_METRICS if name in values},
+            "elapsed_ms": (time.perf_counter() - started) * 1000.0,
+            "values": values,
+            "missing_lifecycle_metrics": [name for name in LIFECYCLE_METRICS if name not in values],
+            "missing_model_memory_metrics": [name for name in MODEL_METRICS if name not in values],
         }
-    except Exception as error:  # noqa: BLE001 - metrics must not mask workload evidence.
-        return {"ok": False, "error": str(error), "values": {}}
+    except Exception as error:  # noqa: BLE001 - observability cannot hide request evidence.
+        return {
+            "ok": False,
+            "elapsed_ms": (time.perf_counter() - started) * 1000.0,
+            "error": str(error),
+            "values": {},
+            "missing_lifecycle_metrics": list(LIFECYCLE_METRICS),
+            "missing_model_memory_metrics": list(MODEL_METRICS),
+        }
+
+
+def lifecycle_state(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Classify whether native generation lifecycle queues have fully drained."""
+    if not metrics.get("ok"):
+        return {"state": "inconclusive", "missing": list(LIFECYCLE_METRICS), "nonzero": {}}
+    values = metrics.get("values", {})
+    if not isinstance(values, dict):
+        return {"state": "inconclusive", "missing": list(LIFECYCLE_METRICS), "nonzero": {}}
+    missing = [name for name in LIFECYCLE_METRICS if name not in values]
+    if missing:
+        return {"state": "inconclusive", "missing": missing, "nonzero": {}}
+    nonzero = {
+        name: float(values[name])
+        for name in LIFECYCLE_METRICS
+        if isinstance(values.get(name), (int, float)) and float(values[name]) > 0.0
+    }
+    return {"state": "drained" if not nonzero else "busy", "missing": [], "nonzero": nonzero}
+
+
+def wait_for_quiescence(
+    *, base_url: str, model_id: str, timeout_s: float, poll_interval_s: float = 0.25
+) -> dict[str, Any]:
+    """Poll after a response until all lifecycle gauges are zero or evidence says why not."""
+    started = time.monotonic()
+    attempts = 0
+    latest: dict[str, Any] = {}
+    while True:
+        attempts += 1
+        latest = collect_metrics(base_url, model_id, timeout_s=min(5.0, timeout_s))
+        state = lifecycle_state(latest)
+        if state["state"] != "busy":
+            return {
+                "state": state["state"],
+                "attempts": attempts,
+                "elapsed_ms": (time.monotonic() - started) * 1000.0,
+                "missing": state["missing"],
+                "nonzero": state["nonzero"],
+                "metrics": latest,
+            }
+        if time.monotonic() - started >= timeout_s:
+            return {
+                "state": "timeout",
+                "attempts": attempts,
+                "elapsed_ms": (time.monotonic() - started) * 1000.0,
+                "missing": [],
+                "nonzero": state["nonzero"],
+                "metrics": latest,
+            }
+        time.sleep(min(poll_interval_s, max(0.01, timeout_s)))
 
 
 def process_snapshot(pid: int) -> dict[str, Any]:
-    """Collect RSS/CPU from the exact server PID, not a broad process match."""
-    result = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "pid=,rss=,%cpu=,etime="],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    """Collect RSS/CPU for the exact owned server PID, not a process-name match."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "pid=,rss=,%cpu=,etime="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"alive": False, "pid": pid, "error": str(error)}
     fields = result.stdout.strip().split(maxsplit=3)
     if len(fields) != 4:
         return {"alive": False, "pid": pid}
     try:
+        rss_kb = int(fields[1])
         return {
             "alive": True,
             "pid": int(fields[0]),
-            "rss_kb": int(fields[1]),
+            "rss_kb": rss_kb,
+            "rss_bytes": rss_kb * 1024,
             "cpu_percent": float(fields[2]),
             "elapsed": fields[3],
         }
@@ -382,41 +630,199 @@ def process_snapshot(pid: int) -> dict[str, Any]:
         return {"alive": False, "pid": pid, "parse_error": result.stdout.strip()}
 
 
-def collect_host_snapshot(output_dir: Path) -> dict[str, Any]:
-    """Collect lightweight host context at four-hour checkpoint boundaries."""
-    disk = shutil.disk_usage(output_dir)
-    return {
+VM_STAT_FIELDS = {
+    "Pages wired down": "wired_pages",
+    "Pages active": "active_pages",
+    "Pages inactive": "inactive_pages",
+    "Pages speculative": "speculative_pages",
+    "Pages occupied by compressor": "compressor_pages",
+    "Pages purgeable": "purgeable_pages",
+    "File-backed pages": "file_backed_pages",
+    "Anonymous pages": "anonymous_pages",
+}
+
+
+def parse_vm_stat(text: str) -> dict[str, int]:
+    """Extract relevant page counts from macOS ``vm_stat`` output."""
+    result: dict[str, int] = {}
+    for raw_name, key in VM_STAT_FIELDS.items():
+        match = re.search(rf"(?m)^\s*{re.escape(raw_name)}:\s*([0-9,]+)\.", text)
+        if match:
+            result[key] = int(match.group(1).replace(",", ""))
+    return result
+
+
+def parse_memory_size(value: str) -> int | None:
+    """Parse a compact macOS memory size such as ``128.00M`` into bytes."""
+    match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGTP])(?:B)?\s*", value, re.I)
+    if not match:
+        return None
+    multipliers = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5}
+    return int(float(match.group(1)) * multipliers[match.group(2).upper()])
+
+
+def parse_swap_usage(text: str) -> dict[str, int]:
+    """Extract total/used/free swap bytes from ``sysctl vm.swapusage``."""
+    result: dict[str, int] = {}
+    for key in ("total", "used", "free"):
+        match = re.search(rf"\b{key}\s*=\s*([0-9.]+\s*[KMGTP](?:B)?)", text, re.I)
+        if match:
+            parsed = parse_memory_size(match.group(1))
+            if parsed is not None:
+                result[f"{key}_bytes"] = parsed
+    return result
+
+
+def parse_int_output(text: str) -> int | None:
+    """Parse a clean non-negative command value, otherwise return unavailable."""
+    try:
+        value = int(text.strip())
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def collect_light_host_snapshot(output_dir: Path) -> dict[str, Any]:
+    """Collect low-overhead OS memory/power context suitable for minute sampling."""
+    page_size = parse_int_output(command_output("sysctl", "-n", "hw.pagesize", timeout_s=10.0))
+    page_size = page_size or 16_384
+    page_counts = parse_vm_stat(command_output("vm_stat", timeout_s=10.0))
+    pages = dict(page_counts)
+    host: dict[str, Any] = {
+        "page_size_bytes": page_size,
+        "vm_pages": pages,
+        "swap": parse_swap_usage(command_output("sysctl", "-n", "vm.swapusage", timeout_s=10.0)),
         "load_average": list(os.getloadavg()),
-        "swap_usage": command_output("sysctl", "-n", "vm.swapusage"),
-        "memory_pressure": command_output("memory_pressure"),
-        "disk_free_bytes": disk.free,
-        "disk_total_bytes": disk.total,
-        "power": command_output("pmset", "-g", "batt"),
     }
+    for page_key, value in pages.items():
+        host[page_key.removesuffix("_pages") + "_bytes"] = value * page_size
+    wired_limit_mib = parse_int_output(
+        command_output("sysctl", "-n", "iogpu.wired_limit_mb", timeout_s=10.0)
+    )
+    if wired_limit_mib is not None:
+        host["iogpu_wired_limit_bytes"] = wired_limit_mib * MEBIBYTE
+    try:
+        disk = shutil.disk_usage(output_dir)
+        host["disk_free_bytes"] = disk.free
+        host["disk_total_bytes"] = disk.total
+    except OSError as error:
+        host["disk_error"] = str(error)
+    return host
+
+
+def collect_checkpoint_host_snapshot(output_dir: Path) -> dict[str, Any]:
+    """Add less-frequent diagnostic context to a lightweight host sample."""
+    snapshot = collect_light_host_snapshot(output_dir)
+    snapshot["memory_pressure"] = command_output("memory_pressure", timeout_s=30.0)
+    snapshot["power"] = command_output("pmset", "-g", "batt", timeout_s=10.0)
+    return snapshot
+
+
+class ResourceSampler:
+    """Independently sample the fixed server and OS once per minute by default."""
+
+    def __init__(
+        self,
+        *,
+        output_dir: Path,
+        events_path: Path,
+        base_url: str,
+        model_id: str,
+        server_pid: int,
+        started_monotonic: float,
+        interval_s: float,
+    ) -> None:
+        self.output_dir = output_dir
+        self.events_path = events_path
+        self.base_url = base_url
+        self.model_id = model_id
+        self.server_pid = server_pid
+        self.started_monotonic = started_monotonic
+        self.interval_s = interval_s
+        self._stop = threading.Event()
+        self._samples: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run, name="axq-resource-sampler", daemon=True)
+
+    def sample_once(self) -> dict[str, Any]:
+        """Capture one resource sample and synchronously persist it."""
+        sample = {
+            "timestamp": utc_now(),
+            "kind": "resource_sample",
+            "elapsed_seconds": max(0.0, time.monotonic() - self.started_monotonic),
+            "process": process_snapshot(self.server_pid),
+            "host": collect_light_host_snapshot(self.output_dir),
+            "metrics": collect_metrics(self.base_url, self.model_id, timeout_s=10.0),
+        }
+        append_jsonl(self.events_path, sample)
+        with self._lock:
+            self._samples.append(sample)
+        return sample
+
+    def start(self) -> None:
+        """Record an initial sample before beginning periodic collection."""
+        self.sample_once()
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_s):
+            try:
+                self.sample_once()
+            except Exception as error:  # noqa: BLE001 - do not kill workload sampling thread.
+                append_jsonl(
+                    self.events_path,
+                    {"timestamp": utc_now(), "kind": "resource_sampler_error", "error": str(error)},
+                )
+
+    def stop(self) -> bool:
+        """Stop sampling and report whether the sampler joined cleanly."""
+        self._stop.set()
+        self._thread.join(timeout=60.0)
+        return not self._thread.is_alive()
+
+    def samples(self) -> list[dict[str, Any]]:
+        """Return a stable shallow copy of collected samples."""
+        with self._lock:
+            return list(self._samples)
 
 
 def select_shape(request_index: int) -> WorkloadShape:
-    """Return the fixed 21:2:1 short/medium/long request mix."""
-    if request_index % 24 == 0:
-        return WORKLOAD_SHAPES["long"]
-    if request_index % 8 == 0:
-        return WORKLOAD_SHAPES["medium"]
-    return WORKLOAD_SHAPES["short"]
+    """Return a deterministic, interleaved shape from the 20-request cycle."""
+    if request_index <= 0:
+        raise ValueError("request_index must be positive")
+    return WORKLOAD_SHAPES[WORKLOAD_SEQUENCE[(request_index - 1) % len(WORKLOAD_SEQUENCE)]]
+
+
+def deterministic_words(count: int, salt: int) -> str:
+    """Generate deterministic synthetic text without model/user data."""
+    offset = salt % len(PROMPT_WORDS)
+    return " ".join(PROMPT_WORDS[(offset + index) % len(PROMPT_WORDS)] for index in range(count))
 
 
 def deterministic_prompt(shape: WorkloadShape, request_index: int) -> str:
-    """Create a unique, tokenizer-exercising raw-text prompt without user data."""
-    offset = request_index % len(PROMPT_WORDS)
-    words = [PROMPT_WORDS[(offset + index) % len(PROMPT_WORDS)] for index in range(shape.nominal_input_words)]
-    header = (
-        f"Endurance request {request_index}; this is a synthetic runtime-health probe. "
-        "Return a concise acknowledgement after processing the following sequence.\n"
+    """Create a unique or deliberately shared-prefix raw-text request."""
+    if shape.mode == "shared_prefix":
+        # The long common prefix intentionally exercises the prefix-cache path.
+        # A unique tail keeps the request semantically distinct and bounded.
+        shared = deterministic_words(shape.shared_prefix_words, salt=0)
+        tail = deterministic_words(shape.unique_words, salt=request_index)
+        return (
+            "Shared AX Engine endurance prefix follows.\n"
+            f"{shared}\n"
+            f"unique_tail_nonce={request_index:08d}; acknowledge this synthetic probe.\n{tail}"
+        )
+    # Put the nonce first so a normal prefix cache cannot make unique workload
+    # requests look artificially warm after the initial header tokens.
+    body = deterministic_words(shape.unique_words, salt=request_index)
+    return (
+        f"unique_nonce_{request_index:08d} AX Engine endurance probe. "
+        "Process the synthetic sequence and return a concise acknowledgement.\n"
+        f"{body}"
     )
-    return header + " ".join(words)
 
 
 def make_prompt_item(shape: WorkloadShape, request_index: int) -> serving_bench.PromptItem:
-    """Adapt a shape into the existing serving benchmark's request type."""
+    """Adapt a shape into the existing native-serving benchmark request type."""
     return serving_bench.PromptItem(
         id=f"{shape.name}-{request_index:08d}",
         category=shape.name,
@@ -424,7 +830,11 @@ def make_prompt_item(shape: WorkloadShape, request_index: int) -> serving_bench.
         input_tokens=None,
         input_tokens_count=shape.nominal_input_words,
         max_output_tokens=shape.max_output_tokens,
-        metadata={"nominal_input_words": shape.nominal_input_words},
+        metadata={
+            "mode": shape.mode,
+            "nominal_input_words": shape.nominal_input_words,
+            "shared_prefix_words": shape.shared_prefix_words,
+        },
     )
 
 
@@ -436,7 +846,7 @@ def run_stream_request(
     timeout_s: float,
     stream_func: Callable[..., Any] = serving_bench.http_sse_events,
 ) -> dict[str, Any]:
-    """Run one native streaming request with fixed-length greedy sampling."""
+    """Run one bounded greedy native stream and retain only timing/token evidence."""
     started = time.perf_counter()
     payload = serving_bench.build_payload(
         prompt,
@@ -449,18 +859,39 @@ def run_stream_request(
     )
     sampling = payload.get("sampling")
     if isinstance(sampling, dict):
-        # This is an AX-native control used by the existing fault soak. It keeps
-        # each request bounded and prevents accidental early-EOS-only cycles.
+        # AX-native control used by the existing fault soak: bounded fixed-length
+        # decode avoids a mostly-empty early-EOS workload.
         sampling["ignore_eos"] = True
     try:
         events = list(stream_func(f"{base_url}/v1/generate/stream", payload, timeout_s))
-        return serving_bench.observe_stream(
+        observation = serving_bench.observe_stream(
             events,
             prompt=prompt,
             scheduled_at_s=0.0,
             started_at_s=0.0,
             completed_at_s=time.perf_counter() - started,
         )
+        tpot_ms = observation.get("client_tpot_ms")
+        if isinstance(tpot_ms, (int, float)) and tpot_ms > 0.0:
+            observation["client_decode_tok_s"] = 1_000.0 / float(tpot_ms)
+        else:
+            observation["client_decode_tok_s"] = None
+        prompt_token_count = native_prompt_token_count(events)
+        observation["prompt_token_count"] = prompt_token_count
+        ttft_ms = observation.get("ttft_ms")
+        if (
+            isinstance(prompt_token_count, int)
+            and prompt_token_count > 0
+            and isinstance(ttft_ms, (int, float))
+            and ttft_ms > 0.0
+        ):
+            # Effective prefill includes native admission/tokenization and the
+            # first-token step. Exact native prompt length avoids treating
+            # synthetic words as tokenizer tokens.
+            observation["effective_prefill_tok_s"] = prompt_token_count * 1_000.0 / ttft_ms
+        else:
+            observation["effective_prefill_tok_s"] = None
+        return observation
     except Exception as error:  # noqa: BLE001 - workload failures are first-class evidence.
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         return {
@@ -473,93 +904,437 @@ def run_stream_request(
             "e2e_latency_ms": elapsed_ms,
             "ttft_ms": None,
             "client_tpot_ms": None,
+            "client_decode_tok_s": None,
+            "prompt_token_count": None,
+            "effective_prefill_tok_s": None,
             "output_tokens": None,
             "route_decisions": {},
         }
 
 
-def percentile(values: list[float], quantile: float) -> float | None:
-    """Return a linear-interpolated percentile for checkpoint windows."""
-    if not values:
+def native_prompt_token_count(events: Iterable[tuple[str | None, Any, float]]) -> int | None:
+    """Return the exact native prompt length carried by the SSE request event."""
+    for event_name, payload, _elapsed_s in events:
+        if event_name not in {"request", "step"} or not isinstance(payload, dict):
+            continue
+        request = payload.get("request")
+        if not isinstance(request, dict):
+            continue
+        prompt_len = request.get("prompt_len")
+        if isinstance(prompt_len, int) and not isinstance(prompt_len, bool) and prompt_len > 0:
+            return prompt_len
+    return None
+
+
+def percentile(values: Iterable[float], quantile: float) -> float | None:
+    """Return a linear-interpolated percentile for concise window reports."""
+    clean = sorted(float(value) for value in values if math.isfinite(float(value)))
+    if not clean:
         return None
-    ordered = sorted(values)
-    index = (len(ordered) - 1) * quantile
+    index = (len(clean) - 1) * quantile
     lower = int(index)
-    upper = min(lower + 1, len(ordered) - 1)
-    return ordered[lower] + (ordered[upper] - ordered[lower]) * (index - lower)
+    upper = min(lower + 1, len(clean) - 1)
+    return clean[lower] + (clean[upper] - clean[lower]) * (index - lower)
 
 
-def summarize_values(values: list[float]) -> dict[str, float] | None:
-    """Produce small, high-signal latency summaries for one reporting window."""
-    if not values:
+def summarize_values(values: Iterable[float | int | None]) -> dict[str, float] | None:
+    """Produce a compact latency/throughput distribution."""
+    clean = [float(value) for value in values if isinstance(value, (int, float))]
+    clean = [value for value in clean if math.isfinite(value)]
+    if not clean:
         return None
     return {
-        "count": float(len(values)),
-        "min": min(values),
-        "mean": sum(values) / len(values),
-        "p50": percentile(values, 0.50) or 0.0,
-        "p95": percentile(values, 0.95) or 0.0,
-        "p99": percentile(values, 0.99) or 0.0,
-        "max": max(values),
+        "count": float(len(clean)),
+        "min": min(clean),
+        "mean": statistics.fmean(clean),
+        "p05": percentile(clean, 0.05),
+        "p50": percentile(clean, 0.50),
+        "p95": percentile(clean, 0.95),
+        "p99": percentile(clean, 0.99),
+        "max": max(clean),
     }
 
 
-def summarize_window(records: list[dict[str, Any]], elapsed_s: float) -> dict[str, Any]:
-    """Summarize a bounded in-memory checkpoint window only."""
-    successes = [record for record in records if record.get("request", {}).get("ok")]
+def request_successes(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return records containing a successful stream observation."""
+    return [record for record in records if record.get("request", {}).get("ok")]
+
+
+def summarize_requests(records: list[dict[str, Any]], elapsed_s: float) -> dict[str, Any]:
+    """Summarize one reporting window and break performance out by request shape."""
+    successes = request_successes(records)
     failures = len(records) - len(successes)
-    ttft = [
-        float(record["request"]["ttft_ms"])
-        for record in successes
-        if isinstance(record["request"].get("ttft_ms"), (int, float))
-    ]
-    tpot = [
-        float(record["request"]["client_tpot_ms"])
-        for record in successes
-        if isinstance(record["request"].get("client_tpot_ms"), (int, float))
-    ]
-    e2e = [
-        float(record["request"]["e2e_latency_ms"])
-        for record in successes
-        if isinstance(record["request"].get("e2e_latency_ms"), (int, float))
-    ]
+    shapes = sorted({str(record.get("shape", "unknown")) for record in records})
+
+    def summarize_group(group: list[dict[str, Any]]) -> dict[str, Any]:
+        observations = [record["request"] for record in request_successes(group)]
+        return {
+            "requests": len(group),
+            "successful_requests": len(observations),
+            "failed_requests": len(group) - len(observations),
+            "ttft_ms": summarize_values([item.get("ttft_ms") for item in observations]),
+            "client_tpot_ms": summarize_values(
+                [item.get("client_tpot_ms") for item in observations]
+            ),
+            "client_decode_tok_s": summarize_values(
+                [item.get("client_decode_tok_s") for item in observations]
+            ),
+            "effective_prefill_tok_s": summarize_values(
+                [item.get("effective_prefill_tok_s") for item in observations]
+            ),
+            "e2e_latency_ms": summarize_values(
+                [item.get("e2e_latency_ms") for item in observations]
+            ),
+            "output_tokens": summarize_values([item.get("output_tokens") for item in observations]),
+            "route_decisions": serving_bench.summarize_route_decisions(observations),
+        }
+
+    duration = max(elapsed_s, 0.001)
+    overall = summarize_group(records)
     output_tokens = [
         float(record["request"]["output_tokens"])
         for record in successes
         if isinstance(record["request"].get("output_tokens"), (int, float))
     ]
-    route_decisions = serving_bench.summarize_route_decisions(
-        [record["request"] for record in successes]
-    )
-    window_duration = max(elapsed_s, 0.001)
     return {
         "requests": len(records),
         "successful_requests": len(successes),
         "failed_requests": failures,
         "success_ratio": len(successes) / len(records) if records else 0.0,
-        "request_throughput_rps": len(successes) / window_duration,
-        "output_token_throughput_tok_s": sum(output_tokens) / window_duration,
-        "ttft_ms": summarize_values(ttft),
-        "client_tpot_ms": summarize_values(tpot),
-        "e2e_latency_ms": summarize_values(e2e),
-        "output_tokens": summarize_values(output_tokens),
-        "route_decisions": route_decisions,
+        "request_throughput_rps": len(successes) / duration,
+        "output_token_throughput_tok_s": sum(output_tokens) / duration,
+        "overall": overall,
+        "by_shape": {
+            shape: summarize_group([record for record in records if record.get("shape") == shape])
+            for shape in shapes
+        },
     }
 
 
+def summarize_window(records: list[dict[str, Any]], elapsed_s: float) -> dict[str, Any]:
+    """Compatibility alias for tests and callers expecting a window summary."""
+    return summarize_requests(records, elapsed_s)
+
+
+def get_nested_number(value: dict[str, Any], path: tuple[str, ...]) -> float | None:
+    """Get one finite numeric value from a nested evidence record."""
+    current: Any = value
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if isinstance(current, (int, float)) and math.isfinite(float(current)):
+        return float(current)
+    return None
+
+
+def linear_slope_per_hour(points: Iterable[tuple[float, float]]) -> float | None:
+    """Return ordinary-least-squares value slope per hour, or inconclusive."""
+    clean = [(float(x), float(y)) for x, y in points if math.isfinite(x) and math.isfinite(y)]
+    if len(clean) < 3:
+        return None
+    mean_x = statistics.fmean(point[0] for point in clean)
+    mean_y = statistics.fmean(point[1] for point in clean)
+    denominator = sum((x - mean_x) ** 2 for x, _ in clean)
+    if denominator <= 0.0:
+        return None
+    numerator = sum((x - mean_x) * (y - mean_y) for x, y in clean)
+    return numerator / denominator * 3_600.0
+
+
+def memory_analysis(
+    *,
+    samples: list[dict[str, Any]],
+    resource_baseline: dict[str, float],
+    window_start_elapsed_s: float,
+    baseline_end_elapsed_s: float | None = None,
+) -> dict[str, Any]:
+    """Report memory current/peak/growth/slope without mistaking capacity for a leak."""
+    analysis: dict[str, Any] = {"sample_count": len(samples), "series": {}}
+    for name, path in MEMORY_SERIES_PATHS.items():
+        points = [
+            (float(sample["elapsed_seconds"]), value)
+            for sample in samples
+            if isinstance(sample.get("elapsed_seconds"), (int, float))
+            for value in [get_nested_number(sample, path)]
+            if value is not None
+        ]
+        if not points:
+            continue
+        values = [point[1] for point in points]
+        current = values[-1]
+        baseline = resource_baseline.get(name)
+        recent_points = [point for point in points if point[0] >= window_start_elapsed_s]
+        after_baseline_points = [
+            point
+            for point in points
+            if baseline is None
+            or baseline_end_elapsed_s is None
+            or point[0] >= baseline_end_elapsed_s
+        ]
+        entry: dict[str, Any] = {
+            "current_bytes": current,
+            "peak_bytes": max(values),
+            "samples": len(points),
+            "window_slope_mib_per_hour": _bytes_slope_to_mib(linear_slope_per_hour(recent_points)),
+            "lifetime_slope_mib_per_hour": _bytes_slope_to_mib(
+                linear_slope_per_hour(after_baseline_points)
+            ),
+        }
+        if baseline is not None:
+            entry["baseline_median_bytes"] = baseline
+            entry["growth_mib"] = (current - baseline) / MEBIBYTE
+        analysis["series"][name] = entry
+    return analysis
+
+
+def _bytes_slope_to_mib(slope: float | None) -> float | None:
+    return None if slope is None else slope / MEBIBYTE
+
+
+def build_resource_baseline(samples: list[dict[str, Any]], baseline_s: float) -> dict[str, float]:
+    """Use baseline-window medians to avoid classifying normal allocator noise as drift."""
+    baseline: dict[str, float] = {}
+    for name, path in MEMORY_SERIES_PATHS.items():
+        values = [
+            value
+            for sample in samples
+            if isinstance(sample.get("elapsed_seconds"), (int, float))
+            and float(sample["elapsed_seconds"]) <= baseline_s
+            for value in [get_nested_number(sample, path)]
+            if value is not None
+        ]
+        median = percentile(values, 0.50)
+        if median is not None:
+            baseline[name] = median
+    return baseline
+
+
+def counter_deltas(values: dict[str, Any], baseline: dict[str, float]) -> dict[str, float]:
+    """Calculate non-negative deltas for server counters sampled after warmup."""
+    output: dict[str, float] = {}
+    for name in COUNTER_METRICS:
+        current = values.get(name)
+        initial = baseline.get(name)
+        if isinstance(current, (int, float)) and initial is not None:
+            output[name] = max(0.0, float(current) - initial)
+    return output
+
+
+def evaluate_performance_regression(
+    *,
+    baseline: dict[str, Any] | None,
+    window: dict[str, Any],
+    min_samples: int,
+    max_ttft_p95_ratio: float,
+    min_decode_p05_ratio: float,
+) -> list[str]:
+    """Compare same-shape p95 TTFT and p05 decode rate to the warm baseline."""
+    if baseline is None:
+        return []
+    messages: list[str] = []
+    baseline_shapes = baseline.get("by_shape", {})
+    window_shapes = window.get("by_shape", {})
+    if not isinstance(baseline_shapes, dict) or not isinstance(window_shapes, dict):
+        return messages
+    for shape, current in window_shapes.items():
+        reference = baseline_shapes.get(shape)
+        if not isinstance(current, dict) or not isinstance(reference, dict):
+            continue
+        if (
+            int(current.get("successful_requests", 0)) < min_samples
+            or int(reference.get("successful_requests", 0)) < min_samples
+        ):
+            continue
+        current_ttft = get_distribution_value(current, "ttft_ms", "p95")
+        baseline_ttft = get_distribution_value(reference, "ttft_ms", "p95")
+        if current_ttft and baseline_ttft and current_ttft > baseline_ttft * max_ttft_p95_ratio:
+            messages.append(
+                f"{shape}: p95 TTFT {current_ttft:.1f} ms is "
+                f"{current_ttft / baseline_ttft:.2f}x baseline ({baseline_ttft:.1f} ms)"
+            )
+        current_decode = get_distribution_value(current, "client_decode_tok_s", "p05")
+        baseline_decode = get_distribution_value(reference, "client_decode_tok_s", "p05")
+        if (
+            current_decode
+            and baseline_decode
+            and current_decode < baseline_decode * min_decode_p05_ratio
+        ):
+            messages.append(
+                f"{shape}: p05 decode {current_decode:.2f} tok/s is "
+                f"{current_decode / baseline_decode:.2f}x baseline ({baseline_decode:.2f} tok/s)"
+            )
+    return messages
+
+
+def get_distribution_value(summary: dict[str, Any], metric: str, statistic: str) -> float | None:
+    """Read a finite statistic from a nested request distribution."""
+    distribution = summary.get(metric)
+    if not isinstance(distribution, dict):
+        return None
+    value = distribution.get(statistic)
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return float(value)
+    return None
+
+
+def evaluate_memory_alerts(
+    *, analysis: dict[str, Any], max_growth_mib: float, max_slope_mib_per_hour: float
+) -> list[str]:
+    """Flag persistent-looking growth, retaining cache-capacity ambiguity in wording."""
+    messages: list[str] = []
+    series = analysis.get("series", {})
+    if not isinstance(series, dict):
+        return messages
+    for name, value in series.items():
+        if not isinstance(value, dict):
+            continue
+        growth = value.get("growth_mib")
+        slope = value.get("lifetime_slope_mib_per_hour")
+        if (
+            isinstance(growth, (int, float))
+            and isinstance(slope, (int, float))
+            and growth >= max_growth_mib
+            and slope >= max_slope_mib_per_hour
+        ):
+            messages.append(
+                f"{name} rose {growth:.1f} MiB with {slope:.1f} MiB/h slope after baseline"
+            )
+    return messages
+
+
+def evaluate_window_guardrails(
+    *,
+    state: RunState,
+    records: list[dict[str, Any]],
+    window_elapsed_s: float,
+    latest_metrics: dict[str, Any],
+    resource_samples: list[dict[str, Any]],
+    window_start_elapsed_s: float,
+    min_performance_samples: int,
+    max_ttft_p95_ratio: float,
+    min_decode_p05_ratio: float,
+    max_client_error_rate: float,
+    memory_growth_mib: float,
+    memory_slope_mib_per_hour: float,
+) -> tuple[list[str], list[str]]:
+    """Evaluate one complete or terminal partial window with identical gates."""
+    current_window = summarize_requests(records, max(window_elapsed_s, 0.001))
+    performance_alerts = evaluate_performance_regression(
+        baseline=state.baseline,
+        window=current_window,
+        min_samples=min_performance_samples,
+        max_ttft_p95_ratio=max_ttft_p95_ratio,
+        min_decode_p05_ratio=min_decode_p05_ratio,
+    )
+    if state.requests_attempted:
+        client_error_rate = state.requests_failed / state.requests_attempted
+        if client_error_rate > max_client_error_rate:
+            performance_alerts.append(
+                f"client error rate {client_error_rate:.4%} exceeds "
+                f"{max_client_error_rate:.4%} guardrail"
+            )
+    metric_values = latest_metrics.get("values", {})
+    if isinstance(metric_values, dict):
+        server_error_rate = metric_values.get("ax_runtime_error_rate")
+        if (
+            isinstance(server_error_rate, (int, float))
+            and not isinstance(server_error_rate, bool)
+            and math.isfinite(float(server_error_rate))
+            and float(server_error_rate) > max_client_error_rate
+        ):
+            performance_alerts.append(
+                f"server error rate {float(server_error_rate):.4%} exceeds "
+                f"{max_client_error_rate:.4%} guardrail"
+            )
+        deltas = counter_deltas(metric_values, state.counter_baseline)
+        for counter in (
+            "ax_engine_generation_saturated_commands_total",
+            "ax_engine_generation_stream_backlog_overflows_total",
+            "ax_engine_http_status_5xx_total",
+        ):
+            if deltas.get(counter, 0.0) > 0.0:
+                performance_alerts.append(
+                    f"server counter {counter} increased by {deltas[counter]:.0f}"
+                )
+
+    memory = memory_analysis(
+        samples=resource_samples,
+        resource_baseline=state.resource_baseline,
+        window_start_elapsed_s=window_start_elapsed_s,
+        baseline_end_elapsed_s=state.baseline_completed_elapsed_s,
+    )
+    memory_alerts = evaluate_memory_alerts(
+        analysis=memory,
+        max_growth_mib=memory_growth_mib,
+        max_slope_mib_per_hour=memory_slope_mib_per_hour,
+    )
+    return performance_alerts, memory_alerts
+
+
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    """Persist an inspectable checkpoint without leaving a partial JSON file."""
+    """Persist an inspectable JSON checkpoint without a partial visible file."""
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
+def write_text_atomic(path: Path, content: str) -> None:
+    """Atomically publish the human-readable checkpoint report."""
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
+
+
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    """Append and flush one event so a sudden host failure retains evidence."""
-    with path.open("a", encoding="utf-8") as handle:
+    """Append+fsync one evidence event; safe across workload and sampler threads."""
+    with JSONL_LOCK, path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def assessment(
+    *, state: RunState, terminal_status: str, baseline_required: bool = True
+) -> tuple[str, list[str]]:
+    """Create a conservative high-level verdict from independent evidence classes."""
+    concerns: list[str] = []
+    if state.requests_failed:
+        concerns.append(f"{state.requests_failed} client stream request(s) failed")
+    if state.health_failures:
+        concerns.append(f"{state.health_failures} health check(s) failed")
+    if state.lifecycle_timeouts:
+        concerns.append(f"{state.lifecycle_timeouts} post-request lifecycle drain timeout(s)")
+    if state.lifecycle_inconclusive:
+        concerns.append(
+            f"{state.lifecycle_inconclusive} lifecycle drain verdict(s) were inconclusive"
+        )
+    if state.kv_report_unavailable:
+        concerns.append(
+            f"{state.kv_report_unavailable} post-request native KV report(s) were unavailable"
+        )
+    if state.metric_scrape_failures:
+        concerns.append(f"{state.metric_scrape_failures} metric scrape(s) failed")
+    if state.resource_sampler_stop_timeouts:
+        concerns.append(f"{state.resource_sampler_stop_timeouts} resource sampler stop timed out")
+    if state.quiescent_kv_logical_exceedances:
+        concerns.append(
+            f"{state.quiescent_kv_logical_exceedances} drained sample(s) exceeded "
+            "the logical-KV guardrail"
+        )
+    if state.performance_alerts:
+        concerns.append(f"{state.performance_alerts} performance-regression alert(s)")
+    if state.memory_alerts:
+        concerns.append(f"{state.memory_alerts} persistent-memory-growth alert(s)")
+    if terminal_status == "failed":
+        return "fail", concerns
+    if terminal_status == "interrupted":
+        concerns.append("run was interrupted before the target duration")
+    if baseline_required and state.baseline is None:
+        concerns.append("performance/memory baseline not yet complete")
+    if concerns:
+        return "watch", concerns
+    return "pass", concerns
 
 
 def run_summary(
@@ -572,45 +1347,132 @@ def run_summary(
     latest_server: dict[str, Any],
     latest_host: dict[str, Any],
     latest_metrics: dict[str, Any],
+    memory: dict[str, Any],
+    counter_deltas_view: dict[str, float],
+    performance_alerts: list[str],
+    memory_alerts: list[str],
     alerts: list[str],
     output_dir: Path,
 ) -> dict[str, Any]:
-    """Build the current durable status used by operators and four-hour reports."""
+    """Build a durable current status used for both automation and operator review."""
+    verdict, concerns = assessment(state=state, terminal_status=status)
     return {
         "schema_version": SCHEMA_VERSION,
         "status": status,
+        "verdict": verdict,
         "updated_at": utc_now(),
         "elapsed_seconds": elapsed_s,
         "target_duration_seconds": target_duration_s,
         "target_end_at": (
-            dt.datetime.fromisoformat(state.started_wall)
-            + dt.timedelta(seconds=target_duration_s)
+            dt.datetime.fromisoformat(state.started_wall) + dt.timedelta(seconds=target_duration_s)
         ).isoformat(),
         "server": latest_server,
         "requests": {
             "attempted": state.requests_attempted,
             "successful": state.requests_ok,
             "failed": state.requests_failed,
+            "client_error_rate": state.requests_failed / state.requests_attempted
+            if state.requests_attempted
+            else 0.0,
             "health_failures": state.health_failures,
             "consecutive_request_failures": state.consecutive_request_failures,
         },
-        "memory": {
-            "baseline_rss_kb": state.baseline_rss_kb,
-            "max_rss_kb": state.max_rss_kb,
-            "rss_growth_alerts": state.rss_growth_alerts,
+        "lifecycle": {
+            "drain_timeouts": state.lifecycle_timeouts,
+            "inconclusive_drains": state.lifecycle_inconclusive,
+            "kv_reports_unavailable": state.kv_report_unavailable,
+            "quiescent_kv_logical_exceedances": state.quiescent_kv_logical_exceedances,
+        },
+        "resource_sampler_stop_timeouts": state.resource_sampler_stop_timeouts,
+        "baseline": {
+            "completed_at": state.baseline_completed_at,
+            "performance": state.baseline,
+            "resource_medians_bytes": state.resource_baseline,
         },
         "latest_window": latest_window,
-        "host": latest_host,
+        "memory": memory,
         "metrics": latest_metrics,
-        "alerts": alerts[-20:],
+        "metric_counter_deltas_since_warmup": counter_deltas_view,
+        "host": latest_host,
+        "performance_alerts": performance_alerts,
+        "memory_alerts": memory_alerts,
+        "assessment_concerns": concerns,
+        "alerts": alerts[-50:],
         "last_error": state.last_error,
         "artifacts": {
             "output_dir": str(output_dir),
             "events": str(output_dir / "events.jsonl"),
             "server_log": str(output_dir / "server.log"),
+            "summary": str(output_dir / "summary.json"),
             "checkpoints_dir": str(output_dir / "checkpoints"),
+            "reports_dir": str(output_dir / "reports"),
         },
     }
+
+
+def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
+    """Render a short status readout suitable for an every-four-hour handoff."""
+    requests = summary["requests"]
+    window = summary["latest_window"]
+    overall = window.get("overall", {}) if isinstance(window, dict) else {}
+    ttft = get_distribution_value(overall, "ttft_ms", "p95") if isinstance(overall, dict) else None
+    decode = (
+        get_distribution_value(overall, "client_decode_tok_s", "p05")
+        if isinstance(overall, dict)
+        else None
+    )
+    lines = [
+        f"# AXQ endurance checkpoint: {summary['status']}",
+        "",
+        f"- Reason: `{reason}`",
+        f"- Updated: `{summary['updated_at']}`",
+        f"- Elapsed: `{summary['elapsed_seconds'] / 3600.0:.2f} h` / "
+        f"`{summary['target_duration_seconds'] / 3600.0:.2f} h`",
+        f"- Server PID alive: `{summary['server'].get('alive')}` "
+        f"(PID `{summary['server'].get('pid')}`)",
+        f"- Requests: `{requests['successful']}/{requests['attempted']}` successful; "
+        f"client error rate `{requests['client_error_rate']:.4%}`",
+        f"- Window p95 TTFT: `{format_metric(ttft, 'ms')}`; "
+        f"window p05 client decode: `{format_metric(decode, 'tok/s')}`",
+        f"- Baseline: `{'complete' if summary['baseline']['performance'] else 'pending'}`",
+        "",
+        "## Assessment",
+        "",
+    ]
+    concerns = summary.get("assessment_concerns", [])
+    if concerns:
+        lines.extend(f"- {concern}" for concern in concerns)
+    else:
+        lines.append("- No current endurance concern was detected by configured guardrails.")
+    memory_series = summary.get("memory", {}).get("series", {})
+    if isinstance(memory_series, dict) and memory_series:
+        lines.extend(["", "## Memory trend", ""])
+        for name, values in memory_series.items():
+            if not isinstance(values, dict):
+                continue
+            growth = values.get("growth_mib")
+            slope = values.get("lifetime_slope_mib_per_hour")
+            lines.append(
+                f"- `{name}`: current `{format_bytes(values.get('current_bytes'))}`, "
+                f"growth `{format_metric(growth, 'MiB')}`, "
+                f"slope `{format_metric(slope, 'MiB/h')}`"
+            )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_metric(value: Any, unit: str) -> str:
+    """Render an optional finite metric for the human checkpoint."""
+    if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return "n/a"
+    return f"{float(value):.2f} {unit}"
+
+
+def format_bytes(value: Any) -> str:
+    """Render an optional byte value in MiB."""
+    if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return "n/a"
+    return f"{float(value) / MEBIBYTE:.1f} MiB"
 
 
 def write_checkpoint(
@@ -620,16 +1482,28 @@ def write_checkpoint(
     state: RunState,
     status: str,
     elapsed_s: float,
-    window_elapsed_s: float,
     target_duration_s: float,
     records: list[dict[str, Any]],
+    window_elapsed_s: float,
     latest_server: dict[str, Any],
     latest_host: dict[str, Any],
     latest_metrics: dict[str, Any],
+    resource_samples: list[dict[str, Any]],
+    window_start_elapsed_s: float,
+    performance_alerts: list[str],
+    memory_alerts: list[str],
     alerts: list[str],
 ) -> dict[str, Any]:
-    """Write one immutable checkpoint plus the mutable summary.json view."""
-    window = summarize_window(records, elapsed_s=max(window_elapsed_s, 0.001))
+    """Publish immutable JSON/Markdown checkpoint and update mutable summary.json."""
+    window = summarize_requests(records, elapsed_s=max(window_elapsed_s, 0.001))
+    values = latest_metrics.get("values", {}) if isinstance(latest_metrics, dict) else {}
+    values = values if isinstance(values, dict) else {}
+    memory = memory_analysis(
+        samples=resource_samples,
+        resource_baseline=state.resource_baseline,
+        window_start_elapsed_s=window_start_elapsed_s,
+        baseline_end_elapsed_s=state.baseline_completed_elapsed_s,
+    )
     summary = run_summary(
         state=state,
         status=status,
@@ -639,6 +1513,10 @@ def write_checkpoint(
         latest_server=latest_server,
         latest_host=latest_host,
         latest_metrics=latest_metrics,
+        memory=memory,
+        counter_deltas_view=counter_deltas(values, state.counter_baseline),
+        performance_alerts=performance_alerts,
+        memory_alerts=memory_alerts,
         alerts=alerts,
         output_dir=output_dir,
     )
@@ -647,24 +1525,30 @@ def write_checkpoint(
         "reason": reason,
         "summary": summary,
     }
-    checkpoint_name = f"{utc_now().replace(':', '').replace('+00:00', 'Z')}-{reason}.json"
-    write_json_atomic(output_dir / "checkpoints" / checkpoint_name, checkpoint)
+    timestamp = utc_now().replace(":", "").replace("+00:00", "Z")
+    checkpoint_name = f"{timestamp}-{reason}"
+    write_json_atomic(output_dir / "checkpoints" / f"{checkpoint_name}.json", checkpoint)
+    write_text_atomic(
+        output_dir / "reports" / f"{checkpoint_name}.md",
+        render_checkpoint_markdown(reason, summary),
+    )
     write_json_atomic(output_dir / "summary.json", summary)
     return summary
 
 
 def prepare_output_dir(path: Path) -> None:
-    """Refuse a non-empty output path so long-run evidence is never overwritten."""
+    """Refuse non-empty evidence directories so a run can never overwrite another."""
     if path.exists() and not path.is_dir():
         raise RuntimeError(f"output path exists and is not a directory: {path}")
     if path.exists() and any(path.iterdir()):
         raise RuntimeError(f"output directory is not empty: {path}")
     path.mkdir(parents=True, exist_ok=True)
     (path / "checkpoints").mkdir(exist_ok=True)
+    (path / "reports").mkdir(exist_ok=True)
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    """Validate exact local inputs before spawning a multi-day process."""
+    """Validate exact local inputs before creating a multi-day server process."""
     args.server = args.server.expanduser().resolve()
     args.model_dir = args.model_dir.expanduser().resolve()
     args.output_dir = args.output_dir.expanduser().resolve()
@@ -673,11 +1557,77 @@ def validate_args(args: argparse.Namespace) -> None:
     model_identity(args.model_dir)
     if not 0 < args.port < 65_536:
         raise ValueError("--port must be in 1..65535")
+    if args.baseline_hours >= args.duration_hours:
+        raise ValueError("--baseline-hours must be smaller than --duration-hours")
+    assert_port_available(args.host, args.port)
     prepare_output_dir(args.output_dir)
 
 
+def add_alert(alerts: list[str], message: str) -> None:
+    """Retain bounded deduplicated alerts in the summary while JSONL keeps all events."""
+    if not alerts or alerts[-1] != message:
+        alerts.append(message)
+    if len(alerts) > 500:
+        del alerts[:-500]
+
+
+def maybe_finalize_baseline(
+    *,
+    state: RunState,
+    baseline_records: list[dict[str, Any]],
+    resource_samples: list[dict[str, Any]],
+    elapsed_s: float,
+    baseline_s: float,
+) -> bool:
+    """Finalize stable references after the configured warm baseline window."""
+    if state.baseline is not None or elapsed_s < baseline_s:
+        return False
+    state.baseline = summarize_requests(baseline_records, elapsed_s=baseline_s)
+    state.resource_baseline = build_resource_baseline(resource_samples, baseline_s)
+    state.baseline_completed_at = utc_now()
+    state.baseline_completed_elapsed_s = elapsed_s
+    return True
+
+
+def guard_lifecycle(
+    *, state: RunState, drain: dict[str, Any], max_quiescent_kv_logical_mib: float
+) -> list[str]:
+    """Turn post-request lifecycle/KV evidence into conservative diagnostics."""
+    messages: list[str] = []
+    drain_state = drain.get("state")
+    if drain_state == "timeout":
+        state.lifecycle_timeouts += 1
+        messages.append(f"post-request lifecycle drain timed out with {drain.get('nonzero', {})}")
+    elif drain_state == "inconclusive":
+        state.lifecycle_inconclusive += 1
+        messages.append(
+            f"post-request lifecycle drain is inconclusive; missing {drain.get('missing', [])}"
+        )
+    metrics = drain.get("metrics", {})
+    values = metrics.get("values", {}) if isinstance(metrics, dict) else {}
+    report_available = (
+        values.get("ax_engine_model_memory_kv_report_available")
+        if isinstance(values, dict)
+        else None
+    )
+    if report_available != 1.0:
+        state.kv_report_unavailable += 1
+        messages.append("post-request native model KV memory report is unavailable")
+    logical = (
+        values.get("ax_engine_model_memory_kv_logical_bytes") if isinstance(values, dict) else None
+    )
+    if isinstance(logical, (int, float)) and logical > max_quiescent_kv_logical_mib * MEBIBYTE:
+        state.quiescent_kv_logical_exceedances += 1
+        messages.append(
+            "logical model KV remained "
+            f"{float(logical) / MEBIBYTE:.1f} MiB after lifecycle drain "
+            f"(guardrail {max_quiescent_kv_logical_mib:.1f} MiB)"
+        )
+    return messages
+
+
 def run_endurance(args: argparse.Namespace) -> int:
-    """Run the soak while converting SIGTERM into a checkpointed interrupt."""
+    """Convert SIGTERM into a normal interrupted run with a final checkpoint."""
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
     def handle_sigterm(_signum: int, _frame: Any) -> None:
@@ -691,38 +1641,57 @@ def run_endurance(args: argparse.Namespace) -> int:
 
 
 def _run_endurance(args: argparse.Namespace) -> int:
-    """Launch one server and keep it exercised until duration or a real failure."""
+    """Launch one server and exercise it continuously until duration or hard failure."""
     validate_args(args)
     base_url = f"http://{args.host}:{args.port}"
     target_duration_s = args.duration_hours * 3_600.0
     report_interval_s = args.report_interval_hours * 3_600.0
+    baseline_s = args.baseline_hours * 3_600.0
     output_dir = args.output_dir
     server_command = build_server_command(args)
     server_log = output_dir / "server.log"
     events_path = output_dir / "events.jsonl"
     process: subprocess.Popen[bytes] | None = None
+    log_handle: Any = None
+    sampler: ResourceSampler | None = None
     state: RunState | None = None
     status = "failed"
     failure: str | None = None
     alerts: list[str] = []
-    records: list[dict[str, Any]] = []
+    baseline_records: list[dict[str, Any]] = []
+    window_records: list[dict[str, Any]] = []
     latest_server: dict[str, Any] = {}
     latest_host: dict[str, Any] = {}
     latest_metrics: dict[str, Any] = {}
     last_checkpoint_monotonic: float | None = None
+    last_performance_alerts: list[str] = []
+    last_memory_alerts: list[str] = []
 
     try:
         manifest = {
             "schema_version": SCHEMA_VERSION,
             "created_at": utc_now(),
             "methodology": {
-                "scope": "72-hour low-rate no-restart AX Engine MLX endurance soak",
+                "scope": "low-rate no-restart AX Engine MLX endurance/soak",
                 "server_lifetime": "one owned process; automatic restart is forbidden",
                 "concurrency": 1,
-                "cadence_seconds": args.request_interval_seconds,
-                "workload_mix": "21 short : 2 medium : 1 long synthetic raw-text streams",
-                "stream_validation": "HTTP success, terminal response, and non-empty output",
-                "reporting": "atomic summary plus immutable checkpoint every report interval",
+                "minimum_idle_seconds_after_request": args.request_interval_seconds,
+                "resource_sample_seconds": args.resource_interval_seconds,
+                "workload_mix": (
+                    "20-request interleaved cycle: 14 short unique, 3 medium unique, "
+                    "2 shared-prefix, 1 long unique"
+                ),
+                "stream_validation": "HTTP success, terminal response, non-empty output",
+                "lifecycle_validation": "post-response native lifecycle gauges must drain to zero",
+                "cache_interpretation": (
+                    "non-zero KV capacity/paged pool/prefix-cache is not itself a leak; "
+                    "the test evaluates drain state, post-baseline growth, and slope"
+                ),
+                "performance_validation": (
+                    "same-shape client p95 TTFT and p05 decode token/s compared with "
+                    "the first baseline window; server runtime gauges are retained as corroboration"
+                ),
+                "reporting": "atomic current summary plus immutable JSON and Markdown checkpoints",
             },
             "target": {
                 "model_id": args.model_id,
@@ -730,28 +1699,31 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 "server_command": server_command,
                 "base_url": base_url,
             },
-            "limits": {
+            "guardrails": {
                 "duration_hours": args.duration_hours,
+                "baseline_hours": args.baseline_hours,
                 "report_interval_hours": args.report_interval_hours,
                 "request_timeout_seconds": args.request_timeout_seconds,
+                "drain_timeout_seconds": args.drain_timeout_seconds,
                 "max_consecutive_request_failures": args.max_consecutive_request_failures,
-                "rss_growth_alert_mib": args.max_rss_growth_mib,
+                "max_client_error_rate": args.max_client_error_rate,
+                "max_ttft_p95_ratio": args.max_ttft_p95_ratio,
+                "min_decode_p05_ratio": args.min_decode_p05_ratio,
+                "min_performance_samples": args.min_performance_samples,
+                "memory_growth_mib": args.memory_growth_mib,
+                "memory_slope_mib_per_hour": args.memory_slope_mib_per_hour,
+                "max_quiescent_kv_logical_mib": args.max_quiescent_kv_logical_mib,
             },
             "runtime": runtime_metadata(args.server),
         }
         write_json_atomic(output_dir / "manifest.json", manifest)
 
-        with server_log.open("wb") as log:
-            process = subprocess.Popen(
-                server_command,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        state = RunState(
-            started_wall=utc_now(),
-            started_monotonic=time.monotonic(),
-            server_pid=process.pid,
+        log_handle = server_log.open("wb")
+        process = subprocess.Popen(
+            server_command,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
         readiness = wait_for_server(
             process,
@@ -765,8 +1737,9 @@ def _run_endurance(args: argparse.Namespace) -> int:
 
         for warmup_index in range(args.warmup_requests):
             shape = select_shape(warmup_index + 1)
+            warmup_request_index = 1_000_000 + warmup_index + 1
             observation = run_stream_request(
-                prompt=make_prompt_item(shape, warmup_index + 1),
+                prompt=make_prompt_item(shape, warmup_request_index),
                 model_id=args.model_id,
                 base_url=base_url,
                 timeout_s=args.request_timeout_seconds,
@@ -778,24 +1751,44 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     "timestamp": utc_now(),
                     "kind": "warmup_request",
                     "request_index": warmup_index + 1,
+                    "prompt_request_index": warmup_request_index,
+                    "shape": shape.name,
                     "request": observation,
                 },
             )
             if not observation.get("ok"):
-                raise RuntimeError(f"warmup request {warmup_index + 1} failed: {observation.get('error')}")
+                raise RuntimeError(
+                    f"warmup request {warmup_index + 1} failed: {observation.get('error')}"
+                )
 
-        # Warmups are setup, not part of the promised endurance duration or
-        # fixed-rate schedule. Start the measured clock only after they finish
-        # so a slow first model load cannot make the runner catch up by issuing
-        # several measured requests back-to-back.
         started_monotonic = time.monotonic()
-        state.started_wall = utc_now()
-        state.started_monotonic = started_monotonic
+        state = RunState(
+            started_wall=utc_now(),
+            started_monotonic=started_monotonic,
+            server_pid=process.pid,
+        )
+        latest_metrics = collect_metrics(base_url, args.model_id, timeout_s=10.0)
+        if not latest_metrics.get("ok"):
+            state.metric_scrape_failures += 1
+        values = latest_metrics.get("values", {})
+        if isinstance(values, dict):
+            state.counter_baseline = {
+                name: float(values[name])
+                for name in COUNTER_METRICS
+                if isinstance(values.get(name), (int, float))
+            }
+        sampler = ResourceSampler(
+            output_dir=output_dir,
+            events_path=events_path,
+            base_url=base_url,
+            model_id=args.model_id,
+            server_pid=process.pid,
+            started_monotonic=started_monotonic,
+            interval_s=args.resource_interval_seconds,
+        )
+        sampler.start()
         latest_server = process_snapshot(process.pid)
-        state.baseline_rss_kb = latest_server.get("rss_kb")
-        state.max_rss_kb = state.baseline_rss_kb
-        latest_host = collect_host_snapshot(output_dir)
-        latest_metrics = collect_metrics(base_url, timeout_s=10.0)
+        latest_host = collect_checkpoint_host_snapshot(output_dir)
         next_checkpoint = started_monotonic + report_interval_s
         last_checkpoint_monotonic = started_monotonic
         write_checkpoint(
@@ -804,20 +1797,20 @@ def _run_endurance(args: argparse.Namespace) -> int:
             state=state,
             status="running",
             elapsed_s=0.0,
-            window_elapsed_s=0.0,
             target_duration_s=target_duration_s,
-            records=records,
+            records=[],
+            window_elapsed_s=0.001,
             latest_server=latest_server,
             latest_host=latest_host,
             latest_metrics=latest_metrics,
+            resource_samples=sampler.samples(),
+            window_start_elapsed_s=0.0,
+            performance_alerts=[],
+            memory_alerts=[],
             alerts=alerts,
         )
 
-        # Warmups use indices 1..N, so measured requests continue at N+1
-        # instead of replaying the same prompt ids and accidentally exercising
-        # retained-prefix reuse.
-        request_index = args.warmup_requests
-        cadence_index = 0
+        request_index = 0
         while True:
             now = time.monotonic()
             elapsed_s = now - started_monotonic
@@ -829,20 +1822,20 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 raise RuntimeError(f"server exited during endurance run with code {exit_code}")
 
             request_index += 1
-            cadence_index += 1
             shape = select_shape(request_index)
+            phase = "baseline" if elapsed_s < baseline_s else "endurance"
             health = health_check(base_url, timeout_s=10.0)
             if not health["ok"]:
                 state.health_failures += 1
                 state.last_error = f"health check failed: {health['error']}"
-                alerts.append(state.last_error)
+                add_alert(alerts, state.last_error)
             observation = run_stream_request(
                 prompt=make_prompt_item(shape, request_index),
                 model_id=args.model_id,
                 base_url=base_url,
                 timeout_s=args.request_timeout_seconds,
             )
-            observation["phase"] = "endurance"
+            observation["phase"] = phase
             state.requests_attempted += 1
             if observation.get("ok"):
                 state.requests_ok += 1
@@ -851,33 +1844,43 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 state.requests_failed += 1
                 state.consecutive_request_failures += 1
                 state.last_error = str(observation.get("error") or "stream request failed")
-                alerts.append(state.last_error)
+                add_alert(alerts, state.last_error)
 
+            drain = wait_for_quiescence(
+                base_url=base_url,
+                model_id=args.model_id,
+                timeout_s=args.drain_timeout_seconds,
+            )
+            latest_metrics = drain["metrics"]
+            if not latest_metrics.get("ok"):
+                state.metric_scrape_failures += 1
+            for message in guard_lifecycle(
+                state=state,
+                drain=drain,
+                max_quiescent_kv_logical_mib=args.max_quiescent_kv_logical_mib,
+            ):
+                add_alert(alerts, message)
             latest_server = process_snapshot(process.pid)
-            rss_kb = latest_server.get("rss_kb")
-            if isinstance(rss_kb, int):
-                state.max_rss_kb = max(state.max_rss_kb or rss_kb, rss_kb)
-                baseline = state.baseline_rss_kb
-                growth_limit_kb = int(args.max_rss_growth_mib * 1024.0)
-                if baseline is not None and rss_kb - baseline > growth_limit_kb:
-                    state.rss_growth_alerts += 1
-                    alerts.append(
-                        f"server RSS grew {(rss_kb - baseline) / 1024.0:.1f} MiB above warm baseline"
-                    )
             if not latest_server.get("alive"):
                 raise RuntimeError("server PID disappeared during an endurance request")
 
             record = {
                 "timestamp": utc_now(),
                 "kind": "endurance_request",
+                "elapsed_seconds": time.monotonic() - started_monotonic,
                 "request_index": request_index,
+                "phase": phase,
                 "shape": shape.name,
                 "health": health,
                 "request": observation,
+                "lifecycle": drain,
                 "server": latest_server,
             }
-            records.append(record)
+            window_records.append(record)
+            if phase == "baseline":
+                baseline_records.append(record)
             append_jsonl(events_path, record)
+
             if state.consecutive_request_failures >= args.max_consecutive_request_failures:
                 raise RuntimeError(
                     "consecutive request failure limit reached: "
@@ -885,88 +1888,191 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 )
 
             now = time.monotonic()
+            resource_samples = sampler.samples()
+            if maybe_finalize_baseline(
+                state=state,
+                baseline_records=baseline_records,
+                resource_samples=resource_samples,
+                elapsed_s=now - started_monotonic,
+                baseline_s=baseline_s,
+            ):
+                append_jsonl(
+                    events_path,
+                    {
+                        "timestamp": utc_now(),
+                        "kind": "baseline_finalized",
+                        "elapsed_seconds": now - started_monotonic,
+                        "baseline": state.baseline,
+                        "resource_medians_bytes": state.resource_baseline,
+                    },
+                )
+
             if now >= next_checkpoint:
-                latest_host = collect_host_snapshot(output_dir)
-                latest_metrics = collect_metrics(base_url, timeout_s=10.0)
+                latest_host = collect_checkpoint_host_snapshot(output_dir)
+                latest_metrics = collect_metrics(base_url, args.model_id, timeout_s=10.0)
+                if not latest_metrics.get("ok"):
+                    state.metric_scrape_failures += 1
+                checkpoint_start = last_checkpoint_monotonic or started_monotonic
+                window_elapsed_s = now - checkpoint_start
+                last_performance_alerts, last_memory_alerts = evaluate_window_guardrails(
+                    state=state,
+                    records=window_records,
+                    window_elapsed_s=window_elapsed_s,
+                    latest_metrics=latest_metrics,
+                    resource_samples=resource_samples,
+                    window_start_elapsed_s=checkpoint_start - started_monotonic,
+                    min_performance_samples=args.min_performance_samples,
+                    max_ttft_p95_ratio=args.max_ttft_p95_ratio,
+                    min_decode_p05_ratio=args.min_decode_p05_ratio,
+                    max_client_error_rate=args.max_client_error_rate,
+                    memory_growth_mib=args.memory_growth_mib,
+                    memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                )
+                for message in [*last_performance_alerts, *last_memory_alerts]:
+                    add_alert(alerts, message)
+                state.performance_alerts += len(last_performance_alerts)
+                state.memory_alerts += len(last_memory_alerts)
                 write_checkpoint(
                     output_dir=output_dir,
                     reason="periodic",
                     state=state,
                     status="running",
                     elapsed_s=now - started_monotonic,
-                    window_elapsed_s=now - last_checkpoint_monotonic,
                     target_duration_s=target_duration_s,
-                    records=records,
+                    records=window_records,
+                    window_elapsed_s=window_elapsed_s,
                     latest_server=latest_server,
                     latest_host=latest_host,
                     latest_metrics=latest_metrics,
+                    resource_samples=resource_samples,
+                    window_start_elapsed_s=checkpoint_start - started_monotonic,
+                    performance_alerts=last_performance_alerts,
+                    memory_alerts=last_memory_alerts,
                     alerts=alerts,
                 )
-                records.clear()
+                window_records.clear()
                 last_checkpoint_monotonic = now
                 while next_checkpoint <= now:
                     next_checkpoint += report_interval_s
 
-            scheduled_next = (
-                started_monotonic
-                + cadence_index * args.request_interval_seconds
-            )
-            delay = max(0.0, scheduled_next - time.monotonic())
+            # Completion-based pacing avoids catch-up bursts after an unusually
+            # slow prefill/decode.  This remains an endurance test, not a load test.
+            delay = args.request_interval_seconds
             if delay > 0.0:
                 time.sleep(delay)
 
     except KeyboardInterrupt:
         status = "interrupted"
         failure = "runner received an interrupt signal"
-    except Exception as error:  # noqa: BLE001 - a failed soak must retain its exact cause.
+    except Exception as error:  # noqa: BLE001 - failure cause is the primary result of a soak.
         status = "failed"
         failure = str(error)
     finally:
-        if state is not None:
-            if failure:
-                state.last_error = failure
-                alerts.append(failure)
-            elapsed_s = time.monotonic() - state.started_monotonic
-            window_elapsed_s = (
-                time.monotonic() - last_checkpoint_monotonic
-                if last_checkpoint_monotonic is not None
-                else elapsed_s
-            )
-            if process is not None:
-                latest_server = process_snapshot(process.pid)
-            if not latest_host:
-                latest_host = collect_host_snapshot(output_dir)
-            if not latest_metrics:
-                latest_metrics = collect_metrics(base_url, timeout_s=10.0)
-            append_jsonl(
-                events_path,
-                {
-                    "timestamp": utc_now(),
-                    "kind": "run_terminal",
-                    "status": status,
-                    "error": failure,
-                },
-            )
-            write_checkpoint(
-                output_dir=output_dir,
-                reason="final",
-                state=state,
-                status=status,
-                elapsed_s=elapsed_s,
-                window_elapsed_s=window_elapsed_s,
-                target_duration_s=target_duration_s,
-                records=records,
-                latest_server=latest_server,
-                latest_host=latest_host,
-                latest_metrics=latest_metrics,
-                alerts=alerts,
-            )
-        if process is not None:
-            stop_result = stop_server(process)
-            append_jsonl(
-                events_path,
-                {"timestamp": utc_now(), "kind": "server_stopped", "result": stop_result},
-            )
+        try:
+            if sampler is not None and not sampler.stop() and state is not None:
+                state.resource_sampler_stop_timeouts += 1
+                add_alert(
+                    alerts,
+                    "resource sampler did not stop before the final checkpoint",
+                )
+            if state is not None:
+                if failure:
+                    state.last_error = failure
+                    add_alert(alerts, failure)
+                elapsed_s = time.monotonic() - state.started_monotonic
+                if process is not None:
+                    latest_server = process_snapshot(process.pid)
+                latest_host = collect_checkpoint_host_snapshot(output_dir)
+                latest_metrics = collect_metrics(base_url, args.model_id, timeout_s=10.0)
+                if not latest_metrics.get("ok"):
+                    state.metric_scrape_failures += 1
+                resource_samples = sampler.samples() if sampler is not None else []
+                maybe_finalize_baseline(
+                    state=state,
+                    baseline_records=baseline_records,
+                    resource_samples=resource_samples,
+                    elapsed_s=elapsed_s,
+                    baseline_s=baseline_s,
+                )
+                checkpoint_start = last_checkpoint_monotonic or state.started_monotonic
+                window_elapsed_s = max(
+                    0.001,
+                    elapsed_s - (checkpoint_start - state.started_monotonic),
+                )
+                window_start_elapsed_s = checkpoint_start - state.started_monotonic
+                if window_records:
+                    last_performance_alerts, last_memory_alerts = evaluate_window_guardrails(
+                        state=state,
+                        records=window_records,
+                        window_elapsed_s=window_elapsed_s,
+                        latest_metrics=latest_metrics,
+                        resource_samples=resource_samples,
+                        window_start_elapsed_s=window_start_elapsed_s,
+                        min_performance_samples=args.min_performance_samples,
+                        max_ttft_p95_ratio=args.max_ttft_p95_ratio,
+                        min_decode_p05_ratio=args.min_decode_p05_ratio,
+                        max_client_error_rate=args.max_client_error_rate,
+                        memory_growth_mib=args.memory_growth_mib,
+                        memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                    )
+                    for message in [
+                        *last_performance_alerts,
+                        *last_memory_alerts,
+                    ]:
+                        add_alert(alerts, message)
+                    state.performance_alerts += len(last_performance_alerts)
+                    state.memory_alerts += len(last_memory_alerts)
+                append_jsonl(
+                    events_path,
+                    {
+                        "timestamp": utc_now(),
+                        "kind": "run_terminal",
+                        "status": status,
+                        "error": failure,
+                    },
+                )
+                write_checkpoint(
+                    output_dir=output_dir,
+                    reason="final",
+                    state=state,
+                    status=status,
+                    elapsed_s=elapsed_s,
+                    target_duration_s=target_duration_s,
+                    records=window_records,
+                    window_elapsed_s=window_elapsed_s,
+                    latest_server=latest_server,
+                    latest_host=latest_host,
+                    latest_metrics=latest_metrics,
+                    resource_samples=resource_samples,
+                    window_start_elapsed_s=window_start_elapsed_s,
+                    performance_alerts=last_performance_alerts,
+                    memory_alerts=last_memory_alerts,
+                    alerts=alerts,
+                )
+            else:
+                write_json_atomic(
+                    output_dir / "failure.json",
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "timestamp": utc_now(),
+                        "error": failure,
+                    },
+                )
+        finally:
+            try:
+                if process is not None:
+                    stop_result = stop_server(process)
+                    append_jsonl(
+                        events_path,
+                        {
+                            "timestamp": utc_now(),
+                            "kind": "server_stopped",
+                            "result": stop_result,
+                        },
+                    )
+            finally:
+                if log_handle is not None:
+                    log_handle.close()
 
     if failure:
         print(f"AXQ endurance run {status}: {failure}", file=sys.stderr)
@@ -976,7 +2082,7 @@ def _run_endurance(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the explicit, conservative endurance runner CLI."""
+    """Build the explicit conservative CLI for the endurance runner."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", type=Path, required=True)
     parser.add_argument("--model-dir", type=Path, required=True)
@@ -986,24 +2092,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=31418)
     parser.add_argument("--duration-hours", type=positive_float, default=DEFAULT_DURATION_HOURS)
     parser.add_argument(
-        "--report-interval-hours",
-        type=positive_float,
-        default=DEFAULT_REPORT_INTERVAL_HOURS,
+        "--report-interval-hours", type=positive_float, default=DEFAULT_REPORT_INTERVAL_HOURS
+    )
+    parser.add_argument("--baseline-hours", type=positive_float, default=DEFAULT_BASELINE_HOURS)
+    parser.add_argument(
+        "--request-interval-seconds", type=positive_float, default=DEFAULT_REQUEST_INTERVAL_S
     )
     parser.add_argument(
-        "--request-interval-seconds",
-        type=positive_float,
-        default=DEFAULT_REQUEST_INTERVAL_S,
+        "--resource-interval-seconds", type=positive_float, default=DEFAULT_RESOURCE_INTERVAL_S
     )
     parser.add_argument(
-        "--request-timeout-seconds",
-        type=positive_float,
-        default=DEFAULT_REQUEST_TIMEOUT_S,
+        "--request-timeout-seconds", type=positive_float, default=DEFAULT_REQUEST_TIMEOUT_S
     )
     parser.add_argument(
-        "--startup-timeout-seconds",
-        type=positive_float,
-        default=DEFAULT_STARTUP_TIMEOUT_S,
+        "--startup-timeout-seconds", type=positive_float, default=DEFAULT_STARTUP_TIMEOUT_S
+    )
+    parser.add_argument(
+        "--drain-timeout-seconds", type=positive_float, default=DEFAULT_DRAIN_TIMEOUT_S
     )
     parser.add_argument("--warmup-requests", type=non_negative_int, default=DEFAULT_WARMUP_REQUESTS)
     parser.add_argument(
@@ -1012,22 +2117,43 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
     )
     parser.add_argument(
-        "--max-rss-growth-mib",
+        "--max-client-error-rate",
+        type=non_negative_float,
+        default=DEFAULT_MAX_ERROR_RATE,
+    )
+    parser.add_argument(
+        "--max-ttft-p95-ratio", type=positive_float, default=DEFAULT_MAX_TTFT_P95_RATIO
+    )
+    parser.add_argument(
+        "--min-decode-p05-ratio", type=positive_float, default=DEFAULT_MIN_DECODE_P05_RATIO
+    )
+    parser.add_argument(
+        "--min-performance-samples", type=positive_int, default=DEFAULT_MIN_PERFORMANCE_SAMPLES
+    )
+    parser.add_argument(
+        "--memory-growth-mib", type=positive_float, default=DEFAULT_MEMORY_GROWTH_MIB
+    )
+    parser.add_argument(
+        "--memory-slope-mib-per-hour",
         type=positive_float,
-        default=DEFAULT_MAX_RSS_GROWTH_MIB,
-        help="Alert threshold versus the warm baseline; it does not restart the server.",
+        default=DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR,
+    )
+    parser.add_argument(
+        "--max-quiescent-kv-logical-mib",
+        type=positive_float,
+        default=DEFAULT_MAX_QUIESCENT_KV_LOGICAL_MIB,
     )
     parser.add_argument(
         "--server-extra-arg",
         action="append",
         default=[],
-        help="Repeat to pass a safe additional ax-engine-server argument.",
+        help="Repeat to pass a deliberate additional ax-engine-server argument.",
     )
     return parser
 
 
 def main_with_args_for_test(argv: list[str]) -> int:
-    """Entrypoint retained separately so unit tests can parse realistic args."""
+    """Entrypoint kept separately for simple test invocation."""
     return run_endurance(build_parser().parse_args(argv))
 
 
