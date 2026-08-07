@@ -71,10 +71,11 @@ hashes, and fails closed unless the clean-build and host-condition matrix is
 publication eligible.
 
 Use `bench_embedding_fair.py` for published embedding comparisons between
-`mlx-lm` and ax-engine, or pass `--ax-only` for README-style AX-only refreshes.
-That harness excludes HTTP/cold-start paths and forces the measured engine(s) to
-materialize the same contiguous CPU `float32 [B,H]` output matrix, then reports
-batch-size and token-length scaling separately. Use
+`mlx-lm` and ax-engine. Competitive README rows require a same-session paired
+run; reserve `--ax-only` for absolute AX trend diagnostics. That harness
+excludes HTTP/cold-start paths and forces the measured engine(s) to materialize
+the same contiguous CPU `float32 [B,H]` output matrix, then reports batch-size
+and token-length scaling separately. Use
 `bench_embedding_ingest_scale.py` for sustained RAG/indexing profiles where a
 large deterministic chunk corpus is split into repeated batches and p95 batch
 latency matters beside tok/s. Keep `bench_embedding_models.py` for legacy
