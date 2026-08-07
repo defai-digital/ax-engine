@@ -484,7 +484,9 @@ move **+2.7% for decode**, **+25.3% for prefill**, and **-20.2% for TTFT**
 (lower is better). Decode improves in 24/36 cells; prefill and TTFT improve in
 all 36. The result is not uniform: Qwen3.6 35B-A3B decode regresses by
 approximately **4.5% at 4-bit** and **5.9% at 6-bit** on the three-depth
-geometric mean.
+geometric mean. The prior artifact records `git_tracked_dirty: true` and a
+list of in-flight runtime changes, so these are dated snapshot deltas, not a
+clean v6.12.0-to-v6.13.3 release regression claim.
 
 The fresh, separate `mlx_lm` 0.31.3 reference run covers 30 comparable cells.
 AX wins all 30 decode cells with a **+4.6%** geometric-mean advantage, but its

@@ -364,12 +364,13 @@ Per-suite tables: [Performance Results: MTP](docs/PERFORMANCE-RESULTS.md#session
 
 ### Direct generation, embeddings, and archives
 
-The fresh v6.13.3 direct snapshot improves over v6.12.0 by **2.7% decode** and
-**25.3% prefill** on the 36-cell geometric mean while lowering TTFT by
-**20.2%**. Against a fresh but separate-run `mlx_lm` 0.31.3 snapshot, AX wins
-all 30 comparable decode cells (**+4.6%** geometric mean), while prefill is
-**10.6% lower** and TTFT is **11.9% higher**. This is cross-run evidence, not a
-same-session peer benchmark.
+The fresh v6.13.3 direct snapshot improves over the dated, tracked-dirty
+v6.12.0 benchmark snapshot by **2.7% decode** and **25.3% prefill** on the
+36-cell geometric mean while lowering TTFT by **20.2%**. Against a fresh but
+separate-run `mlx_lm` 0.31.3 snapshot, AX wins all 30 comparable decode cells
+(**+4.6%** geometric mean), while prefill is **10.6% lower** and TTFT is
+**11.9% higher**. This is cross-run evidence, not a same-session peer
+benchmark or a clean release-to-release comparison.
 
 Non-speculative decode/prefill/TTFT (Gemma 4 and Qwen 3.6 box plots from fresh
 separate-run AX, `mlx_lm`, and llama.cpp **b10050** Metal snapshots), embedding ingest scale,
