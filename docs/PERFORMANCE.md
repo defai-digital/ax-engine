@@ -159,7 +159,7 @@ decode. Current benchmark artifacts do not encode that as a claim-status
 variant; `ax_decode_claim_status` is intentionally limited to throughput and
 fallback state. Treat random-token n-gram wins as synthetic throughput rows
 unless a separate token-output validation artifact accompanies the claim. See
-[[NGRAM-ACCELERATION.md](NGRAM-ACCELERATION.md) § Synthetic repeated-output loops](NGRAM-ACCELERATION.md#synthetic-repeated-output-loops)
+[`NGRAM-ACCELERATION.md` § Synthetic repeated-output loops](NGRAM-ACCELERATION.md#synthetic-repeated-output-loops)
 for the interpretation rule.
 
 The strongest user-facing case for n-gram acceleration is coding-shaped output

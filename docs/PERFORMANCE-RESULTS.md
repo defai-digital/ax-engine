@@ -78,7 +78,7 @@ AX diagnostics, but they are not headline MTP matrix rows.
 
 Use `ax-engine download-mtp <target>` for the packages below. These targets are
 the supported repo-owned MTP preparation paths; direct-model aliases are listed
-separately in [Getting a Model](#getting-a-model).
+separately in [Getting a Model](GETTING-STARTED.md#getting-a-model).
 
 | Target | Base model | MTP package |
 | --- | --- | --- |

@@ -68,6 +68,140 @@ prompt/decode shape, with prompt-token provenance recorded in the artifact.
 `mlx_lm_delegated` checks validate delegation behavior, not repo-owned MLX runtime
 speed.
 
+## Refreshing the README Benchmark Set
+
+Run README refresh campaigns serially on one admitted Apple Silicon host.
+Keep the default load/CPU gates, AC-power check, cooldowns, clean tracked
+checkouts, and exact model snapshots. Use the benchmark virtual environment's
+interpreter so the recorded MLX and peer-package versions are the versions that
+actually ran.
+
+Refresh the upstream `mlx-lm` reference first, then run AX direct against the
+same resolved model snapshots:
+
+```bash
+RUN_DATE=2026-08-07
+MLX_LM_VERSION=0.31.3
+AX_VERSION=6.13.3
+REFERENCE_ROOT=benchmarks/results/inference/mlx-lm-reference/${RUN_DATE}-mlx-lm-${MLX_LM_VERSION}-m5max
+AX_ROOT=benchmarks/results/inference/ax-direct/${RUN_DATE}-v${AX_VERSION}-m5max-ax-direct-only
+
+.venv/bin/python scripts/bench_ax_only_sweep.py \
+  --output-root "$REFERENCE_ROOT" \
+  --mlx-lm-reference-only
+
+cargo build --release -p ax-engine-server
+
+.venv/bin/python scripts/bench_ax_only_sweep.py \
+  --output-root "$AX_ROOT" \
+  --model-snapshot-reference-root "$REFERENCE_ROOT" \
+  --ax-direct-only
+```
+
+These are separate dated snapshots, not a paired engine delta. The results
+page must say so explicitly and point its `readme-mlx-lm-direct-snapshot` and
+`readme-ax-direct-snapshot` markers at the two complete publication matrices.
+
+Refresh the shape-compatible llama.cpp Metal sweep separately:
+
+```bash
+RUN_DATE=2026-08-07
+LLAMA_BUILD=b10050
+LLAMA_ROOT=benchmarks/results/inference/llama-cpp-metal/${RUN_DATE}-llama-cpp-${LLAMA_BUILD}-m5max
+
+.venv/bin/python scripts/bench_llama_cpp_metal_sweep.py \
+  --output-root "$LLAMA_ROOT" \
+  --cache-only \
+  --keep-gguf \
+  --llama-cpp-flash-attn \
+  --llama-cpp-decode-at-depth \
+  --prompt-tokens 128,512,2048 \
+  --generation-tokens 128 \
+  --repetitions 5 \
+  --cooldown 15
+
+.venv/bin/python scripts/update_readme_inject_llama_cpp.py \
+  --sweep "$LLAMA_ROOT/sweep_results.json" \
+  --readme docs/PERFORMANCE-RESULTS.md
+```
+
+Refresh exact same-package MTP and the cross-engine Qwen3.6 peer campaign as
+separate sessions:
+
+```bash
+RUN_DATE=2026-08-07
+AX_VERSION=6.13.3
+MTP_EXACT_ROOT=benchmarks/results/speculative/mtp-6bit/${RUN_DATE}-v${AX_VERSION}-m5max
+MTP_PEER_ROOT=benchmarks/results/mtp-qwen36-matrix/${RUN_DATE}-peer-comparison-apples-to-apples-refresh
+
+.venv/bin/python scripts/bench_mtp_6bit_ax_refresh.py \
+  --output-dir "$MTP_EXACT_ROOT"
+
+.venv/bin/python scripts/bench_qwen36_mtp_matrix.py \
+  --output-dir "$MTP_PEER_ROOT" \
+  --benchmark-contract apples-to-apples \
+  --execute
+```
+
+For sustained embedding claims, run same-session paired matrices. Qwen uses
+`mlx_lm` with last-token pooling; EmbeddingGemma uses `mlx-embeddings` with
+mean pooling:
+
+```bash
+RUN_DATE=2026-08-07
+
+.venv/bin/python scripts/bench_embedding_ingest_scale.py \
+  --model qwen3-embedding-0.6b-8bit=/path/to/qwen-0.6b-snapshot \
+  --model qwen3-embedding-4b-4bit-dwq=/path/to/qwen-4b-snapshot \
+  --model qwen3-embedding-8b-4bit-dwq=/path/to/qwen-8b-snapshot \
+  --batch-sizes 8,32,64 \
+  --chunk-tokens 256,512 \
+  --total-chunks 512 \
+  --warmup 2 \
+  --trials 5 \
+  --cooldown 15 \
+  --output-dir benchmarks/results/embedding/embedding-scale/${RUN_DATE}-qwen-paired
+
+.venv/bin/python scripts/bench_embedding_ingest_scale.py \
+  --reference mlx_embeddings \
+  --pooling mean \
+  --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-snapshot \
+  --batch-sizes 8,32,64 \
+  --chunk-tokens 256,512 \
+  --total-chunks 512 \
+  --warmup 2 \
+  --trials 5 \
+  --cooldown 15 \
+  --output-dir benchmarks/results/embedding/embedding-scale/${RUN_DATE}-embeddinggemma-paired
+```
+
+Validate each timestamped embedding artifact with
+`scripts/check_embedding_publish_gate.py --claim paired_delta`. Refresh the
+dense batched-decode ceiling with:
+
+```bash
+RUN_DATE=2026-08-07
+
+.venv/bin/python scripts/bench_batched_decode_ceiling.py \
+  /path/to/Llama-3.1-8B-Instruct-4bit-snapshot \
+  --output-dir benchmarks/results/inference/mlx-inference/${RUN_DATE}-batched-decode-ceiling-m5max
+```
+
+The single-client and S1 serving campaigns have additional process-order,
+cache-isolation, and availability gates described in the next section. After
+all artifacts are imported, regenerate charts and run the fail-closed checks:
+
+```bash
+MTP_PEER_ROOT=benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh
+
+.venv/bin/python scripts/render_qwen36_mtp_bandwidth_diagnostic.py \
+  --summary "$MTP_PEER_ROOT/summary.json" \
+  --json-output "$MTP_PEER_ROOT/bandwidth_diagnostic.json"
+.venv/bin/python scripts/render_readme_performance_charts.py
+.venv/bin/python scripts/check_readme_performance_artifacts.py
+bash scripts/check-scripts.sh
+```
+
 ## Online Serving Benchmark
 
 Use the serving harness when the question is market-style endpoint behavior
