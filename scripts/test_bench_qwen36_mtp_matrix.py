@@ -242,7 +242,7 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
                     matrix,
                     "peer_boundary_conditions",
                     return_value=publication_conditions(),
-                ),
+                ) as peer_conditions,
                 patch.object(
                     matrix.bench_support,
                     "collect_performance_condition_metadata",
@@ -252,6 +252,7 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
                 matrix.execute_lanes(args, [lane])
 
         run_logged.assert_called_once()
+        self.assertEqual(peer_conditions.call_count, 2)
 
     def test_mtplx_publication_gate_requires_complete_clean_trials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

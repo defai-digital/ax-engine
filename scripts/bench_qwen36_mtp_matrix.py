@@ -1222,13 +1222,15 @@ def execute_lanes(args: argparse.Namespace, lanes: list[Lane]) -> None:
                 env = None
             run_logged(lane.command, log_path, env=env)
             if conditions_start is not None:
+                conditions_end = peer_boundary_conditions(
+                    args,
+                    context=f"{context} end",
+                )
                 attach_peer_benchmark_window(
                     args,
                     lane,
                     conditions_start=conditions_start,
-                    conditions_end=(
-                        bench_support.collect_performance_condition_metadata()
-                    ),
+                    conditions_end=conditions_end,
                 )
         except Exception as exc:
             write_error_artifact(
