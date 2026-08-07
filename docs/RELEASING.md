@@ -174,18 +174,33 @@ ticket's cdhashes matched the binaries exactly, and the check kept failing
 40+ minutes later), while dylibs reused from earlier releases pass because
 their tickets were registered long ago.
 
-Recovery: trigger a one-time Gatekeeper assessment for each affected binary,
-which fetches and registers the ticket, then confirm the `codesign` gate and
-finish the draft per "Recover stuck drafts" above:
+The publisher handles this by copying each affected Mach-O to a disposable
+path, adding a quarantine attribute to that copy, and asking Gatekeeper for an
+uncached install assessment. The quarantine attribute is required: without it,
+Gatekeeper can report `Unnotarized Developer ID` without fetching the fresh
+ticket. After Gatekeeper accepts the disposable copy as `Notarized Developer
+ID`, the publisher deletes it and re-runs the fail-closed `codesign`
+requirement against the untouched uploaded bytes.
+
+For a draft created by an older publisher, perform the same recovery manually
+for each affected binary, then finish the draft per "Recover stuck drafts"
+above:
 
 ```bash
-spctl --assess --type install payload/ax-engine          # registers the ticket
-codesign --verify --strict -R=notarized payload/ax-engine # must now pass
+probe_dir="$(mktemp -d /tmp/ax-engine-notary-ticket.XXXXXX)"
+cp payload/ax-engine "$probe_dir/ax-engine"
+xattr -w com.apple.quarantine \
+  "0083;$(printf '%x' "$(date +%s)");AX Engine release verifier;https://github.com/defai-digital/ax-engine/" \
+  "$probe_dir/ax-engine"
+spctl --assess --type install --ignore-cache "$probe_dir/ax-engine"
+codesign --verify --strict -R=notarized payload/ax-engine
+rm -rf "$probe_dir"
 ```
 
-The publisher deliberately does not run `spctl` itself: Gatekeeper verdicts
-depend on local policy, so `codesign` stays the only fail-closed gate
-(enforced by `scripts/test_release_signing.py`).
+The Gatekeeper assessment is used only to fetch and register Apple's ticket;
+`codesign -R="notarized"` on the original uploaded bytes remains the final
+fail-closed publication gate (enforced by
+`scripts/test_release_signing.py`).
 
 ## Build-cache policy
 

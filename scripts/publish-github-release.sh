@@ -454,6 +454,30 @@ notarize_release_payload() {
     rm -f "$notarize_zip"
 }
 
+register_notarization_ticket() {
+    local source_image="$1"
+    local ticket_dir
+    local ticket_probe
+    local quarantine_timestamp
+
+    ticket_dir="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-notary-ticket.XXXXXX")"
+    (
+        trap 'rm -rf "$ticket_dir"' EXIT
+        ticket_probe="$ticket_dir/$(basename "$source_image")"
+        cp "$source_image" "$ticket_probe"
+        chmod +x "$ticket_probe"
+
+        # Standalone command-line binaries cannot carry stapled tickets.
+        # Gatekeeper fetches their fresh ticket only when assessing a
+        # quarantined copy; the untouched uploaded bytes are verified below.
+        quarantine_timestamp="$(printf '%x' "$(date +%s)")"
+        run xattr -w com.apple.quarantine \
+            "0083;${quarantine_timestamp};AX Engine release verifier;https://github.com/${MAIN_REPO}/releases/tag/${TAG}" \
+            "$ticket_probe"
+        run spctl --assess --type install --ignore-cache --verbose=4 "$ticket_probe"
+    )
+}
+
 verify_uploaded_release() {
     local entitlement_details
     local image
@@ -630,7 +654,11 @@ PY
                     # --check-notarization only modifies verification; it is not a
                     # standalone codesign operation (see codesign(1)).
                     run codesign --verify --strict --check-notarization --verbose=2 "$verify_dir/payload/$image"
-                    run codesign --verify --strict --verbose=2 -R="notarized" "$verify_dir/payload/$image"
+                    if ! run codesign --verify --strict --verbose=2 -R="notarized" "$verify_dir/payload/$image"; then
+                        echo "Registering fresh notarization ticket for uploaded $image"
+                        register_notarization_ticket "$verify_dir/payload/$image"
+                        run codesign --verify --strict --verbose=2 -R="notarized" "$verify_dir/payload/$image"
+                    fi
                 fi
             done
             for image in ax-engine ax-engine-server ax-engine-bench; do
@@ -784,6 +812,8 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     if [[ "$SKIP_NOTARIZATION" = false ]]; then
         check_cmd xcrun "xcrun notarytool is required for notarization"
         check_cmd zip "zip is required for notarization submission"
+        check_cmd xattr "xattr is required to register fresh notarization tickets"
+        check_cmd spctl "spctl is required to register fresh notarization tickets"
         if ! xcrun notarytool --help &>/dev/null; then
             die "xcrun notarytool is not available - install current Xcode Command Line Tools"
         fi
