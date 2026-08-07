@@ -44,6 +44,7 @@ MIN_REPETITIONS = 5
 MIN_COOLDOWN_SECONDS = 15.0
 DEFAULT_MAX_LOAD_AVERAGE = 2.0
 DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT = 50.0
+TRIAL_ORDER = "alternating_by_repetition"
 PROBE_ROW_RE = re.compile(
     r"^\s*(?P<batch>\d+)\s+"
     r"(?P<agg>\d+(?:\.\d+)?)\s+"
@@ -221,6 +222,8 @@ def publication_reasons(artifact: dict[str, Any]) -> list[str]:
         reasons.append("benchmark_incomplete")
     if artifact.get("prefill_len") != 32:
         reasons.append("publication_requires_prefill_len_32")
+    if artifact.get("trial_order") != TRIAL_ORDER:
+        reasons.append("trial_order_mismatch")
     if artifact.get("probe_contract") != {
         "batches": list(EXPECTED_BATCHES),
         "warmup_steps_per_batch": PROBE_WARMUP_STEPS_PER_BATCH,
@@ -253,6 +256,11 @@ def publication_reasons(artifact: dict[str, Any]) -> list[str]:
         reasons.append("non_release_build")
     if not isinstance(build, dict) or build.get("git_tracked_dirty") is not False:
         reasons.append("dirty_build")
+    engine_version = build.get("engine_version") if isinstance(build, dict) else None
+    if not isinstance(engine_version, str) or re.fullmatch(
+        r"\d+\.\d+\.\d+", engine_version
+    ) is None:
+        reasons.append("missing_semantic_engine_version")
     binary_sha = (
         build.get("benchmark_binary_sha256")
         if isinstance(build, dict)
@@ -269,6 +277,22 @@ def publication_reasons(artifact: dict[str, Any]) -> list[str]:
         reasons.append("missing_benchmark_binary_hash")
     if not isinstance(binary_path, str) or not binary_path:
         reasons.append("missing_benchmark_binary_path")
+    max_load = artifact.get("max_load_average")
+    if (
+        not isinstance(max_load, (int, float))
+        or isinstance(max_load, bool)
+        or not math.isfinite(float(max_load))
+        or float(max_load) > DEFAULT_MAX_LOAD_AVERAGE
+    ):
+        reasons.append("publication_requires_default_load_gate")
+    max_top_cpu = artifact.get("max_top_process_cpu_percent")
+    if (
+        not isinstance(max_top_cpu, (int, float))
+        or isinstance(max_top_cpu, bool)
+        or not math.isfinite(float(max_top_cpu))
+        or float(max_top_cpu) > DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT
+    ):
+        reasons.append("publication_requires_default_top_process_cpu_gate")
 
     host = artifact.get("host")
     if not isinstance(host, dict) or "Apple" not in str(host.get("chip", "")):
@@ -379,6 +403,17 @@ def publication_reasons(artifact: dict[str, Any]) -> list[str]:
     }
     if keys != expected_keys:
         reasons.append("repetition_policy_matrix_mismatch")
+    expected_sequence = []
+    for repetition in range(1, repetitions + 1):
+        order = POLICIES if repetition % 2 == 1 else tuple(reversed(POLICIES))
+        expected_sequence.extend((repetition, policy) for policy in order)
+    observed_sequence = [
+        (trial.get("repetition"), trial.get("policy"))
+        for trial in trials
+        if isinstance(trial, dict)
+    ]
+    if observed_sequence != expected_sequence:
+        reasons.append("trial_sequence_mismatch")
     for batch, hashes in hashes_by_batch.items():
         if len(hashes) != 1:
             reasons.append(f"batch{batch}_cohort_hash_divergence")
@@ -586,6 +621,7 @@ def main() -> int:
         },
         "repetitions": args.repetitions,
         "cooldown_seconds": args.cooldown,
+        "trial_order": TRIAL_ORDER,
         "max_load_average": args.max_load_average,
         "max_top_process_cpu_percent": args.max_top_process_cpu_percent,
         "trials": [],

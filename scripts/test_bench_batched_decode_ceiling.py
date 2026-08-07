@@ -68,7 +68,12 @@ def rows(*, batch8_rate: float = 100.0) -> list[dict[str, object]]:
 def complete_artifact() -> dict[str, object]:
     trials = []
     for repetition in range(1, 6):
-        for policy in bench.POLICIES:
+        order = (
+            bench.POLICIES
+            if repetition % 2 == 1
+            else tuple(reversed(bench.POLICIES))
+        )
+        for policy in order:
             policy_value = "1" if policy == "shared" else "0"
             trials.append(
                 {
@@ -102,6 +107,11 @@ def complete_artifact() -> dict[str, object]:
         },
         "repetitions": 5,
         "cooldown_seconds": 15.0,
+        "trial_order": bench.TRIAL_ORDER,
+        "max_load_average": bench.DEFAULT_MAX_LOAD_AVERAGE,
+        "max_top_process_cpu_percent": (
+            bench.DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT
+        ),
         "build": {
             "commit": "a" * 40,
             "engine_version": "6.13.2",
@@ -167,6 +177,19 @@ batch  agg_tok_s  per_req_tok_s  step_us  scaling_vs_b1
         reasons = bench.publication_reasons(artifact)
 
         self.assertIn("batch8_cohort_hash_divergence", reasons)
+
+    def test_publication_gate_rejects_relaxed_load_or_blocked_order(self) -> None:
+        artifact = complete_artifact()
+        artifact["max_load_average"] = 5.0
+        artifact["trials"][0], artifact["trials"][1] = (
+            artifact["trials"][1],
+            artifact["trials"][0],
+        )
+
+        reasons = bench.publication_reasons(artifact)
+
+        self.assertIn("publication_requires_default_load_gate", reasons)
+        self.assertIn("trial_sequence_mismatch", reasons)
 
     def test_policy_environment_removes_inherited_ax_mlx_flags(self) -> None:
         original = bench.os.environ.get("AX_MLX_DENSE_FFN_COMPILE")
