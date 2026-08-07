@@ -178,6 +178,8 @@ bash scripts/check-qa.sh
   scripts/test_readme_performance_artifacts.py \
   scripts/render_readme_performance_charts.py \
   scripts/test_render_readme_performance_charts.py \
+  scripts/render_qwen36_mtp_bandwidth_diagnostic.py \
+  scripts/test_render_qwen36_mtp_bandwidth_diagnostic.py \
   scripts/check_decode_hot_path_kernel_admission.py \
   scripts/check_direct_mlx_hotpath_probe_artifact.py \
   scripts/check_direct_mlx_no_production_route.py \
@@ -305,6 +307,7 @@ bash scripts/check-qa.sh
   scripts/test_check_quantization_quality_gate.py \
   scripts/test_bench_direct_telemetry_pass.py \
   scripts/test_render_readme_performance_charts.py \
+  scripts/test_render_qwen36_mtp_bandwidth_diagnostic.py \
   scripts/test_check_version_sync.py \
   scripts/test_check_github_release_parity.py \
   scripts/test_ci_workflow_policy.py \
