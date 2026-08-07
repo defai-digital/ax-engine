@@ -204,6 +204,22 @@ class BenchMtpRefreshTests(unittest.TestCase):
             command[sampling_index + 1],
             '{"temperature":0.6,"top_p":0.95,"top_k":20}',
         )
+        self.assertEqual(
+            command[command.index("--max-load-average") + 1],
+            str(bench.MAX_PUBLICATION_LOAD_AVERAGE),
+        )
+        self.assertEqual(
+            command[command.index("--max-top-process-cpu-percent") + 1],
+            str(bench.MAX_PUBLICATION_PROCESS_CPU_PERCENT),
+        )
+        self.assertEqual(
+            command[command.index("--load-average-wait-timeout") + 1],
+            str(bench.DEFAULT_LOAD_WAIT_TIMEOUT_S),
+        )
+        self.assertEqual(
+            command[command.index("--load-average-poll-interval") + 1],
+            str(bench.DEFAULT_LOAD_POLL_INTERVAL_S),
+        )
         self.assertIn("--ax-qwen-linear-mtp-exact", command)
 
     def test_exact_artifact_validation_fails_closed(self) -> None:

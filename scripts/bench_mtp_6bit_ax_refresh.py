@@ -34,6 +34,8 @@ MTP_6BIT_EXACT_CLAIM_TYPE = "exact_mtp_comparison"
 MLX_INFERENCE_STACK_SCHEMA = "ax.mlx_inference_stack.v2"
 MAX_PUBLICATION_LOAD_AVERAGE = 2.0
 MAX_PUBLICATION_PROCESS_CPU_PERCENT = 50.0
+DEFAULT_LOAD_WAIT_TIMEOUT_S = 900.0
+DEFAULT_LOAD_POLL_INTERVAL_S = 5.0
 MTP_SAMPLER_SIGNATURE = "sampling[temperature=0.6,top_p=0.95,top_k=20]"
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
@@ -237,6 +239,32 @@ def bench_cmd(
         str(args.cooldown),
         "--inter-case-cooldown",
         str(args.inter_case_cooldown),
+        "--max-load-average",
+        str(getattr(args, "max_load_average", MAX_PUBLICATION_LOAD_AVERAGE)),
+        "--max-top-process-cpu-percent",
+        str(
+            getattr(
+                args,
+                "max_top_process_cpu_percent",
+                MAX_PUBLICATION_PROCESS_CPU_PERCENT,
+            )
+        ),
+        "--load-average-wait-timeout",
+        str(
+            getattr(
+                args,
+                "load_wait_timeout",
+                DEFAULT_LOAD_WAIT_TIMEOUT_S,
+            )
+        ),
+        "--load-average-poll-interval",
+        str(
+            getattr(
+                args,
+                "load_poll_interval",
+                DEFAULT_LOAD_POLL_INTERVAL_S,
+            )
+        ),
         "--ax-sampling",
         json.dumps(MTP_SAMPLING, separators=(",", ":")),
         "--skip-mlx-lm",
@@ -1160,6 +1188,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-repetitions", type=int, default=WARMUP_REPETITIONS)
     parser.add_argument("--cooldown", type=float, default=COOLDOWN_S)
     parser.add_argument("--inter-case-cooldown", type=float, default=INTER_CASE_COOLDOWN_S)
+    parser.add_argument(
+        "--max-load-average",
+        type=float,
+        default=MAX_PUBLICATION_LOAD_AVERAGE,
+    )
+    parser.add_argument(
+        "--max-top-process-cpu-percent",
+        type=float,
+        default=MAX_PUBLICATION_PROCESS_CPU_PERCENT,
+    )
+    parser.add_argument(
+        "--load-wait-timeout",
+        type=float,
+        default=DEFAULT_LOAD_WAIT_TIMEOUT_S,
+    )
+    parser.add_argument(
+        "--load-poll-interval",
+        type=float,
+        default=DEFAULT_LOAD_POLL_INTERVAL_S,
+    )
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument(
         "--approximate-speed-ceiling",
@@ -1178,6 +1226,10 @@ def main() -> int:
     args = parse_args()
     if args.repetitions <= 0 or args.warmup_repetitions < 0:
         raise ValueError("repetitions must be positive and warmups must be non-negative")
+    if args.max_load_average < 0 or args.max_top_process_cpu_percent < 0:
+        raise ValueError("performance gate limits must be non-negative")
+    if args.load_wait_timeout < 0 or args.load_poll_interval <= 0:
+        raise ValueError("performance gate wait must be non-negative with positive polling")
     if args.update_readme and args.approximate_speed_ceiling:
         raise ValueError("approximate MTP speed ceilings cannot update README claims")
     args.output_dir = args.output_dir.resolve()
