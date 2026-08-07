@@ -186,6 +186,23 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.PublishGateError, "runtime_identity"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
+    def test_v2_rejects_dirty_or_under_sampled_artifact(self) -> None:
+        dirty = _paired_fair_artifact(
+            build={"commit": "abc123", "git_tracked_dirty": True}
+        )
+        path = self._write(dirty)
+        with self.assertRaisesRegex(gate.PublishGateError, "require-clean-tree"):
+            gate.validate_artifact(
+                path,
+                claim=gate.CLAIM_PAIRED,
+                require_clean_tree=True,
+            )
+
+        under_sampled = _paired_fair_artifact(warmup=1, trials=4)
+        path = self._write(under_sampled)
+        with self.assertRaisesRegex(gate.PublishGateError, "warmup >= 2"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
     def test_scale_requires_p95(self) -> None:
         payload = {
             "schema_version": "ax.embedding_ingest_scale.v2",
@@ -195,6 +212,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
             "reference": "mlx_lm",
             "warmup": 2,
             "trials": 5,
+            "cooldown_s": 15.0,
             "git_commit": "abc",
             "build": {"commit": "abc", "git_tracked_dirty": False},
             "host": {"chip": "Apple M5 Max"},
@@ -236,6 +254,50 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         }
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "median_batch_p95_ms"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_scale_requires_publication_cooldown(self) -> None:
+        payload = {
+            "schema_version": "ax.embedding_ingest_scale.v2",
+            "output_contract": "contiguous_cpu_f32_batch_hidden",
+            "ax_only": False,
+            "publication_claim": "paired_delta",
+            "reference": "mlx_lm",
+            "warmup": 2,
+            "trials": 5,
+            "cooldown_s": 0.0,
+            "build": {"commit": "abc", "git_tracked_dirty": False},
+            "host": {"chip": "Apple M5 Max"},
+            "runtime_identity": {
+                "ax_engine_native": {"linked_mlx": []},
+                "reference_runtime": {"linked_mlx": []},
+            },
+            "models": [
+                {
+                    "model_label": "qwen",
+                    "rows": [
+                        {
+                            "workload": "scale_512x256_b8",
+                            "results": {
+                                "mlx_lm": {
+                                    "median_tokens_per_sec": 1.0,
+                                    "median_batch_p95_ms": 1.0,
+                                },
+                                "ax_engine_py": {
+                                    "median_tokens_per_sec": 1.0,
+                                    "median_batch_p95_ms": 1.0,
+                                },
+                            },
+                            "comparison": {
+                                "ax_vs_reference_tokens_pct": 0.0
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "cooldown_s >= 15"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
 

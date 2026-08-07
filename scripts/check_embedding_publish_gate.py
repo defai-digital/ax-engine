@@ -34,6 +34,9 @@ V2_SCHEMAS = {"ax.embedding_fair.v2", "ax.embedding_ingest_scale.v2"}
 CLAIM_PAIRED = "paired_delta"
 CLAIM_AX_ONLY = "ax_absolute_trend"
 VALID_CLAIMS = {CLAIM_PAIRED, CLAIM_AX_ONLY}
+MIN_WARMUPS = 2
+MIN_TRIALS = 5
+MIN_SCALE_COOLDOWN_SECONDS = 15.0
 
 
 class PublishGateError(ValueError):
@@ -317,13 +320,40 @@ def validate_artifact(
 
     warnings.extend(validate_rows(artifact, path=path, claim=claim))
 
-    # Methodology floor for publication.
+    # V2 schemas are current publication evidence, so provenance and
+    # methodology floors fail closed. Legacy artifacts remain explicitly
+    # opt-in historical context and keep warning-only behavior.
     warmup = artifact.get("warmup")
     trials = artifact.get("trials")
-    if isinstance(warmup, int) and warmup < 2:
-        warnings.append(f"{path}: warmup={warmup} < 2 (publication convention is 2)")
-    if isinstance(trials, int) and trials < 5:
-        warnings.append(f"{path}: trials={trials} < 5 (publication convention is 5)")
+    if is_v2:
+        require(
+            isinstance(warmup, int) and warmup >= MIN_WARMUPS,
+            f"{path}: v2 publication requires warmup >= {MIN_WARMUPS}",
+        )
+        require(
+            isinstance(trials, int) and trials >= MIN_TRIALS,
+            f"{path}: v2 publication requires trials >= {MIN_TRIALS}",
+        )
+        if schema in SCALE_SCHEMAS:
+            cooldown = artifact.get("cooldown_s")
+            require(
+                isinstance(cooldown, (int, float))
+                and not isinstance(cooldown, bool)
+                and float(cooldown) >= MIN_SCALE_COOLDOWN_SECONDS,
+                f"{path}: v2 ingest-scale publication requires cooldown_s "
+                f">= {MIN_SCALE_COOLDOWN_SECONDS:.0f}",
+            )
+    else:
+        if isinstance(warmup, int) and warmup < MIN_WARMUPS:
+            warnings.append(
+                f"{path}: warmup={warmup} < {MIN_WARMUPS} "
+                "(publication convention)"
+            )
+        if isinstance(trials, int) and trials < MIN_TRIALS:
+            warnings.append(
+                f"{path}: trials={trials} < {MIN_TRIALS} "
+                "(publication convention)"
+            )
 
     return {
         "path": str(path),
