@@ -129,10 +129,8 @@ Refresh exact same-package MTP and the cross-engine Qwen3.6 peer campaign as
 separate sessions:
 
 ```bash
-RUN_DATE=2026-08-07
-AX_VERSION=6.13.3
-MTP_EXACT_ROOT=benchmarks/results/speculative/mtp-6bit/${RUN_DATE}-v${AX_VERSION}-m5max
-MTP_PEER_ROOT=benchmarks/results/mtp-qwen36-matrix/${RUN_DATE}-peer-comparison-apples-to-apples-refresh
+MTP_EXACT_ROOT=benchmarks/results/speculative/mtp-6bit/2026-08-06-v6.13.1-m5max-supported-mtp-ax-only
+MTP_PEER_ROOT=benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh
 
 .venv/bin/python scripts/bench_mtp_6bit_ax_refresh.py \
   --output-dir "$MTP_EXACT_ROOT"
