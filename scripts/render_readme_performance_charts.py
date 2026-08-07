@@ -2005,6 +2005,12 @@ def load_mtp_peer_rows(summary_path: Path) -> list[dict[str, Any]]:
         "ax_mtp_optimistic": False,
         "lightning_mtp_optimistic": False,
         "lightning_prefix_cache_policy": "disabled_for_cold_prefill",
+        "publication_load_gate": {
+            "max_load_average": 2.0,
+            "max_top_process_cpu_percent": 50.0,
+            "load_wait_timeout_seconds": 900.0,
+            "load_poll_interval_seconds": 5.0,
+        },
     }
     for field, expected in expected_contract.items():
         if contract.get(field) != expected:

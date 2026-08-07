@@ -22,6 +22,17 @@ sys.modules["bench_qwen36_mtp_matrix"] = matrix
 MODULE_SPEC.loader.exec_module(matrix)
 
 
+def publication_conditions() -> dict[str, object]:
+    return {
+        "load_average": {"one_minute": 0.5},
+        "power_source": "AC Power",
+        "thermal_warning_recorded": False,
+        "performance_warning_recorded": False,
+        "cpu_power_status_recorded": False,
+        "top_processes_cpu": [{"cpu_percent": 0.1, "command": "test"}],
+    }
+
+
 def make_args(root: Path) -> Namespace:
     return Namespace(
         models=["27b", "35b-a3b"],
@@ -36,6 +47,10 @@ def make_args(root: Path) -> Namespace:
         warmup_repetitions=2,
         cooldown=30.0,
         inter_case_cooldown=10.0,
+        max_load_average=2.0,
+        max_top_process_cpu_percent=50.0,
+        load_wait_timeout=900.0,
+        load_poll_interval=5.0,
         sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
         seed=None,
         ax_python=Path("python3"),
@@ -221,7 +236,19 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
                 command=["python3", "fake-bench.py"],
             )
 
-            with patch.object(matrix, "run_logged") as run_logged:
+            with (
+                patch.object(matrix, "run_logged") as run_logged,
+                patch.object(
+                    matrix,
+                    "peer_boundary_conditions",
+                    return_value=publication_conditions(),
+                ),
+                patch.object(
+                    matrix.bench_support,
+                    "collect_performance_condition_metadata",
+                    return_value=publication_conditions(),
+                ),
+            ):
                 matrix.execute_lanes(args, [lane])
 
         run_logged.assert_called_once()
@@ -246,6 +273,16 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
                 "warmup_repetitions": 2,
                 "cooldown_s": 30.0,
                 "sampling": args.sampling,
+                "publication_load_gate": {
+                    "max_load_average": 2.0,
+                    "max_top_process_cpu_percent": 50.0,
+                    "load_wait_timeout_seconds": 900.0,
+                    "load_poll_interval_seconds": 5.0,
+                },
+                "benchmark_window": {
+                    "performance_conditions_start": publication_conditions(),
+                    "performance_conditions_end": publication_conditions(),
+                },
                 "build": {
                     "git_commit": "a" * 40,
                     "git_tracked_dirty": False,
@@ -276,6 +313,13 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
                 args, lane, artifact
             )
             self.assertEqual(reasons, [])
+
+            artifact["publication_load_gate"]["max_load_average"] = 3.0
+            reasons = matrix.peer_artifact_publication_reasons(
+                args, lane, artifact
+            )
+            self.assertIn("missing_or_relaxed_load_gate", reasons)
+            artifact["publication_load_gate"]["max_load_average"] = 2.0
 
             artifact["results"][0]["runs"][0]["generated_tokens"] = 999
             reasons = matrix.peer_artifact_publication_reasons(

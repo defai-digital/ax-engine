@@ -20,8 +20,10 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from scripts import bench_mlx_inference_stack as bench_support
     from scripts import bench_mtp_6bit_ax_refresh as exact_mtp_gate
 except ModuleNotFoundError:
+    import bench_mlx_inference_stack as bench_support
     import bench_mtp_6bit_ax_refresh as exact_mtp_gate
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +48,10 @@ DEFAULT_PEER_CACHES = tuple(
 )
 
 DEFAULT_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
+DEFAULT_MAX_LOAD_AVERAGE = 2.0
+DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT = 50.0
+DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS = 900.0
+DEFAULT_LOAD_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_SUITES = ("flappy", "long_code", "python_modules_long")
 ENGINES = ("ax_engine", "mtplx", "lightning_mlx", "rapid_mlx", "omlx")
 MODELS = ("27b", "35b-a3b")
@@ -987,6 +993,14 @@ def write_plan(args: argparse.Namespace, lanes: list[Lane]) -> None:
             "warmup_repetitions": args.warmup_repetitions,
             "cooldown_s": args.cooldown,
             "inter_case_cooldown_s": args.inter_case_cooldown,
+            "publication_load_gate": {
+                "max_load_average": args.max_load_average,
+                "max_top_process_cpu_percent": (
+                    args.max_top_process_cpu_percent
+                ),
+                "load_wait_timeout_seconds": args.load_wait_timeout,
+                "load_poll_interval_seconds": args.load_poll_interval,
+            },
             "prefill_step_size": args.prefill_step_size,
             "mtplx_profile": args.mtplx_profile,
             "lightning_mtp_optimistic": args.lightning_mtp_optimistic,
@@ -1111,6 +1125,62 @@ def write_error_artifact(
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def peer_boundary_conditions(
+    args: argparse.Namespace,
+    *,
+    context: str,
+) -> dict[str, Any]:
+    conditions = bench_support.wait_for_performance_load(
+        max_one_minute=args.max_load_average,
+        max_top_process_cpu_percent_value=(
+            args.max_top_process_cpu_percent
+        ),
+        timeout_seconds=args.load_wait_timeout,
+        poll_interval_seconds=args.load_poll_interval,
+        context=context,
+    )
+    fake_artifact = {
+        "benchmark_window": {
+            "performance_conditions_start": conditions,
+            "performance_conditions_end": conditions,
+        }
+    }
+    reasons = exact_mtp_gate.publication_condition_reasons(
+        context, fake_artifact
+    )
+    if reasons:
+        raise RuntimeError(
+            f"ineligible performance conditions before {context}: "
+            + ", ".join(reasons)
+        )
+    return conditions
+
+
+def attach_peer_benchmark_window(
+    args: argparse.Namespace,
+    lane: Lane,
+    *,
+    conditions_start: dict[str, Any],
+    conditions_end: dict[str, Any],
+) -> None:
+    artifact = json.loads(lane.output_path.read_text())
+    artifact["benchmark_window"] = {
+        "performance_conditions_start": conditions_start,
+        "performance_conditions_end": conditions_end,
+    }
+    artifact["publication_load_gate"] = {
+        "max_load_average": args.max_load_average,
+        "max_top_process_cpu_percent": (
+            args.max_top_process_cpu_percent
+        ),
+        "load_wait_timeout_seconds": args.load_wait_timeout,
+        "load_poll_interval_seconds": args.load_poll_interval,
+    }
+    lane.output_path.write_text(
+        json.dumps(artifact, indent=2, sort_keys=True) + "\n"
+    )
+
+
 def execute_lanes(args: argparse.Namespace, lanes: list[Lane]) -> None:
     for lane in lanes:
         if lane.status != "supported" or lane.command is None:
@@ -1128,6 +1198,12 @@ def execute_lanes(args: argparse.Namespace, lanes: list[Lane]) -> None:
         print(f"[run] {lane.target.key} {lane.suite} {lane.engine}", flush=True)
         log_path = lane.output_path.with_suffix(".log")
         try:
+            conditions_start = None
+            if lane.engine != "ax_engine":
+                context = f"{lane.target.key}/{lane.suite}/{lane.engine}"
+                conditions_start = peer_boundary_conditions(
+                    args, context=context
+                )
             if lane.engine == "ax_engine":
                 env = ax_env(args)
             elif lane.engine == "mtplx":
@@ -1135,6 +1211,15 @@ def execute_lanes(args: argparse.Namespace, lanes: list[Lane]) -> None:
             else:
                 env = None
             run_logged(lane.command, log_path, env=env)
+            if conditions_start is not None:
+                attach_peer_benchmark_window(
+                    args,
+                    lane,
+                    conditions_start=conditions_start,
+                    conditions_end=(
+                        bench_support.collect_performance_condition_metadata()
+                    ),
+                )
         except Exception as exc:
             write_error_artifact(
                 lane.output_path,
@@ -1173,6 +1258,34 @@ def peer_artifact_publication_reasons(
         sampling.get(key) != expected for key, expected in args.sampling.items()
     ):
         reasons.append("sampling_mismatch")
+    load_gate = artifact.get("publication_load_gate")
+    max_load = (
+        load_gate.get("max_load_average")
+        if isinstance(load_gate, dict)
+        else None
+    )
+    max_top_cpu = (
+        load_gate.get("max_top_process_cpu_percent")
+        if isinstance(load_gate, dict)
+        else None
+    )
+    if (
+        not isinstance(max_load, (int, float))
+        or isinstance(max_load, bool)
+        or not math.isfinite(float(max_load))
+        or float(max_load) > DEFAULT_MAX_LOAD_AVERAGE
+    ):
+        reasons.append("missing_or_relaxed_load_gate")
+    if (
+        not isinstance(max_top_cpu, (int, float))
+        or isinstance(max_top_cpu, bool)
+        or not math.isfinite(float(max_top_cpu))
+        or float(max_top_cpu) > DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT
+    ):
+        reasons.append("missing_or_relaxed_top_process_cpu_gate")
+    reasons.extend(
+        exact_mtp_gate.publication_condition_reasons("peer", artifact)
+    )
 
     results = artifact.get("results")
     if not isinstance(results, list):
@@ -1490,6 +1603,14 @@ def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]
             "warmup_repetitions": args.warmup_repetitions,
             "cooldown_s": args.cooldown,
             "inter_case_cooldown_s": args.inter_case_cooldown,
+            "publication_load_gate": {
+                "max_load_average": args.max_load_average,
+                "max_top_process_cpu_percent": (
+                    args.max_top_process_cpu_percent
+                ),
+                "load_wait_timeout_seconds": args.load_wait_timeout,
+                "load_poll_interval_seconds": args.load_poll_interval,
+            },
             "prefill_step_size": args.prefill_step_size,
             "mtplx_profile": args.mtplx_profile,
             "lightning_mtp_optimistic": args.lightning_mtp_optimistic,
@@ -1683,6 +1804,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-repetitions", type=int, default=2)
     parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--inter-case-cooldown", type=float, default=10.0)
+    parser.add_argument(
+        "--max-load-average",
+        type=float,
+        default=DEFAULT_MAX_LOAD_AVERAGE,
+    )
+    parser.add_argument(
+        "--max-top-process-cpu-percent",
+        type=float,
+        default=DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+    )
+    parser.add_argument(
+        "--load-wait-timeout",
+        type=float,
+        default=DEFAULT_LOAD_WAIT_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--load-poll-interval",
+        type=float,
+        default=DEFAULT_LOAD_POLL_INTERVAL_SECONDS,
+    )
     parser.add_argument("--prefill-step-size", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=DEFAULT_SAMPLING["temperature"])
     parser.add_argument("--top-p", type=float, default=DEFAULT_SAMPLING["top_p"])
@@ -1745,6 +1886,17 @@ def parse_args() -> argparse.Namespace:
         parser.error("--prompt-limit must be positive")
     if args.prefill_step_size is not None and args.prefill_step_size <= 0:
         parser.error("--prefill-step-size must be positive")
+    for field in (
+        "max_load_average",
+        "max_top_process_cpu_percent",
+        "load_wait_timeout",
+        "load_poll_interval",
+    ):
+        value = getattr(args, field)
+        if not math.isfinite(value) or value <= 0.0:
+            parser.error(
+                f"--{field.replace('_', '-')} must be finite and positive"
+            )
     args.sampling = {
         "temperature": args.temperature,
         "top_p": args.top_p,
