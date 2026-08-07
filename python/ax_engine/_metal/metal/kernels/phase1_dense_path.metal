@@ -245,6 +245,9 @@ kernel void paged_decode_attention(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         score = smem[0];
+        // Every simdgroup must consume this iteration's broadcast score
+        // before lane 0 overwrites smem in the next loop iteration.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         // Online softmax update for this thread's output dimension (lid)
         float m_new    = max(m, score);
@@ -636,7 +639,10 @@ kernel void row_vector_scale_f32(
 
 // Projection kernels use one simd-group (32 threads) per output row.
 // Each thread handles every 32nd input element; simd_sum reduces to the dot
-// product. This achieves near-memory-bandwidth-limited throughput for GEMV
+// product. The reduction must run in uniform control flow, before the lane-0
+// branch: after a ragged accumulation loop (input_width not a multiple of
+// 32), a simd_sum inside `if (lane == 0)` sums only the active lane and
+// silently drops the other 31 partials. This achieves near-memory-bandwidth-limited throughput for GEMV
 // (single-token decode) by fully utilising the GPU's SIMD parallelism.
 // Dispatch: vocab_rows * 32 total threads, threadgroup size 32.
 
@@ -656,8 +662,9 @@ kernel void decode_logits_projection_f32(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += projection[row_base + col] * hidden[col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[out_row] = simd_sum(partial);
+        logits[out_row] = total;
     }
 }
 
@@ -677,8 +684,9 @@ kernel void decode_logits_projection_f16(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += float(projection[row_base + col]) * hidden[col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[out_row] = simd_sum(partial);
+        logits[out_row] = total;
     }
 }
 
@@ -698,8 +706,9 @@ kernel void decode_logits_projection_bf16(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += float(projection[row_base + col]) * hidden[col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[out_row] = simd_sum(partial);
+        logits[out_row] = total;
     }
 }
 
@@ -726,8 +735,9 @@ kernel void decode_logits_projection_batched_f32(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += projection[row_base + col] * hidden[hidden_base + col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[flat_index] = simd_sum(partial);
+        logits[flat_index] = total;
     }
 }
 
@@ -751,8 +761,9 @@ kernel void decode_logits_projection_batched_f16(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += float(projection[row_base + col]) * hidden[hidden_base + col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[flat_index] = simd_sum(partial);
+        logits[flat_index] = total;
     }
 }
 
@@ -776,8 +787,9 @@ kernel void decode_logits_projection_batched_bf16(
     for (uint col = lane; col < params.input_width; col += 32) {
         partial += float(projection[row_base + col]) * hidden[hidden_base + col];
     }
+    float total = simd_sum(partial);
     if (lane == 0) {
-        logits[flat_index] = simd_sum(partial);
+        logits[flat_index] = total;
     }
 }
 
@@ -1232,6 +1244,9 @@ kernel void sample_argmax_logprob_f32(
     threadgroup_barrier(mem_flags::mem_threadgroup);
     best_score = smem_val[0];
     winner_idx = smem_idx[0];
+    // Pass 2 reuses smem_val: every thread must read the broadcast winner
+    // before lane 0 of simdgroup 0 overwrites slot 0.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Pass 2: parallel logsumexp
     float partial_exp = 0.0f;
@@ -1302,6 +1317,9 @@ kernel void sample_argmax_logprob_batched_f32(
     threadgroup_barrier(mem_flags::mem_threadgroup);
     best_score = smem_val[0];
     winner     = smem_idx[0];
+    // Pass 2 reuses smem_val: every thread must read the broadcast winner
+    // before lane 0 of simdgroup 0 overwrites slot 0.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Pass 2: parallel logsumexp
     float partial_exp = 0.0f;
