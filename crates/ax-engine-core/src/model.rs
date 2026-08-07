@@ -3492,9 +3492,9 @@ fn resolved_moe_dims(manifest: &NativeModelManifest) -> Result<NativeMoeDims, Na
 /// Per-layer attention projection widths as (q_rows, kv_rows).
 ///
 /// Q rows widen with the layer's configured head dim. Full-attention layers
-/// use `global_kv_head_count` when it is explicit. Older manifests preserve
-/// the legacy constant-total-KV-width rule, where `kv_head_count` × the base
-/// head width fixes the total even when the full-attention head dim is wider.
+/// use `global_kv_head_count` when it is explicit. Older manifests can omit
+/// that field, so prefer the projection's recorded tensor geometry before
+/// falling back to the legacy constant-total-KV-width rule.
 fn configured_attention_projection_dims(
     manifest: &NativeModelManifest,
     layer_index: u32,
@@ -3509,6 +3509,7 @@ fn configured_attention_projection_dims(
         manifest
             .global_kv_head_count
             .map(|count| u64::from(count) * head_dim)
+            .or_else(|| inferred_attention_kv_rows(manifest, layer_index, q_rows))
             .unwrap_or_else(|| {
                 u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim)
             })
@@ -3516,6 +3517,42 @@ fn configured_attention_projection_dims(
         u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim)
     };
     (q_rows, kv_rows)
+}
+
+/// Resolve the K/V projection width carried by a layer's tensor metadata.
+///
+/// This is the compatibility path for manifests generated before
+/// `global_kv_head_count` existed. Gemma 4 full-attention layers do not all
+/// preserve the base layer's total KV width (for example E2B uses one
+/// 256-wide sliding KV head and one 512-wide global KV head), so the tensor
+/// rows are the only authoritative fallback.
+fn inferred_attention_kv_rows(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+    q_rows: u64,
+) -> Option<u64> {
+    if let Some(attention_k) =
+        manifest_tensor(manifest, NativeTensorRole::AttentionK, Some(layer_index))
+    {
+        return matrix_shape(attention_k).map(|(rows, _)| rows);
+    }
+
+    let packed = manifest_tensor(
+        manifest,
+        NativeTensorRole::AttentionQkvPacked,
+        Some(layer_index),
+    )?;
+    let (packed_rows, _) = matrix_shape(packed)?;
+    let packed_q_rows = if manifest.attn_output_gate {
+        q_rows.checked_mul(2)?
+    } else {
+        q_rows
+    };
+    let remaining = packed_rows.checked_sub(packed_q_rows)?;
+    remaining
+        .is_multiple_of(2)
+        .then_some(remaining / 2)
+        .filter(|rows| *rows > 0)
 }
 
 fn configured_attention_head_dim(manifest: &NativeModelManifest, layer_index: u32) -> u64 {
@@ -5702,6 +5739,44 @@ mod tests {
             result.is_ok(),
             "BF16 Q must not force packed K/V/O to use raw column shapes"
         );
+    }
+
+    #[test]
+    fn native_model_artifacts_infer_legacy_gemma4_global_kv_width_from_tensors() {
+        let mut manifest = mixed_split_projection_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.kv_head_count = 8;
+        manifest.global_head_dim = Some(256);
+        manifest.global_kv_head_count = None;
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ];
+
+        for projection in &mut manifest.tensors {
+            match (projection.layer_index, projection.role) {
+                (Some(0), NativeTensorRole::AttentionQkvPacked) => {
+                    projection.shape = vec![4096, 2048];
+                }
+                (Some(1), NativeTensorRole::AttentionQ) => {
+                    projection.shape = vec![4096, 2048];
+                }
+                (Some(1), NativeTensorRole::AttentionK | NativeTensorRole::AttentionV) => {
+                    projection.shape = vec![512, 256];
+                }
+                (Some(1), NativeTensorRole::AttentionO) => {
+                    projection.shape = vec![2048, 512];
+                }
+                _ => {}
+            }
+        }
+
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+        NativeModelArtifacts::from_dir(&dir).expect(
+            "legacy Gemma4 manifests must use full-attention tensor rows when the global KV field is absent",
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

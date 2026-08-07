@@ -682,7 +682,6 @@ fn converts_gemma4_default_layer_type_pattern_for_k_eq_v() {
                 "hidden_size": 3072,
                 "num_attention_heads": 32,
                 "num_key_value_heads": 8,
-                "num_global_key_value_heads": 4,
                 "head_dim": 128,
                 "global_head_dim": 256,
                 "attention_k_eq_v": true,
@@ -720,6 +719,11 @@ fn converts_gemma4_default_layer_type_pattern_for_k_eq_v() {
 
     let manifest = convert_hf_model_dir(&dir).expect("gemma4 conversion should succeed");
 
+    assert_eq!(
+        manifest.global_kv_head_count,
+        Some(4),
+        "missing config metadata should be inferred from the full-attention K projection"
+    );
     assert_eq!(
         manifest.layer_types,
         vec![
@@ -1286,6 +1290,7 @@ fn converts_gemma4_k_eq_v_full_attention_layers() {
 
     let manifest = convert_hf_model_dir(&dir).expect("gemma4 conversion should succeed");
 
+    assert_eq!(manifest.global_kv_head_count, Some(4));
     assert_eq!(manifest.attention_value_from_key_layers, vec![0]);
     assert!(
         !manifest

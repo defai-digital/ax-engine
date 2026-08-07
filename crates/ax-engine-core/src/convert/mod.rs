@@ -17,7 +17,7 @@
 //! sensitive layers. Convert applies those overrides onto U32 weight tensors;
 //! packing skips mixed-precision fusions when sibling projections disagree.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -259,8 +259,9 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
-    let global_kv_head_count =
-        arch_u64(&config, &model_type, "num_global_key_value_heads").and_then(u64_to_u32);
+    let global_kv_head_count = arch_u64(&config, &model_type, "num_global_key_value_heads")
+        .and_then(u64_to_u32)
+        .or_else(|| infer_global_kv_head_count(&mapped_tensors, &layer_types, global_head_dim));
     // Unlimited-OCR's value is interpreted by the MLX runtime as protected-prefix
     // R-SWA: the complete image/text prefill remains resident and only generated
     // tokens rotate through this many decode slots. Other uniform-SWA families
@@ -388,6 +389,42 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     validate_converted_model_contract(&config, &model_type, &manifest)?;
 
     Ok(manifest)
+}
+
+/// Infer a uniform full-attention KV head count from split K projections.
+///
+/// Early Gemma 4 configs (notably E2B/E4B) omit
+/// `num_global_key_value_heads`, and the global layers do not necessarily
+/// preserve the sliding layers' total KV width. Safetensors row counts are
+/// authoritative and remain logical output dimensions even for MLX affine
+/// weights, so record the inferred count in newly generated manifests.
+fn infer_global_kv_head_count(
+    tensors: &[NativeTensorSpec],
+    layer_types: &[String],
+    global_head_dim: Option<u32>,
+) -> Option<u32> {
+    let head_dim = u64::from(global_head_dim?);
+    if head_dim == 0 {
+        return None;
+    }
+
+    let counts: BTreeSet<u32> = tensors
+        .iter()
+        .filter(|tensor| tensor.role == NativeTensorRole::AttentionK)
+        .filter_map(|tensor| {
+            let layer_index = tensor.layer_index? as usize;
+            (layer_types.get(layer_index).map(String::as_str) == Some("full_attention"))
+                .then_some(())?;
+            let rows = *tensor.shape.first()?;
+            (tensor.shape.len() == 2 && rows > 0 && rows.is_multiple_of(head_dim))
+                .then(|| u32::try_from(rows / head_dim).ok())
+                .flatten()
+        })
+        .collect();
+
+    (counts.len() == 1)
+        .then(|| counts.first().copied())
+        .flatten()
 }
 
 /// Read `<think>` / `</think>` special-token ids from the model directory's

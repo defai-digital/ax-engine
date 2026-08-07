@@ -800,6 +800,10 @@ struct ManifestKvGeometry {
     /// omit this and retain the constant-total-KV-width rule.
     #[serde(default)]
     global_kv_head_count: Option<u32>,
+    /// Minimal tensor projection used to recover per-layer KV geometry from
+    /// manifests generated before `global_kv_head_count` was introduced.
+    #[serde(default)]
+    tensors: Vec<ManifestKvTensorGeometry>,
     /// Per-layer annotations ("sliding_attention" / "full_attention");
     /// empty for homogeneous models.
     #[serde(default)]
@@ -815,6 +819,16 @@ struct ManifestKvGeometry {
     diffusion: NativeDiffusionConfig,
 }
 
+#[derive(Debug, Deserialize)]
+struct ManifestKvTensorGeometry {
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    layer_index: Option<u32>,
+    #[serde(default)]
+    shape: Vec<u64>,
+}
+
 fn manifest_kv_geometry(dir: &std::path::Path) -> Option<ManifestKvGeometry> {
     let bytes = std::fs::read(dir.join("model-manifest.json")).ok()?;
     serde_json::from_slice(&bytes).ok()
@@ -824,6 +838,33 @@ fn manifest_kv_geometry(dir: &std::path::Path) -> Option<ManifestKvGeometry> {
 /// block pool is the admission bound the scheduler enforces per model.
 fn kv_pool_tokens(kv_config: &KvManagerConfig) -> u64 {
     u64::from(kv_config.total_blocks).saturating_mul(u64::from(kv_config.block_size_tokens))
+}
+
+fn full_kv_head_count_for_layer(
+    geometry: &ManifestKvGeometry,
+    layer_idx: u32,
+    full_head_dim: u64,
+    legacy_full_kv_heads: Option<u64>,
+) -> Option<u64> {
+    match geometry.global_kv_head_count {
+        Some(count) if count > 0 => return Some(u64::from(count)),
+        Some(_) => return None,
+        None => {}
+    }
+
+    let inferred = geometry
+        .tensors
+        .iter()
+        .find(|tensor| tensor.role == "attention_k" && tensor.layer_index == Some(layer_idx))
+        .and_then(|tensor| {
+            let rows = *tensor.shape.first()?;
+            (tensor.shape.len() == 2
+                && rows > 0
+                && full_head_dim > 0
+                && rows.is_multiple_of(full_head_dim))
+            .then_some(rows / full_head_dim)
+        });
+    inferred.or(legacy_full_kv_heads)
 }
 
 /// Worst-case KV-cache bytes for one model at its configured pool, from the
@@ -858,21 +899,10 @@ fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) -> O
     let full_head_dim = geometry
         .global_head_dim
         .unwrap_or(geometry.attention_head_dim);
-    let full_kv_heads = match geometry.global_kv_head_count {
-        Some(count) if count > 0 => u64::from(count),
-        Some(_) => return None,
-        None => {
-            let base_kv_width = kv_heads.saturating_mul(u64::from(geometry.attention_head_dim));
-            let full_head_dim = u64::from(full_head_dim);
-            if full_head_dim == 0 || !base_kv_width.is_multiple_of(full_head_dim) {
-                return None;
-            }
-            base_kv_width / full_head_dim
-        }
-    };
-    let full_bytes_per_token = full_kv_heads
-        .saturating_mul(u64::from(full_head_dim))
-        .saturating_mul(KV_CACHE_BYTES_PER_HEAD_ELEMENT);
+    let full_head_dim = u64::from(full_head_dim);
+    let base_kv_width = kv_heads.saturating_mul(u64::from(geometry.attention_head_dim));
+    let legacy_full_kv_heads = (full_head_dim > 0 && base_kv_width.is_multiple_of(full_head_dim))
+        .then_some(base_kv_width / full_head_dim);
 
     let mut total = 0u64;
     for layer_idx in 0..geometry.layer_count {
@@ -885,6 +915,15 @@ fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) -> O
             if u64::from(layer_idx) % interval != interval - 1 {
                 continue;
             }
+            let full_kv_heads = full_kv_head_count_for_layer(
+                geometry,
+                layer_idx,
+                full_head_dim,
+                legacy_full_kv_heads,
+            )?;
+            let full_bytes_per_token = full_kv_heads
+                .saturating_mul(full_head_dim)
+                .saturating_mul(KV_CACHE_BYTES_PER_HEAD_ELEMENT);
             total = total.saturating_add(pool_tokens.saturating_mul(full_bytes_per_token));
             continue;
         }
@@ -897,6 +936,15 @@ fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) -> O
             // full attention only in head dim.
             total = total.saturating_add(pool_tokens.saturating_mul(sliding_bytes_per_token));
         } else {
+            let full_kv_heads = full_kv_head_count_for_layer(
+                geometry,
+                layer_idx,
+                full_head_dim,
+                legacy_full_kv_heads,
+            )?;
+            let full_bytes_per_token = full_kv_heads
+                .saturating_mul(full_head_dim)
+                .saturating_mul(KV_CACHE_BYTES_PER_HEAD_ELEMENT);
             total = total.saturating_add(pool_tokens.saturating_mul(full_bytes_per_token));
         }
     }
@@ -2021,6 +2069,28 @@ mod tests {
         assert_eq!(
             estimated_kv_pool_bytes(&legacy, pool),
             Some(pool * (8 * 256) * KV_CACHE_BYTES_PER_HEAD_ELEMENT)
+        );
+    }
+
+    #[test]
+    fn kv_pool_bytes_infers_legacy_gemma4_global_heads_from_k_projection() {
+        let geometry = kv_geometry(serde_json::json!({
+            "layer_count": 2,
+            "attention_head_dim": 256,
+            "kv_head_count": 1,
+            "global_head_dim": 512,
+            "layer_types": ["sliding_attention", "full_attention"],
+            "tensors": [{
+                "role": "attention_k",
+                "layer_index": 1,
+                "shape": [512, 192]
+            }]
+        }));
+        let pool = 1000;
+        let expected_per_token = (256 + 512) * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
+        assert_eq!(
+            estimated_kv_pool_bytes(&geometry, pool),
+            Some(pool * expected_per_token)
         );
     }
 
