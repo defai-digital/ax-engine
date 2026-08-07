@@ -279,6 +279,15 @@ class ReadmePerformanceChartTests(unittest.TestCase):
     def test_mlx_lm_direct_snapshot_requires_clean_complete_reference_matrix(
         self,
     ) -> None:
+        self.assertNotIn(
+            "gemma-4-e2b-it-6bit",
+            {
+                slug
+                for slugs in charts.FAMILY_SLUGS.values()
+                for slug in slugs
+            },
+        )
+        self.assertIn("gemma-4-e2b-it-6bit", charts.AX_DIRECT_EXPECTED_SLUGS)
         source_path = (
             charts.REPO_ROOT
             / "benchmarks/results/inference/ax-direct/"

@@ -150,7 +150,19 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         self.assertEqual(row["mlx_local_dir"], ".internal/models/gemma-4-e4b-it-6bit")
         self.assertIn("AX manifest is present", row["prompt_source_note"])
 
-    def test_default_manifest_defines_twelve_readme_and_eleven_peer_rows(self) -> None:
+    def test_default_manifest_marks_both_unsupported_e_series_peers(self) -> None:
+        manifest = json.loads(sweep.DEFAULT_MANIFEST.read_text())
+        row = next(
+            row
+            for row in manifest["rows"]
+            if row.get("slug") == "gemma-4-e2b-it-6bit"
+        )
+
+        self.assertFalse(row["mlx_lm_peer_required"])
+        self.assertIn("140 extra tensors", row["prompt_source_note"])
+        self.assertIn("AX manifest is present", row["prompt_source_note"])
+
+    def test_default_manifest_defines_twelve_readme_and_ten_peer_rows(self) -> None:
         manifest = json.loads(sweep.DEFAULT_MANIFEST.read_text())
         rows = sweep.filter_manifest_rows(manifest["rows"], None)
         readme_rows = sweep.readme_manifest_rows(rows)
@@ -158,7 +170,7 @@ class BenchAxOnlySweepTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 14)
         self.assertEqual(len(readme_rows), 12)
-        self.assertEqual(len(peer_rows), 11)
+        self.assertEqual(len(peer_rows), 10)
         self.assertEqual(
             {
                 row["slug"]
@@ -173,7 +185,7 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                 for row in readme_rows
                 if row.get("mlx_lm_peer_required") is False
             },
-            {"gemma-4-e4b-it-6bit"},
+            {"gemma-4-e2b-it-6bit", "gemma-4-e4b-it-6bit"},
         )
 
     def test_select_sweep_rows_defaults_to_readme_scope(self) -> None:

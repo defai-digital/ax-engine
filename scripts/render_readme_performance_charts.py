@@ -89,7 +89,6 @@ def direct_versions_footnote(
 FAMILY_SLUGS: dict[str, list[str]] = {
     "gemma4": [
         "gemma-4-e2b-it-4bit",
-        "gemma-4-e2b-it-6bit",
         "gemma-4-e4b-it-4bit",
         "gemma-4-26b-a4b-it-4bit",
         "gemma-4-26b-a4b-it-6bit",
@@ -106,6 +105,7 @@ FAMILY_SLUGS: dict[str, list[str]] = {
 AX_DIRECT_EXPECTED_SLUGS = frozenset(
     {
         *FAMILY_SLUGS["gemma4"],
+        "gemma-4-e2b-it-6bit",
         "gemma-4-e4b-it-6bit",
         *FAMILY_SLUGS["qwen"],
     }
