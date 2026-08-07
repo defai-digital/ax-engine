@@ -165,7 +165,7 @@ class AxqEnduranceTests(unittest.TestCase):
             ["post-request native model KV memory report is unavailable"],
         )
 
-    def test_vm_stat_and_swap_parsers_calculate_wired_memory_inputs(self) -> None:
+    def test_vm_stat_swap_and_iogpu_parsers_calculate_memory_inputs(self) -> None:
         vm = runner.parse_vm_stat(
             """
             Mach Virtual Memory Statistics: (page size of 16384 bytes)
@@ -175,11 +175,18 @@ class AxqEnduranceTests(unittest.TestCase):
             """
         )
         swap = runner.parse_swap_usage("total = 1024.00M  used = 128.50M  free = 895.50M")
+        iogpu = runner.parse_iogpu_memory(
+            '"PerformanceStatistics" = {"Alloc system memory"=745930752,'
+            '"In use system memory"=391020544,'
+            '"In use system memory (driver)"=0}'
+        )
 
         self.assertEqual(vm["wired_pages"], 12_345)
         self.assertEqual(vm["compressor_pages"], 33)
         self.assertEqual(swap["total_bytes"], 1024 * 1024 * 1024)
         self.assertEqual(swap["used_bytes"], int(128.5 * 1024 * 1024))
+        self.assertEqual(iogpu["alloc_system_memory_bytes"], 745930752)
+        self.assertEqual(iogpu["in_use_system_memory_bytes"], 391020544)
 
     def test_linear_slope_and_memory_growth_are_computed(self) -> None:
         samples = [
@@ -187,23 +194,57 @@ class AxqEnduranceTests(unittest.TestCase):
                 "elapsed_seconds": float(hour * 3600),
                 "process": {"rss_bytes": (1_000 + hour * 300) * runner.MEBIBYTE},
                 "host": {},
-                "metrics": {"values": {}},
+                "metrics": {
+                    "values": {
+                        "ax_engine_model_memory_kv_logical_bytes": (20 + hour * 10)
+                        * runner.MEBIBYTE,
+                    }
+                },
             }
             for hour in range(4)
         ]
         analysis = runner.memory_analysis(
             samples=samples,
-            resource_baseline={"server_rss_bytes": 1_000 * runner.MEBIBYTE},
+            resource_baseline={
+                "server_rss_bytes": 1_000 * runner.MEBIBYTE,
+                "model_kv_logical_bytes": 20 * runner.MEBIBYTE,
+            },
             window_start_elapsed_s=0.0,
         )
         rss = analysis["series"]["server_rss_bytes"]
 
         self.assertAlmostEqual(rss["growth_mib"], 900.0)
         self.assertAlmostEqual(rss["lifetime_slope_mib_per_hour"], 300.0)
+        self.assertAlmostEqual(
+            analysis["series"]["model_kv_logical_bytes"]["growth_mib"],
+            30.0,
+        )
         alerts = runner.evaluate_memory_alerts(
             analysis=analysis, max_growth_mib=500.0, max_slope_mib_per_hour=200.0
         )
         self.assertEqual(len(alerts), 1)
+
+    def test_baseline_stability_rejects_a_still_climbing_reference(self) -> None:
+        samples = [
+            {
+                "elapsed_seconds": float(hour * 3600),
+                "process": {"rss_bytes": (1_000 + hour * 400) * runner.MEBIBYTE},
+                "host": {},
+                "metrics": {"values": {}},
+            }
+            for hour in range(4)
+        ]
+
+        alerts = runner.evaluate_baseline_stability(
+            samples=samples,
+            baseline_s=3 * 3600.0,
+            baseline_growth_mib=1_024.0,
+            max_slope_mib_per_hour=256.0,
+            max_swap_growth_mib=512.0,
+        )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("baseline did not settle", alerts[0])
 
     def test_swap_growth_has_a_tighter_host_safety_guardrail(self) -> None:
         analysis = {
@@ -290,6 +331,25 @@ class AxqEnduranceTests(unittest.TestCase):
 
         self.assertEqual(len(alerts), 1)
         self.assertIn("effective prefill", alerts[0])
+
+    def test_baseline_coverage_requires_all_client_measurements(self) -> None:
+        records = [
+            request_record(
+                shape=shape,
+                ttft_ms=100.0,
+                decode_tok_s=100.0,
+                prefill_tok_s=(None if shape == "long_unique" else 1_000.0),
+            )
+            for shape in runner.WORKLOAD_SHAPES
+            for _ in range(8)
+        ]
+        baseline = runner.summarize_requests(records, elapsed_s=10.0)
+
+        concerns = runner.evaluate_baseline_coverage(baseline, min_samples=8)
+
+        self.assertEqual(len(concerns), 1)
+        self.assertIn("long_unique", concerns[0])
+        self.assertIn("effective prefill", concerns[0])
 
     def test_performance_regression_requires_enough_baseline_samples(self) -> None:
         baseline = runner.summarize_requests(
@@ -396,6 +456,21 @@ class AxqEnduranceTests(unittest.TestCase):
 
         self.assertEqual(verdict, "watch")
         self.assertTrue(any("interrupted" in concern for concern in concerns))
+
+    def test_unsettled_or_incomplete_baseline_never_passes(self) -> None:
+        state = runner.RunState(
+            started_wall="2026-08-06T00:00:00+00:00",
+            started_monotonic=1.0,
+            server_pid=42,
+            baseline={"by_shape": {}},
+            baseline_coverage_concerns=["baseline missing long-prompt TTFT evidence"],
+            baseline_stability_alerts=["baseline did not settle: server RSS rose"],
+        )
+
+        verdict, concerns = runner.assessment(state=state, terminal_status="completed")
+
+        self.assertEqual(verdict, "watch")
+        self.assertEqual(len(concerns), 2)
 
     def test_summary_reports_latency_and_failure_counts(self) -> None:
         summary = runner.summarize_window(

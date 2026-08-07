@@ -60,6 +60,7 @@ DEFAULT_MIN_PREFILL_P05_RATIO = 0.75
 DEFAULT_MIN_PERFORMANCE_SAMPLES = 8
 DEFAULT_MEMORY_GROWTH_MIB = 4_096.0
 DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR = 256.0
+DEFAULT_BASELINE_STABILITY_GROWTH_MIB = 1_024.0
 DEFAULT_MAX_SWAP_GROWTH_MIB = 512.0
 DEFAULT_MAX_QUIESCENT_KV_LOGICAL_MIB = 1_024.0
 
@@ -124,9 +125,17 @@ COUNTER_METRICS = (
 MEMORY_SERIES_PATHS = {
     "server_rss_bytes": ("process", "rss_bytes"),
     "host_wired_bytes": ("host", "wired_bytes"),
+    "host_compressor_bytes": ("host", "compressor_bytes"),
     "host_swap_used_bytes": ("host", "swap", "used_bytes"),
+    "iogpu_alloc_system_memory_bytes": ("host", "iogpu", "alloc_system_memory_bytes"),
+    "iogpu_in_use_system_memory_bytes": ("host", "iogpu", "in_use_system_memory_bytes"),
     "mlx_active_bytes": ("metrics", "values", "ax_engine_memory_mlx_active_bytes"),
     "mlx_cache_bytes": ("metrics", "values", "ax_engine_memory_mlx_cache_bytes"),
+    "model_kv_logical_bytes": (
+        "metrics",
+        "values",
+        "ax_engine_model_memory_kv_logical_bytes",
+    ),
     "model_kv_physical_bytes": (
         "metrics",
         "values",
@@ -237,6 +246,8 @@ class RunState:
     baseline_completed_elapsed_s: float | None = None
     baseline: dict[str, Any] | None = None
     resource_baseline: dict[str, float] = field(default_factory=dict)
+    baseline_coverage_concerns: list[str] = field(default_factory=list)
+    baseline_stability_alerts: list[str] = field(default_factory=list)
     counter_baseline: dict[str, float] = field(default_factory=dict)
     performance_alerts: int = 0
     memory_alerts: int = 0
@@ -675,6 +686,26 @@ def parse_swap_usage(text: str) -> dict[str, int]:
     return result
 
 
+def parse_iogpu_memory(text: str) -> dict[str, int]:
+    """Extract Apple GPU driver memory counters when the host exposes them.
+
+    These are driver-wide unified-memory observations, not per-process wired
+    allocations.  They complement `vm_stat` and AX's own MLX gauges when
+    diagnosing a Metal-side growth pattern on Apple Silicon.
+    """
+    fields = {
+        "Alloc system memory": "alloc_system_memory_bytes",
+        "In use system memory": "in_use_system_memory_bytes",
+        "In use system memory (driver)": "in_use_driver_system_memory_bytes",
+    }
+    result: dict[str, int] = {}
+    for raw_name, key in fields.items():
+        match = re.search(rf'"{re.escape(raw_name)}"\s*=\s*([0-9]+)', text)
+        if match:
+            result[key] = int(match.group(1))
+    return result
+
+
 def parse_int_output(text: str) -> int | None:
     """Parse a clean non-negative command value, otherwise return unavailable."""
     try:
@@ -703,6 +734,11 @@ def collect_light_host_snapshot(output_dir: Path) -> dict[str, Any]:
     )
     if wired_limit_mib is not None:
         host["iogpu_wired_limit_bytes"] = wired_limit_mib * MEBIBYTE
+    iogpu = parse_iogpu_memory(
+        command_output("ioreg", "-l", "-w0", "-r", "-c", "IOGPU", timeout_s=10.0)
+    )
+    if iogpu:
+        host["iogpu"] = iogpu
     try:
         disk = shutil.disk_usage(output_dir)
         host["disk_free_bytes"] = disk.free
@@ -1112,6 +1148,64 @@ def build_resource_baseline(samples: list[dict[str, Any]], baseline_s: float) ->
     return baseline
 
 
+def evaluate_baseline_stability(
+    *,
+    samples: list[dict[str, Any]],
+    baseline_s: float,
+    baseline_growth_mib: float,
+    max_slope_mib_per_hour: float,
+    max_swap_growth_mib: float,
+) -> list[str]:
+    """Flag a baseline that is still climbing instead of treating it as a reference.
+
+    The first and last quartiles are summarized independently so a brief allocator
+    step does not become a false drift signal.  This is deliberately a watch
+    condition: it says the run needs investigation, not that a warm cache is a leak.
+    """
+    baseline_samples = [
+        sample
+        for sample in samples
+        if isinstance(sample.get("elapsed_seconds"), (int, float))
+        and float(sample["elapsed_seconds"]) <= baseline_s
+    ]
+    if len(baseline_samples) < 3:
+        return ["baseline has fewer than three resource samples; resource trend is inconclusive"]
+
+    messages: list[str] = []
+    for name, path in MEMORY_SERIES_PATHS.items():
+        points = [
+            (float(sample["elapsed_seconds"]), value)
+            for sample in baseline_samples
+            for value in [get_nested_number(sample, path)]
+            if value is not None
+        ]
+        if len(points) < 3:
+            continue
+        endpoint_count = max(1, len(points) // 4)
+        initial = percentile([value for _elapsed, value in points[:endpoint_count]], 0.50)
+        current = percentile([value for _elapsed, value in points[-endpoint_count:]], 0.50)
+        slope = _bytes_slope_to_mib(linear_slope_per_hour(points))
+        if initial is None or current is None:
+            continue
+        growth_mib = (current - initial) / MEBIBYTE
+        if name == "host_swap_used_bytes":
+            if growth_mib >= max_swap_growth_mib:
+                messages.append(
+                    "baseline did not settle: host swap used rose "
+                    f"{growth_mib:.1f} MiB (guardrail {max_swap_growth_mib:.1f} MiB)"
+                )
+        elif (
+            growth_mib >= baseline_growth_mib
+            and isinstance(slope, (int, float))
+            and slope >= max_slope_mib_per_hour
+        ):
+            messages.append(
+                f"baseline did not settle: {name} rose {growth_mib:.1f} MiB with "
+                f"{slope:.1f} MiB/h slope"
+            )
+    return messages
+
+
 def counter_deltas(values: dict[str, Any], baseline: dict[str, float]) -> dict[str, float]:
     """Calculate non-negative deltas for server counters sampled after warmup."""
     output: dict[str, float] = {}
@@ -1191,6 +1285,45 @@ def get_distribution_value(summary: dict[str, Any], metric: str, statistic: str)
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         return float(value)
     return None
+
+
+def evaluate_baseline_coverage(baseline: dict[str, Any] | None, min_samples: int) -> list[str]:
+    """Require enough same-shape client evidence before calling a run clean.
+
+    A successful HTTP stream without a measured first token or native prompt length
+    cannot substantiate TTFT or effective-prefill stability.  Keep that gap
+    explicit rather than silently skipping the corresponding regression check.
+    """
+    if baseline is None:
+        return ["performance/resource baseline was not finalized"]
+    by_shape = baseline.get("by_shape")
+    if not isinstance(by_shape, dict):
+        return ["baseline has no per-shape request summaries"]
+
+    messages: list[str] = []
+    required_metrics = (
+        ("ttft_ms", "TTFT"),
+        ("client_decode_tok_s", "decode token/s"),
+        ("effective_prefill_tok_s", "effective prefill token/s"),
+    )
+    for shape in WORKLOAD_SHAPES:
+        summary = by_shape.get(shape)
+        if not isinstance(summary, dict):
+            messages.append(f"baseline has no {shape} requests")
+            continue
+        successful = int(summary.get("successful_requests", 0))
+        if successful < min_samples:
+            messages.append(
+                f"baseline {shape} has {successful} successful request(s); need {min_samples}"
+            )
+        for metric, label in required_metrics:
+            available = get_distribution_value(summary, metric, "count")
+            count = int(available) if available is not None else 0
+            if count < min_samples:
+                messages.append(
+                    f"baseline {shape} has {count} {label} sample(s); need {min_samples}"
+                )
+    return messages
 
 
 def evaluate_memory_alerts(
@@ -1368,6 +1501,8 @@ def assessment(
         concerns.append("run was interrupted before the target duration")
     if baseline_required and state.baseline is None:
         concerns.append("performance/memory baseline not yet complete")
+    concerns.extend(state.baseline_coverage_concerns)
+    concerns.extend(state.baseline_stability_alerts)
     if concerns:
         return "watch", concerns
     return "pass", concerns
@@ -1424,6 +1559,8 @@ def run_summary(
             "completed_at": state.baseline_completed_at,
             "performance": state.baseline,
             "resource_medians_bytes": state.resource_baseline,
+            "coverage_concerns": state.baseline_coverage_concerns,
+            "stability_alerts": state.baseline_stability_alerts,
         },
         "latest_window": latest_window,
         "memory": memory,
@@ -1462,6 +1599,11 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
         if isinstance(overall, dict)
         else None
     )
+    baseline = summary["baseline"]
+    baseline_concerns = [
+        *baseline.get("coverage_concerns", []),
+        *baseline.get("stability_alerts", []),
+    ]
     lines = [
         f"# AXQ endurance checkpoint: {summary['status']}",
         "",
@@ -1476,7 +1618,8 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
         f"- Window p95 TTFT: `{format_metric(ttft, 'ms')}`; "
         f"p05 decode: `{format_metric(decode, 'tok/s')}`; "
         f"p05 effective prefill: `{format_metric(prefill, 'tok/s')}`",
-        f"- Baseline: `{'complete' if summary['baseline']['performance'] else 'pending'}`",
+        f"- Baseline: `{'complete' if baseline['performance'] else 'pending'}`; "
+        f"quality: `{'ready' if baseline['performance'] and not baseline_concerns else 'watch'}`",
         "",
         "## Assessment",
         "",
@@ -1620,12 +1763,27 @@ def maybe_finalize_baseline(
     resource_samples: list[dict[str, Any]],
     elapsed_s: float,
     baseline_s: float,
+    min_performance_samples: int,
+    baseline_stability_growth_mib: float,
+    memory_slope_mib_per_hour: float,
+    max_swap_growth_mib: float,
 ) -> bool:
     """Finalize stable references after the configured warm baseline window."""
     if state.baseline is not None or elapsed_s < baseline_s:
         return False
     state.baseline = summarize_requests(baseline_records, elapsed_s=baseline_s)
     state.resource_baseline = build_resource_baseline(resource_samples, baseline_s)
+    state.baseline_coverage_concerns = evaluate_baseline_coverage(
+        state.baseline,
+        min_samples=min_performance_samples,
+    )
+    state.baseline_stability_alerts = evaluate_baseline_stability(
+        samples=resource_samples,
+        baseline_s=baseline_s,
+        baseline_growth_mib=baseline_stability_growth_mib,
+        max_slope_mib_per_hour=memory_slope_mib_per_hour,
+        max_swap_growth_mib=max_swap_growth_mib,
+    )
     state.baseline_completed_at = utc_now()
     state.baseline_completed_elapsed_s = elapsed_s
     return True
@@ -1756,9 +1914,11 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 "min_performance_samples": args.min_performance_samples,
                 "memory_growth_mib": args.memory_growth_mib,
                 "memory_slope_mib_per_hour": args.memory_slope_mib_per_hour,
+                "baseline_stability_growth_mib": args.baseline_stability_growth_mib,
                 "max_swap_growth_mib": args.max_swap_growth_mib,
                 "max_quiescent_kv_logical_mib": args.max_quiescent_kv_logical_mib,
             },
+            "pre_server_host": collect_checkpoint_host_snapshot(output_dir),
             "runtime": runtime_metadata(args.server),
         }
         write_json_atomic(output_dir / "manifest.json", manifest)
@@ -1940,7 +2100,16 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 resource_samples=resource_samples,
                 elapsed_s=now - started_monotonic,
                 baseline_s=baseline_s,
+                min_performance_samples=args.min_performance_samples,
+                baseline_stability_growth_mib=args.baseline_stability_growth_mib,
+                memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                max_swap_growth_mib=args.max_swap_growth_mib,
             ):
+                for message in [
+                    *state.baseline_coverage_concerns,
+                    *state.baseline_stability_alerts,
+                ]:
+                    add_alert(alerts, message)
                 append_jsonl(
                     events_path,
                     {
@@ -2034,13 +2203,22 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 if not latest_metrics.get("ok"):
                     state.metric_scrape_failures += 1
                 resource_samples = sampler.samples() if sampler is not None else []
-                maybe_finalize_baseline(
+                if maybe_finalize_baseline(
                     state=state,
                     baseline_records=baseline_records,
                     resource_samples=resource_samples,
                     elapsed_s=elapsed_s,
                     baseline_s=baseline_s,
-                )
+                    min_performance_samples=args.min_performance_samples,
+                    baseline_stability_growth_mib=args.baseline_stability_growth_mib,
+                    memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                    max_swap_growth_mib=args.max_swap_growth_mib,
+                ):
+                    for message in [
+                        *state.baseline_coverage_concerns,
+                        *state.baseline_stability_alerts,
+                    ]:
+                        add_alert(alerts, message)
                 checkpoint_start = last_checkpoint_monotonic or state.started_monotonic
                 window_elapsed_s = max(
                     0.001,
@@ -2191,6 +2369,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--memory-slope-mib-per-hour",
         type=positive_float,
         default=DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR,
+    )
+    parser.add_argument(
+        "--baseline-stability-growth-mib",
+        type=positive_float,
+        default=DEFAULT_BASELINE_STABILITY_GROWTH_MIB,
+        help="Flag a baseline that rises by this much while still trending upward.",
     )
     parser.add_argument(
         "--max-swap-growth-mib",

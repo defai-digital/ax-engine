@@ -21,6 +21,21 @@ manifest lineage issue described in
 [Qwen 3.6 27B AXQ Certification](model-certifications/qwen3.6-27b-axq.md)
 remains a separate artifact-integrity gate.
 
+## Decision and test boundary
+
+The decision is deliberately narrow: can one exact AX Engine binary keep one
+exact AXQ package loaded and answer a representative low-rate workload for 72
+measured hours without a restart or evidence of resource-retention or
+performance degradation? It is **not** a maximum-throughput, multi-user,
+crash-recovery, or fault-injection test. Keeping those questions separate
+prevents queueing pressure or a recovery policy from hiding the endurance
+signal.
+
+Run it on AC power with no competing AX Engine job and preserve the host state
+in the run manifest. The runner captures a host snapshot before model launch,
+then another immediately after warm-up, so model-load allocation is not
+mistaken for a later leak.
+
 ## Test contract
 
 The runner starts one owned `ax-engine-server` process, records its PID, and
@@ -47,7 +62,42 @@ Each 20-request cycle contains:
 Warm-up prompts use a disjoint nonce range, so the first measured requests
 cannot obtain a false cache hit from warm-up. The first four hours form the
 baseline; no performance regression decision is made until that baseline is
-complete.
+complete and it has sufficient same-shape measurements. The runner also checks
+whether the first and last quartiles of the baseline are still rising. A
+baseline that climbs by at least 1 GiB while its slope remains at least 256
+MiB/hour is a `watch`, rather than a reference that could hide a leak.
+
+## Execution gates
+
+Use a short pilot to validate the exact host, artifact, metrics, and lifecycle
+contract before starting the irreversible 72-hour evidence run. The pilot is
+an integration gate, not a performance certification; its shortened windows
+will not necessarily have enough long-prompt samples for a clean baseline.
+
+1. Run `ax-engine doctor --verbose --mlx-model-artifacts-dir "$stage/models/axq"`
+   and retain its output. Do not relabel a manifest-lineage warning as a passed
+   model certification.
+2. Run a 20–30 minute pilot in its own fresh output directory. Confirm that the
+   owned server becomes ready, every response has a terminal event and native
+   prompt length, the lifecycle gauges drain, and model-KV gauges are present.
+3. Inspect the pilot `summary.json` and server log. If its evidence is clean
+   enough to exercise all probes, start the final run in a new empty directory.
+   The final runner owns one PID and must never be restarted.
+
+For example, a pilot can use short cadence and short reporting without
+increasing concurrency:
+
+```bash
+pilot_dir="$stage/endurance/axq-6bit-pilot-$(date -u +%Y%m%dT%H%M%SZ)"
+caffeinate -dimsu "$stage/.venv/bin/python" \
+  "$stage/source/scripts/run_axq_endurance.py" \
+  --server "$stage/source/target/release/ax-engine-server" \
+  --model-dir "$stage/models/axq" \
+  --model-id qwen3.6-27b-axq-6bit \
+  --output-dir "$pilot_dir" \
+  --duration-hours 0.35 --baseline-hours 0.10 --report-interval-hours 0.05 \
+  --request-interval-seconds 30 --resource-interval-seconds 15 --warmup-requests 2
+```
 
 ## What is measured
 
@@ -62,8 +112,8 @@ independently every minute. Every four hours it atomically updates
 | Server corroboration | `ax_runtime_ttft_p95_ms`, `ax_runtime_decode_tok_per_sec`, `ax_runtime_error_rate`, queue depth and saturation counters |
 | Errors | Client failures, health failures, HTTP 5xx/saturation/backlog counter deltas |
 | Native drain/KV | Post-response jobs, pending commands, active streams and buffered events must be zero; target-model logical/physical KV and prefix-cache gauges are retained |
-| AX process memory | Server RSS, MLX active/cache/peak metrics and model KV/prefix-cache memory |
-| macOS memory | `vm_stat` wired pages, compressor/active pages, swap, IOGPU wired limit, disk and load |
+| AX process memory | Server RSS, MLX active/cache/peak metrics and target-model logical/physical KV and prefix-cache memory |
+| macOS memory | `vm_stat` wired, compressor and active pages; swap; IOGPU driver alloc/in-use memory when exposed; disk and load |
 
 `ax_engine_http_requests_in_flight` is recorded but excluded from the drain
 gate: `/metrics` correctly observes its own scrape as an in-flight HTTP
@@ -81,8 +131,13 @@ is drained is separately reported as a KV-retirement concern.
 
 Host wired memory is important but is a host-wide value. A wired-memory trend
 is strongest evidence of an AX problem when it correlates with growth in the
-owned server RSS or AX/MLX memory metrics; otherwise it is reported as a host
-level observation rather than attributed automatically to AX Engine.
+owned server RSS or AX/MLX/logical-KV memory metrics; otherwise it is reported
+as a host-level observation rather than attributed automatically to AX Engine.
+Compressor and swap establish whether host pressure is growing even if an AX
+allocation is not visible in RSS. Where macOS exposes IOGPU
+`PerformanceStatistics`, the runner also retains driver-wide unified-memory
+alloc/in-use counters. They are corroborating host evidence, not a per-process
+leak attribution.
 
 ## Default guardrails
 
@@ -91,14 +146,18 @@ level observation rather than attributed automatically to AX Engine.
 - Watch: any observed error, failed/inconclusive lifecycle drain, error rate
   over 0.1%, server 5xx/saturation/backlog counter growth, or a configured
   memory/KV guardrail breach.
+- Baseline watch: fewer than eight successful same-shape samples for TTFT,
+  decode, or effective-prefill evidence; missing native prompt length; or an
+  unsettled baseline as defined above. This makes the run **inconclusive**,
+  not a clean pass.
 - Performance watch: with at least eight baseline and eight current samples of
   the same shape, p95 TTFT over 1.5× baseline, p05 decode below 0.75×
   baseline, or p05 effective prefill below 0.75× baseline. Effective prefill
   is exact native prompt tokens divided by TTFT, so it is an end-to-end
   serving measure rather than a pure kernel microbenchmark.
 - Pass: the server completed 72 hours without hard failure and no configured
-  watch condition remained. A missing lifecycle/metric series is
-  **inconclusive**, not a clean pass.
+  watch condition remained. A missing lifecycle, KV, or required client-metric
+  series is **inconclusive**, not a clean pass.
 
 The values are configurable command-line arguments and are written verbatim to
 the run manifest, so later review can distinguish a real regression from a
@@ -134,6 +193,7 @@ python3 -m json.tool "$output_dir/summary.json"
 ```
 
 The operator should report the four-hour checkpoint's status, elapsed time,
-same PID result, request/error counts, p95 TTFT, p05 decode rate, drain/KV
-findings, and resource growth/slope. The raw `events.jsonl`, `server.log`, and
-immutable checkpoint files remain the source of truth for final analysis.
+same PID result, request/error counts, p95 TTFT, p05 decode/effective-prefill
+rates, baseline quality, drain/KV findings, and resource growth/slope. The raw
+`events.jsonl`, `server.log`, and immutable checkpoint files remain the source
+of truth for final analysis.
