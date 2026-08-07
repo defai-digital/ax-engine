@@ -123,15 +123,18 @@ security add-generic-password -U \
   -w
 ```
 
-`scripts/minisign-artifact.sh` reads that Keychain item automatically when
-`AX_MINISIGN_PASSWORD` is not set. The password resolution order is:
+When stdin is an interactive terminal, `scripts/minisign-artifact.sh` reads
+that Keychain item automatically if `AX_MINISIGN_PASSWORD` is not set. The
+password resolution order is:
 
 ```text
-AX_MINISIGN_PASSWORD  >  macOS Keychain  >  interactive minisign prompt
+AX_MINISIGN_PASSWORD  >  macOS Keychain (terminal only)  >  fail closed
 ```
 
 Override the lookup names with `AX_MINISIGN_KEYCHAIN_SERVICE` /
-`AX_MINISIGN_KEYCHAIN_ACCOUNT` or the matching flags.
+`AX_MINISIGN_KEYCHAIN_ACCOUNT` or the matching flags. Non-interactive release
+automation must provide `AX_MINISIGN_PASSWORD`; neither `security` nor
+`minisign` inherits stdin to open a prompt.
 
 ## CI secrets
 

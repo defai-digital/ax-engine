@@ -61,6 +61,10 @@ Environment:
   AX_MINISIGN_KEYCHAIN_SERVICE   Keychain service name (default: ax-minisign).
   AX_MINISIGN_KEYCHAIN_ACCOUNT   Keychain account name (default: ax-release).
 
+Passphrase lookup is non-interactive: Keychain is consulted only when stdin is
+a terminal. Automated callers must set AX_MINISIGN_PASSWORD; missing credentials
+fail closed instead of opening a prompt.
+
 Keychain setup (one-time, macOS):
   security add-generic-password -U -a ax-release -s ax-minisign -w
   # (you will be prompted for the passphrase)
@@ -266,13 +270,21 @@ if [[ "$DRY_RUN" != true ]]; then
     fi
 fi
 
-# Retrieve the minisign key passphrase: env var > macOS Keychain > "" (let minisign prompt).
+# Resolve the minisign key passphrase without allowing an interactive fallback.
+# Environment wins; an attached terminal may use macOS Keychain; otherwise the
+# empty result makes minisign fail closed on an encrypted key.
 _minisign_password_from_keychain() {
     [[ "$(uname -s)" == "Darwin" ]] || return 1
     command -v security &>/dev/null || return 1
+    # Never consult the Keychain from a scripted context: a locked keychain
+    # item makes `security -w` raise an interactive authorization prompt that
+    # blocks CI/test/background runs for minutes (or forever), and there is
+    # nobody present to answer it. Require an interactive stdin terminal; any
+    # other caller must set AX_MINISIGN_PASSWORD explicitly.
+    [[ -t 0 ]] || return 1
     security find-generic-password -w \
         -s "$MINISIGN_KEYCHAIN_SERVICE" \
-        -a "$MINISIGN_KEYCHAIN_ACCOUNT" 2>/dev/null || return 1
+        -a "$MINISIGN_KEYCHAIN_ACCOUNT" </dev/null 2>/dev/null || return 1
 }
 
 _minisign_resolve_password() {
@@ -290,7 +302,10 @@ _run_minisign() {
     if [[ -n "$pw" ]]; then
         printf '%s\n' "$pw" | minisign "$@"
     else
-        minisign "$@"
+        # </dev/null: a passphrase-protected key would otherwise make minisign
+        # prompt on the inherited terminal and hang scripted/CI runs. Fail
+        # closed with minisign's own error instead of blocking.
+        minisign "$@" </dev/null
     fi
 }
 
@@ -361,7 +376,9 @@ for i in "${!FILES[@]}"; do
         else
             verify_args+=(-p "$PUBLIC_KEY")
         fi
-        minisign "${verify_args[@]}"
+        # </dev/null: verification never needs a passphrase, so never let
+        # minisign inherit an interactive terminal it could prompt on.
+        minisign "${verify_args[@]}" </dev/null
         echo "verified: $sig"
     fi
 done

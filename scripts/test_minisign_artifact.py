@@ -8,6 +8,7 @@ suite in spirit.
 """
 
 import os
+import pty
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,9 @@ PINNED_KEY = "RWS_FAKE_PINNED_AX_ENGINE_PUBLIC_KEY_MATERIAL"
 
 FAKE_MINISIGN = """#!/usr/bin/env bash
 set -euo pipefail
+if [ -t 0 ] && [ -n "${TTY_MARKER:-}" ]; then
+  printf 'minisign inherited a terminal\n' >> "${TTY_MARKER}"
+fi
 stdin="$(cat || true)"
 if [ -n "$stdin" ]; then
   printf '%s' "$stdin" >> "${STDIN_LOG}"
@@ -48,6 +52,17 @@ FAKE_SECURITY = """#!/usr/bin/env bash
 if [ "$1" = "find-generic-password" ]; then
   printf 'from-keychain\\n'
   exit 0
+fi
+exit 1
+"""
+
+# Locked/missing keychain item: the real `security` binary can pop an
+# interactive authorization prompt here. The fake records whether it inherited
+# a terminal (the condition that makes the real prompt block forever) and
+# reports failure, mirroring a keychain miss.
+FAKE_SECURITY_MISS = """#!/usr/bin/env bash
+if [ "$1" = "find-generic-password" ] && [ -t 0 ] && [ -n "${TTY_MARKER:-}" ]; then
+  printf 'security inherited a terminal\n' >> "${TTY_MARKER}"
 fi
 exit 1
 """
@@ -97,7 +112,7 @@ def _make_fixture():
     }
 
 
-def _run(args, fixture, env=None):
+def _run(args, fixture, env=None, stdin=None):
     full_env = {
         **os.environ,
         "PATH": fixture["bindir"] + os.pathsep + os.environ.get("PATH", ""),
@@ -110,9 +125,10 @@ def _run(args, fixture, env=None):
         ["bash", SCRIPT, *args],
         cwd=REPO_ROOT,
         env=full_env,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL if stdin is None else stdin,
         capture_output=True,
         text=True,
+        timeout=30,
     )
 
 
@@ -185,16 +201,24 @@ class MinisignArtifactTests(unittest.TestCase):
         f = self.fixture
         _write_executable(os.path.join(f["bindir"], "uname"), FAKE_UNAME)
         _write_executable(os.path.join(f["bindir"], "security"), FAKE_SECURITY)
-        result = _run(
-            [
-                "--secret-key",
-                f["secret_key"],
-                "--public-key",
-                f["public_key"],
-                f["asset"],
-            ],
-            f,
-        )
+        # Keychain lookup is skipped unless stdin is a terminal (scripted
+        # runs cannot answer its authorization prompt), so attach a pty.
+        master, slave = pty.openpty()
+        try:
+            result = _run(
+                [
+                    "--secret-key",
+                    f["secret_key"],
+                    "--public-key",
+                    f["public_key"],
+                    f["asset"],
+                ],
+                f,
+                stdin=slave,
+            )
+        finally:
+            os.close(master)
+            os.close(slave)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(os.path.exists(f["asset"] + ".minisig"))
         with open(f["stdin_log"]) as fh:
@@ -276,6 +300,42 @@ class MinisignArtifactTests(unittest.TestCase):
             f,
         )
         self.assertEqual(third.returncode, 0, third.stderr)
+
+    def test_keychain_miss_never_inherits_terminal_and_still_signs(self):
+        # Regression: with no AX_MINISIGN_PASSWORD and a failing Keychain
+        # lookup the signer used to leave the terminal attached to
+        # `security`/`minisign`, whose interactive prompts blocked scripted
+        # runs indefinitely. Every prompt-capable invocation must detach
+        # stdin so the keychain-miss path completes (empty passphrase).
+        f = self.fixture
+        _write_executable(os.path.join(f["bindir"], "uname"), FAKE_UNAME)
+        _write_executable(os.path.join(f["bindir"], "security"), FAKE_SECURITY_MISS)
+        tty_marker = os.path.join(f["tmp"], "tty.log")
+        master, slave = pty.openpty()
+        try:
+            result = _run(
+                [
+                    "--secret-key",
+                    f["secret_key"],
+                    "--public-key",
+                    f["public_key"],
+                    f["asset"],
+                ],
+                f,
+                {"TTY_MARKER": tty_marker},
+                stdin=slave,
+            )
+        finally:
+            os.close(master)
+            os.close(slave)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(os.path.exists(f["asset"] + ".minisig"))
+        self.assertFalse(
+            os.path.exists(tty_marker),
+            "signer left a terminal attached to a prompt-capable tool",
+        )
+        # Keychain miss means no passphrase was piped to minisign.
+        self.assertFalse(os.path.exists(f["stdin_log"]))
 
 
 if __name__ == "__main__":

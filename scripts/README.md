@@ -127,10 +127,12 @@ throughput baselines.
 - `minisign-artifact.sh`: signs one or more release artifacts with minisign.
   The default key is the shared AX product signing key at `~/signkey/ax.sec`
   / `~/signkey/ax.pub` (Keychain service `ax-minisign`, account
-  `ax-release`). If the passphrase is already stored in the shared AX
-  Keychain entry, the release path needs no password prompt. Override key
-  paths via `AX_MINISIGN_SECRET_KEY` / `AX_MINISIGN_PUBLIC_KEY` or Keychain
-  lookup via `--keychain-service` / `--keychain-account`. Set
+  `ax-release`). An interactive terminal can read the shared AX Keychain entry
+  without a minisign prompt. Automated callers must set
+  `AX_MINISIGN_PASSWORD`; missing credentials fail closed instead of inheriting
+  a terminal or opening a prompt. Override key paths via
+  `AX_MINISIGN_SECRET_KEY` / `AX_MINISIGN_PUBLIC_KEY` or Keychain lookup via
+  `--keychain-service` / `--keychain-account`. Set
   `AX_MINISIGN_PINNED_PUBLIC_KEY` (or `--pinned-public-key`) to fail closed
   unless the local public key matches the expected release key. Also supports
   `--dry-run`, `--untrusted-comment`, and `--signature-dir`. See
