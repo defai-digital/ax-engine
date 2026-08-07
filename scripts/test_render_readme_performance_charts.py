@@ -228,6 +228,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertTrue(
             all(row["engine"] == "mlx_lm" for row in reference["rows"])
         )
+        llama_cpp_build = charts.find_llama_cpp_build(readme)
         gemma_decode_spec = next(
             spec
             for spec in charts.CHARTS
@@ -241,16 +242,23 @@ class ReadmePerformanceChartTests(unittest.TestCase):
                 + charts.load_llama_rows_from_readme(readme),
                 gemma_decode_spec,
                 ax_engine_version=str(snapshot["engine_version"]),
+                llama_cpp_build=llama_cpp_build,
             ),
             ax_engine_version=str(snapshot["engine_version"]),
             snapshot_date=str(snapshot["date"]),
             mlx_lm_version=str(reference["version"]),
             mlx_lm_snapshot_date=str(reference["date"]),
+            llama_cpp_build=llama_cpp_build,
         )
         self.assertIn("AX Engine v6.13.3", boxplot)
         self.assertIn("mlx-lm 0.31.3", boxplot)
+        llama_label = (
+            f"llama.cpp {llama_cpp_build}"
+            if llama_cpp_build is not None
+            else "llama.cpp Metal"
+        )
         self.assertIn(
-            "mlx-lm 0.31.3 (2026-08-07) · llama.cpp Metal · separate runs",
+            f"mlx-lm 0.31.3 (2026-08-07) · {llama_label} · separate runs",
             boxplot,
         )
         self.assertNotIn("retained mlx-lm", boxplot)
@@ -387,8 +395,14 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             chart = (
                 output_dir / "perf-gemma4-decode-box-whisker.svg"
             ).read_text()
+            build = charts.find_llama_cpp_build(
+                charts.REPO_ROOT / "docs/PERFORMANCE-RESULTS.md"
+            )
+            llama_label = (
+                f"llama.cpp {build}" if build is not None else "llama.cpp Metal"
+            )
             self.assertIn(
-                "mlx-lm 0.31.3 (2026-08-07) · llama.cpp Metal · separate runs",
+                f"mlx-lm 0.31.3 (2026-08-07) · {llama_label} · separate runs",
                 chart,
             )
             self.assertNotIn("retained mlx-lm", chart)
