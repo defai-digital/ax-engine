@@ -13,7 +13,7 @@ The recommended `uv` path is:
 ```bash
 uv venv --python 3.11 .venv
 source .venv/bin/activate
-uv pip install --upgrade "ax-engine[download]>=6.13.4,<7"
+uv pip install --upgrade "ax-engine[download]>=6.13.5,<7"
 python -c 'import importlib.metadata; print(importlib.metadata.version("ax-engine"))'
 which -a ax-engine
 ax-engine doctor
@@ -128,8 +128,8 @@ Then point any OpenAI client at `http://127.0.0.1:31418`.
 Install the OpenAI shim or image/audio helpers with the matching extra:
 
 ```bash
-python3 -m pip install --upgrade "ax-engine[openai]>=6.13.4,<7"
-python3 -m pip install --upgrade "ax-engine[multimodal]>=6.13.4,<7"
+python3 -m pip install --upgrade "ax-engine[openai]>=6.13.5,<7"
+python3 -m pip install --upgrade "ax-engine[multimodal]>=6.13.5,<7"
 ```
 
 ## Requirements
