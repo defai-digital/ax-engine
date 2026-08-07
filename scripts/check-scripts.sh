@@ -110,10 +110,14 @@ bash scripts/check-qa.sh
   scripts/test_check_mtp_sidecar_provenance.py \
   scripts/test_bench_qwen36_mtp_fair.py \
   scripts/test_bench_rapid_mlx_prompt_suites.py \
+  scripts/bench_qwen36_mtp_matrix.py \
+  scripts/test_bench_qwen36_mtp_matrix.py \
   scripts/bench_ax_only_sweep.py \
   scripts/test_bench_ax_only_sweep.py \
   scripts/bench_llama_cpp_metal_sweep.py \
   scripts/test_bench_llama_cpp_metal_sweep.py \
+  scripts/bench_batched_decode_ceiling.py \
+  scripts/test_bench_batched_decode_ceiling.py \
   scripts/build_mlx_prefill_scaling_artifact.py \
   scripts/test_build_mlx_prefill_scaling_artifact.py \
   scripts/check_mlx_prefill_scaling_artifact.py \
@@ -271,6 +275,8 @@ bash scripts/check-qa.sh
   scripts/test_bench_lightning_mlx_raw.py \
   scripts/test_bench_qwen36_mtp_fair.py \
   scripts/test_bench_rapid_mlx_prompt_suites.py \
+  scripts/test_bench_qwen36_mtp_matrix.py \
+  scripts/test_bench_batched_decode_ceiling.py \
   scripts/test_offline_policy_search_artifact.py \
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_check_no_mlxcel_public_docs.py \

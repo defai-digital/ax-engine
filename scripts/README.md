@@ -63,6 +63,13 @@ Use `certify_row_exact_coalesced_decode.py` to compare the production
 Qwen/Gemma row-exact decode route with its independent sequential oracle and,
 optionally, the non-coalesced serving baseline.
 
+Use `bench_batched_decode_ceiling.py` for the dense-model aggregate-decode
+ceiling shown in the public performance docs. It alternates the default Shared
+projection policy with the RowExact kill-switch, runs at least five repetitions
+per policy, preserves every Rust-probe log, checks full-cohort greedy-token
+hashes, and fails closed unless the clean-build and host-condition matrix is
+publication eligible.
+
 Use `bench_embedding_fair.py` for published embedding comparisons between
 `mlx-lm` and ax-engine, or pass `--ax-only` for README-style AX-only refreshes.
 That harness excludes HTTP/cold-start paths and forces the measured engine(s) to
