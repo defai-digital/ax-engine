@@ -242,8 +242,10 @@ jobs:
           TAP_DIR="$(mktemp -d /tmp/ax-engine-tap.XXXXXX)"
           trap 'rm -rf "$TAP_DIR"' EXIT
 
+          # The tap is public, so cloning must not depend on a write
+          # credential. Select and validate a credential only when pushing.
           git clone \
-            "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/${TAP_REPO}.git" \
+            "https://github.com/${TAP_REPO}.git" \
             --depth=1 --quiet \
             "$TAP_DIR"
 
@@ -337,23 +339,35 @@ jobs:
           git diff --cached "$TAP_FORMULA"
 
           git commit -m "chore: update ax-engine to ${TAG}"
+          if [[ -z "$HOMEBREW_TAP_TOKEN" && -z "$LEGACY_TAP_TOKEN" ]]; then
+            echo "error: neither HOMEBREW_TAP_TOKEN nor TAP_TOKEN is configured" >&2
+            exit 1
+          fi
+
+          pushed=false
           for attempt in 1 2 3 4 5; do
             git pull --rebase origin main
-            if git push origin HEAD:main; then
-              break
-            fi
-            if [[ "$attempt" -eq 5 ]]; then
-              echo "error: shared tap changed repeatedly; push failed" >&2
-              exit 1
-            fi
+            for push_token in "$HOMEBREW_TAP_TOKEN" "$LEGACY_TAP_TOKEN"; do
+              [[ -n "$push_token" ]] || continue
+              if git push \
+                "https://x-access-token:${push_token}@github.com/${TAP_REPO}.git" \
+                HEAD:main; then
+                pushed=true
+                break 2
+              fi
+              echo "Tap credential rejected; trying the next configured credential." >&2
+            done
             sleep $((attempt * 2))
           done
+          if [[ "$pushed" != true ]]; then
+            echo "error: no configured tap credential could push after 5 attempts" >&2
+            exit 1
+          fi
           echo "Tap updated: ${TAP_REPO}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Prefer the dedicated tap credential. TAP_TOKEN is retained only as
-          # a compatibility fallback for repositories that have not migrated.
-          TAP_PUSH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.TAP_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          LEGACY_TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
           TOOLING_SHA: ${{ github.workflow_sha }}
 
       - name: Step summary
