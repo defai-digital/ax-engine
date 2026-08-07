@@ -37,6 +37,7 @@ V2_SCHEMAS = {"ax.embedding_fair.v2", "ax.embedding_ingest_scale.v2"}
 CLAIM_PAIRED = "paired_delta"
 CLAIM_AX_ONLY = "ax_absolute_trend"
 VALID_CLAIMS = {CLAIM_PAIRED, CLAIM_AX_ONLY}
+VALID_REFERENCES = {"mlx_lm", "mlx_embeddings"}
 MIN_WARMUPS = 2
 MIN_TRIALS = 5
 MIN_SCALE_COOLDOWN_SECONDS = 15.0
@@ -65,9 +66,11 @@ def require(condition: bool, message: str) -> None:
 
 def reference_key(artifact: dict[str, Any]) -> str:
     reference = artifact.get("reference", "mlx_lm")
-    if reference == "mlx_embeddings":
-        return "mlx_embeddings"
-    return "mlx_lm"
+    require(
+        reference in VALID_REFERENCES,
+        f"unsupported embedding reference backend: {reference!r}",
+    )
+    return str(reference)
 
 
 def validate_host(artifact: dict[str, Any], *, path: Path) -> list[str]:
@@ -518,10 +521,21 @@ def validate_claim_shape(
     *,
     path: Path,
     claim: str,
+    strict: bool,
 ) -> None:
-    ax_only = bool(artifact.get("ax_only"))
+    raw_ax_only = artifact.get("ax_only")
     declared = artifact.get("publication_claim")
-    if isinstance(declared, str) and declared in VALID_CLAIMS and declared != claim:
+    if strict:
+        require(
+            isinstance(raw_ax_only, bool),
+            f"{path}: v2 publication requires boolean ax_only",
+        )
+        require(
+            declared in VALID_CLAIMS,
+            f"{path}: v2 publication requires a recognized publication_claim",
+        )
+    ax_only = bool(raw_ax_only)
+    if declared in VALID_CLAIMS and declared != claim:
         raise PublishGateError(
             f"{path}: artifact publication_claim={declared!r} does not match "
             f"requested claim={claim!r}"
@@ -567,11 +581,11 @@ def validate_artifact(
         artifact.get("output_contract") == "contiguous_cpu_f32_batch_hidden",
         f"{path}: output_contract must be contiguous_cpu_f32_batch_hidden",
     )
-    validate_claim_shape(artifact, path=path, claim=claim)
 
     warnings: list[str] = []
     is_v2 = schema in V2_SCHEMAS
     has_identity = isinstance(artifact.get("runtime_identity"), dict)
+    validate_claim_shape(artifact, path=path, claim=claim, strict=is_v2)
 
     if is_v2 or has_identity:
         warnings.extend(validate_host(artifact, path=path))

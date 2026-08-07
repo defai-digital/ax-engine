@@ -145,6 +145,21 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.PublishGateError, "ax_only=false"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
+    def test_v2_requires_boolean_ax_only(self) -> None:
+        path = self._write(_paired_fair_artifact(ax_only="false"))
+        with self.assertRaisesRegex(gate.PublishGateError, "boolean ax_only"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_v2_requires_recognized_publication_claim(self) -> None:
+        path = self._write(_paired_fair_artifact(publication_claim="directional"))
+        with self.assertRaisesRegex(gate.PublishGateError, "recognized publication_claim"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_unknown_reference_backend_fails_closed(self) -> None:
+        path = self._write(_paired_fair_artifact(reference="unknown"))
+        with self.assertRaisesRegex(gate.PublishGateError, "unsupported embedding reference"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
     def test_ax_absolute_rejects_reference_results_without_ax_only(self) -> None:
         path = self._write(_paired_fair_artifact(ax_only=False))
         with self.assertRaisesRegex(gate.PublishGateError, "ax_absolute_trend"):
