@@ -513,6 +513,45 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 ["direct-generation:current-head-claim-boundary"],
             )
 
+    def test_direct_generation_claim_boundary_accepts_current_cross_run_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "README.md"
+            readme.write_text(
+                "### Session Mode: Direct Generation\n\n"
+                "Current-head AX and `mlx_lm` snapshots are separate benchmark runs, "
+                "not a same-session peer benchmark.\n"
+                "<!-- readme-ax-direct-snapshot: ax.json -->\n"
+                "<!-- readme-mlx-lm-direct-snapshot: mlx-lm.json -->\n"
+            )
+
+            self.assertEqual(
+                checker.validate_readme_direct_generation_claims(
+                    readme_path=readme
+                ),
+                ["direct-generation:current-head-cross-run-boundary"],
+            )
+
+    def test_direct_generation_claim_boundary_rejects_unqualified_current_snapshots(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "README.md"
+            readme.write_text(
+                "### Session Mode: Direct Generation\n\n"
+                "<!-- readme-ax-direct-snapshot: ax.json -->\n"
+                "<!-- readme-mlx-lm-direct-snapshot: mlx-lm.json -->\n"
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "must state the cross-run publication boundary",
+            ):
+                checker.validate_readme_direct_generation_claims(
+                    readme_path=readme
+                )
+
     def test_direct_generation_claim_boundary_rejects_unqualified_boxplot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             readme = Path(tmp) / "README.md"

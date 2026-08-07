@@ -1866,6 +1866,26 @@ def validate_readme_direct_generation_claims(*, readme_path: Path) -> list[str]:
                 f"README contains unsupported matrix-wide direct claim: {claim}"
             )
 
+    has_ax_snapshot = re.search(
+        r"readme-ax-direct-snapshot:\s*([^\s]+)",
+        text,
+    ) is not None
+    has_mlx_lm_snapshot = re.search(
+        r"readme-mlx-lm-direct-snapshot:\s*([^\s]+)",
+        text,
+    ) is not None
+    if has_ax_snapshot and has_mlx_lm_snapshot:
+        required_boundary = (
+            "Current-head AX and `mlx_lm` snapshots are separate benchmark runs, "
+            "not a same-session peer benchmark."
+        )
+        if required_boundary not in text:
+            raise ArtifactCheckError(
+                "README current-head direct snapshots must state the cross-run "
+                "publication boundary"
+            )
+        return ["direct-generation:current-head-cross-run-boundary"]
+
     required_boundary = (
         "No current-head, matrix-wide direct peer comparison is published."
     )
