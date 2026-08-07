@@ -18,7 +18,7 @@ Public results are split by session mode in
 | Session mode | Current public source |
 | --- | --- |
 | MTP generation | AX 6-bit MTP package acceleration (exact sampled MTP) plus Qwen3.6 peer MTP decode rows; see [results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation) |
-| Direct generation | v6.12.0 AX-only direct snapshot plus retained peer/historical composites; see [results: Direct](PERFORMANCE-RESULTS.md#session-mode-direct-generation) |
+| Direct generation | v6.13.3 AX-only direct snapshot plus a fresh separate-run `mlx_lm` 0.31.3 reference and retained llama.cpp rows; see [results: Direct](PERFORMANCE-RESULTS.md#session-mode-direct-generation) |
 | Embeddings | Qwen3-Embedding paired ingest-scale and EmbeddingGemma scale rows; see [results: Embeddings](PERFORMANCE-RESULTS.md#session-mode-embeddings) |
 
 These rows are a provenance-tracked composite, not one same-session benchmark.
@@ -139,12 +139,15 @@ parity with CUDA server systems such as vLLM or TensorRT-LLM.
 
 ## Interpretation
 
-The current public direct-generation high-water composite reports AX ahead of
-`mlx_lm` on the published Gemma 4 and Qwen 3.6 direct cells that have a current
-comparable `mlx_lm` row. That does not make it a universal direct-decode claim:
-the table is a curated public snapshot for named model artifacts, prompt
-lengths, host class, and route policy. It is still a same-policy baseline rather
-than the default AX user path.
+The current public direct-generation snapshots show a split result. Against
+the previous v6.12.0 AX snapshot, v6.13.3 improves the 36-cell geometric mean
+by 2.7% for decode and 25.3% for prefill while lowering TTFT by 20.2%. Against
+the fresh, separate-run `mlx_lm` reference, AX wins all 30 comparable decode
+cells (+4.6% geometric mean), but trails on prefill (-10.6%) and has higher
+TTFT (+11.9%). Current-head AX and `mlx_lm` snapshots are separate benchmark
+runs, not a same-session peer benchmark. The result is scoped to the named
+model artifacts, prompt lengths, M5 Max host, and direct route policy; it is
+still a same-policy baseline rather than the default AX user path.
 
 N-gram acceleration is a separate AX user/server decode policy. Historical
 n-gram artifacts still report workload-dependent effective throughput and
