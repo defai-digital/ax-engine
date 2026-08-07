@@ -60,6 +60,7 @@ DEFAULT_MIN_PREFILL_P05_RATIO = 0.75
 DEFAULT_MIN_PERFORMANCE_SAMPLES = 8
 DEFAULT_MEMORY_GROWTH_MIB = 4_096.0
 DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR = 256.0
+DEFAULT_MAX_SWAP_GROWTH_MIB = 512.0
 DEFAULT_MAX_QUIESCENT_KV_LOGICAL_MIB = 1_024.0
 
 MEBIBYTE = 1024 * 1024
@@ -123,6 +124,7 @@ COUNTER_METRICS = (
 MEMORY_SERIES_PATHS = {
     "server_rss_bytes": ("process", "rss_bytes"),
     "host_wired_bytes": ("host", "wired_bytes"),
+    "host_swap_used_bytes": ("host", "swap", "used_bytes"),
     "mlx_active_bytes": ("metrics", "values", "ax_engine_memory_mlx_active_bytes"),
     "mlx_cache_bytes": ("metrics", "values", "ax_engine_memory_mlx_cache_bytes"),
     "model_kv_physical_bytes": (
@@ -1128,8 +1130,9 @@ def evaluate_performance_regression(
     min_samples: int,
     max_ttft_p95_ratio: float,
     min_decode_p05_ratio: float,
+    min_prefill_p05_ratio: float = DEFAULT_MIN_PREFILL_P05_RATIO,
 ) -> list[str]:
-    """Compare same-shape p95 TTFT and p05 decode rate to the warm baseline."""
+    """Compare same-shape p95 TTFT, p05 decode, and p05 prefill to baseline."""
     if baseline is None:
         return []
     messages: list[str] = []
@@ -1164,6 +1167,18 @@ def evaluate_performance_regression(
                 f"{shape}: p05 decode {current_decode:.2f} tok/s is "
                 f"{current_decode / baseline_decode:.2f}x baseline ({baseline_decode:.2f} tok/s)"
             )
+        current_prefill = get_distribution_value(current, "effective_prefill_tok_s", "p05")
+        baseline_prefill = get_distribution_value(reference, "effective_prefill_tok_s", "p05")
+        if (
+            current_prefill
+            and baseline_prefill
+            and current_prefill < baseline_prefill * min_prefill_p05_ratio
+        ):
+            messages.append(
+                f"{shape}: p05 effective prefill {current_prefill:.2f} tok/s is "
+                f"{current_prefill / baseline_prefill:.2f}x baseline "
+                f"({baseline_prefill:.2f} tok/s)"
+            )
     return messages
 
 
@@ -1179,7 +1194,11 @@ def get_distribution_value(summary: dict[str, Any], metric: str, statistic: str)
 
 
 def evaluate_memory_alerts(
-    *, analysis: dict[str, Any], max_growth_mib: float, max_slope_mib_per_hour: float
+    *,
+    analysis: dict[str, Any],
+    max_growth_mib: float,
+    max_slope_mib_per_hour: float,
+    max_swap_growth_mib: float = DEFAULT_MAX_SWAP_GROWTH_MIB,
 ) -> list[str]:
     """Flag persistent-looking growth, retaining cache-capacity ambiguity in wording."""
     messages: list[str] = []
@@ -1187,6 +1206,11 @@ def evaluate_memory_alerts(
     if not isinstance(series, dict):
         return messages
     for name, value in series.items():
+        if name == "host_swap_used_bytes":
+            # Swap has its own lower absolute-growth guardrail below. Reporting
+            # it here as well would duplicate the same concern when both
+            # thresholds happen to trigger.
+            continue
         if not isinstance(value, dict):
             continue
         growth = value.get("growth_mib")
@@ -1199,6 +1223,14 @@ def evaluate_memory_alerts(
         ):
             messages.append(
                 f"{name} rose {growth:.1f} MiB with {slope:.1f} MiB/h slope after baseline"
+            )
+    swap = series.get("host_swap_used_bytes")
+    if isinstance(swap, dict):
+        swap_growth = swap.get("growth_mib")
+        if isinstance(swap_growth, (int, float)) and swap_growth >= max_swap_growth_mib:
+            messages.append(
+                f"host swap used rose {swap_growth:.1f} MiB after baseline "
+                f"(guardrail {max_swap_growth_mib:.1f} MiB)"
             )
     return messages
 
@@ -1217,6 +1249,8 @@ def evaluate_window_guardrails(
     max_client_error_rate: float,
     memory_growth_mib: float,
     memory_slope_mib_per_hour: float,
+    max_swap_growth_mib: float = DEFAULT_MAX_SWAP_GROWTH_MIB,
+    min_prefill_p05_ratio: float = DEFAULT_MIN_PREFILL_P05_RATIO,
 ) -> tuple[list[str], list[str]]:
     """Evaluate one complete or terminal partial window with identical gates."""
     current_window = summarize_requests(records, max(window_elapsed_s, 0.001))
@@ -1226,6 +1260,7 @@ def evaluate_window_guardrails(
         min_samples=min_performance_samples,
         max_ttft_p95_ratio=max_ttft_p95_ratio,
         min_decode_p05_ratio=min_decode_p05_ratio,
+        min_prefill_p05_ratio=min_prefill_p05_ratio,
     )
     if state.requests_attempted:
         client_error_rate = state.requests_failed / state.requests_attempted
@@ -1268,6 +1303,7 @@ def evaluate_window_guardrails(
         analysis=memory,
         max_growth_mib=memory_growth_mib,
         max_slope_mib_per_hour=memory_slope_mib_per_hour,
+        max_swap_growth_mib=max_swap_growth_mib,
     )
     return performance_alerts, memory_alerts
 
@@ -1421,6 +1457,11 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
         if isinstance(overall, dict)
         else None
     )
+    prefill = (
+        get_distribution_value(overall, "effective_prefill_tok_s", "p05")
+        if isinstance(overall, dict)
+        else None
+    )
     lines = [
         f"# AXQ endurance checkpoint: {summary['status']}",
         "",
@@ -1433,7 +1474,8 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
         f"- Requests: `{requests['successful']}/{requests['attempted']}` successful; "
         f"client error rate `{requests['client_error_rate']:.4%}`",
         f"- Window p95 TTFT: `{format_metric(ttft, 'ms')}`; "
-        f"window p05 client decode: `{format_metric(decode, 'tok/s')}`",
+        f"p05 decode: `{format_metric(decode, 'tok/s')}`; "
+        f"p05 effective prefill: `{format_metric(prefill, 'tok/s')}`",
         f"- Baseline: `{'complete' if summary['baseline']['performance'] else 'pending'}`",
         "",
         "## Assessment",
@@ -1688,8 +1730,9 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     "the test evaluates drain state, post-baseline growth, and slope"
                 ),
                 "performance_validation": (
-                    "same-shape client p95 TTFT and p05 decode token/s compared with "
-                    "the first baseline window; server runtime gauges are retained as corroboration"
+                    "same-shape client p95 TTFT plus p05 decode/effective-prefill token/s "
+                    "compared with the first baseline window; server runtime gauges are "
+                    "retained as corroboration"
                 ),
                 "reporting": "atomic current summary plus immutable JSON and Markdown checkpoints",
             },
@@ -1709,9 +1752,11 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 "max_client_error_rate": args.max_client_error_rate,
                 "max_ttft_p95_ratio": args.max_ttft_p95_ratio,
                 "min_decode_p05_ratio": args.min_decode_p05_ratio,
+                "min_prefill_p05_ratio": args.min_prefill_p05_ratio,
                 "min_performance_samples": args.min_performance_samples,
                 "memory_growth_mib": args.memory_growth_mib,
                 "memory_slope_mib_per_hour": args.memory_slope_mib_per_hour,
+                "max_swap_growth_mib": args.max_swap_growth_mib,
                 "max_quiescent_kv_logical_mib": args.max_quiescent_kv_logical_mib,
             },
             "runtime": runtime_metadata(args.server),
@@ -1924,9 +1969,11 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     min_performance_samples=args.min_performance_samples,
                     max_ttft_p95_ratio=args.max_ttft_p95_ratio,
                     min_decode_p05_ratio=args.min_decode_p05_ratio,
+                    min_prefill_p05_ratio=args.min_prefill_p05_ratio,
                     max_client_error_rate=args.max_client_error_rate,
                     memory_growth_mib=args.memory_growth_mib,
                     memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                    max_swap_growth_mib=args.max_swap_growth_mib,
                 )
                 for message in [*last_performance_alerts, *last_memory_alerts]:
                     add_alert(alerts, message)
@@ -2011,9 +2058,11 @@ def _run_endurance(args: argparse.Namespace) -> int:
                         min_performance_samples=args.min_performance_samples,
                         max_ttft_p95_ratio=args.max_ttft_p95_ratio,
                         min_decode_p05_ratio=args.min_decode_p05_ratio,
+                        min_prefill_p05_ratio=args.min_prefill_p05_ratio,
                         max_client_error_rate=args.max_client_error_rate,
                         memory_growth_mib=args.memory_growth_mib,
                         memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                        max_swap_growth_mib=args.max_swap_growth_mib,
                     )
                     for message in [
                         *last_performance_alerts,
@@ -2128,6 +2177,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-decode-p05-ratio", type=positive_float, default=DEFAULT_MIN_DECODE_P05_RATIO
     )
     parser.add_argument(
+        "--min-prefill-p05-ratio",
+        type=positive_float,
+        default=DEFAULT_MIN_PREFILL_P05_RATIO,
+    )
+    parser.add_argument(
         "--min-performance-samples", type=positive_int, default=DEFAULT_MIN_PERFORMANCE_SAMPLES
     )
     parser.add_argument(
@@ -2137,6 +2191,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--memory-slope-mib-per-hour",
         type=positive_float,
         default=DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR,
+    )
+    parser.add_argument(
+        "--max-swap-growth-mib",
+        type=positive_float,
+        default=DEFAULT_MAX_SWAP_GROWTH_MIB,
     )
     parser.add_argument(
         "--max-quiescent-kv-logical-mib",

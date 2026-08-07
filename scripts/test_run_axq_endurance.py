@@ -27,6 +27,7 @@ def request_record(
     shape: str,
     ttft_ms: float = 100.0,
     decode_tok_s: float = 50.0,
+    prefill_tok_s: float | None = None,
     ok: bool = True,
 ) -> dict:
     """Make a small synthetic record matching the persisted request shape."""
@@ -37,6 +38,7 @@ def request_record(
             "ttft_ms": ttft_ms if ok else None,
             "client_tpot_ms": 1000.0 / decode_tok_s if ok else None,
             "client_decode_tok_s": decode_tok_s if ok else None,
+            "effective_prefill_tok_s": prefill_tok_s if ok else None,
             "e2e_latency_ms": 300.0 if ok else 50.0,
             "output_tokens": 10 if ok else None,
             "route_decisions": {"accepted": 1} if ok else {},
@@ -86,6 +88,7 @@ class AxqEnduranceTests(unittest.TestCase):
         def stream_func(_url, payload, _timeout):
             captured.update(payload)
             yield "__http_status__", {"status": 200}, 0.0
+            yield "request", {"request": {"prompt_len": 321}}, 0.001
             yield "step", {"delta_tokens": [7]}, 0.01
             yield "response", {"response": {"output_token_count": 2}}, 0.02
 
@@ -100,6 +103,8 @@ class AxqEnduranceTests(unittest.TestCase):
         self.assertTrue(observation["ok"])
         self.assertTrue(captured["sampling"]["ignore_eos"])
         self.assertEqual(observation["output_tokens"], 2)
+        self.assertEqual(observation["prompt_token_count"], 321)
+        self.assertIsNotNone(observation["effective_prefill_tok_s"])
 
     def test_prometheus_parser_selects_target_model_labels(self) -> None:
         samples = runner.parse_prometheus_samples(
@@ -200,6 +205,26 @@ class AxqEnduranceTests(unittest.TestCase):
         )
         self.assertEqual(len(alerts), 1)
 
+    def test_swap_growth_has_a_tighter_host_safety_guardrail(self) -> None:
+        analysis = {
+            "series": {
+                "host_swap_used_bytes": {
+                    "growth_mib": 5_000.0,
+                    "lifetime_slope_mib_per_hour": 300.0,
+                }
+            }
+        }
+
+        alerts = runner.evaluate_memory_alerts(
+            analysis=analysis,
+            max_growth_mib=4_096.0,
+            max_slope_mib_per_hour=256.0,
+            max_swap_growth_mib=512.0,
+        )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("swap", alerts[0])
+
     def test_performance_regression_compares_same_shape_tail_metrics(self) -> None:
         baseline = runner.summarize_requests(
             [
@@ -227,6 +252,44 @@ class AxqEnduranceTests(unittest.TestCase):
         self.assertEqual(len(alerts), 2)
         self.assertIn("p95 TTFT", alerts[0])
         self.assertIn("p05 decode", alerts[1])
+
+    def test_prefill_regression_uses_exact_native_prompt_metric(self) -> None:
+        baseline = runner.summarize_requests(
+            [
+                request_record(
+                    shape="medium_unique",
+                    ttft_ms=100.0,
+                    decode_tok_s=100.0,
+                    prefill_tok_s=1_000.0,
+                )
+                for _ in range(10)
+            ],
+            elapsed_s=10.0,
+        )
+        window = runner.summarize_requests(
+            [
+                request_record(
+                    shape="medium_unique",
+                    ttft_ms=100.0,
+                    decode_tok_s=100.0,
+                    prefill_tok_s=600.0,
+                )
+                for _ in range(10)
+            ],
+            elapsed_s=10.0,
+        )
+
+        alerts = runner.evaluate_performance_regression(
+            baseline=baseline,
+            window=window,
+            min_samples=8,
+            max_ttft_p95_ratio=1.5,
+            min_decode_p05_ratio=0.75,
+            min_prefill_p05_ratio=0.75,
+        )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("effective prefill", alerts[0])
 
     def test_performance_regression_requires_enough_baseline_samples(self) -> None:
         baseline = runner.summarize_requests(

@@ -58,7 +58,7 @@ independently every minute. Every four hours it atomically updates
 | Concern | Evidence |
 | --- | --- |
 | Process lifetime | Owned PID, server exit code, server log |
-| Client-visible latency | Same-shape client p95 TTFT, p05 decode token/s, E2E latency, output token count |
+| Client-visible latency | Same-shape client p95 TTFT, p05 decode token/s, p05 effective prefill token/s, E2E latency and output token count |
 | Server corroboration | `ax_runtime_ttft_p95_ms`, `ax_runtime_decode_tok_per_sec`, `ax_runtime_error_rate`, queue depth and saturation counters |
 | Errors | Client failures, health failures, HTTP 5xx/saturation/backlog counter deltas |
 | Native drain/KV | Post-response jobs, pending commands, active streams and buffered events must be zero; target-model logical/physical KV and prefix-cache gauges are retained |
@@ -74,7 +74,8 @@ request. It would otherwise create a false lifecycle leak signal.
 A nonzero KV capacity, paged-pool slab, MLX cache, or prefix-cache payload is
 not by itself a memory leak. These allocations may intentionally remain warm.
 A memory concern requires evidence such as a post-baseline growth of at least
-4 GiB *and* a sustained slope of at least 256 MiB/hour. A post-response
+4 GiB *and* a sustained slope of at least 256 MiB/hour. Separately, a host
+swap increase of 512 MiB after baseline is a watch condition. A post-response
 lifecycle drain timeout or unexpectedly large logical KV after the lifecycle
 is drained is separately reported as a KV-retirement concern.
 
@@ -91,8 +92,10 @@ level observation rather than attributed automatically to AX Engine.
   over 0.1%, server 5xx/saturation/backlog counter growth, or a configured
   memory/KV guardrail breach.
 - Performance watch: with at least eight baseline and eight current samples of
-  the same shape, p95 TTFT over 1.5× baseline or p05 decode below 0.75×
-  baseline.
+  the same shape, p95 TTFT over 1.5× baseline, p05 decode below 0.75×
+  baseline, or p05 effective prefill below 0.75× baseline. Effective prefill
+  is exact native prompt tokens divided by TTFT, so it is an end-to-end
+  serving measure rather than a pure kernel microbenchmark.
 - Pass: the server completed 72 hours without hard failure and no configured
   watch condition remained. A missing lifecycle/metric series is
   **inconclusive**, not a clean pass.
