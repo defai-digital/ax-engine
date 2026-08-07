@@ -68,7 +68,11 @@ fully streamed and the native lifecycle has drained, it waits at least 60
 seconds before the next request. This intentionally leaves resource headroom;
 it avoids a request-rate catch-up burst after an unusually slow prefill or
 decode. This is a reliability experiment under a stable, low duty-cycle load,
-not a throughput or saturation experiment.
+not a throughput or saturation experiment. The native MLX streaming route on
+this server accepts pre-tokenized input, so the runner uses the model's local
+`tokenizer.json` with `add_special_tokens=false`, sends `input_tokens`, and
+reconciles that exact client count with the native request event. Client-side
+tokenization is deliberately outside the TTFT/prefill timing boundary.
 
 Each 20-request cycle contains:
 

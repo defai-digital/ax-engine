@@ -379,7 +379,7 @@ def sanitized_hardware_profile() -> str:
 def runtime_metadata(server_path: Path) -> dict[str, Any]:
     """Capture reproducibility context once, before the server starts."""
     packages: dict[str, str | None] = {}
-    for package in ("mlx", "mlx-lm", "huggingface-hub"):
+    for package in ("mlx", "mlx-lm", "huggingface-hub", "tokenizers"):
         try:
             packages[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -900,19 +900,70 @@ def deterministic_prompt(shape: WorkloadShape, request_index: int) -> str:
     )
 
 
-def make_prompt_item(shape: WorkloadShape, request_index: int) -> serving_bench.PromptItem:
+def load_local_tokenizer(model_dir: Path) -> Callable[[str], list[int]]:
+    """Load the exact artifact tokenizer for native MLX's token-only route.
+
+    The native `/v1/generate/stream` MLX preview endpoint intentionally accepts
+    pre-tokenized input only.  Tokenizing locally makes that restriction
+    explicit, avoids timing client text tokenization as server prefill, and
+    gives the runner an exact sent-token count to reconcile with the native
+    request event.  `tokenizers` reads the model's bundled `tokenizer.json`
+    directly, matching AX's non-special-token native prompt encoding.
+    """
+    tokenizer_path = model_dir / "tokenizer.json"
+    if not tokenizer_path.is_file():
+        raise FileNotFoundError(f"native MLX token input requires {tokenizer_path}")
+    try:
+        from tokenizers import Tokenizer
+    except ImportError as error:
+        raise RuntimeError(
+            "native MLX endurance input needs the Python `tokenizers` package"
+        ) from error
+    try:
+        tokenizer = Tokenizer.from_file(str(tokenizer_path))
+    except Exception as error:  # noqa: BLE001 - artifact tokenizer errors are preflight evidence.
+        raise RuntimeError(f"failed to load tokenizer.json at {tokenizer_path}: {error}") from error
+
+    def encode(text: str) -> list[int]:
+        try:
+            token_ids = list(tokenizer.encode(text, add_special_tokens=False).ids)
+        except Exception as error:  # noqa: BLE001 - preserve artifact encoding failure context.
+            raise RuntimeError(f"failed to tokenize endurance prompt: {error}") from error
+        if not token_ids:
+            raise RuntimeError("endurance tokenizer returned an empty prompt")
+        if any(
+            not isinstance(token, int) or isinstance(token, bool) or token < 0
+            for token in token_ids
+        ):
+            raise RuntimeError("endurance tokenizer returned an invalid token id")
+        return token_ids
+
+    return encode
+
+
+def make_prompt_item(
+    shape: WorkloadShape,
+    request_index: int,
+    *,
+    tokenize: Callable[[str], list[int]] | None = None,
+) -> serving_bench.PromptItem:
     """Adapt a shape into the existing native-serving benchmark request type."""
+    input_text = deterministic_prompt(shape, request_index)
+    input_tokens = tokenize(input_text) if tokenize is not None else None
     return serving_bench.PromptItem(
         id=f"{shape.name}-{request_index:08d}",
         category=shape.name,
-        input_text=deterministic_prompt(shape, request_index),
-        input_tokens=None,
-        input_tokens_count=shape.nominal_input_words,
+        input_text=input_text,
+        input_tokens=input_tokens,
+        input_tokens_count=len(input_tokens)
+        if input_tokens is not None
+        else shape.nominal_input_words,
         max_output_tokens=shape.max_output_tokens,
         metadata={
             "mode": shape.mode,
             "nominal_input_words": shape.nominal_input_words,
             "shared_prefix_words": shape.shared_prefix_words,
+            "input_encoding": "tokenizer.json" if input_tokens is not None else "raw_text",
         },
     )
 
@@ -923,25 +974,26 @@ def run_stream_request(
     model_id: str,
     base_url: str,
     timeout_s: float,
+    input_kind: str = "tokens",
     stream_func: Callable[..., Any] = serving_bench.http_sse_events,
 ) -> dict[str, Any]:
     """Run one bounded greedy native stream and retain only timing/token evidence."""
     started = time.perf_counter()
-    payload = serving_bench.build_payload(
-        prompt,
-        model_id=model_id,
-        input_kind="text",
-        temperature=0.0,
-        top_p=1.0,
-        top_k=0,
-        seed=0,
-    )
-    sampling = payload.get("sampling")
-    if isinstance(sampling, dict):
-        # AX-native control used by the existing fault soak: bounded fixed-length
-        # decode avoids a mostly-empty early-EOS workload.
-        sampling["ignore_eos"] = True
     try:
+        payload = serving_bench.build_payload(
+            prompt,
+            model_id=model_id,
+            input_kind=input_kind,
+            temperature=0.0,
+            top_p=1.0,
+            top_k=0,
+            seed=0,
+        )
+        sampling = payload.get("sampling")
+        if isinstance(sampling, dict):
+            # AX-native control used by the existing fault soak: bounded fixed-length
+            # decode avoids a mostly-empty early-EOS workload.
+            sampling["ignore_eos"] = True
         events = list(stream_func(f"{base_url}/v1/generate/stream", payload, timeout_s))
         observation = serving_bench.observe_stream(
             events,
@@ -957,6 +1009,7 @@ def run_stream_request(
             observation["client_decode_tok_s"] = None
         prompt_token_count = native_prompt_token_count(events)
         observation["prompt_token_count"] = prompt_token_count
+        observation["client_input_token_count"] = prompt.input_tokens_count
         ttft_ms = observation.get("ttft_ms")
         if (
             isinstance(prompt_token_count, int)
@@ -985,6 +1038,7 @@ def run_stream_request(
             "client_tpot_ms": None,
             "client_decode_tok_s": None,
             "prompt_token_count": None,
+            "client_input_token_count": prompt.input_tokens_count,
             "effective_prefill_tok_s": None,
             "output_tokens": None,
             "route_decisions": {},
@@ -2017,6 +2071,14 @@ def warmup_preflight_concerns(
     prompt_tokens = observation.get("prompt_token_count")
     if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool) or prompt_tokens <= 0:
         concerns.append("native prompt token count was unavailable")
+    sent_tokens = observation.get("client_input_token_count")
+    if not isinstance(sent_tokens, int) or isinstance(sent_tokens, bool) or sent_tokens <= 0:
+        concerns.append("client pre-tokenized input count was unavailable")
+    elif isinstance(prompt_tokens, int) and prompt_tokens > 0 and prompt_tokens != sent_tokens:
+        concerns.append(
+            f"native prompt token count {prompt_tokens} did not match sent token count "
+            f"{sent_tokens}"
+        )
 
     drain_state = drain.get("state")
     if drain_state != "drained":
@@ -2060,6 +2122,7 @@ def run_endurance(args: argparse.Namespace) -> int:
 def _run_endurance(args: argparse.Namespace) -> int:
     """Launch one server and exercise it continuously until duration or hard failure."""
     validate_args(args)
+    tokenize_prompt = load_local_tokenizer(args.model_dir)
     base_url = f"http://{args.host}:{args.port}"
     target_duration_s = args.duration_hours * 3_600.0
     report_interval_s = args.report_interval_hours * 3_600.0
@@ -2103,6 +2166,10 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 "workload_mix": (
                     "20-request interleaved cycle: 14 short unique, 3 medium unique, "
                     "2 shared-prefix, 1 long unique"
+                ),
+                "input_encoding": (
+                    "client-local tokenizer.json with add_special_tokens=false; "
+                    "native MLX input_tokens only"
                 ),
                 "stream_validation": "HTTP success, terminal response, non-empty output",
                 "lifecycle_validation": "post-response native lifecycle gauges must drain to zero",
@@ -2171,7 +2238,7 @@ def _run_endurance(args: argparse.Namespace) -> int:
             shape = select_shape(warmup_index + 1)
             warmup_request_index = 1_000_000 + warmup_index + 1
             observation = run_stream_request(
-                prompt=make_prompt_item(shape, warmup_request_index),
+                prompt=make_prompt_item(shape, warmup_request_index, tokenize=tokenize_prompt),
                 model_id=args.model_id,
                 base_url=base_url,
                 timeout_s=args.request_timeout_seconds,
@@ -2275,7 +2342,7 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 state.last_error = f"health check failed: {health['error']}"
                 add_alert(alerts, state.last_error)
             observation = run_stream_request(
-                prompt=make_prompt_item(shape, request_index),
+                prompt=make_prompt_item(shape, request_index, tokenize=tokenize_prompt),
                 model_id=args.model_id,
                 base_url=base_url,
                 timeout_s=args.request_timeout_seconds,

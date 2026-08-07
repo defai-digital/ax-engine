@@ -91,7 +91,11 @@ class AxqEnduranceTests(unittest.TestCase):
         self.assertNotEqual(warmup.input_text, measured.input_text)
 
     def test_stream_request_uses_ignore_eos_and_requires_terminal_response(self) -> None:
-        prompt = runner.make_prompt_item(runner.WORKLOAD_SHAPES["short_unique"], 1)
+        prompt = runner.make_prompt_item(
+            runner.WORKLOAD_SHAPES["short_unique"],
+            1,
+            tokenize=lambda _text: [10, 11, 12],
+        )
         captured = {}
 
         def stream_func(_url, payload, _timeout):
@@ -111,9 +115,23 @@ class AxqEnduranceTests(unittest.TestCase):
 
         self.assertTrue(observation["ok"])
         self.assertTrue(captured["sampling"]["ignore_eos"])
+        self.assertEqual(captured["input_tokens"], [10, 11, 12])
+        self.assertNotIn("input_text", captured)
         self.assertEqual(observation["output_tokens"], 2)
         self.assertEqual(observation["prompt_token_count"], 321)
+        self.assertEqual(observation["client_input_token_count"], 3)
         self.assertIsNotNone(observation["effective_prefill_tok_s"])
+
+    def test_tokenized_prompt_uses_exact_client_token_count(self) -> None:
+        prompt = runner.make_prompt_item(
+            runner.WORKLOAD_SHAPES["shared_prefix"],
+            42,
+            tokenize=lambda text: [len(text), 5, 7],
+        )
+
+        self.assertEqual(prompt.input_tokens, [len(prompt.input_text or ""), 5, 7])
+        self.assertEqual(prompt.input_tokens_count, 3)
+        self.assertEqual(prompt.metadata["input_encoding"], "tokenizer.json")
 
     def test_prometheus_parser_selects_target_model_labels(self) -> None:
         samples = runner.parse_prometheus_samples(
@@ -178,6 +196,7 @@ class AxqEnduranceTests(unittest.TestCase):
         observation = {
             "ok": True,
             "prompt_token_count": 128,
+            "client_input_token_count": 128,
         }
         values = {
             **{name: 0.0 for name in runner.LIFECYCLE_METRICS},
@@ -202,6 +221,16 @@ class AxqEnduranceTests(unittest.TestCase):
             ),
             [],
         )
+
+        observation["client_input_token_count"] = 127
+        mismatch = runner.warmup_preflight_concerns(
+            observation=observation,
+            drain=drain,
+            max_quiescent_kv_logical_mib=1024.0,
+        )
+        self.assertEqual(len(mismatch), 1)
+        self.assertIn("did not match", mismatch[0])
+        observation["client_input_token_count"] = 128
 
         observation["prompt_token_count"] = None
         drain["state"] = "inconclusive"
