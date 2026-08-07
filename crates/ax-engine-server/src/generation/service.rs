@@ -1762,14 +1762,24 @@ fn apply_step_to_streams(
                     stream.first_output_emitted = true;
                     let delta_tokens = std::mem::take(&mut stream.pending_delta_tokens);
                     let delta_token_logprobs = std::mem::take(&mut stream.pending_delta_logprobs);
-                    let step_report = stream
+                    let Some((step_report, request)) = stream
                         .pending_step
                         .take()
-                        .expect("pending step set when flushing stream batch");
-                    let request = stream
-                        .pending_request
-                        .take()
-                        .expect("pending request set when flushing stream batch");
+                        .zip(stream.pending_request.take())
+                    else {
+                        detach_stream_with_error(
+                            session,
+                            *request_id,
+                            stream,
+                            EngineSessionError::RequestReportInvariantViolation {
+                                request_id: *request_id,
+                                message: "stream batch flushed without pending request metadata",
+                            },
+                            service_state,
+                        );
+                        completed.push(*request_id);
+                        continue;
+                    };
                     (
                         GenerateStreamEvent::Step(GenerateStreamStepEvent {
                             request,
