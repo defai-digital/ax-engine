@@ -75,6 +75,97 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             "rows": rows,
         }
 
+    @staticmethod
+    def mtp_peer_summary() -> dict[str, object]:
+        labels = {
+            "27b-4bit": "Qwen3.6 27B 4-bit",
+            "27b-6bit": "Qwen3.6 27B 6-bit",
+            "35b-a3b-4bit": "Qwen3.6 35B-A3B 4-bit",
+            "35b-a3b-6bit": "Qwen3.6 35B-A3B 6-bit",
+        }
+        rows = []
+        for (target, engine), status in charts.MTP_PEER_EXPECTED_STATUS.items():
+            supported = status == "supported"
+            rows.append(
+                {
+                    "target": target,
+                    "model_label": labels[target],
+                    "suite": "flappy",
+                    "engine": engine,
+                    "status": status,
+                    "artifact": f"benchmarks/results/{target}/{engine}.json",
+                    "publication_candidate": supported,
+                    "publication_reasons": [],
+                    "metrics": (
+                        {
+                            "status": "ok",
+                            "case_count": 4,
+                            "decode_tok_s": 50.0,
+                            "prefill_tok_s": 500.0,
+                            "ttft_ms": 100.0,
+                            "accept_rate": 0.5,
+                            "degeneracy_gate": {
+                                "degenerate": False,
+                                "evidence_complete": True,
+                            },
+                        }
+                        if supported
+                        else {"status": "unsupported"}
+                    ),
+                }
+            )
+        return {
+            "schema": charts.MTP_PEER_SCHEMA,
+            "publication_candidate": True,
+            "publication_reasons": [],
+            "engine_identities": {
+                "ax_engine": {
+                    "name": "AX Engine",
+                    "version": "6.13.2",
+                    "commit": "a" * 40,
+                },
+                "mtplx": {
+                    "name": "MTPLX",
+                    "version": "2.1.0",
+                    "commit": "b" * 40,
+                },
+                "lightning_mlx": {
+                    "name": "lightning-mlx",
+                    "version": "0.8.0",
+                    "commit": "c" * 40,
+                },
+            },
+            "contract": {
+                "models": ["27b", "35b-a3b"],
+                "bits": [4, 6],
+                "engines": [
+                    "ax_engine",
+                    "mtplx",
+                    "lightning_mlx",
+                    "rapid_mlx",
+                    "omlx",
+                ],
+                "suites": ["flappy"],
+                "benchmark_contract": "apples-to-apples",
+                "mode": "mtp",
+                "max_tokens": 1000,
+                "repetitions": 5,
+                "warmup_repetitions": 2,
+                "cooldown_s": 15.0,
+                "inter_case_cooldown_s": 10.0,
+                "seed": 0,
+                "ax_mtp_optimistic": False,
+                "lightning_mtp_optimistic": False,
+                "lightning_prefix_cache_policy": "disabled_for_cold_prefill",
+                "sampling": {
+                    "temperature": 0.6,
+                    "top_p": 0.95,
+                    "top_k": 20,
+                },
+            },
+            "rows": rows,
+        }
+
     def test_family_boxplots_cover_all_direct_metrics(self) -> None:
         self.assertEqual(len(charts.CHARTS), 6)
         self.assertEqual(
@@ -379,7 +470,48 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             charts.REPO_ROOT
             / "benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json",
         )
-        self.assertEqual(charts.MTP_PEER_AX_ENGINE_VERSION, "6.9.0")
+
+    def test_mtp_peer_chart_uses_measured_engine_identities(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            summary_path = Path(root_name) / "2026-08-06-peer" / "summary.json"
+            summary_path.parent.mkdir()
+            summary_path.write_text(json.dumps(self.mtp_peer_summary()))
+
+            rows = charts.load_mtp_peer_rows(summary_path)
+            chart = charts.render_mtp_peer_comparison_chart(
+                rows, summary_path, "decode"
+            )
+
+        self.assertEqual(len(rows), 10)
+        self.assertIn("AX Engine v6.13.2", chart)
+        self.assertIn("MTPLX v2.1.0", chart)
+        self.assertIn("lightning-mlx v0.8.0", chart)
+        self.assertIn("(aaaaaaaa)", chart)
+
+    def test_mtp_peer_chart_rejects_stitched_or_ineligible_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            summary_path = Path(root_name) / "summary.json"
+            summary = self.mtp_peer_summary()
+            summary["schema"] = "ax.qwen36_mtp_peer_comparison_stitched.v1"
+            summary_path.write_text(json.dumps(summary))
+            with self.assertRaisesRegex(charts.ChartError, "summary.v2"):
+                charts.load_mtp_peer_rows(summary_path)
+
+            summary = self.mtp_peer_summary()
+            summary["rows"][0]["publication_candidate"] = False
+            summary_path.write_text(json.dumps(summary))
+            with self.assertRaisesRegex(charts.ChartError, "not publication eligible"):
+                charts.load_mtp_peer_rows(summary_path)
+
+    def test_mtp_peer_chart_requires_full_measured_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            summary_path = Path(root_name) / "summary.json"
+            summary = self.mtp_peer_summary()
+            summary["engine_identities"]["mtplx"]["commit"] = "short"
+            summary_path.write_text(json.dumps(summary))
+
+            with self.assertRaisesRegex(charts.ChartError, "full commit"):
+                charts.load_mtp_peer_rows(summary_path)
 
     def test_mtp_approximate_summary_must_be_non_publishable(self) -> None:
         with tempfile.TemporaryDirectory() as root_name:

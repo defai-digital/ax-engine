@@ -1899,21 +1899,26 @@ MTP_PEER_COLORS = {
     "mtplx": "#f2b705",
     "lightning_mlx": "#2563eb",
 }
-MTP_PEER_AX_ENGINE_VERSION = "6.9.0"
-MTP_PEER_LABELS = {
-    "ax_engine": f"AX Engine v{MTP_PEER_AX_ENGINE_VERSION}",
+MTP_PEER_SCHEMA = "ax.qwen36_mtp_matrix.summary.v2"
+MTP_PEER_ENGINES = tuple(MTP_PEER_COLORS)
+MTP_PEER_BASE_LABELS = {
+    "ax_engine": "AX Engine",
     "mtplx": "MTPLX",
     "lightning_mlx": "lightning-mlx",
 }
-# Engine versions behind the peer-comparison artifacts, surfaced on each chart so the
-# run is reproducible. Update alongside any re-benchmark. Provenance:
-#   AX Engine     = frozen publication label for this retained benchmark snapshot
-#   MTPLX         = /opt/homebrew/var/mtplx/venv-2.0.1 (pip: mtplx 2.0.1)
-#   lightning-mlx = .internal/reference/lightning-mlx v0.7.0 (git rev ec19b3d, incl. post-tag streaming fix #3)
-MTP_PEER_VERSIONS = {
-    "ax_engine": MTP_PEER_AX_ENGINE_VERSION,
-    "mtplx": "2.0.1",
-    "lightning_mlx": "0.7.0",
+MTP_PEER_EXPECTED_STATUS = {
+    ("27b-4bit", "ax_engine"): "supported",
+    ("27b-4bit", "mtplx"): "supported",
+    ("27b-4bit", "lightning_mlx"): "supported",
+    ("27b-6bit", "ax_engine"): "supported",
+    ("27b-6bit", "mtplx"): "unsupported",
+    ("27b-6bit", "lightning_mlx"): "unsupported",
+    ("35b-a3b-4bit", "ax_engine"): "supported",
+    ("35b-a3b-4bit", "mtplx"): "supported",
+    ("35b-a3b-4bit", "lightning_mlx"): "supported",
+    ("35b-a3b-6bit", "ax_engine"): "supported",
+    ("35b-a3b-6bit", "mtplx"): "supported",
+    ("35b-a3b-6bit", "lightning_mlx"): "supported",
 }
 MTP_PEER_METRICS = {
     "decode": {
@@ -1970,31 +1975,197 @@ def find_mtp_peer_summary(readme: Path) -> Path | None:
 
 def load_mtp_peer_rows(summary_path: Path) -> list[dict[str, Any]]:
     summary = json.loads(summary_path.read_text())
-    rows = []
-    for row in summary.get("rows", []):
+    if not isinstance(summary, dict) or summary.get("schema") != MTP_PEER_SCHEMA:
+        raise ChartError(
+            f"MTP peer summary must use {MTP_PEER_SCHEMA}: {summary_path}"
+        )
+    if summary.get("publication_candidate") is not True:
+        raise ChartError(
+            f"MTP peer summary is not a publication_candidate: {summary_path}"
+        )
+    if summary.get("publication_reasons") != []:
+        raise ChartError(
+            f"MTP peer summary has publication failures: {summary_path}"
+        )
+    contract = summary.get("contract")
+    if not isinstance(contract, dict):
+        raise ChartError(f"MTP peer summary has no contract: {summary_path}")
+    expected_contract = {
+        "models": ["27b", "35b-a3b"],
+        "bits": [4, 6],
+        "suites": ["flappy"],
+        "benchmark_contract": "apples-to-apples",
+        "mode": "mtp",
+        "max_tokens": 1000,
+        "repetitions": 5,
+        "warmup_repetitions": 2,
+        "cooldown_s": 15.0,
+        "inter_case_cooldown_s": 10.0,
+        "seed": 0,
+        "ax_mtp_optimistic": False,
+        "lightning_mtp_optimistic": False,
+        "lightning_prefix_cache_policy": "disabled_for_cold_prefill",
+    }
+    for field, expected in expected_contract.items():
+        if contract.get(field) != expected:
+            raise ChartError(
+                f"MTP peer summary contract {field} must be {expected!r}: "
+                f"{summary_path}"
+            )
+    contract_engines = contract.get("engines")
+    if not isinstance(contract_engines, list) or not set(MTP_PEER_ENGINES).issubset(
+        contract_engines
+    ):
+        raise ChartError(
+            f"MTP peer summary contract is missing peer engines: {summary_path}"
+        )
+    if contract.get("sampling") != {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+    }:
+        raise ChartError(
+            f"MTP peer summary has an unexpected sampling contract: {summary_path}"
+        )
+    mtp_peer_engine_metadata(summary, summary_path)
+
+    raw_rows = summary.get("rows")
+    if not isinstance(raw_rows, list):
+        raise ChartError(f"MTP peer summary has no rows: {summary_path}")
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in raw_rows:
         if not isinstance(row, dict):
             continue
         engine = row.get("engine")
-        metrics = row.get("metrics")
+        target = row.get("target")
+        if engine not in MTP_PEER_ENGINES or not isinstance(target, str):
+            continue
+        key = (target, str(engine))
+        if key in rows_by_key:
+            raise ChartError(
+                f"MTP peer summary repeats row {target}/{engine}: {summary_path}"
+            )
+        rows_by_key[key] = row
+
+    chart_rows: list[dict[str, Any]] = []
+    for key, expected_status in MTP_PEER_EXPECTED_STATUS.items():
+        row = rows_by_key.get(key)
+        if row is None:
+            raise ChartError(
+                f"MTP peer summary is missing row {key[0]}/{key[1]}: "
+                f"{summary_path}"
+            )
+        if row.get("suite") != "flappy" or row.get("status") != expected_status:
+            raise ChartError(
+                f"MTP peer summary row {key[0]}/{key[1]} has an invalid "
+                f"suite or support status: {summary_path}"
+            )
+        if expected_status == "unsupported":
+            if row.get("publication_candidate") is not False:
+                raise ChartError(
+                    f"unsupported MTP peer row is publication eligible: "
+                    f"{key[0]}/{key[1]}"
+                )
+            continue
         if (
-            engine not in MTP_PEER_LABELS
-            or not isinstance(metrics, dict)
-            or metrics.get("status") != "ok"
+            row.get("publication_candidate") is not True
+            or row.get("publication_reasons") != []
         ):
-            continue
-        decode = metrics.get("decode_tok_s")
-        if not isinstance(decode, int | float):
-            continue
-        rows.append(row)
-    if not rows:
-        raise ChartError(f"MTP peer summary has no chartable rows: {summary_path}")
-    return rows
+            raise ChartError(
+                f"MTP peer row is not publication eligible: {key[0]}/{key[1]}"
+            )
+        artifact = row.get("artifact")
+        if not isinstance(artifact, str) or not artifact.strip():
+            raise ChartError(
+                f"MTP peer row has no artifact: {key[0]}/{key[1]}"
+            )
+        metrics = row.get("metrics")
+        if not isinstance(metrics, dict) or metrics.get("status") != "ok":
+            raise ChartError(
+                f"MTP peer row has invalid metrics: {key[0]}/{key[1]}"
+            )
+        if metrics.get("case_count") != 4:
+            raise ChartError(
+                f"MTP peer row must contain four prompt cases: {key[0]}/{key[1]}"
+            )
+        for field in ("decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"):
+            value = metrics.get(field)
+            if (
+                not isinstance(value, int | float)
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or float(value) <= 0.0
+            ):
+                raise ChartError(
+                    f"MTP peer row has invalid {field}: {key[0]}/{key[1]}"
+                )
+        if float(metrics["accept_rate"]) > 1.0:
+            raise ChartError(
+                f"MTP peer row has invalid accept_rate: {key[0]}/{key[1]}"
+            )
+        degeneracy = metrics.get("degeneracy_gate")
+        if (
+            not isinstance(degeneracy, dict)
+            or degeneracy.get("evidence_complete") is not True
+            or degeneracy.get("degenerate") is not False
+        ):
+            raise ChartError(
+                f"MTP peer row lacks a passing degeneracy gate: "
+                f"{key[0]}/{key[1]}"
+            )
+        chart_rows.append(row)
+    return chart_rows
+
+
+def mtp_peer_engine_metadata(
+    summary: dict[str, Any],
+    summary_path: Path,
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    identities = summary.get("engine_identities")
+    if not isinstance(identities, dict):
+        raise ChartError(
+            f"MTP peer summary has no measured engine identities: {summary_path}"
+        )
+    labels: dict[str, str] = {}
+    checked: dict[str, dict[str, str]] = {}
+    for engine in MTP_PEER_ENGINES:
+        identity = identities.get(engine)
+        if not isinstance(identity, dict):
+            raise ChartError(
+                f"MTP peer summary has no identity for {engine}: {summary_path}"
+            )
+        name = identity.get("name")
+        version = identity.get("version")
+        commit = identity.get("commit")
+        if name != MTP_PEER_BASE_LABELS[engine]:
+            raise ChartError(
+                f"MTP peer summary has an unexpected name for {engine}: "
+                f"{summary_path}"
+            )
+        if not isinstance(version, str) or not version.strip():
+            raise ChartError(
+                f"MTP peer summary has no version for {engine}: {summary_path}"
+            )
+        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            raise ChartError(
+                f"MTP peer summary has no full commit for {engine}: {summary_path}"
+            )
+        labels[engine] = f"{name} v{version}"
+        checked[engine] = {
+            "name": name,
+            "version": version,
+            "commit": commit,
+        }
+    return labels, checked
 
 
 def render_mtp_peer_comparison_chart(
     rows: list[dict[str, Any]], summary_path: Path, metric_key: str
 ) -> str:
     summary = json.loads(summary_path.read_text())
+    engine_labels, engine_identities = mtp_peer_engine_metadata(
+        summary, summary_path
+    )
     contract_label = str(
         summary.get("contract", {}).get("benchmark_contract", "production-configuration")
     ).replace("-", " ")
@@ -2081,7 +2252,8 @@ def render_mtp_peer_comparison_chart(
     # No standalone axis unit label: it collided with the last (rightmost) tick,
     # and the unit is already stated in the description line above the plot.
     legend_x = 648.0
-    for engine, label in MTP_PEER_LABELS.items():
+    for engine in MTP_PEER_ENGINES:
+        label = engine_labels[engine]
         lines.extend(
             [
                 f'<rect x="{legend_x:.1f}" y="25" width="13" height="13" rx="2" fill="{MTP_PEER_COLORS[engine]}"/>',
@@ -2095,11 +2267,11 @@ def render_mtp_peer_comparison_chart(
         lines.append(
             f'<text x="32" y="{base_y + 18:.1f}" font-family="{FONT}" font-size="15" font-weight="700" fill="#111827">{escape(short_target)}</text>'
         )
-        for engine_index, engine in enumerate(MTP_PEER_LABELS):
+        for engine_index, engine in enumerate(MTP_PEER_ENGINES):
             value = by_target_engine.get((target, engine))
             y = base_y + 32.0 + engine_index * (MTP_PEER_BAR_H + 10.0)
             lines.append(
-                f'<text x="{MTP_PEER_LEFT - 14:.1f}" y="{y + 15:.1f}" text-anchor="end" font-family="{FONT}" font-size="12" fill="#374151">{escape(MTP_PEER_LABELS[engine])}</text>'
+                f'<text x="{MTP_PEER_LEFT - 14:.1f}" y="{y + 15:.1f}" text-anchor="end" font-family="{FONT}" font-size="12" fill="#374151">{escape(engine_labels[engine])}</text>'
             )
             if value is None:
                 lines.append(
@@ -2124,11 +2296,11 @@ def render_mtp_peer_comparison_chart(
                 ]
             )
     versions_text = " · ".join(
-        f"{MTP_PEER_LABELS[engine]} {version}"
-        for engine, version in MTP_PEER_VERSIONS.items()
+        f"{engine_labels[engine]} ({engine_identities[engine]['commit'][:8]})"
+        for engine in MTP_PEER_ENGINES
     )
     source_label = (
-        f"Source: {summary_path.parent.name}/summary.json"
+        f"Source: {display_source_path(summary_path)}"
         f"   ·   Versions: {versions_text}"
     )
     lines.append(

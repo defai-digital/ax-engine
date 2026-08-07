@@ -111,6 +111,91 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertFalse(summary["publication_candidate"])
         self.assertIn("missing_artifact", summary["rows"][0]["publication_reasons"])
 
+    def test_summary_records_engine_identity_from_measured_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            output_path = args.output_dir / "mtplx.json"
+            output_path.parent.mkdir(parents=True)
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "mtplx_version": "2.1.0",
+                        "build": {"git_commit": "a" * 40},
+                    }
+                )
+            )
+            lane = matrix.Lane(
+                target=matrix.TARGETS["27b-4bit"],
+                engine="mtplx",
+                suite="flappy",
+                status="supported",
+                output_path=output_path,
+                command=["python3"],
+            )
+            metrics = {
+                "status": "ok",
+                "decode_tok_s": 1.0,
+                "accept_rate": 0.5,
+            }
+            with (
+                patch.object(matrix, "summarize_artifact", return_value=metrics),
+                patch.object(matrix, "lane_publication_reasons", return_value=[]),
+            ):
+                summary = matrix.build_summary(args, [lane])
+
+        self.assertTrue(summary["publication_candidate"])
+        self.assertEqual(
+            summary["engine_identities"]["mtplx"],
+            {
+                "name": "MTPLX",
+                "version": "2.1.0",
+                "commit": "a" * 40,
+            },
+        )
+
+    def test_summary_rejects_inconsistent_engine_identities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            lanes = []
+            for index, target_key in enumerate(("27b-4bit", "35b-a3b-4bit")):
+                output_path = args.output_dir / f"mtplx-{index}.json"
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(
+                    json.dumps(
+                        {
+                            "mtplx_version": "2.1.0",
+                            "build": {"git_commit": str(index + 1) * 40},
+                        }
+                    )
+                )
+                lanes.append(
+                    matrix.Lane(
+                        target=matrix.TARGETS[target_key],
+                        engine="mtplx",
+                        suite="flappy",
+                        status="supported",
+                        output_path=output_path,
+                        command=["python3"],
+                    )
+                )
+            metrics = {
+                "status": "ok",
+                "decode_tok_s": 1.0,
+                "accept_rate": 0.5,
+            }
+            with (
+                patch.object(matrix, "summarize_artifact", return_value=metrics),
+                patch.object(matrix, "lane_publication_reasons", return_value=[]),
+            ):
+                summary = matrix.build_summary(args, lanes)
+
+        self.assertFalse(summary["publication_candidate"])
+        self.assertIn(
+            "mtplx:inconsistent_engine_identity",
+            summary["publication_reasons"],
+        )
+        self.assertNotIn("mtplx", summary["engine_identities"])
+
     def test_skip_existing_retries_an_error_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = make_args(Path(tmp))
@@ -567,6 +652,51 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertTrue(result["degenerate"])
         self.assertEqual(len(result["cases"]), 1)
         self.assertTrue(result["cases"][0]["is_degenerate"])
+        self.assertTrue(result["evidence_complete"])
+
+    def test_peer_degeneracy_gate_checks_every_mtplx_trial(self) -> None:
+        artifact = {
+            "results": [
+                {
+                    "prompt_id": "case-1",
+                    "runs": [
+                        {
+                            "measured": True,
+                            "repetition": 0,
+                            "tokens": [1, 2, 3, 4] * 250,
+                        }
+                    ],
+                }
+            ]
+        }
+
+        result = matrix.check_peer_output_degeneracy(
+            artifact, engine="mtplx"
+        )
+
+        self.assertTrue(result["degenerate"])
+        self.assertTrue(result["evidence_complete"])
+        self.assertEqual(result["checked_runs"], 1)
+        self.assertEqual(result["cases"][0]["evidence"], "token_ids")
+
+    def test_peer_degeneracy_gate_rejects_missing_lightning_text(self) -> None:
+        artifact = {
+            "results": [
+                {
+                    "prompt_id": "case-1",
+                    "runs": [{"measured": True, "repetition": 0}],
+                }
+            ]
+        }
+
+        result = matrix.check_peer_output_degeneracy(
+            artifact, engine="lightning_mlx"
+        )
+
+        self.assertFalse(result["degenerate"])
+        self.assertFalse(result["evidence_complete"])
+        self.assertEqual(result["expected_runs"], 1)
+        self.assertEqual(result["checked_runs"], 0)
 
     def test_mtp_head_provenance_in_plan_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

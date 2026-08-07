@@ -324,10 +324,12 @@ def check_ax_output_degeneracy(artifact: dict[str, Any]) -> dict[str, Any]:
     """
     cases: list[dict[str, Any]] = []
     any_degenerate = False
+    expected_runs = 0
     for row in artifact.get("results", []):
         if row.get("engine") not in AX_MTP_ENGINES:
             continue
         for trial in row.get("trials", []):
+            expected_runs += 1
             token_ids = trial.get("output_token_ids")
             if not isinstance(token_ids, list) or not token_ids:
                 continue
@@ -343,6 +345,65 @@ def check_ax_output_degeneracy(artifact: dict[str, Any]) -> dict[str, Any]:
         "threshold": DEGENERACY_COVERAGE_THRESHOLD,
         "periodic_threshold": DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
         "max_cycle_len": DEGENERACY_MAX_CYCLE_LEN,
+        "expected_runs": expected_runs,
+        "checked_runs": len(cases),
+        "evidence_complete": expected_runs > 0 and len(cases) == expected_runs,
+        "cases": cases,
+    }
+
+
+def check_peer_output_degeneracy(
+    artifact: dict[str, Any],
+    *,
+    engine: str,
+) -> dict[str, Any]:
+    """Run the cycle-coverage gate over every measured peer-engine output."""
+    cases: list[dict[str, Any]] = []
+    any_degenerate = False
+    expected_runs = 0
+    for case in artifact.get("results", []):
+        if not isinstance(case, dict):
+            continue
+        for run in measured_runs(case):
+            expected_runs += 1
+            sequence: list[int] | None = None
+            evidence = ""
+            if engine == "mtplx":
+                tokens = run.get("tokens")
+                if isinstance(tokens, list) and tokens and all(
+                    isinstance(token, int) and not isinstance(token, bool)
+                    for token in tokens
+                ):
+                    sequence = tokens
+                    evidence = "token_ids"
+            elif engine == "lightning_mlx":
+                text = run.get("text")
+                if isinstance(text, str) and text:
+                    sequence = [ord(character) for character in text]
+                    evidence = "unicode_codepoints"
+            if not sequence:
+                continue
+            result = detect_degenerate_output(sequence)
+            result.update(
+                {
+                    "prompt_case_id": case.get("prompt_id"),
+                    "repetition": run.get("repetition"),
+                    "sample_count": len(sequence),
+                    "evidence": evidence,
+                }
+            )
+            cases.append(result)
+            if result["is_degenerate"]:
+                any_degenerate = True
+    return {
+        "degenerate": any_degenerate,
+        "gate": "output_entropy_cycle_coverage",
+        "threshold": DEGENERACY_COVERAGE_THRESHOLD,
+        "periodic_threshold": DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
+        "max_cycle_len": DEGENERACY_MAX_CYCLE_LEN,
+        "expected_runs": expected_runs,
+        "checked_runs": len(cases),
+        "evidence_complete": expected_runs > 0 and len(cases) == expected_runs,
         "cases": cases,
     }
 
@@ -498,6 +559,9 @@ def summarize_mtplx_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "ttft_source": "prompt_eval_time_s",
         "ttft_scope": "server_prompt_eval",
         "accept_source": "mtplx_draft_stats",
+        "degeneracy_gate": check_peer_output_degeneracy(
+            artifact, engine="mtplx"
+        ),
     }
 
 
@@ -537,6 +601,9 @@ def summarize_lightning_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "ttft_source": "client_stream_ttft_s",
         "ttft_scope": "client_http_wall",
         "accept_source": "lightning_request_telemetry",
+        "degeneracy_gate": check_peer_output_degeneracy(
+            artifact, engine="lightning_mlx"
+        ),
     }
 
 
@@ -1223,7 +1290,12 @@ def lane_publication_reasons(
     ):
         reasons.append("case_count_mismatch")
     degeneracy = metrics.get("degeneracy_gate")
-    if isinstance(degeneracy, dict) and degeneracy.get("degenerate") is True:
+    if (
+        not isinstance(degeneracy, dict)
+        or degeneracy.get("evidence_complete") is not True
+    ):
+        reasons.append("incomplete_degeneracy_evidence")
+    elif degeneracy.get("degenerate") is True:
         reasons.append("degenerate_output")
     if not lane.output_path.is_file():
         return sorted({*reasons, "missing_artifact"})
@@ -1282,12 +1354,69 @@ def repo_relative_artifact(path: Path) -> str:
         return str(resolved)
 
 
+def lane_engine_identity(lane: Lane, artifact: dict[str, Any]) -> dict[str, str]:
+    """Return the measured engine identity recorded by a publishable lane."""
+    if lane.engine == "ax_engine":
+        identity = exact_mtp_gate.artifact_build_identity(
+            lane.output_path, artifact
+        )
+        return {
+            "name": "AX Engine",
+            "version": identity.engine_version,
+            "commit": identity.commit,
+        }
+    if lane.engine == "mtplx":
+        version = artifact.get("mtplx_version")
+        build = artifact.get("build")
+        commit = build.get("git_commit") if isinstance(build, dict) else None
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError("missing MTPLX version")
+        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            raise ValueError("missing MTPLX commit")
+        return {
+            "name": "MTPLX",
+            "version": version,
+            "commit": commit,
+        }
+    if lane.engine == "lightning_mlx":
+        source_identity = artifact.get("lightning_source_identity")
+        version = (
+            source_identity.get("pyproject_version")
+            if isinstance(source_identity, dict)
+            else None
+        )
+        commit = (
+            source_identity.get("git_commit")
+            if isinstance(source_identity, dict)
+            else None
+        )
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError("missing lightning-mlx version")
+        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            raise ValueError("missing lightning-mlx commit")
+        result = {
+            "name": "lightning-mlx",
+            "version": version,
+            "commit": commit,
+        }
+        describe = source_identity.get("git_describe")
+        if isinstance(describe, str) and describe.strip():
+            result["git_describe"] = describe
+        return result
+    raise ValueError(f"unsupported engine identity: {lane.engine}")
+
+
 def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]:
     rows = []
     supported_rows = 0
     publication_failures: list[str] = []
+    identity_samples: dict[str, list[dict[str, str]]] = collections.defaultdict(list)
     for lane in lanes:
-        metrics = summarize_artifact(lane.engine, lane.output_path) if lane.status == "supported" else {"status": "unsupported"}
+        metrics = (
+            summarize_artifact(lane.engine, lane.output_path)
+            if lane.status == "supported"
+            else {"status": "unsupported"}
+        )
         publication_reasons = lane_publication_reasons(args, lane, metrics)
         publication_candidate = (
             lane.status == "supported" and not publication_reasons
@@ -1298,6 +1427,19 @@ def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]
                 f"{lane.target.key}/{lane.suite}/{lane.engine}:{reason}"
                 for reason in publication_reasons
             )
+        if publication_candidate:
+            artifact = json.loads(lane.output_path.read_text())
+            try:
+                identity_samples[lane.engine].append(
+                    lane_engine_identity(lane, artifact)
+                )
+            except ValueError as error:
+                publication_candidate = False
+                reason = f"engine_identity_error:{error}"
+                publication_reasons.append(reason)
+                publication_failures.append(
+                    f"{lane.target.key}/{lane.suite}/{lane.engine}:{reason}"
+                )
         rows.append(
             {
                 "target": lane.target.key,
@@ -1316,10 +1458,21 @@ def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]
                 "publication_reasons": publication_reasons,
             }
         )
+    engine_identities: dict[str, dict[str, str]] = {}
+    for engine, samples in sorted(identity_samples.items()):
+        unique = {
+            json.dumps(sample, sort_keys=True, separators=(",", ":"))
+            for sample in samples
+        }
+        if len(unique) != 1:
+            publication_failures.append(f"{engine}:inconsistent_engine_identity")
+            continue
+        engine_identities[engine] = samples[0]
     return {
         "schema": "ax.qwen36_mtp_matrix.summary.v2",
         "publication_candidate": supported_rows > 0 and not publication_failures,
-        "publication_reasons": publication_failures,
+        "publication_reasons": sorted(publication_failures),
+        "engine_identities": engine_identities,
         "created_at": date.today().isoformat(),
         "contract": {
             "models": args.models,
