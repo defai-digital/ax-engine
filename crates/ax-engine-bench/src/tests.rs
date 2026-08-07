@@ -2857,6 +2857,147 @@ fn doctor_report_accepts_runtime_assets_without_metal_toolchain() {
 }
 
 #[test]
+fn doctor_detects_homebrew_bundled_mlx_runtime_without_metal_toolchain() {
+    let root = unique_test_dir("doctor-homebrew-runtime");
+    let bin_dir = root.join("bin");
+    let libexec_dir = root.join("libexec");
+    fs::create_dir_all(&bin_dir).expect("bin dir should create");
+    fs::create_dir_all(&libexec_dir).expect("libexec dir should create");
+    let executable = bin_dir.join("ax-engine-bench");
+    fs::write(&executable, b"bench").expect("bench fixture should write");
+    for name in ["libmlx.dylib", "libjaccl.dylib", "mlx.metallib"] {
+        fs::write(libexec_dir.join(name), b"runtime").expect("runtime fixture should write");
+    }
+
+    let runtime_assets = detect_bundled_mlx_runtime_from_executable(&executable)
+        .expect("bundled runtime should be detected");
+
+    assert_eq!(runtime_assets.status, DoctorRuntimeAssetsStatus::Ready);
+    let expected_libexec_dir =
+        fs::canonicalize(&libexec_dir).expect("libexec dir should canonicalize");
+    assert_eq!(
+        runtime_assets.path.as_deref(),
+        Some(expected_libexec_dir.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        runtime_assets.source.as_deref(),
+        Some("bundled_mlx_runtime")
+    );
+    assert!(runtime_assets.issue.is_none());
+
+    let host = doctor_host_fixture(true, false, Some("Apple M4"));
+    let toolchain = doctor_metal_toolchain_fixture(false, false, false);
+    let report = build_doctor_report_for_model_and_runtime(host, toolchain, runtime_assets, None);
+    assert_eq!(report.status, DoctorStatus::Ready);
+    assert!(report.mlx_runtime_ready);
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("only blocks rebuilding Metal kernels"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_rejects_incomplete_homebrew_bundled_mlx_runtime() {
+    let root = unique_test_dir("doctor-incomplete-homebrew-runtime");
+    let bin_dir = root.join("bin");
+    let libexec_dir = root.join("libexec");
+    fs::create_dir_all(&bin_dir).expect("bin dir should create");
+    fs::create_dir_all(&libexec_dir).expect("libexec dir should create");
+    let executable = bin_dir.join("ax-engine-bench");
+    fs::write(&executable, b"bench").expect("bench fixture should write");
+    fs::write(libexec_dir.join("libmlx.dylib"), b"runtime").expect("runtime fixture should write");
+    fs::write(libexec_dir.join("libjaccl.dylib"), b"runtime")
+        .expect("runtime fixture should write");
+
+    let runtime_assets = detect_bundled_mlx_runtime_from_executable(&executable)
+        .expect("incomplete bundled runtime should be detected");
+
+    assert_eq!(runtime_assets.status, DoctorRuntimeAssetsStatus::NotReady);
+    assert_eq!(
+        runtime_assets.source.as_deref(),
+        Some("bundled_mlx_runtime")
+    );
+    assert!(
+        runtime_assets
+            .issue
+            .as_deref()
+            .is_some_and(|issue| issue.contains("mlx.metallib is missing"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_detects_standalone_bundled_mlx_runtime_next_to_executable() {
+    let root = unique_test_dir("doctor-standalone-runtime");
+    fs::create_dir_all(&root).expect("standalone dir should create");
+    let executable = root.join("ax-engine-bench");
+    fs::write(&executable, b"bench").expect("bench fixture should write");
+    for name in ["libmlx.dylib", "libjaccl.dylib", "mlx.metallib"] {
+        fs::write(root.join(name), b"runtime").expect("runtime fixture should write");
+    }
+
+    let runtime_assets = detect_bundled_mlx_runtime_from_executable(&executable)
+        .expect("standalone bundled runtime should be detected");
+
+    assert_eq!(runtime_assets.status, DoctorRuntimeAssetsStatus::Ready);
+    let expected_root = fs::canonicalize(&root).expect("standalone dir should canonicalize");
+    assert_eq!(
+        runtime_assets.path.as_deref(),
+        Some(expected_root.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        runtime_assets.source.as_deref(),
+        Some("bundled_mlx_runtime")
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_detects_pypi_bundled_mlx_runtime_without_python_environment_setup() {
+    let root = unique_test_dir("doctor-pypi-runtime");
+    let bin_dir = root.join("_bin");
+    let dylib_dir = root.join(".dylibs");
+    fs::create_dir_all(&bin_dir).expect("wheel bin dir should create");
+    fs::create_dir_all(&dylib_dir).expect("wheel dylib dir should create");
+    let executable = bin_dir.join("ax-engine-bench");
+    fs::write(&executable, b"bench").expect("bench fixture should write");
+    for name in ["libmlx.dylib", "libjaccl.dylib", "mlx.metallib"] {
+        fs::write(dylib_dir.join(name), b"runtime").expect("runtime fixture should write");
+    }
+
+    let runtime_assets = detect_bundled_mlx_runtime_from_executable(&executable)
+        .expect("wheel-bundled runtime should be detected");
+
+    assert_eq!(runtime_assets.status, DoctorRuntimeAssetsStatus::Ready);
+    let expected_dylib_dir =
+        fs::canonicalize(&dylib_dir).expect("wheel dylib dir should canonicalize");
+    assert_eq!(
+        runtime_assets.path.as_deref(),
+        Some(expected_dylib_dir.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        runtime_assets.source.as_deref(),
+        Some("bundled_mlx_runtime")
+    );
+    assert!(runtime_assets.issue.is_none());
+
+    let host = doctor_host_fixture(true, false, Some("Apple M4"));
+    let toolchain = doctor_metal_toolchain_fixture(false, false, false);
+    let report = build_doctor_report_for_model_and_runtime(host, toolchain, runtime_assets, None);
+    assert_eq!(report.status, DoctorStatus::Ready);
+    assert!(report.mlx_runtime_ready);
+    assert!(report.issues.is_empty());
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
 fn doctor_report_treats_stale_runtime_assets_as_note_when_toolchain_can_rebuild() {
     let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
     let toolchain = doctor_metal_toolchain_fixture(true, true, true);

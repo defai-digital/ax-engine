@@ -172,15 +172,26 @@ Run this once after `brew install`. No Apple Developer account is required.
 
 Use the wheel when you need the **Python package** (`import ax_engine`),
 LangChain helpers, or the optional OpenAI/multimodal extras — or when you cannot
-use Homebrew. A virtual environment keeps its Python dependencies isolated from
-the system interpreter:
+use Homebrew. Use a dedicated Python 3.12 virtual environment so the wheel,
+Python dependencies, and command wrappers stay on one version. `uv` is the
+recommended setup:
 
 ```bash
-python3 -m venv .venv
+uv venv --python 3.12 .venv
 source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine[download]>=6.13.2,<7"
+uv pip install --upgrade "ax-engine[download]>=6.13.2,<7"
+python -c 'import importlib.metadata; print(importlib.metadata.version("ax-engine"))'
+which -a ax-engine
 ax-engine doctor
+```
+
+The standard-library equivalent is:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --upgrade "ax-engine[download]>=6.13.2,<7"
 ```
 
 The current macOS arm64 wheel exposes `ax-engine` and `ax-engine-server` and
