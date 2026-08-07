@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -142,6 +143,33 @@ class BenchMtpRefreshTests(unittest.TestCase):
                 "ax_mtp_emitted_tokens": emitted_tokens,
             },
         }
+
+    def test_skip_existing_requires_publishable_run_conditions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_path = Path(tmp) / "artifact.json"
+            artifact = self.publication_artifact()
+            artifact["results"] = [{"engine": "ax_engine_mlx"}]
+            artifact_path.write_text(json.dumps(artifact))
+
+            self.assertTrue(bench.existing_artifact_ok(artifact_path))
+
+            artifact["benchmark_window"]["performance_conditions_end"][
+                "load_average"
+            ]["one_minute"] = bench.MAX_PUBLICATION_LOAD_AVERAGE + 0.1
+            artifact_path.write_text(json.dumps(artifact))
+
+            self.assertFalse(bench.existing_artifact_ok(artifact_path))
+
+    def test_skip_existing_rejects_missing_or_malformed_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_path = Path(tmp) / "artifact.json"
+            self.assertFalse(bench.existing_artifact_ok(artifact_path))
+
+            artifact_path.write_text("{")
+            self.assertFalse(bench.existing_artifact_ok(artifact_path))
+
+            artifact_path.write_text(json.dumps({"results": []}))
+            self.assertFalse(bench.existing_artifact_ok(artifact_path))
 
     def test_bench_command_records_two_warmups_and_sampled_exact_sampler(self) -> None:
         target = bench.Target(

@@ -166,7 +166,10 @@ def existing_artifact_ok(path: Path) -> bool:
         artifact = json.loads(path.read_text())
     except json.JSONDecodeError:
         return False
-    return bool(artifact.get("results"))
+    return bool(artifact.get("results")) and not publication_condition_reasons(
+        "existing",
+        artifact,
+    )
 
 
 def validate_model_dir(path: Path) -> None:
