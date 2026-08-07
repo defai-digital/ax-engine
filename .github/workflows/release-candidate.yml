@@ -113,8 +113,9 @@ jobs:
 
       - name: Smoke-test built wheel
         run: |
-          python -m venv target/release-candidate-smoke
-          source target/release-candidate-smoke/bin/activate
+          smoke_venv="${RUNNER_TEMP}/ax-engine-release-candidate-smoke"
+          python -m venv --clear "$smoke_venv"
+          source "$smoke_venv/bin/activate"
           python -m pip install --upgrade pip
           python -m pip install target/wheels/delocated/ax_engine-*.whl
           python examples/python/basic.py

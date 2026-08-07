@@ -207,6 +207,22 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("--mlx-version", pypi)
         self.assertIn("shared-key: release-macos-arm64", pypi)
 
+    def test_release_smoke_venvs_are_isolated_from_rust_cache(self) -> None:
+        workflows = {path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")}
+
+        for workflow, venv_name in (
+            ("release-candidate.yml", "ax-engine-release-candidate-smoke"),
+            ("pypi.yml", "ax-engine-pypi-wheel-smoke"),
+        ):
+            text = workflows[workflow]
+            self.assertIn(
+                f'smoke_venv="${{RUNNER_TEMP}}/{venv_name}"',
+                text,
+                f"{workflow} must create its smoke venv outside cached target/",
+            )
+            self.assertIn('python -m venv --clear "$smoke_venv"', text)
+            self.assertNotIn("python -m venv target/", text)
+
     def test_homebrew_is_dispatched_only_after_release_assets_are_verified(self) -> None:
         brew = (WORKFLOWS_DIR / "brew-release.yml").read_text()
         publisher = PUBLISH_SCRIPT.read_text()
