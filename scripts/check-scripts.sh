@@ -140,6 +140,8 @@ bash scripts/check-qa.sh
   scripts/test_run_mlx_p2_latency_artifacts.py \
   scripts/run_native_generation_fault_soak.py \
   scripts/test_run_native_generation_fault_soak.py \
+  scripts/run_axq_endurance.py \
+  scripts/test_run_axq_endurance.py \
   scripts/smoke_compatible_models.py \
   scripts/test_smoke_compatible_models.py \
   scripts/test_run_mlx_artifact_wrappers.py \
@@ -285,6 +287,7 @@ bash scripts/check-qa.sh
   scripts/test_long_context_comparison_artifact.py \
   scripts/test_long_context_decode_at_depth_artifact.py \
   scripts/test_run_native_generation_fault_soak.py \
+  scripts/test_run_axq_endurance.py \
   scripts/test_run_mlx_artifact_wrappers.py \
   scripts/test_verify_prefix_reuse_equivalence.py \
   scripts/test_profile_kv_multiturn_chat_evidence.py \

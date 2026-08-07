@@ -384,6 +384,14 @@ throughput baselines.
   shared-prefix serving corpus builder.
 - `test_run_disk_prefix_serving_soak.py`: unit tests for the disk-prefix
   serving soak runner and dry-run command bundle.
+- `run_axq_endurance.py`: owns one no-restart AX MLX server for a deterministic,
+  low-rate 72-hour AXQ endurance workload. It records every streaming request,
+  health and RSS evidence, atomic four-hour checkpoints, and a final checkpoint
+  on completion, failure, or interrupt; it never reuses warmup prompt IDs in
+  the measured schedule.
+- `test_run_axq_endurance.py`: unit tests for the AXQ endurance workload mix,
+  prompt identity, streaming contract, checkpoint accounting, and server
+  limits.
 - `test_ax_serving_benchmark_artifact.py`: unit tests for the serving artifact
   checker, including long-prompt p95 gates and failed-request rejection.
 - `test_render_ax_serving_benchmark_report.py`: unit tests for the serving
