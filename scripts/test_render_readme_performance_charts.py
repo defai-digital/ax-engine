@@ -242,10 +242,17 @@ class ReadmePerformanceChartTests(unittest.TestCase):
                 ax_engine_version=str(snapshot["engine_version"]),
             ),
             ax_engine_version=str(snapshot["engine_version"]),
+            snapshot_date=str(snapshot["date"]),
             mlx_lm_version=str(reference["version"]),
+            mlx_lm_snapshot_date=str(reference["date"]),
         )
         self.assertIn("AX Engine v6.13.3", boxplot)
         self.assertIn("mlx-lm 0.31.3", boxplot)
+        self.assertIn(
+            "mlx-lm 0.31.3 (2026-08-07) · llama.cpp Metal · separate runs",
+            boxplot,
+        )
+        self.assertNotIn("retained mlx-lm", boxplot)
         self.assertIn("cross-run distribution", boxplot)
 
         readme_text = readme.read_text()

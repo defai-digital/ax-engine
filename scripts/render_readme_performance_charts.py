@@ -3637,10 +3637,13 @@ def main() -> int:
                     rows,
                     spec,
                     ax_engine_version=str(snapshot["engine_version"]),
+                    mlx_lm_version=str(reference["version"]),
                     llama_cpp_build=llama_cpp_build,
                 ),
                 ax_engine_version=str(snapshot["engine_version"]),
                 snapshot_date=str(snapshot.get("date")),
+                mlx_lm_version=str(reference["version"]),
+                mlx_lm_snapshot_date=str(reference.get("date")),
                 llama_cpp_build=llama_cpp_build,
             )
             if not write_chart(output_path, content, args.check):
