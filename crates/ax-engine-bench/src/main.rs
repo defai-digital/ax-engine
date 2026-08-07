@@ -131,6 +131,7 @@ use crate::compare_json::inferred_tool_mode_from_runtime_json;
 use crate::doctor::{
     DoctorAdviceSeverity, DoctorModelArtifactsStatus, DoctorRuntimeAssetsReport,
     DoctorRuntimeAssetsStatus, DoctorStatus, build_doctor_report_for_model,
+    detect_bundled_mlx_runtime_from_executable,
 };
 #[cfg(test)]
 use crate::doctor_workflow::command_text;

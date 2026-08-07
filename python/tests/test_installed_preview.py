@@ -3,7 +3,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import pathlib
 import socket
+import subprocess
+import sys
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -105,6 +109,86 @@ class InstalledPreviewTests(unittest.TestCase):
             ) from exc
 
         cls.ax_engine = module
+
+    def test_wheel_doctor_uses_bundled_mlx_runtime_without_developer_toolchain(
+        self,
+    ) -> None:
+        package_dir = pathlib.Path(self.ax_engine.__file__).resolve().parent
+        bench = package_dir / "_bin" / "ax-engine-bench"
+        runtime_dir = package_dir / ".dylibs"
+        console = pathlib.Path(sys.prefix) / "bin" / "ax-engine"
+
+        self.assertTrue(bench.is_file(), f"wheel is missing {bench}")
+        self.assertTrue(os.access(bench, os.X_OK), f"wheel binary is not executable: {bench}")
+        self.assertTrue(console.is_file(), f"wheel console script is missing: {console}")
+        for name in ("libmlx.dylib", "libjaccl.dylib", "mlx.metallib"):
+            asset = runtime_dir / name
+            self.assertTrue(asset.is_file(), f"wheel is missing {asset}")
+            self.assertGreater(asset.stat().st_size, 0, f"wheel asset is empty: {asset}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            fake_bin = root / "bin"
+            home = root / "home"
+            fake_bin.mkdir()
+            home.mkdir()
+            fake_xcrun = fake_bin / "xcrun"
+            fake_xcrun.write_text("#!/bin/sh\nexit 1\n")
+            fake_xcrun.chmod(0o755)
+
+            env = os.environ.copy()
+            env.pop("AX_ENGINE_METAL_BUILD_DIR", None)
+            env.pop("DEVELOPER_DIR", None)
+            env["HOME"] = str(home)
+            env["PATH"] = f"{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"
+
+            direct = subprocess.run(
+                [str(bench), "doctor", "--json"],
+                cwd=root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(
+                direct.returncode,
+                0,
+                f"wheel-bundled doctor failed:\nstdout:\n{direct.stdout}\nstderr:\n{direct.stderr}",
+            )
+            direct_report = json.loads(direct.stdout)
+            self.assertEqual(direct_report["runtime_assets"]["status"], "ready")
+            self.assertEqual(
+                direct_report["runtime_assets"]["source"],
+                "bundled_mlx_runtime",
+            )
+            self.assertEqual(
+                pathlib.Path(direct_report["runtime_assets"]["path"]).resolve(),
+                runtime_dir.resolve(),
+            )
+            self.assertFalse(direct_report["metal_toolchain"]["fully_available"])
+            self.assertFalse(
+                any("xcrun" in issue for issue in direct_report["issues"]),
+                direct_report["issues"],
+            )
+
+            public = subprocess.run(
+                [str(console), "doctor", "--json"],
+                cwd=root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            public_report = json.loads(public.stdout)
+            checks = {check["id"]: check for check in public_report["checks"]}
+            self.assertEqual(checks["metal_toolchain"]["status"], "pass")
+            self.assertEqual(checks["mlx_runtime"]["status"], "pass")
+            self.assertFalse(public_report["issues"], public_report["issues"])
+            if direct_report["host"]["supported_mlx_runtime"]:
+                self.assertEqual(public.returncode, 0, public.stderr)
+                self.assertEqual(public_report["result"], "ready")
 
     def test_installed_package_reports_runtime_and_generate_result(self) -> None:
         with _llama_cpp_upstream() as (server_url, _requests):

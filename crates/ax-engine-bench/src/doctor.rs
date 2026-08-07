@@ -16,6 +16,8 @@ use crate::error::CliError;
 use crate::json_io::load_json_value;
 use crate::path_utils::path_string;
 
+const BUNDLED_MLX_RUNTIME_FILES: &[&str] = &["libmlx.dylib", "libjaccl.dylib", "mlx.metallib"];
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DoctorArgs {
     pub(crate) json: bool,
@@ -430,13 +432,112 @@ fn build_doctor_report_with_runtime_assets(
 pub(crate) fn detect_runtime_assets_report(
     current_dir: Option<&Path>,
 ) -> DoctorRuntimeAssetsReport {
+    let current_executable = env::current_exe().ok();
+    detect_runtime_assets_report_with_executable(current_dir, current_executable.as_deref())
+}
+
+pub(crate) fn detect_runtime_assets_report_with_executable(
+    current_dir: Option<&Path>,
+    current_executable: Option<&Path>,
+) -> DoctorRuntimeAssetsReport {
     if let Some(path) = env::var_os("AX_ENGINE_METAL_BUILD_DIR").map(PathBuf::from) {
         return runtime_assets_report_for_dir(&path, "explicit_env");
     }
 
-    current_dir
-        .and_then(detect_repo_runtime_assets_from)
+    let bundled_runtime = current_executable.and_then(detect_bundled_mlx_runtime_from_executable);
+    if let Some(report) = bundled_runtime.as_ref()
+        && report.is_ready()
+    {
+        return report.clone();
+    }
+
+    let repo_runtime = current_dir.and_then(detect_repo_runtime_assets_from);
+    if let Some(report) = repo_runtime.as_ref()
+        && report.is_ready()
+    {
+        return report.clone();
+    }
+
+    bundled_runtime
+        .or(repo_runtime)
         .unwrap_or_else(DoctorRuntimeAssetsReport::not_found)
+}
+
+pub(crate) fn detect_bundled_mlx_runtime_from_executable(
+    executable: &Path,
+) -> Option<DoctorRuntimeAssetsReport> {
+    let resolved_executable =
+        fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
+    let executable_dir = resolved_executable.parent()?;
+    let mut candidates = vec![executable_dir.to_path_buf()];
+    if let Some(install_prefix) = executable_dir.parent() {
+        // Homebrew installs binaries under bin/ and the private MLX runtime
+        // under libexec/. Delocated PyPI wheels use _bin/ and .dylibs/.
+        candidates.push(install_prefix.join("libexec"));
+        candidates.push(install_prefix.join(".dylibs"));
+    }
+    candidates.dedup();
+
+    let mut first_diagnostic = None;
+    for candidate in candidates {
+        let Some(report) = bundled_mlx_runtime_report_for_dir(&candidate) else {
+            continue;
+        };
+        if report.is_ready() {
+            return Some(report);
+        }
+        first_diagnostic.get_or_insert(report);
+    }
+    first_diagnostic
+}
+
+fn bundled_mlx_runtime_report_for_dir(path: &Path) -> Option<DoctorRuntimeAssetsReport> {
+    let mut observed_runtime_file = false;
+    let mut problems = Vec::new();
+
+    for name in BUNDLED_MLX_RUNTIME_FILES {
+        let file = path.join(name);
+        match fs::metadata(&file) {
+            Ok(metadata) => {
+                observed_runtime_file = true;
+                if !metadata.is_file() {
+                    problems.push(format!("{name} is not a regular file"));
+                } else if metadata.len() == 0 {
+                    problems.push(format!("{name} is empty"));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                problems.push(format!("{name} is missing"));
+            }
+            Err(error) => {
+                observed_runtime_file = true;
+                problems.push(format!("failed to inspect {name}: {error}"));
+            }
+        }
+    }
+
+    if !observed_runtime_file {
+        return None;
+    }
+
+    if problems.is_empty() {
+        Some(DoctorRuntimeAssetsReport {
+            status: DoctorRuntimeAssetsStatus::Ready,
+            path: Some(path_string(path)),
+            source: Some("bundled_mlx_runtime".to_string()),
+            issue: None,
+        })
+    } else {
+        Some(DoctorRuntimeAssetsReport {
+            status: DoctorRuntimeAssetsStatus::NotReady,
+            path: Some(path_string(path)),
+            source: Some("bundled_mlx_runtime".to_string()),
+            issue: Some(format!(
+                "bundled MLX runtime is incomplete: {}",
+                problems.join(", ")
+            )),
+        })
+    }
 }
 
 fn detect_repo_runtime_assets_from(start_dir: &Path) -> Option<DoctorRuntimeAssetsReport> {

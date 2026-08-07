@@ -151,11 +151,14 @@ class RepairMlxMetallibReleaseContractTests(unittest.TestCase):
     def test_release_build_repairs_before_final_asset_guards(self) -> None:
         script = (REPO_ROOT / "scripts" / "build-pypi-wheel.sh").read_text(encoding="utf-8")
         repair = 'python3 scripts/repair_mlx_metallib_wheel.py "$DELOCATED"'
+        jaccl_guard = 'verify_wheel_member "$DELOCATED" "ax_engine/.dylibs/libjaccl.dylib"'
         final_guard = 'verify_wheel_member "$DELOCATED" "ax_engine/.dylibs/mlx.metallib"'
 
         self.assertIn(repair, script)
+        self.assertIn(jaccl_guard, script)
         self.assertIn(final_guard, script)
         self.assertLess(script.index("delocate-wheel --require-archs arm64"), script.index(repair))
+        self.assertLess(script.index(repair), script.index(jaccl_guard))
         self.assertLess(script.index(repair), script.index(final_guard))
 
     def test_repository_script_gate_runs_repair_regressions(self) -> None:

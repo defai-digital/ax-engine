@@ -254,6 +254,7 @@ python3 scripts/repair_mlx_metallib_wheel.py "$DELOCATED"
 # Keep this guard after repair so a release cannot silently regress native pip inference.
 echo "==> Verifying bundled MLX runtime assets..."
 verify_wheel_member "$DELOCATED" "ax_engine/.dylibs/libmlx.dylib"
+verify_wheel_member "$DELOCATED" "ax_engine/.dylibs/libjaccl.dylib"
 verify_wheel_member "$DELOCATED" "ax_engine/.dylibs/mlx.metallib"
 
 echo "==> Verifying bundled AX Metal runtime assets..."
