@@ -32,6 +32,24 @@ crash-recovery, or fault-injection test. Keeping those questions separate
 prevents queueing pressure or a recovery policy from hiding the endurance
 signal.
 
+## Design basis
+
+The procedure follows the general performance-testing sequence of a small
+smoke/integration gate, a stable baseline, and then a prolonged soak; this
+keeps a test-script or observability defect from consuming a multi-day run.
+Grafana's [test taxonomy](https://grafana.com/docs/k6/latest/testing-guides/automated-performance-testing/)
+similarly distinguishes smoke, average, stress, and soak workloads, and its
+[threshold guidance](https://grafana.com/docs/k6/latest/using-k6/thresholds/)
+uses explicit error and percentile criteria rather than a subjective final
+readout. The runner applies that idea to client-visible TTFT/decode/prefill,
+per-shape samples, lifecycle state, and memory trends.
+
+MLX uses a [unified-memory model](https://ml-explore.github.io/mlx/build/html/)
+on Apple silicon, so host wired and IOGPU counters cannot be treated as an AX
+process allocation in isolation. This is why the procedure correlates those
+host counters with the owned server's RSS and AX/MLX/KV metrics instead of
+calling a nonzero or warm cache a leak by itself.
+
 Run it on AC power with no competing AX Engine job and preserve the host state
 in the run manifest. The runner captures a host snapshot before model launch,
 then another immediately after warm-up, so model-load allocation is not
