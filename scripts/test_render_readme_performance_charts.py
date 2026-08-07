@@ -393,16 +393,32 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             labels = {
                 engine: label
                 for engine, label, _color, _dot in charts.series_for_chart(
-                    spec, llama_cpp_build=build
+                    spec,
+                    mlx_lm_version="0.31.4",
+                    llama_cpp_build=build,
                 )
             }
 
             self.assertEqual(build, "b10050")
+            self.assertEqual(labels["mlx_lm"], "mlx-lm 0.31.4")
             self.assertEqual(labels["llama_cpp_metal"], "llama.cpp b10050")
             self.assertIn(
                 "retained llama.cpp b10050",
                 charts.direct_versions_footnote(
                     "6.13.2", llama_cpp_build=build
+                ),
+            )
+            self.assertEqual(
+                charts.direct_versions_footnote(
+                    "6.13.3",
+                    snapshot_date="2026-08-07",
+                    mlx_lm_version="0.31.3",
+                    mlx_lm_snapshot_date="2026-08-07",
+                    llama_cpp_build=build,
+                ),
+                (
+                    "AX v6.13.3 (2026-08-07) · mlx-lm 0.31.3 "
+                    "(2026-08-07) · llama.cpp b10050 · separate runs"
                 ),
             )
 

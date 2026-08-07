@@ -73,6 +73,8 @@ def direct_versions_footnote(
     engine_version: str,
     *,
     snapshot_date: str | None = None,
+    mlx_lm_version: str | None = None,
+    mlx_lm_snapshot_date: str | None = None,
     llama_cpp_build: str | None = None,
 ) -> str:
     date_label = snapshot_date or "current"
@@ -81,6 +83,13 @@ def direct_versions_footnote(
         if llama_cpp_build is not None
         else "llama.cpp Metal"
     )
+    if mlx_lm_version is not None:
+        mlx_lm_date_label = mlx_lm_snapshot_date or "current"
+        return (
+            f"AX v{engine_version} ({date_label}) · "
+            f"mlx-lm {mlx_lm_version} ({mlx_lm_date_label}) · "
+            f"{llama_label} · separate runs"
+        )
     return (
         f"AX Engine v{engine_version} snapshot ({date_label}) · retained "
         f"mlx-lm 0.31.3 · retained {llama_label} · cross-run distribution"
@@ -207,8 +216,8 @@ class EmbeddingModelBoxGroup:
 
 
 BOX_CHART_SUBTITLE = (
-    "AX-only snapshot vs retained peer rows | cross-run distribution; "
-    "use the exact table for per-model values."
+    "Separate AX / mlx-lm snapshots + llama.cpp shape reference | "
+    "cross-run distribution; use exact tables for per-model values."
 )
 CHARTS: tuple[ChartSpec, ...] = (
     ChartSpec(
@@ -675,6 +684,7 @@ def series_for_chart(
     spec: ChartSpec,
     *,
     ax_engine_version: str | None = None,
+    mlx_lm_version: str | None = None,
     llama_cpp_build: str | None = None,
 ) -> list[tuple[str, str, str, str]]:
     version = ax_engine_version or AX_ENGINE_VERSION
@@ -684,6 +694,8 @@ def series_for_chart(
             label = f"AX Engine v{version}"
         elif engine == "ax_engine_mlx_ngram_accel":
             label = f"AX+ngram v{version}"
+        elif engine == "mlx_lm" and mlx_lm_version is not None:
+            label = f"mlx-lm {mlx_lm_version}"
         elif engine == "llama_cpp_metal" and llama_cpp_build is not None:
             label = f"llama.cpp {llama_cpp_build}"
         series_by_engine[engine] = (engine, label, color, dot_color)
@@ -1159,6 +1171,7 @@ def collect_family_values(
     spec: ChartSpec,
     *,
     ax_engine_version: str | None = None,
+    mlx_lm_version: str | None = None,
     llama_cpp_build: str | None = None,
 ) -> list[EngineGroupStats]:
     family_slugs = set(FAMILY_SLUGS[spec.family])
@@ -1169,6 +1182,7 @@ def collect_family_values(
     for engine, label, color, dot_color in series_for_chart(
         spec,
         ax_engine_version=ax_engine_version,
+        mlx_lm_version=mlx_lm_version,
         llama_cpp_build=llama_cpp_build,
     ):
         context_stats_list: list[EngineContextStats] = []
@@ -1223,6 +1237,8 @@ def render_family_chart(
     *,
     ax_engine_version: str | None = None,
     snapshot_date: str | None = None,
+    mlx_lm_version: str | None = None,
+    mlx_lm_snapshot_date: str | None = None,
     llama_cpp_build: str | None = None,
 ) -> str:
     all_maxima = [cs.stats.maximum for eg in engine_groups for cs in eg.context_stats]
@@ -1270,6 +1286,8 @@ def render_family_chart(
     versions_footnote = direct_versions_footnote(
         ax_engine_version or AX_ENGINE_VERSION,
         snapshot_date=snapshot_date,
+        mlx_lm_version=mlx_lm_version,
+        mlx_lm_snapshot_date=mlx_lm_snapshot_date,
         llama_cpp_build=llama_cpp_build,
     )
 
@@ -3765,10 +3783,21 @@ def main() -> int:
             if not args.results_dir and ax_direct_snapshot is not None
             else None
         )
+        mlx_lm_version = (
+            str(mlx_lm_direct_snapshot["version"])
+            if not args.results_dir and mlx_lm_direct_snapshot is not None
+            else None
+        )
+        mlx_lm_snapshot_date = (
+            str(mlx_lm_direct_snapshot["date"])
+            if not args.results_dir and mlx_lm_direct_snapshot is not None
+            else None
+        )
         engine_groups = collect_family_values(
             rows,
             spec,
             ax_engine_version=snapshot_version,
+            mlx_lm_version=mlx_lm_version,
             llama_cpp_build=llama_cpp_build,
         )
         output_path = args.output_dir / chart_output_name(spec)
@@ -3777,6 +3806,8 @@ def main() -> int:
             engine_groups,
             ax_engine_version=snapshot_version,
             snapshot_date=snapshot_date,
+            mlx_lm_version=mlx_lm_version,
+            mlx_lm_snapshot_date=mlx_lm_snapshot_date,
             llama_cpp_build=llama_cpp_build,
         )
         if not write_chart(output_path, content, args.check):
