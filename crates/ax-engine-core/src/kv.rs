@@ -656,6 +656,20 @@ impl KvManager {
         }
     }
 
+    /// Evict sole-owner cached prefix blocks (LRU leaf-first, the same
+    /// policy as allocate-time eviction) until at least
+    /// `required_free_blocks` are free or candidates run out. Returns the
+    /// number of blocks freed. Cached blocks shared with live requests are
+    /// never evicted.
+    pub fn reclaim_cached_blocks(
+        &mut self,
+        required_free_blocks: u32,
+    ) -> Result<u32, KvManagerError> {
+        let before = self.available_block_count();
+        self.evict_cached_prefixes_until(required_free_blocks)?;
+        Ok(self.available_block_count().saturating_sub(before))
+    }
+
     fn required_new_blocks(&self, table: &BlockTable, scheduled_tokens: u32) -> u32 {
         if scheduled_tokens == 0 {
             return 0;
@@ -1862,6 +1876,58 @@ mod tests {
         let manager = make_manager(10, 4);
 
         assert_eq!(manager.memory_pressure(), None);
+    }
+
+    #[test]
+    fn reclaim_cached_blocks_frees_to_demand_and_reports_count() {
+        let mut manager = make_manager(4, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4])
+            .unwrap();
+        manager.allocate(RequestId(1), 4).unwrap();
+        manager.free(RequestId(1)).unwrap();
+        manager
+            .register_request(RequestId(2), vec![5, 6, 7, 8])
+            .unwrap();
+        manager.allocate(RequestId(2), 4).unwrap();
+        manager.free(RequestId(2)).unwrap();
+        // Two sole-owner cached blocks remain; two blocks are free.
+        assert_eq!(manager.available_block_count(), 2);
+
+        let freed = manager.reclaim_cached_blocks(3).unwrap();
+
+        assert_eq!(freed, 1, "eviction must stop at the demand target");
+        assert_eq!(manager.available_block_count(), 3);
+
+        let freed = manager.reclaim_cached_blocks(u32::MAX).unwrap();
+
+        assert_eq!(freed, 1, "only remaining cached candidates can be freed");
+        assert_eq!(manager.available_block_count(), 4);
+    }
+
+    #[test]
+    fn reclaim_cached_blocks_skips_live_shared_cache_entries() {
+        let mut manager = make_manager(2, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4])
+            .unwrap();
+        manager.allocate(RequestId(1), 4).unwrap();
+        manager.free(RequestId(1)).unwrap();
+        // Share the cached block with a live request: refcount 2 makes it
+        // ineligible for eviction, so reclaim must free nothing.
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 9])
+            .unwrap();
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 9])
+            .unwrap();
+        assert!(lookup.hit);
+        manager.share_prefix(RequestId(2), &lookup).unwrap();
+
+        let freed = manager.reclaim_cached_blocks(2).unwrap();
+
+        assert_eq!(freed, 0);
+        assert_eq!(manager.available_block_count(), 1);
     }
 
     #[test]
