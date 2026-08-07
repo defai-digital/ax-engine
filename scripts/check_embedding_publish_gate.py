@@ -135,6 +135,20 @@ def _linked_sources(identity: dict[str, Any], side: str) -> list[str]:
     return sources
 
 
+def _linked_hashes(identity: dict[str, Any], side: str) -> set[str]:
+    block = identity.get(side)
+    if not isinstance(block, dict):
+        return set()
+    linked = block.get("linked_mlx") or []
+    return {
+        str(entry["sha256"])
+        for entry in linked
+        if isinstance(entry, dict)
+        and isinstance(entry.get("sha256"), str)
+        and bool(entry["sha256"])
+    }
+
+
 def validate_runtime_identity(
     artifact: dict[str, Any],
     *,
@@ -171,18 +185,27 @@ def validate_runtime_identity(
             isinstance(ref_rt, dict),
             f"{path}: paired_delta requires runtime_identity.reference_runtime",
         )
+        ref_linked = ref_rt.get("linked_mlx") or []
+        require(
+            bool(linked) and bool(ref_linked),
+            f"{path}: paired_delta requires linked MLX fingerprints for both AX and the reference",
+        )
         ref_sources = set(_linked_sources(identity, "reference_runtime"))
-        if (
-            ax_sources
-            and ref_sources
-            and ax_sources.isdisjoint(ref_sources)
-            and "homebrew" in ax_sources
-            and "pip_or_venv" in ref_sources
-        ):
+        if ax_sources != ref_sources and ("homebrew" in ax_sources or "homebrew" in ref_sources):
             raise PublishGateError(
-                f"{path}: AX uses Homebrew libmlx while reference uses "
-                "pip/venv MLX — reject paired_delta publication"
+                f"{path}: AX and reference use different Homebrew / pip "
+                "libmlx sources — reject paired_delta publication"
             )
+        ax_hashes = _linked_hashes(identity, "ax_engine_native")
+        ref_hashes = _linked_hashes(identity, "reference_runtime")
+        require(
+            bool(ax_hashes) and bool(ref_hashes),
+            f"{path}: paired_delta requires sha256 fingerprints for linked MLX",
+        )
+        require(
+            ax_hashes == ref_hashes,
+            f"{path}: AX and reference resolve different linked MLX binaries",
+        )
     return warnings
 
 

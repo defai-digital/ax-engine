@@ -155,7 +155,34 @@ class EmbeddingPublishGateTests(unittest.TestCase):
             }
         ]
         path = self._write(payload)
-        with self.assertRaisesRegex(gate.PublishGateError, "Homebrew libmlx"):
+        with self.assertRaisesRegex(gate.PublishGateError, "Homebrew / pip"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_pip_vs_homebrew_rejects_paired_in_reverse_direction(self) -> None:
+        payload = _paired_fair_artifact()
+        payload["runtime_identity"]["reference_runtime"]["linked_mlx"] = [
+            {
+                "install_name": "/opt/homebrew/opt/mlx/lib/libmlx.dylib",
+                "source_class": "homebrew",
+                "sha256": "aaa",
+            }
+        ]
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "Homebrew / pip"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_different_pip_mlx_hashes_reject_paired(self) -> None:
+        payload = _paired_fair_artifact()
+        payload["runtime_identity"]["reference_runtime"]["linked_mlx"][0]["sha256"] = "different"
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "different linked MLX binaries"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_missing_linked_mlx_fingerprint_rejects_paired(self) -> None:
+        payload = _paired_fair_artifact()
+        payload["runtime_identity"]["reference_runtime"]["linked_mlx"] = []
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "requires linked MLX fingerprints"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
     def test_legacy_requires_flag(self) -> None:
@@ -276,13 +303,21 @@ class EmbeddingPublishGateTests(unittest.TestCase):
                 "ax_engine_native": {
                     "path": "/tmp/x.so",
                     "linked_mlx": [
-                        {"install_name": "/venv/libmlx.dylib", "source_class": "pip_or_venv"}
+                        {
+                            "install_name": "/venv/libmlx.dylib",
+                            "source_class": "pip_or_venv",
+                            "sha256": "same",
+                        }
                     ],
                 },
                 "reference_runtime": {
                     "module": "mlx_lm",
                     "linked_mlx": [
-                        {"install_name": "/venv/libmlx.dylib", "source_class": "pip_or_venv"}
+                        {
+                            "install_name": "/venv/libmlx.dylib",
+                            "source_class": "pip_or_venv",
+                            "sha256": "same",
+                        }
                     ],
                 },
             },
@@ -353,8 +388,22 @@ class EmbeddingPublishGateTests(unittest.TestCase):
             },
             "host": {"chip": "Apple M5 Max"},
             "runtime_identity": {
-                "ax_engine_native": {"linked_mlx": []},
-                "reference_runtime": {"linked_mlx": []},
+                "ax_engine_native": {
+                    "linked_mlx": [
+                        {
+                            "source_class": "pip_or_venv",
+                            "sha256": "same",
+                        }
+                    ]
+                },
+                "reference_runtime": {
+                    "linked_mlx": [
+                        {
+                            "source_class": "pip_or_venv",
+                            "sha256": "same",
+                        }
+                    ]
+                },
             },
             "models": [
                 {
