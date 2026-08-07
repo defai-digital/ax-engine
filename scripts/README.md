@@ -258,7 +258,10 @@ throughput baselines.
   coverage, fallback, n-gram contamination, or non-publishable methodology.
 - `bench_qwen36_mtp_matrix.py`: Qwen 3.6 AX/MTPLX/lightning-mlx peer matrix.
   AX commands automatically select and record the validated exact-verifier
-  profile. Unsupported peer lanes remain explicit in `plan.json` / `plan.md`.
+  profile. Peer lanes wait for eligible host conditions at both benchmark
+  boundaries, and MTPLX artifacts record the actual MTPLX source checkout
+  commit/clean state. Unsupported peer lanes remain explicit in
+  `plan.json` / `plan.md`.
 - `bench_qwen36_mtp_fair.py`: Qwen3.6 MTP prompt-suite harness for MTPLX and AX
   Engine. The default `--modes mtp mtp-ngram` path is a fixed-depth comparison.
   Add `--modes tuned` only for tuned best-of rows: MTPLX runs its public

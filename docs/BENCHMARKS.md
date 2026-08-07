@@ -164,6 +164,11 @@ Rules for the current matrix:
   add the flag and reject an AX artifact that does not record it.
 - Report decode tok/s, prefill tok/s, TTFT ms, and MTP accept rate for every
   supported lane.
+- Keep the default host-condition gates enabled. The matrix waits for an
+  eligible load/CPU boundary before and after every peer lane, records both
+  snapshots, and rejects artifacts with missing or relaxed gates.
+- Run MTPLX from an explicit source checkout. Its artifact records that
+  checkout's commit and tracked-file state, not the AX harness working tree.
 - Include peer lanes only when the reference project has a matching Qwen3.6 MTP
   runner/artifact. Unsupported lanes stay in the plan with their support reason.
 - Do not run, render, or promote `mtp-ngram` rows.
