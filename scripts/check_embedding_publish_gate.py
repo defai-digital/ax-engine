@@ -22,6 +22,7 @@ import argparse
 import json
 import math
 import re
+import statistics
 import sys
 from pathlib import Path
 from typing import Any
@@ -285,6 +286,47 @@ def validate_benchmark_conditions(
         )
 
 
+def validate_trial_summary(
+    result: dict[str, Any],
+    *,
+    path: Path,
+    context: str,
+    declared_trials: int,
+    summary_key: str,
+    trial_key: str,
+    allow_zero: bool = False,
+) -> None:
+    trial_rows = result.get("trials")
+    require(
+        isinstance(trial_rows, list) and len(trial_rows) == declared_trials,
+        f"{path}: {context} must contain exactly {declared_trials} trial rows",
+    )
+    values = [row.get(trial_key) if isinstance(row, dict) else None for row in trial_rows]
+    require(
+        all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and (float(value) >= 0.0 if allow_zero else float(value) > 0.0)
+            for value in values
+        ),
+        f"{path}: {context} trial {trial_key} values must be finite and "
+        f"{'non-negative' if allow_zero else 'positive'}",
+    )
+    recorded = result.get(summary_key)
+    require(
+        isinstance(recorded, (int, float))
+        and not isinstance(recorded, bool)
+        and math.isfinite(float(recorded)),
+        f"{path}: {context} {summary_key} must be finite",
+    )
+    expected = statistics.median(float(value) for value in values)
+    require(
+        math.isclose(float(recorded), expected, rel_tol=1e-9, abs_tol=1e-9),
+        f"{path}: {context} {summary_key} is inconsistent with trial rows",
+    )
+
+
 def validate_rows(
     artifact: dict[str, Any],
     *,
@@ -297,6 +339,13 @@ def validate_rows(
     ref_key = reference_key(artifact)
     schema = str(artifact.get("schema_version", ""))
     is_fair = schema in FAIR_SCHEMAS
+    is_v2 = schema in V2_SCHEMAS
+    declared_trials = artifact.get("trials")
+    if is_v2:
+        require(
+            isinstance(declared_trials, int) and not isinstance(declared_trials, bool),
+            f"{path}: v2 publication requires an integer trials count",
+        )
 
     for model in models:
         require(isinstance(model, dict), f"{path}: model entries must be objects")
@@ -328,6 +377,15 @@ def validate_rows(
                 f"{path}: {label}/{workload} ax_engine_py "
                 "median_tokens_per_sec must be finite and positive",
             )
+            if is_v2:
+                validate_trial_summary(
+                    ax,
+                    path=path,
+                    context=f"{label}/{workload} ax_engine_py",
+                    declared_trials=declared_trials,
+                    summary_key="median_tokens_per_sec",
+                    trial_key="tokens_per_sec",
+                )
             if claim == CLAIM_PAIRED:
                 ref = results.get(ref_key)
                 require(
@@ -343,6 +401,15 @@ def validate_rows(
                     f"{path}: {label}/{workload} {ref_key} "
                     "median_tokens_per_sec must be finite and positive",
                 )
+                if is_v2:
+                    validate_trial_summary(
+                        ref,
+                        path=path,
+                        context=f"{label}/{workload} {ref_key}",
+                        declared_trials=declared_trials,
+                        summary_key="median_tokens_per_sec",
+                        trial_key="tokens_per_sec",
+                    )
                 comparison = row.get("comparison")
                 require(
                     isinstance(comparison, dict) and bool(comparison),
@@ -380,6 +447,24 @@ def validate_rows(
                             f"{path}: {label}/{workload} lacks median_ms_per_item "
                             "(short-query primary metric)"
                         )
+                    elif is_v2:
+                        validate_trial_summary(
+                            ax,
+                            path=path,
+                            context=f"{label}/{workload} ax_engine_py",
+                            declared_trials=declared_trials,
+                            summary_key="median_ms_per_item",
+                            trial_key="ms_per_item",
+                        )
+                        if claim == CLAIM_PAIRED:
+                            validate_trial_summary(
+                                ref,
+                                path=path,
+                                context=f"{label}/{workload} {ref_key}",
+                                declared_trials=declared_trials,
+                                summary_key="median_ms_per_item",
+                                trial_key="ms_per_item",
+                            )
                     primary = row.get("primary_metric")
                     if primary and primary != "median_ms_per_item":
                         warnings.append(
@@ -396,6 +481,35 @@ def validate_rows(
                     f"{path}: {label}/{workload} ax_engine_py "
                     "median_batch_p95_ms must be finite and non-negative",
                 )
+                if is_v2:
+                    validate_trial_summary(
+                        ax,
+                        path=path,
+                        context=f"{label}/{workload} ax_engine_py",
+                        declared_trials=declared_trials,
+                        summary_key="median_batch_p95_ms",
+                        trial_key="batch_p95_ms",
+                        allow_zero=True,
+                    )
+                    if claim == CLAIM_PAIRED:
+                        reference_batch_p95_ms = ref.get("median_batch_p95_ms")
+                        require(
+                            isinstance(reference_batch_p95_ms, (int, float))
+                            and not isinstance(reference_batch_p95_ms, bool)
+                            and math.isfinite(float(reference_batch_p95_ms))
+                            and float(reference_batch_p95_ms) >= 0.0,
+                            f"{path}: {label}/{workload} {ref_key} "
+                            "median_batch_p95_ms must be finite and non-negative",
+                        )
+                        validate_trial_summary(
+                            ref,
+                            path=path,
+                            context=f"{label}/{workload} {ref_key}",
+                            declared_trials=declared_trials,
+                            summary_key="median_batch_p95_ms",
+                            trial_key="batch_p95_ms",
+                            allow_zero=True,
+                        )
     return warnings
 
 

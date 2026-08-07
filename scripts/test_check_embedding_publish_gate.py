@@ -36,6 +36,10 @@ def _performance_conditions() -> dict:
     }
 
 
+def _trials(tokens_per_sec: float, **metrics: float) -> list[dict[str, float]]:
+    return [{"tokens_per_sec": tokens_per_sec, **metrics} for _ in range(5)]
+
+
 def _paired_fair_artifact(**overrides):
     payload = {
         "schema_version": "ax.embedding_fair.v2",
@@ -88,10 +92,12 @@ def _paired_fair_artifact(**overrides):
                             "mlx_lm": {
                                 "median_tokens_per_sec": 100.0,
                                 "median_ms_per_item": 10.0,
+                                "trials": _trials(100.0, ms_per_item=10.0),
                             },
                             "ax_engine_py": {
                                 "median_tokens_per_sec": 110.0,
                                 "median_ms_per_item": 9.0,
+                                "trials": _trials(110.0, ms_per_item=9.0),
                             },
                         },
                         "comparison": {
@@ -103,8 +109,14 @@ def _paired_fair_artifact(**overrides):
                         "workload": "fixed_16_b8",
                         "primary_metric": "median_tokens_per_sec",
                         "results": {
-                            "mlx_lm": {"median_tokens_per_sec": 1000.0},
-                            "ax_engine_py": {"median_tokens_per_sec": 1100.0},
+                            "mlx_lm": {
+                                "median_tokens_per_sec": 1000.0,
+                                "trials": _trials(1000.0),
+                            },
+                            "ax_engine_py": {
+                                "median_tokens_per_sec": 1100.0,
+                                "trials": _trials(1100.0),
+                            },
                         },
                         "comparison": {"ax_vs_reference_tokens_pct": 10.0},
                     },
@@ -269,7 +281,7 @@ class EmbeddingPublishGateTests(unittest.TestCase):
                 require_clean_tree=True,
             )
 
-        under_sampled = _paired_fair_artifact(warmup=1, trials=4)
+        under_sampled = _paired_fair_artifact(warmup=1)
         path = self._write(under_sampled)
         with self.assertRaisesRegex(gate.PublishGateError, "warmup >= 2"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
@@ -331,9 +343,11 @@ class EmbeddingPublishGateTests(unittest.TestCase):
                                 "mlx_lm": {
                                     "median_tokens_per_sec": 1.0,
                                     "median_batch_p95_ms": 10.0,
+                                    "trials": _trials(1.0, batch_p95_ms=10.0),
                                 },
                                 "ax_engine_py": {
                                     "median_tokens_per_sec": 1.0,
+                                    "trials": _trials(1.0, batch_p95_ms=10.0),
                                     # missing p95
                                 },
                             },
@@ -361,6 +375,22 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         )
         path = self._write(payload)
         with self.assertRaisesRegex(gate.PublishGateError, "must be finite and positive"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_v2_requires_all_declared_trial_rows(self) -> None:
+        payload = _paired_fair_artifact()
+        payload["models"][0]["rows"][0]["results"]["ax_engine_py"]["trials"].pop()
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "exactly 5 trial rows"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
+    def test_v2_summary_must_match_trial_median(self) -> None:
+        payload = _paired_fair_artifact()
+        trials = payload["models"][0]["rows"][0]["results"]["ax_engine_py"]["trials"]
+        for trial in trials[:3]:
+            trial["tokens_per_sec"] = 1.0
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "inconsistent with trial rows"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
     def test_scale_requires_publication_cooldown(self) -> None:
@@ -415,10 +445,12 @@ class EmbeddingPublishGateTests(unittest.TestCase):
                                 "mlx_lm": {
                                     "median_tokens_per_sec": 1.0,
                                     "median_batch_p95_ms": 1.0,
+                                    "trials": _trials(1.0, batch_p95_ms=1.0),
                                 },
                                 "ax_engine_py": {
                                     "median_tokens_per_sec": 1.0,
                                     "median_batch_p95_ms": 1.0,
+                                    "trials": _trials(1.0, batch_p95_ms=1.0),
                                 },
                             },
                             "comparison": {"ax_vs_reference_tokens_pct": 0.0},
@@ -447,6 +479,8 @@ class EmbeddingPublishGateTests(unittest.TestCase):
             for row in model["rows"]:
                 for result in row["results"].values():
                     result["median_batch_p95_ms"] = 1.0
+                    for trial in result["trials"]:
+                        trial["batch_p95_ms"] = 1.0
         path = self._write(payload)
         report = gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
         self.assertTrue(report["ok"])
