@@ -62,7 +62,7 @@ PROMPT_TOKENS = (128, 512, 2048)
 AX_ENGINE_CHART_LABEL = f"AX Engine v{AX_ENGINE_VERSION}"
 
 SERIES = [
-    ("llama_cpp_metal", "llama.cpp b9910", "#f97316", "#c2410c"),
+    ("llama_cpp_metal", "llama.cpp Metal", "#f97316", "#c2410c"),
     ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
     ("ax_engine_mlx", AX_ENGINE_CHART_LABEL, "#2eaf5f", "#176c37"),
     ("ax_engine_mlx_ngram_accel", f"AX+ngram v{AX_ENGINE_VERSION}", "#137a3d", "#0b4f28"),
@@ -70,12 +70,20 @@ SERIES = [
 
 
 def direct_versions_footnote(
-    engine_version: str, *, snapshot_date: str | None = None
+    engine_version: str,
+    *,
+    snapshot_date: str | None = None,
+    llama_cpp_build: str | None = None,
 ) -> str:
     date_label = snapshot_date or "current"
+    llama_label = (
+        f"llama.cpp {llama_cpp_build}"
+        if llama_cpp_build is not None
+        else "llama.cpp Metal"
+    )
     return (
         f"AX Engine v{engine_version} snapshot ({date_label}) · retained "
-        "mlx-lm 0.31.3 · retained llama.cpp b9910 · cross-run distribution"
+        f"mlx-lm 0.31.3 · retained {llama_label} · cross-run distribution"
     )
 
 FAMILY_SLUGS: dict[str, list[str]] = {
@@ -664,7 +672,10 @@ def load_llama_rows_from_readme(readme: Path) -> list[dict[str, Any]]:
 
 
 def series_for_chart(
-    spec: ChartSpec, *, ax_engine_version: str | None = None
+    spec: ChartSpec,
+    *,
+    ax_engine_version: str | None = None,
+    llama_cpp_build: str | None = None,
 ) -> list[tuple[str, str, str, str]]:
     version = ax_engine_version or AX_ENGINE_VERSION
     series_by_engine = {}
@@ -673,6 +684,8 @@ def series_for_chart(
             label = f"AX Engine v{version}"
         elif engine == "ax_engine_mlx_ngram_accel":
             label = f"AX+ngram v{version}"
+        elif engine == "llama_cpp_metal" and llama_cpp_build is not None:
+            label = f"llama.cpp {llama_cpp_build}"
         series_by_engine[engine] = (engine, label, color, dot_color)
     missing = [
         engine for engine in spec.series_engines if engine not in series_by_engine
@@ -768,6 +781,18 @@ def find_mlx_lm_direct_snapshot(readme: Path) -> Path | None:
     if path_value.startswith("benchmarks/"):
         return (REPO_ROOT / path_value).resolve()
     return relative
+
+
+def find_llama_cpp_build(readme: Path) -> str | None:
+    """Return the measured llama.cpp build label declared by the result page."""
+    text = readme.read_text(encoding="utf-8")
+    marker = "readme-llama-cpp-build:"
+    if marker not in text:
+        return None
+    matches = re.findall(r"readme-llama-cpp-build:\s*(b\d+)", text)
+    if len(matches) != 1:
+        raise ChartError("README must declare exactly one valid llama.cpp build marker")
+    return matches[0]
 
 
 def require_publication_matrix(
@@ -1134,6 +1159,7 @@ def collect_family_values(
     spec: ChartSpec,
     *,
     ax_engine_version: str | None = None,
+    llama_cpp_build: str | None = None,
 ) -> list[EngineGroupStats]:
     family_slugs = set(FAMILY_SLUGS[spec.family])
     family_rows = [r for r in rows if r.get("_slug") in family_slugs]
@@ -1141,7 +1167,9 @@ def collect_family_values(
 
     engine_groups: list[EngineGroupStats] = []
     for engine, label, color, dot_color in series_for_chart(
-        spec, ax_engine_version=ax_engine_version
+        spec,
+        ax_engine_version=ax_engine_version,
+        llama_cpp_build=llama_cpp_build,
     ):
         context_stats_list: list[EngineContextStats] = []
         for prompt_tokens in PROMPT_TOKENS:
@@ -1195,6 +1223,7 @@ def render_family_chart(
     *,
     ax_engine_version: str | None = None,
     snapshot_date: str | None = None,
+    llama_cpp_build: str | None = None,
 ) -> str:
     all_maxima = [cs.stats.maximum for eg in engine_groups for cs in eg.context_stats]
     axis_max = nice_axis_ceiling(max(all_maxima) * 1.05)
@@ -1238,6 +1267,11 @@ def render_family_chart(
 
     header_right = FAMILY_CHART_WIDTH - 34
     unit_w = max(48, len(spec.unit) * 7 + 24)
+    versions_footnote = direct_versions_footnote(
+        ax_engine_version or AX_ENGINE_VERSION,
+        snapshot_date=snapshot_date,
+        llama_cpp_build=llama_cpp_build,
+    )
 
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg"'
@@ -1261,7 +1295,7 @@ def render_family_chart(
         f"</text>",
         # Footnote (versions)
         f'<text x="{FAMILY_LEFT}" y="62" font-family="{FONT}"'
-        f' font-size="10" fill="#6b7280">{escape(direct_versions_footnote(ax_engine_version or AX_ENGINE_VERSION, snapshot_date=snapshot_date))}</text>',
+        f' font-size="10" fill="#6b7280">{escape(versions_footnote)}</text>',
         # Unit pill badge (top-right)
         f'<rect x="{header_right - unit_w}" y="13" width="{unit_w}" height="22"'
         f' rx="11" fill="#eef2ff" stroke="#c7d2fe"/>',
@@ -3546,6 +3580,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     repo_root = readme_artifacts.repo_root_for(args.readme)
+    llama_cpp_build = find_llama_cpp_build(args.readme)
 
     if args.only_ax_direct_snapshot:
         snapshot_path = find_ax_direct_snapshot(args.readme)
@@ -3572,9 +3607,11 @@ def main() -> int:
                     rows,
                     spec,
                     ax_engine_version=str(snapshot["engine_version"]),
+                    llama_cpp_build=llama_cpp_build,
                 ),
                 ax_engine_version=str(snapshot["engine_version"]),
                 snapshot_date=str(snapshot.get("date")),
+                llama_cpp_build=llama_cpp_build,
             )
             if not write_chart(output_path, content, args.check):
                 mismatches.append(output_path)
@@ -3729,7 +3766,10 @@ def main() -> int:
             else None
         )
         engine_groups = collect_family_values(
-            rows, spec, ax_engine_version=snapshot_version
+            rows,
+            spec,
+            ax_engine_version=snapshot_version,
+            llama_cpp_build=llama_cpp_build,
         )
         output_path = args.output_dir / chart_output_name(spec)
         content = render_family_chart(
@@ -3737,6 +3777,7 @@ def main() -> int:
             engine_groups,
             ax_engine_version=snapshot_version,
             snapshot_date=snapshot_date,
+            llama_cpp_build=llama_cpp_build,
         )
         if not write_chart(output_path, content, args.check):
             mismatches.append(output_path)

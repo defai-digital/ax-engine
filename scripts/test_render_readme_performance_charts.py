@@ -367,6 +367,36 @@ class ReadmePerformanceChartTests(unittest.TestCase):
                 snapshot_path.resolve(),
             )
 
+    def test_llama_cpp_chart_label_comes_from_result_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            readme = Path(root_name) / "README.md"
+            readme.write_text(
+                "<!-- readme-llama-cpp-build: b10050 -->\n",
+                encoding="utf-8",
+            )
+            spec = next(
+                item
+                for item in charts.CHARTS
+                if item.family == "gemma4" and item.metric == "decode"
+            )
+
+            build = charts.find_llama_cpp_build(readme)
+            labels = {
+                engine: label
+                for engine, label, _color, _dot in charts.series_for_chart(
+                    spec, llama_cpp_build=build
+                )
+            }
+
+            self.assertEqual(build, "b10050")
+            self.assertEqual(labels["llama_cpp_metal"], "llama.cpp b10050")
+            self.assertIn(
+                "retained llama.cpp b10050",
+                charts.direct_versions_footnote(
+                    "6.13.2", llama_cpp_build=build
+                ),
+            )
+
     def test_gemma4_12b_decode_uses_llama_matched_depth(self) -> None:
         row = {
             "engine": "llama_cpp_metal",

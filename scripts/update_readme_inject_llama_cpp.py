@@ -45,6 +45,10 @@ LLAMA_SEPARATOR_CELL = "---:"
 LLAMA_CPP_PUBLICATION_MATRIX_SCHEMA = "ax.llama_cpp_metal_publication_matrix.v1"
 
 DISCLAIMER_MARK = "<!-- llama-cpp-column-disclaimer -->"
+LLAMA_BUILD_MARKER_PREFIX = "<!-- readme-llama-cpp-build:"
+LLAMA_BUILD_MARKER_RE = re.compile(
+    r"^<!-- readme-llama-cpp-build:\s*b(\d+)\s*-->$"
+)
 DISCLAIMER_PARAGRAPH = (
     f"{DISCLAIMER_MARK}\n"
     "**`llama.cpp Metal*` column** — Shape-compatible reference produced by "
@@ -206,6 +210,43 @@ def ensure_disclaimer(lines: list[str]) -> tuple[list[str], bool]:
     raise RuntimeError("Could not locate 'Prefill throughput' section to anchor disclaimer.")
 
 
+def upsert_llama_build_marker(
+    lines: list[str], sweep_doc: dict[str, Any]
+) -> tuple[list[str], bool]:
+    """Bind injected table values and chart labels to the measured build."""
+    matrix = sweep_doc.get("llama_cpp_publication_matrix")
+    identity = matrix.get("llama_cpp_identity") if isinstance(matrix, dict) else None
+    build_number = identity.get("build_number") if isinstance(identity, dict) else None
+    if (
+        not isinstance(build_number, int)
+        or isinstance(build_number, bool)
+        or build_number <= 0
+    ):
+        return lines, False
+    marker = f"{LLAMA_BUILD_MARKER_PREFIX} b{build_number} -->"
+    existing = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith(LLAMA_BUILD_MARKER_PREFIX)
+    ]
+    if len(existing) > 1:
+        raise RuntimeError("README contains duplicate llama.cpp build markers")
+    if existing:
+        index = existing[0]
+        if LLAMA_BUILD_MARKER_RE.fullmatch(lines[index]) is None:
+            raise RuntimeError("README contains a malformed llama.cpp build marker")
+        if lines[index] == marker:
+            return lines, False
+        updated = list(lines)
+        updated[index] = marker
+        return updated, True
+
+    for index, line in enumerate(lines):
+        if _is_section_heading(line, TABLE_TARGETS[0][0]):
+            return lines[:index] + [marker, ""] + lines[index:], True
+    raise RuntimeError("Could not locate the first benchmark table for the build marker.")
+
+
 _ROW_PT_RE = re.compile(r"^\s*\|.*?\|.*?\|\s*(128|512|2048)\s*\|")
 _HEADER_RE = re.compile(r"^\s*\|\s*Model\s*\|")
 _SEPARATOR_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
@@ -350,6 +391,7 @@ def apply(readme_text: str, sweep_doc: dict[str, Any]) -> tuple[str, dict[str, A
 
     lines, removed = remove_standalone_section(lines)
     lines, inserted_disclaimer = ensure_disclaimer(lines)
+    lines, updated_build_marker = upsert_llama_build_marker(lines, sweep_doc)
     for header_prefix, metric_key in TABLE_TARGETS:
         lines = inject_column(lines, header_prefix, metric_key, lookup)
 
@@ -357,6 +399,7 @@ def apply(readme_text: str, sweep_doc: dict[str, Any]) -> tuple[str, dict[str, A
         "rows_in_lookup": len(lookup),
         "removed_standalone_section": removed,
         "inserted_disclaimer": inserted_disclaimer,
+        "updated_build_marker": updated_build_marker,
     }
     return "\n".join(lines) + "\n", stats
 
@@ -377,6 +420,7 @@ def main() -> None:
         f"  rows in lookup: {stats['rows_in_lookup']}\n"
         f"  removed standalone section: {stats['removed_standalone_section']}\n"
         f"  inserted disclaimer: {stats['inserted_disclaimer']}\n"
+        f"  updated build marker: {stats['updated_build_marker']}\n"
         f"  byte delta: {len(updated) - len(original):+d}"
     )
 

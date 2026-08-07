@@ -230,6 +230,20 @@ class InjectorTests(unittest.TestCase):
             self.assertEqual(stripped.count(inj.LLAMA_HEADER_CELL), 1)
             self.assertEqual(stripped[3], inj.LLAMA_HEADER_CELL)
 
+    def test_apply_binds_injected_values_to_measured_llama_build(self) -> None:
+        sweep_doc = dict(self.sweep_doc)
+        sweep_doc["llama_cpp_publication_matrix"] = {
+            "llama_cpp_identity": {"build_number": 10050}
+        }
+
+        once, stats = inj.apply(SAMPLE_README, sweep_doc)
+        twice, second_stats = inj.apply(once, sweep_doc)
+
+        self.assertTrue(stats["updated_build_marker"])
+        self.assertIn("<!-- readme-llama-cpp-build: b10050 -->", once)
+        self.assertEqual(once, twice)
+        self.assertFalse(second_stats["updated_build_marker"])
+
     def test_apply_migrates_legacy_trailing_column_to_canonical_position(self) -> None:
         """A README with the llama column at the end (legacy layout) should
         be migrated to the canonical pre-mlx_lm position on the next run."""
