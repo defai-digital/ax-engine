@@ -2000,6 +2000,49 @@ def guard_lifecycle(
     return messages
 
 
+def warmup_preflight_concerns(
+    *, observation: dict[str, Any], drain: dict[str, Any], max_quiescent_kv_logical_mib: float
+) -> list[str]:
+    """Require the probes and observability needed for a meaningful measured run.
+
+    Warm-up is the last safe point to discover that the exact server cannot
+    produce the native token/KV/lifecycle evidence required by this soak.  A
+    72-hour request stream without that evidence would show liveness, but
+    could not answer the retention and prefill questions the run is intended
+    to resolve.
+    """
+    concerns: list[str] = []
+    if not observation.get("ok"):
+        concerns.append(f"stream failed: {observation.get('error')}")
+    prompt_tokens = observation.get("prompt_token_count")
+    if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool) or prompt_tokens <= 0:
+        concerns.append("native prompt token count was unavailable")
+
+    drain_state = drain.get("state")
+    if drain_state != "drained":
+        concerns.append(
+            f"post-response lifecycle did not drain ({drain_state}; "
+            f"missing={drain.get('missing', [])}; nonzero={drain.get('nonzero', {})})"
+        )
+    metrics = drain.get("metrics", {})
+    values = metrics.get("values", {}) if isinstance(metrics, dict) else {}
+    if not isinstance(values, dict):
+        values = {}
+    if values.get("ax_engine_model_memory_kv_report_available") != 1.0:
+        concerns.append("native model KV memory report was unavailable")
+    missing_model_memory = metrics.get("missing_model_memory_metrics", [])
+    if isinstance(missing_model_memory, list) and missing_model_memory:
+        concerns.append(f"required model-memory metrics were missing: {missing_model_memory}")
+    logical = values.get("ax_engine_model_memory_kv_logical_bytes")
+    if isinstance(logical, (int, float)) and logical > max_quiescent_kv_logical_mib * MEBIBYTE:
+        concerns.append(
+            "logical model KV remained "
+            f"{float(logical) / MEBIBYTE:.1f} MiB after lifecycle drain "
+            f"(guardrail {max_quiescent_kv_logical_mib:.1f} MiB)"
+        )
+    return concerns
+
+
 def run_endurance(args: argparse.Namespace) -> int:
     """Convert SIGTERM into a normal interrupted run with a final checkpoint."""
     previous_sigterm = signal.getsignal(signal.SIGTERM)
@@ -2134,6 +2177,11 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 timeout_s=args.request_timeout_seconds,
             )
             observation["phase"] = "warmup"
+            drain = wait_for_quiescence(
+                base_url=base_url,
+                model_id=args.model_id,
+                timeout_s=args.drain_timeout_seconds,
+            )
             append_jsonl(
                 events_path,
                 {
@@ -2143,11 +2191,18 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     "prompt_request_index": warmup_request_index,
                     "shape": shape.name,
                     "request": observation,
+                    "lifecycle": drain,
                 },
             )
-            if not observation.get("ok"):
+            preflight_concerns = warmup_preflight_concerns(
+                observation=observation,
+                drain=drain,
+                max_quiescent_kv_logical_mib=args.max_quiescent_kv_logical_mib,
+            )
+            if preflight_concerns:
                 raise RuntimeError(
-                    f"warmup request {warmup_index + 1} failed: {observation.get('error')}"
+                    f"warmup request {warmup_index + 1} did not satisfy the endurance "
+                    f"preflight: {'; '.join(preflight_concerns)}"
                 )
 
         started_monotonic = time.monotonic()

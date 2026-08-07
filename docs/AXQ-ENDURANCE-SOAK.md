@@ -83,9 +83,11 @@ will not necessarily have enough long-prompt samples for a clean baseline.
 1. Run `ax-engine doctor --verbose --mlx-model-artifacts-dir "$stage/models/axq"`
    and retain its output. Do not relabel a manifest-lineage warning as a passed
    model certification.
-2. Run a 20–30 minute pilot in its own fresh output directory. Confirm that the
-   owned server becomes ready, every response has a terminal event and native
-   prompt length, the lifecycle gauges drain, and model-KV gauges are present.
+2. Run a 20–30 minute pilot in its own fresh output directory. Before its
+   measured interval begins, the runner executes one complete warm-up cycle
+   and requires each probe to have a terminal response and native prompt
+   length, a fully drained lifecycle, and every target-model KV-memory gauge.
+   It stops before the long run if that instrumentation contract is absent.
 3. Inspect the pilot `summary.json` and server log. If its evidence is clean
    enough to exercise all probes, start the final run in a new empty directory.
    The final runner owns one PID and must never be restarted.

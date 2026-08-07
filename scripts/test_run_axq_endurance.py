@@ -174,6 +174,57 @@ class AxqEnduranceTests(unittest.TestCase):
             ["post-request native model KV memory report is unavailable"],
         )
 
+    def test_warmup_preflight_requires_stream_token_kv_and_drain_evidence(self) -> None:
+        observation = {
+            "ok": True,
+            "prompt_token_count": 128,
+        }
+        values = {
+            **{name: 0.0 for name in runner.LIFECYCLE_METRICS},
+            **{name: 0.0 for name in runner.MODEL_METRICS},
+            "ax_engine_model_memory_kv_report_available": 1.0,
+        }
+        drain = {
+            "state": "drained",
+            "missing": [],
+            "nonzero": {},
+            "metrics": {
+                "values": values,
+                "missing_model_memory_metrics": [],
+            },
+        }
+
+        self.assertEqual(
+            runner.warmup_preflight_concerns(
+                observation=observation,
+                drain=drain,
+                max_quiescent_kv_logical_mib=1024.0,
+            ),
+            [],
+        )
+
+        observation["prompt_token_count"] = None
+        drain["state"] = "inconclusive"
+        drain["missing"] = ["ax_engine_jobs_in_flight"]
+        values["ax_engine_model_memory_kv_report_available"] = 0.0
+        drain["metrics"]["missing_model_memory_metrics"] = [
+            "ax_engine_model_memory_kv_physical_bytes"
+        ]
+        values["ax_engine_model_memory_kv_logical_bytes"] = 2_048 * runner.MEBIBYTE
+
+        concerns = runner.warmup_preflight_concerns(
+            observation=observation,
+            drain=drain,
+            max_quiescent_kv_logical_mib=1024.0,
+        )
+
+        self.assertEqual(len(concerns), 5)
+        self.assertIn("native prompt token", concerns[0])
+        self.assertIn("did not drain", concerns[1])
+        self.assertIn("KV memory report", concerns[2])
+        self.assertIn("required model-memory", concerns[3])
+        self.assertIn("logical model KV", concerns[4])
+
     def test_vm_stat_swap_and_iogpu_parsers_calculate_memory_inputs(self) -> None:
         vm = runner.parse_vm_stat(
             """
