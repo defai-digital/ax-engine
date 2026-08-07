@@ -1050,8 +1050,13 @@ def execute_lanes(args: argparse.Namespace, lanes: list[Lane]) -> None:
             print(f"[skip] {lane.target.key} {lane.suite} {lane.engine}: {lane.reason}", flush=True)
             continue
         if args.skip_existing and lane.output_path.is_file():
-            print(f"[skip-existing] {lane.output_path}", flush=True)
-            continue
+            if existing_lane_artifact_is_publishable(args, lane):
+                print(f"[skip-existing] {lane.output_path}", flush=True)
+                continue
+            print(
+                f"[rerun-ineligible] {lane.output_path}",
+                flush=True,
+            )
         lane.output_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"[run] {lane.target.key} {lane.suite} {lane.engine}", flush=True)
         log_path = lane.output_path.with_suffix(".log")
@@ -1254,6 +1259,19 @@ def lane_publication_reasons(
     else:
         reasons.extend(peer_artifact_publication_reasons(args, lane, artifact))
     return sorted(set(reasons))
+
+
+def existing_lane_artifact_is_publishable(
+    args: argparse.Namespace,
+    lane: Lane,
+) -> bool:
+    if lane.status != "supported" or not lane.output_path.is_file():
+        return False
+    try:
+        metrics = summarize_artifact(lane.engine, lane.output_path)
+        return not lane_publication_reasons(args, lane, metrics)
+    except Exception:
+        return False
 
 
 def repo_relative_artifact(path: Path) -> str:

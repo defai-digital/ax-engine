@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("bench_qwen36_mtp_matrix.py")
 MODULE_SPEC = importlib.util.spec_from_file_location(
@@ -109,6 +110,36 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
 
         self.assertFalse(summary["publication_candidate"])
         self.assertIn("missing_artifact", summary["rows"][0]["publication_reasons"])
+
+    def test_skip_existing_retries_an_error_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            args.skip_existing = True
+            self.write_single_prompt_suite(args)
+            output_path = args.output_dir / "mtplx.json"
+            output_path.parent.mkdir(parents=True)
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "ax.mtp_engine_error.v1",
+                        "engine": "mtplx",
+                        "error": "interrupted",
+                    }
+                )
+            )
+            lane = matrix.Lane(
+                target=matrix.TARGETS["27b-4bit"],
+                engine="mtplx",
+                suite="flappy",
+                status="supported",
+                output_path=output_path,
+                command=["python3", "fake-bench.py"],
+            )
+
+            with patch.object(matrix, "run_logged") as run_logged:
+                matrix.execute_lanes(args, [lane])
+
+        run_logged.assert_called_once()
 
     def test_mtplx_publication_gate_requires_complete_clean_trials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
