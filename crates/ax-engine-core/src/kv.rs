@@ -457,7 +457,7 @@ impl KvManager {
             .block_tables
             .get(&request_id)
             .ok_or(KvManagerError::UnknownRequest(request_id))?;
-        Ok(self.required_new_blocks(table, scheduled_tokens) <= self.free_block_ids.len() as u32)
+        Ok(self.required_new_blocks(table, scheduled_tokens) <= self.allocatable_block_count())
     }
 
     pub fn allocate(
@@ -474,15 +474,17 @@ impl KvManager {
             });
         }
 
-        let can_allocate = self.can_allocate(request_id, scheduled_tokens)?;
-        if !can_allocate {
-            self.evict_cached_prefixes_until(
-                self.required_new_blocks_for_request(request_id, scheduled_tokens)?,
-            )?;
+        // Fused accounting: reclaimable prefix cache counts as capacity.
+        // When raw free blocks are short, evict sole-owner cached blocks
+        // (LRU leaf-first) before popping; eviction is what moves a cached
+        // block onto the free stack, so a popped block can never still be
+        // hash-resident in `cached_blocks`.
+        let required_new_blocks =
+            self.required_new_blocks_for_request(request_id, scheduled_tokens)?;
+        if self.available_block_count() < required_new_blocks {
+            self.evict_cached_prefixes_until(required_new_blocks)?;
         }
-
-        let can_allocate = self.can_allocate(request_id, scheduled_tokens)?;
-        if !can_allocate {
+        if self.available_block_count() < required_new_blocks {
             return Ok(AllocationPlan {
                 request_id,
                 new_block_ids: Vec::new(),
@@ -491,14 +493,7 @@ impl KvManager {
             });
         }
 
-        let required_new_blocks = {
-            let table = self
-                .block_tables
-                .get(&request_id)
-                .ok_or(KvManagerError::UnknownRequest(request_id))?;
-            self.required_new_blocks(table, scheduled_tokens) as usize
-        };
-
+        let required_new_blocks = required_new_blocks as usize;
         let mut new_block_ids = Vec::with_capacity(required_new_blocks);
         for _ in 0..required_new_blocks {
             let block_id = self
@@ -636,38 +631,34 @@ impl KvManager {
         self.free_block_ids.len() as u32
     }
 
+    /// Free blocks plus sole-owner cached prefix blocks (refcount == 1),
+    /// i.e. everything allocation can use after on-demand eviction. This is
+    /// the scheduler-facing availability number — the same accounting as
+    /// vLLM's free queue, where evictable hashed blocks count as free, so a
+    /// "full but reclaimable" pool is never reported as exhausted.
+    pub fn allocatable_block_count(&self) -> u32 {
+        let reclaimable = self
+            .cached_blocks
+            .values()
+            .filter(|entry| self.cached_entry_releases_block(entry))
+            .count() as u32;
+        self.available_block_count() + reclaimable
+    }
+
     pub fn memory_pressure(&self) -> Option<String> {
-        let free_blocks = self.available_block_count();
-        if free_blocks == 0 {
-            if !self.cached_blocks.is_empty() {
-                Some("kv_exhausted_reclaimable_cache".into())
-            } else {
-                Some("kv_exhausted".into())
-            }
-        } else if u64::from(free_blocks) * u64::from(KV_LOW_FREE_BLOCKS_DIVISOR)
+        let allocatable_blocks = self.allocatable_block_count();
+        if allocatable_blocks == 0 {
+            Some("kv_exhausted".into())
+        } else if u64::from(allocatable_blocks) * u64::from(KV_LOW_FREE_BLOCKS_DIVISOR)
             <= u64::from(self.config.total_blocks)
         {
             Some(format!(
                 "kv_low_free_blocks:{}/{}",
-                free_blocks, self.config.total_blocks
+                allocatable_blocks, self.config.total_blocks
             ))
         } else {
             None
         }
-    }
-
-    /// Evict sole-owner cached prefix blocks (LRU leaf-first, the same
-    /// policy as allocate-time eviction) until at least
-    /// `required_free_blocks` are free or candidates run out. Returns the
-    /// number of blocks freed. Cached blocks shared with live requests are
-    /// never evicted.
-    pub fn reclaim_cached_blocks(
-        &mut self,
-        required_free_blocks: u32,
-    ) -> Result<u32, KvManagerError> {
-        let before = self.available_block_count();
-        self.evict_cached_prefixes_until(required_free_blocks)?;
-        Ok(self.available_block_count().saturating_sub(before))
     }
 
     fn required_new_blocks(&self, table: &BlockTable, scheduled_tokens: u32) -> u32 {
@@ -1843,18 +1834,19 @@ mod tests {
     }
 
     #[test]
-    fn memory_pressure_reports_reclaimable_cache_when_no_free_blocks_can_evict() {
-        let mut manager = make_manager(1, 4);
+    fn memory_pressure_counts_sole_owner_cache_as_available() {
+        let mut manager = make_manager(4, 4);
         manager
             .register_request(RequestId(1), vec![1, 2, 3, 4])
             .unwrap();
         manager.allocate(RequestId(1), 4).unwrap();
         manager.free(RequestId(1)).unwrap();
 
-        assert_eq!(
-            manager.memory_pressure(),
-            Some("kv_exhausted_reclaimable_cache".into())
-        );
+        // Raw free is 3 and the cached block is sole-owner (reclaimable), so
+        // the fused view sees a fully available pool.
+        assert_eq!(manager.available_block_count(), 3);
+        assert_eq!(manager.allocatable_block_count(), 4);
+        assert_eq!(manager.memory_pressure(), None);
     }
 
     #[test]
@@ -1879,7 +1871,7 @@ mod tests {
     }
 
     #[test]
-    fn reclaim_cached_blocks_frees_to_demand_and_reports_count() {
+    fn allocatable_block_count_includes_sole_owner_cache() {
         let mut manager = make_manager(4, 4);
         manager
             .register_request(RequestId(1), vec![1, 2, 3, 4])
@@ -1891,22 +1883,18 @@ mod tests {
             .unwrap();
         manager.allocate(RequestId(2), 4).unwrap();
         manager.free(RequestId(2)).unwrap();
-        // Two sole-owner cached blocks remain; two blocks are free.
+        // Two sole-owner cached blocks remain; two blocks are raw free.
         assert_eq!(manager.available_block_count(), 2);
-
-        let freed = manager.reclaim_cached_blocks(3).unwrap();
-
-        assert_eq!(freed, 1, "eviction must stop at the demand target");
-        assert_eq!(manager.available_block_count(), 3);
-
-        let freed = manager.reclaim_cached_blocks(u32::MAX).unwrap();
-
-        assert_eq!(freed, 1, "only remaining cached candidates can be freed");
-        assert_eq!(manager.available_block_count(), 4);
+        assert_eq!(manager.allocatable_block_count(), 4);
+        manager.register_request(RequestId(3), vec![9; 16]).unwrap();
+        assert!(
+            manager.can_allocate(RequestId(3), 16).unwrap(),
+            "fused accounting must count reclaimable cache as capacity"
+        );
     }
 
     #[test]
-    fn reclaim_cached_blocks_skips_live_shared_cache_entries() {
+    fn allocatable_block_count_excludes_live_shared_cache() {
         let mut manager = make_manager(2, 4);
         manager
             .register_request(RequestId(1), vec![1, 2, 3, 4])
@@ -1914,7 +1902,7 @@ mod tests {
         manager.allocate(RequestId(1), 4).unwrap();
         manager.free(RequestId(1)).unwrap();
         // Share the cached block with a live request: refcount 2 makes it
-        // ineligible for eviction, so reclaim must free nothing.
+        // ineligible for eviction, so it must not count as allocatable.
         manager
             .register_request(RequestId(2), vec![1, 2, 3, 4, 9])
             .unwrap();
@@ -1924,10 +1912,8 @@ mod tests {
         assert!(lookup.hit);
         manager.share_prefix(RequestId(2), &lookup).unwrap();
 
-        let freed = manager.reclaim_cached_blocks(2).unwrap();
-
-        assert_eq!(freed, 0);
         assert_eq!(manager.available_block_count(), 1);
+        assert_eq!(manager.allocatable_block_count(), 1);
     }
 
     #[test]

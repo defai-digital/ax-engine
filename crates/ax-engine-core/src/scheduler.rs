@@ -350,7 +350,7 @@ pub struct Scheduler;
 
 /// Fallback budget for *unrecognized* pressure labels only: one token so
 /// decode can still progress. No current label maps here — `kv_exhausted`
-/// and `kv_exhausted_reclaimable_cache` both defer (budget 0).
+/// defers (budget 0).
 const MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP: u32 = 1;
 /// Soft pressure (`kv_low_free_blocks:*`): keep prefill productive. Forcing 1
 /// token here made multi-model long-prefill (flip S1 Gemma ~14k tok) take ~35s
@@ -362,7 +362,6 @@ const MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP: u32 = 1;
 /// re-throttle long prefills after KV free drops below 20%.
 const MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP: u32 = 256;
 const MEMORY_PRESSURE_KV_EXHAUSTED: &str = "kv_exhausted";
-const MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE: &str = "kv_exhausted_reclaimable_cache";
 const MEMORY_PRESSURE_KV_LOW_PREFIX: &str = "kv_low_free_blocks:";
 
 impl Scheduler {
@@ -437,9 +436,9 @@ impl Scheduler {
         // 256-token pressure budget, which mid-prompt on Gemma-12B long
         // prefill is hundreds of ms and blew S1 concurrent gap p95 to
         // ~350–500 ms (2026-07-24). Soft pressure still caps via
-        // `pressure_prefill_budget` (min with fair_chunk below); only hard
-        // exhausted / reclaimable-hard policies turn fair off so the
-        // defer path remains the sole throttle.
+        // `pressure_prefill_budget` (min with fair_chunk below); only the
+        // hard exhausted policy turns fair off so the defer path remains
+        // the sole throttle.
         let fair_active = input.multi_prefill_fair
             && !is_hard_memory_pressure_prefill_budget(pressure_prefill_budget);
         let mut admitted_prefill_requests: u32 = 0;
@@ -757,12 +756,6 @@ fn prefill_budget_for_memory_pressure(memory_pressure: Option<&str>) -> Option<u
     match memory_pressure {
         None => None,
         Some(MEMORY_PRESSURE_KV_EXHAUSTED) => Some(0),
-        // Defer, never trickle. The engine reclaims sole-owner cached blocks
-        // before planning, so this label reaching the scheduler means nothing
-        // was evictable (every cached block is live-shared); a 1-token chunk
-        // cannot allocate blocks that do not exist and only burns scheduler
-        // turns while decode drain is what actually frees capacity.
-        Some(MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE) => Some(0),
         Some(label) if label.starts_with(MEMORY_PRESSURE_KV_LOW_PREFIX) => {
             Some(MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP)
         }
@@ -1545,7 +1538,7 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_reclaimable_cache_pressure_defers_prefill_without_starving_decode() {
+    fn unknown_pressure_label_falls_back_to_one_token_prefill() {
         let scheduler = Scheduler::new();
         let schedule_plan = scheduler.plan(&SchedulerInput::new(
             StepId(17),
@@ -1553,19 +1546,22 @@ mod tests {
                 make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16),
                 make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16),
             ],
-            Some("kv_exhausted_reclaimable_cache".into()),
+            Some("kv_future_unrecognized_label".into()),
             8,
         ));
 
-        // Same shape as `kv_exhausted`: the engine already reclaimed every
-        // evictable block before planning, so prefill defers whole and
-        // decode keeps the step.
-        assert_eq!(schedule_plan.selected_requests, vec![RequestId(2)]);
-        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
+        // Unrecognized labels degrade to the conservative 1-token fallback;
+        // decode keeps priority.
+        assert_eq!(
+            schedule_plan.selected_requests,
+            vec![RequestId(2), RequestId(1)]
+        );
         let execution_batch = schedule_plan.execution_batch.unwrap();
-        assert_eq!(execution_batch.total_scheduled_tokens, 1);
+        assert_eq!(execution_batch.total_scheduled_tokens, 2);
         assert_eq!(execution_batch.items[0].mode, ExecutionMode::Decode);
         assert_eq!(execution_batch.items[0].scheduled_token_count, 1);
+        assert_eq!(execution_batch.items[1].mode, ExecutionMode::Prefill);
+        assert_eq!(execution_batch.items[1].scheduled_token_count, 1);
     }
 
     #[test]

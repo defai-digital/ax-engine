@@ -353,6 +353,11 @@ pub struct RequestRecord {
     pub diffusion_commit_ready: bool,
     /// Current diffusion block has been committed (next unit starts denoise).
     pub diffusion_block_committed: bool,
+    /// Consecutive steps this request landed in `memory_blocked_requests`
+    /// without being selected. Reset whenever the request is selected; at
+    /// `MEMORY_BLOCKED_STEP_LIMIT` the request fails instead of retrying
+    /// forever (a never-fitting request would otherwise wedge the queue).
+    pub memory_blocked_step_count: u32,
 }
 
 impl RequestRecord {
@@ -381,6 +386,7 @@ impl RequestRecord {
             diffusion_denoise_steps_in_block: 0,
             diffusion_commit_ready: false,
             diffusion_block_committed: false,
+            memory_blocked_step_count: 0,
         }
     }
 

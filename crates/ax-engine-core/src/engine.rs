@@ -313,14 +313,12 @@ impl EngineCore {
         let retried_memory_blocked = self.request_manager.retry_memory_blocked()?;
         let admitted_requests = self.request_manager.admit_waiting()?;
         self.refresh_execution_plan_refs()?;
-        let prereclaimed_kv_blocks = self.reclaim_kv_for_pending_work(global_token_budget)?;
         let step_id = self.allocate_step_id()?;
         step_span.record("step_id", step_id.0);
         trace!(
             cleanup_results = cleanup_results.len(),
             retried_memory_blocked = retried_memory_blocked.len(),
             admitted_requests = admitted_requests.len(),
-            prereclaimed_kv_blocks,
             "prepared step state"
         );
 
@@ -833,63 +831,6 @@ impl EngineCore {
         Ok((prefix_reuse, schedule_plan))
     }
 
-    /// When the logical pool is exhausted but reclaimable prefix cache
-    /// exists, evict enough sole-owner cached blocks *before* planning that
-    /// the scheduler sees real free capacity instead of the
-    /// `kv_exhausted_reclaimable_cache` label. Without this, the label used
-    /// to re-derive every step with a one-token prefill cap — allocate-time
-    /// eviction freed exactly one chunk's blocks, free returned to zero —
-    /// and a fresh long prompt prefilled token by token (3,770 steps /
-    /// 259 s TTFT for a 4,280-token prompt against a full 1,024-block
-    /// pool). Demand-bounded
-    /// so a step never evicts more cache than its own budget could consume;
-    /// if nothing is evictable (all cached blocks live-shared) the
-    /// reclaimable-exhausted label defers prefill outright (budget 0, the
-    /// same shape as `kv_exhausted`) and the blocked-on-memory retry and
-    /// preempt-and-recompute paths still own progress.
-    fn reclaim_kv_for_pending_work(
-        &mut self,
-        global_token_budget: u32,
-    ) -> Result<u32, EngineCoreError> {
-        if self.kv_manager.available_block_count() > 0 {
-            return Ok(0);
-        }
-        let block_size = self.kv_manager.config().block_size_tokens.max(1);
-        let mut pending_prefill_tokens: u64 = 0;
-        let mut decode_candidates: u32 = 0;
-        for record in self.request_manager.records_iter() {
-            if record.state != RequestState::Runnable {
-                continue;
-            }
-            let prompt_len = record.prompt_tokens.len() as u64;
-            let processed = u64::from(record.processed_prompt_tokens);
-            if processed < prompt_len {
-                pending_prefill_tokens += prompt_len - processed;
-            } else if (record.generated_tokens.len() as u64) < u64::from(record.max_output_tokens) {
-                decode_candidates = decode_candidates.saturating_add(1);
-            }
-        }
-        let prefill_tokens = pending_prefill_tokens.min(u64::from(global_token_budget)) as u32;
-        let demand_blocks = prefill_tokens
-            .div_ceil(block_size)
-            .saturating_add(decode_candidates);
-        if demand_blocks == 0 {
-            return Ok(0);
-        }
-        let freed = self.kv_manager.reclaim_cached_blocks(demand_blocks)?;
-        if freed > 0 {
-            debug!(
-                demand_blocks,
-                freed_blocks = freed,
-                free_after = self.kv_manager.available_block_count(),
-                pending_prefill_tokens,
-                decode_candidates,
-                "reclaimed sole-owner cached KV blocks before scheduling under exhausted pool"
-            );
-        }
-        Ok(freed)
-    }
-
     fn scheduler_input(
         &self,
         step_id: StepId,
@@ -908,7 +849,7 @@ impl EngineCore {
             self.max_prefill_tokens_per_request_per_step;
         input.max_inflight_prefill_requests = self.max_inflight_prefill_requests;
         input.block_size_tokens = kv_config.block_size_tokens;
-        input.available_kv_blocks = self.kv_manager.available_block_count();
+        input.available_kv_blocks = self.kv_manager.allocatable_block_count();
         input.total_kv_blocks = kv_config.total_blocks;
         input
     }
@@ -2513,13 +2454,13 @@ mod tests {
         let initial_available = before.available_kv_blocks;
         assert_eq!(
             initial_available,
-            engine.kv_manager().available_block_count()
+            engine.kv_manager().allocatable_block_count()
         );
 
         engine.submit(make_submission(30, 1, 1)).unwrap();
         engine.step(64, true).unwrap();
 
-        let live_available = engine.kv_manager().available_block_count();
+        let live_available = engine.kv_manager().allocatable_block_count();
         assert!(
             live_available < initial_available,
             "prefill scheduling must have allocated at least one KV block"
@@ -2539,12 +2480,13 @@ mod tests {
     /// Regression for the 2026-08-07 AXQ endurance preflight failure: a
     /// fresh prompt arriving while the logical pool is full but mostly
     /// reclaimable prefix cache must prefill in budget-sized chunks. The
-    /// `kv_exhausted_reclaimable_cache` pressure label used to cap prefill
-    /// at one token per step while allocate-time eviction freed exactly one
-    /// chunk's blocks, so the label re-derived every step and a 4,280-token
-    /// prompt took 3,770 prefill steps (880.8/1k tokens vs the 64/1k soak
-    /// guardrail). The engine now reclaims sole-owner cached blocks up to
-    /// the step's demand before planning.
+    /// retired `kv_exhausted_reclaimable_cache` pressure label used to cap
+    /// prefill at one token per step while allocate-time eviction freed
+    /// exactly one chunk's blocks, so the label re-derived every step and a
+    /// 4,280-token prompt took 3,770 prefill steps (880.8/1k tokens vs the
+    /// 64/1k soak guardrail). Fused accounting (ADR-015 Phase 2) now counts
+    /// sole-owner cached blocks as available, so the scheduler plans a full
+    /// chunk and `allocate()` evicts on demand.
     #[test]
     fn full_pool_with_reclaimable_cache_prefills_in_chunks() {
         // 8 blocks x 4 tokens. A and B run to completion and leave their
@@ -2597,16 +2539,22 @@ mod tests {
         assert_eq!(outcome.schedule_plan.selected_requests, vec![RequestId(3)]);
         let snapshot = engine.request_manager().snapshot(RequestId(3)).unwrap();
         assert_eq!(snapshot.processed_prompt_tokens, first_chunk_tokens);
+        // Fused entry state: raw free is zero, but the reclaimable cache
+        // counts as allocatable, so the pool is not reported exhausted.
         assert_eq!(engine.kv_manager().available_block_count(), 0);
-        assert_eq!(
+        assert!(
+            engine.kv_manager().allocatable_block_count() > 0,
+            "test must start the next step with reclaimable cache present"
+        );
+        assert_ne!(
             engine.kv_manager().memory_pressure().as_deref(),
-            Some("kv_exhausted_reclaimable_cache"),
-            "test must start the next step from the reclaimable-exhausted state"
+            Some("kv_exhausted"),
+            "reclaimable cache must keep the pool out of the exhausted state"
         );
 
-        // The next step must pre-reclaim cached blocks and finish the whole
-        // remaining prompt in one chunk. Without demand-driven reclamation
-        // this step schedules exactly one token.
+        // The next step must see the reclaimable capacity, schedule the
+        // whole remaining prompt in one chunk, and evict on demand inside
+        // allocate(). Pre-fusion this step scheduled exactly one token.
         let remaining_prompt_tokens = 24 - first_chunk_tokens;
         let outcome = engine.step(64, true).unwrap();
         assert_eq!(outcome.metrics.scheduled_tokens, remaining_prompt_tokens);
@@ -2633,6 +2581,46 @@ mod tests {
         let snapshot = engine.request_manager().snapshot(RequestId(3)).unwrap();
         assert!(snapshot.state.is_terminal());
         assert_eq!(snapshot.generated_len, 2);
+    }
+
+    #[test]
+    fn step_fails_request_that_can_never_fit_after_blocked_step_limit() {
+        // Pool: 1 block x 4 tokens. The 8-token prompt needs 2 blocks and
+        // can never fit; without the starvation bound it would loop
+        // BlockedOnMemory forever and wedge the queue behind it (the
+        // mistral.rs WAITING_TIMEOUT case).
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 1));
+        engine
+            .submit(make_submission_with_prompt(1, 1, vec![7; 8], 1))
+            .unwrap();
+
+        for _ in 0..70 {
+            engine.step(8, true).unwrap();
+            let state = engine
+                .request_manager()
+                .snapshot(RequestId(1))
+                .unwrap()
+                .state;
+            if state == RequestState::Failed {
+                break;
+            }
+        }
+
+        let snapshot = engine.request_manager().snapshot(RequestId(1)).unwrap();
+        assert_eq!(
+            snapshot.state,
+            RequestState::Failed,
+            "never-fitting request must fail after the blocked-step limit, not retry forever"
+        );
+        assert!(
+            snapshot
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("KV capacity")),
+            "failure must name the cause, got {:?}",
+            snapshot.last_error
+        );
     }
 
     #[test]

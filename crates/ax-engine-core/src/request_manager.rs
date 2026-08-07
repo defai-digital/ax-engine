@@ -13,6 +13,13 @@ use crate::sampling::{SampledToken, StopReason};
 use crate::scheduler::SchedulePlan;
 
 const MAX_TERMINAL_SNAPSHOT_RETENTION: usize = 1024;
+/// Consecutive memory-blocked scheduling steps after which a request fails
+/// with a controlled error instead of retrying forever (the mistral.rs
+/// `WAITING_TIMEOUT` practice). Without the bound, a request whose demand
+/// can never be satisfied — larger than the pool even after every eviction
+/// and preemption — loops `BlockedOnMemory` indefinitely and wedges the
+/// queue behind it.
+const MEMORY_BLOCKED_STEP_LIMIT: u32 = 64;
 /// Byte budget for retained terminal snapshots. Each snapshot keeps the full
 /// prompt/output token payload so post-terminal `request_report` queries work,
 /// which at long context can pin ~130KB per request; without a byte cap the
@@ -301,10 +308,35 @@ impl RequestManager {
         self.validate_schedule_plan(schedule_plan)?;
 
         for request_id in &schedule_plan.selected_requests {
+            if let Some(record) = self.records.get_mut(request_id) {
+                record.memory_blocked_step_count = 0;
+            }
             self.transition_request(*request_id, RequestRecord::start_running)?;
         }
 
         for request_id in &schedule_plan.memory_blocked_requests {
+            let blocked_count = {
+                let record = self
+                    .records
+                    .get_mut(request_id)
+                    .ok_or(RequestManagerError::UnknownRequest(*request_id))?;
+                record.memory_blocked_step_count =
+                    record.memory_blocked_step_count.saturating_add(1);
+                record.memory_blocked_step_count
+            };
+            if blocked_count > MEMORY_BLOCKED_STEP_LIMIT {
+                // Starvation bound (mistral.rs WAITING_TIMEOUT practice): a
+                // request that cannot obtain KV for this many consecutive
+                // steps will never make progress — fail it with a controlled
+                // error instead of letting it retry forever and wedge the
+                // queue behind it.
+                self.transition_request(*request_id, |record| {
+                    record.fail(
+                        "request could not obtain KV capacity within the memory-blocked step limit",
+                    )
+                })?;
+                continue;
+            }
             self.transition_request(*request_id, RequestRecord::mark_blocked_on_memory)?;
         }
 

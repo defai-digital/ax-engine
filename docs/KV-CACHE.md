@@ -599,23 +599,20 @@ Historical quality and microbench artifacts remain under
 
 `KvManager` surfaces memory pressure in two ways:
 
-- `memory_pressure()` reports `kv_low_free_blocks:<free>/<total>` when free
-  blocks drop below the low-water mark.
-- `memory_pressure()` reports `kv_exhausted_reclaimable_cache` when no free
-  blocks remain but retained prefix cache can be evicted.
-- `memory_pressure()` reports `kv_exhausted` when no free blocks remain and no
-  retained cache can be reclaimed.
-- `allocate()` returns `InsufficientCapacity` if a concrete scheduled item still
-  cannot obtain the blocks it needs.
+- `memory_pressure()` reports `kv_low_free_blocks:<allocatable>/<total>` when
+  allocatable blocks drop below the low-water mark. The allocatable count is
+  fused: raw free blocks plus sole-owner cached blocks that allocation can
+  evict on demand, so a full-but-reclaimable pool does not report pressure.
+- `memory_pressure()` reports `kv_exhausted` when nothing is allocatable —
+  no free blocks and no evictable (sole-owner) cached blocks.
+- `allocate()` evicts sole-owner cached blocks on demand when raw free blocks
+  run short, and returns `InsufficientCapacity` if a concrete scheduled item
+  still cannot obtain the blocks it needs.
 
 `Scheduler.plan()` reads `SchedulerInput.memory_pressure`:
 
 - `kv_low_free_blocks:*` preserves decode progress and caps new prefill to a
   soft 256-token budget per step, keeping fair multi-prefill active.
-- `kv_exhausted_reclaimable_cache` preserves decode progress and defers new
-  prefill for the step. The engine reclaims sole-owner cached blocks before
-  planning, so this label means no cache was evictable; a bounded 1-token
-  allocation opportunity cannot succeed and is no longer offered.
 - `kv_exhausted` preserves decode progress but defers new prefill work.
 
 This is a front-line throttle, not a complete admission guarantee: a decode or
