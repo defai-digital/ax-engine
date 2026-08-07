@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -370,6 +371,27 @@ class ReadmePerformanceChartTests(unittest.TestCase):
                 charts.find_mlx_lm_direct_snapshot(readme),
                 snapshot_path.resolve(),
             )
+
+    def test_only_ax_direct_main_labels_fresh_reference_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as root_name:
+            output_dir = Path(root_name) / "charts"
+            argv = [
+                str(CHART_SCRIPT_PATH),
+                "--only-ax-direct-snapshot",
+                "--output-dir",
+                str(output_dir),
+            ]
+            with mock.patch.object(sys, "argv", argv):
+                self.assertEqual(charts.main(), 0)
+
+            chart = (
+                output_dir / "perf-gemma4-decode-box-whisker.svg"
+            ).read_text()
+            self.assertIn(
+                "mlx-lm 0.31.3 (2026-08-07) · llama.cpp Metal · separate runs",
+                chart,
+            )
+            self.assertNotIn("retained mlx-lm", chart)
 
     def test_llama_cpp_chart_label_comes_from_result_marker(self) -> None:
         with tempfile.TemporaryDirectory() as root_name:
