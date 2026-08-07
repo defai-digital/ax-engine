@@ -66,6 +66,7 @@ class AxqEnduranceTests(unittest.TestCase):
         }
 
         self.assertEqual(warmup_shapes, set(runner.WORKLOAD_SHAPES))
+        self.assertEqual(runner.CACHE_CAPACITY_PROBE_SHAPES, ("long_unique", "medium_unique"))
 
     def test_prompt_unique_and_shared_prefix_modes_have_intended_cache_shape(self) -> None:
         unique = runner.WORKLOAD_SHAPES["medium_unique"]
@@ -140,6 +141,7 @@ class AxqEnduranceTests(unittest.TestCase):
             ax_engine_jobs_in_flight 0
             ax_engine_model_memory_kv_physical_bytes{model="qwen-target"} 4096
             ax_engine_model_memory_kv_physical_bytes{model="other"} 9999
+            ax_engine_step_kv_usage_blocks 1018
             ax_runtime_ttft_p95_ms 42
             """
         )
@@ -147,6 +149,7 @@ class AxqEnduranceTests(unittest.TestCase):
 
         self.assertEqual(selected["ax_engine_jobs_in_flight"], 0.0)
         self.assertEqual(selected["ax_engine_model_memory_kv_physical_bytes"], 4096.0)
+        self.assertEqual(selected["ax_engine_step_kv_usage_blocks"], 1018.0)
         self.assertEqual(selected["ax_runtime_ttft_p95_ms"], 42.0)
         self.assertEqual(
             runner.parse_prometheus_metrics('labelled_metric{model="qwen"} 4\nunlabelled 1'),
@@ -253,6 +256,105 @@ class AxqEnduranceTests(unittest.TestCase):
         self.assertIn("KV memory report", concerns[2])
         self.assertIn("required model-memory", concerns[3])
         self.assertIn("logical model KV", concerns[4])
+
+    def test_cache_capacity_probe_requires_productive_prefill_and_kv_telemetry(self) -> None:
+        observation = {
+            "ok": True,
+            "prompt_token_count": 4_281,
+            "client_input_token_count": 4_281,
+            "route_decisions": {
+                "ax_mlx_prefill_steps": 3,
+                "ax_mlx_prefill_cache_only_continuations": 2,
+            },
+        }
+        values = {
+            **{name: 0.0 for name in runner.LIFECYCLE_METRICS},
+            **{name: 0.0 for name in runner.MODEL_METRICS},
+            "ax_engine_model_memory_kv_report_available": 1.0,
+            "ax_engine_step_kv_usage_blocks": 1_018.0,
+            "ax_runtime_kv_pages_total": 1_024.0,
+            "ax_runtime_kv_utilization": 1_018.0 / 1_024.0,
+        }
+        drain = {
+            "state": "drained",
+            "missing": [],
+            "nonzero": {},
+            "metrics": {
+                "values": values,
+                "missing_model_memory_metrics": [],
+            },
+        }
+
+        self.assertEqual(
+            runner.cache_capacity_probe_concerns(
+                observation=observation,
+                drain=drain,
+                max_quiescent_kv_logical_mib=1_024.0,
+                max_prefill_steps_per_1k_tokens=64.0,
+            ),
+            [],
+        )
+        self.assertEqual(
+            runner.prefill_progress_evidence(observation)["prefill_steps_per_1k_tokens"],
+            3_000.0 / 4_281.0,
+        )
+        pressure = runner.cache_capacity_pressure_evidence(
+            drain=drain,
+            fresh_prompt_tokens=4_281,
+            block_size_tokens=16,
+        )
+        self.assertTrue(pressure["reclamation_required"])
+        self.assertEqual(pressure["fresh_prompt_blocks"], 268.0)
+        self.assertEqual(pressure["free_blocks"], 6.0)
+
+        low_pressure_drain = {
+            **drain,
+            "metrics": {
+                **drain["metrics"],
+                "values": {
+                    **values,
+                    "ax_engine_step_kv_usage_blocks": 700.0,
+                    "ax_runtime_kv_utilization": 700.0 / 1_024.0,
+                },
+            },
+        }
+        self.assertFalse(
+            runner.cache_capacity_pressure_evidence(
+                drain=low_pressure_drain,
+                fresh_prompt_tokens=4_281,
+                block_size_tokens=16,
+            )["reclamation_required"]
+        )
+
+        observation["route_decisions"] = {
+            "ax_mlx_prefill_steps": 3_261,
+            "ax_mlx_prefill_cache_only_continuations": 3_260,
+        }
+        concerns = runner.cache_capacity_probe_concerns(
+            observation=observation,
+            drain=drain,
+            max_quiescent_kv_logical_mib=1_024.0,
+            max_prefill_steps_per_1k_tokens=64.0,
+        )
+        self.assertEqual(len(concerns), 1)
+        self.assertIn("prefill fragmentation", concerns[0])
+        self.assertIn("761.7/1k", concerns[0])
+
+        del values["ax_engine_step_kv_usage_blocks"]
+        telemetry_concerns = runner.cache_capacity_probe_concerns(
+            observation={
+                **observation,
+                "route_decisions": {
+                    "ax_mlx_prefill_steps": 3,
+                    "ax_mlx_prefill_cache_only_continuations": 2,
+                },
+            },
+            drain=drain,
+            max_quiescent_kv_logical_mib=1_024.0,
+            max_prefill_steps_per_1k_tokens=64.0,
+        )
+        self.assertEqual(len(telemetry_concerns), 1)
+        self.assertIn("used_blocks", telemetry_concerns[0])
 
     def test_vm_stat_swap_and_iogpu_parsers_calculate_memory_inputs(self) -> None:
         vm = runner.parse_vm_stat(
@@ -732,6 +834,72 @@ class AxqEnduranceTests(unittest.TestCase):
             self.assertEqual(len(reports), 1)
             self.assertEqual(json.loads(checkpoints[0].read_text())["reason"], "periodic")
 
+    def test_preflight_failure_summary_is_not_mislabeled_as_a_short_measurement(self) -> None:
+        state = runner.RunState(
+            started_wall="2026-08-06T00:00:00+00:00",
+            started_monotonic=1.0,
+            server_pid=42,
+            preflight_status="failed",
+            preflight_elapsed_seconds=123.0,
+            measurement_started=False,
+            cache_capacity_rehearsal=[
+                {
+                    "shape": "long_unique",
+                    "prefill_progress": {"prefill_steps_per_1k_tokens": 761.7},
+                    "logical_kv": {"utilization": 1_018.0 / 1_024.0},
+                    "verdict": "fail",
+                }
+            ],
+            last_error="cache-capacity probe 1 did not satisfy the endurance preflight",
+        )
+
+        summary = runner.run_summary(
+            state=state,
+            status="failed",
+            elapsed_s=123.0,
+            target_duration_s=259_200.0,
+            latest_window={},
+            latest_server={"alive": True, "pid": 42},
+            latest_host={},
+            latest_metrics={"values": {}},
+            memory={},
+            counter_deltas_view={},
+            performance_alerts=[],
+            memory_alerts=[],
+            alerts=[],
+            output_dir=Path("/tmp/axq-endurance-test"),
+        )
+
+        self.assertEqual(summary["verdict"], "fail")
+        self.assertEqual(summary["elapsed_seconds"], 0.0)
+        self.assertIsNone(summary["target_end_at"])
+        self.assertEqual(summary["preflight"]["status"], "failed")
+        self.assertFalse(summary["preflight"]["measurement_started"])
+        self.assertTrue(
+            any(
+                "measured interval never started" in concern
+                for concern in summary["assessment_concerns"]
+            )
+        )
+        self.assertIn(
+            "Measurement: `not started`", runner.render_checkpoint_markdown("final", summary)
+        )
+
+    def test_preflight_only_pass_is_distinct_from_a_72_hour_completion(self) -> None:
+        state = runner.RunState(
+            started_wall="2026-08-06T00:00:00+00:00",
+            started_monotonic=1.0,
+            server_pid=42,
+            preflight_status="passed",
+            preflight_elapsed_seconds=123.0,
+            measurement_started=False,
+        )
+
+        verdict, concerns = runner.assessment(state=state, terminal_status="preflight_passed")
+
+        self.assertEqual(verdict, "pass")
+        self.assertEqual(concerns, [])
+
     def test_build_server_command_pins_single_request_limits(self) -> None:
         args = runner.build_parser().parse_args(
             [
@@ -749,6 +917,8 @@ class AxqEnduranceTests(unittest.TestCase):
 
         self.assertIn("--max-concurrent-requests", command)
         self.assertIn("--max-concurrent-requests-per-model", command)
+        self.assertEqual(command[command.index("--block-size-tokens") + 1], "16")
+        self.assertEqual(command[command.index("--total-blocks") + 1], "1024")
         self.assertEqual(command[command.index("--max-batch-tokens") + 1], "2048")
         self.assertIn("--some-flag", command)
 
@@ -782,6 +952,9 @@ class AxqEnduranceTests(unittest.TestCase):
 
         self.assertEqual(args.memory_slope_mib_per_hour, 64.0)
         self.assertEqual(args.baseline_stability_slope_mib_per_hour, 256.0)
+        self.assertEqual(args.max_prefill_steps_per_1k_tokens, 64.0)
+        self.assertEqual(args.max_capacity_fill_requests, 4)
+        self.assertFalse(args.preflight_only)
 
     def test_run_endurance_installs_and_restores_sigterm_handler(self) -> None:
         installed = []

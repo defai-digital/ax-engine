@@ -12,6 +12,7 @@ The test target is:
 | Revision | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` |
 | AX Engine mode | Native MLX server, one loaded model |
 | Request concurrency | 1 |
+| Logical-KV geometry | Explicitly pinned at 1,024 blocks × 16 tokens/block |
 | Scheduler prefill budget | Explicitly pinned at 2,048 tokens per step; longer text probes are chunked |
 | Target duration | 72 hours |
 | Status cadence | 4 hours |
@@ -52,8 +53,9 @@ calling a nonzero or warm cache a leak by itself.
 
 Run it on AC power with no competing AX Engine job and preserve the host state
 in the run manifest. The runner captures a host snapshot before model launch,
-then another immediately after warm-up, so model-load allocation is not
-mistaken for a later leak.
+records host and server snapshots for each cache-capacity probe, and takes its
+first resource sample immediately before measured time. This prevents
+model-load or warm-up allocation from being mistaken for a later leak.
 
 ## Test contract
 
@@ -87,13 +89,35 @@ Warm-up prompts use a disjoint nonce range, so the first measured requests
 cannot obtain a false cache hit from warm-up. By default, warm-up is one full
 20-request workload cycle, including the long-prefill and shared-prefix
 probes; this settles expected first-use KV, allocator, and cache allocations
-before measured time begins. The first four hours then form the baseline; no
-performance regression decision is made until that baseline is complete and
-it has sufficient same-shape measurements. The runner also checks whether the
-first and last quartiles show material growth *and* the latter half is still
-rising. A baseline that climbs by at least 1 GiB while its latter-half slope
-remains at least 256 MiB/hour is a `watch`, rather than a reference that could
-hide a leak.
+before measured time begins.
+
+Warm-up alone is not enough to validate a reusable KV cache: it can fill the
+logical block ledger while every warm-up request still succeeds. The runner
+therefore performs a **cache-capacity rehearsal** after the full warm-up and
+before the measured clock starts. It first records an anchor with core
+logical-KV occupancy (`ax_engine_step_kv_usage_blocks`,
+`ax_runtime_kv_pages_total`, and `ax_runtime_kv_utilization`) and calculates
+whether the fresh long prompt must exceed available logical blocks. If it does
+not, the runner adds up to four bounded fresh long prompts to fill the cache,
+then rechecks the anchor. It fails as inconclusive if it still cannot prove
+that reclamation will be exercised. Only then does it send one fresh
+long-unique request and one fresh medium-unique request from a second nonce
+range. High cache utilization is permitted; the gate is that a fresh prompt
+must still make productive prefill progress. By default, more than 64 prefill
+steps or cache-only continuations per 1,000 input tokens is a preflight
+failure. That limit is deliberately far above normal chunking and is aimed at
+a one-token scheduler loop. Each anchor, filler, and probe retains its
+host/server snapshot, pass/fail verdict, and concern list. A rejected
+preflight writes the ordinary final summary and checkpoint with
+`measurement_started=false`; it is not reported as a short endurance run.
+
+Only after this rehearsal passes do the first four measured hours form the
+baseline. No performance regression decision is made until that baseline is
+complete and it has sufficient same-shape measurements. The runner also
+checks whether the first and last quartiles show material growth *and* the
+latter half is still rising. A baseline that climbs by at least 1 GiB while
+its latter-half slope remains at least 256 MiB/hour is a `watch`, rather than
+a reference that could hide a leak.
 
 ## Execution gates
 
@@ -106,13 +130,22 @@ will not necessarily have enough long-prompt samples for a clean baseline.
    and retain its output. Do not relabel a manifest-lineage warning as a passed
    model certification.
 2. Run a 20–30 minute pilot in its own fresh output directory. Before its
-   measured interval begins, the runner executes one complete warm-up cycle
-   and requires each probe to have a terminal response and native prompt
-   length, a fully drained lifecycle, and every target-model KV-memory gauge.
-   It stops before the long run if that instrumentation contract is absent.
-3. Inspect the pilot `summary.json` and server log. If its evidence is clean
-   enough to exercise all probes, start the final run in a new empty directory.
-   The final runner owns one PID and must never be restarted.
+   measured interval begins, the runner executes one complete warm-up cycle,
+   then the anchored fresh long/medium cache-capacity rehearsal. Each anchor,
+   filler, and probe must have a fully drained lifecycle and core
+   KV-occupancy telemetry; each request must additionally have a terminal
+   response, native prompt length, every target-model KV-memory gauge, and
+   bounded prefill fragmentation. It stops before the long run if that
+   instrumentation, capacity-pressure proof, or progress contract is absent.
+3. Inspect the pilot `summary.json`, `cache_capacity_probe` JSONL events, and
+   server log. If the capacity rehearsal and normal workload are clean, start
+   the final run in a new empty directory. The final runner owns one PID and
+   must never be restarted.
+
+For a no-measurement implementation check, run the same launch contract in a
+fresh output directory with `--preflight-only`. It runs the full warm-up and
+cache-capacity rehearsal, then stops the owned server cleanly. Its
+`preflight_passed` status validates only the gate; it is not a 72-hour result.
 
 For example, a pilot can use short cadence and short reporting without
 increasing concurrency:
@@ -147,6 +180,7 @@ endurance. Every four hours it atomically updates
 | Server corroboration | `ax_runtime_ttft_p95_ms`, `ax_runtime_decode_tok_per_sec`, `ax_runtime_error_rate`, queue depth and saturation counters |
 | Errors | Client failures, health failures, HTTP 5xx/saturation/backlog counter deltas |
 | Native drain/KV | Post-response jobs, pending commands, active streams and buffered events must be zero; target-model logical/physical KV and prefix-cache gauges are retained |
+| Logical-KV capacity | Post-warm-up anchor proves the next fresh long prompt exceeds free logical blocks; bounded fillers make pressure explicit if needed; fresh long/medium probes report used/total logical blocks, utilization, native prefill steps, and cache-only continuations |
 | Prefix-cache exercise | The dedicated shared-prefix requests retain their physical-cache hit/miss/blocked/store/eviction route decisions separately in each checkpoint |
 | AX process memory | Server RSS, MLX active/cache/peak metrics and target-model logical/physical KV and prefix-cache memory |
 | macOS memory and confounders | `vm_stat` wired, compressor and active pages; swap; IOGPU driver alloc/in-use memory when exposed; disk, load, and `pmset` thermal state |
@@ -190,6 +224,16 @@ after the lifecycle drains.
 
 - Hard failure: server exits/PID disappears, or three consecutive stream
   failures.
+- Preflight failure: the fresh cache-capacity rehearsal lacks its native
+  lifecycle/KV/occupancy telemetry, cannot prove that the fresh long prompt
+  exceeds available logical blocks after its bounded fill phase, or exceeds
+  64 prefill steps or cache-only continuations per 1,000 input tokens. This is
+  intentionally before measured time: a 72-hour run cannot establish a
+  meaningful baseline after cache reclamation has already collapsed into
+  token-by-token prefill.
+- Preflight-only pass: the full warm-up and cache-capacity rehearsal passed,
+  then the process stopped before measured time. This validates the launch
+  contract only; it is explicitly not a soak pass.
 - Watch: any observed error, failed/inconclusive lifecycle drain, error rate
   over 0.1%, server 5xx/saturation/backlog counter growth, or a configured
   memory/KV guardrail breach. A resource-observation gap beyond the
@@ -214,6 +258,42 @@ The values are configurable command-line arguments and are written verbatim to
 the run manifest, so later review can distinguish a real regression from a
 changed policy.
 
+## Pilot finding on `df-macmini-03`
+
+The short pilot completed its bounded workload and shut down its owned server
+cleanly; it did **not** start a 72-hour run. It found a repeatable cache-pressure
+path at the pinned 1,024-block configuration. A fresh 4,281-token long prompt
+used 3,261 native prefill steps, had 238.8 s TTFT, and achieved 17.9 effective
+prefill token/s. A later fresh 1,091-token medium prompt used 836 steps, had
+59.8 s TTFT, and achieved 18.3 effective prefill token/s. In contrast, normal
+nearby requests used a few prefill steps and roughly 100+ effective prefill
+token/s.
+
+The host did not show swap growth or a thermal/performance warning during
+those events, and the server stayed healthy. The evidence instead points to
+the logical-KV cache being full of reclaimable warm entries and the scheduler
+entering a one-token prefill policy before each allocation can reclaim enough
+space. The accompanying runner change makes that exact transition a
+pre-measurement gate. It is not a memory-leak conclusion, and it is not a
+72-hour pass. Do not launch the final endurance run with this configuration
+until the new capacity rehearsal passes or the runtime behavior is explicitly
+changed and revalidated.
+
+A subsequent `--preflight-only` replay exercised the same transition more
+directly. Its bounded filler reached 992/1,024 logical blocks, after which a
+fresh 4,280-token long probe failed the guard with 3,770 prefill steps and
+3,769 cache-only continuations (880.8 and 880.6 per 1,000 input tokens),
+258.998 s TTFT, and 16.5 effective-prefill token/s. It never started the
+measured interval. At the failed probe's drained snapshot, AX reported about
+20.1 GiB MLX active memory, 20.6 GiB host-resident memory, and a 21.5 GiB MLX
+peak; target-model logical and physical KV gauges were about 275 MiB and
+435 MiB. Swap stayed at zero. In this isolated run, macOS wired pages were
+about 22.9 GiB while the model was loaded and about 2.1 GiB after the owned
+server stopped, with no surviving server process. This distinguishes the
+configured logical-KV exhaustion from physical exhaustion of the 64 GiB host;
+the bounded replay does not establish either a 72-hour memory leak or a
+72-hour pass.
+
 ## Launch and status
 
 Run on AC power with no other intentional AX Engine workload, and retain the
@@ -234,6 +314,8 @@ nohup env VIRTUAL_ENV="$stage/.venv" PYO3_PYTHON="$stage/.venv/bin/python" \
   --model-dir "$stage/models/axq" \
   --model-id qwen3.6-27b-axq-6bit \
   --output-dir "$output_dir" \
+  --block-size-tokens 16 \
+  --total-blocks 1024 \
   --duration-hours 72 \
   --report-interval-hours 4 \
   > "$stage/endurance/launcher-$run_id.log" 2>&1 &
@@ -248,6 +330,7 @@ python3 -m json.tool "$output_dir/summary.json"
 The operator should report the four-hour checkpoint's status, elapsed time,
 same PID result, request/error counts, **per-shape** p95 TTFT and p05
 decode/effective-prefill rates, shared-prefix cache-route evidence, baseline
-quality, drain/KV findings, and resource growth/slope. The raw `events.jsonl`,
-`server.log`, and immutable checkpoint files remain the source of truth for
-final analysis.
+quality, cache-capacity rehearsal step/continuation ratios and logical-KV
+occupancy, drain/KV findings, and resource growth/slope. The raw
+`events.jsonl`, `server.log`, and immutable checkpoint files remain the source
+of truth for final analysis.

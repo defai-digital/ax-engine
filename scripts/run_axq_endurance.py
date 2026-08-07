@@ -41,8 +41,8 @@ from typing import Any
 
 import bench_ax_serving as serving_bench
 
-SCHEMA_VERSION = "ax.axq_endurance_soak.v2"
-CHECKPOINT_SCHEMA_VERSION = "ax.axq_endurance_checkpoint.v2"
+SCHEMA_VERSION = "ax.axq_endurance_soak.v3"
+CHECKPOINT_SCHEMA_VERSION = "ax.axq_endurance_checkpoint.v3"
 DEFAULT_DURATION_HOURS = 72.0
 DEFAULT_REPORT_INTERVAL_HOURS = 4.0
 DEFAULT_BASELINE_HOURS = 4.0
@@ -52,6 +52,9 @@ DEFAULT_REQUEST_TIMEOUT_S = 300.0
 DEFAULT_STARTUP_TIMEOUT_S = 1_200.0
 DEFAULT_DRAIN_TIMEOUT_S = 10.0
 DEFAULT_MAX_BATCH_TOKENS = 2_048
+DEFAULT_BLOCK_SIZE_TOKENS = 16
+DEFAULT_TOTAL_BLOCKS = 1_024
+DEFAULT_MAX_CAPACITY_FILL_REQUESTS = 4
 # The measured baseline must begin after each request class has caused its
 # normal first-use allocations.  One complete interleaved cycle includes the
 # long prefill and prefix-cache probes as well as the short steady-state
@@ -75,6 +78,11 @@ DEFAULT_BASELINE_STABILITY_SLOPE_MIB_PER_HOUR = 256.0
 DEFAULT_MAX_SWAP_GROWTH_MIB = 512.0
 DEFAULT_MAX_QUIESCENT_KV_LOGICAL_MIB = 1_024.0
 DEFAULT_MAX_SAMPLING_GAP_S = 140.0
+# A healthy single-client request may take several scheduler prefill turns;
+# this deliberately roomy limit detects the pathological one-token turn loop
+# without treating ordinary chunking as a failure.  It is evaluated only by
+# fresh, post-warm-up capacity probes, where a cache hit is not expected.
+DEFAULT_MAX_PREFILL_STEPS_PER_1K_TOKENS = 64.0
 
 MEBIBYTE = 1024 * 1024
 SENSITIVE_HARDWARE_PREFIXES = (
@@ -114,6 +122,9 @@ SERVER_METRICS = (
     "ax_runtime_ttft_p95_ms",
     "ax_runtime_decode_tok_per_sec",
     "ax_runtime_error_rate",
+    # The unlabelled value is the one-model logical KV ledger in this test.
+    # It distinguishes a full reusable block cache from model-side KV bytes.
+    "ax_engine_step_kv_usage_blocks",
     "ax_runtime_kv_pages_total",
     "ax_runtime_kv_utilization",
     "ax_runtime_queue_depth",
@@ -243,6 +254,15 @@ WORKLOAD_SEQUENCE = (
     "short_unique",
     "shared_prefix",
 )
+# Run after every full warm-up with fresh nonces.  These probes force the
+# logical-KV cache to reclaim entries before the measured interval begins;
+# otherwise a pristine first long prefill can mask a cache-pressure scheduler
+# regression until hours into a soak.
+CACHE_CAPACITY_PROBE_SHAPES = ("long_unique", "medium_unique")
+
+
+class PreflightComplete(Exception):
+    """Signal that an explicitly requested preflight-only run passed."""
 
 
 @dataclass
@@ -273,6 +293,14 @@ class RunState:
     counter_baseline: dict[str, float] = field(default_factory=dict)
     performance_alerts: int = 0
     memory_alerts: int = 0
+    # Defaults preserve the historical meaning for callers that construct a
+    # state for the measured interval.  The runner explicitly marks the
+    # preflight state before warm-up so a rejected run is not mistaken for a
+    # zero-duration measurement.
+    preflight_status: str = "passed"
+    preflight_elapsed_seconds: float | None = None
+    measurement_started: bool = True
+    cache_capacity_rehearsal: list[dict[str, Any]] = field(default_factory=list)
     last_error: str | None = None
 
 
@@ -281,12 +309,12 @@ JSONL_LOCK = threading.Lock()
 
 def utc_now() -> str:
     """Return a stable, timezone-explicit timestamp for evidence."""
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    return dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
 
 
 def utc_run_id() -> str:
     """Return a filesystem-safe default run identifier."""
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def positive_float(value: str) -> float:
@@ -417,6 +445,13 @@ def build_server_command(args: argparse.Namespace) -> list[str]:
         "1",
         "--max-concurrent-requests-per-model",
         "1",
+        # Pin the logical-KV geometry as well as the scheduling budget.  A
+        # cache-pressure result is uninterpretable if an upgraded server has
+        # silently changed either default.
+        "--block-size-tokens",
+        str(args.block_size_tokens),
+        "--total-blocks",
+        str(args.total_blocks),
         # Pin the scheduler's prefill-step budget instead of depending on a
         # server-version default. Text prompts above this limit are chunked,
         # which keeps the periodic long probe bounded without turning this
@@ -1768,7 +1803,15 @@ def assessment(
         concerns.append(f"{state.performance_alerts} performance-regression alert(s)")
     if state.memory_alerts:
         concerns.append(f"{state.memory_alerts} persistent-memory-growth alert(s)")
+    if terminal_status == "preflight_passed":
+        return ("watch" if concerns else "pass"), concerns
+    if not state.measurement_started:
+        concerns.append(
+            "endurance preflight did not pass; the 72-hour measured interval never started"
+        )
     if terminal_status == "failed":
+        if state.last_error:
+            concerns.append(f"terminal failure: {state.last_error}")
         return "fail", concerns
     if terminal_status == "interrupted":
         concerns.append("run was interrupted before the target duration")
@@ -1800,16 +1843,25 @@ def run_summary(
 ) -> dict[str, Any]:
     """Build a durable current status used for both automation and operator review."""
     verdict, concerns = assessment(state=state, terminal_status=status)
+    measurement_elapsed_s = elapsed_s if state.measurement_started else 0.0
     return {
         "schema_version": SCHEMA_VERSION,
         "status": status,
         "verdict": verdict,
         "updated_at": utc_now(),
-        "elapsed_seconds": elapsed_s,
+        # This counter represents only the configured 72-hour evidence
+        # interval.  A failed capacity rehearsal remains visible below as
+        # preflight time instead of looking like a very short endurance run.
+        "elapsed_seconds": measurement_elapsed_s,
         "target_duration_seconds": target_duration_s,
         "target_end_at": (
-            dt.datetime.fromisoformat(state.started_wall) + dt.timedelta(seconds=target_duration_s)
-        ).isoformat(),
+            (
+                dt.datetime.fromisoformat(state.started_wall)
+                + dt.timedelta(seconds=target_duration_s)
+            ).isoformat()
+            if state.measurement_started
+            else None
+        ),
         "server": latest_server,
         "requests": {
             "attempted": state.requests_attempted,
@@ -1826,6 +1878,12 @@ def run_summary(
             "inconclusive_drains": state.lifecycle_inconclusive,
             "kv_reports_unavailable": state.kv_report_unavailable,
             "quiescent_kv_logical_exceedances": state.quiescent_kv_logical_exceedances,
+        },
+        "preflight": {
+            "status": state.preflight_status,
+            "elapsed_seconds": state.preflight_elapsed_seconds,
+            "measurement_started": state.measurement_started,
+            "cache_capacity_rehearsal": state.cache_capacity_rehearsal,
         },
         "resource_sampler_stop_timeouts": state.resource_sampler_stop_timeouts,
         "observation_continuity": {
@@ -1890,13 +1948,76 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
     ]
     continuity = summary.get("observation_continuity", {})
     continuity_concerns = continuity.get("concerns", []) if isinstance(continuity, dict) else []
+    preflight = summary.get("preflight", {})
+    rehearsal = preflight.get("cache_capacity_rehearsal", []) if isinstance(preflight, dict) else []
+    preflight_status = (
+        preflight.get("status", "unknown") if isinstance(preflight, dict) else "unknown"
+    )
+    measurement_started = (
+        bool(preflight.get("measurement_started")) if isinstance(preflight, dict) else True
+    )
+    preflight_elapsed = preflight.get("elapsed_seconds") if isinstance(preflight, dict) else None
+    rehearsal_text = "n/a"
+    if isinstance(rehearsal, list) and rehearsal:
+        parts = []
+        for probe in rehearsal:
+            if not isinstance(probe, dict):
+                continue
+            shape = probe.get("shape", "unknown")
+            phase = probe.get("phase", "cache_capacity_probe")
+            verdict = probe.get("verdict", "unknown")
+            progress = probe.get("prefill_progress", {})
+            capacity = probe.get("logical_kv", {})
+            pressure = probe.get("capacity_pressure", {})
+            if not isinstance(progress, dict):
+                progress = {}
+            if not isinstance(capacity, dict):
+                capacity = {}
+            if not isinstance(pressure, dict):
+                pressure = {}
+            ratio = format_metric(progress.get("prefill_steps_per_1k_tokens"), "/1k tokens")
+            utilization_value = capacity.get("utilization")
+            utilization = (
+                f"{float(utilization_value):.1%}"
+                if isinstance(utilization_value, (int, float))
+                and math.isfinite(float(utilization_value))
+                else "n/a"
+            )
+            if phase == "cache_capacity_anchor":
+                free_blocks = format_metric(pressure.get("free_blocks"), "blocks")
+                fresh_blocks = format_metric(pressure.get("fresh_prompt_blocks"), "blocks")
+                reclamation = pressure.get("reclamation_required")
+                reclamation_text = (
+                    "required"
+                    if reclamation is True
+                    else "not yet required"
+                    if reclamation is False
+                    else "unknown"
+                )
+                parts.append(
+                    f"anchor/{shape} ({verdict}): free {free_blocks}, "
+                    f"fresh-long {fresh_blocks}, reclamation {reclamation_text}, "
+                    f"KV utilization {utilization}"
+                )
+            else:
+                parts.append(f"{phase}/{shape} ({verdict}): {ratio}, KV utilization {utilization}")
+        if parts:
+            rehearsal_text = "; ".join(parts)
+    timing_line = (
+        f"- Elapsed: `{summary['elapsed_seconds'] / 3600.0:.2f} h` / "
+        f"`{summary['target_duration_seconds'] / 3600.0:.2f} h`"
+        if measurement_started
+        else (
+            f"- Measurement: `not started`; preflight status: `{preflight_status}`; "
+            f"preflight elapsed: `{format_metric(preflight_elapsed, 's')}`"
+        )
+    )
     lines = [
         f"# AXQ endurance checkpoint: {summary['status']}",
         "",
         f"- Reason: `{reason}`",
         f"- Updated: `{summary['updated_at']}`",
-        f"- Elapsed: `{summary['elapsed_seconds'] / 3600.0:.2f} h` / "
-        f"`{summary['target_duration_seconds'] / 3600.0:.2f} h`",
+        timing_line,
         f"- Server PID alive: `{summary['server'].get('alive')}` "
         f"(PID `{summary['server'].get('pid')}`)",
         f"- Requests: `{requests['successful']}/{requests['attempted']}` successful; "
@@ -1905,6 +2026,7 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
         f"p05 decode: `{format_metric(decode, 'tok/s')}`; "
         f"p05 effective prefill: `{format_metric(prefill, 'tok/s')}`",
         f"- Shared-prefix cache route evidence: `{prefix_cache_text}`",
+        f"- Post-warm-up cache-capacity rehearsal: `{rehearsal_text}`",
         f"- Baseline: `{'complete' if baseline['performance'] else 'pending'}`; "
         f"quality: `{'ready' if baseline['performance'] and not baseline_concerns else 'watch'}`",
         f"- Observation continuity: `{'watch' if continuity_concerns else 'continuous'}`",
@@ -2076,6 +2198,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--port must be in 1..65535")
     if args.baseline_hours >= args.duration_hours:
         raise ValueError("--baseline-hours must be smaller than --duration-hours")
+    if args.warmup_requests < len(WORKLOAD_SEQUENCE):
+        raise ValueError(
+            "--warmup-requests must cover one complete workload cycle "
+            f"({len(WORKLOAD_SEQUENCE)} requests)"
+        )
     assert_port_available(args.host, args.port)
     prepare_output_dir(args.output_dir)
 
@@ -2209,6 +2336,181 @@ def warmup_preflight_concerns(
     return concerns
 
 
+def prefill_progress_evidence(observation: dict[str, Any]) -> dict[str, float | None]:
+    """Extract scheduler-fragmentation evidence from one completed fresh prompt.
+
+    A request can legitimately be divided into a few prefill items.  The
+    relevant failure signature is a ratio near one item per prompt token, not
+    a nonzero continuation count.  Route telemetry is attached to the native
+    terminal response, so it survives independently of periodic metric
+    sampling and makes the capacity rehearsal auditable after a failed run.
+    """
+    prompt_tokens = observation.get("prompt_token_count")
+    route = observation.get("route_decisions")
+    if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool) or prompt_tokens <= 0:
+        prompt_tokens = None
+    if not isinstance(route, dict):
+        route = {}
+
+    def number(name: str) -> float | None:
+        value = route.get(name)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            numeric = float(value)
+            if math.isfinite(numeric) and numeric >= 0.0:
+                return numeric
+        return None
+
+    steps = number("ax_mlx_prefill_steps")
+    continuations = number("ax_mlx_prefill_cache_only_continuations")
+    per_1k = (1_000.0 / prompt_tokens) if prompt_tokens is not None else None
+    return {
+        "prompt_tokens": float(prompt_tokens) if prompt_tokens is not None else None,
+        "prefill_steps": steps,
+        "cache_only_continuations": continuations,
+        "prefill_steps_per_1k_tokens": steps * per_1k
+        if steps is not None and per_1k is not None
+        else None,
+        "cache_only_continuations_per_1k_tokens": continuations * per_1k
+        if continuations is not None and per_1k is not None
+        else None,
+    }
+
+
+def prefill_progress_concerns(
+    *, observation: dict[str, Any], max_steps_per_1k_tokens: float
+) -> list[str]:
+    """Fail closed when a fresh capacity probe degrades into token-by-token prefill."""
+    evidence = prefill_progress_evidence(observation)
+    steps = evidence["prefill_steps"]
+    continuations = evidence["cache_only_continuations"]
+    steps_per_1k = evidence["prefill_steps_per_1k_tokens"]
+    continuations_per_1k = evidence["cache_only_continuations_per_1k_tokens"]
+    if steps is None or continuations is None or steps_per_1k is None:
+        return [
+            "native prefill-progress telemetry was unavailable "
+            "(need ax_mlx_prefill_steps and ax_mlx_prefill_cache_only_continuations)"
+        ]
+    if steps_per_1k > max_steps_per_1k_tokens or (
+        continuations_per_1k is not None and continuations_per_1k > max_steps_per_1k_tokens
+    ):
+        return [
+            "prefill fragmentation exceeded the cache-capacity guardrail: "
+            f"steps={steps:.0f} ({steps_per_1k:.1f}/1k tokens), "
+            f"cache-only continuations={continuations:.0f} "
+            f"({continuations_per_1k or 0.0:.1f}/1k tokens), "
+            f"guardrail={max_steps_per_1k_tokens:.1f}/1k tokens"
+        ]
+    return []
+
+
+def cache_capacity_evidence(drain: dict[str, Any]) -> dict[str, float | None]:
+    """Return the logical-KV occupancy evidence collected after a capacity probe."""
+    metrics = drain.get("metrics", {})
+    values = metrics.get("values", {}) if isinstance(metrics, dict) else {}
+    values = values if isinstance(values, dict) else {}
+
+    def number(name: str) -> float | None:
+        value = values.get(name)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            numeric = float(value)
+            if math.isfinite(numeric):
+                return numeric
+        return None
+
+    return {
+        "used_blocks": number("ax_engine_step_kv_usage_blocks"),
+        "total_blocks": number("ax_runtime_kv_pages_total"),
+        "utilization": number("ax_runtime_kv_utilization"),
+    }
+
+
+def cache_capacity_telemetry_concerns(evidence: dict[str, float | None]) -> list[str]:
+    """Validate the core logical-KV gauges required to interpret a rehearsal."""
+    concerns: list[str] = []
+    missing = [name for name, value in evidence.items() if value is None]
+    if missing:
+        concerns.append(f"cache-capacity telemetry was unavailable: {', '.join(missing)}")
+    total = evidence["total_blocks"]
+    used = evidence["used_blocks"]
+    utilization = evidence["utilization"]
+    if total is not None and total <= 0.0:
+        concerns.append(f"cache-capacity telemetry reported invalid total_blocks={total:g}")
+    if total is not None and used is not None and total > 0.0 and (used < 0.0 or used > total):
+        concerns.append(
+            "cache-capacity telemetry was internally inconsistent: "
+            f"used_blocks={used:g}, total_blocks={total:g}"
+        )
+    if utilization is not None and not 0.0 <= utilization <= 1.0:
+        concerns.append(f"cache-capacity telemetry reported invalid utilization={utilization:g}")
+    return concerns
+
+
+def cache_capacity_pressure_evidence(
+    *,
+    drain: dict[str, Any],
+    fresh_prompt_tokens: int,
+    block_size_tokens: int,
+) -> dict[str, float | bool | None]:
+    """Show whether the next fresh long prompt must reclaim logical KV blocks.
+
+    A successful request at low occupancy says nothing about the cache-full
+    path.  The rehearsal therefore records the number of free logical blocks
+    before its fresh long prompt and requires that the prompt's own block
+    demand exceed that free space.  This is a conservative pressure proof;
+    it does not assume an intentionally warm cache is a leak.
+    """
+    evidence = cache_capacity_evidence(drain)
+    prompt_blocks = (
+        float(math.ceil(fresh_prompt_tokens / block_size_tokens))
+        if fresh_prompt_tokens > 0 and block_size_tokens > 0
+        else None
+    )
+    used = evidence["used_blocks"]
+    total = evidence["total_blocks"]
+    free_blocks = total - used if total is not None and used is not None else None
+    reclamation_required = (
+        used + prompt_blocks > total
+        if used is not None and prompt_blocks is not None and total is not None and total > 0.0
+        else None
+    )
+    return {
+        **evidence,
+        "fresh_prompt_tokens": float(fresh_prompt_tokens),
+        "fresh_prompt_blocks": prompt_blocks,
+        "free_blocks": free_blocks,
+        "reclamation_required": reclamation_required,
+    }
+
+
+def cache_capacity_probe_concerns(
+    *,
+    observation: dict[str, Any],
+    drain: dict[str, Any],
+    max_quiescent_kv_logical_mib: float,
+    max_prefill_steps_per_1k_tokens: float,
+) -> list[str]:
+    """Combine ordinary warm-up checks with fresh-cache pressure evidence.
+
+    High logical-KV utilization is intentionally *not* an automatic failure:
+    a cache is allowed to fill and reclaim.  The gate is whether a fresh prompt
+    still makes productive prefill progress and whether the occupancy telemetry
+    needed to interpret that result exists.
+    """
+    concerns = warmup_preflight_concerns(
+        observation=observation,
+        drain=drain,
+        max_quiescent_kv_logical_mib=max_quiescent_kv_logical_mib,
+    )
+    concerns.extend(
+        prefill_progress_concerns(
+            observation=observation,
+            max_steps_per_1k_tokens=max_prefill_steps_per_1k_tokens,
+        )
+    )
+    concerns.extend(cache_capacity_telemetry_concerns(cache_capacity_evidence(drain)))
+    return concerns
+
+
 def run_endurance(args: argparse.Namespace) -> int:
     """Convert SIGTERM into a normal interrupted run with a final checkpoint."""
     previous_sigterm = signal.getsignal(signal.SIGTERM)
@@ -2265,11 +2567,18 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 "server_lifetime": "one owned process; automatic restart is forbidden",
                 "concurrency": 1,
                 "max_batch_tokens": args.max_batch_tokens,
+                "block_size_tokens": args.block_size_tokens,
+                "total_blocks": args.total_blocks,
+                "max_capacity_fill_requests": args.max_capacity_fill_requests,
                 "minimum_idle_seconds_after_request": args.request_interval_seconds,
                 "resource_sample_seconds": args.resource_interval_seconds,
                 "workload_mix": (
                     "20-request interleaved cycle: 14 short unique, 3 medium unique, "
                     "2 shared-prefix, 1 long unique"
+                ),
+                "cache_capacity_rehearsal": (
+                    "after one complete warm-up cycle, fresh long and medium unique prompts "
+                    "must reclaim logical-KV capacity without token-by-token prefill"
                 ),
                 "input_encoding": (
                     "client-local tokenizer.json with add_special_tokens=false; "
@@ -2314,7 +2623,10 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 ),
                 "max_swap_growth_mib": args.max_swap_growth_mib,
                 "max_quiescent_kv_logical_mib": args.max_quiescent_kv_logical_mib,
+                "max_prefill_steps_per_1k_tokens": args.max_prefill_steps_per_1k_tokens,
+                "max_capacity_fill_requests": args.max_capacity_fill_requests,
                 "max_sampling_gap_seconds": max_sampling_gap_s,
+                "preflight_only": args.preflight_only,
             },
             "pre_server_host": collect_checkpoint_host_snapshot(output_dir),
             "runtime": runtime_metadata(args.server),
@@ -2336,6 +2648,16 @@ def _run_endurance(args: argparse.Namespace) -> int:
         append_jsonl(
             events_path,
             {"timestamp": utc_now(), "kind": "readiness", "health": readiness, "pid": process.pid},
+        )
+        # Create a state before warm-up so a preflight rejection receives the
+        # same durable summary/checkpoint treatment as a measured-run failure.
+        # Its clock is reset only after all preflight gates pass.
+        state = RunState(
+            started_wall=utc_now(),
+            started_monotonic=time.monotonic(),
+            server_pid=process.pid,
+            preflight_status="running",
+            measurement_started=False,
         )
 
         for warmup_index in range(args.warmup_requests):
@@ -2376,12 +2698,186 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     f"preflight: {'; '.join(preflight_concerns)}"
                 )
 
+        # A full warm-up can fill the logical KV cache while every warm-up
+        # request still looks healthy. Prove that the fresh long probe will
+        # need to reclaim logical KV capacity before using it as the gate.
+        # This avoids treating a healthy low-occupancy long prompt as evidence
+        # of the cache-full path that caused the pilot regression.
+        capacity_probe_items = [
+            (
+                probe_index,
+                WORKLOAD_SHAPES[shape_name],
+                2_000_000 + probe_index,
+                make_prompt_item(
+                    WORKLOAD_SHAPES[shape_name],
+                    2_000_000 + probe_index,
+                    tokenize=tokenize_prompt,
+                ),
+            )
+            for probe_index, shape_name in enumerate(CACHE_CAPACITY_PROBE_SHAPES, start=1)
+        ]
+        _, long_probe_shape, long_probe_request_index, long_probe = capacity_probe_items[0]
+        for fill_index in range(args.max_capacity_fill_requests + 1):
+            drain = wait_for_quiescence(
+                base_url=base_url,
+                model_id=args.model_id,
+                timeout_s=args.drain_timeout_seconds,
+            )
+            logical_kv = cache_capacity_evidence(drain)
+            pressure = cache_capacity_pressure_evidence(
+                drain=drain,
+                fresh_prompt_tokens=long_probe.input_tokens_count,
+                block_size_tokens=args.block_size_tokens,
+            )
+            anchor_concerns: list[str] = []
+            if drain.get("state") != "drained":
+                anchor_concerns.append(
+                    "post-warm-up cache-capacity anchor did not drain "
+                    f"({drain.get('state')}; missing={drain.get('missing', [])}; "
+                    f"nonzero={drain.get('nonzero', {})})"
+                )
+            anchor_concerns.extend(cache_capacity_telemetry_concerns(logical_kv))
+            reclamation_required = pressure["reclamation_required"]
+            if not anchor_concerns and reclamation_required is not True:
+                if fill_index >= args.max_capacity_fill_requests:
+                    anchor_concerns.append(
+                        "cache-capacity rehearsal could not force logical-KV reclamation: "
+                        f"used_blocks={pressure['used_blocks']}, "
+                        f"free_blocks={pressure['free_blocks']}, "
+                        f"fresh_prompt_blocks={pressure['fresh_prompt_blocks']}"
+                    )
+                anchor_verdict = "filling"
+            else:
+                anchor_verdict = "pressure_reached" if not anchor_concerns else "fail"
+            anchor_record = {
+                "phase": "cache_capacity_anchor",
+                "fill_index": fill_index,
+                "shape": long_probe_shape.name,
+                "prompt_request_index": long_probe_request_index,
+                "lifecycle": drain,
+                "logical_kv": logical_kv,
+                "capacity_pressure": pressure,
+                "server": process_snapshot(process.pid),
+                "host": collect_light_host_snapshot(output_dir),
+                "verdict": anchor_verdict,
+                "concerns": anchor_concerns,
+            }
+            state.cache_capacity_rehearsal.append(anchor_record)
+            append_jsonl(
+                events_path,
+                {"timestamp": utc_now(), "kind": "cache_capacity_anchor", **anchor_record},
+            )
+            if anchor_concerns:
+                raise RuntimeError(
+                    "cache-capacity anchor did not satisfy the endurance preflight: "
+                    f"{'; '.join(anchor_concerns)}"
+                )
+            if reclamation_required is True:
+                break
+
+            fill_request_index = 1_900_000 + fill_index + 1
+            fill_shape = WORKLOAD_SHAPES["long_unique"]
+            observation = run_stream_request(
+                prompt=make_prompt_item(fill_shape, fill_request_index, tokenize=tokenize_prompt),
+                model_id=args.model_id,
+                base_url=base_url,
+                timeout_s=args.request_timeout_seconds,
+            )
+            observation["phase"] = "cache_capacity_fill"
+            drain = wait_for_quiescence(
+                base_url=base_url,
+                model_id=args.model_id,
+                timeout_s=args.drain_timeout_seconds,
+            )
+            fill_concerns = cache_capacity_probe_concerns(
+                observation=observation,
+                drain=drain,
+                max_quiescent_kv_logical_mib=args.max_quiescent_kv_logical_mib,
+                max_prefill_steps_per_1k_tokens=args.max_prefill_steps_per_1k_tokens,
+            )
+            fill_record = {
+                "phase": "cache_capacity_fill",
+                "fill_index": fill_index + 1,
+                "shape": fill_shape.name,
+                "prompt_request_index": fill_request_index,
+                "request": observation,
+                "lifecycle": drain,
+                "prefill_progress": prefill_progress_evidence(observation),
+                "logical_kv": cache_capacity_evidence(drain),
+                "server": process_snapshot(process.pid),
+                "host": collect_light_host_snapshot(output_dir),
+                "verdict": "pass" if not fill_concerns else "fail",
+                "concerns": fill_concerns,
+            }
+            state.cache_capacity_rehearsal.append(fill_record)
+            append_jsonl(
+                events_path,
+                {"timestamp": utc_now(), "kind": "cache_capacity_fill", **fill_record},
+            )
+            if fill_concerns:
+                raise RuntimeError(
+                    f"cache-capacity fill {fill_index + 1} did not satisfy the endurance "
+                    f"preflight: {'; '.join(fill_concerns)}"
+                )
+
+        for probe_index, shape, probe_request_index, prompt in capacity_probe_items:
+            observation = run_stream_request(
+                prompt=prompt,
+                model_id=args.model_id,
+                base_url=base_url,
+                timeout_s=args.request_timeout_seconds,
+            )
+            observation["phase"] = "cache_capacity_rehearsal"
+            drain = wait_for_quiescence(
+                base_url=base_url,
+                model_id=args.model_id,
+                timeout_s=args.drain_timeout_seconds,
+            )
+            server_snapshot = process_snapshot(process.pid)
+            host_snapshot = collect_light_host_snapshot(output_dir)
+            preflight_concerns = cache_capacity_probe_concerns(
+                observation=observation,
+                drain=drain,
+                max_quiescent_kv_logical_mib=args.max_quiescent_kv_logical_mib,
+                max_prefill_steps_per_1k_tokens=args.max_prefill_steps_per_1k_tokens,
+            )
+            rehearsal_record = {
+                "phase": "cache_capacity_probe",
+                "probe_index": probe_index,
+                "shape": shape.name,
+                "prompt_request_index": probe_request_index,
+                "request": observation,
+                "lifecycle": drain,
+                "prefill_progress": prefill_progress_evidence(observation),
+                "logical_kv": cache_capacity_evidence(drain),
+                "server": server_snapshot,
+                "host": host_snapshot,
+                "verdict": "pass" if not preflight_concerns else "fail",
+                "concerns": preflight_concerns,
+            }
+            state.cache_capacity_rehearsal.append(rehearsal_record)
+            append_jsonl(
+                events_path,
+                {
+                    "timestamp": utc_now(),
+                    "kind": "cache_capacity_probe",
+                    **rehearsal_record,
+                },
+            )
+            if preflight_concerns:
+                raise RuntimeError(
+                    f"cache-capacity probe {probe_index} ({shape.name}) did not satisfy "
+                    f"the endurance preflight: {'; '.join(preflight_concerns)}"
+                )
+
         started_monotonic = time.monotonic()
-        state = RunState(
-            started_wall=utc_now(),
-            started_monotonic=started_monotonic,
-            server_pid=process.pid,
-        )
+        state.preflight_status = "passed"
+        state.preflight_elapsed_seconds = started_monotonic - state.started_monotonic
+        if args.preflight_only:
+            raise PreflightComplete
+        state.measurement_started = True
+        state.started_wall = utc_now()
+        state.started_monotonic = started_monotonic
         latest_metrics = collect_metrics(base_url, args.model_id, timeout_s=10.0)
         if not latest_metrics.get("ok"):
             state.metric_scrape_failures += 1
@@ -2589,6 +3085,8 @@ def _run_endurance(args: argparse.Namespace) -> int:
             if delay > 0.0:
                 time.sleep(delay)
 
+    except PreflightComplete:
+        status = "preflight_passed"
     except KeyboardInterrupt:
         status = "interrupted"
         failure = "runner received an interrupt signal"
@@ -2597,6 +3095,12 @@ def _run_endurance(args: argparse.Namespace) -> int:
         failure = str(error)
     finally:
         try:
+            if state is not None and not state.measurement_started:
+                if status == "preflight_passed":
+                    state.preflight_status = "passed"
+                else:
+                    state.preflight_status = "interrupted" if status == "interrupted" else "failed"
+                state.preflight_elapsed_seconds = time.monotonic() - state.started_monotonic
             if sampler is not None and not sampler.stop() and state is not None:
                 state.resource_sampler_stop_timeouts += 1
                 add_alert(
@@ -2615,7 +3119,7 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 if not latest_metrics.get("ok"):
                     state.metric_scrape_failures += 1
                 resource_samples = sampler.samples() if sampler is not None else []
-                if maybe_finalize_baseline(
+                if state.measurement_started and maybe_finalize_baseline(
                     state=state,
                     baseline_records=baseline_records,
                     resource_samples=resource_samples,
@@ -2720,7 +3224,9 @@ def _run_endurance(args: argparse.Namespace) -> int:
         print(f"AXQ endurance run {status}: {failure}", file=sys.stderr)
     else:
         print(f"AXQ endurance run {status}: {output_dir}")
-    return 0 if status == "completed" else 130 if status == "interrupted" else 1
+    return (
+        0 if status in {"completed", "preflight_passed"} else 130 if status == "interrupted" else 1
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2762,7 +3268,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--drain-timeout-seconds", type=positive_float, default=DEFAULT_DRAIN_TIMEOUT_S
     )
     parser.add_argument("--max-batch-tokens", type=positive_int, default=DEFAULT_MAX_BATCH_TOKENS)
+    parser.add_argument("--block-size-tokens", type=positive_int, default=DEFAULT_BLOCK_SIZE_TOKENS)
+    parser.add_argument("--total-blocks", type=positive_int, default=DEFAULT_TOTAL_BLOCKS)
+    parser.add_argument(
+        "--max-capacity-fill-requests",
+        type=non_negative_int,
+        default=DEFAULT_MAX_CAPACITY_FILL_REQUESTS,
+        help=(
+            "Maximum bounded fresh-long requests used to make the post-warm-up long "
+            "probe prove logical-KV reclamation before measured time."
+        ),
+    )
     parser.add_argument("--warmup-requests", type=non_negative_int, default=DEFAULT_WARMUP_REQUESTS)
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help=(
+            "Run the full warm-up and cache-capacity rehearsal, then stop before the "
+            "measured interval. A passing result is a preflight pass, not a soak pass."
+        ),
+    )
     parser.add_argument(
         "--max-consecutive-request-failures",
         type=positive_int,
@@ -2816,6 +3341,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-quiescent-kv-logical-mib",
         type=positive_float,
         default=DEFAULT_MAX_QUIESCENT_KV_LOGICAL_MIB,
+    )
+    parser.add_argument(
+        "--max-prefill-steps-per-1k-tokens",
+        type=positive_float,
+        default=DEFAULT_MAX_PREFILL_STEPS_PER_1K_TOKENS,
+        help=(
+            "Fail the post-warm-up fresh cache-capacity probes when prefill is fragmented "
+            "into more scheduler turns per 1,000 prompt tokens than this limit."
+        ),
     )
     parser.add_argument(
         "--server-extra-arg",
