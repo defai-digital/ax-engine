@@ -3159,7 +3159,7 @@ fn doctor_report_rejects_manifest_with_missing_tensor_file() {
 #[test]
 fn axquant_stable_sha256_matches_python_canonical_json() {
     let value: Value = serde_json::from_str(
-        r#"{"unicode":"量化","tiny":0.0000100,"threshold":0.0001000,"seed":18446744073709551616,"roundtrip":0.0030897113371060546,"nested":{"z":6.000,"a":-0.0},"huge":1E16}"#,
+        r#"{"created_at":"2026-08-08T12:00:00Z","unicode":"量化","tiny":0.0000100,"threshold":0.0001000,"seed":18446744073709551616,"roundtrip":0.0030897113371060546,"nested":{"z":6.000,"created_at":"nested timestamp","a":-0.0},"huge":1E16}"#,
     )
     .expect("Python-compatible JSON fixture should parse");
 

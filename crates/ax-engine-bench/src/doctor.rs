@@ -1303,7 +1303,13 @@ fn write_axquant_canonical_json(value: &Value, output: &mut String) -> Option<()
         }
         Value::Object(values) => {
             output.push('{');
-            let mut entries = values.iter().collect::<Vec<_>>();
+            // AXQuant's stable_sha256 deliberately excludes creation timestamps at
+            // every nesting depth. Match that semantic digest exactly so persisted
+            // plans remain verifiable after their nondeterministic timestamps change.
+            let mut entries = values
+                .iter()
+                .filter(|(key, _)| key.as_str() != "created_at")
+                .collect::<Vec<_>>();
             entries.sort_unstable_by_key(|(key, _)| *key);
             for (index, (key, value)) in entries.into_iter().enumerate() {
                 if index > 0 {
