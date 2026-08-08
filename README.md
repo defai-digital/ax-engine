@@ -216,6 +216,18 @@ Aliases, hardware sizing, and legacy MTP packaging targets:
 [Hardware FAQ](docs/FAQ.md#what-hardware-does-ax-engine-support) ·
 [CLI](docs/CLI.md).
 
+### AXQ endurance evidence
+
+AX Engine 6.13.5 completed an **8-hour endurance test with 8.87 hours of
+continuous measured runtime** for the pinned Qwen 3.6 27B AXQ 6-bit model on a
+64 GB M4 Pro Mac mini: **437/437 requests
+succeeded**, the owned server did not restart, and no retained-RSS growth,
+swap, lifecycle-drain failure, or performance guardrail breach was observed.
+The operator stopped this run to add deeper vLLM-style leak attribution before
+restarting the full 72-hour qualification, so it is short-duration evidence,
+not a 72-hour pass. Read the
+[8-hour endurance report](docs/model-certifications/qwen3.6-27b-axq-6bit-8h-endurance-2026-08-08.md).
+
 ### Multi-model serving
 
 One process can keep several **allowlisted** models loaded and route each

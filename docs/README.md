@@ -35,6 +35,7 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 | Write or backfill GitHub release notes | [Release notes policy](releases/README.md) | [Releasing](RELEASING.md), [template](releases/TEMPLATE.md) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance Results](PERFORMANCE-RESULTS.md), [Performance](PERFORMANCE.md) |
 | Compare AX vs peer MLX server on chat serving | [AX vs peer MLX serving (Qwen 3.6)](performance/ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) | [Performance Results: serving](PERFORMANCE-RESULTS.md#session-mode-single-client-serving-ax-vs-peer-mlx) |
+| Review AXQ endurance evidence | [Qwen 3.6 27B AXQ 6-bit: 8-hour report](model-certifications/qwen3.6-27b-axq-6bit-8h-endurance-2026-08-08.md) | [AXQ certification](model-certifications/qwen3.6-27b-axq.md), [endurance methodology](AXQ-ENDURANCE-SOAK.md) |
 | Choose a fast AutomatosX package | [Supported Models](SUPPORTED-MODELS.md) · [README Models](../README.md#models) | [Performance Results](PERFORMANCE-RESULTS.md) |
 | Reproduce or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
 | Serve OpenAI / Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md), [Multi-model](SERVER.md#multi-model-serving), [Ports](PORTS.md) |

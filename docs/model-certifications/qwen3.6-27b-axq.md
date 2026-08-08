@@ -6,7 +6,7 @@ Default selector candidate: **AXQ 6-bit**
 
 Compact fallback candidate: **AXQ 4-bit**
 
-Last reviewed: **2026-08-06**
+Last reviewed: **2026-08-08**
 
 This record is the promotion gate for the first AXQ flagship model. A successful
 smoke test proves that a checkpoint can load and generate; it does not by itself
@@ -46,6 +46,16 @@ zero quantizer fallbacks, and carry architecture-prior allocation evidence.
 That is useful construction evidence, but `evidence_kind=architecture_prior`
 is not a measured checkpoint-quality result. Consequently both snapshots stay
 `candidate`.
+
+The pinned 6-bit candidate also completed an
+[8-hour low-rate endurance test](qwen3.6-27b-axq-6bit-8h-endurance-2026-08-08.md),
+with 8.87 hours of actual measured runtime, on a 64 GB M4 Pro Mac mini: 437/437
+measured requests succeeded with one owned server PID, continuous observations,
+stable quiescent RSS/MLX active memory,
+and no configured performance or lifecycle failure. The operator deliberately
+stopped that run to strengthen request/KV-correlated memory attribution before
+restarting the full 72-hour qualification. It is short-duration evidence and
+does not promote the candidate or satisfy the endurance gate.
 
 ## M5 Smoke Record
 
