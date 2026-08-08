@@ -905,26 +905,30 @@ def collect_light_host_snapshot(output_dir: Path) -> dict[str, Any]:
     should be visible in the same evidence stream instead of inferred after
     the fact from an unrelated machine snapshot.
     """
-    page_size = parse_int_output(command_output("sysctl", "-n", "hw.pagesize", timeout_s=10.0))
+    page_size = parse_int_output(
+        command_output("/usr/sbin/sysctl", "-n", "hw.pagesize", timeout_s=10.0)
+    )
     page_size = page_size or 16_384
     page_counts = parse_vm_stat(command_output("vm_stat", timeout_s=10.0))
     pages = dict(page_counts)
     host: dict[str, Any] = {
         "page_size_bytes": page_size,
         "vm_pages": pages,
-        "swap": parse_swap_usage(command_output("sysctl", "-n", "vm.swapusage", timeout_s=10.0)),
+        "swap": parse_swap_usage(
+            command_output("/usr/sbin/sysctl", "-n", "vm.swapusage", timeout_s=10.0)
+        ),
         "load_average": list(os.getloadavg()),
         "thermal": command_output("pmset", "-g", "therm", timeout_s=10.0),
     }
     for page_key, value in pages.items():
         host[page_key.removesuffix("_pages") + "_bytes"] = value * page_size
     wired_limit_mib = parse_int_output(
-        command_output("sysctl", "-n", "iogpu.wired_limit_mb", timeout_s=10.0)
+        command_output("/usr/sbin/sysctl", "-n", "iogpu.wired_limit_mb", timeout_s=10.0)
     )
     if wired_limit_mib is not None:
         host["iogpu_wired_limit_bytes"] = wired_limit_mib * MEBIBYTE
     iogpu = parse_iogpu_memory(
-        command_output("ioreg", "-l", "-w0", "-r", "-c", "IOGPU", timeout_s=10.0)
+        command_output("/usr/sbin/ioreg", "-l", "-w0", "-r", "-c", "IOGPU", timeout_s=10.0)
     )
     if iogpu:
         host["iogpu"] = iogpu

@@ -381,6 +381,31 @@ class AxqEnduranceTests(unittest.TestCase):
         self.assertEqual(iogpu["alloc_system_memory_bytes"], 745930752)
         self.assertEqual(iogpu["in_use_system_memory_bytes"], 391020544)
 
+    def test_light_host_snapshot_uses_absolute_paths_for_sbin_tools(self) -> None:
+        commands = []
+
+        def output(*command, **_kwargs):
+            commands.append(command)
+            if command[:3] == ("/usr/sbin/sysctl", "-n", "hw.pagesize"):
+                return "16384"
+            if command[:3] == ("/usr/sbin/sysctl", "-n", "vm.swapusage"):
+                return "total = 0.00M  used = 0.00M  free = 0.00M"
+            if command[:3] == ("/usr/sbin/sysctl", "-n", "iogpu.wired_limit_mb"):
+                return "49152"
+            if command[0] == "/usr/sbin/ioreg":
+                return '"PerformanceStatistics" = {"Alloc system memory"=1024}'
+            if command[0] == "vm_stat":
+                return "Pages wired down: 1."
+            return ""
+
+        with mock.patch.object(runner, "command_output", side_effect=output):
+            snapshot = runner.collect_light_host_snapshot(Path("/tmp"))
+
+        self.assertIn(("/usr/sbin/sysctl", "-n", "vm.swapusage"), commands)
+        self.assertTrue(any(command[0] == "/usr/sbin/ioreg" for command in commands))
+        self.assertEqual(snapshot["swap"]["used_bytes"], 0)
+        self.assertEqual(snapshot["iogpu"]["alloc_system_memory_bytes"], 1024)
+
     def test_linear_slope_and_memory_growth_are_computed(self) -> None:
         samples = [
             {
