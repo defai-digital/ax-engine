@@ -50,7 +50,7 @@ resolved session*, not how well a family is supported.
 
 | Host class | Practical model choices |
 | --- | --- |
-| **16 GB** (base Mac mini M4 and similar) | One compact **4-bit** pack at a time — e.g. Qwen 3.5 9B AXQ / OptiQ, small embeddings. Prefer short context; do not multi-model. |
+| **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
 | **64 GB+** | Comfortable always-on multi-role local server |
 

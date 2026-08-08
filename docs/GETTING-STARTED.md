@@ -288,8 +288,9 @@ For the current crate layering and dependency-boundary guidance, see
 
 - macOS 26 (Tahoe) or later
 - Apple Silicon **M2 or newer**
-  - **Light host (16 GB):** base Mac mini M4 and similar — one compact 4-bit
-    model (for example Qwen 3.5 9B AXQ / OptiQ), short-to-moderate context
+  - **Light host (16 GB):** base Mac mini M4 and similar — one compact Qwen
+    3.5 9B pack (4-bit preferred; 6-bit works with less free RAM), short
+    context only
   - **Full local server (32 GB+):** multi-model serving, longer contexts, and
     larger packs (27B/35B class); **64 GB** recommended for a comfortable stack
 - Rust 1.88+ for source builds

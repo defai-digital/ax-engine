@@ -18,10 +18,10 @@ MiniCPM-V, and others) are documented under
 [Supported Models](docs/SUPPORTED-MODELS.md).
 
 **Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 or newer).** For compact
-single models (for example Qwen 3.5 9B AXQ 4-bit), **16 GB** unified memory is
-enough — including base **Mac mini M4 16 GB**. For multi-model serving, longer
-contexts, and larger packs (27B/35B class), plan on **32 GB+** (64 GB
-recommended).
+single models (Qwen 3.5 9B 4-bit preferred; 6-bit also fits), **16 GB** unified
+memory is enough — including base **Mac mini M4 16 GB**. Prefer 4-bit for
+headroom. For multi-model serving, longer contexts, and larger packs
+(27B/35B class), plan on **32 GB+** (64 GB recommended).
 
 ## Why AX Engine
 

@@ -24,21 +24,28 @@ short-to-moderate context — not for multi-model residency or 27B/35B stacks.
 | Mac mini M4 (base) | 16 GB | One compact chat model (e.g. Qwen 3.5 9B AXQ / OptiQ 4-bit), embeddings, or other small packs |
 | MacBook Air / Pro M3–M4 with 16–24 GB | 16–24 GB | Same light single-model use |
 
-Validated light-host example: **Mac mini M4 / 16 GB** serving
-`AutomatosX` **Qwen 3.5 9B AXQ 4-bit MTP** end-to-end (load + OpenAI chat).
-After load, free memory is tight (~1 GB class) — keep **one model**, avoid long
-context and concurrent large requests.
+Validated light-host matrix (**Mac mini M4 / 16 GB**, `df-macmini-02`): short
+OpenAI chat after `ax-engine serve` for single-model Qwen 3.5 9B packs:
+
+| Pack | Serve + chat | Approx. free after load |
+| --- | --- | ---: |
+| AutomatosX **AXQ 4-bit MTP** | pass | ~1.3–1.4 GiB |
+| AutomatosX **6-bit MTP** | pass | ~0.6–0.7 GiB |
+| mlx-community **6-bit** | pass | ~0.7–0.8 GiB |
+
+Keep **one model**, short-to-moderate context, and no concurrent heavy jobs.
+Prefer **4-bit** for headroom; 6-bit 9B works but leaves little free memory.
 
 Good starting downloads on 16 GB:
 
 ```text
 ax-engine download ax-qwen3.5-9b          # OptiQ 4-bit MTP (catalog default)
-# or an explicit AXQ 4-bit pack from https://huggingface.co/AutomatosX/models
+# or AXQ 4-bit from https://huggingface.co/AutomatosX/models
 ax-engine serve <model-dir-or-alias> --port 31418
 ```
 
-Prefer **4-bit** over 6-bit on 16 GB. Skip multi-model (`load_mode=add`), large
-coding packs, and Qwen 3.6 27B/35B unless you upgrade memory.
+Skip multi-model (`load_mode=add`), large coding packs, and Qwen 3.6 27B/35B
+unless you upgrade memory.
 
 ### Full local server (multi-model / larger models)
 
