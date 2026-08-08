@@ -1506,6 +1506,8 @@ impl MlxRunner {
         );
         let (qwen_linear_mtp_exact_enabled, qwen_linear_mtp_exact_selection) =
             crate::fastpath::resolve_qwen_linear_mtp_exact(qwen_linear_mtp_exact_eligible);
+        let qwen_linear_mtp_certification_candidate =
+            qwen_linear_mtp_certification_candidate_from_env();
         // Cover load-time JIT warm-up with the same arithmetic contract used
         // by production decode. The scope is runner-local and restores on
         // every early return.
@@ -1521,6 +1523,7 @@ impl MlxRunner {
                 .map(|runtime| runtime.status.max_depth),
             qwen_linear_attention: cfg.linear_attention.is_some(),
             qwen_linear_exact_enabled: qwen_linear_mtp_exact_enabled,
+            qwen_linear_certification_candidate: qwen_linear_mtp_certification_candidate,
         });
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
@@ -1712,7 +1715,15 @@ impl MlxRunner {
                 mtp_depth = weights.mtp.as_ref().map_or(0, |head| head.max_depth),
                 exact_profile_eligible = qwen_linear_mtp_exact_eligible,
                 exact_profile_selection = qwen_linear_mtp_exact_selection.route_code(),
-                "Qwen linear-attention MTP is not exact-profile eligible; using direct decode",
+                "Qwen linear-attention MTP acceleration is uncertified; using canonical direct decode",
+            );
+        } else if mtp_model_policy.is_qwen_linear_certification_candidate() {
+            tracing::warn!(
+                target: "ax_engine_mlx::runner",
+                model_family = %cfg.model_family,
+                mtp_depth = weights.mtp.as_ref().map_or(0, |head| head.max_depth),
+                exact_profile_selection = qwen_linear_mtp_exact_selection.route_code(),
+                "UNRELEASED Qwen linear-attention MTP certification candidate enabled",
             );
         } else if mtp_model_policy.has_conflicting_drafters() {
             tracing::error!(
