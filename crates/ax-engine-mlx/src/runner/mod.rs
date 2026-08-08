@@ -8113,17 +8113,13 @@ impl MlxRunner {
                 // rejected speculative token. Verify on a clone; adopt it only
                 // when the full draft is accepted, otherwise recompute the
                 // committed prefix on the original cache.
-                // The explicit Qwen exact profile's invariant-projection
-                // contract is validated for a 1-4 token verifier, so drafts up
-                // to QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS use the exact, lazy
-                // recurrent-state checkpoint: full accept adopts the verify
-                // cache, a complete miss restores the committed-prefix
-                // checkpoint, and a partial accept recomputes only the short
-                // committed prefix. Outside that profile, and for deeper
-                // drafts, retain the established singleton replay until each
-                // graph has equally strong validation. Setting the replay env
-                // flag to a nonzero value is the profile's rollback kill
-                // switch.
+                // The Qwen exact profile keeps its invariant-projection
+                // arithmetic enabled, but recurrent linear-attention state is
+                // currently committed only through singleton replay. A formal
+                // greedy A/B check found a deterministic late-token mismatch
+                // in the otherwise eligible multi-token checkpoint path. Do
+                // not adopt or restore a batched verifier cache until a
+                // sequence-level equivalence proof covers that path.
                 let replay_kill_switch = std::env::var("AX_MLX_MTP_LINEAR_EXACT_REPLAY")
                     .map(|value| value != "0")
                     .unwrap_or(false);
@@ -10106,12 +10102,10 @@ fn select_linear_mtp_correction_token(
     }
 }
 
-/// Maximum draft length served by the exact lazy-checkpoint path.
-///
-/// The invariant-projection arithmetic contract is validated for a 1-4 token
-/// verifier ([`crate::fastpath::qwen_linear_mtp_exact_enabled`]), i.e. up to
-/// three drafts plus the committed token. Longer drafts keep the fail-closed
-/// singleton replay.
+/// Maximum draft length for which the exact arithmetic implementation is
+/// available. Recurrent-state commits still use singleton replay for every
+/// draft length until the multi-token checkpoint path has sequence-level
+/// equivalence coverage.
 const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
 
 const fn qwen_linear_mtp_exact_scope_for_request(
@@ -10167,14 +10161,14 @@ fn qwen_linear_mtp_exact_model_eligible(
 }
 
 fn linear_mtp_requires_singleton_replay(
-    pending_len: usize,
-    exact_profile_enabled: bool,
-    replay_kill_switch: bool,
+    _pending_len: usize,
+    _exact_profile_enabled: bool,
+    _replay_kill_switch: bool,
 ) -> bool {
-    pending_len == 0
-        || pending_len > QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS
-        || !exact_profile_enabled
-        || replay_kill_switch
+    // Fail closed: the environment flag remains accepted for compatibility,
+    // but `0` may not re-enable a recurrent-state path which has failed an
+    // exact greedy certification check.
+    true
 }
 
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
@@ -11939,15 +11933,12 @@ mod tests {
     }
 
     #[test]
-    fn linear_mtp_checkpoint_uses_resolved_exact_profile() {
-        assert!(!linear_mtp_requires_singleton_replay(1, true, false));
+    fn linear_mtp_checkpoint_fails_closed_to_singleton_replay() {
+        assert!(linear_mtp_requires_singleton_replay(1, true, false));
         assert!(linear_mtp_requires_singleton_replay(1, false, false));
         assert!(linear_mtp_requires_singleton_replay(1, true, true));
-        // The invariant-projection contract covers a 1-4 token verifier, so
-        // drafts up to three ride the exact checkpoint path; anything longer
-        // (or empty) keeps the fail-closed singleton replay.
-        assert!(!linear_mtp_requires_singleton_replay(2, true, false));
-        assert!(!linear_mtp_requires_singleton_replay(3, true, false));
+        assert!(linear_mtp_requires_singleton_replay(2, true, false));
+        assert!(linear_mtp_requires_singleton_replay(3, true, false));
         assert!(linear_mtp_requires_singleton_replay(4, true, false));
         assert!(linear_mtp_requires_singleton_replay(0, true, false));
         assert!(linear_mtp_requires_singleton_replay(2, false, false));
@@ -14060,6 +14051,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -14105,6 +14097,8 @@ mod tests {
             per_layer_proj_norm: None,
             mtp: None,
             glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -14551,6 +14545,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -14576,6 +14572,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            deepseek_v4: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
