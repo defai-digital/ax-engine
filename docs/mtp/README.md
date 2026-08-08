@@ -23,10 +23,11 @@ validation, or MTP tuning reports.
   explicitly disabled Qwen linear-MTP package safely uses direct decode
   instead of the slow singleton-replay MTP path.
 - Certified depth-one Qwen exact profiles, including the current
-  `AX-Qwen3.5-9B-MLX-AXQ-4bit-MTP` package, default the draft confidence gate
-  to `0`. A depth-one sidecar has no low-confidence tail to prune, while the
-  generic `0.90` gate still pays for a full-vocabulary draft softmax and can
-  discard the only proposal. Explicit
+  `AX-Qwen3.5-9B-MLX-AXQ-6bit-MTP` package, default the draft confidence gate
+  to `0`. (A separate AXQ-4bit sibling for this base is not published: protection
+  floors made it redundant with the 6bit pack.) A depth-one sidecar has no
+  low-confidence tail to prune, while the generic `0.90` gate still pays for a
+  full-vocabulary draft softmax and can discard the only proposal. Explicit
   `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`, speculation profiles, and the adaptive
   controller retain precedence.
 - The policy mechanism covers every model-based drafter, but the numeric
