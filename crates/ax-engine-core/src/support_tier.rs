@@ -128,6 +128,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -153,6 +155,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            deepseek_v4: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,
@@ -172,7 +175,7 @@ mod tests {
             | "glm4_moe_lite" | "gpt_oss" | "deepseek_v3" | "deepseek_v32" => {
                 ModelSupportTier::Certified
             }
-            "diffusion_gemma" => ModelSupportTier::Experimental,
+            "diffusion_gemma" | "deepseek_v4" => ModelSupportTier::Experimental,
             _ => ModelSupportTier::Compatible,
         }
     }
@@ -229,6 +232,16 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_v4_is_experimental_until_graph_certification() {
+        // Converter + registry plumbing only; the repo-owned runtime graph is
+        // still in progress, so no certification evidence exists.
+        assert_eq!(
+            support_tier_for_family("deepseek_v4"),
+            ModelSupportTier::Experimental
+        );
+    }
+
+    #[test]
     fn compatible_families_have_no_cert_promise() {
         for label in [
             "llama3",
@@ -242,6 +255,7 @@ mod tests {
             "mixtral",
             "llama4",
             "nemotron_h",
+            "nemotron_embed",
             "unlimited_ocr",
         ] {
             assert_eq!(

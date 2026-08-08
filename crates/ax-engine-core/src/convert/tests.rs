@@ -3,14 +3,19 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use super::deepseek_v4_quantized::{
+    BlockScaleBytes, DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE, dequantize_fp8_block_scales,
+    e8m0_to_f32, f32_to_bf16_bits, fp8_e4m3_to_f32, fp8_e5m2_to_f32, stack_mxfp4_experts,
+};
 use super::{
     AUTO_GENERATED_MANIFEST_NOTE, ConvertError, DroppedTensorLedger, MANIFEST_TEMP_FILE_PREFIX,
     NativeTensorDataType, NativeTensorRole, compute_attention_value_from_key_layers,
-    config_quantization, convert_hf_model_dir, ensure_manifest_for_hf_model_dir,
-    llama4_no_rope_layer_interval, match_tensor, model_family_for_type, moe_config,
-    parse_layer_types, parse_rope_params, tensor_name_looks_like_media_role,
-    tensor_quantization_override, validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling,
-    with_real_model_manifest_lock, write_manifest,
+    config_quantization, convert_hf_model_dir, deepseek_v4_config,
+    ensure_manifest_for_hf_model_dir, llama4_no_rope_layer_interval, match_tensor,
+    model_family_for_type, moe_config, parse_layer_types, parse_rope_params, parse_rope_scaling,
+    tensor_name_looks_like_media_role, tensor_quantization_override,
+    validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling, with_real_model_manifest_lock,
+    write_manifest,
 };
 
 fn write_fake_safetensors(dir: &Path, filename: &str, tensors: &[(&str, &str, &[u64])]) {
@@ -3186,6 +3191,987 @@ fn converts_deepseek_v3_raw_kv_b_projection_to_mla_manifest() {
     let _ = fs::remove_dir_all(dir);
 }
 
+fn deepseek_v4_config_json() -> serde_json::Value {
+    serde_json::json!({
+        "model_type": "deepseek_v4",
+        "hidden_size": 16,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "head_dim": 8,
+        "num_hidden_layers": 3,
+        "vocab_size": 64,
+        "max_position_embeddings": 128,
+        "rope_theta": 10000,
+        "rms_norm_eps": 1e-6,
+        "qk_rope_head_dim": 2,
+        "q_lora_rank": 4,
+        "sliding_window": 32,
+        "o_lora_rank": 4,
+        "o_groups": 1,
+        "index_topk": 2,
+        "index_n_heads": 2,
+        "index_head_dim": 4,
+        "compress_ratios": [4, 128, 0],
+        "compress_rope_theta": 160000,
+        "hc_mult": 4,
+        "hc_sinkhorn_iters": 2,
+        "hc_eps": 1e-5,
+        "num_hash_layers": 1,
+        "scoring_func": "sqrtsoftplus",
+        "swiglu_limit": 7.0,
+        "moe_intermediate_size": 5,
+        "n_shared_experts": 1,
+        "n_routed_experts": 2,
+        "num_experts_per_tok": 1,
+        "routed_scaling_factor": 2.5,
+        "norm_topk_prob": true,
+        "num_nextn_predict_layers": 1
+    })
+}
+
+/// Full per-layer tensor set for the synthetic 3-layer V4 checkpoint
+/// (compress_ratios [4, 128, 0], num_hash_layers 1).
+fn deepseek_v4_fixture_tensors() -> Vec<(String, &'static str, Vec<u64>)> {
+    let mut tensors: Vec<(String, &'static str, Vec<u64>)> = vec![
+        ("embed.weight".to_string(), "BF16", vec![64, 16]),
+        ("norm.weight".to_string(), "BF16", vec![16]),
+        ("head.weight".to_string(), "BF16", vec![64, 16]),
+        ("hc_head_fn".to_string(), "F32", vec![4, 4]),
+        ("hc_head_base".to_string(), "F32", vec![4, 16]),
+        ("hc_head_scale".to_string(), "F32", vec![4]),
+    ];
+    for layer in 0..3_u32 {
+        let p = |name: &str| format!("layers.{layer}.{name}");
+        let mut layer_tensors: Vec<(String, &'static str, Vec<u64>)> = vec![
+            (p("attn_norm.weight"), "BF16", vec![16]),
+            (p("ffn_norm.weight"), "BF16", vec![16]),
+            (p("attn.wq_a.weight"), "BF16", vec![4, 16]),
+            (p("attn.q_norm.weight"), "BF16", vec![4]),
+            (p("attn.wq_b.weight"), "BF16", vec![16, 4]),
+            (p("attn.wkv.weight"), "BF16", vec![8, 16]),
+            (p("attn.kv_norm.weight"), "BF16", vec![8]),
+            (p("attn.wo_a.weight"), "BF16", vec![4, 16]),
+            (p("attn.wo_b.weight"), "BF16", vec![16, 4]),
+            (p("attn.attn_sink"), "BF16", vec![2]),
+            (p("hc_attn_fn"), "F32", vec![4, 4]),
+            (p("hc_attn_base"), "F32", vec![4, 16]),
+            (p("hc_attn_scale"), "F32", vec![4]),
+            (p("hc_ffn_fn"), "F32", vec![4, 4]),
+            (p("hc_ffn_base"), "F32", vec![4, 16]),
+            (p("hc_ffn_scale"), "F32", vec![4]),
+            (p("ffn.gate.weight"), "BF16", vec![2, 16]),
+            (p("ffn.shared_experts.w1.weight"), "BF16", vec![5, 16]),
+            (p("ffn.shared_experts.w2.weight"), "BF16", vec![16, 5]),
+            (p("ffn.shared_experts.w3.weight"), "BF16", vec![5, 16]),
+        ];
+        // Hash layer 0 routes via tid2eid; the rest use the correction bias.
+        if layer == 0 {
+            layer_tensors.push((p("ffn.gate.tid2eid"), "I32", vec![64]));
+        } else {
+            layer_tensors.push((p("ffn.gate.bias"), "BF16", vec![2]));
+        }
+        // Stacked routed experts (raw HF per-expert `ffn.experts.{eid}.w*`
+        // tensors are intentionally unmapped, like raw DeepSeek V3).
+        layer_tensors.extend([
+            (p("ffn.experts.gate.weight"), "BF16", vec![2, 5, 16]),
+            (p("ffn.experts.up.weight"), "BF16", vec![2, 5, 16]),
+            (p("ffn.experts.down.weight"), "BF16", vec![2, 16, 5]),
+        ]);
+        if layer == 0 {
+            // compress_ratio == 4: compressor + indexer.
+            layer_tensors.extend([
+                (p("attn.compressor.wkv.weight"), "BF16", vec![4, 16]),
+                (p("attn.compressor.wgate.weight"), "BF16", vec![4, 16]),
+                (p("attn.compressor.ape"), "F32", vec![32, 8]),
+                (p("attn.compressor.norm.weight"), "BF16", vec![8]),
+                (p("attn.indexer.weights_proj.weight"), "BF16", vec![2, 16]),
+                (p("attn.indexer.wq_b.weight"), "BF16", vec![8, 4]),
+                (p("attn.indexer.compressor.wkv.weight"), "BF16", vec![4, 16]),
+                (
+                    p("attn.indexer.compressor.wgate.weight"),
+                    "BF16",
+                    vec![4, 16],
+                ),
+                (p("attn.indexer.compressor.ape"), "F32", vec![32, 4]),
+                (p("attn.indexer.compressor.norm.weight"), "BF16", vec![4]),
+            ]);
+        } else if layer == 1 {
+            // compress_ratio == 128: compressor only.
+            layer_tensors.extend([
+                (p("attn.compressor.wkv.weight"), "BF16", vec![4, 16]),
+                (p("attn.compressor.wgate.weight"), "BF16", vec![4, 16]),
+                (p("attn.compressor.ape"), "F32", vec![32, 8]),
+                (p("attn.compressor.norm.weight"), "BF16", vec![8]),
+            ]);
+        }
+        tensors.extend(layer_tensors);
+    }
+    // MTP (nextn) sidecar tensors for num_nextn_predict_layers == 1.
+    tensors.extend([
+        ("mtp.0.e_proj.weight".to_string(), "BF16", vec![16, 16]),
+        ("mtp.0.h_proj.weight".to_string(), "BF16", vec![16, 16]),
+        ("mtp.0.enorm.weight".to_string(), "BF16", vec![16]),
+        ("mtp.0.hnorm.weight".to_string(), "BF16", vec![16]),
+        ("mtp.0.norm.weight".to_string(), "BF16", vec![16]),
+    ]);
+    tensors
+}
+
+fn write_deepseek_v4_fixture(dir: &Path, tensors: &[(String, &'static str, Vec<u64>)]) {
+    let refs: Vec<(&str, &str, &[u64])> = tensors
+        .iter()
+        .map(|(name, dtype, shape)| (name.as_str(), *dtype, shape.as_slice()))
+        .collect();
+    write_fake_safetensors(dir, "model.safetensors", &refs);
+}
+
+#[test]
+fn converts_deepseek_v4_flash_to_manifest() {
+    let dir = unique_test_dir("deepseek_v4");
+    write_config(&dir, deepseek_v4_config_json());
+    write_deepseek_v4_fixture(&dir, &deepseek_v4_fixture_tensors());
+
+    let manifest = convert_hf_model_dir(&dir).expect("DeepSeek V4 conversion should succeed");
+
+    assert_eq!(manifest.model_family, "deepseek_v4");
+    assert_eq!(manifest.attention_head_dim, 8);
+    assert_eq!(manifest.kv_head_count, 1);
+    // V4 must not reuse the V3 MLA block or sigmoid routing.
+    assert!(manifest.mla_attention.is_disabled());
+    assert!(!manifest.moe.sigmoid_routing);
+
+    let attention = &manifest.deepseek_v4.attention;
+    assert_eq!(attention.head_dim, Some(8));
+    assert_eq!(attention.qk_rope_head_dim, Some(2));
+    assert_eq!(attention.q_lora_rank, Some(4));
+    assert_eq!(attention.o_lora_rank, Some(4));
+    assert_eq!(attention.o_groups, Some(1));
+    assert_eq!(attention.index_topk, Some(2));
+    assert_eq!(attention.index_n_heads, Some(2));
+    assert_eq!(attention.index_head_dim, Some(4));
+    assert_eq!(attention.compress_rope_theta, Some(160000));
+    assert!(attention.has_attn_sinks);
+    assert_eq!(manifest.deepseek_v4.compress_ratios, vec![4, 128, 0]);
+    assert_eq!(manifest.deepseek_v4.hc_mult, Some(4));
+    assert_eq!(manifest.deepseek_v4.hc_sinkhorn_iters, Some(2));
+    assert_eq!(manifest.deepseek_v4.hc_eps, Some(1e-5));
+    assert_eq!(manifest.deepseek_v4.num_hash_layers, Some(1));
+    assert_eq!(manifest.deepseek_v4.num_nextn_predict_layers, Some(1));
+    assert_eq!(
+        manifest.deepseek_v4.scoring_func.as_deref(),
+        Some("sqrtsoftplus")
+    );
+    assert_eq!(manifest.deepseek_v4.swiglu_limit, Some(7.0));
+    assert_eq!(manifest.moe.expert_count, Some(2));
+    assert_eq!(manifest.moe.experts_per_token, Some(1));
+    assert_eq!(manifest.moe.expert_intermediate_size, Some(5));
+    assert_eq!(manifest.moe.shared_expert_count, Some(1));
+    assert_eq!(manifest.moe.routed_scaling_factor, Some(2.5));
+    assert!(manifest.moe_norm_topk_prob);
+
+    let has_role = |role: NativeTensorRole, layer_index: Option<u32>| {
+        manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == role && tensor.layer_index == layer_index)
+    };
+    for role in [
+        NativeTensorRole::AttentionKv,
+        NativeTensorRole::AttentionKvNorm,
+        NativeTensorRole::AttentionOutA,
+        NativeTensorRole::AttentionOutB,
+        NativeTensorRole::AttnSink,
+        NativeTensorRole::HcAttnFn,
+        NativeTensorRole::HcFfnScale,
+    ] {
+        for layer in 0..3 {
+            assert!(
+                has_role(role, Some(layer)),
+                "missing {role:?} on layer {layer}"
+            );
+        }
+    }
+    assert!(has_role(NativeTensorRole::FfnGateTid2Eid, Some(0)));
+    assert!(!has_role(NativeTensorRole::FfnGateTid2Eid, Some(1)));
+    assert!(has_role(
+        NativeTensorRole::FfnGateInpCorrectionBias,
+        Some(1)
+    ));
+    assert!(has_role(
+        NativeTensorRole::FfnGateInpCorrectionBias,
+        Some(2)
+    ));
+    assert!(!has_role(
+        NativeTensorRole::FfnGateInpCorrectionBias,
+        Some(0)
+    ));
+    assert!(has_role(NativeTensorRole::CompressorApe, Some(0)));
+    assert!(has_role(NativeTensorRole::CompressorApe, Some(1)));
+    assert!(!has_role(NativeTensorRole::CompressorApe, Some(2)));
+    assert!(has_role(NativeTensorRole::IndexerProj, Some(0)));
+    assert!(!has_role(NativeTensorRole::IndexerProj, Some(1)));
+    // Stacked routed experts map onto the shared expert roles on every layer.
+    for layer in 0..3 {
+        assert!(has_role(NativeTensorRole::FfnGateExps, Some(layer)));
+        assert!(has_role(NativeTensorRole::FfnUpExps, Some(layer)));
+        assert!(has_role(NativeTensorRole::FfnDownExps, Some(layer)));
+    }
+    // Root-level hyper-connection head + MTP sidecar roles stay layer-less.
+    assert!(has_role(NativeTensorRole::HcHeadFn, None));
+    assert!(has_role(NativeTensorRole::HcHeadBase, None));
+    assert!(has_role(NativeTensorRole::HcHeadScale, None));
+    assert!(has_role(NativeTensorRole::NextnEproj, None));
+    assert!(has_role(NativeTensorRole::NextnHproj, None));
+    assert!(has_role(NativeTensorRole::NextnSharedHeadNorm, None));
+
+    // The I32 hash-routing table rides the U32 container dtype but is not a
+    // quantized weight.
+    let tid2eid = manifest
+        .tensors
+        .iter()
+        .find(|tensor| tensor.role == NativeTensorRole::FfnGateTid2Eid)
+        .expect("tid2eid tensor");
+    assert_eq!(tid2eid.dtype, NativeTensorDataType::U32);
+    assert!(!tid2eid.source_quantized);
+    assert!(tid2eid.quantization.is_none());
+
+    write_manifest(&dir, &manifest).expect("write should succeed");
+    crate::model::NativeModelArtifacts::from_dir(&dir)
+        .expect("runtime-ready DeepSeek V4 manifest should validate");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn parses_deepseek_v4_config_fields() {
+    let config = deepseek_v4_config_json();
+    let parsed = deepseek_v4_config(&config, "deepseek_v4");
+    assert!(parsed.is_enabled());
+    assert_eq!(parsed.attention.head_dim, Some(8));
+    assert_eq!(parsed.attention.qk_rope_head_dim, Some(2));
+    assert_eq!(parsed.attention.q_lora_rank, Some(4));
+    assert_eq!(parsed.attention.o_lora_rank, Some(4));
+    assert_eq!(parsed.attention.o_groups, Some(1));
+    assert_eq!(parsed.attention.index_topk, Some(2));
+    assert_eq!(parsed.attention.index_n_heads, Some(2));
+    assert_eq!(parsed.attention.index_head_dim, Some(4));
+    assert_eq!(parsed.attention.compress_rope_theta, Some(160000));
+    assert!(parsed.attention.has_attn_sinks);
+    assert_eq!(parsed.compress_ratios, vec![4, 128, 0]);
+    assert_eq!(parsed.hc_mult, Some(4));
+    assert_eq!(parsed.hc_sinkhorn_iters, Some(2));
+    assert_eq!(parsed.hc_eps, Some(1e-5));
+    assert_eq!(parsed.num_hash_layers, Some(1));
+    assert_eq!(parsed.num_nextn_predict_layers, Some(1));
+    assert_eq!(parsed.scoring_func.as_deref(), Some("sqrtsoftplus"));
+    assert_eq!(parsed.swiglu_limit, Some(7.0));
+
+    // Other model types never populate the V4 block.
+    assert!(deepseek_v4_config(&config, "deepseek_v3").is_disabled());
+    assert!(deepseek_v4_config(&config, "qwen3").is_disabled());
+
+    // V4 MoE rides the generic block: expert dims and scaling factor are
+    // parsed, but sigmoid routing stays off (routing is scoring_func-based).
+    let moe = moe_config(&config, "deepseek_v4");
+    assert_eq!(moe.expert_count, Some(2));
+    assert_eq!(moe.experts_per_token, Some(1));
+    assert_eq!(moe.expert_intermediate_size, Some(5));
+    assert_eq!(moe.shared_expert_count, Some(1));
+    assert_eq!(moe.routed_scaling_factor, Some(2.5));
+    assert!(!moe.sigmoid_routing);
+    assert_eq!(moe.first_dense_layers, None);
+}
+
+#[test]
+fn deepseek_v4_tensor_matching_covers_hf_layout() {
+    let family = model_family_for_type("deepseek_v4", &serde_json::json!({})).expect("V4 family");
+    for (name, expected) in [
+        ("embed.weight", (NativeTensorRole::TokenEmbedding, None)),
+        ("norm.weight", (NativeTensorRole::FinalNorm, None)),
+        ("head.weight", (NativeTensorRole::LmHead, None)),
+        ("hc_head_fn", (NativeTensorRole::HcHeadFn, None)),
+        ("hc_head_base", (NativeTensorRole::HcHeadBase, None)),
+        ("hc_head_scale", (NativeTensorRole::HcHeadScale, None)),
+        (
+            "layers.3.attn.wq_a.weight",
+            (NativeTensorRole::AttentionQa, Some(3)),
+        ),
+        (
+            "layers.3.attn.q_norm.weight",
+            (NativeTensorRole::AttentionQaNorm, Some(3)),
+        ),
+        (
+            "layers.3.attn.wkv.weight",
+            (NativeTensorRole::AttentionKv, Some(3)),
+        ),
+        (
+            "layers.3.attn.kv_norm.weight",
+            (NativeTensorRole::AttentionKvNorm, Some(3)),
+        ),
+        (
+            "layers.3.attn.wo_a.weight",
+            (NativeTensorRole::AttentionOutA, Some(3)),
+        ),
+        (
+            "layers.3.attn.wo_b.weight",
+            (NativeTensorRole::AttentionOutB, Some(3)),
+        ),
+        (
+            "layers.3.attn.attn_sink",
+            (NativeTensorRole::AttnSink, Some(3)),
+        ),
+        (
+            "layers.3.attn.compressor.wkv.weight",
+            (NativeTensorRole::CompressorKv, Some(3)),
+        ),
+        (
+            "layers.3.attn.compressor.wgate.weight",
+            (NativeTensorRole::CompressorGate, Some(3)),
+        ),
+        (
+            "layers.3.attn.compressor.ape",
+            (NativeTensorRole::CompressorApe, Some(3)),
+        ),
+        (
+            "layers.3.attn.compressor.norm.weight",
+            (NativeTensorRole::CompressorNorm, Some(3)),
+        ),
+        (
+            "layers.3.attn.indexer.weights_proj.weight",
+            (NativeTensorRole::IndexerProj, Some(3)),
+        ),
+        (
+            "layers.3.attn.indexer.wq_b.weight",
+            (NativeTensorRole::IndexerQb, Some(3)),
+        ),
+        (
+            "layers.3.attn.indexer.compressor.wkv.weight",
+            (NativeTensorRole::IndexerCompressorKv, Some(3)),
+        ),
+        (
+            "layers.3.attn.indexer.compressor.wgate.weight",
+            (NativeTensorRole::IndexerCompressorGate, Some(3)),
+        ),
+        (
+            "layers.3.attn.indexer.compressor.ape",
+            (NativeTensorRole::IndexerCompressorApe, Some(3)),
+        ),
+        (
+            "layers.3.attn.indexer.compressor.norm.weight",
+            (NativeTensorRole::IndexerCompressorNorm, Some(3)),
+        ),
+        ("layers.3.hc_attn_fn", (NativeTensorRole::HcAttnFn, Some(3))),
+        (
+            "layers.3.hc_attn_base",
+            (NativeTensorRole::HcAttnBase, Some(3)),
+        ),
+        (
+            "layers.3.hc_attn_scale",
+            (NativeTensorRole::HcAttnScale, Some(3)),
+        ),
+        ("layers.3.hc_ffn_fn", (NativeTensorRole::HcFfnFn, Some(3))),
+        (
+            "layers.3.hc_ffn_base",
+            (NativeTensorRole::HcFfnBase, Some(3)),
+        ),
+        (
+            "layers.3.hc_ffn_scale",
+            (NativeTensorRole::HcFfnScale, Some(3)),
+        ),
+        (
+            "layers.3.ffn.gate.weight",
+            (NativeTensorRole::FfnGateInp, Some(3)),
+        ),
+        (
+            "layers.3.ffn.gate.bias",
+            (NativeTensorRole::FfnGateInpCorrectionBias, Some(3)),
+        ),
+        (
+            "layers.3.ffn.gate.e_score_correction_bias",
+            (NativeTensorRole::FfnGateInpCorrectionBias, Some(3)),
+        ),
+        (
+            "layers.3.ffn.gate.tid2eid",
+            (NativeTensorRole::FfnGateTid2Eid, Some(3)),
+        ),
+        (
+            "layers.3.ffn.shared_experts.w1.weight",
+            (NativeTensorRole::FfnSharedExpertGate, Some(3)),
+        ),
+        (
+            "layers.3.ffn.shared_experts.w2.weight",
+            (NativeTensorRole::FfnSharedExpertDown, Some(3)),
+        ),
+        (
+            "layers.3.ffn.shared_experts.w3.weight",
+            (NativeTensorRole::FfnSharedExpertUp, Some(3)),
+        ),
+        (
+            "layers.3.ffn.experts.gate.weight",
+            (NativeTensorRole::FfnGateExps, Some(3)),
+        ),
+        (
+            "layers.61.nextn.eh_proj.weight",
+            (NativeTensorRole::NextnEhProj, None),
+        ),
+        (
+            "layers.61.nextn.enorm.weight",
+            (NativeTensorRole::NextnEnorm, None),
+        ),
+        ("mtp.0.hc_head_fn", (NativeTensorRole::HcHeadFn, None)),
+        ("mtp.1.enorm.weight", (NativeTensorRole::NextnEnorm, None)),
+        (
+            "mtp.1.norm.weight",
+            (NativeTensorRole::NextnSharedHeadNorm, None),
+        ),
+    ] {
+        assert_eq!(match_tensor(name, &family), Some(expected), "tensor {name}");
+    }
+    // Sanitized `model.`-prefixed layouts ride the generic extra-map path.
+    assert_eq!(
+        match_tensor("model.layers.3.attn.wq_b.weight", &family),
+        Some((NativeTensorRole::AttentionQb, Some(3)))
+    );
+    // Unknown V4-ish names stay unmapped (dropped ledger, fail-loud).
+    assert_eq!(
+        match_tensor("layers.3.ffn.gate.weight_scale", &family),
+        None
+    );
+    // Raw per-expert stacks are not mapped in Phase 1 (converter cannot stack
+    // them; same behavior as raw per-expert DeepSeek V3 checkpoints).
+    assert_eq!(
+        match_tensor("layers.3.ffn.experts.7.w1.weight", &family),
+        None
+    );
+}
+
+#[test]
+fn deepseek_v4_contract_rejects_missing_hyper_connection_tensors() {
+    let dir = unique_test_dir("deepseek_v4_missing_hc");
+    write_config(&dir, deepseek_v4_config_json());
+    let tensors: Vec<(String, &'static str, Vec<u64>)> = deepseek_v4_fixture_tensors()
+        .into_iter()
+        .filter(|(name, _, _)| name != "layers.0.hc_ffn_fn")
+        .collect();
+    write_deepseek_v4_fixture(&dir, &tensors);
+
+    let error = convert_hf_model_dir(&dir).expect_err("missing hc_ffn_fn must fail the contract");
+    assert!(
+        matches!(error, ConvertError::InvalidModelContract { .. }),
+        "expected InvalidModelContract, got {error:?}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn deepseek_v4_contract_enforces_hash_routing_xor() {
+    let dir = unique_test_dir("deepseek_v4_hash_xor");
+    write_config(&dir, deepseek_v4_config_json());
+    // Give the non-hash layer 1 a tid2eid table instead of the correction bias.
+    let tensors: Vec<(String, &'static str, Vec<u64>)> = deepseek_v4_fixture_tensors()
+        .into_iter()
+        .filter(|(name, _, _)| name != "layers.1.ffn.gate.bias")
+        .chain([("layers.1.ffn.gate.tid2eid".to_string(), "I32", vec![64])])
+        .collect();
+    write_deepseek_v4_fixture(&dir, &tensors);
+
+    let error =
+        convert_hf_model_dir(&dir).expect_err("tid2eid on a non-hash layer must fail the contract");
+    assert!(
+        matches!(error, ConvertError::InvalidModelContract { .. }),
+        "expected InvalidModelContract, got {error:?}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// AXQuant / mlx-lm quantized V4 fixture config: the raw-HF geometry plus the
+/// MLX-LM `quantization` section (affine base + per-module-prefix overrides
+/// keyed without the `.weight` suffix), mirroring
+/// `AX-DeepSeek-V4-Flash-MLX-AXQ-2bit`.
+fn deepseek_v4_axq_config_json(base_bits: u32) -> serde_json::Value {
+    let mut config = deepseek_v4_config_json();
+    config.as_object_mut().expect("config object").insert(
+        "quantization".to_string(),
+        serde_json::json!({
+            "group_size": 32,
+            "bits": base_bits,
+            "mode": "affine",
+            "model.embed_tokens": { "group_size": 32, "bits": 8, "mode": "affine" },
+            "model.layers.0.attn.wq_a": { "group_size": 32, "bits": 4, "mode": "affine" },
+        }),
+    );
+    config
+}
+
+/// Full per-layer tensor set for a synthetic 3-layer AXQ/mlx-lm V4 checkpoint
+/// (`model.`-prefixed, affine `X.weight` + `X.scales` + `X.biases` triplets,
+/// fused `switch_mlp.gate_proj`, native 3-D `attn.wo_a`). `base_bits` selects
+/// the base quantization width (the real artifact uses 2).
+fn deepseek_v4_axq_fixture_tensors(base_bits: u32) -> Vec<(String, &'static str, Vec<u64>)> {
+    // MLX affine packing: ceil(logical_cols * bits / 32) U32 words per row.
+    let packed = |cols: u64, bits: u64| (cols * bits).div_ceil(32);
+    let base = u64::from(base_bits);
+    let mut tensors: Vec<(String, &'static str, Vec<u64>)> = vec![
+        (
+            "model.embed_tokens.weight".to_string(),
+            "U32",
+            vec![64, packed(16, 8)],
+        ),
+        ("model.embed_tokens.scales".to_string(), "BF16", vec![64, 1]),
+        ("model.embed_tokens.biases".to_string(), "BF16", vec![64, 1]),
+        ("model.norm.weight".to_string(), "BF16", vec![16]),
+        (
+            "lm_head.weight".to_string(),
+            "U32",
+            vec![64, packed(16, base)],
+        ),
+        ("lm_head.scales".to_string(), "BF16", vec![64, 1]),
+        ("lm_head.biases".to_string(), "BF16", vec![64, 1]),
+        ("model.hc_head.fn".to_string(), "F32", vec![4, 4]),
+        ("model.hc_head.base".to_string(), "F32", vec![4, 16]),
+        ("model.hc_head.scale".to_string(), "F32", vec![4]),
+    ];
+    // Push one affine triplet: U32 packed weight + BF16 scales/biases
+    // sidecars (one group per row; sidecar shapes are not contract-checked).
+    fn push_quant(
+        tensors: &mut Vec<(String, &'static str, Vec<u64>)>,
+        name: String,
+        shape: Vec<u64>,
+    ) {
+        let mut sidecar = shape.clone();
+        if let Some(last) = sidecar.last_mut() {
+            *last = 1;
+        }
+        let base = name.strip_suffix(".weight").unwrap_or(&name).to_string();
+        tensors.push((name, "U32", shape));
+        tensors.push((format!("{base}.scales"), "BF16", sidecar.clone()));
+        tensors.push((format!("{base}.biases"), "BF16", sidecar));
+    }
+    for layer in 0..3_u32 {
+        let p = |name: &str| format!("model.layers.{layer}.{name}");
+        tensors.extend([
+            (p("attn_norm.weight"), "BF16", vec![16]),
+            (p("ffn_norm.weight"), "BF16", vec![16]),
+            (p("attn.q_norm.weight"), "BF16", vec![4]),
+            (p("attn.kv_norm.weight"), "BF16", vec![8]),
+            // Native grouped 3-D output down-projection [G, R_o, H*D/G].
+            (p("attn.wo_a.weight"), "BF16", vec![1, 4, 16]),
+            (p("attn.attn_sink"), "F32", vec![2]),
+            (p("attn_hc.fn"), "F32", vec![4, 4]),
+            (p("attn_hc.base"), "F32", vec![4, 16]),
+            (p("attn_hc.scale"), "F32", vec![4]),
+            (p("ffn_hc.fn"), "F32", vec![4, 4]),
+            (p("ffn_hc.base"), "F32", vec![4, 16]),
+            (p("ffn_hc.scale"), "F32", vec![4]),
+            (p("ffn.gate.weight"), "BF16", vec![2, 16]),
+        ]);
+        // Layer 0 carries the 4-bit wq_a override; the rest use the base bits.
+        let wq_a_bits = if layer == 0 { 4 } else { base };
+        push_quant(
+            &mut tensors,
+            p("attn.wq_a.weight"),
+            vec![4, packed(16, wq_a_bits)],
+        );
+        push_quant(
+            &mut tensors,
+            p("attn.wq_b.weight"),
+            vec![16, packed(4, base)],
+        );
+        push_quant(
+            &mut tensors,
+            p("attn.wkv.weight"),
+            vec![8, packed(16, base)],
+        );
+        push_quant(
+            &mut tensors,
+            p("attn.wo_b.weight"),
+            vec![16, packed(4, base)],
+        );
+        // Hash layer 0 routes via tid2eid; the rest use the correction bias.
+        if layer == 0 {
+            tensors.push((p("ffn.gate.tid2eid"), "I32", vec![64]));
+        } else {
+            tensors.push((p("ffn.gate.e_score_correction_bias"), "F32", vec![2]));
+        }
+        // Fused gate+up routed experts (no separate up_proj) + shared trio.
+        push_quant(
+            &mut tensors,
+            p("ffn.switch_mlp.gate_proj.weight"),
+            vec![2, 10, packed(16, base)],
+        );
+        push_quant(
+            &mut tensors,
+            p("ffn.switch_mlp.down_proj.weight"),
+            vec![2, 16, packed(5, base)],
+        );
+        push_quant(
+            &mut tensors,
+            p("ffn.shared_experts.gate_proj.weight"),
+            vec![5, packed(16, base)],
+        );
+        push_quant(
+            &mut tensors,
+            p("ffn.shared_experts.up_proj.weight"),
+            vec![5, packed(16, base)],
+        );
+        push_quant(
+            &mut tensors,
+            p("ffn.shared_experts.down_proj.weight"),
+            vec![16, packed(5, base)],
+        );
+        if layer == 0 || layer == 1 {
+            // compress_ratio 4 / 128: sliding-window compressor.
+            push_quant(
+                &mut tensors,
+                p("attn.compressor.wkv.weight"),
+                vec![4, packed(16, base)],
+            );
+            push_quant(
+                &mut tensors,
+                p("attn.compressor.wgate.weight"),
+                vec![4, packed(16, base)],
+            );
+            tensors.extend([
+                (p("attn.compressor.ape"), "F32", vec![4, 8]),
+                (p("attn.compressor.norm.weight"), "BF16", vec![8]),
+            ]);
+        }
+        if layer == 0 {
+            // compress_ratio == 4: sparse indexer (`weights_proj`, not `proj`).
+            push_quant(
+                &mut tensors,
+                p("attn.indexer.weights_proj.weight"),
+                vec![2, packed(16, base)],
+            );
+            push_quant(
+                &mut tensors,
+                p("attn.indexer.wq_b.weight"),
+                vec![8, packed(4, base)],
+            );
+            push_quant(
+                &mut tensors,
+                p("attn.indexer.compressor.wkv.weight"),
+                vec![4, packed(16, base)],
+            );
+            push_quant(
+                &mut tensors,
+                p("attn.indexer.compressor.wgate.weight"),
+                vec![4, packed(16, base)],
+            );
+            tensors.extend([
+                (p("attn.indexer.compressor.ape"), "F32", vec![4, 4]),
+                (p("attn.indexer.compressor.norm.weight"), "BF16", vec![4]),
+            ]);
+        }
+    }
+    tensors
+}
+
+#[test]
+fn deepseek_v4_tensor_matching_covers_axq_layout() {
+    let family = model_family_for_type("deepseek_v4", &serde_json::json!({})).expect("V4 family");
+    for (name, expected) in [
+        (
+            "model.embed_tokens.weight",
+            (NativeTensorRole::TokenEmbedding, None),
+        ),
+        ("model.norm.weight", (NativeTensorRole::FinalNorm, None)),
+        ("lm_head.weight", (NativeTensorRole::LmHead, None)),
+        ("model.hc_head.fn", (NativeTensorRole::HcHeadFn, None)),
+        ("model.hc_head.base", (NativeTensorRole::HcHeadBase, None)),
+        ("model.hc_head.scale", (NativeTensorRole::HcHeadScale, None)),
+        (
+            "model.layers.7.attn.wq_a.weight",
+            (NativeTensorRole::AttentionQa, Some(7)),
+        ),
+        (
+            "model.layers.7.attn.indexer.weights_proj.weight",
+            (NativeTensorRole::IndexerProj, Some(7)),
+        ),
+        (
+            "model.layers.7.attn_hc.fn",
+            (NativeTensorRole::HcAttnFn, Some(7)),
+        ),
+        (
+            "model.layers.7.attn_hc.base",
+            (NativeTensorRole::HcAttnBase, Some(7)),
+        ),
+        (
+            "model.layers.7.attn_hc.scale",
+            (NativeTensorRole::HcAttnScale, Some(7)),
+        ),
+        (
+            "model.layers.7.ffn_hc.fn",
+            (NativeTensorRole::HcFfnFn, Some(7)),
+        ),
+        (
+            "model.layers.7.ffn_hc.scale",
+            (NativeTensorRole::HcFfnScale, Some(7)),
+        ),
+        // Fused gate+up switch experts land on the packed-experts role.
+        (
+            "model.layers.7.ffn.switch_mlp.gate_proj.weight",
+            (NativeTensorRole::FfnGateUpExpsPacked, Some(7)),
+        ),
+        (
+            "model.layers.7.ffn.switch_mlp.down_proj.weight",
+            (NativeTensorRole::FfnDownExps, Some(7)),
+        ),
+        (
+            "model.layers.7.ffn.shared_experts.gate_proj.weight",
+            (NativeTensorRole::FfnSharedExpertGate, Some(7)),
+        ),
+        (
+            "model.layers.7.ffn.shared_experts.up_proj.weight",
+            (NativeTensorRole::FfnSharedExpertUp, Some(7)),
+        ),
+        (
+            "model.layers.7.ffn.shared_experts.down_proj.weight",
+            (NativeTensorRole::FfnSharedExpertDown, Some(7)),
+        ),
+    ] {
+        assert_eq!(match_tensor(name, &family), Some(expected), "tensor {name}");
+    }
+}
+
+#[test]
+fn converts_deepseek_v4_axq_layout_to_manifest() {
+    let dir = unique_test_dir("deepseek_v4_axq");
+    write_config(&dir, deepseek_v4_axq_config_json(2));
+    write_deepseek_v4_fixture(&dir, &deepseek_v4_axq_fixture_tensors(2));
+
+    let manifest = convert_hf_model_dir(&dir).expect("AXQ DeepSeek V4 conversion should succeed");
+    assert_eq!(manifest.model_family, "deepseek_v4");
+
+    // MLX-LM quantization overrides land per tensor: embed 8-bit, layer-0
+    // wq_a 4-bit, everything else on the 2-bit group-32 affine base.
+    let spec = |name: &str| {
+        manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.name == name)
+            .unwrap_or_else(|| panic!("missing tensor {name}"))
+    };
+    let quant_bits = |name: &str| {
+        let tensor = spec(name);
+        assert!(tensor.source_quantized, "{name} must be source-quantized");
+        tensor
+            .quantization
+            .as_ref()
+            .map(|q| (q.bits, q.group_size, q.mode.as_str()))
+    };
+    assert_eq!(
+        quant_bits("model.embed_tokens.weight"),
+        Some((8, 32, "affine"))
+    );
+    assert_eq!(
+        quant_bits("model.layers.0.attn.wq_a.weight"),
+        Some((4, 32, "affine"))
+    );
+    assert_eq!(
+        quant_bits("model.layers.1.attn.wq_a.weight"),
+        Some((2, 32, "affine"))
+    );
+    assert_eq!(
+        quant_bits("model.layers.0.ffn.switch_mlp.gate_proj.weight"),
+        Some((2, 32, "affine"))
+    );
+    assert_eq!(quant_bits("lm_head.weight"), Some((2, 32, "affine")));
+
+    // Unquantized modules carry no quantization metadata.
+    let wo_a = spec("model.layers.0.attn.wo_a.weight");
+    assert!(!wo_a.source_quantized);
+    assert!(wo_a.quantization.is_none());
+    assert_eq!(
+        wo_a.shape,
+        vec![1, 4, 16],
+        "native 3-D wo_a layout is preserved"
+    );
+    let router = spec("model.layers.0.ffn.gate.weight");
+    assert!(!router.source_quantized);
+
+    // The fused switch gate_proj maps to the packed-experts role; no split
+    // gate/up expert roles may appear.
+    let has_role = |role: NativeTensorRole, layer_index: Option<u32>| {
+        manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == role && tensor.layer_index == layer_index)
+    };
+    for layer in 0..3 {
+        assert!(has_role(NativeTensorRole::FfnGateUpExpsPacked, Some(layer)));
+        assert!(!has_role(NativeTensorRole::FfnGateExps, Some(layer)));
+        assert!(!has_role(NativeTensorRole::FfnUpExps, Some(layer)));
+        assert!(has_role(NativeTensorRole::FfnDownExps, Some(layer)));
+        assert!(has_role(NativeTensorRole::HcAttnFn, Some(layer)));
+        assert!(has_role(NativeTensorRole::HcFfnScale, Some(layer)));
+    }
+    assert!(has_role(NativeTensorRole::HcHeadFn, None));
+    assert!(has_role(NativeTensorRole::IndexerProj, Some(0)));
+    assert!(!has_role(NativeTensorRole::IndexerProj, Some(1)));
+    assert!(has_role(NativeTensorRole::FfnGateTid2Eid, Some(0)));
+    assert!(has_role(
+        NativeTensorRole::FfnGateInpCorrectionBias,
+        Some(1)
+    ));
+
+    // Only the `.weight` member of each affine triplet enters the manifest;
+    // the sidecars stay on disk for the runtime to resolve by name.
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .all(|tensor| !tensor.name.ends_with(".scales") && !tensor.name.ends_with(".biases")),
+        "quantization sidecars must not appear in the manifest"
+    );
+
+    write_manifest(&dir, &manifest).expect("write should succeed");
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn deepseek_v4_axq_manifest_passes_loader_validation() {
+    // 4-bit base keeps every tensor inside the supported affine bit widths so
+    // loader validation runs without the experimental 2-bit env gate; the
+    // layout under test (packed experts, 3-D wo_a, triplets) is identical.
+    let dir = unique_test_dir("deepseek_v4_axq_validate");
+    write_config(&dir, deepseek_v4_axq_config_json(4));
+    write_deepseek_v4_fixture(&dir, &deepseek_v4_axq_fixture_tensors(4));
+
+    let manifest = convert_hf_model_dir(&dir).expect("AXQ conversion should succeed");
+    write_manifest(&dir, &manifest).expect("write should succeed");
+    crate::model::NativeModelArtifacts::from_dir(&dir)
+        .expect("AXQ DeepSeek V4 manifest should pass loader validation");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn deepseek_v4_axq_requires_complete_quantization_triplets() {
+    let dir = unique_test_dir("deepseek_v4_axq_missing_biases");
+    write_config(&dir, deepseek_v4_axq_config_json(2));
+    let tensors: Vec<(String, &'static str, Vec<u64>)> = deepseek_v4_axq_fixture_tensors(2)
+        .into_iter()
+        .filter(|(name, _, _)| name != "model.layers.1.attn.wkv.biases")
+        .collect();
+    write_deepseek_v4_fixture(&dir, &tensors);
+
+    let error = convert_hf_model_dir(&dir)
+        .expect_err("a quantized weight without its .biases sidecar must fail the contract");
+    match error {
+        ConvertError::InvalidModelContract { message, .. } => {
+            assert!(
+                message.contains("biases"),
+                "error should name the sidecar: {message}"
+            );
+        }
+        other => panic!("expected InvalidModelContract, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn deepseek_v4_contract_rejects_indexer_on_ratio_128_layer() {
+    let dir = unique_test_dir("deepseek_v4_axq_indexer_128");
+    write_config(&dir, deepseek_v4_axq_config_json(2));
+    // Layer 1 has compress_ratio 128: a stray indexer tensor must fail.
+    let tensors: Vec<(String, &'static str, Vec<u64>)> = deepseek_v4_axq_fixture_tensors(2)
+        .into_iter()
+        .chain([(
+            "model.layers.1.attn.indexer.weights_proj.weight".to_string(),
+            "BF16",
+            vec![2, 16],
+        )])
+        .collect();
+    write_deepseek_v4_fixture(&dir, &tensors);
+
+    let error = convert_hf_model_dir(&dir)
+        .expect_err("indexer tensors on a ratio-128 layer must fail the contract");
+    match error {
+        ConvertError::InvalidModelContract { message, .. } => {
+            assert!(
+                message.contains("indexer"),
+                "error should name the indexer: {message}"
+            );
+        }
+        other => panic!("expected InvalidModelContract, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn deepseek_v4_axq_config_trims_nextn_compress_ratio() {
+    // The real AXQ config carries num_hidden_layers + num_nextn_predict_layers
+    // ratios (44 for 43 layers); the manifest keeps main-layer ratios only.
+    let mut config = deepseek_v4_config_json();
+    config.as_object_mut().expect("config object").insert(
+        "compress_ratios".to_string(),
+        serde_json::json!([4, 128, 0, 0]),
+    );
+    let parsed = deepseek_v4_config(&config, "deepseek_v4");
+    assert_eq!(parsed.compress_ratios, vec![4, 128, 0]);
+}
+
+#[test]
+fn deepseek_v4_axq_tolerates_fp8_mtp_sidecar() {
+    // The published AXQ `mtp.safetensors` sidecar stores raw-HF names with
+    // FP8 weights (F8_E4M3 + F8_E8M0 `.scale`) and per-expert I8 stacks.
+    // Role-mapped FP8 tensors (e_proj/h_proj) dequantize like any FP8 dense
+    // weight; role-less FP8/I8 sidecar tensors must not fail conversion.
+    let dir = unique_test_dir("deepseek_v4_axq_mtp_fp8");
+    write_config(&dir, deepseek_v4_axq_config_json(2));
+    write_deepseek_v4_fixture(&dir, &deepseek_v4_axq_fixture_tensors(2));
+    write_fake_safetensors(
+        &dir,
+        "mtp.safetensors",
+        &[
+            ("mtp.0.e_proj.weight", "F8_E4M3", &[16, 16]),
+            ("mtp.0.e_proj.scale", "F8_E8M0", &[1, 1]),
+            ("mtp.0.h_proj.weight", "F8_E4M3", &[16, 16]),
+            ("mtp.0.h_proj.scale", "F8_E8M0", &[1, 1]),
+            ("mtp.0.enorm.weight", "BF16", &[16]),
+            ("mtp.0.attn.wq_a.weight", "F8_E4M3", &[4, 16]),
+            ("mtp.0.attn.wq_a.scale", "F8_E8M0", &[1, 1]),
+            ("mtp.0.ffn.experts.0.w1.weight", "I8", &[5, 16]),
+            ("mtp.0.ffn.experts.0.w1.scale", "F8_E8M0", &[1, 1]),
+        ],
+    );
+
+    let manifest =
+        convert_hf_model_dir(&dir).expect("FP8 mtp sidecar must not fail AXQ conversion");
+
+    // e_proj/h_proj dequantize into the converted safetensors file as BF16
+    // nextn tensors; the role-less FP8/I8 sidecar tensors stay unmapped.
+    let nextn = |role: NativeTensorRole| {
+        manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.role == role && tensor.layer_index.is_none())
+    };
+    for role in [
+        NativeTensorRole::NextnEproj,
+        NativeTensorRole::NextnHproj,
+        NativeTensorRole::NextnEnorm,
+    ] {
+        let tensor = nextn(role).unwrap_or_else(|| panic!("missing {role:?}"));
+        assert_eq!(tensor.dtype, NativeTensorDataType::Bf16, "{role:?}");
+    }
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .all(|tensor| !tensor.name.starts_with("mtp.0.attn.")
+                && !tensor.name.starts_with("mtp.0.ffn.experts")),
+        "role-less mtp sidecar tensors must not enter the manifest"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
 #[test]
 fn rejects_glm4_moe_lite_rope_scaling_until_scale_contract_is_manifested() {
     validate_glm4_moe_lite_rope_scaling(&serde_json::json!({}))
@@ -3497,14 +4483,15 @@ fn rejects_quantized_dtypes() {
             "vocab_size": 151936,
         }),
     );
-    // "I32" is not a supported safetensors dtype in our converter
+    // "F64" is not a supported safetensors dtype in our converter ("I32" is,
+    // since DeepSeek V4's `ffn.gate.tid2eid` hash-routing table needs it).
     write_fake_safetensors(
         &dir,
         "model.safetensors",
-        &[("model.embed_tokens.weight", "I32", &[151936, 4096])],
+        &[("model.embed_tokens.weight", "F64", &[151936, 4096])],
     );
 
-    let error = convert_hf_model_dir(&dir).expect_err("I32 dtype should fail");
+    let error = convert_hf_model_dir(&dir).expect_err("F64 dtype should fail");
     assert!(matches!(error, ConvertError::UnsupportedDtype { .. }));
 
     let _ = fs::remove_dir_all(dir);
@@ -4353,6 +5340,164 @@ fn parse_nemotron_hybrid_pattern_from_string() {
 }
 
 #[test]
+fn converts_nemotron_embed_bare_ministral_encoder() {
+    let dir = unique_test_dir("nemotron_embed_1b_shape");
+    // Mirrors nvidia/Nemotron-3-Embed-1B-BF16 encoder signals + bare tensor names.
+    write_config(
+        &dir,
+        serde_json::json!({
+            "architectures": ["Ministral3Model"],
+            "model_type": "ministral3",
+            "vocab_size": 32,
+            "hidden_size": 8,
+            "intermediate_size": 16,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 4,
+            "num_hidden_layers": 2,
+            "is_causal": false,
+            "pooling": "avg",
+            "tie_word_embeddings": true,
+            "rms_norm_eps": 1e-5,
+            "rope_theta": 1_000_000.0,
+            "nemo_version": "0.3.0rc0",
+            "rope_parameters": {
+                "rope_type": "yarn",
+                "type": "yarn",
+                "factor": 16.0,
+                "original_max_position_embeddings": 16384,
+                "beta_fast": 32.0,
+                "beta_slow": 1.0,
+                "rope_theta": 1_000_000.0
+            }
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[
+            ("embed_tokens.weight", "BF16", &[32, 8]),
+            ("norm.weight", "BF16", &[8]),
+            ("layers.0.self_attn.q_proj.weight", "BF16", &[8, 8]),
+            ("layers.0.self_attn.k_proj.weight", "BF16", &[4, 8]),
+            ("layers.0.self_attn.v_proj.weight", "BF16", &[4, 8]),
+            ("layers.0.self_attn.o_proj.weight", "BF16", &[8, 8]),
+            ("layers.0.mlp.gate_proj.weight", "BF16", &[16, 8]),
+            ("layers.0.mlp.up_proj.weight", "BF16", &[16, 8]),
+            ("layers.0.mlp.down_proj.weight", "BF16", &[8, 16]),
+            ("layers.0.input_layernorm.weight", "BF16", &[8]),
+            ("layers.0.post_attention_layernorm.weight", "BF16", &[8]),
+            ("layers.1.self_attn.q_proj.weight", "BF16", &[8, 8]),
+            ("layers.1.self_attn.k_proj.weight", "BF16", &[4, 8]),
+            ("layers.1.self_attn.v_proj.weight", "BF16", &[4, 8]),
+            ("layers.1.self_attn.o_proj.weight", "BF16", &[8, 8]),
+            ("layers.1.mlp.gate_proj.weight", "BF16", &[16, 8]),
+            ("layers.1.mlp.up_proj.weight", "BF16", &[16, 8]),
+            ("layers.1.mlp.down_proj.weight", "BF16", &[8, 16]),
+            ("layers.1.input_layernorm.weight", "BF16", &[8]),
+            ("layers.1.post_attention_layernorm.weight", "BF16", &[8]),
+        ],
+    );
+
+    let manifest = convert_hf_model_dir(&dir).expect("nemotron_embed conversion should succeed");
+    assert_eq!(manifest.model_family, "nemotron_embed");
+    assert!(manifest.tie_word_embeddings);
+    assert_eq!(manifest.layer_count, 2);
+    assert_eq!(manifest.hidden_size, 8);
+    assert_eq!(
+        manifest.rope_scaling_type.as_deref(),
+        Some("yarn"),
+        "YaRN should be lifted from rope_parameters"
+    );
+    assert_eq!(manifest.rope_scaling_factor, Some(16.0));
+    assert_eq!(manifest.rope_original_context_len, Some(16384));
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::TokenEmbedding && t.layer_index.is_none())
+    );
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::FinalNorm && t.layer_index.is_none())
+    );
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::AttentionQ && t.layer_index == Some(0))
+    );
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::AttentionPostNorm && t.layer_index == Some(1))
+    );
+    assert!(
+        !manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::LmHead),
+        "encoder packs should not require lm_head"
+    );
+
+    write_manifest(&dir, &manifest).expect("write should succeed");
+    crate::model::NativeModelArtifacts::from_dir(&dir)
+        .expect("nemotron_embed manifest should validate");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn causal_ministral3_without_pooling_stays_mistral3_chat() {
+    let dir = unique_test_dir("ministral3_chat_not_embed");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "ministral3",
+            "vocab_size": 32,
+            "hidden_size": 8,
+            "intermediate_size": 16,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 4,
+            "num_hidden_layers": 1,
+            "is_causal": true,
+            "tie_word_embeddings": true
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[
+            ("model.embed_tokens.weight", "BF16", &[32, 8]),
+            ("model.norm.weight", "BF16", &[8]),
+            ("model.layers.0.self_attn.q_proj.weight", "BF16", &[8, 8]),
+            ("model.layers.0.self_attn.k_proj.weight", "BF16", &[4, 8]),
+            ("model.layers.0.self_attn.v_proj.weight", "BF16", &[4, 8]),
+            ("model.layers.0.self_attn.o_proj.weight", "BF16", &[8, 8]),
+            ("model.layers.0.mlp.gate_proj.weight", "BF16", &[16, 8]),
+            ("model.layers.0.mlp.up_proj.weight", "BF16", &[16, 8]),
+            ("model.layers.0.mlp.down_proj.weight", "BF16", &[8, 16]),
+            ("model.layers.0.input_layernorm.weight", "BF16", &[8]),
+            (
+                "model.layers.0.post_attention_layernorm.weight",
+                "BF16",
+                &[8],
+            ),
+        ],
+    );
+    let manifest = convert_hf_model_dir(&dir).expect("chat ministral3 should convert");
+    assert_eq!(
+        manifest.model_family, "mistral3",
+        "causal Ministral must not steal nemotron_embed detection"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn converts_unlimited_ocr_language_moe_directory() {
     let dir = unique_test_dir("unlimited_ocr_lang");
     write_config(
@@ -5002,6 +6147,799 @@ fn from_dir_or_convert_leaves_existing_manifest_untouched() {
     assert_eq!(artifacts.manifest().model_family, "qwen3");
     let after = fs::read(&manifest_path).expect("manifest should be readable");
     assert_eq!(before, after, "existing manifest must not be rewritten");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn parse_rope_scaling_keeps_yarn_beta_bounds() {
+    let (ty, factor, _, _, orig, beta_fast, beta_slow) = parse_rope_scaling(
+        &serde_json::json!({
+            "rope_scaling": {
+                "rope_type": "yarn",
+                "factor": 64.0,
+                "beta_fast": 32,
+                "beta_slow": 1,
+                "original_max_position_embeddings": 65536
+            }
+        }),
+        "deepseek_v4",
+    );
+    assert_eq!(ty.as_deref(), Some("yarn"));
+    assert_eq!(factor, Some(64.0));
+    assert_eq!(orig, Some(65536));
+    assert_eq!(beta_fast, Some(32.0));
+    assert_eq!(beta_slow, Some(1.0));
+
+    // Missing beta keys stay None (runtime falls back to the 32/1 defaults).
+    let (_, _, _, _, _, beta_fast, beta_slow) = parse_rope_scaling(
+        &serde_json::json!({ "rope_scaling": { "rope_type": "yarn", "factor": 8.0 } }),
+        "deepseek_v4",
+    );
+    assert_eq!(beta_fast, None);
+    assert_eq!(beta_slow, None);
+}
+
+// ---------------------------------------------------------------------------
+// DeepSeek V4 quantized-checkpoint conversion (FP8 dense + FP4 experts)
+// ---------------------------------------------------------------------------
+
+/// Write a safetensors file with real tensor payloads (the fake writer above
+/// keeps fixtures sparse; the FP8/FP4 data pass reads actual bytes).
+fn write_safetensors_with_data(
+    dir: &Path,
+    filename: &str,
+    tensors: &[(String, String, Vec<u64>, Vec<u8>)],
+) {
+    let elem_size = |dtype: &str| -> u64 {
+        match dtype {
+            "F16" | "BF16" => 2,
+            "F32" | "U32" | "I32" => 4,
+            // F4 packs two values per byte.
+            "F4" => 0,
+            _ => 1,
+        }
+    };
+    let mut header = BTreeMap::new();
+    let mut offset = 0u64;
+    for (name, dtype, shape, data) in tensors {
+        let num_elements: u64 = shape.iter().product();
+        let byte_len = if dtype == "F4" {
+            num_elements.div_ceil(2)
+        } else {
+            num_elements * elem_size(dtype)
+        };
+        assert_eq!(
+            data.len() as u64,
+            byte_len,
+            "tensor {name} payload length must match shape {shape:?} ({dtype})"
+        );
+        header.insert(
+            name.clone(),
+            serde_json::json!({
+                "dtype": dtype,
+                "shape": shape,
+                "data_offsets": [offset, offset + byte_len],
+            }),
+        );
+        offset += byte_len;
+    }
+
+    let header_json = serde_json::to_vec(&header).unwrap();
+    let path = dir.join(filename);
+    let mut file = fs::File::create(&path).unwrap();
+    file.write_all(&(header_json.len() as u64).to_le_bytes())
+        .unwrap();
+    file.write_all(&header_json).unwrap();
+    for (_, _, _, data) in tensors {
+        file.write_all(data).unwrap();
+    }
+}
+
+/// Read one tensor's raw payload back from a safetensors file.
+fn read_safetensors_tensor(dir: &Path, filename: &str, name: &str) -> (String, Vec<u64>, Vec<u8>) {
+    let path = dir.join(filename);
+    let entries = super::parse_safetensors_header(&path).expect("header should parse");
+    let entry = entries
+        .iter()
+        .find(|entry| entry.name == name)
+        .unwrap_or_else(|| panic!("tensor {name} should exist in {filename}"));
+    let bytes = fs::read(&path).expect("file should be readable");
+    let start = entry.offset_bytes as usize;
+    let end = start + entry.length_bytes as usize;
+    (
+        entry.dtype.clone(),
+        entry.shape.clone(),
+        bytes[start..end].to_vec(),
+    )
+}
+
+fn pattern_bytes(len: usize, seed: u8) -> Vec<u8> {
+    (0..len).map(|i| seed.wrapping_add(i as u8)).collect()
+}
+
+#[test]
+fn fp8_e4m3_decode_spot_checks() {
+    assert_eq!(fp8_e4m3_to_f32(0x00), 0.0);
+    assert_eq!(fp8_e4m3_to_f32(0x80), -0.0);
+    assert_eq!(fp8_e4m3_to_f32(0x30), 0.5);
+    assert_eq!(fp8_e4m3_to_f32(0x38), 1.0);
+    assert_eq!(fp8_e4m3_to_f32(0xB8), -1.0);
+    // exp=6, mantissa=6: (1 + 6/8) * 2^-1 = 0.875.
+    assert_eq!(fp8_e4m3_to_f32(0x36), 0.875);
+    // Max normal: exp=15, mantissa=6: (1 + 6/8) * 2^8 = 448.
+    assert_eq!(fp8_e4m3_to_f32(0x7E), 448.0);
+    assert_eq!(fp8_e4m3_to_f32(0xFE), -448.0);
+    // Smallest subnormal: 2^-9.
+    assert_eq!(fp8_e4m3_to_f32(0x01), 0.001953125);
+    // exp=15, mantissa=7 is the NaN encoding (no infinity in e4m3fn).
+    assert!(fp8_e4m3_to_f32(0x7F).is_nan());
+    assert!(fp8_e4m3_to_f32(0xFF).is_nan());
+}
+
+#[test]
+fn fp8_e5m2_decode_spot_checks() {
+    assert_eq!(fp8_e5m2_to_f32(0x00), 0.0);
+    assert_eq!(fp8_e5m2_to_f32(0x38), 0.5);
+    assert_eq!(fp8_e5m2_to_f32(0x3C), 1.0);
+    assert_eq!(fp8_e5m2_to_f32(0xC0), -2.0);
+    assert_eq!(fp8_e5m2_to_f32(0x40), 2.0);
+    // Smallest subnormal: 2^-16.
+    assert_eq!(fp8_e5m2_to_f32(0x01), 1.0 / 65_536.0);
+    assert_eq!(fp8_e5m2_to_f32(0x7C), f32::INFINITY);
+    assert_eq!(fp8_e5m2_to_f32(0xFC), f32::NEG_INFINITY);
+    assert!(fp8_e5m2_to_f32(0x7D).is_nan());
+}
+
+#[test]
+fn e8m0_scale_and_bf16_rounding_spot_checks() {
+    assert_eq!(e8m0_to_f32(127), 1.0);
+    assert_eq!(e8m0_to_f32(128), 2.0);
+    assert_eq!(e8m0_to_f32(126), 0.5);
+    assert_eq!(e8m0_to_f32(0), f32::exp2(-127.0));
+
+    assert_eq!(f32_to_bf16_bits(1.0), 0x3F80);
+    assert_eq!(f32_to_bf16_bits(0.5), 0x3F00);
+    assert_eq!(f32_to_bf16_bits(-2.0), 0xC000);
+    // Round-to-nearest-even at the midpoint between 0x3F80 and 0x3F81 (even).
+    assert_eq!(f32_to_bf16_bits(f32::from_bits(0x3F80_8000)), 0x3F80);
+    // Just above the midpoint rounds up.
+    assert_eq!(f32_to_bf16_bits(f32::from_bits(0x3F80_8001)), 0x3F81);
+    // Midpoint with odd target rounds up to even 0x3F82.
+    assert_eq!(f32_to_bf16_bits(f32::from_bits(0x3F81_8000)), 0x3F82);
+    // NaN stays NaN.
+    let nan_bits = f32_to_bf16_bits(f32::NAN);
+    assert!(f32::from_bits((nan_bits as u32) << 16).is_nan());
+}
+
+#[test]
+fn fp8_block_scale_dequant_matches_hand_computed() {
+    // [2, 256] e4m3 weight with a 1x2 e8m0 scale grid.
+    let rows = 2;
+    let cols = 256;
+    let mut weights = vec![0x38u8; rows * cols]; // 1.0 everywhere
+    weights[128] = 0x30; // (0, 128): 0.5
+    weights[cols] = 0xB8; // (1, 0): -1.0
+    weights[2 * cols - 1] = 0x01; // (1, 255): 2^-9 subnormal
+    let scales = [128u8, 127]; // col block 0: 2.0, col block 1: 1.0
+
+    let out =
+        dequantize_fp8_block_scales(&weights, false, rows, cols, BlockScaleBytes::E8m0(&scales))
+            .expect("dequant should succeed");
+    assert_eq!(out.len(), rows * cols * 2);
+
+    let value_at = |r: usize, c: usize| -> u16 {
+        let start = (r * cols + c) * 2;
+        u16::from_le_bytes([out[start], out[start + 1]])
+    };
+    assert_eq!(value_at(0, 0), 0x4000); // 1.0 * 2.0 = 2.0
+    assert_eq!(value_at(0, 127), 0x4000); // same 128-block
+    assert_eq!(value_at(0, 128), 0x3F00); // 0.5 * 1.0 = 0.5
+    assert_eq!(value_at(1, 0), 0xC000); // -1.0 * 2.0 = -2.0
+    assert_eq!(value_at(1, 255), 0x3B00); // 2^-9 * 1.0 (exact in bf16)
+
+    // F32 scale sidecar variant decodes identically.
+    let mut f32_scales = Vec::new();
+    f32_scales.extend_from_slice(&2.0f32.to_le_bytes());
+    f32_scales.extend_from_slice(&1.0f32.to_le_bytes());
+    let out_f32 = dequantize_fp8_block_scales(
+        &weights,
+        false,
+        rows,
+        cols,
+        BlockScaleBytes::F32Le(&f32_scales),
+    )
+    .expect("f32-scaled dequant should succeed");
+    assert_eq!(out, out_f32);
+
+    // Byte-count mismatch is rejected.
+    assert!(
+        dequantize_fp8_block_scales(
+            &weights[..weights.len() - 1],
+            false,
+            rows,
+            cols,
+            BlockScaleBytes::E8m0(&scales)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn mxfp4_expert_stacking_preserves_nibble_order() {
+    // Two experts, [2 rows, 16 packed cols] (= 32 logical FP4 values per row,
+    // one e8m0 block). The HF adjacent low/high nibble byte order is exactly
+    // MLX's MXFP4 u32 packing, so stacking must be a pure concatenation.
+    let e0_weight: Vec<u8> = (0..32u8)
+        .map(|i| i.wrapping_mul(3).wrapping_add(1))
+        .collect();
+    let e1_weight: Vec<u8> = (0..32u8)
+        .map(|i| 255u8.wrapping_sub(i.wrapping_mul(5)))
+        .collect();
+    let e0_scales = vec![120u8, 121];
+    let e1_scales = vec![130u8, 131];
+
+    let (weights, scales) = stack_mxfp4_experts(
+        &[
+            (e0_weight.as_slice(), e0_scales.as_slice()),
+            (e1_weight.as_slice(), e1_scales.as_slice()),
+        ],
+        2,
+        16,
+        1,
+    )
+    .expect("stacking should succeed");
+
+    let mut expected_weights = e0_weight.clone();
+    expected_weights.extend_from_slice(&e1_weight);
+    assert_eq!(weights, expected_weights);
+    let mut expected_scales = e0_scales.clone();
+    expected_scales.extend_from_slice(&e1_scales);
+    assert_eq!(scales, expected_scales);
+
+    // Length mismatches are rejected.
+    assert!(
+        stack_mxfp4_experts(
+            &[(&e0_weight[..31], &e0_scales), (&e1_weight, &e1_scales)],
+            2,
+            16,
+            1
+        )
+        .is_err()
+    );
+    assert!(
+        stack_mxfp4_experts(
+            &[(&e0_weight, &e0_scales[..1]), (&e1_weight, &e1_scales)],
+            2,
+            16,
+            1
+        )
+        .is_err()
+    );
+}
+
+/// Synthetic quantized V4 checkpoint: hidden_size 32 / moe_intermediate 32 so
+/// FP4 rows are 32 logical columns (one MXFP4 group). Layer 1 `attn.wq_b` is
+/// FP8 e4m3 + e8m0 scale; layer 2 `attn.wkv` is FP8 e5m2 + U8 scale; every
+/// layer's routed experts are per-expert FP4 nibbles + e8m0 scales.
+#[allow(clippy::type_complexity)]
+fn deepseek_v4_quantized_fixture() -> (
+    serde_json::Value,
+    Vec<(String, String, Vec<u64>, Vec<u8>)>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+) {
+    let mut config = deepseek_v4_config_json();
+    config["hidden_size"] = serde_json::json!(32);
+    config["moe_intermediate_size"] = serde_json::json!(32);
+
+    let bf16 = |elems: usize| vec![0u8; elems * 2];
+    let f32z = |elems: usize| vec![0u8; elems * 4];
+    let mut tensors: Vec<(String, String, Vec<u64>, Vec<u8>)> = vec![
+        (
+            "embed.weight".to_string(),
+            "BF16".to_string(),
+            vec![64, 32],
+            bf16(64 * 32),
+        ),
+        (
+            "norm.weight".to_string(),
+            "BF16".to_string(),
+            vec![32],
+            bf16(32),
+        ),
+        (
+            "head.weight".to_string(),
+            "BF16".to_string(),
+            vec![64, 32],
+            bf16(64 * 32),
+        ),
+        (
+            "hc_head_fn".to_string(),
+            "F32".to_string(),
+            vec![4, 4],
+            f32z(16),
+        ),
+        (
+            "hc_head_base".to_string(),
+            "F32".to_string(),
+            vec![4, 32],
+            f32z(128),
+        ),
+        (
+            "hc_head_scale".to_string(),
+            "F32".to_string(),
+            vec![4],
+            f32z(4),
+        ),
+    ];
+
+    // FP8 payloads kept aside for expected-value computation.
+    let wq_b_fp8 = pattern_bytes(16 * 4, 0);
+    let wq_b_scale = vec![129u8]; // 2^2 = 4.0
+    let wkv_fp8 = pattern_bytes(8 * 32, 3);
+    let wkv_scale = vec![126u8]; // 2^-1 = 0.5
+
+    for layer in 0..3_u32 {
+        let p = |name: &str| format!("layers.{layer}.{name}");
+        tensors.extend([
+            (
+                p("attn_norm.weight"),
+                "BF16".to_string(),
+                vec![32],
+                bf16(32),
+            ),
+            (p("ffn_norm.weight"), "BF16".to_string(), vec![32], bf16(32)),
+            (
+                p("attn.wq_a.weight"),
+                "BF16".to_string(),
+                vec![4, 32],
+                bf16(128),
+            ),
+            (
+                p("attn.q_norm.weight"),
+                "BF16".to_string(),
+                vec![4],
+                bf16(4),
+            ),
+        ]);
+        if layer == 1 {
+            tensors.extend([
+                (
+                    p("attn.wq_b.weight"),
+                    "F8_E4M3".to_string(),
+                    vec![16, 4],
+                    wq_b_fp8.clone(),
+                ),
+                (
+                    p("attn.wq_b.scale"),
+                    "F8_E8M0".to_string(),
+                    vec![1, 1],
+                    wq_b_scale.clone(),
+                ),
+            ]);
+        } else {
+            tensors.push((
+                p("attn.wq_b.weight"),
+                "BF16".to_string(),
+                vec![16, 4],
+                bf16(64),
+            ));
+        }
+        if layer == 2 {
+            tensors.extend([
+                (
+                    p("attn.wkv.weight"),
+                    "F8_E5M2".to_string(),
+                    vec![8, 32],
+                    wkv_fp8.clone(),
+                ),
+                (
+                    p("attn.wkv.scale"),
+                    "U8".to_string(),
+                    vec![1, 1],
+                    wkv_scale.clone(),
+                ),
+            ]);
+        } else {
+            tensors.push((
+                p("attn.wkv.weight"),
+                "BF16".to_string(),
+                vec![8, 32],
+                bf16(256),
+            ));
+        }
+        tensors.extend([
+            (
+                p("attn.kv_norm.weight"),
+                "BF16".to_string(),
+                vec![8],
+                bf16(8),
+            ),
+            (
+                p("attn.wo_a.weight"),
+                "BF16".to_string(),
+                vec![4, 32],
+                bf16(128),
+            ),
+            (
+                p("attn.wo_b.weight"),
+                "BF16".to_string(),
+                vec![32, 4],
+                bf16(128),
+            ),
+            (p("attn.attn_sink"), "BF16".to_string(), vec![2], bf16(2)),
+            (p("hc_attn_fn"), "F32".to_string(), vec![4, 4], f32z(16)),
+            (p("hc_attn_base"), "F32".to_string(), vec![4, 32], f32z(128)),
+            (p("hc_attn_scale"), "F32".to_string(), vec![4], f32z(4)),
+            (p("hc_ffn_fn"), "F32".to_string(), vec![4, 4], f32z(16)),
+            (p("hc_ffn_base"), "F32".to_string(), vec![4, 32], f32z(128)),
+            (p("hc_ffn_scale"), "F32".to_string(), vec![4], f32z(4)),
+            (
+                p("ffn.gate.weight"),
+                "BF16".to_string(),
+                vec![2, 32],
+                bf16(64),
+            ),
+            (
+                p("ffn.shared_experts.w1.weight"),
+                "BF16".to_string(),
+                vec![32, 32],
+                bf16(1024),
+            ),
+            (
+                p("ffn.shared_experts.w2.weight"),
+                "BF16".to_string(),
+                vec![32, 32],
+                bf16(1024),
+            ),
+            (
+                p("ffn.shared_experts.w3.weight"),
+                "BF16".to_string(),
+                vec![32, 32],
+                bf16(1024),
+            ),
+        ]);
+        if layer == 0 {
+            tensors.push((
+                p("ffn.gate.tid2eid"),
+                "I32".to_string(),
+                vec![64],
+                vec![0u8; 256],
+            ));
+        } else {
+            tensors.push((p("ffn.gate.bias"), "BF16".to_string(), vec![2], bf16(2)));
+        }
+        // Per-expert FP4 routed experts: [32 rows, 16 packed cols] weights,
+        // [32, 1] e8m0 scales.
+        for (proj, seed) in [('1', 11u8), ('2', 23), ('3', 37)] {
+            for eid in 0..2_u8 {
+                let weight_seed = seed
+                    .wrapping_add(layer as u8)
+                    .wrapping_add(eid.wrapping_mul(53));
+                tensors.extend([
+                    (
+                        p(&format!("ffn.experts.{eid}.w{proj}.weight")),
+                        "U8".to_string(),
+                        vec![32, 16],
+                        pattern_bytes(32 * 16, weight_seed),
+                    ),
+                    (
+                        p(&format!("ffn.experts.{eid}.w{proj}.scale")),
+                        "U8".to_string(),
+                        vec![32, 1],
+                        pattern_bytes(32, weight_seed.wrapping_add(1)),
+                    ),
+                ]);
+            }
+        }
+        if layer == 0 {
+            tensors.extend([
+                (
+                    p("attn.compressor.wkv.weight"),
+                    "BF16".to_string(),
+                    vec![4, 32],
+                    bf16(128),
+                ),
+                (
+                    p("attn.compressor.wgate.weight"),
+                    "BF16".to_string(),
+                    vec![4, 32],
+                    bf16(128),
+                ),
+                (
+                    p("attn.compressor.ape"),
+                    "F32".to_string(),
+                    vec![32, 8],
+                    f32z(256),
+                ),
+                (
+                    p("attn.compressor.norm.weight"),
+                    "BF16".to_string(),
+                    vec![8],
+                    bf16(8),
+                ),
+                (
+                    p("attn.indexer.weights_proj.weight"),
+                    "BF16".to_string(),
+                    vec![2, 32],
+                    bf16(64),
+                ),
+                (
+                    p("attn.indexer.wq_b.weight"),
+                    "BF16".to_string(),
+                    vec![8, 4],
+                    bf16(32),
+                ),
+                (
+                    p("attn.indexer.compressor.wkv.weight"),
+                    "BF16".to_string(),
+                    vec![4, 32],
+                    bf16(128),
+                ),
+                (
+                    p("attn.indexer.compressor.wgate.weight"),
+                    "BF16".to_string(),
+                    vec![4, 32],
+                    bf16(128),
+                ),
+                (
+                    p("attn.indexer.compressor.ape"),
+                    "F32".to_string(),
+                    vec![32, 4],
+                    f32z(128),
+                ),
+                (
+                    p("attn.indexer.compressor.norm.weight"),
+                    "BF16".to_string(),
+                    vec![4],
+                    bf16(4),
+                ),
+            ]);
+        } else if layer == 1 {
+            tensors.extend([
+                (
+                    p("attn.compressor.wkv.weight"),
+                    "BF16".to_string(),
+                    vec![4, 32],
+                    bf16(128),
+                ),
+                (
+                    p("attn.compressor.wgate.weight"),
+                    "BF16".to_string(),
+                    vec![4, 32],
+                    bf16(128),
+                ),
+                (
+                    p("attn.compressor.ape"),
+                    "F32".to_string(),
+                    vec![32, 8],
+                    f32z(256),
+                ),
+                (
+                    p("attn.compressor.norm.weight"),
+                    "BF16".to_string(),
+                    vec![8],
+                    bf16(8),
+                ),
+            ]);
+        }
+    }
+    tensors.extend([
+        (
+            "mtp.0.e_proj.weight".to_string(),
+            "BF16".to_string(),
+            vec![32, 32],
+            bf16(1024),
+        ),
+        (
+            "mtp.0.h_proj.weight".to_string(),
+            "BF16".to_string(),
+            vec![32, 32],
+            bf16(1024),
+        ),
+        (
+            "mtp.0.enorm.weight".to_string(),
+            "BF16".to_string(),
+            vec![32],
+            bf16(32),
+        ),
+        (
+            "mtp.0.hnorm.weight".to_string(),
+            "BF16".to_string(),
+            vec![32],
+            bf16(32),
+        ),
+        (
+            "mtp.0.norm.weight".to_string(),
+            "BF16".to_string(),
+            vec![32],
+            bf16(32),
+        ),
+    ]);
+
+    (config, tensors, wq_b_fp8, wq_b_scale, wkv_fp8, wkv_scale)
+}
+
+#[test]
+fn converts_deepseek_v4_quantized_checkpoint_end_to_end() {
+    let dir = unique_test_dir("deepseek_v4_quantized");
+    let (config, tensors, wq_b_fp8, wq_b_scale, wkv_fp8, wkv_scale) =
+        deepseek_v4_quantized_fixture();
+    write_config(&dir, config);
+    write_safetensors_with_data(&dir, "model.safetensors", &tensors);
+
+    let manifest = convert_hf_model_dir(&dir).expect("quantized V4 conversion should succeed");
+    assert_eq!(manifest.model_family, "deepseek_v4");
+
+    let generated = PathBuf::from(DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE);
+    let find = |name: &str| {
+        manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.name == name)
+            .unwrap_or_else(|| panic!("manifest tensor {name} should exist"))
+    };
+
+    // FP8 dense weights dequantize to BF16 specs pointing at the generated file.
+    let wq_b = find("layers.1.attn.wq_b.weight");
+    assert_eq!(wq_b.dtype, NativeTensorDataType::Bf16);
+    assert_eq!(wq_b.role, NativeTensorRole::AttentionQb);
+    assert_eq!(wq_b.shape, vec![16, 4]);
+    assert_eq!(wq_b.file, generated);
+    assert!(!wq_b.source_quantized);
+    assert!(wq_b.quantization.is_none());
+    let wkv = find("layers.2.attn.wkv.weight");
+    assert_eq!(wkv.dtype, NativeTensorDataType::Bf16);
+    assert_eq!(wkv.file, generated);
+
+    // FP4 experts become stacked U32 MXFP4 tensors (w1=gate, w2=down, w3=up).
+    for (projection, role) in [
+        ("gate", NativeTensorRole::FfnGateExps),
+        ("up", NativeTensorRole::FfnUpExps),
+        ("down", NativeTensorRole::FfnDownExps),
+    ] {
+        for layer in 0..3_u32 {
+            let spec = find(&format!("layers.{layer}.ffn.experts.{projection}.weight"));
+            assert_eq!(spec.role, role);
+            assert_eq!(spec.layer_index, Some(layer));
+            assert_eq!(spec.dtype, NativeTensorDataType::U32);
+            assert_eq!(spec.shape, vec![2, 32, 4]);
+            assert_eq!(spec.file, generated);
+            assert!(spec.source_quantized);
+            let quantization = spec.quantization.as_ref().expect("mxfp4 quantization");
+            assert_eq!(quantization.mode, "mxfp4");
+            assert_eq!(quantization.group_size, 32);
+            assert_eq!(quantization.bits, 4);
+        }
+    }
+
+    // No scale sidecar or per-expert source leaks into the manifest.
+    assert!(
+        !manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.name.contains(".scale"))
+    );
+    assert!(
+        !manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.name.contains("ffn.experts.0.")
+                || tensor.name.contains("ffn.experts.1."))
+    );
+
+    // Phase-1 behaviors stay intact: tid2eid remains an unquantized U32
+    // container tensor in the source file.
+    let tid2eid = find("layers.0.ffn.gate.tid2eid");
+    assert_eq!(tid2eid.dtype, NativeTensorDataType::U32);
+    assert!(!tid2eid.source_quantized);
+    assert!(tid2eid.quantization.is_none());
+    assert_eq!(tid2eid.file, PathBuf::from("model.safetensors"));
+
+    // Read the generated file back and verify payload values.
+    let (_, shape, wq_b_bytes) = read_safetensors_tensor(
+        &dir,
+        DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE,
+        "layers.1.attn.wq_b.weight",
+    );
+    assert_eq!(shape, vec![16, 4]);
+    let expected_wq_b =
+        dequantize_fp8_block_scales(&wq_b_fp8, false, 16, 4, BlockScaleBytes::E8m0(&wq_b_scale))
+            .expect("expected wq_b dequant");
+    assert_eq!(wq_b_bytes, expected_wq_b);
+
+    let (_, _, wkv_bytes) = read_safetensors_tensor(
+        &dir,
+        DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE,
+        "layers.2.attn.wkv.weight",
+    );
+    let expected_wkv =
+        dequantize_fp8_block_scales(&wkv_fp8, true, 8, 32, BlockScaleBytes::E8m0(&wkv_scale))
+            .expect("expected wkv dequant");
+    assert_eq!(wkv_bytes, expected_wkv);
+
+    // Expert bytes are stacked in eid order with nibble order preserved, and
+    // the scales ride along in the same file without a manifest spec.
+    for (proj, seed) in [('1', 11u8), ('2', 23), ('3', 37)] {
+        let projection = match proj {
+            '1' => "gate",
+            '2' => "down",
+            _ => "up",
+        };
+        let (weight_dtype, weight_shape, weight_bytes) = read_safetensors_tensor(
+            &dir,
+            DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE,
+            &format!("layers.0.ffn.experts.{projection}.weight"),
+        );
+        assert_eq!(weight_dtype, "U32");
+        assert_eq!(weight_shape, vec![2, 32, 4]);
+        let mut expected_weights = pattern_bytes(32 * 16, seed);
+        expected_weights.extend_from_slice(&pattern_bytes(32 * 16, seed.wrapping_add(53)));
+        assert_eq!(weight_bytes, expected_weights);
+
+        let (scale_dtype, scale_shape, scale_bytes) = read_safetensors_tensor(
+            &dir,
+            DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE,
+            &format!("layers.0.ffn.experts.{projection}.scales"),
+        );
+        assert_eq!(scale_dtype, "U8");
+        assert_eq!(scale_shape, vec![2, 32, 1]);
+        let mut expected_scales = pattern_bytes(32, seed.wrapping_add(1));
+        expected_scales.extend_from_slice(&pattern_bytes(32, seed.wrapping_add(54)));
+        assert_eq!(scale_bytes, expected_scales);
+        assert!(
+            !manifest
+                .tensors
+                .iter()
+                .any(|tensor| tensor.name == format!("layers.0.ffn.experts.{projection}.scales"))
+        );
+    }
+
+    // A re-run regenerates the artifact instead of consuming it as source.
+    let manifest_again = convert_hf_model_dir(&dir).expect("re-conversion should succeed");
+    assert_eq!(manifest_again.tensors.len(), manifest.tensors.len());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn deepseek_v4_fp4_group_requires_all_experts() {
+    let dir = unique_test_dir("deepseek_v4_quantized_missing_expert");
+    let (config, mut tensors, _, _, _, _) = deepseek_v4_quantized_fixture();
+    // Drop expert 1's w2 scale: the group then has a single expert and must
+    // fail instead of silently stacking a partial expert set.
+    tensors.retain(|(name, _, _, _)| name != "layers.1.ffn.experts.1.w2.scale");
+    write_config(&dir, config);
+    write_safetensors_with_data(&dir, "model.safetensors", &tensors);
+
+    let error = convert_hf_model_dir(&dir).expect_err("missing expert must fail");
+    let message = error.to_string();
+    assert!(
+        message.contains("experts 0..2"),
+        "error should describe the contiguous expert requirement: {message}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn deepseek_v4_fp8_weight_without_scale_stays_fail_loud() {
+    let dir = unique_test_dir("deepseek_v4_quantized_missing_fp8_scale");
+    let (config, mut tensors, _, _, _, _) = deepseek_v4_quantized_fixture();
+    // An FP8 weight with no scale sidecar cannot dequantize; it must hit the
+    // generic unsupported-dtype error rather than pass through silently.
+    tensors.retain(|(name, _, _, _)| name != "layers.1.attn.wq_b.scale");
+    write_config(&dir, config);
+    write_safetensors_with_data(&dir, "model.safetensors", &tensors);
+
+    let error = convert_hf_model_dir(&dir).expect_err("unscaled FP8 weight must fail");
+    assert!(
+        matches!(error, ConvertError::UnsupportedDtype { .. }),
+        "expected UnsupportedDtype, got {error}"
+    );
 
     let _ = fs::remove_dir_all(dir);
 }

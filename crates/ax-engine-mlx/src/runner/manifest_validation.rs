@@ -25,7 +25,10 @@ pub(super) fn validate_mlx_supported_manifest(
             manifest.model_family
         )));
     }
-    if manifest.model_family == "glm4_moe_lite" || has_glm_mla_tensors(artifacts) {
+    if manifest.model_family == "glm4_moe_lite"
+        || manifest.model_family == "deepseek_v4"
+        || has_glm_mla_tensors(artifacts)
+    {
         validate_mla_moe_manifest(manifest)?;
     }
     if manifest.model_family != "nemotron_h"
@@ -69,6 +72,7 @@ pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
         "gemma4"
             | "gemma3"
             | "embeddinggemma"
+            | "nemotron_embed"
             | "qwen3"
             | "qwen3_vl"
             | "qwen3_vl_moe"
@@ -81,6 +85,9 @@ pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
             | "glm4_moe_lite"
             | "deepseek_v3"
             | "deepseek_v32"
+            // Converter + registry plumbing only; the V4 runtime graph is not
+            // yet implemented and validate_mla_moe_manifest rejects loads.
+            | "deepseek_v4"
             | "mistral3"
             | "mixtral"
             // Secondary open reasoner (catalog + family implementation + registry).
@@ -181,6 +188,9 @@ pub(super) fn validate_mla_moe_manifest(
         manifest.model_family.as_str(),
         "deepseek_v3" | "deepseek_v32"
     );
+    if manifest.model_family == "deepseek_v4" {
+        return validate_deepseek_v4_manifest(manifest);
+    }
     if !is_glm4_moe_lite && !is_deepseek_v3 {
         return Err(MlxRunnerError::UnsupportedFeature(
             "MLA tensor roles are supported only for glm4_moe_lite or DeepSeek V3 manifests"
@@ -378,6 +388,51 @@ pub(super) fn validate_mla_moe_manifest(
                 )?;
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Validate the DeepSeek V4 manifest contract at load time.
+///
+/// Per-layer tensor-role structure is already enforced by the core manifest
+/// validator (`validate_native_model_manifest`) before this runner gate runs;
+/// here we only require the V4 config block to be present and consistent.
+pub(super) fn validate_deepseek_v4_manifest(
+    manifest: &NativeModelManifest,
+) -> Result<(), MlxRunnerError> {
+    if manifest.deepseek_v4.is_disabled() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "deepseek_v4 requires deepseek_v4 metadata in the manifest".to_string(),
+        ));
+    }
+    if manifest.mla_attention.is_enabled() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "deepseek_v4 must not carry mla_attention metadata (V4 drops the V3 MLA keys)"
+                .to_string(),
+        ));
+    }
+    if manifest.moe.sigmoid_routing {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "deepseek_v4 must not enable moe.sigmoid_routing (routing is scoring_func-based)"
+                .to_string(),
+        ));
+    }
+    if manifest.deepseek_v4.compress_ratios.len() != manifest.layer_count as usize {
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "deepseek_v4.compress_ratios must contain one entry per layer, got {} for layer_count {}",
+            manifest.deepseek_v4.compress_ratios.len(),
+            manifest.layer_count
+        )));
+    }
+    if manifest
+        .deepseek_v4
+        .num_hash_layers
+        .is_none_or(|layers| layers > manifest.layer_count)
+    {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "deepseek_v4.num_hash_layers must be configured and <= layer_count".to_string(),
+        ));
     }
 
     Ok(())

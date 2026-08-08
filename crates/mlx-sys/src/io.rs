@@ -241,11 +241,18 @@ pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, S
     Ok(result)
 }
 
+/// Map a safetensors dtype string to the dtype used for the loaded array.
+///
+/// FP8 payloads (`F8_E4M3` blockwise weights, `F8_E8M0` block scales) have
+/// no `MlxDtype` of their own; both are exactly 1 byte per element, so they
+/// arrive as raw `Uint8` byte containers and the caller must dequantize
+/// (e.g. `from_fp8` for E4M3, a `2^(b-127)` LUT for E8M0).
 fn parse_safetensors_dtype(s: &str) -> Option<MlxDtype> {
     Some(match s {
         "F32" | "FLOAT32" => MlxDtype::Float32,
         "F16" | "FLOAT16" => MlxDtype::Float16,
         "BF16" | "BFLOAT16" => MlxDtype::Bfloat16,
+        "F8_E4M3" | "F8_E8M0" => MlxDtype::Uint8,
         "I8" | "INT8" => MlxDtype::Int8,
         "I16" | "INT16" => MlxDtype::Int16,
         "I32" | "INT32" => MlxDtype::Int32,

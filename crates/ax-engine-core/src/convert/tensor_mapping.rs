@@ -165,6 +165,286 @@ pub(crate) const DEEPSEEK_V3_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// Extra per-layer tensor patterns for DeepSeek V4 (Flash).
+///
+/// Raw HuggingFace checkpoints use a bare `layers.N.…` layout (no `model.`
+/// prefix) with `embed.weight` / `norm.weight` / `head.weight` / `hc_head_*`
+/// at the root; `match_deepseek_v4_tensor` in convert/mod.rs handles that
+/// prefix, the `mtp.N.*` / `nextn.*` sidecar tensors, and the per-expert
+/// `ffn.experts.{eid}.w{1,2,3}.weight` stacks. This table is the suffix map
+/// consulted after the `layers.N.` prefix is stripped. Names follow the HF
+/// state dict exactly: raw `nn.Parameter`s (hc_*, attn_sink, ape, tid2eid,
+/// gate bias) have no `.weight` suffix.
+///
+/// AXQuant / mlx-lm quantized checkpoints (e.g.
+/// `AX-DeepSeek-V4-Flash-MLX-AXQ-2bit`) use the `model.`-prefixed layout —
+/// `model.layers.N.…` reaches this same table through the generic
+/// `model.layers.` prefix matcher, and `model.embed_tokens.weight` /
+/// `model.norm.weight` / `lm_head.weight` resolve via the standard map. The
+/// AXQ-specific entries below cover what the raw-HF map does not: the
+/// `model.hc_head.{fn,base,scale}` root globals, `attn_hc.*` / `ffn_hc.*`
+/// hyper-connections (raw HF: `hc_attn_*` / `hc_ffn_*`), the fused
+/// `ffn.switch_mlp.gate_proj` (gate+up in one `[E, 2*I, packed_in]` tensor,
+/// mapped to the engine's packed-experts role like Qwen3/Gemma
+/// `experts.gate_up_proj.weight`), `ffn.switch_mlp.down_proj`, and the
+/// `ffn.shared_experts.{gate,up,down}_proj` trio (raw HF: `w1`/`w2`/`w3`).
+/// Affine quantization rides as `{name}.scales` / `{name}.biases` sidecars
+/// resolved by the runtime from the same files; only the `.weight` member of
+/// each triplet appears in the manifest (same convention as OptiQ Gemma/Qwen).
+pub(crate) const DEEPSEEK_V4_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    // AXQ/mlx-lm root-level hyper-connection head (raw HF: `hc_head_*`).
+    (
+        "model.hc_head.fn",
+        TensorMapping::Global(NativeTensorRole::HcHeadFn),
+    ),
+    (
+        "model.hc_head.base",
+        TensorMapping::Global(NativeTensorRole::HcHeadBase),
+    ),
+    (
+        "model.hc_head.scale",
+        TensorMapping::Global(NativeTensorRole::HcHeadScale),
+    ),
+    // Root-level tensors (raw HF names; `model.` prefix stripped by the matcher).
+    (
+        "embed.weight",
+        TensorMapping::Global(NativeTensorRole::TokenEmbedding),
+    ),
+    (
+        "embed_tokens.weight",
+        TensorMapping::Global(NativeTensorRole::TokenEmbedding),
+    ),
+    (
+        "norm.weight",
+        TensorMapping::Global(NativeTensorRole::FinalNorm),
+    ),
+    (
+        "head.weight",
+        TensorMapping::Global(NativeTensorRole::LmHead),
+    ),
+    (
+        "lm_head.weight",
+        TensorMapping::Global(NativeTensorRole::LmHead),
+    ),
+    (
+        "hc_head_fn",
+        TensorMapping::Global(NativeTensorRole::HcHeadFn),
+    ),
+    (
+        "hc_head_base",
+        TensorMapping::Global(NativeTensorRole::HcHeadBase),
+    ),
+    (
+        "hc_head_scale",
+        TensorMapping::Global(NativeTensorRole::HcHeadScale),
+    ),
+    // Per-layer norms.
+    (
+        "attn_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionNorm),
+    ),
+    (
+        "ffn_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnNorm),
+    ),
+    // Attention: q LoRA trio (shared roles with the V3 MLA map), fused KV,
+    // grouped output LoRA pair, and the learned attention sink.
+    (
+        "attn.wq_a.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQa),
+    ),
+    (
+        "attn.q_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQaNorm),
+    ),
+    (
+        "attn.wq_b.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQb),
+    ),
+    (
+        "attn.wkv.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionKv),
+    ),
+    (
+        "attn.kv_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionKvNorm),
+    ),
+    (
+        "attn.wo_a.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionOutA),
+    ),
+    (
+        "attn.wo_b.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionOutB),
+    ),
+    (
+        "attn.attn_sink",
+        TensorMapping::PerLayer(NativeTensorRole::AttnSink),
+    ),
+    // Sliding-window compressor (layers with compress_ratio 4 or 128).
+    (
+        "attn.compressor.wkv.weight",
+        TensorMapping::PerLayer(NativeTensorRole::CompressorKv),
+    ),
+    (
+        "attn.compressor.wgate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::CompressorGate),
+    ),
+    (
+        "attn.compressor.ape",
+        TensorMapping::PerLayer(NativeTensorRole::CompressorApe),
+    ),
+    (
+        "attn.compressor.norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::CompressorNorm),
+    ),
+    // Sparse indexer (layers with compress_ratio == 4 only).
+    (
+        "attn.indexer.weights_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::IndexerProj),
+    ),
+    (
+        "attn.indexer.wq_b.weight",
+        TensorMapping::PerLayer(NativeTensorRole::IndexerQb),
+    ),
+    (
+        "attn.indexer.compressor.wkv.weight",
+        TensorMapping::PerLayer(NativeTensorRole::IndexerCompressorKv),
+    ),
+    (
+        "attn.indexer.compressor.wgate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::IndexerCompressorGate),
+    ),
+    (
+        "attn.indexer.compressor.ape",
+        TensorMapping::PerLayer(NativeTensorRole::IndexerCompressorApe),
+    ),
+    (
+        "attn.indexer.compressor.norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::IndexerCompressorNorm),
+    ),
+    // Hyper-connection branch parameters.
+    (
+        "hc_attn_fn",
+        TensorMapping::PerLayer(NativeTensorRole::HcAttnFn),
+    ),
+    (
+        "hc_attn_base",
+        TensorMapping::PerLayer(NativeTensorRole::HcAttnBase),
+    ),
+    (
+        "hc_attn_scale",
+        TensorMapping::PerLayer(NativeTensorRole::HcAttnScale),
+    ),
+    (
+        "hc_ffn_fn",
+        TensorMapping::PerLayer(NativeTensorRole::HcFfnFn),
+    ),
+    (
+        "hc_ffn_base",
+        TensorMapping::PerLayer(NativeTensorRole::HcFfnBase),
+    ),
+    (
+        "hc_ffn_scale",
+        TensorMapping::PerLayer(NativeTensorRole::HcFfnScale),
+    ),
+    // AXQ/mlx-lm hyper-connection names (`attn_hc.*` / `ffn_hc.*`).
+    (
+        "attn_hc.fn",
+        TensorMapping::PerLayer(NativeTensorRole::HcAttnFn),
+    ),
+    (
+        "attn_hc.base",
+        TensorMapping::PerLayer(NativeTensorRole::HcAttnBase),
+    ),
+    (
+        "attn_hc.scale",
+        TensorMapping::PerLayer(NativeTensorRole::HcAttnScale),
+    ),
+    (
+        "ffn_hc.fn",
+        TensorMapping::PerLayer(NativeTensorRole::HcFfnFn),
+    ),
+    (
+        "ffn_hc.base",
+        TensorMapping::PerLayer(NativeTensorRole::HcFfnBase),
+    ),
+    (
+        "ffn_hc.scale",
+        TensorMapping::PerLayer(NativeTensorRole::HcFfnScale),
+    ),
+    // MoE router: learned gate (+ correction bias on non-hash layers) or the
+    // hash-routing table (first num_hash_layers layers).
+    (
+        "ffn.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "ffn.gate.bias",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpCorrectionBias),
+    ),
+    (
+        "ffn.gate.e_score_correction_bias",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpCorrectionBias),
+    ),
+    (
+        "ffn.gate.tid2eid",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateTid2Eid),
+    ),
+    // Shared experts (SwiGLU w1/w2/w3).
+    (
+        "ffn.shared_experts.w1.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "ffn.shared_experts.w2.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
+    (
+        "ffn.shared_experts.w3.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    // AXQ/mlx-lm MoE: the switch MLP keeps gate+up fused in one
+    // `[n_routed_experts, 2*moe_intermediate, packed_hidden]` tensor — the
+    // engine's packed-experts convention (`gate_up_exps_packed`, same as
+    // `experts.gate_up_proj.weight` in the standard map), so no split
+    // `up_proj` exists. Shared experts use `{gate,up,down}_proj` names.
+    (
+        "ffn.switch_mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateUpExpsPacked),
+    ),
+    (
+        "ffn.switch_mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "ffn.shared_experts.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "ffn.shared_experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "ffn.shared_experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
+    // Stacked routed experts (sanitized layout; raw HF per-expert
+    // `ffn.experts.{eid}.w{1,2,3}.weight` is handled by the matcher).
+    (
+        "ffn.experts.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "ffn.experts.up.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "ffn.experts.down.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+];
+
 /// Unlimited-OCR language MoE extras + projector / special tokens.
 ///
 /// Language weights live under `language_model.model.layers.*` (via

@@ -1949,6 +1949,9 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
             return "missing required tensor role embedding_dense0"
         if "embedding_dense1" not in global_roles:
             return "missing required tensor role embedding_dense1"
+    elif model_family == "nemotron_embed":
+        # Encoder-only mean-pool: no lm_head / Dense head required.
+        pass
     elif not manifest.get("tie_word_embeddings", False) and "lm_head" not in global_roles:
         return "missing required tensor role lm_head"
 

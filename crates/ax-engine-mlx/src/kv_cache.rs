@@ -50,6 +50,46 @@ struct GlmMlaAppendShape {
     dtype: MlxDtype,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DeepseekV4AppendShape {
+    new_tokens: usize,
+    head_dim: i32,
+    dtype: MlxDtype,
+}
+
+fn validate_deepseek_v4_append_inputs(
+    layer: usize,
+    layer_count: usize,
+    new_k_latent: &MlxArray,
+) -> DeepseekV4AppendShape {
+    assert!(
+        layer < layer_count,
+        "DeepSeek V4 cache layer {layer} out of bounds for {layer_count} layers"
+    );
+
+    let shape = new_k_latent.shape();
+    assert_eq!(
+        shape.len(),
+        4,
+        "DeepSeek V4 latent K cache append expects [1, 1, tokens, head_dim]"
+    );
+    assert_eq!(shape[0], 1, "DeepSeek V4 cache supports batch=1 only");
+    assert_eq!(
+        shape[1], 1,
+        "DeepSeek V4 cache stores one latent K head (K doubles as V)"
+    );
+    assert!(
+        shape[2] > 0 && shape[3] > 0,
+        "DeepSeek V4 cache append requires positive tokens and head_dim"
+    );
+
+    DeepseekV4AppendShape {
+        new_tokens: shape[2] as usize,
+        head_dim: shape[3],
+        dtype: new_k_latent.dtype(),
+    }
+}
+
 fn validate_append_inputs(
     layer: usize,
     layer_count: usize,
@@ -1005,6 +1045,71 @@ struct GlmMlaLayerCache {
     dtype: MlxDtype,
 }
 
+/// DeepSeek V4 (Flash) per-layer attention cache.
+///
+/// The raw per-token latent K state: each token contributes ONE vector of
+/// `head_dim` (=512) floats from the fused `wkv` projection (single latent
+/// head; K doubles as V — there is NO V cache). Compress layers (ratio
+/// 4/128) additionally carry Phase-3 compressor pipelines alongside the raw
+/// buffer: the main CSA/HCA compressor and, for CSA layers, the LID indexer
+/// compressor. Those stay separate fields so the raw append signature is
+/// unchanged.
+///
+/// Note: the F3 disk wire format (`serialize_to_bytes`) does not yet encode
+/// this layer kind; V4 prefix-cache serialization lands with the forward
+/// wiring phase.
+#[derive(Clone)]
+struct DeepseekV4LayerCache {
+    /// `[1, 1, capacity, head_dim]` — one latent K vector per token.
+    k_latent: MlxArray,
+    head_dim: i32,
+    capacity: usize,
+    dtype: MlxDtype,
+    /// Phase-3 main compressor pipeline (CSA/HCA layers only).
+    comp: Option<DeepseekV4CompressorCache>,
+    /// Phase-3 LID indexer compressor pipeline (CSA ratio-4 layers only).
+    indexer_comp: Option<DeepseekV4CompressorCache>,
+}
+
+/// DeepSeek V4 (Flash) Phase-3 compressor pipeline state (one per main
+/// CSA/HCA compressor, plus one for the LID indexer compressor on CSA
+/// layers).
+///
+/// Holds the F32 per-token state buffer (`kv_state`/`score_state` in
+/// llama.cpp's `llama_dsv4_comp_state`, kept F32 there too) covering the
+/// current partial block window — and, for the overlap (CSA) compressor,
+/// the previous block's rows, so a completing block always finds its full
+/// 2·ratio read window buffered — plus the committed compressed-K rows in
+/// chunked storage (one row per completed block, RoPE'd at the block-start
+/// position before append, stored in the raw-K dtype so the CSA/HCA concat
+/// along the key axis needs no cast).
+///
+/// Bookkeeping invariant between forwards: the buffer spans positions
+/// `[state_base, state_base + rows)`, `state_base + rows == token_offset`,
+/// and `committed == token_offset / ratio` right after a forward whose end
+/// crossed a block boundary.
+#[derive(Clone)]
+struct DeepseekV4CompressorCache {
+    /// Buffered F32 per-token KV states `[rows, state_width]`
+    /// (`coff*head_dim` main / `2*index_head_dim` indexer).
+    state_kv: Option<MlxArray>,
+    /// Buffered F32 per-token score states `[rows, state_width]`, ape added.
+    state_score: Option<MlxArray>,
+    /// Absolute token position of buffered row 0.
+    state_base: usize,
+    /// Compressed rows committed so far (== completed blocks).
+    committed: usize,
+    /// Committed compressed-K rows `[1, 1, capacity, row_dim]` (raw-K dtype).
+    comp_k: Option<MlxArray>,
+    capacity: usize,
+    /// Compress ratio of this pipeline (4 = CSA overlap, 128 = HCA) — kept
+    /// for block-boundary bookkeeping on `trim_to`.
+    ratio: usize,
+    /// Whether this is the overlap (coff=2) compressor: after a block
+    /// completes, its rows stay buffered as the next block's previous half.
+    overlap: bool,
+}
+
 #[derive(Clone, Default)]
 struct LinearLayerState {
     /// Qwen3.5 gated-delta conv tail: `[1, conv_kernel - 1, conv_dim]`.
@@ -1146,6 +1251,16 @@ pub struct GlmMlaLayerStateView<'a> {
     pub rope_dim: i32,
 }
 
+/// Borrowed view of a DeepSeek V4 layer's cached latent K state. Returned by
+/// [`MlxKVCache::deepseek_v4_layer_state`].
+pub struct DeepseekV4LayerStateView<'a> {
+    /// The full backing buffer for the latent K cache; shape
+    /// `[1, 1, capacity, head_dim]`. Valid region is `[0..seq_len]`.
+    pub k_latent: &'a MlxArray,
+    /// Inner dim of `k_latent` — equal to the model's `head_dim` (512).
+    pub head_dim: i32,
+}
+
 /// Per-request attention cache with chunked KV pre-allocation.
 ///
 /// Full-attention KV shape convention:
@@ -1167,6 +1282,7 @@ pub struct GlmMlaLayerStateView<'a> {
 pub struct MlxKVCache {
     layers: Vec<Option<FaLayerStorage>>,
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
+    deepseek_v4_layers: Vec<Option<DeepseekV4LayerCache>>,
     linear_layers: Vec<LinearLayerState>,
     /// Number of tokens after which a speculative verifier should capture each
     /// linear-attention layer's transient state. Checkpoints are intentionally
@@ -1277,6 +1393,7 @@ impl Clone for MlxKVCache {
         Self {
             layers: self.layers.clone(),
             glm_mla_layers: self.glm_mla_layers.clone(),
+            deepseek_v4_layers: self.deepseek_v4_layers.clone(),
             linear_layers,
             linear_prefix_capture_after: None,
             seq_len: self.seq_len,
@@ -1357,6 +1474,7 @@ impl MlxKVCache {
         Self {
             layers: (0..num_layers).map(|_| None).collect(),
             glm_mla_layers: (0..num_layers).map(|_| None).collect(),
+            deepseek_v4_layers: (0..num_layers).map(|_| None).collect(),
             linear_layers: (0..num_layers)
                 .map(|_| LinearLayerState::default())
                 .collect(),
@@ -1391,6 +1509,7 @@ impl MlxKVCache {
         Self {
             layers: (0..num_layers).map(|_| None).collect(),
             glm_mla_layers: (0..num_layers).map(|_| None).collect(),
+            deepseek_v4_layers: (0..num_layers).map(|_| None).collect(),
             linear_layers: (0..num_layers)
                 .map(|_| LinearLayerState::default())
                 .collect(),
@@ -1596,6 +1715,7 @@ impl MlxKVCache {
                 )
             })
             && self.glm_mla_layers.iter().all(Option::is_none)
+            && self.deepseek_v4_layers.iter().all(Option::is_none)
             && self
                 .linear_layers
                 .iter()
@@ -1614,6 +1734,7 @@ impl MlxKVCache {
             ));
         }
         if self.glm_mla_layers.iter().any(Option::is_some)
+            || self.deepseek_v4_layers.iter().any(Option::is_some)
             || self
                 .linear_layers
                 .iter()
@@ -2458,6 +2579,7 @@ impl MlxKVCache {
         let layer_has_state = |idx: usize| {
             self.layers[idx].is_some()
                 || self.glm_mla_layers[idx].is_some()
+                || self.deepseek_v4_layers[idx].is_some()
                 || self.linear_layers[idx].conv_state.is_some()
                 || self.linear_layers[idx].recurrent_state.is_some()
         };
@@ -3650,6 +3772,384 @@ impl MlxKVCache {
         (kv_latent, k_pe)
     }
 
+    /// Append DeepSeek V4 (Flash) latent K tokens and return the full logical
+    /// latent view.
+    ///
+    /// `new_k_latent`: `[1, 1, new_tokens, head_dim]` — ONE latent K vector
+    /// per token (single latent head; K doubles as V, so there is no V cache).
+    /// Supports both prefill batches and single-token decode appends.
+    ///
+    /// Returns `[1, 1, total_tokens, head_dim]`. Use
+    /// [`Self::deepseek_v4_k_window`] for the sliding-window read-back.
+    ///
+    /// Phase-3 compressor state (compressed-K rows, indexer rows, buffered
+    /// per-token states) lives alongside this buffer on
+    /// `DeepseekV4LayerCache`; this method stays the raw-K append.
+    pub fn append_deepseek_v4(&mut self, layer: usize, new_k_latent: MlxArray) -> MlxArray {
+        let append =
+            validate_deepseek_v4_append_inputs(layer, self.deepseek_v4_layers.len(), &new_k_latent);
+        let new_tokens = append.new_tokens;
+        let write_start = self.seq_len;
+        let write_end = write_start + new_tokens;
+        let dtype = append.dtype;
+        let head_dim = append.head_dim;
+
+        let entry = &mut self.deepseek_v4_layers[layer];
+        match entry {
+            None => {
+                let capacity = chunk_ceiling(write_end);
+                if write_start == 0 && capacity == new_tokens {
+                    self.growth_count = self.growth_count.saturating_add(1);
+                    *entry = Some(DeepseekV4LayerCache {
+                        k_latent: new_k_latent.clone(),
+                        head_dim,
+                        capacity,
+                        dtype,
+                        comp: None,
+                        indexer_comp: None,
+                    });
+                    return new_k_latent;
+                }
+                let buf_shape = [1i32, 1, capacity as i32, head_dim];
+                let buf = zeros(&buf_shape, dtype, None);
+                let k_latent = slice_update(
+                    &buf,
+                    &new_k_latent,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, 1, write_end as i32, head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                self.growth_count = self.growth_count.saturating_add(1);
+                *entry = Some(DeepseekV4LayerCache {
+                    k_latent,
+                    head_dim,
+                    capacity,
+                    dtype,
+                    comp: None,
+                    indexer_comp: None,
+                });
+            }
+            Some(cache) => {
+                assert_eq!(
+                    cache.head_dim, head_dim,
+                    "DeepSeek V4 cache append cannot change head_dim for an existing layer"
+                );
+                assert_eq!(
+                    cache.dtype, dtype,
+                    "DeepSeek V4 cache append cannot change dtype for an existing layer"
+                );
+                if write_end > cache.capacity {
+                    let new_capacity = chunk_ceiling(write_end);
+                    let buf_shape = [1i32, 1, new_capacity as i32, cache.head_dim];
+                    let buf_new = zeros(&buf_shape, cache.dtype, None);
+                    cache.k_latent = slice_update(
+                        &buf_new,
+                        &cache.k_latent,
+                        &[0, 0, 0, 0],
+                        &[1, 1, cache.capacity as i32, cache.head_dim],
+                        &[1, 1, 1, 1],
+                        None,
+                    );
+                    cache.capacity = new_capacity;
+                    self.growth_count = self.growth_count.saturating_add(1);
+                }
+                cache.k_latent = slice_update(
+                    &cache.k_latent,
+                    &new_k_latent,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, 1, write_end as i32, cache.head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+            }
+        }
+
+        let cache = self.deepseek_v4_layers[layer]
+            .as_ref()
+            .expect("DeepSeek V4 cache entry must exist after append");
+        slice(
+            &cache.k_latent,
+            &[0, 0, 0, 0],
+            &[1, 1, write_end as i32, cache.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        )
+    }
+
+    /// Read back the latent K window for a DeepSeek V4 layer: the last
+    /// `sliding_window` entries of the logical cache, or the full logical
+    /// cache when `sliding_window` is 0 (uncompressed layers attend the full
+    /// window) or exceeds the cached length. `sliding_window` comes from
+    /// `DeepseekV4Config` (via the model's sliding-window setting).
+    ///
+    /// Returns `None` when the layer has no V4 cache; otherwise
+    /// `[1, 1, min(window, seq_len), head_dim]`.
+    pub fn deepseek_v4_k_window(&self, layer: usize, sliding_window: usize) -> Option<MlxArray> {
+        let cache = self.deepseek_v4_layers.get(layer)?.as_ref()?;
+        let len = self.seq_len;
+        let window = if sliding_window == 0 {
+            len
+        } else {
+            sliding_window.min(len)
+        };
+        let start = (len - window) as i32;
+        Some(slice(
+            &cache.k_latent,
+            &[0, 0, start, 0],
+            &[1, 1, len as i32, cache.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        ))
+    }
+
+    /// Read-only access to a single DeepSeek V4 layer's cached latent K array
+    /// plus its inner dim. Mirrors [`Self::glm_mla_layer_state`] for debug
+    /// tooling. The array is over-allocated to capacity; slice to
+    /// `[0..self.seq_len]` for the valid region.
+    pub fn deepseek_v4_layer_state(&self, layer: usize) -> Option<DeepseekV4LayerStateView<'_>> {
+        let entry = self.deepseek_v4_layers.get(layer)?.as_ref()?;
+        Some(DeepseekV4LayerStateView {
+            k_latent: &entry.k_latent,
+            head_dim: entry.head_dim,
+        })
+    }
+
+    fn deepseek_v4_comp_ref(
+        &self,
+        layer: usize,
+        indexer: bool,
+    ) -> Option<&DeepseekV4CompressorCache> {
+        let entry = self.deepseek_v4_layers.get(layer)?.as_ref()?;
+        if indexer {
+            entry.indexer_comp.as_ref()
+        } else {
+            entry.comp.as_ref()
+        }
+    }
+
+    fn deepseek_v4_comp_mut(
+        &mut self,
+        layer: usize,
+        indexer: bool,
+    ) -> Option<&mut DeepseekV4CompressorCache> {
+        let entry = self.deepseek_v4_layers.get_mut(layer)?.as_mut()?;
+        if indexer {
+            entry.indexer_comp.as_mut()
+        } else {
+            entry.comp.as_mut()
+        }
+    }
+
+    /// Ensure a DeepSeek V4 compressor pipeline's cache exists for `layer`
+    /// (Phase 3). `indexer` selects the LID indexer pipeline; `ratio` and
+    /// `overlap` are recorded on creation for block-boundary bookkeeping on
+    /// `trim_to`. No-op when the layer has no V4 cache yet — the compressor
+    /// update runs after the raw append, which creates the entry.
+    pub fn deepseek_v4_comp_ensure(
+        &mut self,
+        layer: usize,
+        indexer: bool,
+        ratio: usize,
+        overlap: bool,
+    ) {
+        let Some(entry) = self
+            .deepseek_v4_layers
+            .get_mut(layer)
+            .and_then(Option::as_mut)
+        else {
+            return;
+        };
+        let slot = if indexer {
+            &mut entry.indexer_comp
+        } else {
+            &mut entry.comp
+        };
+        if slot.is_none() {
+            *slot = Some(DeepseekV4CompressorCache {
+                state_kv: None,
+                state_score: None,
+                state_base: 0,
+                committed: 0,
+                comp_k: None,
+                capacity: 0,
+                ratio,
+                overlap,
+            });
+        }
+    }
+
+    /// Number of committed compressed-K rows (== completed blocks) for one
+    /// compressor pipeline. `0` when the pipeline does not exist.
+    pub fn deepseek_v4_comp_committed(&self, layer: usize, indexer: bool) -> usize {
+        self.deepseek_v4_comp_ref(layer, indexer)
+            .map_or(0, |comp| comp.committed)
+    }
+
+    /// Buffered F32 per-token compressor states: `(state_base, kv, score)`
+    /// with `kv`/`score` `[rows, state_width]` covering positions
+    /// `[state_base, state_base + rows)`. `None` when the buffer is empty.
+    pub fn deepseek_v4_comp_states(
+        &self,
+        layer: usize,
+        indexer: bool,
+    ) -> Option<(usize, MlxArray, MlxArray)> {
+        let comp = self.deepseek_v4_comp_ref(layer, indexer)?;
+        match (&comp.state_kv, &comp.state_score) {
+            (Some(kv), Some(score)) => Some((comp.state_base, kv.clone(), score.clone())),
+            _ => None,
+        }
+    }
+
+    /// Replace the buffered per-token compressor states after a forward
+    /// (the compressor module slices the partial-window tail itself).
+    /// `None`/`None` clears the buffer (positions restart at `state_base`).
+    pub fn deepseek_v4_comp_replace_states(
+        &mut self,
+        layer: usize,
+        indexer: bool,
+        state_base: usize,
+        kv: Option<MlxArray>,
+        score: Option<MlxArray>,
+    ) {
+        let comp = self
+            .deepseek_v4_comp_mut(layer, indexer)
+            .expect("DeepSeek V4 compressor state must be ensured before state replace");
+        comp.state_base = state_base;
+        comp.state_kv = kv;
+        comp.state_score = score;
+    }
+
+    /// Append committed compressed-K rows for one compressor pipeline and
+    /// return the full committed view.
+    ///
+    /// `rows`: `[1, 1, n_blocks, row_dim]` — one compressed row per newly
+    /// completed block, already RMSNormed, RoPE'd at the block-start
+    /// positions, and cast to the raw-K dtype. Rows are written contiguously
+    /// at the committed-row boundary, so a `trim_to` rewind followed by
+    /// re-compression simply overwrites the rejected rows.
+    ///
+    /// Returns `[1, 1, committed, row_dim]`.
+    pub fn append_deepseek_v4_comp_rows(
+        &mut self,
+        layer: usize,
+        indexer: bool,
+        rows: MlxArray,
+    ) -> MlxArray {
+        let shape = rows.shape();
+        assert_eq!(
+            shape.len(),
+            4,
+            "DeepSeek V4 compressed rows must be [1, 1, n, dim]"
+        );
+        assert_eq!(shape[0], 1, "DeepSeek V4 compressed rows batch must be 1");
+        assert_eq!(
+            shape[1], 1,
+            "DeepSeek V4 compressed rows head count must be 1"
+        );
+        let new_rows = shape[2] as usize;
+        let row_dim = shape[3];
+        // Direct field access (not `deepseek_v4_comp_mut`) so the borrow
+        // splitter sees `deepseek_v4_layers` and `growth_count` as disjoint.
+        let comp = self
+            .deepseek_v4_layers
+            .get_mut(layer)
+            .and_then(Option::as_mut)
+            .and_then(|entry| {
+                if indexer {
+                    entry.indexer_comp.as_mut()
+                } else {
+                    entry.comp.as_mut()
+                }
+            })
+            .expect("DeepSeek V4 compressor state must be ensured before row append");
+        let write_start = comp.committed;
+        let write_end = write_start + new_rows;
+
+        match comp.comp_k.take() {
+            None => {
+                let capacity = chunk_ceiling(write_end.max(1));
+                if write_start == 0 && capacity == new_rows {
+                    self.growth_count = self.growth_count.saturating_add(1);
+                    comp.capacity = capacity;
+                    comp.comp_k = Some(rows.clone());
+                    comp.committed = write_end;
+                    return rows;
+                }
+                let buf = zeros(&[1, 1, capacity as i32, row_dim], rows.dtype(), None);
+                let stored = slice_update(
+                    &buf,
+                    &rows,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, 1, write_end as i32, row_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                self.growth_count = self.growth_count.saturating_add(1);
+                comp.capacity = capacity;
+                comp.comp_k = Some(stored);
+            }
+            Some(mut buf) => {
+                if write_end > comp.capacity {
+                    let new_capacity = chunk_ceiling(write_end);
+                    let grown = zeros(&[1, 1, new_capacity as i32, row_dim], buf.dtype(), None);
+                    buf = slice_update(
+                        &grown,
+                        &buf,
+                        &[0, 0, 0, 0],
+                        &[1, 1, comp.capacity as i32, row_dim],
+                        &[1, 1, 1, 1],
+                        None,
+                    );
+                    comp.capacity = new_capacity;
+                    self.growth_count = self.growth_count.saturating_add(1);
+                }
+                buf = slice_update(
+                    &buf,
+                    &rows,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, 1, write_end as i32, row_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                comp.comp_k = Some(buf);
+            }
+        }
+        comp.committed = write_end;
+
+        let comp = self
+            .deepseek_v4_comp_ref(layer, indexer)
+            .expect("DeepSeek V4 compressor state must exist after row append");
+        let comp_k = comp
+            .comp_k
+            .as_ref()
+            .expect("DeepSeek V4 compressed-K buffer must exist after row append");
+        slice(
+            comp_k,
+            &[0, 0, 0, 0],
+            &[1, 1, write_end as i32, row_dim],
+            &[1, 1, 1, 1],
+            None,
+        )
+    }
+
+    /// Read back the committed compressed-K rows for one compressor pipeline:
+    /// `[1, 1, committed, row_dim]`, or `None` when no rows are committed.
+    pub fn deepseek_v4_comp_k(&self, layer: usize, indexer: bool) -> Option<MlxArray> {
+        let comp = self.deepseek_v4_comp_ref(layer, indexer)?;
+        let comp_k = comp.comp_k.as_ref()?;
+        if comp.committed == 0 {
+            return None;
+        }
+        Some(slice(
+            comp_k,
+            &[0, 0, 0, 0],
+            &[1, 1, comp.committed as i32, comp_k.shape()[3]],
+            &[1, 1, 1, 1],
+            None,
+        ))
+    }
+
     /// Trim the logical boundary to `prefix_len` tokens (draft rollback).
     ///
     /// With chunked layout this is O(1) — no array data is modified.  The backing
@@ -3702,8 +4202,68 @@ impl MlxKVCache {
                     }
                 }
             }
+            self.rewind_deepseek_v4_comps(self.seq_len);
         }
         valid
+    }
+
+    /// Rewind DeepSeek V4 compressor bookkeeping after `trim_to`: committed
+    /// compressed rows beyond `prefix_len / ratio` are logically dropped (the
+    /// next forward re-compresses and overwrites them), and the per-token
+    /// state buffer is re-sliced to the retained positions it still covers.
+    ///
+    /// The buffer only retains the last block-plus-partial window, so a
+    /// rollback that reaches further back than the buffered range leaves the
+    /// pipeline without the states it would need to recompress straddling
+    /// blocks; llama.cpp solves this with rollback snapshot planes
+    /// (`llama-kv-cache-dsv4.cpp` `state_snapshot_*`). That depth of draft
+    /// rollback on compress layers is out of scope this phase — such trims
+    /// clear the buffer (positions restart empty at `prefix_len`), which the
+    /// compressor module treats as a best-effort partial window.
+    fn rewind_deepseek_v4_comps(&mut self, prefix_len: usize) {
+        for dsv4 in self.deepseek_v4_layers.iter_mut().flatten() {
+            for comp in [&mut dsv4.comp, &mut dsv4.indexer_comp]
+                .into_iter()
+                .flatten()
+            {
+                let ratio = comp.ratio.max(1);
+                let new_committed = comp.committed.min(prefix_len / ratio);
+                comp.committed = new_committed;
+                // Positions the next forward needs buffered: the previous
+                // block's rows (overlap only) plus the partial current block.
+                let keep_from = if comp.overlap && new_committed > 0 {
+                    (new_committed - 1) * ratio
+                } else {
+                    new_committed * ratio
+                };
+                let rows = comp
+                    .state_kv
+                    .as_ref()
+                    .map_or(0, |kv| kv.shape()[0] as usize);
+                let buffered_from = comp.state_base;
+                let buffered_to = buffered_from + rows;
+                if keep_from >= buffered_from && prefix_len <= buffered_to && prefix_len > keep_from
+                {
+                    let start = (keep_from - buffered_from) as i32;
+                    let stop = (prefix_len - buffered_from) as i32;
+                    let width = comp.state_kv.as_ref().map_or(0, |kv| kv.shape()[1]);
+                    comp.state_kv = comp
+                        .state_kv
+                        .as_ref()
+                        .map(|kv| slice(kv, &[start, 0], &[stop, width], &[1, 1], None));
+                    comp.state_score = comp
+                        .state_score
+                        .as_ref()
+                        .map(|score| slice(score, &[start, 0], &[stop, width], &[1, 1], None));
+                    comp.state_base = keep_from;
+                } else {
+                    // Not covered (or nothing to retain): clear the buffer.
+                    comp.state_kv = None;
+                    comp.state_score = None;
+                    comp.state_base = prefix_len;
+                }
+            }
+        }
     }
 
     /// Logical K/V view for `layer`, sliced to the current `seq_len`, or `None`
@@ -3828,6 +4388,20 @@ impl MlxKVCache {
         for glm_mla in self.glm_mla_layers.iter().flatten() {
             refs.push(&glm_mla.kv_latent);
             refs.push(&glm_mla.k_pe);
+        }
+        for dsv4 in self.deepseek_v4_layers.iter().flatten() {
+            refs.push(&dsv4.k_latent);
+            for comp in [&dsv4.comp, &dsv4.indexer_comp].into_iter().flatten() {
+                if let Some(comp_k) = &comp.comp_k {
+                    refs.push(comp_k);
+                }
+                if let Some(state_kv) = &comp.state_kv {
+                    refs.push(state_kv);
+                }
+                if let Some(state_score) = &comp.state_score {
+                    refs.push(state_score);
+                }
+            }
         }
         for linear in &self.linear_layers {
             if let Some(conv_state) = &linear.conv_state {
@@ -4333,6 +4907,9 @@ impl MlxKVCache {
             *entry = None;
         }
         for entry in &mut self.glm_mla_layers {
+            *entry = None;
+        }
+        for entry in &mut self.deepseek_v4_layers {
             *entry = None;
         }
         for state in &mut self.linear_layers {
@@ -7078,6 +7655,7 @@ mod tests {
             linear_attention: None,
             mla_attention: None,
             glm_router: None,
+            deepseek_v4: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
             rope_mscale: 1.0,
@@ -7112,5 +7690,147 @@ mod tests {
         cache.advance(8);
         assert!(cache.layer_is_quantized(0));
         assert!(!cache.layer_is_quantized(1));
+    }
+
+    #[test]
+    fn deepseek_v4_append_prefill_then_decode_reads_back_full_window() {
+        let mut cache = MlxKVCache::new_contiguous(2);
+        let head_dim = 4;
+        // Prefill batch of 3 tokens, then two single-token decode appends.
+        let prefill = build_mla_latent_f32(3, head_dim);
+        let full = cache.append_deepseek_v4(0, prefill.clone());
+        assert_eq!(full.shape(), vec![1, 1, 3, head_dim]);
+        cache.advance(3);
+
+        let step4 = build_mla_latent_f32(1, head_dim);
+        let full = cache.append_deepseek_v4(0, step4);
+        assert_eq!(full.shape(), vec![1, 1, 4, head_dim]);
+        cache.advance(1);
+        let step5 = build_mla_latent_f32(1, head_dim);
+        let full = cache.append_deepseek_v4(0, step5);
+        assert_eq!(full.shape(), vec![1, 1, 5, head_dim]);
+        cache.advance(1);
+
+        // The last-3 window holds prefill token 2 plus the two decode steps.
+        let view = cache.deepseek_v4_k_window(0, 3).expect("window read-back");
+        assert_eq!(view.shape(), vec![1, 1, 3, head_dim]);
+        let mut expected: Vec<f32> = (8..12).map(|i| (i as f32) * 0.0007).collect();
+        expected.extend((0..4).map(|i| (i as f32) * 0.0007));
+        expected.extend((0..4).map(|i| (i as f32) * 0.0007));
+        assert_eq!(host_f32(&view), expected);
+
+        // Full window (0 = no sliding window) covers every appended token.
+        let full = cache.deepseek_v4_k_window(0, 0).expect("full window");
+        assert_eq!(full.shape(), vec![1, 1, 5, head_dim]);
+
+        // A second layer stays independent.
+        assert!(cache.deepseek_v4_k_window(1, 0).is_none());
+        let state = cache.deepseek_v4_layer_state(0).expect("state view");
+        assert_eq!(state.head_dim, head_dim);
+    }
+
+    #[test]
+    fn deepseek_v4_trim_and_reset_semantics_match_siblings() {
+        let mut cache = MlxKVCache::new_contiguous(1);
+        let head_dim = 4;
+        let prefill = build_mla_latent_f32(4, head_dim);
+        let _ = cache.append_deepseek_v4(0, prefill.clone());
+        cache.advance(4);
+
+        // Draft rollback: trim drops the logical boundary; the next append
+        // overwrites from the trim point.
+        assert!(cache.trim_to(2));
+        let replacement = build_mla_latent_f32(1, head_dim);
+        let full = cache.append_deepseek_v4(0, replacement.clone());
+        assert_eq!(full.shape(), vec![1, 1, 3, head_dim]);
+        cache.advance(1);
+        let window = cache.deepseek_v4_k_window(0, 1).expect("last token");
+        assert_eq!(host_f32(&window), host_f32(&replacement));
+
+        // Reset clears V4 state alongside the sibling caches.
+        cache.reset();
+        assert!(cache.deepseek_v4_k_window(0, 0).is_none());
+        assert!(cache.deepseek_v4_layer_state(0).is_none());
+    }
+
+    #[test]
+    fn deepseek_v4_comp_rows_chunked_append_and_readback() {
+        let mut cache = MlxKVCache::new_contiguous(1);
+        let head_dim = 4;
+        let _ = cache.append_deepseek_v4(0, build_mla_latent_f32(8, head_dim));
+        cache.advance(8);
+
+        cache.deepseek_v4_comp_ensure(0, false, 4, true);
+        assert_eq!(cache.deepseek_v4_comp_committed(0, false), 0);
+        assert!(cache.deepseek_v4_comp_k(0, false).is_none());
+
+        // First append: two rows (block rows are [1, 1, n, dim] like the raw K).
+        let rows_a = build_mla_latent_f32(2, head_dim);
+        let view = cache.append_deepseek_v4_comp_rows(0, false, rows_a.clone());
+        assert_eq!(view.shape(), vec![1, 1, 2, head_dim]);
+        assert_eq!(host_f32(&view), host_f32(&rows_a));
+
+        // Second append: one row; the committed view spans all three rows.
+        let rows_b = build_mla_latent_f32(1, head_dim);
+        let view = cache.append_deepseek_v4_comp_rows(0, false, rows_b.clone());
+        assert_eq!(view.shape(), vec![1, 1, 3, head_dim]);
+        assert_eq!(cache.deepseek_v4_comp_committed(0, false), 3);
+        let mut expected = host_f32(&rows_a);
+        expected.extend(host_f32(&rows_b));
+        assert_eq!(host_f32(&view), expected);
+        let read = cache.deepseek_v4_comp_k(0, false).expect("committed rows");
+        assert_eq!(host_f32(&read), expected);
+
+        // The indexer pipeline is independent.
+        assert_eq!(cache.deepseek_v4_comp_committed(0, true), 0);
+        cache.deepseek_v4_comp_ensure(0, true, 4, true);
+        let idx_rows = build_mla_latent_f32(1, head_dim);
+        let idx_view = cache.append_deepseek_v4_comp_rows(0, true, idx_rows.clone());
+        assert_eq!(idx_view.shape(), vec![1, 1, 1, head_dim]);
+        assert_eq!(host_f32(&idx_view), host_f32(&idx_rows));
+        assert_eq!(cache.deepseek_v4_comp_committed(0, false), 3);
+    }
+
+    #[test]
+    fn deepseek_v4_comp_states_and_trim_rewind() {
+        let mut cache = MlxKVCache::new_contiguous(1);
+        let head_dim = 4;
+        let _ = cache.append_deepseek_v4(0, build_mla_latent_f32(10, head_dim));
+        cache.advance(10);
+
+        // Overlap pipeline (r=4): committed 2 blocks, states buffered over
+        // [4, 10) — the previous block plus the partial current one.
+        cache.deepseek_v4_comp_ensure(0, false, 4, true);
+        let rows = build_mla_latent_f32(2, head_dim);
+        let _ = cache.append_deepseek_v4_comp_rows(0, false, rows);
+        // Compressor states are 2D `[rows, state_width]` (F32).
+        let kv_states = mlx_sys::reshape(&build_mla_latent_f32(6, head_dim), &[6, head_dim], None);
+        let score_states =
+            mlx_sys::reshape(&build_mla_latent_f32(6, head_dim), &[6, head_dim], None);
+        cache.deepseek_v4_comp_replace_states(
+            0,
+            false,
+            4,
+            Some(kv_states.clone()),
+            Some(score_states),
+        );
+        let (base, kv, _score) = cache.deepseek_v4_comp_states(0, false).expect("states");
+        assert_eq!(base, 4);
+        assert_eq!(host_f32(&kv), host_f32(&kv_states));
+
+        // Covered trim to 9: committed stays 2 (9 / 4), the buffer re-slices
+        // to [4, 9) and the overlap keep-from stays at block 1's start.
+        assert!(cache.trim_to(9));
+        assert_eq!(cache.deepseek_v4_comp_committed(0, false), 2);
+        let (base, kv, _score) = cache.deepseek_v4_comp_states(0, false).expect("states");
+        assert_eq!(base, 4);
+        assert_eq!(kv.shape(), vec![5, head_dim]);
+
+        // Trim back to 3 drops the second committed row; the retained buffer
+        // no longer covers the rewind range, so it clears (documented
+        // deep-rollback limitation) and restarts empty at 3.
+        assert!(cache.trim_to(3));
+        assert_eq!(cache.deepseek_v4_comp_committed(0, false), 0);
+        assert!(cache.deepseek_v4_comp_states(0, false).is_none());
     }
 }

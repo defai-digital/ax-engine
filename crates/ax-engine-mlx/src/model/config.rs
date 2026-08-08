@@ -156,6 +156,148 @@ impl MlaAttentionConfig {
     }
 }
 
+/// YaRN rope_scaling params retained for the DeepSeek V4 **compress-layer**
+/// freqs: compress layers rotate with `compress_rope_theta` as the YaRN base
+/// plus these shared scaling params (llama.cpp deepseek4.cpp
+/// `build_attention_impl`: `freq_base_l = dsv4_compress_rope_base` with
+/// `freq_scale = 1/factor`, `beta_fast`/`beta_slow`, `n_ctx_orig`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeepseekV4CompressRopeScaling {
+    pub factor: f32,
+    pub beta_fast: f32,
+    pub beta_slow: f32,
+    pub original_context_len: u32,
+}
+
+/// DeepSeek V4 (Flash) architecture parameters extracted from the manifest.
+///
+/// V4 drops the V3 MLA keys: a fused `wkv` projection feeds per-head K/V
+/// (single KV head), the output projection is a grouped LoRA pair
+/// (`wo_a`/`wo_b`), and every layer is MoE with hyper-connection tensors.
+/// Routing is `scoring_func`-based (e.g. "sqrtsoftplus"), **not** the V3
+/// sigmoid routing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeepseekV4Config {
+    pub head_dim: usize,
+    pub qk_rope_head_dim: usize,
+    pub q_lora_rank: usize,
+    pub o_lora_rank: usize,
+    pub o_groups: usize,
+    pub index_topk: usize,
+    pub index_n_heads: usize,
+    pub index_head_dim: usize,
+    pub compress_rope_theta: f32,
+    /// YaRN scaling for the compress-layer freqs; `None` = plain
+    /// `compress_rope_theta` base (no rope_scaling in the manifest).
+    pub compress_rope_scaling: Option<DeepseekV4CompressRopeScaling>,
+    /// V4 attention layers carry a learned per-head attention sink.
+    pub has_attn_sinks: bool,
+    /// Per-layer compressor ratios (0 / 4 / 128; 0 = uncompressed).
+    pub compress_ratios: Vec<u32>,
+    /// Hyper-connection stream multiplier.
+    pub hc_mult: usize,
+    /// Sinkhorn iterations for the HC mixing coefficients.
+    pub hc_sinkhorn_iters: usize,
+    /// Epsilon for the HC Sinkhorn normalisation.
+    pub hc_eps: f32,
+    /// Leading MoE layers that route via the `tid2eid` hash table.
+    pub num_hash_layers: usize,
+    /// MTP (nextn) predictor layers stacked after the main layers.
+    pub num_nextn_predict_layers: usize,
+    /// Routing scoring function (e.g. "sqrtsoftplus").
+    pub scoring_func: Option<String>,
+    /// SwiGLU clamp limit applied in the expert/shared-expert FFNs.
+    pub swiglu_limit: f32,
+}
+
+impl DeepseekV4Config {
+    pub(crate) fn from_manifest(m: &NativeModelManifest) -> Option<Self> {
+        let cfg = &m.deepseek_v4;
+        if !cfg.is_enabled() {
+            return None;
+        }
+        let attention = &cfg.attention;
+
+        Some(Self {
+            head_dim: attention
+                .head_dim
+                .expect("validated deepseek_v4.attention.head_dim") as usize,
+            qk_rope_head_dim: attention
+                .qk_rope_head_dim
+                .expect("validated deepseek_v4.attention.qk_rope_head_dim")
+                as usize,
+            q_lora_rank: attention
+                .q_lora_rank
+                .expect("validated deepseek_v4.attention.q_lora_rank")
+                as usize,
+            o_lora_rank: attention
+                .o_lora_rank
+                .expect("validated deepseek_v4.attention.o_lora_rank")
+                as usize,
+            o_groups: attention
+                .o_groups
+                .expect("validated deepseek_v4.attention.o_groups") as usize,
+            index_topk: attention
+                .index_topk
+                .expect("validated deepseek_v4.attention.index_topk")
+                as usize,
+            index_n_heads: attention
+                .index_n_heads
+                .expect("validated deepseek_v4.attention.index_n_heads")
+                as usize,
+            index_head_dim: attention
+                .index_head_dim
+                .expect("validated deepseek_v4.attention.index_head_dim")
+                as usize,
+            compress_rope_theta: attention
+                .compress_rope_theta
+                .expect("validated deepseek_v4.attention.compress_rope_theta")
+                as f32,
+            // Same yarn family gate as the standard freqs below; beta
+            // fast/slow fall back to the mlx-lm YarnRoPE defaults (32/1)
+            // when the manifest omits them.
+            compress_rope_scaling: match m.rope_scaling_type.as_deref() {
+                Some("yarn") | Some("deepseek_yarn") | Some("telechat3-yarn") => {
+                    Some(DeepseekV4CompressRopeScaling {
+                        factor: m.rope_scaling_factor.unwrap_or(1.0),
+                        beta_fast: m.rope_beta_fast.unwrap_or(32.0),
+                        beta_slow: m.rope_beta_slow.unwrap_or(1.0),
+                        original_context_len: m.rope_original_context_len.unwrap_or(4096),
+                    })
+                }
+                _ => None,
+            },
+            has_attn_sinks: attention.has_attn_sinks,
+            compress_ratios: cfg.compress_ratios.clone(),
+            hc_mult: cfg.hc_mult.expect("validated deepseek_v4.hc_mult") as usize,
+            hc_sinkhorn_iters: cfg
+                .hc_sinkhorn_iters
+                .expect("validated deepseek_v4.hc_sinkhorn_iters")
+                as usize,
+            hc_eps: cfg.hc_eps.expect("validated deepseek_v4.hc_eps"),
+            num_hash_layers: cfg
+                .num_hash_layers
+                .expect("validated deepseek_v4.num_hash_layers")
+                as usize,
+            num_nextn_predict_layers: cfg.num_nextn_predict_layers.unwrap_or(0) as usize,
+            scoring_func: cfg.scoring_func.clone(),
+            swiglu_limit: cfg
+                .swiglu_limit
+                .expect("validated deepseek_v4.swiglu_limit"),
+        })
+    }
+
+    /// Compressor ratio for a layer (0 = uncompressed).
+    pub fn compress_ratio(&self, layer_idx: usize) -> u32 {
+        self.compress_ratios.get(layer_idx).copied().unwrap_or(0)
+    }
+
+    /// Whether a MoE layer routes via the `tid2eid` hash table.
+    pub fn is_hash_routed_layer(&self, layer_idx: usize) -> bool {
+        layer_idx < self.num_hash_layers
+    }
+}
+
 /// GLM4MoELite router contract extracted from mlx-lm/glm4_moe_lite.py.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlmRouterConfig {
@@ -428,6 +570,8 @@ pub struct ModelConfig {
     pub mla_attention: Option<MlaAttentionConfig>,
     /// GLM4MoELite sigmoid router config, when present.
     pub glm_router: Option<GlmRouterConfig>,
+    /// DeepSeek V4 (Flash) architecture config, when present.
+    pub deepseek_v4: Option<DeepseekV4Config>,
     /// Epsilon for all RMSNorm operations (1e-6 for Qwen/Gemma, 1e-5 for GLM/LLaMA/Mistral).
     pub rms_norm_eps: f32,
     /// Precomputed LLaMA-3 / YaRN corrected RoPE frequencies `[dims/2]`.
@@ -484,10 +628,19 @@ pub struct ModelConfig {
 impl ModelConfig {
     pub fn from_manifest(m: &NativeModelManifest) -> Self {
         let head_dim = m.attention_head_dim as usize;
-        let rope_dims = m
-            .partial_rotary_factor
-            .map(|f| ((head_dim as f32 * f) as usize).next_multiple_of(2))
-            .unwrap_or(head_dim);
+        // DeepSeek V4 (MLA) rotates only the `qk_rope_head_dim` pe slice, not
+        // the full head dim — building YaRN freqs at head_dim would give
+        // freqs of len head_dim/2 and mlx_fast_rope would reject them.
+        let rope_dims = if m.deepseek_v4.is_enabled() {
+            m.deepseek_v4
+                .attention
+                .qk_rope_head_dim
+                .expect("validated deepseek_v4.attention.qk_rope_head_dim") as usize
+        } else {
+            m.partial_rotary_factor
+                .map(|f| ((head_dim as f32 * f) as usize).next_multiple_of(2))
+                .unwrap_or(head_dim)
+        };
         let intermediate_size = if m.intermediate_size > 0 {
             m.intermediate_size as usize
         } else {
@@ -595,6 +748,7 @@ impl ModelConfig {
             linear_attention: LinearAttentionConfig::from_manifest(m),
             mla_attention: MlaAttentionConfig::from_manifest(m),
             glm_router: GlmRouterConfig::from_manifest(m),
+            deepseek_v4: DeepseekV4Config::from_manifest(m),
             rms_norm_eps: m
                 .rms_norm_eps
                 .unwrap_or_else(|| default_rms_norm_eps(&m.model_family)),

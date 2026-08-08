@@ -342,10 +342,13 @@ fn build_layer_specs(manifest: &NativeModelManifest, generation: GenerationKind)
         .linear_attention
         .resolved_full_attention_interval(&manifest.model_family);
     let linear_enabled = manifest.linear_attention.is_enabled();
+    // DeepSeek V4 descends from MLA (sparse compressed attention); mark it so
+    // structural capability probing rejects it for the dense batched-decode
+    // pilot until the repo-owned V4 graph lands.
     let mla_enabled = manifest.mla_attention.is_enabled()
         || matches!(
             manifest.model_family.as_str(),
-            "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32"
+            "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32" | "deepseek_v4"
         );
     let moe_enabled = manifest.moe.is_enabled();
     let experts = manifest.moe.expert_count.unwrap_or(0);
@@ -459,6 +462,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -484,6 +489,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            deepseek_v4: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,
@@ -678,6 +684,17 @@ mod tests {
     #[test]
     fn embeddinggemma_encoder() {
         let m = base_manifest("embeddinggemma", 2);
+        let spec = ArchitectureSpec::from_manifest(&m);
+        assert!(spec.is_encoder_embed());
+        assert!(spec.capabilities.is_encoder_embed);
+        assert!(spec.layers.iter().all(|l| {
+            l.attention == AttentionKind::Bidirectional && l.cache == CacheKind::None
+        }));
+    }
+
+    #[test]
+    fn nemotron_embed_encoder() {
+        let m = base_manifest("nemotron_embed", 2);
         let spec = ArchitectureSpec::from_manifest(&m);
         assert!(spec.is_encoder_embed());
         assert!(spec.capabilities.is_encoder_embed);

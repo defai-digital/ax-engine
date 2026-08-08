@@ -150,6 +150,15 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: true,
             uses_decoder_prefix: false,
         }),
+        // Nemotron 3 Embed: Ministral-3 encoder, bare or model.-prefixed layers,
+        // mean-pool embed path (no Dense head). Detected via resolve_model_type.
+        "nemotron_embed" | "nemotron3_embed" => Ok(ModelFamily {
+            family_name: "nemotron_embed",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: None,
+            uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
+        }),
         "mixtral" => Ok(ModelFamily {
             family_name: "mixtral",
             tensor_map: HF_STANDARD_TENSOR_MAP,
@@ -161,6 +170,16 @@ pub(crate) fn model_family_for_type(
             family_name: "deepseek_v3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(DEEPSEEK_V3_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
+        }),
+        // DeepSeek V4 (Flash): bare `layers.N.…` HF layout with hyper-connection,
+        // compressor/indexer, and hash-routing tensors (see
+        // match_deepseek_v4_tensor for the prefix handling).
+        "deepseek_v4" => Ok(ModelFamily {
+            family_name: "deepseek_v4",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(DEEPSEEK_V4_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),

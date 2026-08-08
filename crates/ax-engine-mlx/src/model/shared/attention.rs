@@ -1,7 +1,7 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, concatenate, contiguous, eval,
-    qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
-    scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, concatenate, contiguous,
+    eval, qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm,
+    rope, scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
     slice_update, transpose,
 };
 #[cfg(test)]
@@ -457,7 +457,11 @@ pub(crate) fn attention_with_sinks(
         None if seq > 1 => ScaledDotProductAttentionMask::Causal,
         None => ScaledDotProductAttentionMask::None,
     };
-    scaled_dot_product_attention_with_mask_and_sinks(q, k, v, query_scale, mask, Some(sinks), None)
+    // MLX's fused SDPA requires sinks to promote to the output dtype;
+    // checkpoints may store sinks in f32 (e.g. DeepSeek V4) while q/k/v run
+    // in bf16/f16, so cast at the call site.
+    let sinks = astype(sinks, q.dtype(), None);
+    scaled_dot_product_attention_with_mask_and_sinks(q, k, v, query_scale, mask, Some(&sinks), None)
 }
 
 /// Unfused reference for [`attention_with_sinks`], kept as the test oracle:
@@ -1199,6 +1203,7 @@ mod tests {
             linear_attention: None,
             mla_attention: None,
             glm_router: None,
+            deepseek_v4: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
             rope_mscale: 1.0,

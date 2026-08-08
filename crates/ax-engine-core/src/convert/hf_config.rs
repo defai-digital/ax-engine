@@ -68,11 +68,17 @@ pub(crate) fn resolve_model_type(config: &serde_json::Value) -> Result<String, C
             field: "model_type",
         })?;
     // Normalize hyphenated HF types to snake_case family labels.
-    Ok(match raw.as_str() {
+    let normalized = match raw.as_str() {
         "unlimited-ocr" => "unlimited_ocr".to_string(),
         "NemotronH_Nano_Omni_Reasoning_V3" => "nemotron_h_nano_omni".to_string(),
+        "nemotron3_embed" | "nemotron_embed" => "nemotron_embed".to_string(),
         other => other.to_string(),
-    })
+    };
+    // Nemotron 3 Embed ships as Ministral3Model with encoder-embedding signals.
+    if is_nemotron_embed_config(config, &normalized) {
+        return Ok("nemotron_embed".to_string());
+    }
+    Ok(normalized)
 }
 
 pub(crate) struct ArchitectureParams {
@@ -171,6 +177,32 @@ pub(crate) fn is_glm4_moe_lite(model_type: &str) -> bool {
 /// NVIDIA Nemotron-H hybrid (`model_type: nemotron_h`): Mamba-2 + GQA + MoE.
 pub(crate) fn is_nemotron_h(model_type: &str) -> bool {
     matches!(model_type, "nemotron_h" | "nemotron_h_nano_omni")
+}
+
+/// NVIDIA Nemotron 3 Embed: Ministral-3 encoder with mean pooling (not chat).
+///
+/// HF checkpoints use `model_type: "ministral3"` plus `is_causal: false` and
+/// `pooling: "avg"`. Explicit `nemotron_embed` / `nemotron3_embed` aliases also
+/// resolve here. Must not steal causal Ministral/Mistral3 chat models.
+pub(crate) fn is_nemotron_embed_model_type(model_type: &str) -> bool {
+    matches!(model_type, "nemotron_embed" | "nemotron3_embed")
+}
+
+/// Config-level encoder-embedding detection for Nemotron 3 Embed checkpoints.
+pub(crate) fn is_nemotron_embed_config(config: &serde_json::Value, model_type: &str) -> bool {
+    if is_nemotron_embed_model_type(model_type) {
+        return true;
+    }
+    if !matches!(model_type, "ministral3" | "mistral3") {
+        return false;
+    }
+    let is_causal = config.get("is_causal").and_then(|v| v.as_bool());
+    let pooling = config
+        .get("pooling")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_ascii_lowercase());
+    let pooling_ok = matches!(pooling.as_deref(), Some("avg" | "mean" | "average"));
+    is_causal == Some(false) && pooling_ok
 }
 
 /// Parse diffusion-specific config fields from config.json.
@@ -414,6 +446,76 @@ pub(crate) fn mla_attention_config(
     }
 }
 
+pub(crate) fn is_deepseek_v4(model_type: &str) -> bool {
+    model_type == "deepseek_v4"
+}
+
+/// Parse DeepSeek V4 (Flash) architecture parameters from config.json.
+///
+/// V4 drops the V3 MLA keys and carries its own attention geometry
+/// (`head_dim` per head, single KV head, grouped output LoRA) plus
+/// hyper-connection constants, per-layer compressor ratios, and hash
+/// routing. V4 tensors always include a learned attention sink, so
+/// `has_attn_sinks` is set unconditionally for the family.
+pub(crate) fn deepseek_v4_config(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> NativeDeepseekV4Config {
+    if !is_deepseek_v4(model_type) {
+        return NativeDeepseekV4Config::default();
+    }
+
+    let compress_ratios = config
+        .get("compress_ratios")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_u64())
+                .filter_map(u64_to_u32)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // AXQuant/mlx-lm configs append one ratio per nextn (MTP) predictor
+    // layer after the main layers; the manifest records main-layer ratios
+    // only and the contract enforces exactly `layer_count` entries.
+    let mut compress_ratios: Vec<u32> = compress_ratios;
+    if let Some(layer_count) = arch_u64(config, model_type, "num_hidden_layers")
+        .and_then(u64_to_u32)
+        .and_then(|count| usize::try_from(count).ok())
+    {
+        compress_ratios.truncate(layer_count);
+    }
+
+    NativeDeepseekV4Config {
+        attention: NativeDeepseekV4AttentionConfig {
+            head_dim: arch_u64(config, model_type, "head_dim").and_then(u64_to_u32),
+            qk_rope_head_dim: arch_u64(config, model_type, "qk_rope_head_dim").and_then(u64_to_u32),
+            q_lora_rank: arch_u64(config, model_type, "q_lora_rank").and_then(u64_to_u32),
+            o_lora_rank: arch_u64(config, model_type, "o_lora_rank").and_then(u64_to_u32),
+            o_groups: arch_u64(config, model_type, "o_groups").and_then(u64_to_u32),
+            index_topk: arch_u64(config, model_type, "index_topk").and_then(u64_to_u32),
+            index_n_heads: arch_u64(config, model_type, "index_n_heads").and_then(u64_to_u32),
+            index_head_dim: arch_u64(config, model_type, "index_head_dim").and_then(u64_to_u32),
+            compress_rope_theta: arch_f64(config, model_type, "compress_rope_theta")
+                .and_then(f64_to_u32),
+            has_attn_sinks: true,
+        },
+        compress_ratios,
+        hc_mult: arch_u64(config, model_type, "hc_mult").and_then(u64_to_u32),
+        hc_sinkhorn_iters: arch_u64(config, model_type, "hc_sinkhorn_iters").and_then(u64_to_u32),
+        hc_eps: arch_f64(config, model_type, "hc_eps").map(|v| v as f32),
+        num_hash_layers: arch_u64(config, model_type, "num_hash_layers").and_then(u64_to_u32),
+        num_nextn_predict_layers: arch_u64(config, model_type, "num_nextn_predict_layers")
+            .and_then(u64_to_u32),
+        scoring_func: config
+            .get("scoring_func")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        swiglu_limit: arch_f64(config, model_type, "swiglu_limit").map(|v| v as f32),
+    }
+}
+
 pub(crate) fn glm_router_config(
     config: &serde_json::Value,
     model_type: &str,
@@ -447,6 +549,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     let is_glm_moe = is_glm4_moe_lite(model_type);
     let is_mixtral = model_type == "mixtral";
     let is_deepseek_v3 = matches!(model_type, "deepseek_v3" | "deepseek_v32");
+    let is_deepseek_v4 = is_deepseek_v4(model_type);
     let is_llama4 = model_type == "llama4";
     // GPT-OSS is always MoE (num_local_experts + num_experts_per_tok).
     let is_gpt_oss = model_type == "gpt_oss";
@@ -459,6 +562,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         && !is_glm_moe
         && !is_mixtral
         && !is_deepseek_v3
+        && !is_deepseek_v4
         && !is_llama4
         && !is_gpt_oss
         && !is_nemotron
@@ -492,7 +596,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         None
     };
 
-    let shared_expert_count = if is_deepseek_v3 || is_nemotron || is_ocr {
+    let shared_expert_count = if is_deepseek_v3 || is_deepseek_v4 || is_nemotron || is_ocr {
         arch_u64(config, model_type, "n_shared_experts").and_then(u64_to_u32)
     } else if is_llama4 {
         // LLaMA 4 always has 1 shared expert when MoE is active
@@ -521,8 +625,10 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         first_dense_layers,
         shared_expert_count,
         // Nemotron-H MoE gate matches DeepSeek-style sigmoid + correction bias.
+        // DeepSeek V4 routes via `scoring_func` (see NativeDeepseekV4Config),
+        // not sigmoid routing, so it must not set this flag.
         sigmoid_routing: is_deepseek_v3 || is_nemotron,
-        routed_scaling_factor: if is_deepseek_v3 || is_nemotron {
+        routed_scaling_factor: if is_deepseek_v3 || is_deepseek_v4 || is_nemotron {
             arch_f64(config, model_type, "routed_scaling_factor").map(|v| v as f32)
         } else {
             None
@@ -532,7 +638,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         } else {
             None
         },
-        topk_group: if is_deepseek_v3 || is_nemotron {
+        topk_group: if is_deepseek_v3 || is_deepseek_v4 || is_nemotron {
             arch_u64(config, model_type, "topk_group").and_then(u64_to_u32)
         } else {
             None
@@ -616,7 +722,7 @@ pub(crate) fn parse_rope_params(
     (theta, None, partial_rotary)
 }
 
-/// Parse LLaMA 3 / LLaMA 4 rope_scaling dict from config.json.
+/// Parse LLaMA 3 / LLaMA 4 / YaRN rope_scaling dict from config.json.
 #[allow(clippy::type_complexity)]
 pub(crate) fn parse_rope_scaling(
     config: &serde_json::Value,
@@ -627,6 +733,8 @@ pub(crate) fn parse_rope_scaling(
     Option<f32>,
     Option<f32>,
     Option<u32>,
+    Option<f32>,
+    Option<f32>,
 ) {
     let rs = if uses_text_config(model_type) {
         config
@@ -637,8 +745,18 @@ pub(crate) fn parse_rope_scaling(
     } else {
         config.get("rope_scaling")
     };
+    // Nemotron 3 Embed (and some Ministral encoder packs) put YaRN under
+    // top-level `rope_parameters` instead of `rope_scaling`.
+    let rs = rs.or_else(|| {
+        if is_nemotron_embed_model_type(model_type) || is_nemotron_embed_config(config, model_type)
+        {
+            config.get("rope_parameters")
+        } else {
+            None
+        }
+    });
     let Some(rs) = rs else {
-        return (None, None, None, None, None);
+        return (None, None, None, None, None, None, None);
     };
     let rope_type = rs
         .get("rope_type")
@@ -658,12 +776,22 @@ pub(crate) fn parse_rope_scaling(
         .get("original_max_position_embeddings")
         .and_then(|v| v.as_u64())
         .and_then(u64_to_u32);
+    let beta_fast = rs
+        .get("beta_fast")
+        .and_then(|v| v.as_f64())
+        .map(|f| f as f32);
+    let beta_slow = rs
+        .get("beta_slow")
+        .and_then(|v| v.as_f64())
+        .map(|f| f as f32);
     (
         rope_type,
         factor,
         low_freq_factor,
         high_freq_factor,
         original_context_len,
+        beta_fast,
+        beta_slow,
     )
 }
 

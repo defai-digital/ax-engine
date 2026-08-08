@@ -117,9 +117,9 @@ use profile::{
 mod config;
 use config::layer_params;
 pub use config::{
-    DiffusionConfig, DiffusionSampler, DiffusionTemperatureSchedule, Gemma4AssistantSharedKvLayers,
-    GlmRouterConfig, KvQuantSpec, LayerConfig, LinearAttentionConfig, MlaAttentionConfig,
-    ModelConfig,
+    DeepseekV4Config, DiffusionConfig, DiffusionSampler, DiffusionTemperatureSchedule,
+    Gemma4AssistantSharedKvLayers, GlmRouterConfig, KvQuantSpec, LayerConfig,
+    LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
 };
 
 pub(crate) mod shared;
@@ -129,6 +129,9 @@ use shared::*;
 mod families;
 
 pub(crate) use families::standard::layer_forward_bidirectional;
+// The MTP module drives the nextn block directly (`mtp.rs`); the family owns
+// the packed hyper-connection residual it threads through that block.
+pub(crate) use families::deepseek_v4 as deepseek_v4_family;
 
 /// Read and reset the batched-decode per-stage timing accumulators
 /// (`AX_MLX_BATCHED_PROFILE=1`); `[pre_attn, attention, o_proj, ffn]` µs.
@@ -247,6 +250,17 @@ pub fn layer_forward(
         Some(LayerForwardRoute::DeepseekV3) => {
             families::deepseek_v3::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
         }
+        Some(LayerForwardRoute::DeepseekV4) => {
+            // Unreachable by construction: DeepSeek V4 forwards dispatch to
+            // `deepseek_v4_forward_*` before the layer loop — the family owns
+            // the packed 4-stream residual, which the E-wide `layer_forward`
+            // contract cannot express. `layer_forward` has no fallible error
+            // channel; mirror the `None` arm so a bypassing caller still
+            // fails loudly.
+            panic!(
+                "deepseek_v4 layers must run through the dedicated deepseek_v4 forward path (packed hyper-connection residual)"
+            )
+        }
         Some(LayerForwardRoute::Mistral3) => families::mistral3::layer_forward(
             cfg,
             w,
@@ -351,6 +365,10 @@ pub fn layer_forward_last_only(
             !skip_post_attention_ffn, // last-only FFN when not skipping
             skip_post_attention_ffn,
         ),
+        // DeepSeek V4 must NOT use last-only FFN pruning: HC mixing consumes
+        // the full packed stream, so its dedicated forward path runs every
+        // layer in full. The fallthrough hits the defensive DeepseekV4 panic
+        // in `layer_forward`, which is unreachable from the V4 entry points.
         _ => layer_forward(
             cfg,
             w,
@@ -841,6 +859,14 @@ pub fn forward_pipeline_stage(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> Result<MlxArray, PipelineStageForwardError> {
+    if cfg.deepseek_v4.is_some() {
+        // Packed `[1, seq, hc*hidden]` pipeline transfer is out of scope; the
+        // hidden-state shape check below hard-requires hidden_size. Reject
+        // explicitly rather than falling into the dense-Llama stage.
+        return Err(PipelineStageForwardError::UnsupportedFamily(
+            cfg.model_family.clone(),
+        ));
+    }
     if cfg.model_family != "llama3" {
         return Err(PipelineStageForwardError::UnsupportedFamily(
             cfg.model_family.clone(),
@@ -984,6 +1010,18 @@ fn forward_and_logits_mode(
     token_offset: usize,
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
+    // DeepSeek V4 owns its packed hyper-connection residual; dispatch before
+    // the generic E-wide path.
+    if cfg.deepseek_v4.is_some() {
+        return deepseek_v4_forward_and_logits_mode(
+            cfg,
+            weights,
+            token_ids,
+            cache,
+            token_offset,
+            logits_mode,
+        );
+    }
     let profile_prefill = token_ids.len() > 1 && prefill_profile_enabled();
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
 
@@ -1134,6 +1172,138 @@ fn forward_and_logits_mode(
     logits
 }
 
+// ── DeepSeek V4 (Flash) forward path ────────────────────────────────────────
+//
+// V4 owns the packed `[1, seq, hc_mult * hidden]` hyper-connection residual
+// end-to-end; these helpers keep the generic `layer_forward` dispatch
+// (E-wide) out of the loop and expose E-wide boundaries only at embed and at
+// the post-collapse tail.
+
+/// V4 trunk: embed `ids_1d` → expand to the packed stream → per-layer
+/// `families::deepseek_v4::layer_forward`. Returns the packed residual
+/// `[1, seq, hc*hidden]`. `ids_1d` is a scalar/1-D `[seq]`/singleton u32
+/// array (lazy arrays allowed); the same ids feed the hash-routed MoE
+/// layers' `tid2eid` lookup.
+fn deepseek_v4_forward_trunk(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    ids_1d: &MlxArray,
+    seq: usize,
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> MlxArray {
+    let v4_cfg = cfg.deepseek_v4.as_ref().expect("DeepSeek V4 config");
+    let mut hidden = embed_tokens_arr(ids_1d, &weights.token_embedding, cfg.hidden_size);
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
+    let mut packed = families::deepseek_v4::expand_embedding(&hidden, v4_cfg);
+
+    // [1, seq] ids for the hash-routing tid2eid gather.
+    let ids_2d = reshape(ids_1d, &[1, seq as i32], None);
+
+    // Single-token decode never needs explicit SDPA masks (same convention
+    // as the generic forward). V4 uses its own cache buffers, never the
+    // rotating ring, so `build_layer_masks_for_forward` always takes the
+    // ordered path.
+    let decode_mask: Option<MlxArray> = None;
+    let masks = (seq > 1).then(|| {
+        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache)
+    });
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        let shared_mask = masks
+            .as_ref()
+            .map(|masks| &masks[li])
+            .unwrap_or(&decode_mask);
+        packed = families::deepseek_v4::layer_forward(
+            cfg,
+            layer_w,
+            &packed,
+            cache,
+            li,
+            token_offset,
+            Some(&ids_2d),
+            shared_mask.as_ref(),
+        );
+    }
+    packed
+}
+
+/// V4 trunk + root-level `hc_head` collapse → `[1, seq, hidden]`.
+fn deepseek_v4_forward_hidden(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    ids_1d: &MlxArray,
+    seq: usize,
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> MlxArray {
+    let packed = deepseek_v4_forward_trunk(cfg, weights, ids_1d, seq, cache, token_offset);
+    let head_w = weights
+        .deepseek_v4_head
+        .as_ref()
+        .expect("DeepSeek V4 head weights (hc_head_*)");
+    families::deepseek_v4::collapse_for_head(cfg, head_w, &packed)
+}
+
+/// V4 counterpart of [`forward_and_logits_mode`]: last-position logits
+/// `[vocab]`, or — for [`FinalLogitsMode::Skip`] — the packed residual after
+/// the last layer (collapse, final norm, and lm_head all skipped; HC mixing
+/// means the last layer must run its full FFN, so no last-only pruning).
+fn deepseek_v4_forward_and_logits_mode(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    logits_mode: FinalLogitsMode,
+) -> MlxArray {
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let seq = token_ids.len();
+    if matches!(logits_mode, FinalLogitsMode::Skip) {
+        return deepseek_v4_forward_trunk(cfg, weights, &ids_1d, seq, cache, token_offset);
+    }
+    let hidden = deepseek_v4_forward_hidden(cfg, weights, &ids_1d, seq, cache, token_offset);
+    let last_hidden = if seq > 1 {
+        let last = (seq - 1) as i32;
+        let hs = cfg.hidden_size as i32;
+        slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
+    } else {
+        hidden
+    };
+    let normed = rms_norm(
+        &last_hidden,
+        Some(&weights.final_norm),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let logits = qw(&normed, &weights.lm_head);
+    let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
+    reshape(&logits, &[cfg.vocab_size as i32], None)
+}
+
+/// V4 counterpart of [`forward_lazy_single_and_logits_mode`]: single-token
+/// forward from a (possibly lazy) token array, returning `[1, 1, vocab]`.
+fn deepseek_v4_forward_lazy_single_and_logits_mode(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_arr: &MlxArray,
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    lazy_mode: LazySingleTokenMode,
+) -> MlxArray {
+    let hidden = deepseek_v4_forward_hidden(cfg, weights, token_arr, 1, cache, token_offset);
+    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let logits = qw(&normed, &weights.lm_head);
+    finalize_lm_head_logits(cfg, &logits, lazy_mode.logits_mode())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     cfg: &ModelConfig,
@@ -1145,6 +1315,12 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     token_offset: usize,
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
+    if cfg.deepseek_v4.is_some() {
+        // V4 is text-only and owns the packed HC residual; the pre-scattered
+        // hidden + media-overlay path cannot express it. Defensive guard —
+        // V4 manifests carry no vision tower, so this is unreachable.
+        panic!("deepseek_v4 does not support the initial-hidden/media forward path");
+    }
     // Gemma 4 E-series derives a separate embedding for every language
     // layer. Media placeholder IDs are outside that auxiliary embedding
     // vocabulary; the reference model substitutes token 0 at visual/audio
@@ -1377,6 +1553,12 @@ pub fn forward_all_positions_update_cache(
         &[token_ids.len() as i32],
         MlxDtype::Uint32,
     );
+    if cfg.deepseek_v4.is_some() {
+        // Trunk only: cache writes are the point; collapse/head are skipped.
+        let _ =
+            deepseek_v4_forward_trunk(cfg, weights, &ids_1d, token_ids.len(), cache, token_offset);
+        return;
+    }
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
@@ -1418,6 +1600,16 @@ pub fn forward_all_positions(
         &[token_ids.len() as i32],
         MlxDtype::Uint32,
     );
+    if cfg.deepseek_v4.is_some() {
+        let hidden =
+            deepseek_v4_forward_hidden(cfg, weights, &ids_1d, token_ids.len(), cache, token_offset);
+        let seq = token_ids.len() as i32;
+        let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+        let logits = qw(&normed, &weights.lm_head);
+        let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+        let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+        return reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None);
+    }
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
@@ -1494,6 +1686,16 @@ pub fn forward_all_positions_with_post_norm_ids(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    if cfg.deepseek_v4.is_some() {
+        let hidden = deepseek_v4_forward_hidden(cfg, weights, ids_1d, seq, cache, token_offset);
+        let seq_i = seq as i32;
+        let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+        let logits = qw(&normed, &weights.lm_head);
+        let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+        let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+        let logits_out = reshape(&logits_f32, &[seq_i, cfg.vocab_size as i32], None);
+        return (logits_out, normed);
+    }
     let mut hidden = embed_tokens_arr(ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
@@ -1546,6 +1748,11 @@ pub fn forward_with_initial_hidden_media_post_norm_last_lm_head(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    if cfg.deepseek_v4.is_some() {
+        // See the guard in `forward_with_initial_hidden_and_media_ranges`:
+        // V4 is text-only and owns the packed HC residual; unreachable.
+        panic!("deepseek_v4 does not support the initial-hidden/media forward path");
+    }
     let per_layer_token_ids =
         mask_media_token_ids_for_per_layer_inputs(token_ids, media_ranges, token_offset);
     let ids_1d = MlxArray::from_raw_data(
@@ -1607,6 +1814,19 @@ pub fn forward_all_positions_post_norm_last_lm_head(
         &[token_ids.len() as i32],
         MlxDtype::Uint32,
     );
+    if cfg.deepseek_v4.is_some() {
+        let seq = token_ids.len();
+        let hidden = deepseek_v4_forward_hidden(cfg, weights, &ids_1d, seq, cache, token_offset);
+        let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+        let last = (seq - 1) as i32;
+        let hs = cfg.hidden_size as i32;
+        let last_normed = slice(&normed, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
+        let logits = qw(&last_normed, &weights.lm_head);
+        let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+        let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+        let last_logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
+        return (last_logits, normed);
+    }
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
@@ -1646,6 +1866,40 @@ pub fn forward_all_positions_post_norm_last_lm_head(
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
     let last_logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
     (last_logits, normed)
+}
+
+/// DeepSeek V4 MTP verify forward: per-position logits `[seq, vocab]` plus
+/// the packed pre-collapse residual `[1, seq, hc*hidden]` — the nextn block's
+/// `h` input (llama.cpp `t_h_nextn`). V4 counterpart of
+/// [`forward_all_positions_with_post_norm`]: the MTP draft head consumes the
+/// packed stream, not the post-norm E-wide hidden, so the runner slices draft
+/// rows from the second return with width `hc_mult * hidden_size`.
+pub fn deepseek_v4_forward_all_positions_with_packed(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> (MlxArray, MlxArray) {
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let seq = token_ids.len();
+    let packed = deepseek_v4_forward_trunk(cfg, weights, &ids_1d, seq, cache, token_offset);
+    let head_w = weights
+        .deepseek_v4_head
+        .as_ref()
+        .expect("DeepSeek V4 head weights (hc_head_*)");
+    let hidden = families::deepseek_v4::collapse_for_head(cfg, head_w, &packed);
+    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let logits = qw(&normed, &weights.lm_head);
+    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+    let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+    let logits_out = reshape(&logits_f32, &[seq as i32, cfg.vocab_size as i32], None);
+    (logits_out, packed)
 }
 
 /// Forward all positions, returning both per-position logits `[seq, vocab]` and
@@ -2078,6 +2332,8 @@ fn layer_forward_dense_embed(
     layer_idx: usize,
     pending_ffn: Option<&MlxArray>,
     target_positions_for_ffn: Option<&[usize]>,
+    // When Some: bidirectional + pad mask. When None: causal SDPA (Qwen last-token).
+    attention_mask: &Option<MlxArray>,
 ) -> (MlxArray, MlxArray) {
     let (
         head_dim,
@@ -2272,9 +2528,9 @@ fn layer_forward_dense_embed(
         (&q_rope, seq)
     };
 
-    // 8. SDPA — k_rope/v used directly, no KV-cache writes. Qwen3-Embedding is
-    // a causal-LM embedder with last-token pooling, matching the mlx-lm oracle.
-    let mask_opt: Option<MlxArray> = None;
+    // 8. SDPA — k_rope/v used directly, no KV-cache writes.
+    // Qwen3-Embedding: mask None → causal (last-token pool oracle).
+    // Nemotron Embed: pass bidirectional padding mask so tokens attend fully.
     let sdpa_started = profile.then(Instant::now);
     let attn_sdpa = full_precision_attention(
         q_rope_ref,
@@ -2282,7 +2538,7 @@ fn layer_forward_dense_embed(
         &v,
         cfg.query_scale,
         attn_seq,
-        &mask_opt,
+        attention_mask,
     );
     if let Some(started) = sdpa_started {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::Sdpa, started, &[&attn_sdpa]);
@@ -2402,6 +2658,17 @@ fn forward_for_embedding_body(
     mut hidden: MlxArray,
     target_position: Option<usize>,
 ) -> MlxArray {
+    // Nemotron Embed is bidirectional: None mask would force causal SDPA.
+    let seq = hidden.shape()[1] as usize;
+    let bidirectional = cfg.model_family == "nemotron_embed";
+    let bidir_mask = if bidirectional {
+        build_bidirectional_padding_mask(1, seq, &[seq], hidden.dtype())
+    } else {
+        None
+    };
+    // Last-token Q prune is only valid for causal last-token embedders.
+    let target_position = if bidirectional { None } else { target_position };
+
     let mut pending_ffn: Option<MlxArray> = None;
     let final_layer_idx = weights.layers.len().saturating_sub(1);
     let target_pos_buf = target_position.map(|p| [p]);
@@ -2424,6 +2691,7 @@ fn forward_for_embedding_body(
             li,
             pending_ffn.as_ref(),
             target_positions_for_ffn,
+            &bidir_mask,
         );
         hidden = h;
         pending_ffn = Some(ffn_out);
@@ -3058,7 +3326,19 @@ pub fn forward_for_embedding_batch(
     if let Some(started) = embed_started {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::EmbedTokens, started, &[&hidden]);
     }
-    let out = forward_for_embedding_batch_body(cfg, weights, hidden, target_positions);
+    // Nemotron Embed: bidirectional standard-dense layers + mean pool (no last-token prune).
+    let target_positions = if cfg.model_family == "nemotron_embed" {
+        None
+    } else {
+        target_positions
+    };
+    let out = forward_for_embedding_batch_body(
+        cfg,
+        weights,
+        hidden,
+        target_positions,
+        Some(actual_lens.as_slice()),
+    );
     if profile {
         record_embed_profile_call(
             weights.layers.len() as u32,
@@ -3163,13 +3443,26 @@ fn forward_for_embedding_batch_body(
     weights: &ModelWeights,
     mut hidden: MlxArray,
     target_positions: Option<&[usize]>,
+    actual_lens: Option<&[usize]>,
 ) -> MlxArray {
+    let batch = hidden.shape()[0] as usize;
     let seq = hidden.shape()[1] as usize;
     // AX_MLX_EMBED_PROFILE: guard on seq>1 so the closure-builder trace (which
     // invokes this body once at build time) and decode paths stay unprofiled.
     // Under profiling the runner forces the imperative path, so the per-stage
     // eval barriers below only fire on a real imperative forward.
     let profile = embed_profile_enabled() && seq > 1;
+    // Nemotron Embed: bidirectional SDPA with pad-aware mask. Prefer real
+    // lengths; fall back to full-seq when the compiled-trace path omits them.
+    let bidir_mask = if cfg.model_family == "nemotron_embed" {
+        let lens: Vec<usize> = match actual_lens {
+            Some(lens) if lens.len() == batch => lens.to_vec(),
+            _ => vec![seq; batch],
+        };
+        build_bidirectional_padding_mask(batch, seq, &lens, hidden.dtype())
+    } else {
+        None
+    };
     let mut pending_ffn: Option<MlxArray> = None;
     let final_layer_idx = weights.layers.len().saturating_sub(1);
     let mut pooled_for_final_ffn = false;
@@ -3187,6 +3480,7 @@ fn forward_for_embedding_batch_body(
             li,
             pending_ffn.as_ref(),
             target_positions_for_ffn,
+            &bidir_mask,
         );
         hidden = h;
         pending_ffn = Some(ffn_out);
@@ -3241,8 +3535,13 @@ pub fn build_embedding_batch_forward_closure(
             return vec![];
         }
         let hidden = inputs.get(0);
-        let out =
-            forward_for_embedding_batch_body(&cfg, &weights, hidden, target_positions.as_deref());
+        let out = forward_for_embedding_batch_body(
+            &cfg,
+            &weights,
+            hidden,
+            target_positions.as_deref(),
+            None,
+        );
         // Fuse the Dense head projection into the compiled graph so the
         // runner avoids a separate MLX dispatch after the closure returns.
         let out = if has_dense_head {
@@ -3264,10 +3563,27 @@ fn forward_for_embedding_mean_pool_body(
     weights: &ModelWeights,
     mut hidden: MlxArray,
 ) -> MlxArray {
+    let batch = hidden.shape()[0] as usize;
+    let seq = hidden.shape()[1] as usize;
+    // Compiled mean-pool traces do not carry actual_lens; Nemotron uses the
+    // imperative batch path (length-aware mask) instead of this closure.
+    let bidir_mask = if cfg.model_family == "nemotron_embed" {
+        let lens = vec![seq; batch];
+        build_bidirectional_padding_mask(batch, seq, &lens, hidden.dtype())
+    } else {
+        None
+    };
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) =
-            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref(), None);
+        let (h, ffn_out) = layer_forward_dense_embed(
+            cfg,
+            layer_w,
+            &hidden,
+            li,
+            pending_ffn.as_ref(),
+            None,
+            &bidir_mask,
+        );
         hidden = h;
         pending_ffn = Some(ffn_out);
     }
@@ -3502,6 +3818,18 @@ fn forward_lazy_single_and_logits_mode(
     token_offset: usize,
     lazy_mode: LazySingleTokenMode,
 ) -> MlxArray {
+    // DeepSeek V4 owns its packed hyper-connection residual; the lazy token
+    // array doubles as the hash-routing tid2eid index source.
+    if cfg.deepseek_v4.is_some() {
+        return deepseek_v4_forward_lazy_single_and_logits_mode(
+            cfg,
+            weights,
+            token_arr,
+            cache,
+            token_offset,
+            lazy_mode,
+        );
+    }
     let profile_decode = decode_profile_enabled();
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
 
@@ -3788,6 +4116,7 @@ mod tests {
             linear_attention: None,
             mla_attention: None,
             glm_router: None,
+            deepseek_v4: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
             rope_mscale: 1.0,
@@ -3833,6 +4162,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -3861,6 +4192,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            deepseek_v4: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
@@ -3893,6 +4225,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -3925,6 +4259,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            deepseek_v4: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
@@ -3990,6 +4325,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -4038,6 +4375,7 @@ mod tests {
                 topk_group: Some(1),
                 has_shared_experts: true,
             },
+            deepseek_v4: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
@@ -4176,6 +4514,8 @@ mod tests {
             per_layer_proj_norm: Some(zeros(&[2], MlxDtype::Float32, None)),
             mtp: None,
             glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -4236,6 +4576,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[hidden_size as i32], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -4306,6 +4647,7 @@ mod tests {
                     mla.kv_lora_rank as i32,
                 ]),
             }),
+            deepseek_v4: None,
             ffn_norm: zeros(&[cfg.hidden_size as i32], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -4504,6 +4846,7 @@ mod tests {
                 out_proj: dense_weight(&[hidden_size as i32, cfg.value_dim() as i32]),
             }),
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[hidden_size as i32], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -4663,6 +5006,7 @@ mod tests {
             o_proj: Some(dense_weight(&[4, 8])),
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: Some(dense_weight(&[3, 4])),
@@ -4798,6 +5142,8 @@ mod tests {
             per_layer_proj_norm: None,
             mtp: None,
             glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -4854,6 +5200,8 @@ mod tests {
             per_layer_proj_norm: None,
             mtp: None,
             glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -4989,6 +5337,8 @@ mod tests {
             per_layer_proj_norm: None,
             mtp: None,
             glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: Some(dense_weight(&[16, 32])),
             assistant_post_projection: Some(dense_weight(&[16, 16])),
@@ -5072,6 +5422,8 @@ mod tests {
             per_layer_proj_norm: None,
             mtp: None,
             glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: Some(dense_weight(&[16, 32])),
             assistant_post_projection: Some(dense_weight(&[16, 16])),
@@ -5850,6 +6202,8 @@ mod tests {
             per_layer_proj_norm: None,
             mtp: None,
             glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -6112,6 +6466,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -6209,6 +6564,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -6282,6 +6638,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -6355,6 +6712,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -6428,6 +6786,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -6544,6 +6903,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -7532,6 +7892,8 @@ mod tests {
             per_layer_proj_norm: None,
             mtp: None,
             glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,

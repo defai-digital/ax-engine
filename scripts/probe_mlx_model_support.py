@@ -5,12 +5,14 @@ This is a support-contract probe, not an inference benchmark. It reads the
 model's config and safetensors index, then cross-checks local reference
 implementations so unsupported architectures fail closed with named blockers.
 
-Native-family policy is governed by ADR 0023
-(`.internal/adr/0023-deepseek-v4-delegated-ds4-route.md`). The Qwen / Gemma
-`REPO_OWNED_TYPES` allowlist below plus the dedicated `probe_glm4_moe_lite`
-path implement D1 of that ADR; `deepseek_v4` is rejected per D4. Models
-outside the native list are expected to route through `mlx_lm_delegated`
-(ADR 0014, ADR 0023 D2) at the SDK layer, not promoted here.
+Native-family policy is governed by `docs/MODEL-SUPPORT-POLICY.md`: direct
+support means a repo-owned graph with evidence, and delegated adapters
+(`mlx_lm_delegated`, `llama_cpp`) must not make an unsupported model appear
+supported. The `REPO_OWNED_TYPES` allowlist below names the families with
+repo-owned graphs today. `deepseek_v4` has complete vendored references
+(vLLM and llama.cpp) and a landed repo-owned AX-native graph; it reports
+`implementation_candidate` until on-hardware validation and benchmark
+evidence exist.
 """
 
 from __future__ import annotations
@@ -48,6 +50,8 @@ REPO_OWNED_TYPES = {
     "mixtral",
     # Nemotron-H hybrid Mamba-2 + GQA + ReLU² MoE (Nemotron 3 Nano).
     "nemotron_h",
+    # Nemotron 3 Embed: bidirectional Ministral encoder + mean pool.
+    "nemotron_embed",
     # Unlimited-OCR / DeepSeek-OCR multimodal MoE + dual vision.
     "unlimited_ocr",
 }
@@ -162,22 +166,23 @@ def probe_glm4_moe_lite(model_dir: Path, keys: list[str]) -> dict[str, Any]:
 
 
 def probe_deepseek_v4(model_dir: Path, keys: list[str]) -> dict[str, Any]:
-    apple_mlx_lm_ref = REPO_ROOT / ".internal/reference/mlx-lm/mlx_lm/models/deepseek_v4.py"
-    swiftlm_ref = (
-        REPO_ROOT
-        / ".internal/reference/SwiftLM/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift"
+    vllm_attention_ref = REPO_ROOT / ".internal/reference/vllm/vllm/models/deepseek_v4/attention.py"
+    vllm_mhc_ref = (
+        REPO_ROOT / ".internal/reference/vllm/vllm/model_executor/kernels/mhc/torch.py"
     )
-    swiftlm_tests = (
-        REPO_ROOT
-        / ".internal/reference/SwiftLM/mlx-swift-lm/Tests/MLXLMTests/DeepseekV4Tests.swift"
-    )
+    llama_cpp_model_ref = REPO_ROOT / ".internal/reference/llama.cpp/src/models/deepseek4.cpp"
+    llama_cpp_kv_ref = REPO_ROOT / ".internal/reference/llama.cpp/src/llama-kv-cache-dsv4.cpp"
     reference_files = [
-        _file_probe(apple_mlx_lm_ref, ["DeepseekV4"]),
         _file_probe(
-            swiftlm_ref,
-            ["DeepseekV4Attention", "compressor/indexer", "tid2eid"],
+            vllm_attention_ref,
+            ["DeepseekV4Attention", "DeepseekV4Indexer", "DeepseekCompressor"],
         ),
-        _file_probe(swiftlm_tests, ["Compressor/indexer sub-modules are not yet implemented"]),
+        _file_probe(vllm_mhc_ref, ["mhc_pre_torch", "sinkhorn"]),
+        _file_probe(
+            llama_cpp_model_ref,
+            ["build_hc_pre", "build_csa_lid_attention", "ffn_gate_tid2eid"],
+        ),
+        _file_probe(llama_cpp_kv_ref, ["dsv4_build_comp_plan"]),
     ]
     features = {
         "attention_sinks": _has_any(keys, ".attn.attn_sink"),
@@ -189,30 +194,40 @@ def probe_deepseek_v4(model_dir: Path, keys: list[str]) -> dict[str, Any]:
         "router_correction_bias": _has_any(keys, ".ffn.gate.e_score_correction_bias"),
     }
 
-    partial_swift = reference_files[1]["exists"] and (
-        reference_files[1].get("markers", {}).get("compressor/indexer") is True
-        or reference_files[1].get("markers", {}).get("tid2eid") is True
+    reference_ready = all(item["exists"] for item in reference_files) and all(
+        all(item.get("markers", {}).values()) for item in reference_files
     )
-    blockers = [
-        "upstream Apple mlx-lm checkout has no deepseek_v4 architecture module",
-        "available SwiftLM DeepSeek V4 port is partial and drops compressor/indexer weights",
-        "available SwiftLM DeepSeek V4 port drops ffn.gate.tid2eid hash-routing weights",
-        "downloaded checkpoint contains compressor/indexer/hash-router tensors that affect the forward contract",
-        "AX does not yet have DeepSeek V4 hyper-connection, attention-sink, grouped-output, compressor/indexer, or hash-routing graph contracts",
-    ]
+    blockers = []
+    if not reference_ready:
+        blockers.append("vendored vLLM / llama.cpp DeepSeek V4 reference files are incomplete")
+    blockers.append(
+        "AX repo-owned DeepSeek V4 graph has landed (hyper-connections, re-parameterized "
+        "MLA, CSA/HCA compressor/indexer, sqrtsoftplus + hash routing) and has limited "
+        "M2 Ultra 192 GB smoke validation with the AXQ 2-bit repack, but has no "
+        "benchmark evidence, MTP acceptance-rate data, or certification evidence; "
+        "tier stays Experimental and the model is not a support claim"
+    )
 
     return {
-        "support_decision": "fail_closed_partial_reference",
-        "can_implement_repo_owned_runtime": False,
-        "reference_support": "partial_only" if partial_swift else "missing",
+        "support_decision": (
+            "implementation_candidate"
+            if reference_ready
+            else "fail_closed_partial_reference"
+        ),
+        "can_implement_repo_owned_runtime": reference_ready,
+        "reference_support": "complete_enough_for_ax_port" if reference_ready else "missing",
         "reference_files": reference_files,
         "checkpoint_features": features,
         "blockers": blockers,
         "next_steps": [
-            "do not promote DeepSeek V4 as repo-owned AX support from the current SwiftLM port",
-            "identify one complete reference for compressor/indexer and hash-routing semantics",
-            "write an AX architecture contract before adding tensor roles or runtime code",
-            "only then add shape tests, tokenizer smoke, server smoke, and benchmark rows",
+            "run the deepseek_v4 unit/integration tests and a synthetic-checkpoint parity "
+            "check against the vendored llama.cpp reference on a Metal host",
+            "run endurance and benchmark lanes with the real checkpoint on a 192 GB "
+            "class host for 2-bit or a 256 GB class host for 4-bit",
+            "do not route DeepSeek V4 through mlx_lm_delegated or llama_cpp as a support claim; "
+            "delegated tiers stay compatibility-only per docs/MODEL-SUPPORT-POLICY.md",
+            "land benchmark rows + docs/model-certifications evidence before any tier "
+            "promotion beyond Experimental",
         ],
     }
 

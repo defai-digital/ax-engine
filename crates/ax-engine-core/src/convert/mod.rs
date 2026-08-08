@@ -1,9 +1,11 @@
 //! Convert HuggingFace / MLX model directories to ax-engine native model manifests.
 //!
 //! Reads `config.json` and safetensors headers from a model directory and produces
-//! a `NativeModelManifest` that can be written as `model-manifest.json`. No tensor
-//! data is copied or converted — the manifest points directly at the original
-//! safetensors files.
+//! a `NativeModelManifest` that can be written as `model-manifest.json`. Most
+//! families are metadata-only — the manifest points directly at the original
+//! safetensors files. The one exception is DeepSeek V4: quantized (FP8 dense +
+//! FP4 expert) checkpoints are dequantized/repacked into a generated
+//! safetensors file by `deepseek_v4_quantized` before mapping.
 //!
 //! # OptiQ / mlx-lm mixed-precision quantization
 //!
@@ -28,10 +30,11 @@ use serde::Deserialize;
 
 use crate::model::{
     AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance, KvCacheQuantizationManifest,
-    NativeDiffusionConfig, NativeGlmRouterConfig, NativeLinearAttentionConfig,
-    NativeMlaAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
-    NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
-    NativeTensorSpec, WeightSanitize,
+    NativeDeepseekV4AttentionConfig, NativeDeepseekV4Config, NativeDiffusionConfig,
+    NativeGlmRouterConfig, NativeLinearAttentionConfig, NativeMlaAttentionConfig,
+    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
+    NativeTensorFormat, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
+    WeightSanitize,
 };
 
 /// Env: when set to `1`/`true`/`on`, convert hard-errors if any tensors are dropped.
@@ -142,7 +145,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, unlimited_ocr, whisper"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -181,7 +184,39 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let arch = resolve_architecture(&config, &model_type)?;
     let safetensors_files = find_safetensors_files(model_dir)?;
     let all_tensors = parse_all_safetensors_headers(model_dir, &safetensors_files)?;
-    let (mut mapped_tensors, dropped_ledger) = map_tensors(&config, &all_tensors, &family)?;
+    // DeepSeek V4 quantized checkpoints (FP8 dense weights + FP4 routed
+    // experts) need a real data pass: dequantize/repack into a generated
+    // safetensors file and consume the quantized sources + scale sidecars so
+    // they never reach the manifest.
+    let converted_v4 = if is_deepseek_v4(&model_type) {
+        convert_deepseek_v4_quantized_tensors(
+            model_dir,
+            &model_type,
+            &config,
+            &family,
+            &all_tensors,
+        )?
+    } else {
+        None
+    };
+    let (mut mapped_tensors, dropped_ledger) = map_tensors(
+        &config,
+        &all_tensors,
+        &family,
+        converted_v4.as_ref().map(|converted| &converted.consumed),
+    )?;
+    if is_deepseek_v4(&model_type) {
+        // AXQ/mlx-lm affine weights are `X.weight` + `X.scales` + `X.biases`
+        // triplets; only `X.weight` enters the manifest and the runtime
+        // resolves the sidecars by name, so a missing sidecar must fail here.
+        // Runs before the converted-spec merge: FP8/FP4-repacked tensors
+        // carry their scales inside the generated safetensors file instead.
+        validate_deepseek_v4_quantized_triplets(&mapped_tensors, &all_tensors)?;
+    }
+    if let Some(converted) = converted_v4 {
+        mapped_tensors.extend(converted.specs);
+        mapped_tensors.sort_by_key(|spec| (spec.layer_index, format!("{:?}", spec.role)));
+    }
     if !dropped_ledger.is_empty() && convert_report_enabled() {
         tracing::warn!(
             target = "ax_engine_core::convert",
@@ -243,6 +278,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_low_freq_factor,
         rope_high_freq_factor,
         rope_original_context_len,
+        rope_beta_fast,
+        rope_beta_slow,
     ) = parse_rope_scaling(&config, &model_type);
 
     let query_pre_attn_scalar =
@@ -258,6 +295,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let linear_attention = linear_attention_config(&config, &model_type);
     let mla_attention = mla_attention_config(&config, &model_type);
     let glm_router = glm_router_config(&config, &model_type);
+    let deepseek_v4 = deepseek_v4_config(&config, &model_type);
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
@@ -312,6 +350,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_low_freq_factor,
         rope_high_freq_factor,
         rope_original_context_len,
+        rope_beta_fast,
+        rope_beta_slow,
         // Llama4 iRoPE period: mlx-lm hardcodes `(layer_idx + 1) % 4 != 0` for
         // use_rope. Do **not** reuse `interleave_moe_layer_step` (that selects MoE
         // layers). Prefer deriving the period from the `no_rope_layers` mask when
@@ -364,6 +404,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         mla_attention,
         moe: moe_config(&config, &model_type),
         glm_router,
+        deepseek_v4,
         // Converter assumes the on-disk weights are mlx-community pre-sanitized;
         // raw HuggingFace checkpoints need this set to `HfToMlx` by hand (or via
         // the doctor command when REQ-L4 lands). EmbeddingGemma's mlx-community
@@ -702,6 +743,9 @@ mod tensor_mapping;
 #[cfg(test)]
 mod tests;
 
+mod deepseek_v4_quantized;
+
+pub(crate) use deepseek_v4_quantized::*;
 pub(crate) use hf_config::*;
 pub(crate) use model_family::*;
 pub(crate) use tensor_mapping::*;
@@ -711,7 +755,7 @@ pub(crate) use tensor_mapping::*;
 // ---------------------------------------------------------------------------
 
 /// Parsed tensor info from a safetensors file header.
-struct SafetensorEntry {
+pub(crate) struct SafetensorEntry {
     name: String,
     dtype: String,
     shape: Vec<u64>,
@@ -736,7 +780,12 @@ fn find_safetensors_files(model_dir: &Path) -> Result<Vec<PathBuf>, ConvertError
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("safetensors") {
+            if path.extension().and_then(|e| e.to_str()) == Some("safetensors")
+                // Converter-generated artifacts (DeepSeek V4 FP8/FP4 repack)
+                // are outputs, never source inputs — a re-run regenerates them.
+                && path.file_name().and_then(|n| n.to_str())
+                    != Some(DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE)
+            {
                 Some(path)
             } else {
                 None
@@ -854,6 +903,10 @@ fn convert_dtype(dtype: &str, name: &str) -> Result<NativeTensorDataType, Conver
         "I8" => Ok(NativeTensorDataType::I8),
         "U8" => Ok(NativeTensorDataType::U8),
         "U32" => Ok(NativeTensorDataType::U32),
+        // Signed 32-bit integers (DeepSeek V4 `ffn.gate.tid2eid` hash-routing
+        // table). Stored with the same 4-byte U32 container dtype the GGUF
+        // loader already uses for GGML_TYPE_I32; not a quantized weight.
+        "I32" => Ok(NativeTensorDataType::U32),
         other => Err(ConvertError::UnsupportedDtype {
             name: name.to_string(),
             dtype: other.to_string(),
@@ -988,6 +1041,26 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
             || name.starts_with("sound_projection.")
         {
             return Some((NativeTensorRole::Other, None));
+        }
+    }
+
+    // DeepSeek V4 raw HuggingFace checkpoints use a bare `layers.N.…` layout
+    // (no `model.` prefix) plus `mtp.N.…` sidecar tensors. Handle those before
+    // the generic maps; `model.`-prefixed / sanitized names fall through to
+    // the standard + extra-map matching below.
+    if family.family_name == "deepseek_v4" {
+        if let Some(extra) = family.extra_tensor_map {
+            if let Some(result) = match_deepseek_v4_tensor(name, extra) {
+                return Some(result);
+            }
+        }
+    }
+
+    // Nemotron 3 Embed HF packs use bare `embed_tokens` / `layers.N.*` / `norm`
+    // (no `model.` prefix). Also accept the standard `model.*` layout.
+    if family.family_name == "nemotron_embed" {
+        if let Some(result) = match_nemotron_embed_tensor(name, family.tensor_map) {
+            return Some(result);
         }
     }
 
@@ -1240,15 +1313,111 @@ fn match_per_layer_pattern(name: &str, prefix: &str, suffix: &str) -> Option<u32
     }
 }
 
+/// Match Nemotron 3 Embed bare HF tensors (`embed_tokens`, `layers.N.*`, `norm`).
+fn match_nemotron_embed_tensor(
+    name: &str,
+    tensor_map: &[(&str, TensorMapping)],
+) -> Option<(NativeTensorRole, Option<u32>)> {
+    match name {
+        "embed_tokens.weight" => return Some((NativeTensorRole::TokenEmbedding, None)),
+        "norm.weight" => return Some((NativeTensorRole::FinalNorm, None)),
+        "lm_head.weight" => return Some((NativeTensorRole::LmHead, None)),
+        _ => {}
+    }
+    if let Some(result) = match_prefixed_per_layer(name, "layers.", tensor_map) {
+        return Some(result);
+    }
+    // Sanitized / mlx-community style `model.*` names.
+    if let Some(result) = match_tensor_in_map(name, tensor_map) {
+        return Some(result);
+    }
+    None
+}
+
+/// Match DeepSeek V4 raw-HF tensors that the generic maps cannot reach: the
+/// bare `layers.N.…` prefix (no `model.`), `layers.N.nextn.…` / `mtp.N.…` MTP
+/// sidecar tensors, and raw per-expert `ffn.experts.{eid}.w{1,2,3}.weight`
+/// stacks. `model.`-prefixed names are handled by the generic maps.
+fn match_deepseek_v4_tensor(
+    name: &str,
+    extra_tensor_map: &[(&str, TensorMapping)],
+) -> Option<(NativeTensorRole, Option<u32>)> {
+    if let Some(rest) = name.strip_prefix("layers.") {
+        let dot = rest.find('.')?;
+        let layer_index: u32 = rest[..dot].parse().ok()?;
+        let suffix = &rest[dot + 1..];
+        // MTP layers live at indices >= num_hidden_layers, which the
+        // layer-indexed role schema cannot represent; map them root-level.
+        if let Some(nextn) = suffix.strip_prefix("nextn.") {
+            return deepseek_v4_nextn_role(nextn).map(|role| (role, None));
+        }
+        for (pattern, mapping) in extra_tensor_map {
+            if let TensorMapping::PerLayer(role) = mapping {
+                if suffix == *pattern {
+                    return Some((*role, Some(layer_index)));
+                }
+            }
+        }
+        // Raw HF per-expert `ffn.experts.{eid}.w{1,2,3}.weight` tensors are
+        // intentionally not mapped: conversion is metadata-only and cannot
+        // stack them, so they land in the dropped ledger (fail-loud in strict
+        // mode) exactly like raw per-expert DeepSeek V3 checkpoints.
+        return None;
+    }
+    if let Some(rest) = name.strip_prefix("mtp.") {
+        let dot = rest.find('.')?;
+        // The MTP index only orders the predictor layers; roles stay root-level.
+        if rest[..dot].parse::<u32>().is_err() {
+            return None;
+        }
+        return deepseek_v4_mtp_role(&rest[dot + 1..]).map(|role| (role, None));
+    }
+    None
+}
+
+/// MTP sidecar roles for `layers.N.nextn.<suffix>` (llama.cpp/GGUF layout)
+/// and `mtp.N.<suffix>` (raw HF layout, minus the hc_head trio).
+fn deepseek_v4_nextn_role(suffix: &str) -> Option<NativeTensorRole> {
+    match suffix {
+        "eh_proj.weight" => Some(NativeTensorRole::NextnEhProj),
+        "e_proj.weight" => Some(NativeTensorRole::NextnEproj),
+        "h_proj.weight" => Some(NativeTensorRole::NextnHproj),
+        "enorm.weight" => Some(NativeTensorRole::NextnEnorm),
+        "hnorm.weight" => Some(NativeTensorRole::NextnHnorm),
+        "shared_head_norm.weight" | "norm.weight" => Some(NativeTensorRole::NextnSharedHeadNorm),
+        "embed_tokens.weight" => Some(NativeTensorRole::NextnEmbedTokens),
+        "shared_head_head.weight" => Some(NativeTensorRole::NextnSharedHeadHead),
+        _ => None,
+    }
+}
+
+/// Raw HF `mtp.N.<suffix>` roles: the hc_head trio maps to the same
+/// root-level roles as the main checkpoint's `hc_head_*` tensors.
+fn deepseek_v4_mtp_role(suffix: &str) -> Option<NativeTensorRole> {
+    match suffix {
+        "hc_head_fn" => Some(NativeTensorRole::HcHeadFn),
+        "hc_head_base" => Some(NativeTensorRole::HcHeadBase),
+        "hc_head_scale" => Some(NativeTensorRole::HcHeadScale),
+        other => deepseek_v4_nextn_role(other),
+    }
+}
+
 fn map_tensors(
     config: &serde_json::Value,
     all_tensors: &[SafetensorEntry],
     family: &ModelFamily,
+    consumed_source_names: Option<&BTreeSet<String>>,
 ) -> Result<(Vec<NativeTensorSpec>, DroppedTensorLedger), ConvertError> {
     let mut mapped = Vec::new();
     let mut dropped = DroppedTensorLedger::default();
 
     for entry in all_tensors {
+        // Quantized sources consumed by a family data pass (DeepSeek V4 FP8
+        // weights, FP4 experts, and their scale sidecars) are replaced by
+        // converted tensors; they must not map or drop as raw entries.
+        if consumed_source_names.is_some_and(|names| names.contains(&entry.name)) {
+            continue;
+        }
         // PyTorch BatchNorm persists this integer training counter beside the
         // inference parameters. It has no role in eval and MLX does not load
         // it; skip it before dtype conversion because safetensors stores it as
@@ -1263,7 +1432,10 @@ fn map_tensors(
         };
 
         let dtype = convert_dtype(&entry.dtype, &entry.name)?;
-        let source_quantized = dtype == NativeTensorDataType::U32;
+        // Only genuine MLX affine source tensors (safetensors U32) count as
+        // source-quantized; I32 integer tensors also decode to the U32
+        // container dtype but carry no quantization metadata.
+        let source_quantized = entry.dtype == "U32";
         let quantization = source_quantized
             .then(|| tensor_quantization(config, family, &entry.name))
             .flatten();
@@ -1293,6 +1465,46 @@ fn is_training_only_tensor(name: &str) -> bool {
     name.ends_with(".num_batches_tracked") || name == "alignment_heads"
 }
 
+/// Verify that every source-quantized (U32) DeepSeek V4 tensor in the
+/// manifest has its MLX affine sidecars (`{base}.scales` and
+/// `{base}.biases`) among the parsed source tensors. The manifest maps only
+/// the `.weight` member; `take_weight_spec` in the runtime resolves the
+/// sidecars by name from the merged safetensors map and hard-errors when
+/// `.scales` is absent, so an incomplete triplet must fail conversion
+/// instead of poisoning the generated manifest.
+fn validate_deepseek_v4_quantized_triplets(
+    mapped_tensors: &[NativeTensorSpec],
+    all_tensors: &[SafetensorEntry],
+) -> Result<(), ConvertError> {
+    let model_type = "deepseek_v4";
+    let mut source_names: Option<BTreeSet<&str>> = None;
+    for spec in mapped_tensors {
+        if !spec.source_quantized {
+            continue;
+        }
+        let names = source_names.get_or_insert_with(|| {
+            all_tensors
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect()
+        });
+        let base = spec.name.strip_suffix(".weight").unwrap_or(&spec.name);
+        for sidecar in ["scales", "biases"] {
+            let sidecar_name = format!("{base}.{sidecar}");
+            if !names.contains(sidecar_name.as_str()) {
+                return invalid_model_contract(
+                    model_type,
+                    format!(
+                        "quantized tensor {} is missing its MLX affine sidecar {sidecar_name}",
+                        spec.name
+                    ),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Conversion contract validation
 // ---------------------------------------------------------------------------
@@ -1313,6 +1525,9 @@ fn validate_converted_model_contract(
     }
     if matches!(model_type, "deepseek_v3" | "deepseek_v32") {
         return validate_deepseek_v3_contract(config, model_type, manifest);
+    }
+    if is_deepseek_v4(model_type) {
+        return validate_deepseek_v4_contract(config, model_type, manifest);
     }
     if is_qwen_family_model_type(model_type) {
         validate_qwen_rope_scaling(config, model_type)?;
@@ -1767,6 +1982,306 @@ fn validate_deepseek_v3_contract(
                 )?;
             }
         }
+    }
+
+    Ok(())
+}
+
+fn validate_deepseek_v4_contract(
+    config: &serde_json::Value,
+    model_type: &str,
+    manifest: &NativeModelManifest,
+) -> Result<(), ConvertError> {
+    let attention = &manifest.deepseek_v4.attention;
+    require_model_config(
+        model_type,
+        attention.head_dim,
+        "deepseek_v4.attention.head_dim",
+    )?;
+    require_model_config(
+        model_type,
+        attention.qk_rope_head_dim,
+        "deepseek_v4.attention.qk_rope_head_dim",
+    )?;
+    require_model_config(
+        model_type,
+        attention.q_lora_rank,
+        "deepseek_v4.attention.q_lora_rank",
+    )?;
+    require_model_config(
+        model_type,
+        attention.o_lora_rank,
+        "deepseek_v4.attention.o_lora_rank",
+    )?;
+    require_model_config(
+        model_type,
+        attention.o_groups,
+        "deepseek_v4.attention.o_groups",
+    )?;
+    require_model_config(
+        model_type,
+        attention.index_topk,
+        "deepseek_v4.attention.index_topk",
+    )?;
+    require_model_config(
+        model_type,
+        attention.index_n_heads,
+        "deepseek_v4.attention.index_n_heads",
+    )?;
+    require_model_config(
+        model_type,
+        attention.index_head_dim,
+        "deepseek_v4.attention.index_head_dim",
+    )?;
+    require_model_config(
+        model_type,
+        attention.compress_rope_theta,
+        "deepseek_v4.attention.compress_rope_theta",
+    )?;
+
+    // V4 gives each attention head a full head_dim; the manifest-level head
+    // dim must come from the same config value (no hardcoded constant).
+    if attention.head_dim != Some(manifest.attention_head_dim) {
+        return invalid_model_contract(
+            model_type,
+            format!(
+                "deepseek_v4.attention.head_dim {:?} must equal attention_head_dim {}",
+                attention.head_dim, manifest.attention_head_dim
+            ),
+        );
+    }
+    // V4 attention uses a single fused KV projection (num_key_value_heads = 1).
+    if manifest.kv_head_count != 1 {
+        return invalid_model_contract(
+            model_type,
+            format!(
+                "deepseek_v4 requires num_key_value_heads == 1, got {}",
+                manifest.kv_head_count
+            ),
+        );
+    }
+
+    require_model_config(
+        model_type,
+        manifest.deepseek_v4.hc_mult,
+        "deepseek_v4.hc_mult",
+    )?;
+    require_model_config(
+        model_type,
+        manifest.deepseek_v4.hc_sinkhorn_iters,
+        "deepseek_v4.hc_sinkhorn_iters",
+    )?;
+    if manifest
+        .deepseek_v4
+        .hc_eps
+        .is_none_or(|value| !value.is_finite() || value <= 0.0)
+    {
+        return invalid_model_contract(
+            model_type,
+            "deepseek_v4.hc_eps must be configured, finite, and > 0",
+        );
+    }
+    let num_hash_layers =
+        manifest
+            .deepseek_v4
+            .num_hash_layers
+            .ok_or_else(|| ConvertError::InvalidModelContract {
+                model_type: model_type.to_string(),
+                message: "deepseek_v4.num_hash_layers must be configured".to_string(),
+            })?;
+    if num_hash_layers > manifest.layer_count {
+        return invalid_model_contract(
+            model_type,
+            format!(
+                "deepseek_v4.num_hash_layers {num_hash_layers} must be <= layer_count {}",
+                manifest.layer_count
+            ),
+        );
+    }
+    if manifest
+        .deepseek_v4
+        .swiglu_limit
+        .is_none_or(|value| !value.is_finite() || value <= 0.0)
+    {
+        return invalid_model_contract(
+            model_type,
+            "deepseek_v4.swiglu_limit must be configured, finite, and > 0",
+        );
+    }
+    // Only the sqrtsoftplus routing scorer is understood; reject unknown
+    // scorers instead of silently routing with the wrong function.
+    if manifest.deepseek_v4.scoring_func.as_deref() != Some("sqrtsoftplus") {
+        return invalid_model_contract(
+            model_type,
+            format!(
+                "deepseek_v4.scoring_func must be \"sqrtsoftplus\", got {:?}",
+                manifest.deepseek_v4.scoring_func
+            ),
+        );
+    }
+    // V4 routing is scoring_func-based; the V3 sigmoid-routing flag must
+    // never leak into a V4 manifest.
+    if manifest.moe.sigmoid_routing {
+        return invalid_model_contract(
+            model_type,
+            "deepseek_v4 must not enable moe.sigmoid_routing (routing is scoring_func-based)",
+        );
+    }
+
+    if manifest.deepseek_v4.compress_ratios.len() != manifest.layer_count as usize {
+        return invalid_model_contract(
+            model_type,
+            format!(
+                "deepseek_v4.compress_ratios must contain one entry per layer, got {} for layer_count {}",
+                manifest.deepseek_v4.compress_ratios.len(),
+                manifest.layer_count
+            ),
+        );
+    }
+    for (layer_index, ratio) in manifest.deepseek_v4.compress_ratios.iter().enumerate() {
+        if !matches!(ratio, 0 | 4 | 128) {
+            return invalid_model_contract(
+                model_type,
+                format!(
+                    "deepseek_v4.compress_ratios[{layer_index}] must be 0, 4, or 128, got {ratio}"
+                ),
+            );
+        }
+    }
+    let has_shared_experts = arch_u64(config, model_type, "n_shared_experts").unwrap_or(0) > 0;
+
+    for layer_index in 0..manifest.layer_count {
+        for role in [
+            NativeTensorRole::AttentionNorm,
+            NativeTensorRole::AttentionQa,
+            NativeTensorRole::AttentionQaNorm,
+            NativeTensorRole::AttentionQb,
+            NativeTensorRole::AttentionKv,
+            NativeTensorRole::AttentionKvNorm,
+            NativeTensorRole::AttentionOutA,
+            NativeTensorRole::AttentionOutB,
+            NativeTensorRole::AttnSink,
+            NativeTensorRole::HcAttnFn,
+            NativeTensorRole::HcAttnBase,
+            NativeTensorRole::HcAttnScale,
+            NativeTensorRole::HcFfnFn,
+            NativeTensorRole::HcFfnBase,
+            NativeTensorRole::HcFfnScale,
+            NativeTensorRole::FfnNorm,
+            NativeTensorRole::FfnGateInp,
+            NativeTensorRole::FfnDownExps,
+        ] {
+            require_model_role(model_type, manifest, layer_index, role)?;
+        }
+        // Routed experts ship exactly one layout: split gate/up stacks (raw
+        // HF / sanitized `ffn.experts.{gate,up}`) or one fused gate+up tensor
+        // (AXQ/mlx-lm `ffn.switch_mlp.gate_proj` → ffn_gate_up_exps_packed).
+        let has_packed_experts =
+            has_model_role(manifest, layer_index, NativeTensorRole::FfnGateUpExpsPacked);
+        let has_gate_exps = has_model_role(manifest, layer_index, NativeTensorRole::FfnGateExps);
+        let has_up_exps = has_model_role(manifest, layer_index, NativeTensorRole::FfnUpExps);
+        if has_packed_experts == (has_gate_exps || has_up_exps) || has_gate_exps != has_up_exps {
+            return invalid_model_contract(
+                model_type,
+                format!(
+                    "layer {layer_index} must provide exactly one routed-expert layout: ffn_gate_up_exps_packed or ffn_gate_exps plus ffn_up_exps"
+                ),
+            );
+        }
+        if has_shared_experts {
+            for role in [
+                NativeTensorRole::FfnSharedExpertGate,
+                NativeTensorRole::FfnSharedExpertUp,
+                NativeTensorRole::FfnSharedExpertDown,
+            ] {
+                require_model_role(model_type, manifest, layer_index, role)?;
+            }
+        }
+
+        let compress_ratio = manifest.deepseek_v4.compress_ratios[layer_index as usize];
+        if matches!(compress_ratio, 4 | 128) {
+            for role in [
+                NativeTensorRole::CompressorKv,
+                NativeTensorRole::CompressorGate,
+                NativeTensorRole::CompressorApe,
+                NativeTensorRole::CompressorNorm,
+            ] {
+                require_model_role(model_type, manifest, layer_index, role)?;
+            }
+        } else {
+            // The compressor exists iff the layer compresses (ratio 4/128):
+            // reject stray compressor tensors on raw sliding-window layers.
+            for role in [
+                NativeTensorRole::CompressorKv,
+                NativeTensorRole::CompressorGate,
+                NativeTensorRole::CompressorApe,
+                NativeTensorRole::CompressorNorm,
+            ] {
+                if has_model_role(manifest, layer_index, role) {
+                    return invalid_model_contract(
+                        model_type,
+                        format!(
+                            "layer {layer_index} must not provide compressor role {role:?} with compress_ratio {compress_ratio}"
+                        ),
+                    );
+                }
+            }
+        }
+        if compress_ratio == 4 {
+            for role in [
+                NativeTensorRole::IndexerProj,
+                NativeTensorRole::IndexerQb,
+                NativeTensorRole::IndexerCompressorKv,
+                NativeTensorRole::IndexerCompressorGate,
+                NativeTensorRole::IndexerCompressorApe,
+                NativeTensorRole::IndexerCompressorNorm,
+            ] {
+                require_model_role(model_type, manifest, layer_index, role)?;
+            }
+        } else {
+            // The sparse indexer exists iff compress_ratio == 4.
+            for role in [
+                NativeTensorRole::IndexerProj,
+                NativeTensorRole::IndexerQb,
+                NativeTensorRole::IndexerCompressorKv,
+                NativeTensorRole::IndexerCompressorGate,
+                NativeTensorRole::IndexerCompressorApe,
+                NativeTensorRole::IndexerCompressorNorm,
+            ] {
+                if has_model_role(manifest, layer_index, role) {
+                    return invalid_model_contract(
+                        model_type,
+                        format!(
+                            "layer {layer_index} must not provide indexer role {role:?} with compress_ratio {compress_ratio}"
+                        ),
+                    );
+                }
+            }
+        }
+
+        let has_tid2eid = has_model_role(manifest, layer_index, NativeTensorRole::FfnGateTid2Eid);
+        let has_correction_bias = has_model_role(
+            manifest,
+            layer_index,
+            NativeTensorRole::FfnGateInpCorrectionBias,
+        );
+        let is_hash_layer = layer_index < num_hash_layers;
+        if is_hash_layer != has_tid2eid || is_hash_layer == has_correction_bias {
+            return invalid_model_contract(
+                model_type,
+                format!(
+                    "layer {layer_index} must provide ffn_gate_tid2eid on hash layers (index < num_hash_layers {num_hash_layers}) or ffn_gate_inp_correction_bias otherwise, exactly one"
+                ),
+            );
+        }
+    }
+
+    for role in [
+        NativeTensorRole::HcHeadFn,
+        NativeTensorRole::HcHeadBase,
+        NativeTensorRole::HcHeadScale,
+    ] {
+        require_model_global_role(model_type, manifest, role)?;
     }
 
     Ok(())

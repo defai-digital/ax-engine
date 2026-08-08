@@ -1186,9 +1186,12 @@ upstream Python reference can load and benchmark a downloaded model artifact,
 but they do not prove AX route compatibility unless an AX server check is also
 run. The 2026-05-06 DeepSeek community check is in this category. GLM has moved
 out of this bucket because it now has a runtime-ready manifest, GLM graph
-coverage, a server smoke, and AX benchmark rows. A partial reference, such as
-the current DeepSeek V4 SwiftLM port that drops compressor/indexer and
-hash-routing tensors, must stay fail-closed.
+coverage, a server smoke, and AX benchmark rows. A partial reference that drops
+architecture tensors must stay fail-closed: that was the right call for the
+earlier partial DeepSeek V4 ports that dropped compressor/indexer and
+hash-routing tensors. DeepSeek V4 now has a repo-owned AX-native graph and
+limited smoke evidence, but remains excluded from decision-grade benchmark
+claims until matching evidence rows land.
 
 The delegated route supports text generation through upstream
 `mlx_lm.server`, including AX SSE surfaces that forward upstream text deltas.

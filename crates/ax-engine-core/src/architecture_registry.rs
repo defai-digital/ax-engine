@@ -19,6 +19,9 @@ pub enum LayerForwardRoute {
     Llama4,
     GlmMoeLite,
     DeepseekV3,
+    /// DeepSeek V4 (Flash): registered for converter/manifest plumbing; the
+    /// repo-owned runtime graph is not yet implemented.
+    DeepseekV4,
     Mistral3,
     Mixtral,
     GptOss,
@@ -34,6 +37,7 @@ impl LayerForwardRoute {
             Self::Llama4 => 1,
             Self::GlmMoeLite => 2,
             Self::DeepseekV3 => 3,
+            Self::DeepseekV4 => 8,
             Self::Mistral3 => 4,
             Self::Mixtral => 5,
             Self::GptOss => 6,
@@ -47,6 +51,7 @@ impl LayerForwardRoute {
             Self::Llama4 => "llama4",
             Self::GlmMoeLite => "glm4_moe_lite",
             Self::DeepseekV3 => "deepseek_v3",
+            Self::DeepseekV4 => "deepseek_v4",
             Self::Mistral3 => "mistral3",
             Self::Mixtral => "mixtral",
             Self::GptOss => "gpt_oss",
@@ -191,6 +196,14 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
+        family_label: "nemotron_embed",
+        default_generation: GenerationKind::EncoderEmbed,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "Nemotron 3 Embed: bidirectional Ministral encoder + mean pool",
+        support_tier: ModelSupportTier::Compatible,
+    },
+    ArchitectureRegistration {
         family_label: "glm4_moe_lite",
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::GlmMoeLite,
@@ -213,6 +226,14 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "MLA + MoE",
         support_tier: ModelSupportTier::Certified,
+    },
+    ArchitectureRegistration {
+        family_label: "deepseek_v4",
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::DeepseekV4,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "sparse attention + hash-routed MoE; repo-owned graph in progress; no certification evidence",
+        support_tier: ModelSupportTier::Experimental,
     },
     ArchitectureRegistration {
         family_label: "mistral3",
@@ -327,6 +348,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -352,6 +375,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            deepseek_v4: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,
@@ -398,8 +422,20 @@ mod tests {
             Some(LayerForwardRoute::DeepseekV3)
         );
         assert_eq!(
+            resolve_layer_forward_route("deepseek_v4"),
+            Some(LayerForwardRoute::DeepseekV4)
+        );
+        assert_eq!(
             resolve_layer_forward_route("nemotron_h"),
             Some(LayerForwardRoute::NemotronH)
+        );
+        assert_eq!(
+            resolve_layer_forward_route("nemotron_embed"),
+            Some(LayerForwardRoute::Standard)
+        );
+        assert_eq!(
+            lookup_architecture("nemotron_embed").map(|e| e.default_generation),
+            Some(GenerationKind::EncoderEmbed)
         );
         assert_eq!(
             resolve_layer_forward_route("unlimited_ocr"),
@@ -475,7 +511,13 @@ mod tests {
     #[test]
     fn structural_caps_reject_unsupported_moe_router_families() {
         // Gemma4 / GPT-OSS use different routers; family bit stays false.
-        for family in ["gemma4", "gpt_oss", "glm4_moe_lite", "deepseek_v3"] {
+        for family in [
+            "gemma4",
+            "gpt_oss",
+            "glm4_moe_lite",
+            "deepseek_v3",
+            "deepseek_v4",
+        ] {
             let mut m = base_manifest(family, 4);
             m.moe.expert_count = Some(8);
             m.moe.experts_per_token = Some(2);

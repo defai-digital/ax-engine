@@ -20,6 +20,7 @@ pub(super) enum MtpModelPolicyKind {
     QwenLinearDirectFallback,
     GlmCalibrated,
     Gemma4AssistantCalibrated,
+    DeepseekV4Calibrated,
     ConflictingDrafters,
 }
 
@@ -34,6 +35,7 @@ impl MtpModelPolicyKind {
             Self::GlmCalibrated => 5,
             Self::Gemma4AssistantCalibrated => 6,
             Self::ConflictingDrafters => 7,
+            Self::DeepseekV4Calibrated => 8,
         }
     }
 }
@@ -50,6 +52,7 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) qwen_depth: Option<usize>,
     pub(super) glm_depth: Option<usize>,
     pub(super) gemma4_assistant_depth: Option<usize>,
+    pub(super) deepseek_v4_depth: Option<usize>,
     pub(super) qwen_linear_attention: bool,
     pub(super) qwen_linear_exact_enabled: bool,
 }
@@ -67,6 +70,7 @@ impl MtpModelPolicy {
             inputs.qwen_depth.is_some(),
             inputs.glm_depth.is_some(),
             inputs.gemma4_assistant_depth.is_some(),
+            inputs.deepseek_v4_depth.is_some(),
         ]
         .into_iter()
         .filter(|attached| *attached)
@@ -80,6 +84,7 @@ impl MtpModelPolicy {
                     .into_iter()
                     .chain(inputs.glm_depth)
                     .chain(inputs.gemma4_assistant_depth)
+                    .chain(inputs.deepseek_v4_depth)
                     .max()
                     .unwrap_or(0),
             };
@@ -108,6 +113,13 @@ impl MtpModelPolicy {
         if let Some(max_depth) = inputs.gemma4_assistant_depth {
             return Self {
                 kind: MtpModelPolicyKind::Gemma4AssistantCalibrated,
+                max_depth,
+            };
+        }
+
+        if let Some(max_depth) = inputs.deepseek_v4_depth {
+            return Self {
+                kind: MtpModelPolicyKind::DeepseekV4Calibrated,
                 max_depth,
             };
         }
@@ -174,6 +186,7 @@ impl MtpModelPolicy {
             MtpModelPolicyKind::GlmCalibrated => self.glm_gate_default(),
             MtpModelPolicyKind::None
             | MtpModelPolicyKind::Gemma4AssistantCalibrated
+            | MtpModelPolicyKind::DeepseekV4Calibrated
             | MtpModelPolicyKind::ConflictingDrafters => None,
         }
     }
@@ -229,8 +242,16 @@ mod tests {
             qwen_depth,
             glm_depth,
             gemma4_assistant_depth: gemma_depth,
+            deepseek_v4_depth: None,
             qwen_linear_attention: qwen_linear,
             qwen_linear_exact_enabled: qwen_exact,
+        })
+    }
+
+    fn policy_v4(v4_depth: Option<usize>) -> MtpModelPolicy {
+        MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            deepseek_v4_depth: v4_depth,
+            ..Default::default()
         })
     }
 
@@ -283,6 +304,17 @@ mod tests {
             policy(None, None, Some(2), false, false).kind,
             MtpModelPolicyKind::Gemma4AssistantCalibrated
         );
+        assert_eq!(
+            policy_v4(Some(1)).kind,
+            MtpModelPolicyKind::DeepseekV4Calibrated
+        );
+        let v4 = policy_v4(Some(1));
+        assert!(v4.route_safe());
+        assert!(v4.has_attached_drafter());
+        assert_eq!(v4.max_depth(), 1);
+        assert_eq!(v4.qwen_gate_default(), None);
+        assert_eq!(v4.glm_gate_default(), None);
+        assert!(!policy_v4(None).has_attached_drafter());
     }
 
     #[test]
@@ -291,6 +323,11 @@ mod tests {
             policy(Some(1), Some(1), None, true, true),
             policy(Some(1), None, Some(1), true, true),
             policy(None, Some(1), Some(1), false, false),
+            MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+                deepseek_v4_depth: Some(1),
+                glm_depth: Some(1),
+                ..Default::default()
+            }),
         ] {
             assert_eq!(conflict.kind, MtpModelPolicyKind::ConflictingDrafters);
             assert!(!conflict.route_safe());

@@ -80,6 +80,7 @@ use crate::model::{
 };
 use crate::model::{prefill_batched_forward, supports_batched_prefill};
 use crate::mtp::{
+    deepseek_v4_mtp_draft_tokens_after_forced_prefix, deepseek_v4_mtp_draft_tokens_gated,
     glm_mtp_draft_tokens_after_forced_prefix, glm_mtp_draft_tokens_gated,
     mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
 };
@@ -1207,8 +1208,8 @@ fn reclaim_native_prefix_entries(
 }
 
 impl MlxRunner {
-    /// Whether the loaded target has a validated Qwen/GLM MTP head or Gemma
-    /// assistant drafter attached.
+    /// Whether the loaded target has a validated Qwen/GLM/DeepSeek-V4 MTP head
+    /// or Gemma assistant drafter attached.
     pub fn has_mtp(&self) -> bool {
         self.mtp_model_policy.has_attached_drafter()
     }
@@ -1228,6 +1229,30 @@ impl MlxRunner {
 
     fn mtp_max_depth(&self) -> usize {
         self.mtp_model_policy.max_depth()
+    }
+
+    /// Width of the hidden row consumed by the MTP draft head: DeepSeek V4's
+    /// nextn block reads the packed pre-collapse residual (`hc*hidden`);
+    /// every other head reads the post-norm E-wide hidden.
+    fn mtp_draft_hidden_width(&self) -> usize {
+        if self.weights.deepseek_v4_nextn.is_some()
+            && let Some(v4) = self.cfg.deepseek_v4.as_ref()
+        {
+            return v4.hc_mult * self.cfg.hidden_size;
+        }
+        self.cfg.hidden_size
+    }
+
+    /// Fresh MTP draft-head KV cache. Qwen/GLM heads own a single layer; the
+    /// DeepSeek V4 nextn block appends at slot `num_hidden_layers` (llama.cpp
+    /// `il = n_layer + nextn_layer_offset`), so its cache needs one slot past
+    /// the main stack.
+    fn new_mtp_draft_cache(&self) -> MlxKVCache {
+        if self.weights.deepseek_v4_nextn.is_some() {
+            MlxKVCache::new(crate::mtp::deepseek_v4_mtp_cache_layer_count(&self.cfg))
+        } else {
+            MlxKVCache::new(1)
+        }
     }
 
     fn gemma4_assistant_mtp_status(&self) -> &Gemma4AssistantMtpStatus {
@@ -1519,6 +1544,16 @@ impl MlxRunner {
             gemma4_assistant_depth: gemma4_assistant_mtp
                 .as_ref()
                 .map(|runtime| runtime.status.max_depth),
+            // The nextn head attaches only with its block layer present and
+            // exactly one predictor block configured (llama.cpp asserts
+            // `n_layer_nextn == 1`); anything else drafts nothing.
+            deepseek_v4_depth: weights
+                .deepseek_v4_nextn
+                .as_ref()
+                .filter(|nextn| nextn.layer.is_some())
+                .and(cfg.deepseek_v4.as_ref())
+                .filter(|v4| v4.num_nextn_predict_layers == 1)
+                .map(|_| 1),
             qwen_linear_attention: cfg.linear_attention.is_some(),
             qwen_linear_exact_enabled: qwen_linear_mtp_exact_enabled,
         });
@@ -1598,12 +1633,12 @@ impl MlxRunner {
         };
 
         // JIT warm-up: trigger Metal shader compilation for both decode and prefill paths.
-        // EmbeddingGemma is an embedding-only encoder with no generation (decode/
-        // prefill) path — skip the generation warmup (it would panic in the
-        // family dispatch); the bidirectional embed forward JITs on first embed.
-        // Skipped when the weights came out of the share cell: warmup exists to
-        // populate process-wide JIT caches (Metal shader + mlx compile), which
-        // the first build through the cell already did — re-running it would
+        // Encoder-only families (EmbeddingGemma, Nemotron Embed) have no generation
+        // (decode/prefill) path — skip the generation warmup (it would panic in
+        // the family dispatch); the bidirectional embed forward JITs on first
+        // embed. Skipped when the weights came out of the share cell: warmup
+        // exists to populate process-wide JIT caches (Metal shader + mlx compile),
+        // which the first build through the cell already did — re-running it would
         // re-impose the per-request forward-pass tax Option A removes.
         //
         // Short-prompt serving (e.g. the Qwen/Gemma flip S0 contract of ~34
@@ -1613,7 +1648,9 @@ impl MlxRunner {
         // prefill sizes and one start_direct_pipeline+advance pair so cold
         // first-request TTFT matches the warmed path under the fresh-process
         // contract.
-        if cfg.model_family != "embeddinggemma" && !reused_shared_weights {
+        let is_encoder_embed_family =
+            cfg.model_family == "embeddinggemma" || cfg.model_family == "nemotron_embed";
+        if !is_encoder_embed_family && !reused_shared_weights {
             let mut dummy_cache = MlxKVCache::new(cfg.layer_count);
             let mut dummy_rng = Xorshift64::new(0);
             decode_step(
@@ -1881,7 +1918,7 @@ impl MlxRunner {
 }
 
 fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) -> EmbeddingPooling {
-    if model_family == "embeddinggemma" {
+    if model_family == "embeddinggemma" || model_family == "nemotron_embed" {
         EmbeddingPooling::Mean
     } else {
         pooling
@@ -2313,7 +2350,9 @@ impl MlxRunner {
         gemma4_assistant_mtp_coalesced_verify_route(
             crate::fastpath::gemma4_assistant_mtp_coalesced_verify_enabled(),
             self.gemma4_assistant_mtp_status.enabled,
-            self.weights.mtp.is_some() || self.weights.glm_mtp.is_some(),
+            self.weights.mtp.is_some()
+                || self.weights.glm_mtp.is_some()
+                || self.weights.deepseek_v4_nextn.is_some(),
             self.mtp_requested,
             self.disable_mtp_ngram_stacking,
             self.mtp_skip_state,
@@ -3894,12 +3933,10 @@ impl MlxRunner {
             return (out, lens, false);
         }
 
-        // Standard (Qwen3-style) embedding path.
-        // AX_MLX_EMBED_PROFILE forces the imperative path: the per-stage eval
-        // barriers cannot live inside a single traced compiled closure, and
-        // compile on/off is throughput-neutral for this path, so the imperative
-        // breakdown is representative.
-        if profile {
+        // Nemotron Embed: always use the imperative path so pad-aware
+        // bidirectional masks see real per-row lengths (compiled mean-pool
+        // traces bake full-seq masks).
+        if self.cfg.model_family == "nemotron_embed" || profile {
             let (out, lens) = crate::model::forward_for_embedding_batch(
                 &self.cfg,
                 &self.weights,
@@ -3908,6 +3945,12 @@ impl MlxRunner {
             );
             return (out, lens, false);
         }
+
+        // Standard (Qwen3-style) embedding path.
+        // AX_MLX_EMBED_PROFILE forces the imperative path: the per-stage eval
+        // barriers cannot live inside a single traced compiled closure, and
+        // compile on/off is throughput-neutral for this path, so the imperative
+        // breakdown is representative.
 
         // Mean-pool compiled closure path: the layer loop + final norm are
         // fused; mean-pool masking is applied post-closure by the caller.
@@ -7925,7 +7968,9 @@ impl MlxRunner {
         // The gate engages in both Greedy and RejectionSampling modes: in
         // Greedy mode the EWMA tracks argmax match rate directly, which is
         // already the stricter metric — if it reaches 0.99, optimistic is safe.
-        let optimistic_allowed = mtp_optimistic_allowed(self.weights.glm_mtp.is_some());
+        let optimistic_allowed = mtp_optimistic_allowed(
+            self.weights.glm_mtp.is_some() || self.weights.deepseek_v4_nextn.is_some(),
+        );
         let auto_optimistic_enabled = mtp_auto_optimistic_enabled_from_env();
         let can_auto_optimistic = auto_optimistic_enabled
             && optimistic_allowed
@@ -8349,7 +8394,17 @@ impl MlxRunner {
                 let needs_predicted =
                     sampling.temperature <= 0.0 || (auto_optimistic && !self.mtp_optimistic);
                 let verify_forward_started = Instant::now();
-                let (logits_all, post_norm_all) = if needs_predicted {
+                let (logits_all, post_norm_all) = if self.weights.deepseek_v4_nextn.is_some() {
+                    // V4 nextn consumes the packed pre-collapse residual; the
+                    // second return is `[1, seq, hc*hidden]`, not post-norm.
+                    crate::model::deepseek_v4_forward_all_positions_with_packed(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut state.cache,
+                        token_offset,
+                    )
+                } else if needs_predicted {
                     forward_all_positions_with_post_norm(
                         &self.cfg,
                         &self.weights,
@@ -8369,7 +8424,8 @@ impl MlxRunner {
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 state.cache.advance(verify_len);
                 let predicted_arr = needs_predicted.then(|| argmax(&logits_all, None));
-                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                let draft_hidden =
+                    slice_post_norm_hidden(&post_norm_all, ac, self.mtp_draft_hidden_width());
                 let kv_refs = state.cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
                 if let Some(ref predicted_arr) = predicted_arr {
@@ -8411,13 +8467,25 @@ impl MlxRunner {
                 )
             } else {
                 let verify_forward_started = Instant::now();
-                let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
-                    &self.cfg,
-                    &self.weights,
-                    &verify_input,
-                    &mut state.cache,
-                    token_offset,
-                );
+                let (logits_all, post_norm_all) = if self.weights.deepseek_v4_nextn.is_some() {
+                    // V4 nextn consumes the packed pre-collapse residual; the
+                    // second return is `[1, seq, hc*hidden]`, not post-norm.
+                    crate::model::deepseek_v4_forward_all_positions_with_packed(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut state.cache,
+                        token_offset,
+                    )
+                } else {
+                    forward_all_positions_with_post_norm(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut state.cache,
+                        token_offset,
+                    )
+                };
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 state.cache.advance(verify_len);
                 // Target probabilities for rejection-sampling acceptance.
@@ -8531,7 +8599,8 @@ impl MlxRunner {
                     state.mtp_decode_count = new_mtp_len;
                 }
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                let draft_hidden =
+                    slice_post_norm_hidden(&post_norm_all, ac, self.mtp_draft_hidden_width());
                 let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
                 (
                     logits_all,
@@ -9033,13 +9102,28 @@ impl MlxRunner {
                 );
 
                 if mtp_tail_cap > 0
-                    && (self.weights.mtp.is_some() || self.weights.glm_mtp.is_some())
+                    && (self.weights.mtp.is_some()
+                        || self.weights.glm_mtp.is_some()
+                        || self.weights.deepseek_v4_nextn.is_some())
                 {
-                    let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+                    let cache = state
+                        .mtp_cache
+                        .get_or_insert_with(|| self.new_mtp_draft_cache());
                     let mtp_draft_started = Instant::now();
                     let (tail, log_probs, distributions, added, _top2_margins) =
                         if self.weights.glm_mtp.is_some() {
                             glm_mtp_draft_tokens_after_forced_prefix(
+                                &self.weights,
+                                &self.cfg,
+                                &draft_hidden,
+                                tail_tok,
+                                &draft,
+                                cache,
+                                mtp_tail_cap,
+                                &mut state.rng,
+                            )
+                        } else if self.weights.deepseek_v4_nextn.is_some() {
+                            deepseek_v4_mtp_draft_tokens_after_forced_prefix(
                                 &self.weights,
                                 &self.cfg,
                                 &draft_hidden,
@@ -9180,6 +9264,38 @@ impl MlxRunner {
                     state.mtp_draft_gate_source = src.route_code();
                     let (draft, log_probs, distributions, added, _top2_margins) =
                         glm_mtp_draft_tokens_gated(
+                            &self.weights,
+                            &self.cfg,
+                            &draft_hidden,
+                            tail_tok,
+                            cache,
+                            Some(state.mtp_adaptive_max_depth),
+                            &mut state.rng,
+                            gate,
+                        );
+                    mtp_timings.mtp_draft_wall_us = mtp_timings
+                        .mtp_draft_wall_us
+                        .saturating_add(elapsed_us(mtp_draft_started));
+                    state.mtp_decode_count += added;
+                    state.mtp_pending_draft_distributions = distributions;
+                    let sources = vec![MtpDraftSource::Mtp; draft.len()];
+                    (draft, log_probs, sources)
+                } else if self.weights.deepseek_v4_nextn.is_some() {
+                    // DeepSeek V4 nextn head (packed-hidden raw-path block).
+                    let cache = state
+                        .mtp_cache
+                        .get_or_insert_with(|| self.new_mtp_draft_cache());
+                    let mtp_draft_started = Instant::now();
+                    let (gate, src) = resolve_mtp_gate_from_env(
+                        Some(sampling.temperature),
+                        state.mtp_adaptive_gate.as_ref(),
+                        mtp_optimistic_draft_min_confidence_override(),
+                        None,
+                    );
+                    state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
+                    state.mtp_draft_gate_source = src.route_code();
+                    let (draft, log_probs, distributions, added, _top2_margins) =
+                        deepseek_v4_mtp_draft_tokens_gated(
                             &self.weights,
                             &self.cfg,
                             &draft_hidden,
@@ -9454,6 +9570,7 @@ impl MlxRunner {
         } else if self.gemma4_assistant_mtp.is_some()
             && self.weights.mtp.is_none()
             && self.weights.glm_mtp.is_none()
+            && self.weights.deepseek_v4_nextn.is_none()
             && crate::fastpath::rotating_bounded_mtp_enabled()
         {
             // Verify width = 1 (primary) + pending; pending is capped by the
@@ -9481,8 +9598,10 @@ impl MlxRunner {
             .cache
             .set_rotating_sliding_slack(rotating_latch.unwrap_or(0));
 
-        let approximate_profile = mtp_optimistic_allowed(self.weights.glm_mtp.is_some())
-            && (self.mtp_optimistic || mtp_auto_optimistic_enabled_from_env());
+        let approximate_profile = mtp_optimistic_allowed(
+            self.weights.glm_mtp.is_some() || self.weights.deepseek_v4_nextn.is_some(),
+        ) && (self.mtp_optimistic
+            || mtp_auto_optimistic_enabled_from_env());
         let exact_supported = is_greedy;
         let mtp_uses_direct_pipeline = matches!(
             mtp_request_route(
@@ -9552,8 +9671,10 @@ impl MlxRunner {
         // to direct; optimistic verification remains an explicit approximation.
         // The per-request bypass (state.mtp_bypassed) short-circuits MTP when
         // the acceptance EWMA has shown MTP is not paying for itself.
-        let approximate_profile = mtp_optimistic_allowed(self.weights.glm_mtp.is_some())
-            && (self.mtp_optimistic || mtp_auto_optimistic_enabled_from_env());
+        let approximate_profile = mtp_optimistic_allowed(
+            self.weights.glm_mtp.is_some() || self.weights.deepseek_v4_nextn.is_some(),
+        ) && (self.mtp_optimistic
+            || mtp_auto_optimistic_enabled_from_env());
         let exact_supported = state.mtp_pending_draft_distributions.is_empty()
             && mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
         match mtp_request_route(
@@ -14051,6 +14172,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -14096,6 +14218,8 @@ mod tests {
             per_layer_proj_norm: None,
             mtp: None,
             glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -14542,6 +14666,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -14567,6 +14693,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            deepseek_v4: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,

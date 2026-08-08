@@ -2,10 +2,10 @@ use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, async_eval,
     compiled_dual_gate_up_qmm, compiled_gelu_approx_split_mlp, divide, dual_affine_qmm,
-    dual_qmm_geglu, expand_dims, expand_dims_axes, gelu_approx_mul,
-    gelu_approx_mul_quantized_matmul, maximum, multiply, quantized_matmul_rms_norm, reshape,
-    rms_norm, rms_norm_quantized_matmul, silu_mul, slice_last_dim, softmax, softmax_precise,
-    sum_axis, take, take_along_axis, topk_axis, zeros,
+    dual_qmm_geglu, exp, expand_dims, expand_dims_axes, gelu_approx_mul,
+    gelu_approx_mul_quantized_matmul, log1p, maximum, minimum, multiply, negative, power,
+    quantized_matmul_rms_norm, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul,
+    slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -567,6 +567,9 @@ pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
 }
 
 pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxArray) -> MlxArray {
+    if let Some(limit) = deepseek_v4_swiglu_limit(cfg) {
+        return deepseek_v4_clamped_swiglu(gate, up, limit);
+    }
     if cfg.uses_geglu {
         geglu(gate, up)
     } else if fastpath::prefill_ffn_compile_swiglu_enabled() {
@@ -576,11 +579,40 @@ pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxA
     }
 }
 
+/// DeepSeek V4 SwiGLU clamp limit (`deepseek_v4.swiglu_limit`), when enabled.
+///
+/// Gates every fused SwiGLU fast path (packed/fused Metal kernels and the
+/// compiled prefill closure) off for V4: they would bypass the clamp.
+pub(super) fn deepseek_v4_swiglu_limit(cfg: &ModelConfig) -> Option<f32> {
+    cfg.deepseek_v4
+        .as_ref()
+        .map(|v4| v4.swiglu_limit)
+        .filter(|limit| *limit > 0.0)
+}
+
+/// DeepSeek V4 clamped SwiGLU: `silu(min(gate, limit)) * clamp(up, ±limit)`.
+///
+/// llama.cpp `ffn_gate_clamped` / `ffn_up_clamped` + `ggml_swiglu_split` for
+/// `LLM_ARCH_DEEPSEEK4`; vLLM `SiluAndMulWithClamp(swiglu_limit)` with the
+/// default `alpha=1, beta=0`.
+fn deepseek_v4_clamped_swiglu(gate: &MlxArray, up: &MlxArray, limit: f32) -> MlxArray {
+    let pos = mlx_sys::ops::cached_scalar(limit, gate.dtype());
+    let neg = mlx_sys::ops::cached_scalar(-limit, gate.dtype());
+    let gate_c = minimum(gate, &pos, None);
+    let up_c = mlx_sys::clip(up, &neg, &pos, None);
+    silu_mul(&gate_c, &up_c, None)
+}
+
 fn packed_ffn_activation(
     cfg: &ModelConfig,
     gate_up: &MlxArray,
     hidden_dim: i32,
 ) -> Option<MlxArray> {
+    if deepseek_v4_swiglu_limit(cfg).is_some() {
+        // The fused packed kernels apply no clamp; fall back to the split
+        // path so `dense_ffn_activation` applies the V4 clamped SwiGLU.
+        return None;
+    }
     if cfg.uses_geglu {
         packed_geglu_metal(gate_up, hidden_dim)
     } else {
@@ -3676,6 +3708,120 @@ pub(crate) fn moe_router_deepseek_v3(
     (top_k_indices, top_k_weights)
 }
 
+/// DeepSeek V4 (Flash) router: `sqrt(softplus)` scoring with the standard
+/// DeepSeek selection tail, plus hash-table routing on the leading
+/// `num_hash_layers` MoE layers.
+///
+/// Scoring (vLLM `csrc/libtorch_stable/moe/topk_softplus_sqrt_kernels.cu`,
+/// llama.cpp `LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS` in
+/// `llama-graph.cpp:1974-1977`): the gate matmul runs in f32 and
+/// `probs = sqrt(softplus(logits))` with the numerically stable softplus form.
+///
+/// Learned routing reuses the `moe_router_deepseek_v3` tail: correction bias
+/// added to a COPY for top-k selection only, optional group masking, optional
+/// `norm_topk_prob` renormalisation, `routed_scaling_factor` scaling; gathered
+/// weights always come from the unbiased probs.
+///
+/// Hash routing (layers with a `tid2eid` table instead of a correction bias —
+/// `DeepseekV4Config::is_hash_routed_layer`): expert INDICES are gathered
+/// from the `[vocab, topk]` table at `token_ids`; expert WEIGHTS still come
+/// from the unbiased sqrtsoftplus probs at those indices (llama.cpp
+/// `deepseek4.cpp:1331-1337`, `llama-graph.cpp:2028-2033`). `token_ids` is
+/// `None` on a hash-routed layer is a contract violation.
+pub(crate) fn moe_router_deepseek_v4(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    token_ids: Option<&MlxArray>,
+) -> (MlxArray, MlxArray) {
+    let router_proj = w
+        .router_proj
+        .as_ref()
+        .expect("DeepSeek V4 MoE layer must have router_proj");
+    // Gate matmul in f32 (llama.cpp forces GGML_PREC_F32 for sqrtsoftplus).
+    let logits = qw(&astype(x, MlxDtype::Float32, None), router_proj);
+    let probs = sqrt_softplus_scores(&logits);
+    let last_axis = probs.ndim() as i32 - 1;
+
+    let tid2eid = w.deepseek_v4.as_ref().and_then(|v4| v4.tid2eid.as_ref());
+    let top_k_indices = if let Some(tid2eid) = tid2eid {
+        // Hash-routed layer: indices come from the token→expert table, never
+        // from the scored probs.
+        let token_ids = token_ids
+            .expect("DeepSeek V4 hash-routed MoE layer requires token_ids for tid2eid lookup");
+        let ids = if matches!(token_ids.dtype(), MlxDtype::Int32 | MlxDtype::Uint32) {
+            token_ids.clone()
+        } else {
+            astype(token_ids, MlxDtype::Int32, None)
+        };
+        let table = if tid2eid.dtype() == MlxDtype::Int32 {
+            tid2eid.clone()
+        } else {
+            astype(tid2eid, MlxDtype::Int32, None)
+        };
+        // [vocab, topk] gathered at [1, seq] ids → [1, seq, topk].
+        take(&table, &ids, 0, None)
+    } else {
+        // Selection scores: correction bias on a copy, then optional group
+        // masking (no-ops when topk_group == n_group).
+        let selection_scores = if let Some(bias) = w.router_correction_bias.as_ref() {
+            add(&probs, &astype(bias, MlxDtype::Float32, None), None)
+        } else {
+            probs.clone()
+        };
+        let selection_scores =
+            deepseek_group_expert_mask(cfg, &selection_scores, cfg.moe_n_group, cfg.moe_topk_group);
+        let (indices, _) = top_k_by_argpartition(
+            &selection_scores,
+            cfg.moe_expert_count,
+            cfg.moe_experts_per_token,
+            false,
+        );
+        indices
+    };
+
+    // Weights always come from the unbiased sqrtsoftplus probs — for hash
+    // routing this is exactly the gather at the table indices.
+    let top_k_weights = take_along_axis(&probs, &top_k_indices, last_axis, None);
+
+    // Optionally normalise top-k weights to sum to 1 (done in f32 for precision).
+    let top_k_weights = if cfg.moe_experts_per_token > 1 && cfg.moe_norm_topk_prob {
+        let denominator = sum_axis(&top_k_weights, last_axis, true, None);
+        divide(&top_k_weights, &denominator, None)
+    } else {
+        top_k_weights
+    };
+
+    // Scale by routed_scaling_factor — still f32.
+    let scaling = cfg.moe_routed_scaling_factor;
+    let top_k_weights = if (scaling - 1.0).abs() > 1e-6 {
+        scale_hidden(&top_k_weights, scaling)
+    } else {
+        top_k_weights
+    };
+
+    // dtype cast deferred to here — after all f32 arithmetic — matching the V3 router.
+    let top_k_weights = astype(&top_k_weights, x.dtype(), None);
+
+    (top_k_indices, top_k_weights)
+}
+
+/// `sqrt(softplus(x))` computed in f32 with the numerically stable softplus
+/// form `max(x, 0) + log1p(exp(-|x|))` (vLLM `topk_softplus_sqrt_kernels.cu:100`).
+fn sqrt_softplus_scores(logits: &MlxArray) -> MlxArray {
+    let logits = astype(logits, MlxDtype::Float32, None);
+    let zero = mlx_sys::ops::cached_scalar(0.0, MlxDtype::Float32);
+    let relu = maximum(&logits, &zero, None);
+    let abs = maximum(&logits, &negative(&logits, None), None);
+    let exp_neg_abs = exp(&negative(&abs, None), None);
+    let softplus = add(&relu, &log1p(&exp_neg_abs, None), None);
+    power(
+        &softplus,
+        &mlx_sys::ops::cached_scalar(0.5, MlxDtype::Float32),
+        None,
+    )
+}
+
 /// GPT-OSS MoE router: top-k on raw logits, then softmax on the selected set.
 ///
 /// Matches mlx-lm `gpt_oss.MLPBlock`:
@@ -3892,6 +4038,7 @@ pub(crate) fn moe_experts_forward_with_cloned_weights(
         o_proj: None,
         linear_attn: None,
         glm_mla_attn: None,
+        deepseek_v4: None,
         ffn_norm: x.clone(),
         ffn_post_norm: None,
         gate_proj: None,
@@ -4569,11 +4716,17 @@ fn moe_experts_forward_impl(
     // through to the sequential gather_qmm path.
     let _ep_plan = expert_parallel_eligible(seq, top_k_indices, cfg.moe_expert_count);
 
+    // DeepSeek V4's clamped SwiGLU has no fused-kernel equivalent: every
+    // activation-fusing Metal fast path must stay off so the clamped split
+    // path in `dense_ffn_activation` runs.
+    let v4_swiglu_clamp = deepseek_v4_swiglu_limit(cfg).is_some();
+
     // Tier 2A: try deep expert-block fusion (decode-only). Fuses gather_qmm
     // gate_up + SwiGLU + gather_qmm down + weighted-sum into one dispatch.
     // Falls back to the standard multi-dispatch path when ineligible.
     if seq == 1
         && batch == 1
+        && !v4_swiglu_clamp
         && let Some(out) = try_moe_deep_expert_block_metal(cfg, w, x, top_k_indices, top_k_weights)
     {
         return out;
@@ -4624,10 +4777,15 @@ fn moe_experts_forward_impl(
             && (seq == 1 || seq <= fastpath::MOE_PACKED_GEGLU_PREFILL_MAX_SEQ);
         let fused = if moe_packed_geglu_ok {
             packed_geglu_metal_impl(&out, half)
-        } else if !cfg.uses_geglu && seq == 1 && fastpath::moe_swiglu_packed_metal_enabled() {
+        } else if !cfg.uses_geglu
+            && seq == 1
+            && !v4_swiglu_clamp
+            && fastpath::moe_swiglu_packed_metal_enabled()
+        {
             packed_swiglu_metal_impl(&out, half)
         } else if seq == 1
             && batch == 1
+            && !v4_swiglu_clamp
             && !gather_inputs.sorted_indices
             && fastpath::moe_fused_expert_block_enabled()
         {
@@ -5921,5 +6079,247 @@ mod tests {
             max_diff > 1.0e-3,
             "shapeless compiled linear closure unexpectedly became shape-polymorphic; re-evaluate the Tier 3A guardrail before enabling it"
         );
+    }
+
+    fn v4_test_config(experts: usize, top_k: usize) -> ModelConfig {
+        ModelConfig {
+            compile_cache_identity: 1,
+            model_family: "deepseek_v4".to_string(),
+            layer_count: 1,
+            hidden_size: 4,
+            intermediate_size: 8,
+            n_heads: 2,
+            n_kv_heads: 1,
+            head_dim: 8,
+            vocab_size: 16,
+            rope_theta: 10000.0,
+            rope_dims: 8,
+            attn_output_gate: false,
+            query_scale: 1.0,
+            final_logit_softcapping: None,
+            moe_expert_count: experts,
+            moe_experts_per_token: top_k,
+            moe_expert_intermediate_size: 8,
+            layer_configs: Vec::new(),
+            global_sliding_window: None,
+            protected_prefix_sliding_window: None,
+            gemma4_moe_router: false,
+            uses_geglu: false,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: true,
+            hidden_size_per_layer_input: 0,
+            linear_attention: None,
+            mla_attention: None,
+            glm_router: None,
+            deepseek_v4: None,
+            rms_norm_eps: 1e-6,
+            rope_freqs: None,
+            rope_mscale: 1.0,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: 8192.0,
+            attn_temperature_scale: 0.1,
+            intermediate_size_mlp: 0,
+            moe_layer_freq: 1,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 2.5,
+            moe_n_group: 1,
+            moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
+            diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
+            generation_kind: ax_engine_core::GenerationKind::Autoregressive,
+            kv_cache_quant: vec![None; 1],
+        }
+    }
+
+    fn v4_layer_weights(router: MlxArray, x: &MlxArray) -> LayerWeights {
+        LayerWeights {
+            attn_norm: x.clone(),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            glm_mla_attn: None,
+            deepseek_v4: None,
+            ffn_norm: x.clone(),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: None,
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: Some(QuantizedWeight::new(router, None, None)),
+            router_correction_bias: None,
+            router_scale: None,
+            router_combined_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_up_proj: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
+            gate_up_exps_packed: None,
+            gate_exps: None,
+            up_exps: None,
+            down_exps: None,
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
+            rotation_smoothing_inverse: None,
+        }
+    }
+
+    /// Manual `sqrt(softplus(x))` in plain f64 arithmetic for comparisons.
+    fn manual_sqrt_softplus(x: f32) -> f64 {
+        let x = x as f64;
+        let softplus = x.max(0.0) + (-x.abs()).exp().ln_1p();
+        softplus.sqrt()
+    }
+
+    #[test]
+    fn sqrt_softplus_scores_matches_manual() {
+        let logits = array_f32(&[-20.0, -1.5, 0.0, 0.5, 3.0, 20.0], &[1, 1, 6]);
+        let scores = sqrt_softplus_scores(&logits);
+        eval(&[&scores]);
+        assert_eq!(scores.dtype(), MlxDtype::Float32);
+        let actual = scores.data_f32().to_vec();
+        let expected: Vec<f32> = [-20.0, -1.5, 0.0, 0.5, 3.0, 20.0]
+            .iter()
+            .map(|x| manual_sqrt_softplus(*x) as f32)
+            .collect();
+        assert_close(&actual, &expected, 1e-5);
+    }
+
+    #[test]
+    fn moe_router_deepseek_v4_learned_path_matches_manual() {
+        // Identity gate: logits == x. top-2 of 4 experts, norm_topk_prob on,
+        // routed_scaling_factor 2.5 (from v4_test_config).
+        let cfg = v4_test_config(4, 2);
+        let router = array_f32(
+            &[
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            &[4, 4],
+        );
+        let x = array_f32(&[0.5, 3.0, -1.0, 1.5], &[1, 1, 4]);
+        let mut w = v4_layer_weights(router, &x);
+        // Correction bias flips the selection: expert 0 beats expert 3.
+        w.router_correction_bias = Some(array_f32(&[3.0, 0.0, 0.0, 0.0], &[4]));
+
+        let (indices, weights) = moe_router_deepseek_v4(&cfg, &w, &x, None);
+        let indices = astype(&indices, MlxDtype::Uint32, None);
+        eval(&[&indices, &weights]);
+        assert_eq!(indices.shape(), vec![1, 1, 2]);
+        assert_eq!(weights.shape(), vec![1, 1, 2]);
+
+        // Selection scores: probs + bias → experts 1 (prob √softplus(3) ≈ 1.74)
+        // and 0 (≈0.93 + 3.0) win. Weights come from the UNBIASED probs,
+        // renormalised then scaled by 2.5.
+        let p = [0.5_f32, 3.0, -1.0, 1.5].map(manual_sqrt_softplus);
+        let sel: Vec<f64> = [p[0] + 3.0, p[1], p[2], p[3]].to_vec();
+        let mut order: Vec<usize> = (0..4).collect();
+        order.sort_by(|a, b| sel[*b].total_cmp(&sel[*a]));
+        let (e0, e1) = (order[0], order[1]);
+        let w0 = p[e0] / (p[e0] + p[e1]) * 2.5;
+        let w1 = p[e1] / (p[e0] + p[e1]) * 2.5;
+
+        let idx = indices.data_u32().to_vec();
+        let got = weights.data_f32().to_vec();
+        let mut got_pairs: Vec<(u32, f32)> = idx.into_iter().zip(got).collect();
+        got_pairs.sort_by_key(|(i, _)| *i);
+        let mut expect_pairs: Vec<(u32, f32)> = [(e0 as u32, w0 as f32), (e1 as u32, w1 as f32)]
+            .into_iter()
+            .collect();
+        expect_pairs.sort_by_key(|(i, _)| *i);
+        assert_eq!(got_pairs.len(), expect_pairs.len());
+        for ((gi, gw), (ei, ew)) in got_pairs.iter().zip(expect_pairs.iter()) {
+            assert_eq!(gi, ei, "selected expert mismatch");
+            assert!((gw - ew).abs() < 1e-4, "weight {gw} vs expected {ew}");
+        }
+    }
+
+    #[test]
+    fn moe_router_deepseek_v4_hash_path_uses_tid2eid_indices() {
+        // Hash routing: indices come from the tid2eid table at token_ids;
+        // weights still come from the unbiased sqrtsoftplus probs.
+        let cfg = v4_test_config(4, 2);
+        let router = array_f32(
+            &[
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            &[4, 4],
+        );
+        let x = array_f32(&[0.5, 3.0, -1.0, 1.5], &[1, 1, 4]);
+        let mut w = v4_layer_weights(router, &x);
+        // [vocab=16, topk=2] table; token 7 routes to experts (2, 0).
+        let mut table = vec![0u32; 16 * 2];
+        table[7 * 2] = 2;
+        table[7 * 2 + 1] = 0;
+        let tid2eid = MlxArray::from_raw_data(
+            table.as_ptr() as *const u8,
+            std::mem::size_of_val(table.as_slice()),
+            &[16, 2],
+            MlxDtype::Uint32,
+        );
+        w.deepseek_v4 = Some(crate::weights::DeepseekV4LayerWeights {
+            wq_a: QuantizedWeight::new(x.clone(), None, None),
+            q_a_norm: x.clone(),
+            wq_b: QuantizedWeight::new(x.clone(), None, None),
+            wkv: QuantizedWeight::new(x.clone(), None, None),
+            kv_norm: x.clone(),
+            wo_a: QuantizedWeight::new(x.clone(), None, None),
+            wo_b: QuantizedWeight::new(x.clone(), None, None),
+            attn_sink: None,
+            hc_attn_fn: x.clone(),
+            hc_attn_base: x.clone(),
+            hc_attn_scale: x.clone(),
+            hc_ffn_fn: x.clone(),
+            hc_ffn_base: x.clone(),
+            hc_ffn_scale: x.clone(),
+            compressor: None,
+            indexer: None,
+            tid2eid: Some(tid2eid),
+        });
+        // Deliberately WRONG correction bias: hash routing must ignore it.
+        w.router_correction_bias = Some(array_f32(&[0.0, 0.0, 100.0, 0.0], &[4]));
+
+        let token_ids = MlxArray::from_raw_data(
+            [7u32].as_ptr() as *const u8,
+            std::mem::size_of::<u32>(),
+            &[1, 1],
+            MlxDtype::Uint32,
+        );
+        let (indices, weights) = moe_router_deepseek_v4(&cfg, &w, &x, Some(&token_ids));
+        let indices = astype(&indices, MlxDtype::Uint32, None);
+        eval(&[&indices, &weights]);
+        assert_eq!(indices.shape(), vec![1, 1, 2]);
+
+        let p = [0.5_f32, 3.0, -1.0, 1.5].map(manual_sqrt_softplus);
+        let w2 = p[2] / (p[2] + p[0]) * 2.5;
+        let w0 = p[0] / (p[2] + p[0]) * 2.5;
+
+        let idx = indices.data_u32().to_vec();
+        let got = weights.data_f32().to_vec();
+        let mut got_pairs: Vec<(u32, f32)> = idx.into_iter().zip(got).collect();
+        got_pairs.sort_by_key(|(i, _)| *i);
+        let expect_pairs: Vec<(u32, f32)> = vec![(0, w0 as f32), (2, w2 as f32)];
+        for ((gi, gw), (ei, ew)) in got_pairs.iter().zip(expect_pairs.iter()) {
+            assert_eq!(gi, ei, "hash-routed expert mismatch");
+            assert!((gw - ew).abs() < 1e-4, "weight {gw} vs expected {ew}");
+        }
     }
 }

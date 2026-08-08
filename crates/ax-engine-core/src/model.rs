@@ -171,6 +171,72 @@ pub enum NativeTensorRole {
     UnlimitedOcrImageNewline,
     /// Unlimited-OCR view separator embedding.
     UnlimitedOcrViewSeparator,
+    /// DeepSeek V4 fused KV projection (`attn.wkv`), replacing the V3 split
+    /// kv_a/kv_b MLA projections.
+    AttentionKv,
+    /// DeepSeek V4 RMSNorm over the per-head KV output of `attn.wkv`.
+    AttentionKvNorm,
+    /// DeepSeek V4 grouped output down-projection (`attn.wo_a`, per o_groups).
+    AttentionOutA,
+    /// DeepSeek V4 output LoRA up-projection (`attn.wo_b`, o_lora_rank → hidden).
+    AttentionOutB,
+    /// DeepSeek V4 hyper-connection attention-branch coefficients (`hc_attn_fn`).
+    HcAttnFn,
+    /// DeepSeek V4 hyper-connection attention-branch base stream (`hc_attn_base`).
+    HcAttnBase,
+    /// DeepSeek V4 hyper-connection attention-branch scale (`hc_attn_scale`).
+    HcAttnScale,
+    /// DeepSeek V4 hyper-connection FFN-branch coefficients (`hc_ffn_fn`).
+    HcFfnFn,
+    /// DeepSeek V4 hyper-connection FFN-branch base stream (`hc_ffn_base`).
+    HcFfnBase,
+    /// DeepSeek V4 hyper-connection FFN-branch scale (`hc_ffn_scale`).
+    HcFfnScale,
+    /// DeepSeek V4 root-level hyper-connection head coefficients (`hc_head_fn`).
+    HcHeadFn,
+    /// DeepSeek V4 root-level hyper-connection head base stream (`hc_head_base`).
+    HcHeadBase,
+    /// DeepSeek V4 root-level hyper-connection head scale (`hc_head_scale`).
+    HcHeadScale,
+    /// DeepSeek V4 sliding-window compressor KV projection (`attn.compressor.wkv`).
+    CompressorKv,
+    /// DeepSeek V4 sliding-window compressor gate (`attn.compressor.wgate`).
+    CompressorGate,
+    /// DeepSeek V4 compressor absolute positional embedding (`attn.compressor.ape`).
+    CompressorApe,
+    /// DeepSeek V4 compressor RMSNorm (`attn.compressor.norm`).
+    CompressorNorm,
+    /// DeepSeek V4 sparse-indexer per-token score projection (`attn.indexer.weights_proj`).
+    IndexerProj,
+    /// DeepSeek V4 sparse-indexer query up-projection (`attn.indexer.wq_b`).
+    IndexerQb,
+    /// DeepSeek V4 indexer compressor KV projection (`attn.indexer.compressor.wkv`).
+    IndexerCompressorKv,
+    /// DeepSeek V4 indexer compressor gate (`attn.indexer.compressor.wgate`).
+    IndexerCompressorGate,
+    /// DeepSeek V4 indexer compressor positional embedding (`attn.indexer.compressor.ape`).
+    IndexerCompressorApe,
+    /// DeepSeek V4 indexer compressor RMSNorm (`attn.indexer.compressor.norm`).
+    IndexerCompressorNorm,
+    /// DeepSeek V4 hash-routing token→expert table (`ffn.gate.tid2eid`, I32),
+    /// present on the first `num_hash_layers` MoE layers.
+    FfnGateTid2Eid,
+    /// DeepSeek V4 MTP embedding projection (`nextn.e_proj` / `mtp.N.e_proj`).
+    NextnEproj,
+    /// DeepSeek V4 MTP hidden projection (`nextn.h_proj` / `mtp.N.h_proj`).
+    NextnHproj,
+    /// DeepSeek V4 MTP fused embedding+hidden projection (`nextn.eh_proj`).
+    NextnEhProj,
+    /// DeepSeek V4 MTP embedding RMSNorm (`nextn.enorm`).
+    NextnEnorm,
+    /// DeepSeek V4 MTP hidden RMSNorm (`nextn.hnorm`).
+    NextnHnorm,
+    /// DeepSeek V4 MTP shared-head RMSNorm (`nextn.shared_head_norm` / `mtp.N.norm`).
+    NextnSharedHeadNorm,
+    /// DeepSeek V4 MTP shared token embedding (`nextn.embed_tokens`).
+    NextnEmbedTokens,
+    /// DeepSeek V4 MTP shared LM head (`nextn.shared_head_head`).
+    NextnSharedHeadHead,
     /// Qwen3-VL vision patch embed projection (visual.patch_embed.proj).
     Qwen3VlVisionPatchEmbed,
     /// Qwen3-VL vision spatial-merge projector (visual.merger).
@@ -250,6 +316,27 @@ impl NativeTensorRole {
                 | Self::FfnDownExps
                 | Self::FfnDownExpsScale
                 | Self::AttnSink
+                | Self::AttentionKv
+                | Self::AttentionKvNorm
+                | Self::AttentionOutA
+                | Self::AttentionOutB
+                | Self::HcAttnFn
+                | Self::HcAttnBase
+                | Self::HcAttnScale
+                | Self::HcFfnFn
+                | Self::HcFfnBase
+                | Self::HcFfnScale
+                | Self::CompressorKv
+                | Self::CompressorGate
+                | Self::CompressorApe
+                | Self::CompressorNorm
+                | Self::IndexerProj
+                | Self::IndexerQb
+                | Self::IndexerCompressorKv
+                | Self::IndexerCompressorGate
+                | Self::IndexerCompressorApe
+                | Self::IndexerCompressorNorm
+                | Self::FfnGateTid2Eid
                 | Self::FfnGateUpExpsMxfp4Blocks
                 | Self::FfnGateUpExpsMxfp4Scales
                 | Self::FfnDownExpsMxfp4Blocks
@@ -328,6 +415,118 @@ impl NativeMlaAttentionConfig {
             || self.qk_nope_head_dim.is_some()
             || self.qk_rope_head_dim.is_some()
             || self.value_head_dim.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
+    }
+}
+
+/// DeepSeek V4 (Flash) attention geometry.
+///
+/// V4 drops the V3 MLA keys (`kv_lora_rank`, `qk_nope_head_dim`, `v_head_dim`):
+/// a fused `attn.wkv` projection feeds per-head K/V directly (single KV head),
+/// and the output projection is a grouped LoRA pair (`wo_a` per `o_groups`,
+/// `wo_b` from `o_lora_rank`). Do not reuse [`NativeMlaAttentionConfig`].
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NativeDeepseekV4AttentionConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qk_rope_head_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q_lora_rank: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub o_lora_rank: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub o_groups: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_topk: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_n_heads: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_head_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compress_rope_theta: Option<u32>,
+    /// V4 attention layers carry a learned per-head attention sink
+    /// (`attn.attn_sink`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_attn_sinks: bool,
+}
+
+impl NativeDeepseekV4AttentionConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.head_dim.is_some()
+            || self.qk_rope_head_dim.is_some()
+            || self.q_lora_rank.is_some()
+            || self.o_lora_rank.is_some()
+            || self.o_groups.is_some()
+            || self.index_topk.is_some()
+            || self.index_n_heads.is_some()
+            || self.index_head_dim.is_some()
+            || self.compress_rope_theta.is_some()
+            || self.has_attn_sinks
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
+    }
+}
+
+/// DeepSeek V4 (Flash) architecture parameters that have no home in the
+/// generic manifest fields: per-layer compressor ratios, hyper-connection
+/// (HC) constants, hash routing, and the routing scoring function.
+///
+/// The MoE shape (expert counts, shared experts, scaling factor) stays in
+/// [`NativeMoeConfig`]; note V4 routing is `scoring_func`-based (e.g.
+/// "sqrtsoftplus"), **not** the V3 sigmoid routing, so
+/// `NativeMoeConfig::sigmoid_routing` must remain false for V4 manifests.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NativeDeepseekV4Config {
+    #[serde(
+        default,
+        skip_serializing_if = "NativeDeepseekV4AttentionConfig::is_disabled"
+    )]
+    pub attention: NativeDeepseekV4AttentionConfig,
+    /// Per-layer compressor ratios (values 0 / 4 / 128; 0 = uncompressed).
+    /// Empty when not configured; otherwise one entry per layer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compress_ratios: Vec<u32>,
+    /// Hyper-connection stream multiplier (`hc_mult`, e.g. 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_mult: Option<u32>,
+    /// Sinkhorn iterations for the HC mixing coefficients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_sinkhorn_iters: Option<u32>,
+    /// Epsilon for the HC Sinkhorn normalisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_eps: Option<f32>,
+    /// Number of leading MoE layers that route via the hash table
+    /// (`ffn.gate.tid2eid`) instead of the learned gate + correction bias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_hash_layers: Option<u32>,
+    /// Number of MTP (nextn) predictor layers stacked after the main layers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_nextn_predict_layers: Option<u32>,
+    /// Routing scoring function (e.g. "sqrtsoftplus").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring_func: Option<String>,
+    /// SwiGLU clamp limit applied in the expert/shared-expert FFNs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swiglu_limit: Option<f32>,
+}
+
+impl NativeDeepseekV4Config {
+    pub fn is_enabled(&self) -> bool {
+        self.attention.is_enabled()
+            || !self.compress_ratios.is_empty()
+            || self.hc_mult.is_some()
+            || self.hc_sinkhorn_iters.is_some()
+            || self.hc_eps.is_some()
+            || self.num_hash_layers.is_some()
+            || self.num_nextn_predict_layers.is_some()
+            || self.scoring_func.is_some()
+            || self.swiglu_limit.is_some()
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -705,6 +904,12 @@ pub struct NativeModelManifest {
     /// LLaMA-3 original training context length for wavelen boundary computation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rope_original_context_len: Option<u32>,
+    /// YaRN `beta_fast` (high-frequency correction boundary; default 32).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_beta_fast: Option<f32>,
+    /// YaRN `beta_slow` (low-frequency correction boundary; default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_beta_slow: Option<f32>,
     /// LLaMA-4 iRoPE: every N-th layer has no RoPE (N=4 for LLaMA4 Scout/Maverick).
     /// 0 means all layers use RoPE.
     #[serde(default)]
@@ -782,6 +987,10 @@ pub struct NativeModelManifest {
     pub moe: NativeMoeConfig,
     #[serde(default, skip_serializing_if = "NativeGlmRouterConfig::is_disabled")]
     pub glm_router: NativeGlmRouterConfig,
+    /// DeepSeek V4 (Flash) architecture parameters. Disabled for all other
+    /// model families.
+    #[serde(default, skip_serializing_if = "NativeDeepseekV4Config::is_disabled")]
+    pub deepseek_v4: NativeDeepseekV4Config,
     /// Weight on-disk convention. Defaults to `None` (mlx-community
     /// pre-sanitized layout) so existing manifests deserialize unchanged.
     /// Set to `hf_to_mlx` in raw HuggingFace checkpoints' manifests to
@@ -1392,6 +1601,8 @@ pub(crate) fn validate_native_model_manifest(
     require_global_role(&global_roles, NativeTensorRole::FinalNorm, "final_norm")?;
     // EmbeddingGemma is a bidirectional encoder: no LM head (never produces
     // logits), but it requires the two sentence-transformers Dense projections.
+    // Nemotron 3 Embed is also encoder-only mean-pool with no Dense head and no
+    // required lm_head (even when tie_word_embeddings is false on 8B packs).
     if manifest.model_family == "embeddinggemma" {
         require_global_role(
             &global_roles,
@@ -1403,6 +1614,9 @@ pub(crate) fn validate_native_model_manifest(
             NativeTensorRole::EmbeddingDense1,
             "embedding_dense1",
         )?;
+    } else if manifest.model_family == "nemotron_embed" {
+        // Encoder-only: TokenEmbedding + FinalNorm are enough at the global
+        // level; skip lm_head / Dense head requirements.
     } else if !manifest.tie_word_embeddings {
         require_global_role(&global_roles, NativeTensorRole::LmHead, "lm_head")?;
     }
@@ -1418,8 +1632,18 @@ pub(crate) fn validate_native_model_manifest(
             "assistant_post_projection",
         )?;
     }
+    if manifest.model_family == "deepseek_v4" {
+        for (role, label) in [
+            (NativeTensorRole::HcHeadFn, "hc_head_fn"),
+            (NativeTensorRole::HcHeadBase, "hc_head_base"),
+            (NativeTensorRole::HcHeadScale, "hc_head_scale"),
+        ] {
+            require_global_role(&global_roles, role, label)?;
+        }
+    }
 
     let is_nemotron_h = manifest.model_family == "nemotron_h";
+    let is_deepseek_v4 = manifest.model_family == "deepseek_v4";
 
     for layer_index in 0..manifest.layer_count {
         let roles =
@@ -1440,6 +1664,15 @@ pub(crate) fn validate_native_model_manifest(
         // and validate the mixer kind from layer_types / tensor roles below.
         if is_nemotron_h {
             validate_nemotron_h_layer(manifest, layer_index, roles)?;
+            continue;
+        }
+
+        // DeepSeek V4 layers replace the classic attention-O projection with the
+        // grouped wo_a/wo_b pair, add hyper-connection tensors, and gate
+        // compressor/indexer/hash-routing tensors per layer — validate the V4
+        // layout directly instead of the generic attn+FFN sandwich.
+        if is_deepseek_v4 {
+            validate_deepseek_v4_layer(manifest, layer_index, roles)?;
             continue;
         }
 
@@ -2132,6 +2365,161 @@ fn validate_nemotron_h_layer(
     Ok(())
 }
 
+/// Validate one DeepSeek V4 layer.
+///
+/// Every V4 layer is an MoE layer with the same attention layout: q_a/q_norm/
+/// q_b + fused wkv + kv_norm + grouped wo_a/wo_b output, an attention sink,
+/// and both hyper-connection trios. Compressor tensors are required exactly
+/// when the layer's `compress_ratios` entry is 4 or 128; indexer tensors only
+/// when it is 4. The first `num_hash_layers` layers route via the
+/// `ffn.gate.tid2eid` hash table, the rest via the learned gate correction
+/// bias — exactly one of the two must be present per layer.
+fn validate_deepseek_v4_layer(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+    roles: &[NativeTensorRole],
+) -> Result<(), NativeModelError> {
+    let require = |role: NativeTensorRole, label: &str| -> Result<(), NativeModelError> {
+        if roles.contains(&role) {
+            return Ok(());
+        }
+        Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "deepseek_v4 layer {layer_index} is missing required tensor role {label}"
+            ),
+        })
+    };
+
+    for (role, label) in [
+        (NativeTensorRole::AttentionQa, "attention_qa"),
+        (NativeTensorRole::AttentionQaNorm, "attention_qa_norm"),
+        (NativeTensorRole::AttentionQb, "attention_qb"),
+        (NativeTensorRole::AttentionKv, "attention_kv"),
+        (NativeTensorRole::AttentionKvNorm, "attention_kv_norm"),
+        (NativeTensorRole::AttentionOutA, "attention_out_a"),
+        (NativeTensorRole::AttentionOutB, "attention_out_b"),
+        (NativeTensorRole::HcAttnFn, "hc_attn_fn"),
+        (NativeTensorRole::HcAttnBase, "hc_attn_base"),
+        (NativeTensorRole::HcAttnScale, "hc_attn_scale"),
+        (NativeTensorRole::HcFfnFn, "hc_ffn_fn"),
+        (NativeTensorRole::HcFfnBase, "hc_ffn_base"),
+        (NativeTensorRole::HcFfnScale, "hc_ffn_scale"),
+        (NativeTensorRole::FfnNorm, "ffn_norm"),
+        (NativeTensorRole::FfnGateInp, "ffn_gate_inp"),
+        (NativeTensorRole::FfnDownExps, "ffn_down_exps"),
+    ] {
+        require(role, label)?;
+    }
+    // Routed experts ship exactly one layout: split gate/up stacks (raw HF /
+    // sanitized) or the fused AXQ gate+up tensor (`ffn_gate_up_exps_packed`).
+    let has_packed_experts = roles.contains(&NativeTensorRole::FfnGateUpExpsPacked);
+    let has_gate_exps = roles.contains(&NativeTensorRole::FfnGateExps);
+    let has_up_exps = roles.contains(&NativeTensorRole::FfnUpExps);
+    if has_packed_experts == (has_gate_exps || has_up_exps) || has_gate_exps != has_up_exps {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "deepseek_v4 layer {layer_index} must provide exactly one routed-expert layout: ffn_gate_up_exps_packed or ffn_gate_exps plus ffn_up_exps"
+            ),
+        });
+    }
+    if manifest.deepseek_v4.attention.has_attn_sinks {
+        require(NativeTensorRole::AttnSink, "attn_sink")?;
+    }
+    if manifest.moe.shared_expert_count.unwrap_or(0) > 0 {
+        for (role, label) in [
+            (
+                NativeTensorRole::FfnSharedExpertGate,
+                "ffn_shared_expert_gate",
+            ),
+            (NativeTensorRole::FfnSharedExpertUp, "ffn_shared_expert_up"),
+            (
+                NativeTensorRole::FfnSharedExpertDown,
+                "ffn_shared_expert_down",
+            ),
+        ] {
+            require(role, label)?;
+        }
+    }
+
+    let compress_ratio = manifest
+        .deepseek_v4
+        .compress_ratios
+        .get(layer_index as usize)
+        .copied()
+        .unwrap_or(0);
+    const COMPRESSOR_ROLES: [NativeTensorRole; 4] = [
+        NativeTensorRole::CompressorKv,
+        NativeTensorRole::CompressorGate,
+        NativeTensorRole::CompressorApe,
+        NativeTensorRole::CompressorNorm,
+    ];
+    const INDEXER_ROLES: [NativeTensorRole; 6] = [
+        NativeTensorRole::IndexerProj,
+        NativeTensorRole::IndexerQb,
+        NativeTensorRole::IndexerCompressorKv,
+        NativeTensorRole::IndexerCompressorGate,
+        NativeTensorRole::IndexerCompressorApe,
+        NativeTensorRole::IndexerCompressorNorm,
+    ];
+    if matches!(compress_ratio, 4 | 128) {
+        for (role, label) in COMPRESSOR_ROLES.into_iter().zip([
+            "compressor_kv",
+            "compressor_gate",
+            "compressor_ape",
+            "compressor_norm",
+        ]) {
+            require(role, label)?;
+        }
+    } else {
+        // The compressor exists iff the layer compresses (ratio 4/128).
+        for role in COMPRESSOR_ROLES {
+            if roles.contains(&role) {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "deepseek_v4 layer {layer_index} must not provide compressor role {role:?} with compress_ratio {compress_ratio}"
+                    ),
+                });
+            }
+        }
+    }
+    if compress_ratio == 4 {
+        for (role, label) in INDEXER_ROLES.into_iter().zip([
+            "indexer_proj",
+            "indexer_qb",
+            "indexer_compressor_kv",
+            "indexer_compressor_gate",
+            "indexer_compressor_ape",
+            "indexer_compressor_norm",
+        ]) {
+            require(role, label)?;
+        }
+    } else {
+        // The sparse indexer exists iff compress_ratio == 4.
+        for role in INDEXER_ROLES {
+            if roles.contains(&role) {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "deepseek_v4 layer {layer_index} must not provide indexer role {role:?} with compress_ratio {compress_ratio}"
+                    ),
+                });
+            }
+        }
+    }
+
+    let has_tid2eid = roles.contains(&NativeTensorRole::FfnGateTid2Eid);
+    let has_correction_bias = roles.contains(&NativeTensorRole::FfnGateInpCorrectionBias);
+    let is_hash_layer = layer_index < manifest.deepseek_v4.num_hash_layers.unwrap_or(0);
+    if is_hash_layer != has_tid2eid || is_hash_layer == has_correction_bias {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "deepseek_v4 layer {layer_index} must provide ffn_gate_tid2eid on hash layers (index < num_hash_layers) or ffn_gate_inp_correction_bias otherwise, exactly one"
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 fn moe_requires_shared_expert(manifest: &NativeModelManifest) -> bool {
     manifest.moe.is_enabled() && matches!(manifest.model_family.as_str(), "qwen3_5" | "qwen3_next")
 }
@@ -2166,6 +2554,7 @@ fn validate_native_model_tensor_shapes(
 
     // EmbeddingGemma encoder: no LM head (see role-presence check above), so skip
     // the lm_head shape validation; validate the Dense projection head instead.
+    // Nemotron Embed is encoder-only mean-pool without Dense head or lm_head.
     if manifest.model_family == "embeddinggemma" {
         let dense0 = required_global_tensor_spec(
             manifest,
@@ -2179,6 +2568,8 @@ fn validate_native_model_tensor_shapes(
             "embedding_dense1",
         )?;
         expect_matrix_shape(dense1, hidden_size, hidden_size * 4, "embedding_dense1")?;
+    } else if manifest.model_family == "nemotron_embed" {
+        // no lm_head / Dense head shapes
     } else if !manifest.tie_word_embeddings {
         let lm_head = required_global_tensor_spec(manifest, NativeTensorRole::LmHead, "lm_head")?;
         expect_matrix_shape(lm_head, vocab_size, hidden_size, "lm_head")?;
@@ -2437,7 +2828,13 @@ fn validate_native_model_tensor_shapes(
         } else if manifest_tensor(manifest, NativeTensorRole::AttentionQa, Some(layer_index))
             .is_some()
         {
-            validate_glm_mla_attention_tensor_shapes(manifest, layer_index)?;
+            // DeepSeek V4 reuses the q_a/q_norm/q_b roles but replaces the V3
+            // MLA KV/O projections with fused wkv + grouped wo_a/wo_b.
+            if manifest.model_family == "deepseek_v4" {
+                validate_deepseek_v4_attention_tensor_shapes(manifest, layer_index)?;
+            } else {
+                validate_glm_mla_attention_tensor_shapes(manifest, layer_index)?;
+            }
         }
         // Layers without standard attention tensors (e.g. linear_attention) skip
         // QKV shape validation but still validate their projection contract below.
@@ -3085,6 +3482,145 @@ fn validate_glm_mla_attention_tensor_shapes(
         hidden_size,
         head_count * value_head_dim,
         "attention_o",
+    )
+}
+
+/// DeepSeek V4 attention tensor shapes.
+///
+/// Layout (vllm `DeepseekV4Attention` / llama.cpp `DeepseekV4Model`):
+/// `wq_a` [q_lora_rank, hidden], `q_norm` [q_lora_rank],
+/// `wq_b` [num_heads * head_dim, q_lora_rank], fused `wkv` [head_dim, hidden]
+/// (single KV head), `kv_norm` [head_dim], grouped `wo_a`
+/// [o_groups * o_lora_rank, num_heads * head_dim / o_groups], and
+/// `wo_b` [hidden, o_groups * o_lora_rank].
+fn validate_deepseek_v4_attention_tensor_shapes(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+) -> Result<(), NativeModelError> {
+    let hidden_size = u64::from(manifest.hidden_size);
+    let head_count = u64::from(manifest.attention_head_count);
+    let attention = &manifest.deepseek_v4.attention;
+    let head_dim =
+        u64::from(
+            attention
+                .head_dim
+                .ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: "deepseek_v4.attention.head_dim must be configured".to_string(),
+                })?,
+        );
+    let q_lora_rank =
+        u64::from(
+            attention
+                .q_lora_rank
+                .ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: "deepseek_v4.attention.q_lora_rank must be configured".to_string(),
+                })?,
+        );
+    let o_lora_rank =
+        u64::from(
+            attention
+                .o_lora_rank
+                .ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: "deepseek_v4.attention.o_lora_rank must be configured".to_string(),
+                })?,
+        );
+    let o_groups =
+        u64::from(
+            attention
+                .o_groups
+                .ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: "deepseek_v4.attention.o_groups must be configured".to_string(),
+                })?,
+        );
+    let Some(grouped_o_rows) = o_groups.checked_mul(o_lora_rank) else {
+        return Err(NativeModelError::InvalidManifest {
+            message: "deepseek_v4 o_groups * o_lora_rank overflowed".to_string(),
+        });
+    };
+    let attention_out_dim = head_count * head_dim;
+    if o_groups == 0 || !attention_out_dim.is_multiple_of(o_groups) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "deepseek_v4 num_heads * head_dim ({attention_out_dim}) must be divisible by o_groups ({o_groups})"
+            ),
+        });
+    }
+
+    let attention_qa = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionQa,
+        "attention_qa",
+    )?;
+    expect_matrix_shape(attention_qa, q_lora_rank, hidden_size, "attention_qa")?;
+    let attention_qa_norm = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionQaNorm,
+        "attention_qa_norm",
+    )?;
+    expect_vector_shape(attention_qa_norm, q_lora_rank, "attention_qa_norm")?;
+    let attention_qb = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionQb,
+        "attention_qb",
+    )?;
+    expect_matrix_shape(attention_qb, attention_out_dim, q_lora_rank, "attention_qb")?;
+    let attention_kv = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionKv,
+        "attention_kv",
+    )?;
+    expect_matrix_shape(attention_kv, head_dim, hidden_size, "attention_kv")?;
+    let attention_kv_norm = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionKvNorm,
+        "attention_kv_norm",
+    )?;
+    expect_vector_shape(attention_kv_norm, head_dim, "attention_kv_norm")?;
+    let attention_out_a = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionOutA,
+        "attention_out_a",
+    )?;
+    // AXQ/mlx-lm checkpoints store `attn.wo_a` in its native grouped 3-D
+    // layout `[o_groups, o_lora_rank, H*D/o_groups]`; raw HF / GGUF-derived
+    // checkpoints carry the flattened `[o_groups*o_lora_rank, H*D/o_groups]`
+    // matrix. Both feed the runtime's reshape-to-3-D grouped projection.
+    let group_width = attention_out_dim / o_groups;
+    if attention_out_a.shape.len() == 3 && !uses_packed_u32_storage(attention_out_a) {
+        let expected = [o_groups, o_lora_rank, group_width];
+        if attention_out_a.shape != expected {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "tensor attention_out_a must have shape {expected:?}, got {:?}",
+                    attention_out_a.shape
+                ),
+            });
+        }
+    } else {
+        expect_matrix_shape(
+            attention_out_a,
+            grouped_o_rows,
+            group_width,
+            "attention_out_a",
+        )?;
+    }
+    let attention_out_b = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionOutB,
+        "attention_out_b",
+    )?;
+    expect_matrix_shape(
+        attention_out_b,
+        hidden_size,
+        grouped_o_rows,
+        "attention_out_b",
     )
 }
 
@@ -4051,7 +4587,14 @@ fn validate_tensor_quantization(
             });
         }
     }
-    if tensor.dtype == NativeTensorDataType::U32 && !tensor.source_quantized {
+    // DeepSeek V4's `ffn.gate.tid2eid` hash-routing table is a genuine I32
+    // integer tensor riding the U32 container dtype (see convert_dtype), not
+    // an MLX affine-quantized weight, so it is exempt from the packed-weight
+    // invariant below.
+    if tensor.dtype == NativeTensorDataType::U32
+        && !tensor.source_quantized
+        && tensor.role != NativeTensorRole::FfnGateTid2Eid
+    {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
                 "tensor {} uses dtype u32 but source_quantized is false",
@@ -4482,6 +5025,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -4507,6 +5052,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            deepseek_v4: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,

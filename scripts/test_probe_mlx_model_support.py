@@ -170,20 +170,25 @@ class MlxModelSupportProbeTests(unittest.TestCase):
         self.assertTrue(report["draft_manifest_features"]["runtime_ready"])
         self.assertEqual(report["blockers"], [])
 
-    def test_deepseek_v4_fails_closed_when_partial_reference_drops_required_weights(self) -> None:
+    def test_deepseek_v4_fails_closed_while_native_runtime_in_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
-            swift = repo / ".internal/reference/SwiftLM/mlx-swift-lm/Libraries/MLXLLM/Models"
-            tests = repo / ".internal/reference/SwiftLM/mlx-swift-lm/Tests/MLXLMTests"
-            swift.mkdir(parents=True)
-            tests.mkdir(parents=True)
-            (swift / "DeepseekV4.swift").write_text(
-                "DeepseekV4Attention compressor/indexer tid2eid"
+            vllm_models = repo / ".internal/reference/vllm/vllm/models/deepseek_v4"
+            vllm_mhc = repo / ".internal/reference/vllm/vllm/model_executor/kernels/mhc"
+            llama_models = repo / ".internal/reference/llama.cpp/src/models"
+            llama_src = repo / ".internal/reference/llama.cpp/src"
+            vllm_models.mkdir(parents=True)
+            vllm_mhc.mkdir(parents=True)
+            llama_models.mkdir(parents=True)
+            (vllm_models / "attention.py").write_text(
+                "DeepseekV4Attention DeepseekV4Indexer DeepseekCompressor"
             )
-            (tests / "DeepseekV4Tests.swift").write_text(
-                "Compressor/indexer sub-modules are not yet implemented"
+            (vllm_mhc / "torch.py").write_text("mhc_pre_torch sinkhorn")
+            (llama_models / "deepseek4.cpp").write_text(
+                "build_hc_pre build_csa_lid_attention ffn_gate_tid2eid"
             )
+            (llama_src / "llama-kv-cache-dsv4.cpp").write_text("dsv4_build_comp_plan")
             model_dir = write_model(
                 root,
                 "deepseek_v4",
@@ -201,11 +206,25 @@ class MlxModelSupportProbeTests(unittest.TestCase):
             with patch.object(probe, "REPO_ROOT", repo):
                 report = probe.probe_model(model_dir)
 
+        self.assertEqual(report["support_decision"], "implementation_candidate")
+        self.assertTrue(report["can_implement_repo_owned_runtime"])
+        self.assertEqual(report["reference_support"], "complete_enough_for_ax_port")
+        self.assertTrue(report["checkpoint_features"]["attention_compressor"])
+        self.assertIn("no benchmark evidence", " ".join(report["blockers"]))
+
+    def test_deepseek_v4_fails_closed_when_references_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            model_dir = write_model(root, "deepseek_v4", ["model.layers.0.attn.attn_sink"])
+
+            with patch.object(probe, "REPO_ROOT", repo):
+                report = probe.probe_model(model_dir)
+
         self.assertEqual(report["support_decision"], "fail_closed_partial_reference")
         self.assertFalse(report["can_implement_repo_owned_runtime"])
-        self.assertEqual(report["reference_support"], "partial_only")
-        self.assertTrue(report["checkpoint_features"]["attention_compressor"])
-        self.assertIn("tid2eid", " ".join(report["blockers"]))
+        self.assertEqual(report["reference_support"], "missing")
 
     def test_known_family_manifest_ready_reports_manifest_features(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

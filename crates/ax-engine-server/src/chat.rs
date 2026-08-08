@@ -157,8 +157,10 @@ pub(crate) fn normalize_role(role: &str) -> Result<&'static str, String> {
         "assistant" => Ok("assistant"),
         "tool" => Ok("tool"),
         "function" => Ok("function"),
+        // NVIDIA GenRM-Principle (Qwen3-Nemotron-*-GenRM) judge turns.
+        "principle" => Ok("principle"),
         _ => Err(
-            "unsupported chat role; expected one of system, user, assistant, tool, function"
+            "unsupported chat role; expected one of system, user, assistant, tool, function, principle"
                 .to_string(),
         ),
     }
@@ -1492,6 +1494,35 @@ mod tests {
             render_prompt_with_template(ChatPromptTemplate::QwenChatMl, &messages, false)
                 .expect("render");
         assert!(no_thinking.ends_with(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+    }
+
+    #[test]
+    fn genrm_principle_role_renders_in_qwen_chatml() {
+        assert_eq!(normalize_role("principle").expect("role"), "principle");
+        assert!(
+            normalize_role("judge").is_err(),
+            "unknown roles must stay fail-closed"
+        );
+
+        let messages = vec![
+            ("user".to_string(), "What is 1+1?".to_string()),
+            ("assistant".to_string(), "1+1=2".to_string()),
+            ("principle".to_string(), "correctness".to_string()),
+        ];
+        let prompt = render_prompt_with_template(ChatPromptTemplate::QwenChatMl, &messages, false)
+            .expect("GenRM principle turns must render");
+        assert!(
+            prompt.contains("<|im_start|>principle\ncorrectness<|im_end|>"),
+            "principle turn missing from prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains("<|im_start|>user\nWhat is 1+1?<|im_end|>"),
+            "user turn missing from prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains("<|im_start|>assistant\n1+1=2<|im_end|>"),
+            "assistant candidate missing from prompt: {prompt}"
+        );
     }
 
     #[test]

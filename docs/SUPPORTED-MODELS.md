@@ -78,9 +78,10 @@ DeepSeek caveats:
   (hyper-connections, CSA/HCA compressed attention with a learned indexer,
   sqrtsoftplus + hash routing). A repo-owned AX-native graph has landed and
   the family is registered **Experimental**: it converts and loads through the
-  AX-native path, but it has no on-hardware validation, benchmark rows, or
-  certification evidence yet, and it is not a support claim. Delegated
-  adapters must not be used to present V4 as supported.
+  AX-native path and has limited M2 Ultra 192 GB smoke evidence with the AXQ
+  2-bit repack. It still has no benchmark rows, MTP acceptance-rate data, or
+  certification evidence, and it is not a support claim. Delegated adapters
+  must not be used to present V4 as supported.
 
 A model moves between tiers by landing evidence, not by renaming:
 
@@ -452,6 +453,8 @@ Current direct-support LLM families:
 | Qwen3-VL | Dense and MoE `qwen3_vl*` MLX checkpoints | Repo-owned image/video chat runtime | Conv3D patch embed, full vision stack and merger, DeepStack, multimodal RoPE |
 | MiniCPM-V 4.6 | `minicpmv4_6` MLX checkpoints | Repo-owned image/multi-image chat runtime | SigLIP + mid-tower/final mergers; OCR/document use |
 | Nemotron 3 Nano Omni | `nemotron_h` manifests containing `vision_model.*` / `sound_encoder.*` | Repo-owned image/audio/mixed chat runtime | RADIO vision + Parakeet audio on the Nemotron-H hybrid backbone |
+| Nemotron 3 Embed | `nemotron_embed` (e.g. `nvidia/Nemotron-3-Embed-1B-BF16`) | Compatible encoder-embed path: convert + mean-pool `/v1/embeddings` | Bidirectional Ministral-3 encoder; **not** chat `mistral3` and **not** Omni `nemotron_h`. Default RAG embedder remains Qwen3-Embedding; switching spaces requires a full reindex. Client applies query/document prefixes. No managed pack / multi-model allowlist yet. |
+| Qwen3-Nemotron GenRM | Qwen3 checkpoints such as `Qwen3-Nemotron-32B-GenRM-Principle` | **Workload** on the `qwen3` direct graph (not a new family) | Generative reward / principle judge. Chat role `principle` is accepted. Numeric Yes/No logprob reward is Phase B — see [GenRM](GENRM.md). Ultra 550B LatentMoE GenRM is out of scope on Apple Silicon. |
 | Unlimited-OCR | `unlimited_ocr` | Preview repo-owned processed-image runtime | Dual vision, DeepSeek MoE, protected-prefix decode ring |
 | Whisper large-v3-turbo | `whisper` | Repo-owned speech transcription/translation runtime | Dedicated audio endpoints; not a chat/text-generation model |
 | Qwen 3.6 | `Qwen3.6-35B-A3B` 4/6-bit MLX, `Qwen3.6-27B` 4/5/6-bit MLX | Repo-owned hybrid language plus manifest-authoritative image/video runtime | Official `qwen3_5` / `qwen3_5_moe` configs: GatedDelta linear attention, gated full attention, optional sparse MoE, Qwen ViT/merger, and multimodal RoPE |
@@ -472,7 +475,7 @@ Experimental direct-support model families:
 | Family | Model ID | Current scope | Notes |
 | --- | --- | --- | --- |
 | DiffusionGemma | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Experimental repo-owned MLX block-diffusion path | Experimental rows live under [Performance Results](PERFORMANCE-RESULTS.md#diffusiongemma); benchmark boundary is first committed 256-token diffusion block, not autoregressive TTFT/decode. See [DiffusionGemma experimental support](DIFFUSIONGEMMA.md). |
-| DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | Experimental repo-owned MLX path: hyper-connections, re-parameterized MLA, CSA/HCA compressor + LID indexer, sqrtsoftplus + hash routing | No on-hardware validation or benchmark evidence yet. ~284B MoE; needs a 256 GB class host (~160 GB at 4-bit) — smaller hosts fail the load memory preflight. MTP/DSpark speculative decode is not wired. Not a support claim. |
+| DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | Experimental repo-owned MLX path: hyper-connections, re-parameterized MLA, CSA/HCA compressor + LID indexer, sqrtsoftplus + hash routing | Smoke-validated on an M2 Ultra 192 GB with the AXQ 2-bit repack (`AutomatosX/AX-DeepSeek-V4-Flash-MLX-AXQ-2bit`, ~115 GB): loads, serves `/v1/completions`, and answers 1.6k-token context-retrieval probes coherently. No benchmark evidence and no MTP acceptance-rate data yet — not a support claim. ~284B MoE; needs a 192 GB class host for 2-bit and 256 GB class for 4-bit — smaller hosts fail the load memory preflight. MTP nextn speculative decode is wired for the AXQ `mtp.safetensors` sidecar (FP8 blockwise projections + per-expert MXFP4); DSpark parallel decode is not implemented. The 2-bit artifact requires `AX_ENGINE_2BIT_EXPERIMENTAL=1`. |
 
 All direct-support models use MLX safetensors format with the AX
 `model-manifest.json` descriptor. Adding a new direct-support architecture

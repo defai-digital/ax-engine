@@ -209,7 +209,7 @@ impl GenerationStrategyDescriptor {
 pub(crate) fn is_encoder_embed_manifest(manifest: &NativeModelManifest) -> bool {
     matches!(
         manifest.model_family.as_str(),
-        "embeddinggemma" | "gemma3_text"
+        "embeddinggemma" | "gemma3_text" | "nemotron_embed"
     )
 }
 
@@ -248,6 +248,8 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
             no_rope_layer_interval: 0,
             attn_temperature_floor: None,
             attn_temperature_scale: None,
@@ -273,6 +275,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            deepseek_v4: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,
@@ -329,6 +332,11 @@ mod tests {
         assert_eq!(
             GenerationStrategyDescriptor::from_manifest(&m).first_visible,
             FirstVisibleEventKind::Embedding
+        );
+        let nemo = base_manifest("nemotron_embed");
+        assert_eq!(
+            GenerationKind::from_manifest(&nemo),
+            GenerationKind::EncoderEmbed
         );
     }
 

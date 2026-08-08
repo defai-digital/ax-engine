@@ -633,6 +633,7 @@ mod tests {
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
+            deepseek_v4: None,
             ffn_norm: zeros(&[16], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,

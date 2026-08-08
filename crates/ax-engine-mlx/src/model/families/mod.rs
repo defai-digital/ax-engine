@@ -1,4 +1,5 @@
 pub(super) mod deepseek_v3;
+pub(crate) mod deepseek_v4;
 pub(super) mod glm4_moe_lite;
 pub(super) mod gpt_oss;
 pub(super) mod llama4;

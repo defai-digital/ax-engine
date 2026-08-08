@@ -34,6 +34,9 @@
   "crates/ax-engine-mlx/src/model/shared/attention.rs": {
     "eval": 2
   },
+  "crates/ax-engine-mlx/src/model/shared/deepseek_v4_compressor.rs": {
+    "eval": 2
+  },
   "crates/ax-engine-mlx/src/model/shared/mlp.rs": {
     "async_eval": 1,
     "eval": 1,
@@ -41,7 +44,7 @@
   },
   "crates/ax-engine-mlx/src/mtp.rs": {
     "async_eval": 1,
-    "eval": 9
+    "eval": 12
   },
   "crates/ax-engine-mlx/src/ngram_accel.rs": {
     "eval": 7
@@ -67,7 +70,7 @@
     "eval": 4
   },
   "crates/ax-engine-mlx/src/weights.rs": {
-    "eval": 15
+    "eval": 16
   },
   "crates/ax-engine-mlx/src/whisper.rs": {
     "try_eval": 2

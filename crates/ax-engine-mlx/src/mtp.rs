@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add, argmax,
-    astype, concatenate, eval, multiply, random_categorical, reshape, rms_norm, rope_dynamic,
-    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take,
+    astype, broadcast_to, concatenate, eval, multiply, random_categorical, reshape, rms_norm,
+    rope_dynamic, scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take,
 };
 
 use crate::fastpath;
@@ -12,9 +12,9 @@ use crate::model::shared::{
     moe_router_qwen3, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qw, rms_norm_opt, shared_expert_forward,
 };
-use crate::model::{ModelConfig, embed_tokens_arr};
+use crate::model::{ModelConfig, deepseek_v4_family, embed_tokens_arr};
 use crate::sampling::{TokenDistribution, Xorshift64};
-use crate::weights::{GlmMtpWeights, ModelWeights, MtpWeights};
+use crate::weights::{DeepseekV4NextnWeights, GlmMtpWeights, ModelWeights, MtpWeights};
 use std::sync::OnceLock;
 
 /// Draft sampling mode for MTP speculative decoding.
@@ -2002,6 +2002,494 @@ fn glm_mtp_draft_tokens_stochastic(
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
 }
 
+// -------------------------------------------------------------------------
+// DeepSeek V4 nextn (MTP) forward
+// -------------------------------------------------------------------------
+
+/// Default draft temperature for the V4 nextn head's stochastic path — the
+/// AXQ artifact carries no runtime sampler config, so this matches the GLM
+/// sidecar default.
+const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
+
+/// KV-cache slot count for the dedicated nextn cache: llama.cpp places the
+/// MTP block at `il = n_layer + nextn_layer_offset`, so the block appends its
+/// raw-path latent K at slot `layer_count` and the cache needs one slot past
+/// the main stack.
+pub fn deepseek_v4_mtp_cache_layer_count(cfg: &ModelConfig) -> usize {
+    cfg.layer_count + 1
+}
+
+/// Depth supported by the V4 nextn head: exactly one predictor block
+/// (llama.cpp asserts `n_layer_nextn == 1`). Returns 0 — disabling MTP
+/// drafts — when the config carries no nextn layer; a multi-block stack is
+/// rejected loudly (once) the same way.
+fn deepseek_v4_mtp_max_depth(cfg: &ModelConfig) -> usize {
+    let Some(v4_cfg) = cfg.deepseek_v4.as_ref() else {
+        return 0;
+    };
+    match v4_cfg.num_nextn_predict_layers {
+        1 => 1,
+        n => {
+            if n > 1 {
+                static WARNED: OnceLock<()> = OnceLock::new();
+                WARNED.get_or_init(|| {
+                    tracing::warn!(
+                        num_nextn_predict_layers = n,
+                        "DeepSeek V4 MTP supports exactly one nextn block; disabling MTP drafts"
+                    );
+                });
+            }
+            0
+        }
+    }
+}
+
+/// Run the DeepSeek V4 nextn (MTP) block for a single decode step.
+///
+/// Returns the block's packed output hidden `[1, 1, hc*hidden]` — re-fed as
+/// `packed_hidden` when chaining draft steps (llama.cpp `t_h_nextn`).
+///
+/// * `nextn`          — nextn weights (block + sidecar tensors).
+/// * `packed_hidden`  — packed pre-collapse residual `[1, 1, hc*hidden]` from
+///   the main model (`deepseek_v4_forward_all_positions_with_packed`) or a
+///   previous nextn block output.
+/// * `prev_token_arr` — token ID as a GPU uint32 array, shape `[1]`.
+/// * `weights`        — main model weights (shared token-embedding fallback).
+/// * `cache`          — dedicated nextn KV cache
+///   ([`deepseek_v4_mtp_cache_layer_count`] slots).
+/// * `cfg`            — main model config.
+/// * `rope_offset_override` — explicit RoPE offset (capped warmup); `None` to
+///   use `cache.seq_len() + cache.rope_offset` (the GLM head's convention).
+pub fn deepseek_v4_mtp_head_forward(
+    nextn: &DeepseekV4NextnWeights,
+    packed_hidden: &MlxArray,
+    prev_token_arr: &MlxArray,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    rope_offset_override: Option<usize>,
+) -> MlxArray {
+    let v4_cfg = cfg.deepseek_v4.as_ref().expect("DeepSeek V4 config");
+    let layer = nextn
+        .layer
+        .as_deref()
+        .expect("DeepSeek V4 nextn block layer weights");
+    debug_assert!(
+        layer
+            .deepseek_v4
+            .as_ref()
+            .is_some_and(|v4_w| v4_w.tid2eid.is_none()),
+        "DeepSeek V4 nextn block must never hash-route (learned sqrtsoftplus router only)"
+    );
+    let token_offset = rope_offset_override.unwrap_or(cache.seq_len() + cache.rope_offset);
+    let hc = v4_cfg.hc_mult as i32;
+    let hidden = cfg.hidden_size as i32;
+
+    // 1. Embed the previous token (nextn-specific table when present) →
+    // enorm; reshape the packed hidden to per-stream layout → hnorm per
+    // stream (llama.cpp graph_mtp, deepseek4.cpp:1438-1457).
+    let embed_table = nextn
+        .embed_tokens
+        .as_ref()
+        .unwrap_or(&weights.token_embedding);
+    let embed = embed_tokens_arr(prev_token_arr, embed_table, cfg.hidden_size);
+    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+    let e_normed = rms_norm(
+        &embed,
+        Some(nextn.enorm.as_ref().expect("DeepSeek V4 nextn enorm")),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let h_streams = reshape(packed_hidden, &[1, 1, hc, hidden], None);
+    let h_normed = rms_norm(
+        &h_streams,
+        Some(nextn.hnorm.as_ref().expect("DeepSeek V4 nextn hnorm")),
+        cfg.rms_norm_eps,
+        None,
+    );
+
+    // 2. Input projection into the packed stream: fused
+    // eh_proj(cat([enorm(e) tiled, hnorm(h)])) per stream (llama.cpp GGUF
+    // layout), or the separate h_proj(h) + e_proj(e) broadcast sum (raw HF
+    // layout, vLLM `DeepSeekV4MultiTokenPredictorLayer`).
+    let packed = if let Some(eh_proj) = nextn.eh_proj.as_ref() {
+        let e_tiled = broadcast_to(
+            &reshape(&e_normed, &[1, 1, 1, hidden], None),
+            &[1, 1, hc, hidden],
+            None,
+        );
+        let combined = concatenate(&[&e_tiled, &h_normed], -1, None);
+        let combined = reshape(&combined, &[hc, 2 * hidden], None);
+        reshape(&qw(&combined, eh_proj), &[1, 1, hc * hidden], None)
+    } else {
+        let e_proj = nextn.e_proj.as_ref().expect("DeepSeek V4 nextn e_proj");
+        let h_proj = nextn.h_proj.as_ref().expect("DeepSeek V4 nextn h_proj");
+        let e_part = reshape(&qw(&e_normed, e_proj), &[1, hidden], None);
+        let h_part = qw(&reshape(&h_normed, &[hc, hidden], None), h_proj);
+        let summed = add(&h_part, &e_part, None);
+        reshape(&summed, &[1, 1, hc * hidden], None)
+    };
+
+    // 3. One full V4 block at layer index `num_hidden_layers`: hc pre/post,
+    // raw-path attention (compress_ratio is 0 out of range, so the
+    // compressor/indexer never engage), learned-router MoE — `token_ids` is
+    // `None` and the block carries no tid2eid table, so the hash path is
+    // structurally unreachable (llama.cpp asserts the same).
+    let packed = deepseek_v4_family::layer_forward(
+        cfg,
+        layer,
+        &packed,
+        cache,
+        cfg.layer_count,
+        token_offset,
+        None,
+        None,
+    );
+    cache.advance(1);
+    packed
+}
+
+/// Collapse the nextn block's packed output and apply the shared head:
+/// `hc_head` → shared-head RMSNorm (nextn-specific or the root final norm) →
+/// shared LM head (nextn-specific or root) — llama.cpp deepseek4.cpp:1528-1544.
+///
+/// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
+pub fn deepseek_v4_mtp_hidden_to_logits(
+    packed_hidden: &MlxArray,
+    nextn: &DeepseekV4NextnWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+) -> MlxArray {
+    let head_w = weights
+        .deepseek_v4_head
+        .as_ref()
+        .expect("DeepSeek V4 head weights (hc_head_*)");
+    let hidden = deepseek_v4_family::collapse_for_head(cfg, head_w, packed_hidden);
+    let norm_w = nextn
+        .shared_head_norm
+        .as_ref()
+        .unwrap_or(&weights.final_norm);
+    let normed = rms_norm(&hidden, Some(norm_w), cfg.rms_norm_eps, None);
+    let head = nextn.shared_head_head.as_ref().unwrap_or(&weights.lm_head);
+    let logits = qw(&normed, head);
+    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+    reshape(&logits_f32, &[cfg.vocab_size as i32], None)
+}
+
+/// Draft up to `max_depth` (≤ `num_nextn_predict_layers` = 1) tokens using the
+/// DeepSeek V4 nextn block.
+///
+/// Returns `(draft_tokens, draft_log_probs, draft_distributions, added, top2_margins)`.
+/// Mirrors [`glm_mtp_draft_tokens`]; returns empty when
+/// `weights.deepseek_v4_nextn` is `None` or the block layer is absent.
+#[allow(clippy::too_many_arguments)]
+pub fn deepseek_v4_mtp_draft_tokens(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth_cap: Option<usize>,
+    rng: &mut Xorshift64,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    deepseek_v4_mtp_draft_tokens_gated(
+        weights,
+        cfg,
+        first_hidden,
+        first_token,
+        cache,
+        max_depth_cap,
+        rng,
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        ),
+    )
+}
+
+/// Like [`deepseek_v4_mtp_draft_tokens`], but first threads the nextn block
+/// through `forced_prefix` (real cache appends, correctly incrementing RoPE
+/// offsets) before drafting the tail. Mirrors
+/// [`glm_mtp_draft_tokens_after_forced_prefix`] for the hybrid n-gram+MTP path.
+#[allow(clippy::too_many_arguments)]
+pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    forced_prefix: &[u32],
+    cache: &mut MlxKVCache,
+    max_tail_depth: usize,
+    rng: &mut Xorshift64,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let Some(nextn) = weights.deepseek_v4_nextn.as_ref() else {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    };
+    if forced_prefix.is_empty() {
+        return deepseek_v4_mtp_draft_tokens(
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            Some(max_tail_depth),
+            rng,
+        );
+    }
+
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for &forced_token in forced_prefix {
+        prev_hidden = deepseek_v4_mtp_head_forward(
+            nextn,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let tok_data = [forced_token];
+        prev_token_arr = MlxArray::from_raw_data(
+            tok_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+    }
+
+    if max_tail_depth == 0 {
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&prev_hidden);
+        targets.extend(kv_refs);
+        eval(&targets);
+        return (vec![], vec![], vec![], forced_prefix.len(), [0.0f32; 3]);
+    }
+
+    let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
+    let min_confidence = resolve_mtp_draft_min_confidence(
+        crate::speculation_profile::speculation_profile_from_env(),
+        None,
+    );
+    let (draft, log_probs, distributions, tail_added, top2_margins) =
+        deepseek_v4_mtp_draft_tokens_gated(
+            weights,
+            cfg,
+            &prev_hidden,
+            last_forced,
+            cache,
+            Some(max_tail_depth),
+            rng,
+            min_confidence,
+        );
+
+    (
+        draft,
+        log_probs,
+        distributions,
+        forced_prefix.len().saturating_add(tail_added),
+        top2_margins,
+    )
+}
+
+/// Like [`deepseek_v4_mtp_draft_tokens`] but with an explicit draft-confidence gate.
+#[allow(clippy::too_many_arguments)]
+pub fn deepseek_v4_mtp_draft_tokens_gated(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth_cap: Option<usize>,
+    _rng: &mut Xorshift64,
+    min_confidence: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let Some(nextn) = weights.deepseek_v4_nextn.as_ref() else {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    };
+    if nextn.layer.is_none() {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    }
+    let max_depth = deepseek_v4_mtp_max_depth(cfg).min(max_depth_cap.unwrap_or(usize::MAX));
+    if max_depth == 0 {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    }
+
+    let vocab = cfg.vocab_size as i32;
+    let draft_mode = mtp_draft_mode_from_env();
+    let gate_forces_greedy = min_confidence > 0.0 && draft_mode != MtpDraftMode::Stochastic;
+
+    let result = if gate_forces_greedy || draft_mode == MtpDraftMode::Greedy {
+        // Greedy argmax; log-probs at T=1.0 (no draft-sampler config ships
+        // with the V4 artifact — see the GLM gated dispatcher for the split).
+        deepseek_v4_mtp_draft_tokens_greedy(
+            nextn,
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            max_depth,
+            vocab,
+            1.0,
+        )
+    } else {
+        deepseek_v4_mtp_draft_tokens_stochastic(
+            nextn,
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            max_depth,
+            vocab,
+        )
+    };
+
+    let appended = result.3;
+    let gated = apply_draft_confidence_gate(result, min_confidence);
+    let dropped = appended.saturating_sub(gated.3);
+    if dropped > 0 {
+        let target = cache.seq_len().saturating_sub(dropped);
+        if !cache.trim_to(target) {
+            // Same contract as the GLM path: output stays correct (every
+            // draft is verified), so warn rather than fail.
+            tracing::warn!(target, "MTP confidence-gate trim refused");
+        }
+    }
+    gated
+}
+
+/// Greedy V4 nextn draft: lazy argmax across all depths, single batch eval.
+#[allow(clippy::too_many_arguments)]
+fn deepseek_v4_mtp_draft_tokens_greedy(
+    nextn: &DeepseekV4NextnWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth: usize,
+    vocab: i32,
+    log_prob_temperature: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    // Imperative path like GLM: a single nextn block at depth ≤1 — a compiled
+    // head would fuse nothing of consequence on these bandwidth-bound models.
+    let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for _ in 0..max_depth {
+        let new_hidden = deepseek_v4_mtp_head_forward(
+            nextn,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let logits = deepseek_v4_mtp_hidden_to_logits(&new_hidden, nextn, weights, cfg);
+        let lazy_tok = lazy_argmax_logits(&logits);
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_temperature, vocab);
+        lazy_tokens.push(lazy_tok.clone());
+        lazy_log_probs.push(lazy_lp);
+        prev_hidden = new_hidden;
+        prev_token_arr = lazy_tok;
+    }
+
+    let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+    for t in &lazy_tokens {
+        all_refs.push(t);
+    }
+    for lp in &lazy_log_probs {
+        all_refs.push(lp);
+    }
+    eval(&all_refs);
+
+    let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+    let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+    let added = draft_tokens.len();
+    (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+/// Stochastic V4 nextn draft: GPU-side `random_categorical` sampling.
+#[allow(clippy::too_many_arguments)]
+fn deepseek_v4_mtp_draft_tokens_stochastic(
+    nextn: &DeepseekV4NextnWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth: usize,
+    vocab: i32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let temperature = DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE;
+    let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for _ in 0..max_depth {
+        let new_hidden = deepseek_v4_mtp_head_forward(
+            nextn,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let logits = deepseek_v4_mtp_hidden_to_logits(&new_hidden, nextn, weights, cfg);
+        let lazy_tok = if temperature > 0.0 {
+            lazy_random_sample(&logits, temperature, vocab)
+        } else {
+            lazy_argmax_logits(&logits)
+        };
+        lazy_tokens.push(lazy_tok.clone());
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        lazy_log_probs.push(lazy_lp);
+        prev_hidden = new_hidden;
+        prev_token_arr = lazy_tok;
+    }
+
+    let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+    for t in &lazy_tokens {
+        all_refs.push(t);
+    }
+    for lp in &lazy_log_probs {
+        all_refs.push(lp);
+    }
+    eval(&all_refs);
+
+    let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+    let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+    let added = draft_tokens.len();
+    (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
 #[cfg(test)]
 mod confidence_gate_tests {
     use super::*;
@@ -2068,5 +2556,438 @@ mod confidence_gate_tests {
             apply_draft_confidence_gate((vec![1, 2, 3], log_probs, vec![], 0, [0.0; 3]), 0.90);
         assert_eq!(toks, vec![1]);
         assert_eq!(added, 1);
+    }
+}
+
+// -------------------------------------------------------------------------
+// DeepSeek V4 nextn (MTP) tests — tiny synthetic block, compile + shape/value
+// checks only (run on hardware elsewhere).
+// -------------------------------------------------------------------------
+#[cfg(test)]
+mod deepseek_v4_mtp_tests {
+    use super::*;
+    use crate::weights::{
+        DeepseekV4HeadWeights, DeepseekV4LayerWeights, LayerWeights, QuantizedWeight,
+    };
+    use mlx_sys::eval;
+
+    // Tiny synthetic dims: E=8, D=4, H=1, G=1, R_o=2, rot=2, R_q=4, HC=4.
+    const E: usize = 8;
+    const D: usize = 4;
+    const H: usize = 1;
+    const G: usize = 1;
+    const R_O: usize = 2;
+    const ROT: usize = 2;
+    const R_Q: usize = 4;
+    const HC: usize = 4;
+    const N_EXPERTS: usize = 2;
+    const TOP_K: usize = 1;
+    const INTER: usize = 4;
+    const VOCAB: usize = 8;
+
+    fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    /// Deterministic pseudo-random fill (no external deps).
+    fn fill(len: usize, seed: f32) -> Vec<f32> {
+        (0..len)
+            .map(|i| ((i as f32 + 1.0) * seed).sin() * 0.5)
+            .collect()
+    }
+
+    fn token_arr(token: u32) -> MlxArray {
+        let data = [token];
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(&data),
+            &[1_i32],
+            MlxDtype::Uint32,
+        )
+    }
+
+    fn test_v4_config() -> crate::model::DeepseekV4Config {
+        crate::model::DeepseekV4Config {
+            head_dim: D,
+            qk_rope_head_dim: ROT,
+            q_lora_rank: R_Q,
+            o_lora_rank: R_O,
+            o_groups: G,
+            index_topk: 8,
+            index_n_heads: 1,
+            index_head_dim: 4,
+            compress_rope_theta: 50000.0,
+            compress_rope_scaling: None,
+            has_attn_sinks: true,
+            compress_ratios: vec![0],
+            hc_mult: HC,
+            hc_sinkhorn_iters: 3,
+            hc_eps: 1e-5,
+            // The nextn block must sit beyond the hash layers; the test block
+            // carries the learned router only.
+            num_hash_layers: 0,
+            num_nextn_predict_layers: 1,
+            scoring_func: Some("sqrtsoftplus".to_string()),
+            swiglu_limit: 7.0,
+        }
+    }
+
+    fn test_model_config() -> ModelConfig {
+        ModelConfig {
+            compile_cache_identity: 1,
+            model_family: "deepseek_v4".to_string(),
+            layer_count: 1,
+            hidden_size: E,
+            intermediate_size: INTER,
+            n_heads: H,
+            n_kv_heads: 1,
+            head_dim: D,
+            vocab_size: VOCAB,
+            rope_theta: 10000.0,
+            rope_dims: ROT,
+            attn_output_gate: false,
+            query_scale: 1.0 / (D as f32).sqrt(),
+            final_logit_softcapping: None,
+            moe_expert_count: N_EXPERTS,
+            moe_experts_per_token: TOP_K,
+            moe_expert_intermediate_size: INTER,
+            layer_configs: Vec::new(),
+            global_sliding_window: None,
+            protected_prefix_sliding_window: None,
+            gemma4_moe_router: false,
+            uses_geglu: false,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: true,
+            hidden_size_per_layer_input: 0,
+            linear_attention: None,
+            mla_attention: None,
+            glm_router: None,
+            deepseek_v4: Some(test_v4_config()),
+            rms_norm_eps: 1e-6,
+            rope_freqs: None,
+            rope_mscale: 1.0,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: 8192.0,
+            attn_temperature_scale: 0.1,
+            intermediate_size_mlp: 0,
+            moe_layer_freq: 1,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 1,
+            moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
+            diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
+            generation_kind: ax_engine_core::GenerationKind::Autoregressive,
+            kv_cache_quant: vec![None; 1],
+        }
+    }
+
+    fn dense_weight(rows: usize, cols: usize, seed: f32) -> QuantizedWeight {
+        QuantizedWeight::new(
+            array_f32(&fill(rows * cols, seed), &[rows as i32, cols as i32]),
+            None,
+            None,
+        )
+    }
+
+    fn hc_branch_weights(mixes: usize, seed: f32) -> (MlxArray, MlxArray, MlxArray) {
+        (
+            array_f32(
+                &fill(mixes * HC * E, seed),
+                &[mixes as i32, (HC * E) as i32],
+            ),
+            array_f32(&fill(mixes, seed + 0.1), &[mixes as i32]),
+            array_f32(&[1.0, 1.0, 1.0], &[3]),
+        )
+    }
+
+    /// Nextn block layer: learned sqrtsoftplus router (correction bias), never
+    /// a tid2eid hash table.
+    fn test_nextn_layer_weights() -> LayerWeights {
+        let mixes = 2 * HC + HC * HC;
+        let (hc_attn_fn, hc_attn_base, hc_attn_scale) = hc_branch_weights(mixes, 0.31);
+        let (hc_ffn_fn, hc_ffn_base, hc_ffn_scale) = hc_branch_weights(mixes, 0.47);
+        LayerWeights {
+            attn_norm: array_f32(&fill(E, 0.9), &[E as i32]),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            glm_mla_attn: None,
+            deepseek_v4: Some(DeepseekV4LayerWeights {
+                wq_a: dense_weight(R_Q, E, 0.11),
+                q_a_norm: array_f32(&fill(R_Q, 0.8), &[R_Q as i32]),
+                wq_b: dense_weight(H * D, R_Q, 0.13),
+                wkv: dense_weight(D, E, 0.17),
+                kv_norm: array_f32(&fill(D, 0.8), &[D as i32]),
+                wo_a: dense_weight(G * R_O, H * D / G, 0.19),
+                wo_b: dense_weight(E, G * R_O, 0.23),
+                attn_sink: Some(array_f32(&[-1.0], &[H as i32])),
+                hc_attn_fn,
+                hc_attn_base,
+                hc_attn_scale,
+                hc_ffn_fn,
+                hc_ffn_base,
+                hc_ffn_scale,
+                compressor: None,
+                indexer: None,
+                tid2eid: None,
+            }),
+            ffn_norm: array_f32(&fill(E, 0.9), &[E as i32]),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: None,
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: Some(dense_weight(N_EXPERTS, E, 0.29)),
+            router_correction_bias: Some(array_f32(&fill(N_EXPERTS, 0.05), &[N_EXPERTS as i32])),
+            router_scale: None,
+            router_combined_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_up_proj: None,
+            shared_gate_proj: Some(dense_weight(INTER, E, 0.37)),
+            shared_up_proj: Some(dense_weight(INTER, E, 0.41)),
+            shared_down_proj: Some(dense_weight(E, INTER, 0.43)),
+            gate_up_exps_packed: None,
+            gate_exps: Some(QuantizedWeight::new(
+                array_f32(
+                    &fill(N_EXPERTS * INTER * E, 0.53),
+                    &[N_EXPERTS as i32, INTER as i32, E as i32],
+                ),
+                None,
+                None,
+            )),
+            up_exps: Some(QuantizedWeight::new(
+                array_f32(
+                    &fill(N_EXPERTS * INTER * E, 0.59),
+                    &[N_EXPERTS as i32, INTER as i32, E as i32],
+                ),
+                None,
+                None,
+            )),
+            down_exps: Some(QuantizedWeight::new(
+                array_f32(
+                    &fill(N_EXPERTS * E * INTER, 0.61),
+                    &[N_EXPERTS as i32, E as i32, INTER as i32],
+                ),
+                None,
+                None,
+            )),
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
+            rotation_smoothing_inverse: None,
+        }
+    }
+
+    fn test_nextn_weights() -> DeepseekV4NextnWeights {
+        DeepseekV4NextnWeights {
+            e_proj: None,
+            h_proj: None,
+            eh_proj: Some(dense_weight(E, 2 * E, 0.71)),
+            enorm: Some(array_f32(&fill(E, 0.73), &[E as i32])),
+            hnorm: Some(array_f32(&fill(E, 0.79), &[E as i32])),
+            // Exercise the root fallbacks (final norm / lm_head / shared
+            // embedding table) rather than nextn-specific tensors.
+            shared_head_norm: None,
+            embed_tokens: None,
+            shared_head_head: None,
+            layer: Some(Box::new(test_nextn_layer_weights())),
+        }
+    }
+
+    fn test_model_weights(nextn: Option<DeepseekV4NextnWeights>) -> ModelWeights {
+        ModelWeights {
+            token_embedding: dense_weight(VOCAB, E, 0.83),
+            final_norm: array_f32(&fill(E, 0.89), &[E as i32]),
+            lm_head: dense_weight(VOCAB, E, 0.97),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            deepseek_v4_head: Some(DeepseekV4HeadWeights {
+                hc_head_fn: array_f32(&fill(HC * HC * E, 0.21), &[HC as i32, (HC * E) as i32]),
+                hc_head_base: array_f32(&fill(HC, 0.22), &[HC as i32]),
+                hc_head_scale: array_f32(&[1.0], &[1]),
+            }),
+            deepseek_v4_nextn: nextn,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
+            diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
+        }
+    }
+
+    fn packed_hidden(seed: f32) -> MlxArray {
+        array_f32(&fill(HC * E, seed), &[1, 1, (HC * E) as i32])
+    }
+
+    #[test]
+    fn head_forward_shapes_and_two_step_chaining() {
+        let cfg = test_model_config();
+        let weights = test_model_weights(Some(test_nextn_weights()));
+        let nextn = weights.deepseek_v4_nextn.as_ref().expect("nextn");
+        let mut cache = MlxKVCache::new(deepseek_v4_mtp_cache_layer_count(&cfg));
+
+        let h0 = packed_hidden(0.67);
+        let out1 = deepseek_v4_mtp_head_forward(
+            nextn,
+            &h0,
+            &token_arr(3),
+            &weights,
+            &mut cache,
+            &cfg,
+            None,
+        );
+        eval(&[&out1]);
+        assert_eq!(out1.shape(), vec![1, 1, (HC * E) as i32]);
+        assert!(out1.data_f32().iter().all(|v| v.is_finite()));
+        assert_eq!(cache.seq_len(), 1);
+
+        // Chain: the block's own packed output is the next step's `h` input
+        // (llama.cpp `t_h_nextn`).
+        let out2 = deepseek_v4_mtp_head_forward(
+            nextn,
+            &out1,
+            &token_arr(5),
+            &weights,
+            &mut cache,
+            &cfg,
+            None,
+        );
+        eval(&[&out2]);
+        assert_eq!(out2.shape(), vec![1, 1, (HC * E) as i32]);
+        assert!(out2.data_f32().iter().all(|v| v.is_finite()));
+        assert_eq!(cache.seq_len(), 2);
+    }
+
+    #[test]
+    fn head_forward_is_deterministic() {
+        let cfg = test_model_config();
+        let weights = test_model_weights(Some(test_nextn_weights()));
+        let nextn = weights.deepseek_v4_nextn.as_ref().expect("nextn");
+        let run = || {
+            let mut cache = MlxKVCache::new(deepseek_v4_mtp_cache_layer_count(&cfg));
+            let out = deepseek_v4_mtp_head_forward(
+                nextn,
+                &packed_hidden(0.67),
+                &token_arr(3),
+                &weights,
+                &mut cache,
+                &cfg,
+                None,
+            );
+            eval(&[&out]);
+            out.data_f32().to_vec()
+        };
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn hidden_to_logits_vocab_shape() {
+        let cfg = test_model_config();
+        let weights = test_model_weights(Some(test_nextn_weights()));
+        let nextn = weights.deepseek_v4_nextn.as_ref().expect("nextn");
+        let logits = deepseek_v4_mtp_hidden_to_logits(&packed_hidden(0.67), nextn, &weights, &cfg);
+        eval(&[&logits]);
+        assert_eq!(logits.shape(), vec![VOCAB as i32]);
+        assert!(logits.data_f32().iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn draft_tokens_empty_without_nextn() {
+        let cfg = test_model_config();
+        let weights = test_model_weights(None);
+        let mut cache = MlxKVCache::new(deepseek_v4_mtp_cache_layer_count(&cfg));
+        let mut rng = Xorshift64::new(1);
+        let (draft, log_probs, dist, added, margins) = deepseek_v4_mtp_draft_tokens(
+            &weights,
+            &cfg,
+            &packed_hidden(0.67),
+            3,
+            &mut cache,
+            None,
+            &mut rng,
+        );
+        assert!(draft.is_empty());
+        assert!(log_probs.is_empty());
+        assert!(dist.is_empty());
+        assert_eq!(added, 0);
+        assert_eq!(margins, [0.0; 3]);
+    }
+
+    #[test]
+    fn draft_tokens_depth_one_then_trim_and_redraft() {
+        let cfg = test_model_config();
+        let weights = test_model_weights(Some(test_nextn_weights()));
+        let mut cache = MlxKVCache::new(deepseek_v4_mtp_cache_layer_count(&cfg));
+        let mut rng = Xorshift64::new(1);
+
+        let (draft, log_probs, _dist, added, _m) = deepseek_v4_mtp_draft_tokens_gated(
+            &weights,
+            &cfg,
+            &packed_hidden(0.67),
+            3,
+            &mut cache,
+            None,
+            &mut rng,
+            0.0,
+        );
+        assert_eq!(draft.len(), 1);
+        assert_eq!(log_probs.len(), 1);
+        assert_eq!(added, 1);
+        assert!(draft[0] < VOCAB as u32);
+        assert!(log_probs[0].is_finite());
+        assert_eq!(cache.seq_len(), 1);
+
+        // Simulate a rejected draft: the cache trims back and the next step
+        // re-drafts from the new committed hidden.
+        assert!(cache.trim_to(0));
+        let (draft2, _lp, _d, added2, _m2) = deepseek_v4_mtp_draft_tokens_gated(
+            &weights,
+            &cfg,
+            &packed_hidden(0.71),
+            4,
+            &mut cache,
+            None,
+            &mut rng,
+            0.0,
+        );
+        assert_eq!(draft2.len(), 1);
+        assert_eq!(added2, 1);
+        assert_eq!(cache.seq_len(), 1);
     }
 }

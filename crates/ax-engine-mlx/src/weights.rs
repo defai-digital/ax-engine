@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, add, astype, concatenate, contiguous, dequantize,
-    dequantize_with_mode, eval, flatten, load_safetensors, multiply, quantize, reshape, slice,
-    transpose, view,
+    MlxArray, MlxDtype, MlxQuantizationMode, add, astype, broadcast_to, concatenate, contiguous,
+    dequantize, dequantize_with_mode, eval, flatten, from_fp8, load_safetensors,
+    load_safetensors_mmap, multiply, quantize, reshape, slice, stack, take, transpose, view,
 };
 
 use ax_engine_core::{
@@ -60,6 +60,11 @@ pub struct ModelWeights {
     pub diffusion_self_conditioning: Option<DiffusionSelfConditioningWeights>,
     /// MTP weights for GLM 4.7 Flash: separate sidecar with MLA-based head.
     pub glm_mtp: Option<GlmMtpWeights>,
+    /// Root-level DeepSeek V4 hyper-connection head (`hc_head_*`).
+    pub deepseek_v4_head: Option<DeepseekV4HeadWeights>,
+    /// DeepSeek V4 MTP (nextn) predictor tensors, loaded for a deferred
+    /// runtime-MTP phase; not consumed by the forward path yet.
+    pub deepseek_v4_nextn: Option<DeepseekV4NextnWeights>,
     /// Unlimited-OCR dual vision (SAM-ViT-B + CLIP-L) + projector.
     pub unlimited_ocr_vision: Option<crate::unlimited_ocr::UnlimitedOcrVisionWeights>,
     /// Qwen3-VL portable ViT tower (WS-V2). `None` until HF vision weights are
@@ -214,6 +219,9 @@ pub struct LayerWeights {
     pub linear_attn: Option<LinearAttentionWeights>,
     // GLM4MoELite MLA attention. Present instead of standard full-attention Q/K/V.
     pub glm_mla_attn: Option<GlmMlaAttentionWeights>,
+    // DeepSeek V4 (Flash) attention + hyper-connection tensors. Present instead
+    // of standard full-attention Q/K/V/O for deepseek_v4 manifests.
+    pub deepseek_v4: Option<DeepseekV4LayerWeights>,
     // Dense FFN norms and weights.
     pub ffn_norm: MlxArray,
     pub ffn_post_norm: Option<MlxArray>,
@@ -282,6 +290,145 @@ pub struct GlmMlaAttentionWeights {
     pub kv_a_norm: MlxArray,
     pub embed_q: QuantizedWeight,
     pub unembed_out: QuantizedWeight,
+}
+
+/// Weights for a DeepSeek V4 (Flash) sliding-window compressor
+/// (`attn.compressor.*`). Present on layers whose compress ratio is 4 or 128.
+pub struct DeepseekV4CompressorWeights {
+    /// Fused KV projection (`compressor.wkv`).
+    pub kv: QuantizedWeight,
+    /// Compressor gate (`compressor.wgate`).
+    pub gate: QuantizedWeight,
+    /// Absolute positional embedding (`compressor.ape`,
+    /// `[coff*head_dim, ratio]` with `coff = 1 + (ratio == 4)`).
+    pub ape: MlxArray,
+    /// Compressor RMSNorm (`compressor.norm`).
+    pub norm: MlxArray,
+}
+
+/// Weights for a DeepSeek V4 (Flash) sparse indexer (`attn.indexer.*`).
+/// Present only on ratio-4 layers.
+pub struct DeepseekV4IndexerWeights {
+    /// Per-token score projection (`indexer.weights_proj`).
+    pub proj: QuantizedWeight,
+    /// Query up-projection (`indexer.wq_b`).
+    pub qb: QuantizedWeight,
+    /// Indexer compressor KV projection (`indexer.compressor.wkv`).
+    pub compressor_kv: QuantizedWeight,
+    /// Indexer compressor gate (`indexer.compressor.wgate`).
+    pub compressor_gate: QuantizedWeight,
+    /// Indexer compressor positional embedding (`indexer.compressor.ape`).
+    pub compressor_ape: MlxArray,
+    /// Indexer compressor RMSNorm (`indexer.compressor.norm`).
+    pub compressor_norm: MlxArray,
+}
+
+/// Weights for a DeepSeek V4 (Flash) layer's attention + hyper-connection
+/// tensors. The MoE router gate, expert stacks, and shared experts use the
+/// generic `LayerWeights` fields (`router_proj`, `gate_exps`, …).
+pub struct DeepseekV4LayerWeights {
+    /// Q LoRA down-projection (`attn.wq_a`).
+    pub wq_a: QuantizedWeight,
+    /// RMSNorm over the Q latent (`attn.q_a_norm`).
+    pub q_a_norm: MlxArray,
+    /// Q LoRA up-projection (`attn.wq_b`).
+    pub wq_b: QuantizedWeight,
+    /// Fused KV projection (`attn.wkv`) feeding the single latent KV head.
+    pub wkv: QuantizedWeight,
+    /// RMSNorm over the `wkv` output (`attn.kv_norm`).
+    pub kv_norm: MlxArray,
+    /// Grouped output down-projection (`attn.wo_a`, per `o_groups`;
+    /// `[H*D/G, R_o, G]`).
+    pub wo_a: QuantizedWeight,
+    /// Output LoRA up-projection (`attn.wo_b`, `o_lora_rank → hidden`).
+    pub wo_b: QuantizedWeight,
+    /// Learned per-head attention sink (`attn.attn_sink`), `[n_heads]` f32.
+    pub attn_sink: Option<MlxArray>,
+    /// Hyper-connection attention-branch coefficients (`hc_attn_fn`).
+    pub hc_attn_fn: MlxArray,
+    /// Hyper-connection attention-branch base (`hc_attn_base`).
+    pub hc_attn_base: MlxArray,
+    /// Hyper-connection attention-branch scale (`hc_attn_scale`).
+    pub hc_attn_scale: MlxArray,
+    /// Hyper-connection FFN-branch coefficients (`hc_ffn_fn`).
+    pub hc_ffn_fn: MlxArray,
+    /// Hyper-connection FFN-branch base (`hc_ffn_base`).
+    pub hc_ffn_base: MlxArray,
+    /// Hyper-connection FFN-branch scale (`hc_ffn_scale`).
+    pub hc_ffn_scale: MlxArray,
+    /// Sliding-window compressor (ratio-4/128 layers only).
+    pub compressor: Option<DeepseekV4CompressorWeights>,
+    /// Sparse indexer (ratio-4 layers only).
+    pub indexer: Option<DeepseekV4IndexerWeights>,
+    /// Hash-routing token→expert table (`ffn.gate.tid2eid`, `[vocab, topk]`
+    /// I32/U32) on the first `num_hash_layers` MoE layers; mutually exclusive
+    /// with the generic `router_correction_bias`.
+    pub tid2eid: Option<MlxArray>,
+}
+
+/// Root-level DeepSeek V4 hyper-connection head (`hc_head_*`), applied before
+/// the final norm to collapse the packed residual stream.
+pub struct DeepseekV4HeadWeights {
+    pub hc_head_fn: MlxArray,
+    pub hc_head_base: MlxArray,
+    pub hc_head_scale: MlxArray,
+}
+
+/// DeepSeek V4 MTP (nextn) predictor tensors. Loaded from manifest-side
+/// nextn roles (GGUF layout `layers.N.nextn.*` / raw HF `mtp.N.*`) and/or the
+/// `mtp.safetensors` sidecar. The block itself (`layer`) is one full V4
+/// transformer layer: GGUF-layout manifests carry it at layer index
+/// `num_hidden_layers`, raw-HF packages ship it in the sidecar.
+#[derive(Default)]
+pub struct DeepseekV4NextnWeights {
+    /// MTP embedding projection (`nextn.e_proj` / `mtp.N.e_proj`).
+    pub e_proj: Option<QuantizedWeight>,
+    /// MTP hidden projection (`nextn.h_proj` / `mtp.N.h_proj`).
+    pub h_proj: Option<QuantizedWeight>,
+    /// MTP fused embedding+hidden projection (`nextn.eh_proj`).
+    pub eh_proj: Option<QuantizedWeight>,
+    /// MTP embedding RMSNorm (`nextn.enorm`).
+    pub enorm: Option<MlxArray>,
+    /// MTP hidden RMSNorm (`nextn.hnorm`).
+    pub hnorm: Option<MlxArray>,
+    /// MTP shared-head RMSNorm (`nextn.shared_head_norm` / `mtp.N.norm`).
+    pub shared_head_norm: Option<MlxArray>,
+    /// MTP shared token embedding (`nextn.embed_tokens`).
+    pub embed_tokens: Option<QuantizedWeight>,
+    /// MTP shared LM head (`nextn.shared_head_head`).
+    pub shared_head_head: Option<QuantizedWeight>,
+    /// The nextn transformer block (raw-path attention + learned-router MoE,
+    /// never hash-routed). `None` when the artifact ships only the
+    /// manifest-side sidecar roles (deferred runtime-MTP phase).
+    pub layer: Option<Box<LayerWeights>>,
+}
+
+impl DeepseekV4NextnWeights {
+    fn is_empty(&self) -> bool {
+        self.e_proj.is_none()
+            && self.h_proj.is_none()
+            && self.eh_proj.is_none()
+            && self.enorm.is_none()
+            && self.hnorm.is_none()
+            && self.shared_head_norm.is_none()
+            && self.embed_tokens.is_none()
+            && self.shared_head_head.is_none()
+            && self.layer.is_none()
+    }
+
+    /// Fill every missing piece from `sidecar` (manifest-side tensors win).
+    fn merged_with(mut self, sidecar: DeepseekV4NextnWeights) -> DeepseekV4NextnWeights {
+        self.e_proj = self.e_proj.or(sidecar.e_proj);
+        self.h_proj = self.h_proj.or(sidecar.h_proj);
+        self.eh_proj = self.eh_proj.or(sidecar.eh_proj);
+        self.enorm = self.enorm.or(sidecar.enorm);
+        self.hnorm = self.hnorm.or(sidecar.hnorm);
+        self.shared_head_norm = self.shared_head_norm.or(sidecar.shared_head_norm);
+        self.embed_tokens = self.embed_tokens.or(sidecar.embed_tokens);
+        self.shared_head_head = self.shared_head_head.or(sidecar.shared_head_head);
+        self.layer = self.layer.or(sidecar.layer);
+        self
+    }
 }
 
 /// Weights for a Qwen3.5 GatedDelta linear-attention layer.
@@ -624,11 +771,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         "final_norm",
     )?
     .weight;
-    // EmbeddingGemma is an encoder with no LM head; reuse the token embedding as
-    // a placeholder `lm_head` (never consumed on the embedding-only forward path)
-    // so the shared ModelWeights shape stays non-optional.
+    // Encoder-only families (EmbeddingGemma, Nemotron Embed) have no LM head;
+    // reuse the token embedding as a placeholder `lm_head` (never consumed on
+    // the embedding-only forward path) so the shared ModelWeights shape stays
+    // non-optional.
     let lm_head = if artifacts.manifest().tie_word_embeddings
         || artifacts.manifest().model_family == "embeddinggemma"
+        || artifacts.manifest().model_family == "nemotron_embed"
     {
         let mut tied = QuantizedWeight::new(
             token_embedding.weight.clone(),
@@ -755,7 +904,16 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         crate::nemotron_omni::load_nemotron_omni_weights(&mut name_map, source_config.as_ref())?;
 
     let mut layers = Vec::with_capacity(layer_count);
-    for li in 0..layer_count {
+    // DeepSeek V4 layers carry attention/hyper-connection tensors that must
+    // not be routed through the standard/GLM-MLA projection loaders.
+    let is_deepseek_v4 = artifacts.manifest().deepseek_v4.is_enabled();
+    // GGUF-layout manifests place the nextn (MTP) block's per-layer tensors at
+    // layer index `layer_count`; load them through the same per-layer path and
+    // detach the extra layer into `DeepseekV4NextnWeights` below.
+    let nextn_block_in_manifest =
+        is_deepseek_v4 && has_role(specs, NativeTensorRole::HcAttnFn, Some(layer_count as u32));
+    let load_layer_total = layer_count + usize::from(nextn_block_in_manifest);
+    for li in 0..load_layer_total {
         let idx = Some(li as u32);
         let uses_shared_kv = artifacts.manifest().model_family == "gemma4_assistant"
             || artifacts
@@ -778,14 +936,15 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         )?
         .weight;
         let o_proj = match attention_layout {
-            AttentionLayout::Full => Some(take_weight(
+            // V4 uses the grouped wo_a/wo_b output LoRA, loaded below.
+            AttentionLayout::Full if !is_deepseek_v4 => Some(take_weight(
                 specs,
                 &mut name_map,
                 NativeTensorRole::AttentionO,
                 idx,
                 "o_proj",
             )?),
-            AttentionLayout::Linear | AttentionLayout::None => None,
+            AttentionLayout::Full | AttentionLayout::Linear | AttentionLayout::None => None,
         };
         let linear_attn = match attention_layout {
             AttentionLayout::Full | AttentionLayout::None => None,
@@ -999,8 +1158,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             (gate_exps, up_exps, down_exps, None, None)
         };
 
-        // GPT-OSS per-head attention sink.
-        let attn_sink = try_take_plain(specs, &mut name_map, NativeTensorRole::AttnSink, idx)?;
+        // GPT-OSS per-head attention sink. V4 owns its sink inside
+        // `DeepseekV4LayerWeights` (loaded below), so skip the generic slot here.
+        let attn_sink = if is_deepseek_v4 {
+            None
+        } else {
+            try_take_plain(specs, &mut name_map, NativeTensorRole::AttnSink, idx)?
+        };
 
         let q_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionQNorm, idx)?;
         let k_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionKNorm, idx)?;
@@ -1008,7 +1172,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         let (qkv_packed, q_proj, k_proj, v_proj, glm_mla_attn) = if matches!(
             attention_layout,
             AttentionLayout::Linear | AttentionLayout::None
-        ) {
+        ) || is_deepseek_v4
+        {
+            // V4 projections load into `DeepseekV4LayerWeights` below; never
+            // through the standard/GLM-MLA layout detection (its Qa/QaNorm/Qb
+            // roles would otherwise misdetect as GLM MLA and hit the V3-only
+            // `split_deepseek_kv_b_projection`).
             (None, None, None, None, None)
         } else {
             match full_attention_projection_layout(specs, idx, uses_shared_kv, uses_value_from_key)?
@@ -1105,6 +1274,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             }
         };
 
+        let deepseek_v4 = if is_deepseek_v4 {
+            Some(load_deepseek_v4_layer_weights(specs, &mut name_map, idx)?)
+        } else {
+            None
+        };
+
         let (gate_up_packed, gate_proj, up_proj) =
             if has_role(specs, NativeTensorRole::FfnGateUpPacked, idx) {
                 let p = take_weight(
@@ -1158,6 +1333,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             o_proj,
             linear_attn,
             glm_mla_attn,
+            deepseek_v4,
             ffn_norm,
             ffn_post_norm,
             gate_proj,
@@ -1209,6 +1385,41 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
 
     crate::weight_rotation::shadow_log_rotation_candidates(specs);
 
+    // Root-level DeepSeek V4 hyper-connection head and deferred MTP (nextn)
+    // tensors; both are global (non-layer-indexed) roles. Detach the nextn
+    // block layer first so `layers` keeps exactly `layer_count` entries.
+    let nextn_block_layer = if nextn_block_in_manifest {
+        Some(
+            layers
+                .pop()
+                .expect("nextn block layer loaded with the extended layer loop"),
+        )
+    } else {
+        None
+    };
+    let deepseek_v4_head = load_deepseek_v4_head_weights(specs, &mut name_map)?;
+    let mut deepseek_v4_nextn =
+        load_deepseek_v4_nextn_weights(specs, &mut name_map, nextn_block_layer)?;
+    // Raw-HF packages ship the nextn block in an `mtp.safetensors` sidecar;
+    // fill any missing piece from it (manifest-side tensors win).
+    if artifacts.manifest().deepseek_v4.is_enabled() {
+        let nextn_incomplete = deepseek_v4_nextn.as_ref().is_none_or(|n| {
+            n.layer.is_none()
+                || n.enorm.is_none()
+                || n.hnorm.is_none()
+                || (n.eh_proj.is_none() && (n.e_proj.is_none() || n.h_proj.is_none()))
+        });
+        if nextn_incomplete
+            && let Some(sidecar) =
+                load_deepseek_v4_mtp_sidecar(&root, &mut name_map, artifacts.manifest())
+        {
+            deepseek_v4_nextn = Some(match deepseek_v4_nextn {
+                Some(base) => base.merged_with(sidecar),
+                None => sidecar,
+            });
+        }
+    }
+
     // Load MTP sidecar if present (e.g. `mtp.safetensors` alongside the main files).
     let (
         mtp_max_depth,
@@ -1216,7 +1427,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         mtp_sidecar_bits,
         mtp_draft_lm_head_spec,
         mtp_norm_layout,
-    ) = load_mtp_sidecar(&root, &mut name_map);
+    ) = load_mtp_sidecar(&root, &mut name_map, artifacts.manifest());
     let mtp = load_mtp(
         &mut name_map,
         &lm_head,
@@ -1248,6 +1459,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         gemma4_vl_vision,
         diffusion_self_conditioning,
         glm_mtp,
+        deepseek_v4_head,
+        deepseek_v4_nextn,
         unlimited_ocr_vision,
         qwen3_vl_vision,
         minicpm_v46_vision,
@@ -1481,6 +1694,7 @@ fn load_dense_llama3_layer(
         o_proj: Some(o_proj),
         linear_attn: None,
         glm_mla_attn: None,
+        deepseek_v4: None,
         ffn_norm,
         ffn_post_norm: None,
         gate_proj: Some(gate_proj),
@@ -1730,6 +1944,198 @@ fn mtp_take_weight(
         mode: "affine".to_string(),
         linear_bias: None,
     })
+}
+
+/// 256-entry f32 lookup table for E8M0 scale bytes: `2^(b - 127)`.
+///
+/// `0xFF` is NaN by the OCP MX spec; the entry carries `f32::NAN` so an
+/// out-of-range scale byte propagates NaN instead of silently mis-scaling.
+fn mtp_e8m0_lut() -> Vec<f32> {
+    (0..=255u32)
+        .map(|b| {
+            if b == 0xFF {
+                f32::NAN
+            } else {
+                2f32.powi(b as i32 - 127)
+            }
+        })
+        .collect()
+}
+
+/// Take an FP8 block-scaled weight pair (`{base}.weight` E4M3 bytes +
+/// `{base}.scale` E8M0 bytes) and dequantize to a dense BF16 tensor.
+///
+/// This is the AXQuant DeepSeek V4 sidecar layout: standard DeepSeek
+/// blockwise FP8 where the scale shape is the weight shape divided by the
+/// block size per dim (128×128 in the published artifact). The block size
+/// is derived per-dim from the shapes, not hardcoded. Returns `None` —
+/// leaving both tensors in `name_map` — when the pair is absent or the
+/// weight is not the FP8 byte container, so callers can fall back to
+/// [`mtp_take_weight`] for raw-HF BF16 / MLX-packed sidecars. A malformed
+/// FP8 pair (byte-container weight with an inconsistent scale grid) is
+/// consumed before returning `None`, so the dense fallback cannot mistake
+/// the raw E4M3 bytes for a dense weight; the sidecar is then reported
+/// incomplete (fail closed).
+fn mtp_take_fp8_blockscaled(
+    name_map: &mut HashMap<String, MlxArray>,
+    base: &str,
+) -> Option<QuantizedWeight> {
+    let weight_key = format!("{base}.weight");
+    let scale_key = format!("{base}.scale");
+    let (w_shape, s_shape) = {
+        let weight = name_map.get(&weight_key)?;
+        let scale = name_map.get(&scale_key)?;
+        // Only the FP8 byte-container layout belongs to this helper; a dense
+        // (e.g. BF16 raw-HF) weight falls through to `mtp_take_weight` even
+        // when a `.scale` tensor happens to share the prefix.
+        if weight.dtype() != MlxDtype::Uint8 {
+            return None;
+        }
+        (weight.shape(), scale.shape())
+    };
+    if w_shape.len() != 2
+        || s_shape.len() != 2
+        || s_shape[0] == 0
+        || s_shape[1] == 0
+        || w_shape[0] % s_shape[0] != 0
+        || w_shape[1] % s_shape[1] != 0
+    {
+        // Malformed FP8 pair: consume both so the dense fallback cannot read
+        // the raw E4M3 bytes as a dense weight (fail closed).
+        name_map.remove(&weight_key);
+        name_map.remove(&scale_key);
+        return None;
+    }
+    let block_rows = w_shape[0] / s_shape[0];
+    let block_cols = w_shape[1] / s_shape[1];
+    let weight = name_map.remove(&weight_key)?;
+    let scale = name_map.remove(&scale_key)?;
+
+    // E4M3 bytes → f32 via MLX's fp8 cast (the shim exposes fp8 payloads as
+    // uint8 containers, the same contract as `to_fp8`'s output).
+    let w_f32 = from_fp8(&weight, MlxDtype::Float32, None);
+    // E8M0 bytes → f32 scales through the 256-entry LUT.
+    let lut = MlxArray::from_f32_slice(&mtp_e8m0_lut());
+    let scale_idx = astype(&scale, MlxDtype::Int32, None);
+    let s_flat = take(&lut, &reshape(&scale_idx, &[-1], None), 0, None);
+    let s_f32 = reshape(&s_flat, &s_shape, None);
+    // Block broadcast: [so, si] → [so, 1, si, 1] → [so, bo, si, bi] → [out, in].
+    let s4 = reshape(&s_f32, &[s_shape[0], 1, s_shape[1], 1], None);
+    let s_block = broadcast_to(&s4, &[s_shape[0], block_rows, s_shape[1], block_cols], None);
+    let s_full = reshape(&s_block, &w_shape, None);
+    let dequantized = multiply(&w_f32, &s_full, None);
+    Some(QuantizedWeight::new(
+        astype(&dequantized, MlxDtype::Bfloat16, None),
+        None,
+        None,
+    ))
+}
+
+/// Sanitize one expert's packed MXFP4 byte tensor (`[out, in/2]` u8/i8) into
+/// MLX's packed-u32 quantized weight layout (`[out, in*4/32]` u32), mirroring
+/// `load_mxfp4_blocks_scales` (u8→u32 view, then flatten the trailing dims
+/// when the payload carries an explicit per-group axis; a 2-D payload is
+/// already in the target layout after the view).
+fn mxfp4_bytes_to_packed_u32(blocks: &MlxArray) -> Option<MlxArray> {
+    let last = *blocks.shape().last()?;
+    if last == 0 || last % 4 != 0 {
+        return None;
+    }
+    let blocks_u32 = view(blocks, MlxDtype::Uint32, None);
+    let ndim = blocks_u32.ndim();
+    if ndim > 2 {
+        Some(flatten(
+            &blocks_u32,
+            (ndim - 2) as i32,
+            (ndim - 1) as i32,
+            None,
+        ))
+    } else {
+        Some(blocks_u32)
+    }
+}
+
+/// Take per-expert MXFP4 routed experts from an AXQuant DeepSeek V4 sidecar
+/// (`{bp}.ffn.experts.{N}.w{1,2,3}.{weight,scale}`) and stack them into the
+/// packed SwitchGLU layout the V4 MoE forward consumes.
+///
+/// The checkpoint's "I8" expert tensors are MXFP4 payloads: E2M1 values
+/// nibbled two-per-byte with E8M0 scales on group_size 32 — the exact byte
+/// layout MLX's mxfp4 `gather_qmm` expects after the same u8→u32 view
+/// sanitize as `load_mxfp4_blocks_scales`. Gate (`w1`) and up (`w3`) are
+/// fused along the out dim into `gate_up_exps_packed`; down (`w2`) becomes
+/// `down_exps`. Returns `None` when the per-expert naming is absent or any
+/// expert tensor is missing; the caller then falls back to the stacked
+/// `ffn.experts.{gate,up,down}` triple or treats the sidecar as incomplete.
+fn mtp_take_mxfp4_experts(
+    name_map: &mut HashMap<String, MlxArray>,
+    bp: &str,
+    expert_count: u32,
+) -> Option<(QuantizedWeight, QuantizedWeight)> {
+    if !name_map.contains_key(&format!("{bp}.ffn.experts.0.w1.weight")) {
+        return None;
+    }
+    // Pre-flight: verify every expert tensor exists before consuming any, so
+    // a partially-present per-expert set leaves `name_map` intact for the
+    // stacked fallback and the leftover-tensor diagnostics.
+    for expert in 0..expert_count {
+        let prefix = format!("{bp}.ffn.experts.{expert}");
+        for suffix in [
+            "w1.weight",
+            "w1.scale",
+            "w2.weight",
+            "w2.scale",
+            "w3.weight",
+            "w3.scale",
+        ] {
+            if !name_map.contains_key(&format!("{prefix}.{suffix}")) {
+                return None;
+            }
+        }
+    }
+    let mut gate_up_weights = Vec::with_capacity(expert_count as usize);
+    let mut gate_up_scales = Vec::with_capacity(expert_count as usize);
+    let mut down_weights = Vec::with_capacity(expert_count as usize);
+    let mut down_scales = Vec::with_capacity(expert_count as usize);
+    for expert in 0..expert_count {
+        let prefix = format!("{bp}.ffn.experts.{expert}");
+        let w1 = name_map.remove(&format!("{prefix}.w1.weight"))?;
+        let s1 = name_map.remove(&format!("{prefix}.w1.scale"))?;
+        let w2 = name_map.remove(&format!("{prefix}.w2.weight"))?;
+        let s2 = name_map.remove(&format!("{prefix}.w2.scale"))?;
+        let w3 = name_map.remove(&format!("{prefix}.w3.weight"))?;
+        let s3 = name_map.remove(&format!("{prefix}.w3.scale"))?;
+        // Fuse gate (w1) + up (w3) along the out dim before packing so the
+        // forward's last-dim split recovers the two halves.
+        let gate_up = concatenate(&[&w1, &w3], 0, None);
+        gate_up_weights.push(mxfp4_bytes_to_packed_u32(&gate_up)?);
+        gate_up_scales.push(concatenate(&[&s1, &s3], 0, None));
+        down_weights.push(mxfp4_bytes_to_packed_u32(&w2)?);
+        down_scales.push(s2);
+    }
+    let gate_up_weight_refs: Vec<&MlxArray> = gate_up_weights.iter().collect();
+    let gate_up_scale_refs: Vec<&MlxArray> = gate_up_scales.iter().collect();
+    let down_weight_refs: Vec<&MlxArray> = down_weights.iter().collect();
+    let down_scale_refs: Vec<&MlxArray> = down_scales.iter().collect();
+    let gate_up = QuantizedWeight {
+        weight: stack(&gate_up_weight_refs, 0, None),
+        scales: Some(stack(&gate_up_scale_refs, 0, None)),
+        biases: None,
+        group_size: 32,
+        bits: 4,
+        mode: "mxfp4".to_string(),
+        linear_bias: None,
+    };
+    let down = QuantizedWeight {
+        weight: stack(&down_weight_refs, 0, None),
+        scales: Some(stack(&down_scale_refs, 0, None)),
+        biases: None,
+        group_size: 32,
+        bits: 4,
+        mode: "mxfp4".to_string(),
+        linear_bias: None,
+    };
+    Some((gate_up, down))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2035,6 +2441,7 @@ fn load_vision_sidecar(
 fn load_mtp_sidecar(
     root: &std::path::Path,
     name_map: &mut HashMap<String, MlxArray>,
+    manifest: &ax_engine_core::NativeModelManifest,
 ) -> (
     usize,
     MlxSamplingParams,
@@ -2048,6 +2455,13 @@ fn load_mtp_sidecar(
     // sidecar config or this default.  Lightning-MLX uses 0.5 for code/tool-call
     // workloads where tighter draft distributions lift acceptance.
     let default_draft = MlxSamplingParams::new(0.7, 0.95, 20);
+
+    // DeepSeek V4 packages also ship their nextn block in `mtp.safetensors`;
+    // the Qwen layout (`mtp.layers.N.*`) must never consume those tensors —
+    // V4 nextn weights load via `load_deepseek_v4_mtp_sidecar`.
+    if manifest.deepseek_v4.is_enabled() {
+        return (0, default_draft, None, None, MtpNormLayout::Auto);
+    }
 
     let sidecar = root.join("mtp.safetensors");
     if !sidecar.exists() {
@@ -2113,6 +2527,13 @@ fn load_glm_mtp_sidecar(
     manifest: &ax_engine_core::NativeModelManifest,
 ) -> Option<GlmMtpWeights> {
     let default_draft = MlxSamplingParams::new(0.7, 0.95, 20);
+
+    // DeepSeek V4 manifests carry nextn (MTP) tensors but no V3 MLA dims, so
+    // the kv_b split below (which hard-requires V3 MLA dims) must never run
+    // for them; V4 nextn weights load via `load_deepseek_v4_nextn_weights`.
+    if manifest.deepseek_v4.is_enabled() {
+        return None;
+    }
 
     let sidecar = root.join("glm_mtp.safetensors");
     if !sidecar.exists() {
@@ -2309,6 +2730,7 @@ fn load_glm_mtp_sidecar(
         o_proj: Some(o_proj),
         linear_attn: None,
         glm_mla_attn,
+        deepseek_v4: None,
         ffn_norm,
         ffn_post_norm: None,
         gate_proj: None,
@@ -2664,6 +3086,7 @@ fn load_mtp(
         o_proj: None,
         linear_attn: None,
         glm_mla_attn: None,
+        deepseek_v4: None,
         ffn_norm: ffn_norm.clone(),
         ffn_post_norm: None,
         gate_proj,
@@ -3572,6 +3995,594 @@ fn load_glm_mla_attention_weights(
         .weight,
         embed_q,
         unembed_out,
+    })
+}
+
+/// Load one DeepSeek V4 (Flash) layer's attention + hyper-connection tensors.
+///
+/// V4 reuses the `AttentionQa`/`AttentionQaNorm`/`AttentionQb` roles but
+/// replaces the V3 MLA kv_a/kv_b pair with a fused `AttentionKv` projection
+/// and a grouped `AttentionOutA`/`AttentionOutB` output LoRA, so it must NOT
+/// route through `load_glm_mla_attention_weights` /
+/// `split_deepseek_kv_b_projection` (which hard-require V3 MLA dims).
+fn load_deepseek_v4_layer_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    layer_index: Option<u32>,
+) -> Result<DeepseekV4LayerWeights, WeightLoadError> {
+    let compressor = if has_role(specs, NativeTensorRole::CompressorKv, layer_index) {
+        Some(DeepseekV4CompressorWeights {
+            kv: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::CompressorKv,
+                layer_index,
+                "dsv4_compressor_kv",
+            )?,
+            gate: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::CompressorGate,
+                layer_index,
+                "dsv4_compressor_gate",
+            )?,
+            ape: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::CompressorApe,
+                layer_index,
+                "dsv4_compressor_ape",
+            )?
+            .weight,
+            norm: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::CompressorNorm,
+                layer_index,
+                "dsv4_compressor_norm",
+            )?
+            .weight,
+        })
+    } else {
+        None
+    };
+    let indexer = if has_role(specs, NativeTensorRole::IndexerProj, layer_index) {
+        Some(DeepseekV4IndexerWeights {
+            proj: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::IndexerProj,
+                layer_index,
+                "dsv4_indexer_proj",
+            )?,
+            qb: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::IndexerQb,
+                layer_index,
+                "dsv4_indexer_qb",
+            )?,
+            compressor_kv: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::IndexerCompressorKv,
+                layer_index,
+                "dsv4_indexer_compressor_kv",
+            )?,
+            compressor_gate: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::IndexerCompressorGate,
+                layer_index,
+                "dsv4_indexer_compressor_gate",
+            )?,
+            compressor_ape: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::IndexerCompressorApe,
+                layer_index,
+                "dsv4_indexer_compressor_ape",
+            )?
+            .weight,
+            compressor_norm: take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::IndexerCompressorNorm,
+                layer_index,
+                "dsv4_indexer_compressor_norm",
+            )?
+            .weight,
+        })
+    } else {
+        None
+    };
+    Ok(DeepseekV4LayerWeights {
+        wq_a: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionQa,
+            layer_index,
+            "dsv4_wq_a",
+        )?,
+        q_a_norm: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionQaNorm,
+            layer_index,
+            "dsv4_q_a_norm",
+        )?
+        .weight,
+        wq_b: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionQb,
+            layer_index,
+            "dsv4_wq_b",
+        )?,
+        wkv: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionKv,
+            layer_index,
+            "dsv4_wkv",
+        )?,
+        kv_norm: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionKvNorm,
+            layer_index,
+            "dsv4_kv_norm",
+        )?
+        .weight,
+        wo_a: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionOutA,
+            layer_index,
+            "dsv4_wo_a",
+        )?,
+        wo_b: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionOutB,
+            layer_index,
+            "dsv4_wo_b",
+        )?,
+        attn_sink: try_take_plain(specs, name_map, NativeTensorRole::AttnSink, layer_index)?,
+        hc_attn_fn: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::HcAttnFn,
+            layer_index,
+            "dsv4_hc_attn_fn",
+        )?
+        .weight,
+        hc_attn_base: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::HcAttnBase,
+            layer_index,
+            "dsv4_hc_attn_base",
+        )?
+        .weight,
+        hc_attn_scale: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::HcAttnScale,
+            layer_index,
+            "dsv4_hc_attn_scale",
+        )?
+        .weight,
+        hc_ffn_fn: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::HcFfnFn,
+            layer_index,
+            "dsv4_hc_ffn_fn",
+        )?
+        .weight,
+        hc_ffn_base: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::HcFfnBase,
+            layer_index,
+            "dsv4_hc_ffn_base",
+        )?
+        .weight,
+        hc_ffn_scale: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::HcFfnScale,
+            layer_index,
+            "dsv4_hc_ffn_scale",
+        )?
+        .weight,
+        compressor,
+        indexer,
+        tid2eid: try_take_plain(
+            specs,
+            name_map,
+            NativeTensorRole::FfnGateTid2Eid,
+            layer_index,
+        )?,
+    })
+}
+
+/// Load the root-level DeepSeek V4 hyper-connection head (`hc_head_*`).
+fn load_deepseek_v4_head_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+) -> Result<Option<DeepseekV4HeadWeights>, WeightLoadError> {
+    if !has_role(specs, NativeTensorRole::HcHeadFn, None) {
+        return Ok(None);
+    }
+    Ok(Some(DeepseekV4HeadWeights {
+        hc_head_fn: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::HcHeadFn,
+            None,
+            "dsv4_hc_head_fn",
+        )?
+        .weight,
+        hc_head_base: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::HcHeadBase,
+            None,
+            "dsv4_hc_head_base",
+        )?
+        .weight,
+        hc_head_scale: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::HcHeadScale,
+            None,
+            "dsv4_hc_head_scale",
+        )?
+        .weight,
+    }))
+}
+
+/// Load any DeepSeek V4 MTP (nextn) predictor tensors present in the
+/// manifest. All roles are optional; returns `None` when none exist.
+/// `block_layer` is the nextn transformer block detached from the layer loop
+/// (GGUF-layout manifests carry it at layer index `layer_count`); the block
+/// must never be hash-routed (llama.cpp asserts MTP layers sit beyond the
+/// hash layers), so a `tid2eid` table on it is a hard error.
+fn load_deepseek_v4_nextn_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    block_layer: Option<LayerWeights>,
+) -> Result<Option<DeepseekV4NextnWeights>, WeightLoadError> {
+    if let Some(layer) = block_layer.as_ref()
+        && let Some(v4) = layer.deepseek_v4.as_ref()
+        && v4.tid2eid.is_some()
+    {
+        return Err(WeightLoadError::InvalidLayer(
+            "DeepSeek V4 nextn (MTP) block must not carry a hash-routing tid2eid table".to_string(),
+        ));
+    }
+    let nextn = DeepseekV4NextnWeights {
+        e_proj: try_take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::NextnEproj,
+            None,
+            "dsv4_nextn_e_proj",
+        )?,
+        h_proj: try_take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::NextnHproj,
+            None,
+            "dsv4_nextn_h_proj",
+        )?,
+        eh_proj: try_take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::NextnEhProj,
+            None,
+            "dsv4_nextn_eh_proj",
+        )?,
+        enorm: try_take_plain(specs, name_map, NativeTensorRole::NextnEnorm, None)?,
+        hnorm: try_take_plain(specs, name_map, NativeTensorRole::NextnHnorm, None)?,
+        shared_head_norm: try_take_plain(
+            specs,
+            name_map,
+            NativeTensorRole::NextnSharedHeadNorm,
+            None,
+        )?,
+        embed_tokens: try_take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::NextnEmbedTokens,
+            None,
+            "dsv4_nextn_embed_tokens",
+        )?,
+        shared_head_head: try_take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::NextnSharedHeadHead,
+            None,
+            "dsv4_nextn_shared_head",
+        )?,
+        layer: block_layer.map(Box::new),
+    };
+    Ok((!nextn.is_empty()).then_some(nextn))
+}
+
+/// Load the DeepSeek V4 MTP sidecar (`mtp.safetensors`) if present alongside
+/// the main model. Mirrors `load_glm_mtp_sidecar`: returns `Some` only when
+/// the sidecar carries a complete nextn block — input norms, an input
+/// projection (fused `eh_proj` or the separate `e_proj`/`h_proj` pair), and
+/// one full raw-path V4 layer (no compressor/indexer, learned-router MoE —
+/// `tid2eid` is never read here). V4 manifests are gated out of the Qwen and
+/// GLM sidecar loaders, so sharing the `mtp.safetensors` filename with the
+/// Qwen layout is safe.
+///
+/// Two on-disk layouts are accepted:
+/// - AXQuant (the published `AX-DeepSeek-V4-Flash-MLX-AXQ-*` artifact): all
+///   block tensors under `mtp.0.*`; attention LoRA trio, `e_proj`/`h_proj`
+///   and shared experts as FP8 blockwise pairs (`{base}.weight` E4M3 bytes +
+///   `{base}.scale` E8M0 bytes on a 128×128 block grid), dequantized to dense
+///   BF16 at load; routed experts as per-expert MXFP4
+///   (`ffn.experts.{N}.w{1,2,3}.{weight,scale}`, "I8" byte payloads nibbled
+///   two-per-byte, group_size 32), fused/stacked into `gate_up_exps_packed`
+///   + `down_exps`.
+/// - Raw-HF fallback: dense BF16 (or MLX-packed affine) tensors via
+///   `mtp_take_weight`, with the stacked `ffn.experts.{gate,up,down}` triple.
+///
+/// `mtplx_runtime.json` is optional; AXQuant's runtime JSON carries no
+/// `mtp_sidecar_bits` key, so `bits` stays `None` (shape inference in
+/// `mtp_take_weight`) without warning.
+fn load_deepseek_v4_mtp_sidecar(
+    root: &std::path::Path,
+    name_map: &mut HashMap<String, MlxArray>,
+    manifest: &ax_engine_core::NativeModelManifest,
+) -> Option<DeepseekV4NextnWeights> {
+    if !manifest.deepseek_v4.is_enabled() {
+        return None;
+    }
+    let sidecar = root.join("mtp.safetensors");
+    if !sidecar.exists() {
+        return None;
+    }
+    // The Rust mmap parser maps FP8 payloads (`F8_E4M3`/`F8_E8M0`) to byte
+    // containers; the C `mlx_load_safetensors` rejects `F8_E8M0` scales,
+    // which would skip the whole AXQuant sidecar.
+    let tensors = match load_safetensors_mmap(&sidecar) {
+        Ok(t) => t,
+        Err(_) => return None,
+    };
+    if !tensors.is_empty() {
+        let refs: Vec<&MlxArray> = tensors.values().collect();
+        eval(&refs);
+    }
+    name_map.extend(tensors);
+
+    let bits = std::fs::read(root.join("mtplx_runtime.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|v| parse_mtp_sidecar_bits_hint(&v));
+
+    // Tensor prefixes: raw-HF extractions keep the `mtp.N.*` layout; a
+    // GGUF-style extraction would keep the block at `layers.<N>.` with the
+    // sidecar tensors under `layers.<N>.nextn.`. Both coincide for raw HF.
+    let layer_count = manifest.layer_count;
+    let bp = [
+        "mtp.0".to_string(),
+        "mtp.1".to_string(),
+        format!("layers.{layer_count}"),
+        "nextn".to_string(),
+    ]
+    .into_iter()
+    .find(|p| name_map.contains_key(&format!("{p}.attn.wq_a.weight")));
+    let np = [
+        "mtp.0".to_string(),
+        "mtp.1".to_string(),
+        format!("layers.{layer_count}.nextn"),
+        "nextn".to_string(),
+    ]
+    .into_iter()
+    .find(|p| name_map.contains_key(&format!("{p}.enorm.weight")));
+    let (Some(bp), Some(np)) = (bp, np) else {
+        return None;
+    };
+    let bp = bp.as_str();
+    let np = np.as_str();
+
+    // Nextn input/output sidecar tensors. AXQuant sidecars store the
+    // projections as FP8 blockwise (`{base}.weight` E4M3 + `{base}.scale`
+    // E8M0); raw-HF fallbacks are dense BF16 handled by `mtp_take_weight`.
+    let enorm = mtp_take_plain(name_map, &format!("{np}.enorm.weight"));
+    let hnorm = mtp_take_plain(name_map, &format!("{np}.hnorm.weight"));
+    let eh_proj = mtp_take_weight(name_map, &format!("{np}.eh_proj"), bits);
+    let e_proj = mtp_take_fp8_blockscaled(name_map, &format!("{np}.e_proj"))
+        .or_else(|| mtp_take_weight(name_map, &format!("{np}.e_proj"), bits));
+    let h_proj = mtp_take_fp8_blockscaled(name_map, &format!("{np}.h_proj"))
+        .or_else(|| mtp_take_weight(name_map, &format!("{np}.h_proj"), bits));
+    let shared_head_norm = mtp_take_plain(name_map, &format!("{np}.shared_head_norm.weight"))
+        .or_else(|| mtp_take_plain(name_map, &format!("{np}.norm.weight")))
+        .or_else(|| mtp_take_plain(name_map, &format!("{np}.shared_head.norm.weight")));
+    let embed_tokens = mtp_take_weight(name_map, &format!("{np}.embed_tokens"), bits);
+    let shared_head_head = mtp_take_weight(name_map, &format!("{np}.shared_head_head"), bits)
+        .or_else(|| mtp_take_weight(name_map, &format!("{np}.shared_head.head"), bits))
+        .or_else(|| mtp_take_weight(name_map, &format!("{np}.head"), bits));
+
+    // Block: raw-path attention (q LoRA trio + fused KV + grouped output LoRA).
+    let attn_norm = mtp_take_plain(name_map, &format!("{bp}.attn_norm.weight"));
+    let ffn_norm = mtp_take_plain(name_map, &format!("{bp}.ffn_norm.weight"));
+    let wq_a = mtp_take_fp8_blockscaled(name_map, &format!("{bp}.attn.wq_a"))
+        .or_else(|| mtp_take_weight(name_map, &format!("{bp}.attn.wq_a"), bits));
+    let q_a_norm = mtp_take_plain(name_map, &format!("{bp}.attn.q_norm.weight"));
+    let wq_b = mtp_take_fp8_blockscaled(name_map, &format!("{bp}.attn.wq_b"))
+        .or_else(|| mtp_take_weight(name_map, &format!("{bp}.attn.wq_b"), bits));
+    let wkv = mtp_take_fp8_blockscaled(name_map, &format!("{bp}.attn.wkv"))
+        .or_else(|| mtp_take_weight(name_map, &format!("{bp}.attn.wkv"), bits));
+    let kv_norm = mtp_take_plain(name_map, &format!("{bp}.attn.kv_norm.weight"));
+    // Dense FP8-dequantized `wo_a` keeps the 2-D `[o_groups*o_lora_rank, H*D/o_groups]`
+    // layout; the forward's dense branch reshapes it per group itself.
+    let wo_a = mtp_take_fp8_blockscaled(name_map, &format!("{bp}.attn.wo_a"))
+        .or_else(|| mtp_take_weight(name_map, &format!("{bp}.attn.wo_a"), bits));
+    let wo_b = mtp_take_fp8_blockscaled(name_map, &format!("{bp}.attn.wo_b"))
+        .or_else(|| mtp_take_weight(name_map, &format!("{bp}.attn.wo_b"), bits));
+    let attn_sink = mtp_take_plain(name_map, &format!("{bp}.attn.attn_sink"));
+
+    // Hyper-connection branch parameters (raw `nn.Parameter`s, no `.weight`).
+    let hc_attn_fn = mtp_take_plain(name_map, &format!("{bp}.hc_attn_fn"));
+    let hc_attn_base = mtp_take_plain(name_map, &format!("{bp}.hc_attn_base"));
+    let hc_attn_scale = mtp_take_plain(name_map, &format!("{bp}.hc_attn_scale"));
+    let hc_ffn_fn = mtp_take_plain(name_map, &format!("{bp}.hc_ffn_fn"));
+    let hc_ffn_base = mtp_take_plain(name_map, &format!("{bp}.hc_ffn_base"));
+    let hc_ffn_scale = mtp_take_plain(name_map, &format!("{bp}.hc_ffn_scale"));
+
+    // Learned-router MoE + shared experts (never the hash-routing table).
+    let router_proj = mtp_take_weight(name_map, &format!("{bp}.ffn.gate"), bits);
+    let router_correction_bias = mtp_take_plain(name_map, &format!("{bp}.ffn.gate.bias"))
+        .or_else(|| mtp_take_plain(name_map, &format!("{bp}.ffn.gate.e_score_correction_bias")));
+    // Routed experts: AXQuant sidecars store per-expert MXFP4 tensors
+    // (`ffn.experts.{N}.w{1,2,3}`); raw-HF fallbacks store the stacked
+    // `ffn.experts.{gate,up,down}` triple.
+    let mxfp4_experts = manifest
+        .moe
+        .expert_count
+        .and_then(|count| mtp_take_mxfp4_experts(name_map, bp, count));
+    let (gate_up_exps_packed, gate_exps, up_exps, down_exps) =
+        if let Some((gate_up, down)) = mxfp4_experts {
+            (Some(gate_up), None, None, Some(down))
+        } else {
+            (
+                None,
+                mtp_take_weight(name_map, &format!("{bp}.ffn.experts.gate"), bits),
+                mtp_take_weight(name_map, &format!("{bp}.ffn.experts.up"), bits),
+                mtp_take_weight(name_map, &format!("{bp}.ffn.experts.down"), bits),
+            )
+        };
+    let shared_gate_proj =
+        mtp_take_fp8_blockscaled(name_map, &format!("{bp}.ffn.shared_experts.w1"))
+            .or_else(|| mtp_take_weight(name_map, &format!("{bp}.ffn.shared_experts.w1"), bits));
+    let shared_down_proj =
+        mtp_take_fp8_blockscaled(name_map, &format!("{bp}.ffn.shared_experts.w2"))
+            .or_else(|| mtp_take_weight(name_map, &format!("{bp}.ffn.shared_experts.w2"), bits));
+    let shared_up_proj = mtp_take_fp8_blockscaled(name_map, &format!("{bp}.ffn.shared_experts.w3"))
+        .or_else(|| mtp_take_weight(name_map, &format!("{bp}.ffn.shared_experts.w3"), bits));
+
+    let experts_complete = down_exps.is_some()
+        && (gate_up_exps_packed.is_some() || (gate_exps.is_some() && up_exps.is_some()));
+    let complete = enorm.is_some()
+        && hnorm.is_some()
+        && (eh_proj.is_some() || (e_proj.is_some() && h_proj.is_some()))
+        && experts_complete
+        && [
+            &attn_norm,
+            &ffn_norm,
+            &q_a_norm,
+            &kv_norm,
+            &hc_attn_fn,
+            &hc_attn_base,
+            &hc_attn_scale,
+            &hc_ffn_fn,
+            &hc_ffn_base,
+            &hc_ffn_scale,
+        ]
+        .into_iter()
+        .all(Option::is_some)
+        && [
+            &wq_a,
+            &wq_b,
+            &wkv,
+            &wo_a,
+            &wo_b,
+            &router_proj,
+            &shared_gate_proj,
+            &shared_down_proj,
+            &shared_up_proj,
+        ]
+        .into_iter()
+        .all(Option::is_some);
+    if !complete {
+        tracing::warn!(
+            target: "ax_mlx::weights",
+            "DeepSeek V4 MTP sidecar is incomplete — skipping nextn block"
+        );
+        return None;
+    }
+
+    let layer = LayerWeights {
+        attn_norm: attn_norm?,
+        attn_post_norm: None,
+        q_norm: None,
+        k_norm: None,
+        q_proj: None,
+        k_proj: None,
+        v_proj: None,
+        qkv_packed: None,
+        o_proj: None,
+        linear_attn: None,
+        glm_mla_attn: None,
+        deepseek_v4: Some(DeepseekV4LayerWeights {
+            wq_a: wq_a?,
+            q_a_norm: q_a_norm?,
+            wq_b: wq_b?,
+            wkv: wkv?,
+            kv_norm: kv_norm?,
+            wo_a: wo_a?,
+            wo_b: wo_b?,
+            attn_sink,
+            hc_attn_fn: hc_attn_fn?,
+            hc_attn_base: hc_attn_base?,
+            hc_attn_scale: hc_attn_scale?,
+            hc_ffn_fn: hc_ffn_fn?,
+            hc_ffn_base: hc_ffn_base?,
+            hc_ffn_scale: hc_ffn_scale?,
+            compressor: None,
+            indexer: None,
+            tid2eid: None,
+        }),
+        ffn_norm: ffn_norm?,
+        ffn_post_norm: None,
+        gate_proj: None,
+        up_proj: None,
+        gate_up_packed: None,
+        down_proj: None,
+        ffn_norm2: None,
+        ffn_post_norm1: None,
+        ffn_post_norm2: None,
+        router_proj,
+        router_correction_bias,
+        router_scale: None,
+        router_combined_scale: None,
+        router_expert_scale: None,
+        layer_scalar: None,
+        per_layer_gate: None,
+        per_layer_proj_w: None,
+        per_layer_post_norm: None,
+        shared_expert_gate: None,
+        shared_gate_up_proj: None,
+        shared_gate_proj,
+        shared_up_proj,
+        shared_down_proj,
+        gate_up_exps_packed,
+        gate_exps,
+        up_exps,
+        down_exps,
+        mxfp4_gate_up_exps: None,
+        mxfp4_down_exps: None,
+        attn_sink: None,
+        rotation_smoothing_inverse: None,
+    };
+
+    Some(DeepseekV4NextnWeights {
+        e_proj,
+        h_proj,
+        eh_proj,
+        enorm,
+        hnorm,
+        shared_head_norm,
+        embed_tokens,
+        shared_head_head,
+        layer: Some(Box::new(layer)),
     })
 }
 
@@ -6465,6 +7476,418 @@ mod tests {
             "expected None when glm_mtp.safetensors is absent"
         );
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn load_deepseek_v4_mtp_sidecar_gates_and_missing_file() {
+        let tmp = std::env::temp_dir().join(format!(
+            "ax-weights-test-dsv4-mtp-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let v4_manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": "ax.native_model.v1",
+                "model_family": "deepseek_v4",
+                "tensor_format": "safetensors",
+                "layer_count": 1,
+                "hidden_size": 1,
+                "attention_head_count": 1,
+                "attention_head_dim": 1,
+                "kv_head_count": 1,
+                "vocab_size": 1,
+                "deepseek_v4": { "num_nextn_predict_layers": 1 },
+                "tensors": []
+            }))
+            .expect("minimal V4 manifest fixture should deserialize");
+        let qwen_manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": "ax.native_model.v1",
+                "model_family": "qwen3",
+                "tensor_format": "safetensors",
+                "layer_count": 1,
+                "hidden_size": 1,
+                "attention_head_count": 1,
+                "attention_head_dim": 1,
+                "kv_head_count": 1,
+                "vocab_size": 1,
+                "tensors": []
+            }))
+            .expect("minimal manifest fixture should deserialize");
+
+        // Family gate: non-V4 manifests never touch `mtp.safetensors` here.
+        let mut name_map = HashMap::new();
+        assert!(load_deepseek_v4_mtp_sidecar(&tmp, &mut name_map, &qwen_manifest).is_none());
+        // Missing sidecar file: graceful None, no panic.
+        assert!(load_deepseek_v4_mtp_sidecar(&tmp, &mut name_map, &v4_manifest).is_none());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn array_u8(data: &[u8], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(data.as_ptr(), data.len(), shape, MlxDtype::Uint8)
+    }
+
+    #[test]
+    fn mtp_e8m0_lut_spot_checks() {
+        let lut = mtp_e8m0_lut();
+        assert_eq!(lut.len(), 256);
+        assert_eq!(lut[127], 1.0);
+        assert_eq!(lut[126], 0.5);
+        assert_eq!(lut[128], 2.0);
+        assert_eq!(lut[0], 2f32.powi(-127));
+        assert!(lut[255].is_nan());
+    }
+
+    #[test]
+    fn mtp_take_fp8_blockscaled_dequantizes_tiny_block() {
+        // e4m3fn 0x38 == 1.0 and 0x40 == 2.0 (sign 0, exp 0111/1000, mantissa
+        // 000); e8m0 byte 128 == 2^1. A 1×1 scale over a 2×2 weight derives a
+        // 2×2 block, so every element is scaled by 2.0.
+        let mut name_map = HashMap::from([
+            (
+                "w.weight".to_string(),
+                array_u8(&[0x38, 0x40, 0x40, 0x38], &[2, 2]),
+            ),
+            ("w.scale".to_string(), array_u8(&[128], &[1, 1])),
+        ]);
+        let qw = mtp_take_fp8_blockscaled(&mut name_map, "w")
+            .expect("fp8 block-scaled pair should dequantize");
+        assert!(qw.scales.is_none());
+        assert!(qw.biases.is_none());
+        assert_eq!(qw.weight.shape(), vec![2, 2]);
+        assert_eq!(qw.weight.dtype(), MlxDtype::Bfloat16);
+        assert!(name_map.is_empty(), "both tensors must be consumed");
+        let as_f32 = astype(&qw.weight, MlxDtype::Float32, None);
+        eval(&[&as_f32]);
+        assert_eq!(as_f32.data_f32(), &[2.0, 4.0, 4.0, 2.0]);
+    }
+
+    #[test]
+    fn mtp_take_fp8_blockscaled_none_without_consuming_on_bad_input() {
+        // Missing scale: weight must stay in the map for the BF16 fallback.
+        let mut name_map = HashMap::from([("w.weight".to_string(), array_u8(&[0x38; 4], &[2, 2]))]);
+        assert!(mtp_take_fp8_blockscaled(&mut name_map, "w").is_none());
+        assert!(name_map.contains_key("w.weight"));
+        // Non-byte-container weight (dense fallback territory): reject
+        // without consuming even when a `.scale` tensor shares the prefix.
+        let mut name_map = HashMap::from([
+            (
+                "w.weight".to_string(),
+                reshape(&MlxArray::from_f32_slice(&[1.0; 12]), &[3, 4], None),
+            ),
+            ("w.scale".to_string(), array_u8(&[127; 2], &[2, 1])),
+        ]);
+        assert!(mtp_take_fp8_blockscaled(&mut name_map, "w").is_none());
+        assert_eq!(name_map.len(), 2);
+        // FP8 bytes with a scale grid that does not divide the weight dims:
+        // fail closed by consuming both so the dense fallback cannot read
+        // the raw E4M3 bytes as a dense weight.
+        let mut name_map = HashMap::from([
+            ("w.weight".to_string(), array_u8(&[0x38; 12], &[3, 4])),
+            ("w.scale".to_string(), array_u8(&[127; 2], &[2, 1])),
+        ]);
+        assert!(mtp_take_fp8_blockscaled(&mut name_map, "w").is_none());
+        assert!(name_map.is_empty(), "malformed fp8 pair must be consumed");
+    }
+
+    #[test]
+    fn mtp_take_mxfp4_experts_stacks_fused_gate_up_and_down() {
+        // 2 experts, out = in = 32 real values: packed byte rows hold in/2 =
+        // 16 nibbles-packed bytes → 4 u32; one e8m0 scale column (group 32).
+        let mut name_map = HashMap::new();
+        for expert in 0..2 {
+            let prefix = format!("mtp.0.ffn.experts.{expert}");
+            name_map.insert(
+                format!("{prefix}.w1.weight"),
+                array_u8(&[0x12; 32 * 16], &[32, 16]),
+            );
+            name_map.insert(format!("{prefix}.w1.scale"), array_u8(&[127; 32], &[32, 1]));
+            name_map.insert(
+                format!("{prefix}.w2.weight"),
+                array_u8(&[0x34; 32 * 16], &[32, 16]),
+            );
+            name_map.insert(format!("{prefix}.w2.scale"), array_u8(&[127; 32], &[32, 1]));
+            name_map.insert(
+                format!("{prefix}.w3.weight"),
+                array_u8(&[0x56; 32 * 16], &[32, 16]),
+            );
+            name_map.insert(format!("{prefix}.w3.scale"), array_u8(&[127; 32], &[32, 1]));
+        }
+        let (gate_up, down) = mtp_take_mxfp4_experts(&mut name_map, "mtp.0", 2)
+            .expect("per-expert mxfp4 experts should stack");
+        // Fused gate+up: [E, 2*32, 32*4/32] u32 with matching e8m0 scales.
+        assert_eq!(gate_up.weight.shape(), vec![2, 64, 4]);
+        assert_eq!(gate_up.weight.dtype(), MlxDtype::Uint32);
+        assert_eq!(
+            gate_up.scales.as_ref().map(MlxArray::shape),
+            Some(vec![2, 64, 1])
+        );
+        assert!(gate_up.biases.is_none());
+        assert_eq!(gate_up.group_size, 32);
+        assert_eq!(gate_up.bits, 4);
+        assert_eq!(gate_up.mode, "mxfp4");
+        assert_eq!(down.weight.shape(), vec![2, 32, 4]);
+        assert_eq!(down.weight.dtype(), MlxDtype::Uint32);
+        assert_eq!(
+            down.scales.as_ref().map(MlxArray::shape),
+            Some(vec![2, 32, 1])
+        );
+        assert_eq!(down.mode, "mxfp4");
+        assert!(name_map.is_empty(), "all expert tensors must be consumed");
+    }
+
+    #[test]
+    fn mtp_take_mxfp4_experts_none_when_any_expert_tensor_missing() {
+        let mut name_map = HashMap::new();
+        assert!(mtp_take_mxfp4_experts(&mut name_map, "mtp.0", 2).is_none());
+        // Expert 0 complete, expert 1 missing w3 → incomplete.
+        for (proj, byte) in [("w1", 0x12u8), ("w2", 0x34), ("w3", 0x56)] {
+            let prefix = format!("mtp.0.ffn.experts.0.{proj}");
+            name_map.insert(
+                format!("{prefix}.weight"),
+                array_u8(&[byte; 32 * 16], &[32, 16]),
+            );
+            name_map.insert(format!("{prefix}.scale"), array_u8(&[127; 32], &[32, 1]));
+        }
+        let prefix = "mtp.0.ffn.experts.1";
+        name_map.insert(
+            format!("{prefix}.w1.weight"),
+            array_u8(&[0x12; 32 * 16], &[32, 16]),
+        );
+        name_map.insert(format!("{prefix}.w1.scale"), array_u8(&[127; 32], &[32, 1]));
+        name_map.insert(
+            format!("{prefix}.w2.weight"),
+            array_u8(&[0x34; 32 * 16], &[32, 16]),
+        );
+        name_map.insert(format!("{prefix}.w2.scale"), array_u8(&[127; 32], &[32, 1]));
+        assert!(mtp_take_mxfp4_experts(&mut name_map, "mtp.0", 2).is_none());
+        // A partially-present set must leave every tensor in the map so the
+        // stacked fallback and leftover diagnostics still see them.
+        assert_eq!(name_map.len(), 10);
+    }
+
+    /// Zero-filled safetensors writer mirroring `write_vision_sidecar_fixture`
+    /// but with per-tensor dtype strings, so FP8/I8 AXQuant layouts can be
+    /// reproduced. `tensors` is `(name, dtype, shape)`.
+    fn write_dsv4_mtp_sidecar_fixture(dir: &Path, tensors: &[(&str, &str, &[usize])]) {
+        let elem_size = |dtype: &str| match dtype {
+            "F32" => 4,
+            "F16" | "BF16" => 2,
+            "F8_E4M3" | "F8_E8M0" | "I8" | "U8" => 1,
+            other => panic!("unsupported fixture dtype {other}"),
+        };
+        let mut header = serde_json::Map::new();
+        let mut data: Vec<u8> = Vec::new();
+        for (name, dtype, shape) in tensors {
+            let numel: usize = shape.iter().product();
+            let start = data.len();
+            data.resize(start + numel * elem_size(dtype), 0);
+            let end = data.len();
+            header.insert(
+                (*name).to_string(),
+                serde_json::json!({
+                    "dtype": dtype,
+                    "shape": shape,
+                    "data_offsets": [start, end],
+                }),
+            );
+        }
+        let header_bytes = serde_json::to_vec(&header).unwrap();
+        let mut file_bytes = (header_bytes.len() as u64).to_le_bytes().to_vec();
+        file_bytes.extend_from_slice(&header_bytes);
+        file_bytes.extend_from_slice(&data);
+        std::fs::write(dir.join("mtp.safetensors"), &file_bytes).unwrap();
+    }
+
+    fn dsv4_mtp_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-weights-test-dsv4-mtp-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn dsv4_mtp_test_manifest(expert_count: u32) -> ax_engine_core::NativeModelManifest {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": "ax.native_model.v1",
+            "model_family": "deepseek_v4",
+            "tensor_format": "safetensors",
+            "layer_count": 1,
+            "hidden_size": 8,
+            "attention_head_count": 1,
+            "attention_head_dim": 1,
+            "kv_head_count": 1,
+            "vocab_size": 1,
+            "deepseek_v4": { "num_nextn_predict_layers": 1 },
+            "moe": { "expert_count": expert_count },
+            "tensors": []
+        }))
+        .expect("minimal V4 manifest fixture should deserialize")
+    }
+
+    /// Tensor names every `mtp.0`-prefixed sidecar layout shares: input
+    /// norms/projections, norms, hyper-connection parameters, router.
+    fn dsv4_mtp_common_tensors(dtype: &str) -> Vec<(String, String, Vec<usize>)> {
+        let mut tensors: Vec<(String, String, Vec<usize>)> = vec![
+            ("mtp.0.enorm.weight", dtype, &[32][..]),
+            ("mtp.0.hnorm.weight", dtype, &[32][..]),
+            ("mtp.0.norm.weight", dtype, &[32][..]),
+            ("mtp.0.attn_norm.weight", dtype, &[32][..]),
+            ("mtp.0.ffn_norm.weight", dtype, &[32][..]),
+            ("mtp.0.attn.q_norm.weight", dtype, &[32][..]),
+            ("mtp.0.attn.kv_norm.weight", dtype, &[32][..]),
+            ("mtp.0.ffn.gate.weight", dtype, &[2, 32][..]),
+        ]
+        .into_iter()
+        .map(|(name, dtype, shape)| (name.to_string(), dtype.to_string(), shape.to_vec()))
+        .collect();
+        for hc in [
+            "hc_attn_fn",
+            "hc_attn_base",
+            "hc_attn_scale",
+            "hc_ffn_fn",
+            "hc_ffn_base",
+            "hc_ffn_scale",
+        ] {
+            tensors.push((format!("mtp.0.{hc}"), "F32".to_string(), vec![1]));
+        }
+        tensors.push((
+            "mtp.0.ffn.gate.bias".to_string(),
+            "F32".to_string(),
+            vec![2],
+        ));
+        tensors.push((
+            "mtp.0.attn.attn_sink".to_string(),
+            "F32".to_string(),
+            vec![2],
+        ));
+        tensors
+    }
+
+    fn dsv4_mtp_tensor_refs(
+        tensors: &[(String, String, Vec<usize>)],
+    ) -> Vec<(&str, &str, &[usize])> {
+        tensors
+            .iter()
+            .map(|(name, dtype, shape)| (name.as_str(), dtype.as_str(), shape.as_slice()))
+            .collect()
+    }
+
+    #[test]
+    fn load_deepseek_v4_mtp_sidecar_loads_bf16_stacked_fallback() {
+        // Raw-HF style sidecar: dense BF16 tensors and the stacked
+        // `ffn.experts.{gate,up,down}` triple must still load through
+        // `mtp_take_weight` when no FP8 pairs / per-expert tensors exist.
+        let dir = dsv4_mtp_test_dir("bf16-fallback");
+        let mut tensors = dsv4_mtp_common_tensors("BF16");
+        for (name, shape) in [
+            ("mtp.0.e_proj.weight", vec![32, 32]),
+            ("mtp.0.h_proj.weight", vec![32, 32]),
+            ("mtp.0.attn.wq_a.weight", vec![32, 32]),
+            ("mtp.0.attn.wq_b.weight", vec![32, 32]),
+            ("mtp.0.attn.wkv.weight", vec![32, 32]),
+            ("mtp.0.attn.wo_a.weight", vec![32, 32]),
+            ("mtp.0.attn.wo_b.weight", vec![32, 32]),
+            ("mtp.0.ffn.experts.gate.weight", vec![2, 32, 32]),
+            ("mtp.0.ffn.experts.up.weight", vec![2, 32, 32]),
+            ("mtp.0.ffn.experts.down.weight", vec![2, 32, 32]),
+            ("mtp.0.ffn.shared_experts.w1.weight", vec![32, 32]),
+            ("mtp.0.ffn.shared_experts.w2.weight", vec![32, 32]),
+            ("mtp.0.ffn.shared_experts.w3.weight", vec![32, 32]),
+        ] {
+            tensors.push((name.to_string(), "BF16".to_string(), shape));
+        }
+        write_dsv4_mtp_sidecar_fixture(&dir, &dsv4_mtp_tensor_refs(&tensors));
+        let manifest = dsv4_mtp_test_manifest(2);
+        let mut name_map = HashMap::new();
+        let nextn = load_deepseek_v4_mtp_sidecar(&dir, &mut name_map, &manifest)
+            .expect("BF16 stacked sidecar should load");
+        let layer = nextn.layer.as_ref().expect("nextn layer should be present");
+        assert!(layer.gate_up_exps_packed.is_none());
+        assert!(layer.gate_exps.is_some());
+        assert!(layer.up_exps.is_some());
+        assert!(layer.down_exps.is_some());
+        assert!(nextn.e_proj.is_some());
+        assert!(nextn.h_proj.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_deepseek_v4_mtp_sidecar_loads_axquant_fp8_mxfp4_layout() {
+        // The published AXQuant artifact layout: FP8 blockwise projections
+        // (E4M3 weight + E8M0 scale) and per-expert MXFP4 routed experts
+        // ("I8" payloads + E8M0 scales). Zero-filled payloads dequantize to
+        // zeros; this test checks dispatch and shapes, not values.
+        let dir = dsv4_mtp_test_dir("axquant");
+        let mut tensors = dsv4_mtp_common_tensors("BF16");
+        for base in [
+            "mtp.0.e_proj",
+            "mtp.0.h_proj",
+            "mtp.0.attn.wq_a",
+            "mtp.0.attn.wq_b",
+            "mtp.0.attn.wkv",
+            "mtp.0.attn.wo_a",
+            "mtp.0.attn.wo_b",
+            "mtp.0.ffn.shared_experts.w1",
+            "mtp.0.ffn.shared_experts.w2",
+            "mtp.0.ffn.shared_experts.w3",
+        ] {
+            tensors.push((
+                format!("{base}.weight"),
+                "F8_E4M3".to_string(),
+                vec![32, 32],
+            ));
+            tensors.push((format!("{base}.scale"), "F8_E8M0".to_string(), vec![1, 1]));
+        }
+        for expert in 0..2 {
+            for proj in ["w1", "w2", "w3"] {
+                let prefix = format!("mtp.0.ffn.experts.{expert}.{proj}");
+                tensors.push((format!("{prefix}.weight"), "I8".to_string(), vec![32, 16]));
+                tensors.push((
+                    format!("{prefix}.scale"),
+                    "F8_E8M0".to_string(),
+                    vec![32, 1],
+                ));
+            }
+        }
+        write_dsv4_mtp_sidecar_fixture(&dir, &dsv4_mtp_tensor_refs(&tensors));
+        let manifest = dsv4_mtp_test_manifest(2);
+        let mut name_map = HashMap::new();
+        let nextn = load_deepseek_v4_mtp_sidecar(&dir, &mut name_map, &manifest)
+            .expect("AXQuant FP8/MXFP4 sidecar should load");
+        let layer = nextn.layer.as_ref().expect("nextn layer should be present");
+        // Routed experts dispatch to fused per-expert MXFP4 packing.
+        let gate_up = layer
+            .gate_up_exps_packed
+            .as_ref()
+            .expect("AXQuant sidecar should pack gate_up experts");
+        assert_eq!(gate_up.weight.shape(), vec![2, 64, 4]);
+        assert_eq!(gate_up.weight.dtype(), MlxDtype::Uint32);
+        assert_eq!(gate_up.mode, "mxfp4");
+        assert_eq!(gate_up.group_size, 32);
+        assert_eq!(gate_up.bits, 4);
+        assert!(layer.gate_exps.is_none());
+        assert!(layer.up_exps.is_none());
+        let down = layer.down_exps.as_ref().expect("down experts should load");
+        assert_eq!(down.weight.shape(), vec![2, 32, 4]);
+        assert_eq!(down.mode, "mxfp4");
+        // FP8 projections dequantize to dense BF16.
+        let v4 = layer.deepseek_v4.as_ref().expect("v4 attention weights");
+        assert!(!v4.wq_a.is_quantized());
+        assert_eq!(v4.wq_a.weight.dtype(), MlxDtype::Bfloat16);
+        assert_eq!(v4.wq_a.weight.shape(), vec![32, 32]);
+        let e_proj = nextn.e_proj.as_ref().expect("e_proj should load");
+        assert!(!e_proj.is_quantized());
+        assert_eq!(e_proj.weight.dtype(), MlxDtype::Bfloat16);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn vision_sidecar_test_dir(tag: &str) -> PathBuf {

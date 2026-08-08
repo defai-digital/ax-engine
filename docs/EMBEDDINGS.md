@@ -157,6 +157,12 @@ The verifier uses family-specific oracles:
 
 - Qwen3-Embedding: `mlx-lm` transformer body, last-token pooling, l2 norm.
 - EmbeddingGemma: `mlx-embeddings`, mean pooling + Dense head + l2 norm.
+- Nemotron 3 Embed (`nemotron_embed`): Compatible encoder path (bidirectional
+  Ministral mean pool + L2). Real-weight oracle vs SentenceTransformers /
+  NVIDIA recipe is a follow-up gate; convert + runtime unit coverage lands
+  first. **Do not mix** Nemotron vectors into a Qwen3-Embedding index — full
+  reindex required. Apply NVIDIA query/document instruction prefixes on the
+  client in v1 (server `input_type` is not yet implemented).
 
 For EmbeddingGemma, the correctness oracle is the `mlx-embeddings` **single-row**
 path for each input. Do not use its mixed-length batch output as a correctness

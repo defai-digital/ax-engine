@@ -1,4 +1,7 @@
 pub(super) mod attention;
+pub(super) mod deepseek_v4_attention;
+pub(super) mod deepseek_v4_compressor;
+pub(super) mod hyper_connection;
 pub(super) mod linear_attention;
 pub(super) mod mla;
 pub(super) mod mlp;
@@ -17,8 +20,11 @@ pub(crate) use attention::{
     prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj_flat, qk_norm_rope_bhsd_from_proj_with_route,
 };
+pub(crate) use deepseek_v4_attention::deepseek_v4_attention_forward;
+pub(crate) use hyper_connection::{hc_head, hc_post, hc_pre};
 pub(crate) use linear_attention::{linear_attention_forward, linear_attention_forward_batched};
 pub(crate) use mla::glm_mla_attention_forward;
+pub(crate) use mlp::moe_router_deepseek_v4;
 #[cfg(test)]
 pub(crate) use mlp::per_layer_input_gate;
 pub(crate) use mlp::{
