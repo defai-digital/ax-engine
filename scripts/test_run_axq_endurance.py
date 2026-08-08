@@ -974,6 +974,24 @@ class AxqEnduranceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "version mismatch"):
                 runner.validate_server_version(server, "6.13.4")
 
+    def test_source_metadata_records_runner_hash_commit_and_clean_state(self) -> None:
+        def output(*command, **_kwargs):
+            if "rev-parse" in command:
+                return "a" * 40
+            if "describe" in command:
+                return "v6.13.5-10-gaaaaaaaa"
+            if "status" in command:
+                return ""
+            return "unavailable"
+
+        with mock.patch.object(runner, "command_output", side_effect=output):
+            metadata = runner.source_control_metadata(SCRIPT_PATH)
+
+        self.assertEqual(metadata["source_git_commit"], "a" * 40)
+        self.assertEqual(metadata["source_git_describe"], "v6.13.5-10-gaaaaaaaa")
+        self.assertFalse(metadata["source_git_dirty"])
+        self.assertEqual(metadata["runner_sha256"], runner.sha256_file(SCRIPT_PATH))
+
     def test_bounded_state_analysis_relates_growth_to_completed_requests(self) -> None:
         samples = []
         for index in range(4):

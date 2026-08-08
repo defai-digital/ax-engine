@@ -203,7 +203,7 @@ endurance. Every four hours it atomically updates
 
 | Concern | Evidence |
 | --- | --- |
-| Process lifetime | Owned PID, server exit code, server log |
+| Identity and process lifetime | Runner SHA-256, source Git commit/describe/dirty state, server version/SHA-256, owned PID, server exit code and server log |
 | Client-visible latency | Same-shape client p95 TTFT, p05 decode token/s, p05 effective prefill token/s, E2E latency and output token count |
 | Server corroboration | `ax_runtime_ttft_p95_ms`, `ax_runtime_decode_tok_per_sec`, `ax_runtime_error_rate`, queue depth and saturation counters |
 | Errors | Client failures, health failures, HTTP 5xx/saturation/backlog counter deltas |

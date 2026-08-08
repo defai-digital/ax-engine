@@ -500,6 +500,32 @@ def sanitized_hardware_profile() -> str:
     )
 
 
+def source_control_metadata(script_path: Path) -> dict[str, Any]:
+    """Capture the exact reusable runner and checkout provenance."""
+    resolved_script = script_path.resolve()
+    source_root = resolved_script.parent.parent
+    commit = command_output("git", "-C", str(source_root), "rev-parse", "HEAD")
+    describe = command_output("git", "-C", str(source_root), "describe", "--tags", "--always")
+    status = command_output(
+        "git",
+        "-C",
+        str(source_root),
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=normal",
+    )
+    git_available = not commit.startswith("unavailable:") and bool(commit)
+    return {
+        "runner_path": str(resolved_script),
+        "runner_sha256": sha256_file(resolved_script),
+        "source_root": str(source_root),
+        "source_git_commit": commit if git_available else None,
+        "source_git_describe": describe if git_available else None,
+        "source_git_dirty": bool(status) if git_available else None,
+        "source_git_status": status if git_available else None,
+    }
+
+
 def runtime_metadata(server_path: Path) -> dict[str, Any]:
     """Capture reproducibility context once, before the server starts."""
     packages: dict[str, str | None] = {}
@@ -521,6 +547,7 @@ def runtime_metadata(server_path: Path) -> dict[str, Any]:
         "server_path": str(server_path),
         "server_sha256": sha256_file(server_path),
         "server_version": command_output(str(server_path), "--version"),
+        "source": source_control_metadata(Path(__file__)),
         "launch_context": {
             "runner_pid": os.getpid(),
             "parent_pid": os.getppid(),
