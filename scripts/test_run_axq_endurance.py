@@ -204,6 +204,7 @@ class AxqEnduranceTests(unittest.TestCase):
         values = {
             **{name: 0.0 for name in runner.LIFECYCLE_METRICS},
             **{name: 0.0 for name in runner.MODEL_METRICS},
+            **{name: 0.0 for name in runner.RETENTION_OBSERVABILITY_METRICS},
             "ax_engine_model_memory_kv_report_available": 1.0,
         }
         drain = {
@@ -270,6 +271,7 @@ class AxqEnduranceTests(unittest.TestCase):
         values = {
             **{name: 0.0 for name in runner.LIFECYCLE_METRICS},
             **{name: 0.0 for name in runner.MODEL_METRICS},
+            **{name: 0.0 for name in runner.RETENTION_OBSERVABILITY_METRICS},
             "ax_engine_model_memory_kv_report_available": 1.0,
             "ax_engine_step_kv_usage_blocks": 1_018.0,
             "ax_runtime_kv_pages_total": 1_024.0,
@@ -937,6 +939,58 @@ class AxqEnduranceTests(unittest.TestCase):
         )
 
         self.assertEqual(args.max_client_error_rate, 0.0)
+
+    def test_exact_server_version_gate_accepts_only_requested_release(self) -> None:
+        server = Path("/tmp/ax-engine-server")
+        with mock.patch.object(runner, "command_output", return_value="ax-engine-server 6.13.5"):
+            self.assertEqual(
+                runner.validate_server_version(server, "6.13.5"), "ax-engine-server 6.13.5"
+            )
+            with self.assertRaisesRegex(RuntimeError, "version mismatch"):
+                runner.validate_server_version(server, "6.13.4")
+
+    def test_bounded_state_analysis_relates_growth_to_completed_requests(self) -> None:
+        samples = []
+        for index in range(4):
+            values = {name: 0.0 for name in runner.LIFECYCLE_METRICS}
+            values.update(
+                {
+                    "ax_engine_generation_completed_requests_total": float(index),
+                    "ax_engine_request_terminal_snapshots": float(index * 2),
+                }
+            )
+            samples.append(
+                {
+                    "elapsed_seconds": float(index * 3_600),
+                    "metrics": {"values": values},
+                }
+            )
+
+        analysis = runner.bounded_state_analysis(
+            samples=samples,
+            baseline_end_elapsed_s=0.0,
+        )["ax_engine_request_terminal_snapshots"]
+
+        self.assertEqual(analysis["post_baseline_growth"], 6.0)
+        self.assertEqual(analysis["post_baseline_slope_per_hour"], 2.0)
+        self.assertEqual(analysis["ols_units_per_completed_request"], 2.0)
+        self.assertEqual(analysis["post_baseline_positive_step_ratio"], 1.0)
+
+    def test_early_memory_warning_requires_growth_slope_and_monotonicity(self) -> None:
+        analysis = {
+            "series": {
+                "server_rss_bytes": {
+                    "quiescent_growth_mib": 300.0,
+                    "quiescent_lifetime_slope_mib_per_hour": 40.0,
+                    "quiescent_positive_step_ratio": 0.8,
+                    "quiescent_post_baseline_span_hours": 5.0,
+                }
+            }
+        }
+
+        self.assertEqual(len(runner.evaluate_memory_early_warnings(analysis)), 1)
+        analysis["series"]["server_rss_bytes"]["quiescent_positive_step_ratio"] = 0.2
+        self.assertEqual(runner.evaluate_memory_early_warnings(analysis), [])
 
     def test_long_run_and_baseline_memory_slopes_are_independent(self) -> None:
         args = runner.build_parser().parse_args(

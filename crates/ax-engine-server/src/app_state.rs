@@ -60,6 +60,15 @@ struct RequestOwners {
     terminal_order: BTreeMap<(String, u64), VecDeque<u64>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RequestOwnerTelemetry {
+    pub(crate) total: u64,
+    pub(crate) active: u64,
+    pub(crate) terminal: u64,
+    pub(crate) terminal_queue_entries: u64,
+    pub(crate) terminal_queues: u64,
+}
+
 const MAX_TERMINAL_REQUEST_OWNERS_PER_GENERATION: usize = 4096;
 
 /// Metadata published on `GET /v1/discovery` and mDNS TXT (no secrets).
@@ -359,6 +368,23 @@ impl AppState {
         self.request_owners.write().by_id.remove(&request_id);
     }
 
+    pub(crate) fn request_owner_telemetry(&self) -> RequestOwnerTelemetry {
+        let owners = self.request_owners.read();
+        let count = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+        let terminal = owners.by_id.values().filter(|owner| owner.terminal).count();
+        RequestOwnerTelemetry {
+            total: count(owners.by_id.len()),
+            active: count(owners.by_id.len().saturating_sub(terminal)),
+            terminal: count(terminal),
+            terminal_queue_entries: owners
+                .terminal_order
+                .values()
+                .map(|queue| count(queue.len()))
+                .fold(0u64, u64::saturating_add),
+            terminal_queues: count(owners.terminal_order.len()),
+        }
+    }
+
     pub(crate) fn snapshot_for_request(&self, request_id: u64) -> Option<LiveState> {
         let owner = self.request_owners.read().by_id.get(&request_id).cloned()?;
         self.live
@@ -554,6 +580,7 @@ pub(crate) struct ServerMetrics {
     pub(crate) grpc_status_error_total: AtomicU64,
     pub(crate) generation_saturated_commands_total: AtomicU64,
     pub(crate) generation_stream_backlog_overflows_total: AtomicU64,
+    pub(crate) generation_completed_requests_total: AtomicU64,
     /// Engine-step stats keyed by model id. Multi-model serving runs one
     /// engine worker per model; a single set of gauges would interleave
     /// last-writer-wins values from unrelated models.
@@ -614,11 +641,29 @@ impl ServingStats {
 #[derive(Clone, Copy, Debug, Default)]
 struct EngineStepStats {
     steps_total: u64,
+    scheduled_requests_total: u64,
+    scheduled_tokens_total: u64,
     scheduled_requests: u64,
     scheduled_tokens: u64,
     kv_usage_blocks: u64,
     waiting_requests: u64,
     prefix_hits_total: u64,
+    kv_allocated_blocks_total: u64,
+    kv_released_blocks_total: u64,
+    kv_cache_evictions_total: u64,
+    kv_free_blocks: u64,
+    kv_block_tables: u64,
+    kv_prompt_entries: u64,
+    kv_block_ref_entries: u64,
+    kv_live_prefix_index_keys: u64,
+    kv_live_prefix_request_refs: u64,
+    kv_cached_blocks: u64,
+    kv_cached_child_index_keys: u64,
+    kv_cached_child_edges: u64,
+    request_active_records: u64,
+    request_terminal_snapshots: u64,
+    request_terminal_snapshot_order: u64,
+    request_terminal_snapshot_bytes: u64,
     memory: Option<ModelMemoryGauges>,
 }
 
@@ -629,11 +674,29 @@ struct EngineStepStats {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EngineStepGauges {
     pub(crate) steps_total: u64,
+    pub(crate) scheduled_requests_total: u64,
+    pub(crate) scheduled_tokens_total: u64,
     pub(crate) scheduled_requests: u64,
     pub(crate) scheduled_tokens: u64,
     pub(crate) kv_usage_blocks: u64,
     pub(crate) waiting_requests: u64,
     pub(crate) prefix_hits_total: u64,
+    pub(crate) kv_allocated_blocks_total: u64,
+    pub(crate) kv_released_blocks_total: u64,
+    pub(crate) kv_cache_evictions_total: u64,
+    pub(crate) kv_free_blocks: u64,
+    pub(crate) kv_block_tables: u64,
+    pub(crate) kv_prompt_entries: u64,
+    pub(crate) kv_block_ref_entries: u64,
+    pub(crate) kv_live_prefix_index_keys: u64,
+    pub(crate) kv_live_prefix_request_refs: u64,
+    pub(crate) kv_cached_blocks: u64,
+    pub(crate) kv_cached_child_index_keys: u64,
+    pub(crate) kv_cached_child_edges: u64,
+    pub(crate) request_active_records: u64,
+    pub(crate) request_terminal_snapshots: u64,
+    pub(crate) request_terminal_snapshot_order: u64,
+    pub(crate) request_terminal_snapshot_bytes: u64,
 }
 
 /// Latest model-attributed memory geometry reported by the native runner.
@@ -772,6 +835,12 @@ impl ServerMetrics {
             return;
         };
         entry.steps_total = entry.steps_total.saturating_add(1);
+        entry.scheduled_requests_total = entry
+            .scheduled_requests_total
+            .saturating_add(u64::from(report.scheduled_requests));
+        entry.scheduled_tokens_total = entry
+            .scheduled_tokens_total
+            .saturating_add(u64::from(report.scheduled_tokens));
         entry.scheduled_requests = report.scheduled_requests as u64;
         entry.scheduled_tokens = report.scheduled_tokens as u64;
         entry.kv_usage_blocks = report.kv_usage_blocks as u64;
@@ -779,6 +848,22 @@ impl ServerMetrics {
         entry.prefix_hits_total = entry
             .prefix_hits_total
             .saturating_add(report.prefix_hits as u64);
+        entry.kv_allocated_blocks_total = report.kv_allocated_blocks_total;
+        entry.kv_released_blocks_total = report.kv_released_blocks_total;
+        entry.kv_cache_evictions_total = report.kv_cache_evictions_total;
+        entry.kv_free_blocks = report.kv_free_blocks;
+        entry.kv_block_tables = report.kv_block_tables;
+        entry.kv_prompt_entries = report.kv_prompt_entries;
+        entry.kv_block_ref_entries = report.kv_block_ref_entries;
+        entry.kv_live_prefix_index_keys = report.kv_live_prefix_index_keys;
+        entry.kv_live_prefix_request_refs = report.kv_live_prefix_request_refs;
+        entry.kv_cached_blocks = report.kv_cached_blocks;
+        entry.kv_cached_child_index_keys = report.kv_cached_child_index_keys;
+        entry.kv_cached_child_edges = report.kv_cached_child_edges;
+        entry.request_active_records = report.request_active_records;
+        entry.request_terminal_snapshots = report.request_terminal_snapshots;
+        entry.request_terminal_snapshot_order = report.request_terminal_snapshot_order;
+        entry.request_terminal_snapshot_bytes = report.request_terminal_snapshot_bytes;
         if let Some(route) = report.route.as_ref()
             && route
                 .decision("ax_mlx_kv_request_snapshots")
@@ -840,11 +925,29 @@ impl ServerMetrics {
                     model_id.clone(),
                     EngineStepGauges {
                         steps_total: entry.steps_total,
+                        scheduled_requests_total: entry.scheduled_requests_total,
+                        scheduled_tokens_total: entry.scheduled_tokens_total,
                         scheduled_requests: entry.scheduled_requests,
                         scheduled_tokens: entry.scheduled_tokens,
                         kv_usage_blocks: entry.kv_usage_blocks,
                         waiting_requests: entry.waiting_requests,
                         prefix_hits_total: entry.prefix_hits_total,
+                        kv_allocated_blocks_total: entry.kv_allocated_blocks_total,
+                        kv_released_blocks_total: entry.kv_released_blocks_total,
+                        kv_cache_evictions_total: entry.kv_cache_evictions_total,
+                        kv_free_blocks: entry.kv_free_blocks,
+                        kv_block_tables: entry.kv_block_tables,
+                        kv_prompt_entries: entry.kv_prompt_entries,
+                        kv_block_ref_entries: entry.kv_block_ref_entries,
+                        kv_live_prefix_index_keys: entry.kv_live_prefix_index_keys,
+                        kv_live_prefix_request_refs: entry.kv_live_prefix_request_refs,
+                        kv_cached_blocks: entry.kv_cached_blocks,
+                        kv_cached_child_index_keys: entry.kv_cached_child_index_keys,
+                        kv_cached_child_edges: entry.kv_cached_child_edges,
+                        request_active_records: entry.request_active_records,
+                        request_terminal_snapshots: entry.request_terminal_snapshots,
+                        request_terminal_snapshot_order: entry.request_terminal_snapshot_order,
+                        request_terminal_snapshot_bytes: entry.request_terminal_snapshot_bytes,
                     },
                 )
             })
@@ -863,6 +966,8 @@ impl ServerMetrics {
     /// Record worker-measured timings for one terminally completed native
     /// stream (see `TerminalRequestStats`).
     pub(crate) fn record_terminal_request(&self, stats: TerminalRequestStats) {
+        self.generation_completed_requests_total
+            .fetch_add(1, Ordering::Relaxed);
         self.serving_stats
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1204,6 +1309,7 @@ mod step_metrics_tests {
             runner_time_us: 0,
             route: None,
             metal_dispatch: None,
+            ..EngineStepReport::default()
         }
     }
 

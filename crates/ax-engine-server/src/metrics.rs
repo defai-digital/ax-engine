@@ -151,6 +151,45 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         "Whether every loaded model generation worker can accept commands.",
         u64::from(!lives.is_empty() && lives.iter().all(|live| live.generation_service.is_ready())),
     );
+    append_counter(
+        &mut body,
+        "ax_engine_generation_completed_requests_total",
+        "Native generation requests that reached a terminal response in this server process.",
+        metrics
+            .generation_completed_requests_total
+            .load(Ordering::Relaxed),
+    );
+
+    let request_owners = state.request_owner_telemetry();
+    for (name, help, value) in [
+        (
+            "ax_engine_request_owners",
+            "Request-owner records retained by the process.",
+            request_owners.total,
+        ),
+        (
+            "ax_engine_request_active_owners",
+            "Non-terminal request-owner records retained by the process.",
+            request_owners.active,
+        ),
+        (
+            "ax_engine_request_terminal_owners",
+            "Terminal request-owner records retained by the bounded owner index.",
+            request_owners.terminal,
+        ),
+        (
+            "ax_engine_request_terminal_owner_queue_entries",
+            "Request ids retained across bounded terminal-owner queues.",
+            request_owners.terminal_queue_entries,
+        ),
+        (
+            "ax_engine_request_terminal_owner_queues",
+            "Generation-scoped terminal-owner queues retained by the process.",
+            request_owners.terminal_queues,
+        ),
+    ] {
+        append_gauge(&mut body, name, help, value);
+    }
 
     // Engine-step gauges come from the snapshot cached by the generation worker;
     // scraping must never call `step_report` itself
@@ -172,6 +211,22 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "counter",
             &step_models,
             |step| step.steps_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_scheduled_requests_total",
+            "Requests scheduled across successful engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            |step| step.scheduled_requests_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_scheduled_tokens_total",
+            "Tokens scheduled across successful engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            |step| step.scheduled_tokens_total,
         );
         append_step_metric(
             &mut body,
@@ -213,6 +268,107 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             &step_models,
             |step| step.prefix_hits_total,
         );
+        for (name, help, kind, value) in [
+            (
+                "ax_engine_kv_allocated_blocks_total",
+                "Logical KV blocks allocated over the current model generation lifetime.",
+                "counter",
+                (|step: &crate::app_state::EngineStepGauges| step.kv_allocated_blocks_total)
+                    as fn(&crate::app_state::EngineStepGauges) -> u64,
+            ),
+            (
+                "ax_engine_kv_released_blocks_total",
+                "Logical KV blocks returned to the free list over the current model generation lifetime.",
+                "counter",
+                |step: &crate::app_state::EngineStepGauges| step.kv_released_blocks_total,
+            ),
+            (
+                "ax_engine_kv_cache_evictions_total",
+                "Retained KV cache entries evicted over the current model generation lifetime.",
+                "counter",
+                |step: &crate::app_state::EngineStepGauges| step.kv_cache_evictions_total,
+            ),
+            (
+                "ax_engine_kv_free_blocks",
+                "Logical KV blocks currently on the free list.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.kv_free_blocks,
+            ),
+            (
+                "ax_engine_kv_block_tables",
+                "Live request block tables retained by the KV manager.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.kv_block_tables,
+            ),
+            (
+                "ax_engine_kv_prompt_entries",
+                "Live request prompt entries retained by the KV manager.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.kv_prompt_entries,
+            ),
+            (
+                "ax_engine_kv_block_ref_entries",
+                "Logical KV block refcount entries currently retained.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.kv_block_ref_entries,
+            ),
+            (
+                "ax_engine_kv_live_prefix_index_keys",
+                "Keys currently retained by the live-prefix request index.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.kv_live_prefix_index_keys,
+            ),
+            (
+                "ax_engine_kv_live_prefix_request_refs",
+                "Request references currently retained by the live-prefix index.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.kv_live_prefix_request_refs,
+            ),
+            (
+                "ax_engine_kv_cached_blocks",
+                "Retained prefix-cache block entries currently held by the KV manager.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.kv_cached_blocks,
+            ),
+            (
+                "ax_engine_kv_cached_child_index_keys",
+                "Parent keys currently retained by the cached-child index.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.kv_cached_child_index_keys,
+            ),
+            (
+                "ax_engine_kv_cached_child_edges",
+                "Parent-child edges currently retained by the cached-child index.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.kv_cached_child_edges,
+            ),
+            (
+                "ax_engine_request_active_records",
+                "Non-terminal request records currently held by the engine request manager.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.request_active_records,
+            ),
+            (
+                "ax_engine_request_terminal_snapshots",
+                "Terminal request snapshots currently retained by the bounded request manager store.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.request_terminal_snapshots,
+            ),
+            (
+                "ax_engine_request_terminal_snapshot_order",
+                "Request ids currently retained by the terminal-snapshot eviction order.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.request_terminal_snapshot_order,
+            ),
+            (
+                "ax_engine_request_terminal_snapshot_bytes",
+                "Prompt, output, and logprob payload bytes retained by terminal request snapshots.",
+                "gauge",
+                |step: &crate::app_state::EngineStepGauges| step.request_terminal_snapshot_bytes,
+            ),
+        ] {
+            append_step_metric(&mut body, name, help, kind, &step_models, value);
+        }
     }
 
     append_saturation_metrics(&mut body, &lives, metrics, &step_models);

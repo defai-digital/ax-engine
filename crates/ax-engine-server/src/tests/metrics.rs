@@ -61,6 +61,22 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
             scheduled_tokens: 5,
             kv_usage_blocks: 4,
             prefix_hits: 1,
+            kv_allocated_blocks_total: 23,
+            kv_released_blocks_total: 19,
+            kv_cache_evictions_total: 7,
+            kv_free_blocks: 1000,
+            kv_block_tables: 1,
+            kv_prompt_entries: 1,
+            kv_block_ref_entries: 24,
+            kv_live_prefix_index_keys: 1,
+            kv_live_prefix_request_refs: 1,
+            kv_cached_blocks: 23,
+            kv_cached_child_index_keys: 4,
+            kv_cached_child_edges: 5,
+            request_active_records: 1,
+            request_terminal_snapshots: 12,
+            request_terminal_snapshot_order: 12,
+            request_terminal_snapshot_bytes: 4096,
             route: Some(GenerateRouteReport {
                 crossover_decisions: BTreeMap::from([
                     ("ax_mlx_kv_request_snapshots".to_string(), 1),
@@ -88,10 +104,18 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert_eq!(status, StatusCode::OK);
     // Gauges hold the latest step; prefix hits accumulate across steps.
     assert!(body.contains("ax_engine_steps_total 2\n"));
+    assert!(body.contains("ax_engine_scheduled_requests_total 4\n"));
+    assert!(body.contains("ax_engine_scheduled_tokens_total 22\n"));
     assert!(body.contains("ax_engine_step_scheduled_requests 1\n"));
     assert!(body.contains("ax_engine_step_scheduled_tokens 5\n"));
     assert!(body.contains("ax_engine_step_kv_usage_blocks 4\n"));
     assert!(body.contains("ax_engine_step_prefix_hits_total 3\n"));
+    assert!(body.contains("ax_engine_kv_allocated_blocks_total 23\n"));
+    assert!(body.contains("ax_engine_kv_released_blocks_total 19\n"));
+    assert!(body.contains("ax_engine_kv_cache_evictions_total 7\n"));
+    assert!(body.contains("ax_engine_kv_cached_child_edges 5\n"));
+    assert!(body.contains("ax_engine_request_terminal_snapshots 12\n"));
+    assert!(body.contains("ax_engine_request_terminal_snapshot_bytes 4096\n"));
     // Per-model labeled series accompany the unlabeled aggregates.
     assert!(body.contains("ax_engine_steps_total{model=\"qwen3\"} 2\n"));
     assert!(body.contains("ax_engine_step_prefix_hits_total{model=\"qwen3\"} 3\n"));
@@ -183,6 +207,7 @@ async fn metrics_saturation_series_feed_fleet_dispatch_contract() {
     assert!(body.contains("ax_runtime_ttft_p95_ms 400\n"));
     // A single decode sample seeds the EWMA directly.
     assert!(body.contains("ax_runtime_decode_tok_per_sec 84\n"));
+    assert!(body.contains("ax_engine_generation_completed_requests_total 4\n"));
     // One failed request out of all counted requests (including the scrapes
     // themselves): strictly positive ratio below 1.
     assert!(body.contains("ax_runtime_error_rate 0."));

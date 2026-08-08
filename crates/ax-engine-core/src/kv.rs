@@ -114,6 +114,27 @@ pub struct FreeResult {
     pub released_blocks: Vec<BlockId>,
 }
 
+/// Bounded-state and churn telemetry for long-running serving validation.
+///
+/// The point-in-time container counts make producer/consumer mismatches
+/// visible, while the lifetime counters let operators normalize retained
+/// memory growth by actual KV work instead of wall time alone.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KvTelemetry {
+    pub allocated_blocks_total: u64,
+    pub released_blocks_total: u64,
+    pub cache_evictions_total: u64,
+    pub free_blocks: u64,
+    pub block_tables: u64,
+    pub prompt_entries: u64,
+    pub block_ref_entries: u64,
+    pub live_prefix_index_keys: u64,
+    pub live_prefix_request_refs: u64,
+    pub cached_blocks: u64,
+    pub cached_child_index_keys: u64,
+    pub cached_child_edges: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KvManagerConfig {
     pub cache_group_id: CacheGroupId,
@@ -165,6 +186,9 @@ pub struct KvManager {
     cached_children_by_parent: HashMap<CachedBlockKey, BTreeSet<CachedBlockKey>>,
     next_cache_tick: u64,
     recent_evictions: u32,
+    allocated_blocks_total: u64,
+    released_blocks_total: u64,
+    cache_evictions_total: u64,
 }
 
 impl KvManager {
@@ -181,6 +205,9 @@ impl KvManager {
             cached_children_by_parent: HashMap::new(),
             next_cache_tick: 0,
             recent_evictions: 0,
+            allocated_blocks_total: 0,
+            released_blocks_total: 0,
+            cache_evictions_total: 0,
         }
     }
 
@@ -507,6 +534,9 @@ impl KvManager {
             }
             new_block_ids.push(block_id);
         }
+        self.allocated_blocks_total = self
+            .allocated_blocks_total
+            .saturating_add(u64::try_from(new_block_ids.len()).unwrap_or(u64::MAX));
 
         self.remove_live_prefix_index(request_id)?;
         {
@@ -584,6 +614,9 @@ impl KvManager {
                 *ref_count -= 1;
             }
         }
+        self.released_blocks_total = self
+            .released_blocks_total
+            .saturating_add(u64::try_from(released_blocks.len()).unwrap_or(u64::MAX));
 
         Ok(FreeResult {
             request_id,
@@ -593,6 +626,32 @@ impl KvManager {
 
     pub fn take_recent_evictions(&mut self) -> u32 {
         std::mem::take(&mut self.recent_evictions)
+    }
+
+    pub fn telemetry(&self) -> KvTelemetry {
+        let count = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+        KvTelemetry {
+            allocated_blocks_total: self.allocated_blocks_total,
+            released_blocks_total: self.released_blocks_total,
+            cache_evictions_total: self.cache_evictions_total,
+            free_blocks: count(self.free_block_ids.len()),
+            block_tables: count(self.block_tables.len()),
+            prompt_entries: count(self.prompt_tokens.len()),
+            block_ref_entries: count(self.block_ref_counts.len()),
+            live_prefix_index_keys: count(self.live_prefix_requests_by_first_block.len()),
+            live_prefix_request_refs: self
+                .live_prefix_requests_by_first_block
+                .values()
+                .map(|requests| count(requests.len()))
+                .fold(0u64, u64::saturating_add),
+            cached_blocks: count(self.cached_blocks.len()),
+            cached_child_index_keys: count(self.cached_children_by_parent.len()),
+            cached_child_edges: self
+                .cached_children_by_parent
+                .values()
+                .map(|children| count(children.len()))
+                .fold(0u64, u64::saturating_add),
+        }
     }
 
     pub fn block_table(&self, request_id: RequestId) -> Result<BlockTableView, KvManagerError> {
@@ -889,8 +948,11 @@ impl KvManager {
 
         for key in eviction_order {
             if let Some(entry) = self.remove_cached_block(&key) {
-                self.release_cached_block_entry(entry)?;
+                if self.release_cached_block_entry(entry)? {
+                    self.released_blocks_total = self.released_blocks_total.saturating_add(1);
+                }
                 self.recent_evictions = self.recent_evictions.saturating_add(1);
+                self.cache_evictions_total = self.cache_evictions_total.saturating_add(1);
             }
         }
 
@@ -931,7 +993,7 @@ impl KvManager {
     fn release_cached_block_entry(
         &mut self,
         entry: CachedBlockEntry,
-    ) -> Result<(), KvManagerError> {
+    ) -> Result<bool, KvManagerError> {
         let Some(ref_count) = self.block_ref_counts.get_mut(&entry.block_id) else {
             return Err(KvManagerError::InvariantViolation(
                 "block refcount missing during cache eviction",
@@ -940,10 +1002,11 @@ impl KvManager {
         if *ref_count == 1 {
             self.block_ref_counts.remove(&entry.block_id);
             self.free_block_ids.push(entry.block_id);
+            Ok(true)
         } else {
             *ref_count -= 1;
+            Ok(false)
         }
-        Ok(())
     }
 
     fn allocate_touch_tick(&mut self) -> u64 {
@@ -1243,6 +1306,31 @@ mod tests {
         assert_eq!(free.released_blocks, vec![BlockId(2)]);
         assert_eq!(manager.available_block_count(), 6);
         assert_eq!(manager.used_block_count(), 2);
+    }
+
+    #[test]
+    fn telemetry_separates_lifetime_churn_from_bounded_container_state() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .unwrap();
+
+        manager.allocate(RequestId(1), 9).unwrap();
+        let active = manager.telemetry();
+        assert_eq!(active.allocated_blocks_total, 3);
+        assert_eq!(active.released_blocks_total, 0);
+        assert_eq!(active.block_tables, 1);
+        assert_eq!(active.prompt_entries, 1);
+        assert_eq!(active.block_ref_entries, 3);
+
+        manager.free(RequestId(1)).unwrap();
+        let drained = manager.telemetry();
+        assert_eq!(drained.allocated_blocks_total, 3);
+        assert_eq!(drained.released_blocks_total, 1);
+        assert_eq!(drained.block_tables, 0);
+        assert_eq!(drained.prompt_entries, 0);
+        assert_eq!(drained.cached_blocks, 2);
+        assert_eq!(drained.block_ref_entries, 2);
     }
 
     #[test]

@@ -566,6 +566,7 @@ impl MlxLmGenerateStreamState {
                 runner_time_us: 0,
                 route: None,
                 metal_dispatch: None,
+                ..EngineStepReport::default()
             },
             delta_tokens: Vec::new(),
             delta_token_logprobs: Vec::new(),
@@ -748,6 +749,7 @@ pub(super) fn apply_llama_cpp_stream_chunk(
             runner_time_us: 0,
             route: Some(report.route.clone()),
             metal_dispatch: None,
+            ..EngineStepReport::default()
         },
         delta_tokens,
         delta_text,

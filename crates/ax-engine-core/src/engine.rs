@@ -53,6 +53,22 @@ pub struct StepMetrics {
     pub ttft_events: u32,
     pub prefix_hits: u32,
     pub kv_usage_blocks: u32,
+    pub kv_allocated_blocks_total: u64,
+    pub kv_released_blocks_total: u64,
+    pub kv_cache_evictions_total: u64,
+    pub kv_free_blocks: u64,
+    pub kv_block_tables: u64,
+    pub kv_prompt_entries: u64,
+    pub kv_block_ref_entries: u64,
+    pub kv_live_prefix_index_keys: u64,
+    pub kv_live_prefix_request_refs: u64,
+    pub kv_cached_blocks: u64,
+    pub kv_cached_child_index_keys: u64,
+    pub kv_cached_child_edges: u64,
+    pub request_active_records: u64,
+    pub request_terminal_snapshots: u64,
+    pub request_terminal_snapshot_order: u64,
+    pub request_terminal_snapshot_bytes: u64,
     /// Requests that wanted to run this step but could not: scheduler-deferred
     /// (admitted but left out of the batch by token budget / admission caps /
     /// fair-mode deferral) plus memory-blocked, measured at the end of this
@@ -385,6 +401,8 @@ impl EngineCore {
             .unwrap_or(0);
 
         let cpu_time_us = step_started.elapsed().as_micros() as u64;
+        let kv_telemetry = self.kv_manager.telemetry();
+        let request_telemetry = self.request_manager.retention_telemetry();
         let metrics = StepMetrics {
             step_id: Some(step_id),
             scheduled_requests: schedule_plan.selected_requests.len() as u32,
@@ -392,6 +410,22 @@ impl EngineCore {
             ttft_events: runner_summary.ttft_events,
             prefix_hits,
             kv_usage_blocks: self.kv_manager.used_block_count(),
+            kv_allocated_blocks_total: kv_telemetry.allocated_blocks_total,
+            kv_released_blocks_total: kv_telemetry.released_blocks_total,
+            kv_cache_evictions_total: kv_telemetry.cache_evictions_total,
+            kv_free_blocks: kv_telemetry.free_blocks,
+            kv_block_tables: kv_telemetry.block_tables,
+            kv_prompt_entries: kv_telemetry.prompt_entries,
+            kv_block_ref_entries: kv_telemetry.block_ref_entries,
+            kv_live_prefix_index_keys: kv_telemetry.live_prefix_index_keys,
+            kv_live_prefix_request_refs: kv_telemetry.live_prefix_request_refs,
+            kv_cached_blocks: kv_telemetry.cached_blocks,
+            kv_cached_child_index_keys: kv_telemetry.cached_child_index_keys,
+            kv_cached_child_edges: kv_telemetry.cached_child_edges,
+            request_active_records: request_telemetry.active_records,
+            request_terminal_snapshots: request_telemetry.terminal_snapshots,
+            request_terminal_snapshot_order: request_telemetry.terminal_snapshot_order,
+            request_terminal_snapshot_bytes: request_telemetry.terminal_snapshot_bytes,
             // Scheduler-deferred requests stay `Runnable` (apply_schedule_plan
             // only moves selected and memory-blocked ones), and `Waiting`
             // drains at step start via admit_waiting(), so a state filter

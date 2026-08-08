@@ -226,7 +226,9 @@ swap, lifecycle-drain failure, or performance guardrail breach was observed.
 The operator stopped this run to add deeper vLLM-style leak attribution before
 restarting the full 72-hour qualification, so it is short-duration evidence,
 not a 72-hour pass. Read the
-[8-hour endurance report](docs/model-certifications/qwen3.6-27b-axq-6bit-8h-endurance-2026-08-08.md).
+[8-hour endurance report](docs/model-certifications/qwen3.6-27b-axq-6bit-8h-endurance-2026-08-08.md)
+or use the reusable [AXQ endurance utility and detached launch procedure](docs/AXQ-ENDURANCE-SOAK.md#reusable-repository-utility)
+to verify another local AXQ package.
 
 ### Multi-model serving
 

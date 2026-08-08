@@ -92,6 +92,38 @@ pub struct EngineStepReport {
     pub ttft_events: u32,
     pub prefix_hits: u32,
     pub kv_usage_blocks: u32,
+    #[serde(default)]
+    pub kv_allocated_blocks_total: u64,
+    #[serde(default)]
+    pub kv_released_blocks_total: u64,
+    #[serde(default)]
+    pub kv_cache_evictions_total: u64,
+    #[serde(default)]
+    pub kv_free_blocks: u64,
+    #[serde(default)]
+    pub kv_block_tables: u64,
+    #[serde(default)]
+    pub kv_prompt_entries: u64,
+    #[serde(default)]
+    pub kv_block_ref_entries: u64,
+    #[serde(default)]
+    pub kv_live_prefix_index_keys: u64,
+    #[serde(default)]
+    pub kv_live_prefix_request_refs: u64,
+    #[serde(default)]
+    pub kv_cached_blocks: u64,
+    #[serde(default)]
+    pub kv_cached_child_index_keys: u64,
+    #[serde(default)]
+    pub kv_cached_child_edges: u64,
+    #[serde(default)]
+    pub request_active_records: u64,
+    #[serde(default)]
+    pub request_terminal_snapshots: u64,
+    #[serde(default)]
+    pub request_terminal_snapshot_order: u64,
+    #[serde(default)]
+    pub request_terminal_snapshot_bytes: u64,
     /// Requests still waiting for scheduler admission at the end of the step
     /// (gauge; 0 for backends without an internal scheduler queue).
     #[serde(default)]
@@ -213,6 +245,22 @@ impl EngineStepReport {
             ttft_events: metrics.ttft_events,
             prefix_hits: metrics.prefix_hits,
             kv_usage_blocks: metrics.kv_usage_blocks,
+            kv_allocated_blocks_total: metrics.kv_allocated_blocks_total,
+            kv_released_blocks_total: metrics.kv_released_blocks_total,
+            kv_cache_evictions_total: metrics.kv_cache_evictions_total,
+            kv_free_blocks: metrics.kv_free_blocks,
+            kv_block_tables: metrics.kv_block_tables,
+            kv_prompt_entries: metrics.kv_prompt_entries,
+            kv_block_ref_entries: metrics.kv_block_ref_entries,
+            kv_live_prefix_index_keys: metrics.kv_live_prefix_index_keys,
+            kv_live_prefix_request_refs: metrics.kv_live_prefix_request_refs,
+            kv_cached_blocks: metrics.kv_cached_blocks,
+            kv_cached_child_index_keys: metrics.kv_cached_child_index_keys,
+            kv_cached_child_edges: metrics.kv_cached_child_edges,
+            request_active_records: metrics.request_active_records,
+            request_terminal_snapshots: metrics.request_terminal_snapshots,
+            request_terminal_snapshot_order: metrics.request_terminal_snapshot_order,
+            request_terminal_snapshot_bytes: metrics.request_terminal_snapshot_bytes,
             waiting_requests: metrics.waiting_requests,
             evictions: metrics.evictions,
             preempted_requests: metrics.preempted_requests,
@@ -239,6 +287,28 @@ impl EngineStepReport {
         self.ttft_events += other.ttft_events;
         self.prefix_hits += other.prefix_hits;
         self.kv_usage_blocks = self.kv_usage_blocks.max(other.kv_usage_blocks);
+        self.kv_allocated_blocks_total = self
+            .kv_allocated_blocks_total
+            .max(other.kv_allocated_blocks_total);
+        self.kv_released_blocks_total = self
+            .kv_released_blocks_total
+            .max(other.kv_released_blocks_total);
+        self.kv_cache_evictions_total = self
+            .kv_cache_evictions_total
+            .max(other.kv_cache_evictions_total);
+        self.kv_free_blocks = other.kv_free_blocks;
+        self.kv_block_tables = other.kv_block_tables;
+        self.kv_prompt_entries = other.kv_prompt_entries;
+        self.kv_block_ref_entries = other.kv_block_ref_entries;
+        self.kv_live_prefix_index_keys = other.kv_live_prefix_index_keys;
+        self.kv_live_prefix_request_refs = other.kv_live_prefix_request_refs;
+        self.kv_cached_blocks = other.kv_cached_blocks;
+        self.kv_cached_child_index_keys = other.kv_cached_child_index_keys;
+        self.kv_cached_child_edges = other.kv_cached_child_edges;
+        self.request_active_records = other.request_active_records;
+        self.request_terminal_snapshots = other.request_terminal_snapshots;
+        self.request_terminal_snapshot_order = other.request_terminal_snapshot_order;
+        self.request_terminal_snapshot_bytes = other.request_terminal_snapshot_bytes;
         self.waiting_requests = self.waiting_requests.max(other.waiting_requests);
         self.evictions += other.evictions;
         self.preempted_requests += other.preempted_requests;

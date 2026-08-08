@@ -1369,6 +1369,7 @@ impl EngineSession {
                 runner_time_us: step.runner_time_us,
                 route: None,
                 metal_dispatch: None,
+                ..EngineStepReport::default()
             }
         };
 

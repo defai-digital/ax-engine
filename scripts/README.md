@@ -397,14 +397,23 @@ throughput baselines.
 - `test_run_disk_prefix_serving_soak.py`: unit tests for the disk-prefix
   serving soak runner and dry-run command bundle.
 - `run_axq_endurance.py`: owns one no-restart AX MLX server for a deterministic,
-  low-rate 72-hour AXQ endurance workload. Its interleaved unique/shared-prefix
+  configurable low-rate AXQ endurance workload (72 hours by default). It is a
+  reusable utility for local AXQ packages and supports an exact server-version
+  gate, preflight-only mode, configurable duration/cadence/KV geometry and
+  immutable evidence directories. Its interleaved unique/shared-prefix
   mix records every stream, post-response lifecycle drain, model KV/cache
-  attribution, process/host memory slope, and same-shape performance drift
-  against a four-hour baseline. It writes atomic JSON and Markdown checkpoints,
+  attribution, bounded request/KV container trajectories, process/host memory
+  slope, work-normalized retention, checkpoint `vmmap`/`footprint` captures,
+  and same-shape performance drift against a four-hour baseline. It writes
+  atomic JSON and Markdown checkpoints,
   including a final checkpoint on completion, failure, SIGINT, or SIGTERM, and
   never reuses warmup prompt IDs in the measured schedule.
   See [AXQ 72-hour Endurance Soak](../docs/AXQ-ENDURANCE-SOAK.md) for the
   pinned target, launch procedure, evidence inventory, and pass/watch rules.
+- `launch_axq_endurance_detached.sh`: starts the endurance utility under
+  `nohup` and `caffeinate` with closed stdin plus launcher log/PID receipts, so
+  the remote Mac continues independently of an SSH or monitoring-client
+  disconnect. It never resumes after a reboot or replaces a failed server.
 - `test_run_axq_endurance.py`: unit tests for the AXQ endurance workload mix,
   prompt identity, streaming/lifecycle contracts, performance and memory
   guardrails, checkpoint accounting, signal handling, and server limits.

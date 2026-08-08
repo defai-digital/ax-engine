@@ -23,6 +23,25 @@ manifest lineage issue described in
 [Qwen 3.6 27B AXQ Certification](model-certifications/qwen3.6-27b-axq.md)
 remains a separate artifact-integrity gate.
 
+## Why 72 hours
+
+The acceptance window is 72 hours, not 48 hours and not an 8-hour extrapolation.
+It spans three full daily cycles and sits at the upper end of the commonly
+described 48–72-hour soak range, giving slow per-request retention and host
+day/night effects another full day to become observable. The vLLM case cited
+below is especially relevant because its process working set rose over multiple
+days while GPU-level signals remained normal; it does not claim that vLLM uses
+72 hours as a universal standard.
+
+There is also a product reason. OpenClaw-style agents and agentic coding now run
+longer, multi-step tool pipelines with alternating inference, tool execution,
+retries, compaction and idle periods. A production-grade inference engine may
+serve many such workflows without being restarted between them. The test does
+not assert that every individual agent task lasts 72 hours; it verifies that the
+shared serving process tolerates that longer-lived operating pattern
+continuously. Passing 48 hours remains a useful checkpoint, but only a complete
+72-hour run can satisfy this test contract.
+
 ## Decision and test boundary
 
 The decision is deliberately narrow: can one exact AX Engine binary keep one
@@ -44,6 +63,15 @@ similarly distinguishes smoke, average, stress, and soak workloads, and its
 uses explicit error and percentile criteria rather than a subjective final
 readout. The runner applies that idea to client-visible TTFT/decode/prefill,
 per-shape samples, lifecycle state, and memory trends.
+
+The redesigned runner also addresses a failure mode demonstrated by vLLM's
+[multi-day GLM-5.2 endurance investigation](https://github.com/vllm-project/vllm-project.github.io/blob/main/_posts/2026-07-23-glm-5.2-nvfp4-b300-pd.md):
+accelerator telemetry can remain stable while a process-side collection grows
+with every KV allocation. RSS alone can detect the consequence but cannot name
+the producer. AX therefore records lifetime KV allocation/release/eviction
+counters, trajectories for request/KV owner indexes and retained snapshots,
+memory growth per completed request/KV allocation, and `vmmap`/`footprint`
+captures at each checkpoint.
 
 MLX uses a [unified-memory model](https://ml-explore.github.io/mlx/build/html/)
 on Apple silicon, so host wired and IOGPU counters cannot be treated as an AX
@@ -183,6 +211,8 @@ endurance. Every four hours it atomically updates
 | Logical-KV capacity | Post-warm-up anchor proves the next fresh long prompt exceeds free logical blocks; bounded fillers make pressure explicit if needed; fresh long/medium probes report used/total logical blocks, utilization, native prefill steps, and cache-only continuations |
 | Prefix-cache exercise | The dedicated shared-prefix requests retain their physical-cache hit/miss/blocked/store/eviction route decisions separately in each checkpoint |
 | AX process memory | Server RSS, MLX active/cache/peak metrics and target-model logical/physical KV and prefix-cache memory |
+| Producer/consumer retention | KV allocation/release/eviction counters; request, terminal snapshot, live-prefix, block-ref and cached-child container gauges; trajectories normalized by completed requests |
+| Process attribution | Immutable `vmmap -summary` and `footprint --wide --swapped` captures at start, every checkpoint, and finalization |
 | macOS memory and confounders | `vm_stat` wired, compressor and active pages; swap; IOGPU driver alloc/in-use memory when exposed; disk, load, and `pmset` thermal state |
 
 `ax_engine_http_requests_in_flight` is recorded but excluded from the drain
@@ -294,11 +324,40 @@ configured logical-KV exhaustion from physical exhaustion of the 64 GiB host;
 the bounded replay does not establish either a 72-hour memory leak or a
 72-hour pass.
 
-## Launch and status
+## Reusable repository utility
 
-Run on AC power with no other intentional AX Engine workload, and retain the
-host's power settings in the manifest. Use `caffeinate` so normal macOS sleep
-does not invalidate the server-lifetime result:
+`scripts/run_axq_endurance.py` is a repository utility, not a host-specific
+one-off. Users can point it at any local AXQ package and AX Engine server,
+choose their own model id, duration, cadence, baseline, KV geometry and
+guardrails, and receive the same versioned JSONL/JSON/Markdown evidence. Run
+`python3 scripts/run_axq_endurance.py --help` for the complete interface.
+
+The workload remains deliberately fixed and deterministic so two runs are
+comparable. It requires the native MLX streaming route, a local
+`tokenizer.json`, and the retention metrics introduced by this methodology.
+Use `--expected-server-version` for a release-verification run; the runner
+fails before model load if the executable reports another version. Use a new
+empty output directory for every run.
+
+For an implementation check without a measured interval:
+
+```bash
+python3 scripts/run_axq_endurance.py \
+  --server target/release/ax-engine-server \
+  --expected-server-version 6.13.5 \
+  --model-dir /path/to/axq-model \
+  --model-id my-axq-model \
+  --output-dir /path/to/evidence/preflight \
+  --preflight-only
+```
+
+## Detached launch and status
+
+Run on AC power with no other intentional AX Engine workload. The detached
+launcher closes stdin, redirects output, uses `nohup` and holds macOS awake
+with `caffeinate`; SSH, a monitoring laptop, or this Codex session may then
+disconnect without affecting the run. It writes sibling launcher-log and PID
+receipt files while the runner owns all test evidence.
 
 ```bash
 stage=/Users/devop/ax-engine-qwen36-27b-axq-6bit-20260807T015129Z
@@ -306,20 +365,27 @@ run_id=$(date -u +%Y%m%dT%H%M%SZ)
 output_dir="$stage/endurance/axq-6bit-72h-$run_id"
 mkdir -p "$stage/endurance"
 
-nohup env VIRTUAL_ENV="$stage/.venv" PYO3_PYTHON="$stage/.venv/bin/python" \
-  PATH="$stage/source/target/release:$stage/.venv/bin:/opt/homebrew/bin:/usr/bin:/bin" \
-  caffeinate -dimsu "$stage/.venv/bin/python" \
-  "$stage/source/scripts/run_axq_endurance.py" \
+VIRTUAL_ENV="$stage/.venv" \
+PYO3_PYTHON="$stage/.venv/bin/python" \
+PATH="$stage/source/target/release:$stage/.venv/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+AX_ENDURANCE_PYTHON="$stage/.venv/bin/python" \
+  "$stage/source/scripts/launch_axq_endurance_detached.sh" \
   --server "$stage/source/target/release/ax-engine-server" \
+  --expected-server-version 6.13.5 \
   --model-dir "$stage/models/axq" \
   --model-id qwen3.6-27b-axq-6bit \
   --output-dir "$output_dir" \
   --block-size-tokens 16 \
   --total-blocks 1024 \
   --duration-hours 72 \
-  --report-interval-hours 4 \
-  > "$stage/endurance/launcher-$run_id.log" 2>&1 &
+  --report-interval-hours 4
 ```
+
+The launcher is intentionally not a reboot-resume service. A host reboot,
+power loss, runner exit, or server crash ends the exact-process contract and
+must produce a failed/interrupted result; a replacement 72-hour run starts
+from hour zero. This prevents a recovery policy from hiding an endurance
+failure.
 
 The current status is always available without stopping the test:
 

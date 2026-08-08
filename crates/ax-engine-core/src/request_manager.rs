@@ -41,6 +41,16 @@ pub struct RequestManager {
     snapshot_order_dirty: bool,
 }
 
+/// Point-in-time retention state used to prove that completed requests are
+/// bounded during multi-day serving.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RequestRetentionTelemetry {
+    pub active_records: u64,
+    pub terminal_snapshots: u64,
+    pub terminal_snapshot_order: u64,
+    pub terminal_snapshot_bytes: u64,
+}
+
 impl RequestManager {
     pub fn new(cache_group_id: CacheGroupId) -> Self {
         Self {
@@ -113,6 +123,16 @@ impl RequestManager {
 
     pub fn record(&self, request_id: RequestId) -> Option<&RequestRecord> {
         self.records.get(&request_id)
+    }
+
+    pub fn retention_telemetry(&self) -> RequestRetentionTelemetry {
+        let count = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+        RequestRetentionTelemetry {
+            active_records: count(self.records.len()),
+            terminal_snapshots: count(self.terminal_snapshots.len()),
+            terminal_snapshot_order: count(self.terminal_snapshot_order.len()),
+            terminal_snapshot_bytes: count(self.terminal_snapshot_bytes),
+        }
     }
 
     /// Borrowing iterator over live request records, in no particular order.
@@ -831,6 +851,11 @@ mod tests {
             manager.snapshot(RequestId(1)).unwrap().state,
             RequestState::Cancelled
         );
+        let retention = manager.retention_telemetry();
+        assert_eq!(retention.active_records, 0);
+        assert_eq!(retention.terminal_snapshots, 1);
+        assert_eq!(retention.terminal_snapshot_order, 1);
+        assert!(retention.terminal_snapshot_bytes > 0);
     }
 
     #[test]

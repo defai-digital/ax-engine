@@ -41,8 +41,8 @@ from typing import Any
 
 import bench_ax_serving as serving_bench
 
-SCHEMA_VERSION = "ax.axq_endurance_soak.v3"
-CHECKPOINT_SCHEMA_VERSION = "ax.axq_endurance_checkpoint.v3"
+SCHEMA_VERSION = "ax.axq_endurance_soak.v4"
+CHECKPOINT_SCHEMA_VERSION = "ax.axq_endurance_checkpoint.v4"
 DEFAULT_DURATION_HOURS = 72.0
 DEFAULT_REPORT_INTERVAL_HOURS = 4.0
 DEFAULT_BASELINE_HOURS = 4.0
@@ -73,6 +73,9 @@ DEFAULT_MEMORY_GROWTH_MIB = 4_096.0
 # high as the short-baseline settling guard or a slow, material leak would be
 # silently classified as normal allocator noise.
 DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR = 64.0
+DEFAULT_EARLY_MEMORY_GROWTH_MIB = 256.0
+DEFAULT_EARLY_MEMORY_SLOPE_MIB_PER_HOUR = 32.0
+DEFAULT_EARLY_MEMORY_POSITIVE_STEP_RATIO = 0.70
 DEFAULT_BASELINE_STABILITY_GROWTH_MIB = 1_024.0
 DEFAULT_BASELINE_STABILITY_SLOPE_MIB_PER_HOUR = 256.0
 DEFAULT_MAX_SWAP_GROWTH_MIB = 512.0
@@ -110,6 +113,7 @@ SERVER_METRICS = (
     "ax_engine_generation_worker_ready",
     "ax_engine_generation_saturated_commands_total",
     "ax_engine_generation_stream_backlog_overflows_total",
+    "ax_engine_generation_completed_requests_total",
     "ax_engine_http_status_2xx_total",
     "ax_engine_http_status_4xx_total",
     "ax_engine_http_status_5xx_total",
@@ -119,6 +123,30 @@ SERVER_METRICS = (
     "ax_engine_memory_host_resident_bytes",
     "ax_engine_memory_unattributed_active_bytes",
     "ax_engine_memory_attribution_excess_bytes",
+    "ax_engine_steps_total",
+    "ax_engine_scheduled_requests_total",
+    "ax_engine_scheduled_tokens_total",
+    "ax_engine_kv_allocated_blocks_total",
+    "ax_engine_kv_released_blocks_total",
+    "ax_engine_kv_cache_evictions_total",
+    "ax_engine_kv_free_blocks",
+    "ax_engine_kv_block_tables",
+    "ax_engine_kv_prompt_entries",
+    "ax_engine_kv_block_ref_entries",
+    "ax_engine_kv_live_prefix_index_keys",
+    "ax_engine_kv_live_prefix_request_refs",
+    "ax_engine_kv_cached_blocks",
+    "ax_engine_kv_cached_child_index_keys",
+    "ax_engine_kv_cached_child_edges",
+    "ax_engine_request_active_records",
+    "ax_engine_request_terminal_snapshots",
+    "ax_engine_request_terminal_snapshot_order",
+    "ax_engine_request_terminal_snapshot_bytes",
+    "ax_engine_request_owners",
+    "ax_engine_request_active_owners",
+    "ax_engine_request_terminal_owners",
+    "ax_engine_request_terminal_owner_queue_entries",
+    "ax_engine_request_terminal_owner_queues",
     "ax_runtime_ttft_p95_ms",
     "ax_runtime_decode_tok_per_sec",
     "ax_runtime_error_rate",
@@ -144,9 +172,50 @@ COUNTER_METRICS = (
     "ax_engine_http_status_2xx_total",
     "ax_engine_http_status_4xx_total",
     "ax_engine_http_status_5xx_total",
+    "ax_engine_generation_completed_requests_total",
+    "ax_engine_steps_total",
+    "ax_engine_scheduled_requests_total",
+    "ax_engine_scheduled_tokens_total",
+    "ax_engine_kv_allocated_blocks_total",
+    "ax_engine_kv_released_blocks_total",
+    "ax_engine_kv_cache_evictions_total",
+)
+BOUNDED_STATE_METRICS = (
+    "ax_engine_kv_free_blocks",
+    "ax_engine_kv_block_tables",
+    "ax_engine_kv_prompt_entries",
+    "ax_engine_kv_block_ref_entries",
+    "ax_engine_kv_live_prefix_index_keys",
+    "ax_engine_kv_live_prefix_request_refs",
+    "ax_engine_kv_cached_blocks",
+    "ax_engine_kv_cached_child_index_keys",
+    "ax_engine_kv_cached_child_edges",
+    "ax_engine_request_active_records",
+    "ax_engine_request_terminal_snapshots",
+    "ax_engine_request_terminal_snapshot_order",
+    "ax_engine_request_terminal_snapshot_bytes",
+    "ax_engine_request_owners",
+    "ax_engine_request_active_owners",
+    "ax_engine_request_terminal_owners",
+    "ax_engine_request_terminal_owner_queue_entries",
+    "ax_engine_request_terminal_owner_queues",
+)
+RETENTION_OBSERVABILITY_METRICS = (
+    "ax_engine_generation_completed_requests_total",
+    "ax_engine_steps_total",
+    "ax_engine_scheduled_tokens_total",
+    "ax_engine_kv_allocated_blocks_total",
+    "ax_engine_kv_released_blocks_total",
+    "ax_engine_kv_cache_evictions_total",
+    *BOUNDED_STATE_METRICS,
 )
 MEMORY_SERIES_PATHS = {
     "server_rss_bytes": ("process", "rss_bytes"),
+    "server_host_resident_metric_bytes": (
+        "metrics",
+        "values",
+        "ax_engine_memory_host_resident_bytes",
+    ),
     "host_wired_bytes": ("host", "wired_bytes"),
     "host_compressor_bytes": ("host", "compressor_bytes"),
     "host_swap_used_bytes": ("host", "swap", "used_bytes"),
@@ -154,6 +223,16 @@ MEMORY_SERIES_PATHS = {
     "iogpu_in_use_system_memory_bytes": ("host", "iogpu", "in_use_system_memory_bytes"),
     "mlx_active_bytes": ("metrics", "values", "ax_engine_memory_mlx_active_bytes"),
     "mlx_cache_bytes": ("metrics", "values", "ax_engine_memory_mlx_cache_bytes"),
+    "mlx_unattributed_active_bytes": (
+        "metrics",
+        "values",
+        "ax_engine_memory_unattributed_active_bytes",
+    ),
+    "request_terminal_snapshot_bytes": (
+        "metrics",
+        "values",
+        "ax_engine_request_terminal_snapshot_bytes",
+    ),
     "model_kv_logical_bytes": (
         "metrics",
         "values",
@@ -170,6 +249,20 @@ MEMORY_SERIES_PATHS = {
         "ax_engine_model_memory_prefix_cache_payload_bytes",
     ),
 }
+WORK_COUNTER_PATHS = {
+    "completed_requests": (
+        "metrics",
+        "values",
+        "ax_engine_generation_completed_requests_total",
+    ),
+    "engine_steps": ("metrics", "values", "ax_engine_steps_total"),
+    "scheduled_tokens": ("metrics", "values", "ax_engine_scheduled_tokens_total"),
+    "kv_allocated_blocks": (
+        "metrics",
+        "values",
+        "ax_engine_kv_allocated_blocks_total",
+    ),
+}
 PREFIX_CACHE_ROUTE_DECISION_KEYS = (
     "ax_mlx_prefix_cache_hits",
     "ax_mlx_prefix_cache_misses",
@@ -178,6 +271,9 @@ PREFIX_CACHE_ROUTE_DECISION_KEYS = (
     "ax_mlx_prefix_cache_evictions",
     "ax_mlx_prefix_cache_reused_tokens",
     "ax_mlx_prefix_cache_warmup_tokens",
+    "retained_cache_hits",
+    "prefix_reused_requests",
+    "prefix_reused_tokens",
 )
 PROMPT_WORDS = (
     "adapter",
@@ -396,7 +492,7 @@ def command_output(*command: str, timeout_s: float = 30.0) -> str:
 
 def sanitized_hardware_profile() -> str:
     """Collect hardware context while excluding durable machine identifiers."""
-    profile = command_output("system_profiler", "SPHardwareDataType", timeout_s=45.0)
+    profile = command_output("/usr/sbin/system_profiler", "SPHardwareDataType", timeout_s=45.0)
     return "\n".join(
         line
         for line in profile.splitlines()
@@ -425,7 +521,30 @@ def runtime_metadata(server_path: Path) -> dict[str, Any]:
         "server_path": str(server_path),
         "server_sha256": sha256_file(server_path),
         "server_version": command_output(str(server_path), "--version"),
+        "launch_context": {
+            "runner_pid": os.getpid(),
+            "parent_pid": os.getppid(),
+            "session_id": os.getsid(0),
+            "process_group_id": os.getpgrp(),
+            "stdin_isatty": sys.stdin.isatty(),
+            "stdout_isatty": sys.stdout.isatty(),
+            "working_directory": str(Path.cwd()),
+        },
     }
+
+
+def validate_server_version(server_path: Path, expected_version: str | None) -> str:
+    """Fail before a multi-day run when the executable version is not the pinned target."""
+    observed = command_output(str(server_path), "--version")
+    if observed.startswith("unavailable:"):
+        raise RuntimeError(f"could not read server version: {observed}")
+    if expected_version is not None:
+        pattern = rf"(?<![0-9A-Za-z.])v?{re.escape(expected_version)}(?![0-9A-Za-z.])"
+        if re.search(pattern, observed) is None:
+            raise RuntimeError(
+                f"server version mismatch: expected {expected_version!r}, observed {observed!r}"
+            )
+    return observed
 
 
 def build_server_command(args: argparse.Namespace) -> list[str]:
@@ -818,11 +937,66 @@ def collect_light_host_snapshot(output_dir: Path) -> dict[str, Any]:
     return host
 
 
-def collect_checkpoint_host_snapshot(output_dir: Path) -> dict[str, Any]:
+def collect_process_diagnostics(
+    output_dir: Path, *, server_pid: int, reason: str
+) -> dict[str, Any]:
+    """Persist low-frequency process VM summaries without allocation tracing.
+
+    `vmmap` and `footprint` provide region/category attribution if RSS later
+    grows while MLX/KV gauges remain flat. They run only at checkpoints so the
+    endurance workload is not continuously perturbed.
+    """
+    diagnostics_dir = output_dir / "diagnostics"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    result: dict[str, Any] = {"pid": server_pid, "reason": reason, "timestamp": utc_now()}
+    for name, command in (
+        ("vmmap-summary", ("/usr/bin/vmmap", "-summary", str(server_pid))),
+        ("footprint", ("/usr/bin/footprint", "-p", str(server_pid), "--wide", "--swapped")),
+    ):
+        return_code: int | None = None
+        error: str | None = None
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=45.0,
+            )
+            return_code = completed.returncode
+            content = (completed.stdout or completed.stderr).strip()
+        except (OSError, subprocess.TimeoutExpired) as command_error:
+            error = str(command_error)
+            content = f"unavailable: {command_error}"
+        path = diagnostics_dir / f"{timestamp}-{reason}-{name}.txt"
+        write_text_atomic(path, content + "\n")
+        result[name.replace("-", "_")] = {
+            "path": str(path),
+            "sha256": sha256_file(path),
+            "available": return_code == 0 and bool(content),
+            "return_code": return_code,
+            "error": error,
+        }
+    return result
+
+
+def collect_checkpoint_host_snapshot(
+    output_dir: Path,
+    *,
+    server_pid: int | None = None,
+    reason: str = "checkpoint",
+) -> dict[str, Any]:
     """Add less-frequent diagnostic context to a lightweight host sample."""
     snapshot = collect_light_host_snapshot(output_dir)
     snapshot["memory_pressure"] = command_output("memory_pressure", timeout_s=30.0)
     snapshot["power"] = command_output("pmset", "-g", "batt", timeout_s=10.0)
+    if server_pid is not None and process_snapshot(server_pid).get("alive"):
+        snapshot["process_diagnostics"] = collect_process_diagnostics(
+            output_dir,
+            server_pid=server_pid,
+            reason=reason,
+        )
     return snapshot
 
 
@@ -850,7 +1024,9 @@ class ResourceSampler:
         self._stop = threading.Event()
         self._samples: list[dict[str, Any]] = []
         self._lock = threading.Lock()
-        self._thread = threading.Thread(target=self._run, name="axq-resource-sampler", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="ax-endurance-resource-sampler", daemon=True
+        )
 
     def sample_once(self) -> dict[str, Any]:
         """Capture one resource sample and synchronously persist it."""
@@ -1259,6 +1435,12 @@ def memory_points(
 
 def linear_slope_per_hour(points: Iterable[tuple[float, float]]) -> float | None:
     """Return ordinary-least-squares value slope per hour, or inconclusive."""
+    slope = linear_slope_y_per_x(points)
+    return None if slope is None else slope * 3_600.0
+
+
+def linear_slope_y_per_x(points: Iterable[tuple[float, float]]) -> float | None:
+    """Return the ordinary-least-squares Y/X slope, or inconclusive."""
     clean = [(float(x), float(y)) for x, y in points if math.isfinite(x) and math.isfinite(y)]
     if len(clean) < 3:
         return None
@@ -1268,7 +1450,111 @@ def linear_slope_per_hour(points: Iterable[tuple[float, float]]) -> float | None
     if denominator <= 0.0:
         return None
     numerator = sum((x - mean_x) * (y - mean_y) for x, y in clean)
-    return numerator / denominator * 3_600.0
+    return numerator / denominator
+
+
+def positive_step_ratio(points: list[tuple[float, float]]) -> float | None:
+    """Fraction of consecutive observations whose retained value increased."""
+    if len(points) < 2:
+        return None
+    deltas = [
+        current[1] - previous[1] for previous, current in zip(points, points[1:], strict=False)
+    ]
+    return sum(delta > 0.0 for delta in deltas) / len(deltas)
+
+
+def bounded_state_analysis(
+    *,
+    samples: list[dict[str, Any]],
+    baseline_end_elapsed_s: float | None,
+) -> dict[str, Any]:
+    """Preserve trajectories for internal containers that can grow per request.
+
+    These gauges include intentionally bounded caches and terminal-record stores,
+    so their growth is diagnostic rather than automatically classified as a leak.
+    Plateau behavior and bytes per completed request make a producer/consumer
+    imbalance visible without relying on process RSS alone.
+    """
+    output: dict[str, Any] = {}
+    completed_path = ("metrics", "values", "ax_engine_generation_completed_requests_total")
+    for name in BOUNDED_STATE_METRICS:
+        path = ("metrics", "values", name)
+        quiescent = memory_points(samples, path, quiescent=True)
+        points = quiescent if len(quiescent) >= 3 else memory_points(samples, path)
+        if not points:
+            continue
+        post_baseline = [
+            point
+            for point in points
+            if baseline_end_elapsed_s is None or point[0] >= baseline_end_elapsed_s
+        ]
+        entry: dict[str, Any] = {
+            "current": points[-1][1],
+            "peak": max(value for _elapsed, value in points),
+            "samples": len(points),
+            "quiescent_samples": len(quiescent),
+        }
+        if len(post_baseline) >= 2:
+            entry.update(
+                {
+                    "post_baseline_growth": post_baseline[-1][1] - post_baseline[0][1],
+                    "post_baseline_slope_per_hour": linear_slope_per_hour(post_baseline),
+                    "post_baseline_positive_step_ratio": positive_step_ratio(post_baseline),
+                    "post_baseline_span_hours": (post_baseline[-1][0] - post_baseline[0][0])
+                    / 3_600.0,
+                }
+            )
+            completed_by_elapsed = {
+                elapsed: value
+                for elapsed, value in memory_points(samples, completed_path)
+                if baseline_end_elapsed_s is None or elapsed >= baseline_end_elapsed_s
+            }
+            normalized_points = [
+                (completed_by_elapsed[elapsed], value)
+                for elapsed, value in post_baseline
+                if elapsed in completed_by_elapsed
+            ]
+            entry["ols_units_per_completed_request"] = linear_slope_y_per_x(normalized_points)
+        output[name] = entry
+    return output
+
+
+def work_normalized_memory_slopes(
+    *,
+    samples: list[dict[str, Any]],
+    memory_path: tuple[str, ...],
+    baseline_end_elapsed_s: float | None,
+) -> dict[str, Any]:
+    """Relate retained bytes to completed work, not wall time alone."""
+    if baseline_end_elapsed_s is None:
+        return {}
+    output: dict[str, Any] = {}
+    for counter_name, counter_path in WORK_COUNTER_PATHS.items():
+        points: list[tuple[float, float]] = []
+        for sample in samples:
+            elapsed = sample.get("elapsed_seconds")
+            if not isinstance(elapsed, (int, float)) or float(elapsed) < baseline_end_elapsed_s:
+                continue
+            memory_value = get_nested_number(sample, memory_path)
+            counter_value = get_nested_number(sample, counter_path)
+            if memory_value is None or counter_value is None:
+                continue
+            points.append((counter_value, memory_value))
+        if len(points) < 3:
+            continue
+        counter_delta = points[-1][0] - points[0][0]
+        if counter_delta <= 0.0:
+            continue
+        slope = linear_slope_y_per_x(points)
+        if slope is None:
+            continue
+        output[counter_name] = {
+            "samples": len(points),
+            "counter_delta": counter_delta,
+            "ols_bytes_per_unit": slope,
+            "endpoint_bytes_per_unit": (points[-1][1] - points[0][1]) / counter_delta,
+        }
+    return output
 
 
 def default_max_sampling_gap_seconds(resource_interval_s: float) -> float:
@@ -1397,10 +1683,21 @@ def memory_analysis(
                     "quiescent_lifetime_slope_mib_per_hour": _bytes_slope_to_mib(
                         linear_slope_per_hour(quiescent_after_baseline)
                     ),
+                    "quiescent_positive_step_ratio": positive_step_ratio(quiescent_after_baseline),
+                    "quiescent_post_baseline_span_hours": (
+                        (quiescent_after_baseline[-1][0] - quiescent_after_baseline[0][0]) / 3_600.0
+                        if len(quiescent_after_baseline) >= 2
+                        else 0.0
+                    ),
                 }
             )
             if baseline is not None:
                 entry["quiescent_growth_mib"] = (quiescent_values[-1] - baseline) / MEBIBYTE
+        entry["work_normalized"] = work_normalized_memory_slopes(
+            samples=samples,
+            memory_path=path,
+            baseline_end_elapsed_s=baseline_end_elapsed_s,
+        )
         analysis["series"][name] = entry
     return analysis
 
@@ -1675,6 +1972,51 @@ def evaluate_memory_alerts(
     return messages
 
 
+def evaluate_memory_early_warnings(
+    analysis: dict[str, Any],
+    *,
+    min_growth_mib: float = DEFAULT_EARLY_MEMORY_GROWTH_MIB,
+    min_slope_mib_per_hour: float = DEFAULT_EARLY_MEMORY_SLOPE_MIB_PER_HOUR,
+    min_positive_step_ratio: float = DEFAULT_EARLY_MEMORY_POSITIVE_STEP_RATIO,
+) -> list[str]:
+    """Flag smaller monotonic retained growth before the material failure gate.
+
+    Only process RSS and AX's unattributed-active gauge participate. Bounded
+    allocator and KV caches are reported diagnostically but do not trigger this
+    early signal while they fill toward a fixed capacity.
+    """
+    series = analysis.get("series", {})
+    if not isinstance(series, dict):
+        return []
+    messages: list[str] = []
+    for name in ("server_rss_bytes", "mlx_unattributed_active_bytes"):
+        values = series.get(name)
+        if not isinstance(values, dict):
+            continue
+        growth = values.get("quiescent_growth_mib", values.get("growth_mib"))
+        slope = values.get(
+            "quiescent_lifetime_slope_mib_per_hour",
+            values.get("lifetime_slope_mib_per_hour"),
+        )
+        ratio = values.get("quiescent_positive_step_ratio")
+        span = values.get("quiescent_post_baseline_span_hours")
+        if (
+            isinstance(growth, (int, float))
+            and isinstance(slope, (int, float))
+            and isinstance(ratio, (int, float))
+            and isinstance(span, (int, float))
+            and span >= 4.0
+            and growth >= min_growth_mib
+            and slope >= min_slope_mib_per_hour
+            and ratio >= min_positive_step_ratio
+        ):
+            messages.append(
+                f"early retained-memory warning: {name} rose {growth:.1f} MiB with "
+                f"{slope:.1f} MiB/h slope and {ratio:.1%} positive steps over {span:.1f} h"
+            )
+    return messages
+
+
 def evaluate_window_guardrails(
     *,
     state: RunState,
@@ -1689,6 +2031,9 @@ def evaluate_window_guardrails(
     max_client_error_rate: float,
     memory_growth_mib: float,
     memory_slope_mib_per_hour: float,
+    early_memory_growth_mib: float = DEFAULT_EARLY_MEMORY_GROWTH_MIB,
+    early_memory_slope_mib_per_hour: float = DEFAULT_EARLY_MEMORY_SLOPE_MIB_PER_HOUR,
+    early_memory_positive_step_ratio: float = DEFAULT_EARLY_MEMORY_POSITIVE_STEP_RATIO,
     max_swap_growth_mib: float = DEFAULT_MAX_SWAP_GROWTH_MIB,
     min_prefill_p05_ratio: float = DEFAULT_MIN_PREFILL_P05_RATIO,
 ) -> tuple[list[str], list[str]]:
@@ -1744,6 +2089,14 @@ def evaluate_window_guardrails(
         max_growth_mib=memory_growth_mib,
         max_slope_mib_per_hour=memory_slope_mib_per_hour,
         max_swap_growth_mib=max_swap_growth_mib,
+    )
+    memory_alerts.extend(
+        evaluate_memory_early_warnings(
+            memory,
+            min_growth_mib=early_memory_growth_mib,
+            min_slope_mib_per_hour=early_memory_slope_mib_per_hour,
+            min_positive_step_ratio=early_memory_positive_step_ratio,
+        )
     )
     return performance_alerts, memory_alerts
 
@@ -1840,10 +2193,13 @@ def run_summary(
     memory_alerts: list[str],
     alerts: list[str],
     output_dir: Path,
+    bounded_state_trends: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a durable current status used for both automation and operator review."""
     verdict, concerns = assessment(state=state, terminal_status=status)
     measurement_elapsed_s = elapsed_s if state.measurement_started else 0.0
+    metric_values = latest_metrics.get("values", {}) if isinstance(latest_metrics, dict) else {}
+    metric_values = metric_values if isinstance(metric_values, dict) else {}
     return {
         "schema_version": SCHEMA_VERSION,
         "status": status,
@@ -1900,6 +2256,12 @@ def run_summary(
         "memory": memory,
         "metrics": latest_metrics,
         "metric_counter_deltas_since_warmup": counter_deltas_view,
+        "bounded_state": {
+            name: metric_values[name]
+            for name in BOUNDED_STATE_METRICS
+            if isinstance(metric_values.get(name), (int, float))
+        },
+        "bounded_state_trends": bounded_state_trends or {},
         "host": latest_host,
         "performance_alerts": performance_alerts,
         "memory_alerts": memory_alerts,
@@ -1913,6 +2275,7 @@ def run_summary(
             "summary": str(output_dir / "summary.json"),
             "checkpoints_dir": str(output_dir / "checkpoints"),
             "reports_dir": str(output_dir / "reports"),
+            "diagnostics_dir": str(output_dir / "diagnostics"),
         },
     }
 
@@ -2088,6 +2451,48 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
                 f"growth `{format_metric(growth, 'MiB')}`; "
                 f"slope `{format_metric(slope, 'MiB/h')}`"
             )
+        normalized_lines = []
+        for name in ("server_rss_bytes", "mlx_unattributed_active_bytes"):
+            values = memory_series.get(name)
+            if not isinstance(values, dict):
+                continue
+            normalized = values.get("work_normalized", {})
+            if not isinstance(normalized, dict):
+                continue
+            requests = normalized.get("completed_requests")
+            allocations = normalized.get("kv_allocated_blocks")
+            request_rate = (
+                requests.get("ols_bytes_per_unit") if isinstance(requests, dict) else None
+            )
+            allocation_rate = (
+                allocations.get("ols_bytes_per_unit") if isinstance(allocations, dict) else None
+            )
+            normalized_lines.append(
+                f"- `{name}`: "
+                f"`{format_metric_per_unit(request_rate, 'KiB/completed request')}`; "
+                f"`{format_metric_per_unit(allocation_rate, 'KiB/KV block allocation')}`"
+            )
+        if normalized_lines:
+            lines.extend(["", "## Work-normalized retained-memory diagnostics", ""])
+            lines.extend(normalized_lines)
+    bounded_state = summary.get("bounded_state", {})
+    if isinstance(bounded_state, dict) and bounded_state:
+        lines.extend(["", "## Bounded internal state", ""])
+        lines.extend(f"- `{name}`: `{value:g}`" for name, value in bounded_state.items())
+    bounded_trends = summary.get("bounded_state_trends", {})
+    if isinstance(bounded_trends, dict) and bounded_trends:
+        lines.extend(["", "## Bounded-state trajectories", ""])
+        for name, values in bounded_trends.items():
+            if not isinstance(values, dict):
+                continue
+            lines.append(
+                f"- `{name}`: growth "
+                f"`{format_metric(values.get('post_baseline_growth'), 'units')}`; "
+                f"slope `"
+                f"{format_metric(values.get('post_baseline_slope_per_hour'), 'units/h')}`; "
+                f"per completed request `"
+                f"{format_metric(values.get('ols_units_per_completed_request'), 'units/request')}`"
+            )
     lines.append("")
     return "\n".join(lines)
 
@@ -2104,6 +2509,13 @@ def format_bytes(value: Any) -> str:
     if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
         return "n/a"
     return f"{float(value) / MEBIBYTE:.1f} MiB"
+
+
+def format_metric_per_unit(value: Any, unit: str) -> str:
+    """Render a byte-per-work-unit slope as KiB per unit."""
+    if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return "n/a"
+    return f"{float(value) / 1024.0:.3f} {unit}"
 
 
 def write_checkpoint(
@@ -2143,6 +2555,10 @@ def write_checkpoint(
         window_start_elapsed_s=window_start_elapsed_s,
         baseline_end_elapsed_s=state.baseline_completed_elapsed_s,
     )
+    bounded_trends = bounded_state_analysis(
+        samples=resource_samples,
+        baseline_end_elapsed_s=state.baseline_completed_elapsed_s,
+    )
     summary = run_summary(
         state=state,
         status=status,
@@ -2158,6 +2574,7 @@ def write_checkpoint(
         memory_alerts=memory_alerts,
         alerts=alerts,
         output_dir=output_dir,
+        bounded_state_trends=bounded_trends,
     )
     checkpoint = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
@@ -2193,11 +2610,14 @@ def validate_args(args: argparse.Namespace) -> None:
     args.output_dir = args.output_dir.expanduser().resolve()
     if not args.server.is_file() or not os.access(args.server, os.X_OK):
         raise FileNotFoundError(f"server binary is not executable: {args.server}")
+    validate_server_version(args.server, args.expected_server_version)
     model_identity(args.model_dir)
     if not 0 < args.port < 65_536:
         raise ValueError("--port must be in 1..65535")
     if args.baseline_hours >= args.duration_hours:
         raise ValueError("--baseline-hours must be smaller than --duration-hours")
+    if args.early_memory_positive_step_ratio > 1.0:
+        raise ValueError("--early-memory-positive-step-ratio must be at most 1")
     if args.warmup_requests < len(WORKLOAD_SEQUENCE):
         raise ValueError(
             "--warmup-requests must cover one complete workload cycle "
@@ -2326,6 +2746,15 @@ def warmup_preflight_concerns(
     missing_model_memory = metrics.get("missing_model_memory_metrics", [])
     if isinstance(missing_model_memory, list) and missing_model_memory:
         concerns.append(f"required model-memory metrics were missing: {missing_model_memory}")
+    missing_retention = [
+        name
+        for name in RETENTION_OBSERVABILITY_METRICS
+        if not isinstance(values.get(name), (int, float))
+    ]
+    if missing_retention:
+        concerns.append(
+            "required retention/churn metrics were missing: " + ", ".join(missing_retention)
+        )
     logical = values.get("ax_engine_model_memory_kv_logical_bytes")
     if isinstance(logical, (int, float)) and logical > max_quiescent_kv_logical_mib * MEBIBYTE:
         concerns.append(
@@ -2596,6 +3025,14 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     "retained as corroboration"
                 ),
                 "reporting": "atomic current summary plus immutable JSON and Markdown checkpoints",
+                "retention_diagnostics": (
+                    "request/KV bounded-state gauges, allocation/release counters, "
+                    "work-normalized memory slopes, and vmmap/footprint checkpoint captures"
+                ),
+                "detached_execution": (
+                    "runner records its process/session/TTY context; use the repository "
+                    "detached launcher so the run does not depend on an SSH client"
+                ),
             },
             "target": {
                 "model_id": args.model_id,
@@ -2617,6 +3054,9 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 "min_performance_samples": args.min_performance_samples,
                 "memory_growth_mib": args.memory_growth_mib,
                 "memory_slope_mib_per_hour": args.memory_slope_mib_per_hour,
+                "early_memory_growth_mib": args.early_memory_growth_mib,
+                "early_memory_slope_mib_per_hour": args.early_memory_slope_mib_per_hour,
+                "early_memory_positive_step_ratio": args.early_memory_positive_step_ratio,
                 "baseline_stability_growth_mib": args.baseline_stability_growth_mib,
                 "baseline_stability_slope_mib_per_hour": (
                     args.baseline_stability_slope_mib_per_hour
@@ -2899,7 +3339,11 @@ def _run_endurance(args: argparse.Namespace) -> int:
         )
         sampler.start()
         latest_server = process_snapshot(process.pid)
-        latest_host = collect_checkpoint_host_snapshot(output_dir)
+        latest_host = collect_checkpoint_host_snapshot(
+            output_dir,
+            server_pid=process.pid,
+            reason="started",
+        )
         next_checkpoint = started_monotonic + report_interval_s
         last_checkpoint_monotonic = started_monotonic
         write_checkpoint(
@@ -3029,7 +3473,11 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 )
 
             if now >= next_checkpoint:
-                latest_host = collect_checkpoint_host_snapshot(output_dir)
+                latest_host = collect_checkpoint_host_snapshot(
+                    output_dir,
+                    server_pid=process.pid,
+                    reason="periodic",
+                )
                 latest_metrics = collect_metrics(base_url, args.model_id, timeout_s=10.0)
                 if not latest_metrics.get("ok"):
                     state.metric_scrape_failures += 1
@@ -3049,6 +3497,9 @@ def _run_endurance(args: argparse.Namespace) -> int:
                     max_client_error_rate=args.max_client_error_rate,
                     memory_growth_mib=args.memory_growth_mib,
                     memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                    early_memory_growth_mib=args.early_memory_growth_mib,
+                    early_memory_slope_mib_per_hour=args.early_memory_slope_mib_per_hour,
+                    early_memory_positive_step_ratio=args.early_memory_positive_step_ratio,
                     max_swap_growth_mib=args.max_swap_growth_mib,
                 )
                 for message in [*last_performance_alerts, *last_memory_alerts]:
@@ -3114,7 +3565,11 @@ def _run_endurance(args: argparse.Namespace) -> int:
                 elapsed_s = time.monotonic() - state.started_monotonic
                 if process is not None:
                     latest_server = process_snapshot(process.pid)
-                latest_host = collect_checkpoint_host_snapshot(output_dir)
+                latest_host = collect_checkpoint_host_snapshot(
+                    output_dir,
+                    server_pid=process.pid if process is not None else None,
+                    reason="final",
+                )
                 latest_metrics = collect_metrics(base_url, args.model_id, timeout_s=10.0)
                 if not latest_metrics.get("ok"):
                     state.metric_scrape_failures += 1
@@ -3158,6 +3613,9 @@ def _run_endurance(args: argparse.Namespace) -> int:
                         max_client_error_rate=args.max_client_error_rate,
                         memory_growth_mib=args.memory_growth_mib,
                         memory_slope_mib_per_hour=args.memory_slope_mib_per_hour,
+                        early_memory_growth_mib=args.early_memory_growth_mib,
+                        early_memory_slope_mib_per_hour=args.early_memory_slope_mib_per_hour,
+                        early_memory_positive_step_ratio=args.early_memory_positive_step_ratio,
                         max_swap_growth_mib=args.max_swap_growth_mib,
                     )
                     for message in [
@@ -3233,6 +3691,11 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the explicit conservative CLI for the endurance runner."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", type=Path, required=True)
+    parser.add_argument(
+        "--expected-server-version",
+        default=None,
+        help="Require the server --version output to contain this exact version token.",
+    )
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--model-id", default="qwen3.6-27b-axq-6bit")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -3319,6 +3782,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--memory-slope-mib-per-hour",
         type=positive_float,
         default=DEFAULT_MEMORY_SLOPE_MIB_PER_HOUR,
+    )
+    parser.add_argument(
+        "--early-memory-growth-mib",
+        type=positive_float,
+        default=DEFAULT_EARLY_MEMORY_GROWTH_MIB,
+    )
+    parser.add_argument(
+        "--early-memory-slope-mib-per-hour",
+        type=positive_float,
+        default=DEFAULT_EARLY_MEMORY_SLOPE_MIB_PER_HOUR,
+    )
+    parser.add_argument(
+        "--early-memory-positive-step-ratio",
+        type=positive_float,
+        default=DEFAULT_EARLY_MEMORY_POSITIVE_STEP_RATIO,
+        help="Positive quiescent sample-step fraction required for an early memory warning.",
     )
     parser.add_argument(
         "--baseline-stability-growth-mib",
