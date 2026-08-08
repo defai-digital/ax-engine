@@ -300,7 +300,15 @@ pub enum RankServiceError {
 
 impl IntoResponse for RankServiceError {
     fn into_response(self) -> Response {
-        (StatusCode::UNPROCESSABLE_ENTITY, self.to_string()).into_response()
+        // Contract and token-validation failures are caused by the request
+        // the caller sent (422); executor failures and a poisoned mutex are
+        // server-internal faults and must surface as 5xx so upstream retry
+        // policies can distinguish them.
+        let status = match self {
+            Self::Contract(_) | Self::WeakWorkerToken => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::Executor(_) | Self::ExecutorPoisoned => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, self.to_string()).into_response()
     }
 }
 
@@ -436,5 +444,14 @@ mod tests {
             router(processor, "short".into(), 1024),
             Err(RankServiceError::WeakWorkerToken)
         ));
+    }
+
+    #[test]
+    fn rank_service_error_statuses_distinguish_client_and_server_faults() {
+        let response = RankServiceError::ExecutorPoisoned.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let response = RankServiceError::WeakWorkerToken.into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

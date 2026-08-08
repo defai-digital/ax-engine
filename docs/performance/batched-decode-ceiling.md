@@ -1,7 +1,45 @@
-# Batched decode ceiling — the lever is real but the forward captures ~none of it
+# Batched decode ceiling — Shared captures the dense-model lever
 
-**Date:** 2026-07-17 · **MLX 0.32.0 (minos 26.2)** · **M3 Max** · Phase 3.0/3.1
-audit for the decode-dispatch-efficiency plan.
+## Current M5 Max certification (2026-08-07)
+
+The strict publication wrapper now confirms that the default Shared projection
+policy captures the dense-model batching lever. On Llama-3.1-8B-Instruct-4bit,
+MLX 0.32.0, Apple M5 Max 128 GB, and AX Engine 6.13.5:
+
+| Policy | Batch | Median aggregate tok/s | Scaling vs policy B=1 | Median step µs |
+| --- | ---: | ---: | ---: | ---: |
+| Shared | 1 | 82.1 | 1.00× | 12,182 |
+| Shared | 2 | 146.8 | 1.79× | 13,625 |
+| Shared | 4 | 271.0 | 3.30× | 14,761 |
+| Shared | 8 | **328.9** | **4.01×** | 24,325 |
+| RowExact | 1 | 82.2 | 1.00× | 12,166 |
+| RowExact | 2 | 91.1 | 1.11× | 21,962 |
+| RowExact | 4 | 99.2 | 1.21× | 40,326 |
+| RowExact | 8 | 102.6 | 1.25× | 77,970 |
+
+At B=8, Shared is **3.20×** RowExact by paired median ratio, with five wins,
+zero ties, and zero losses. Full-cohort greedy hashes match between policies
+at every batch size, including `846ac67aca8bad7d` at B=8.
+
+Source:
+`benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/`.
+The `ax.batched_decode_ceiling.v1` artifact is complete and is a publication
+candidate with no rejection reasons. It records five repetitions per policy,
+a clean AX Engine 6.13.5 build at commit
+`93b897731b8863365465df5b08ee174cb9fc56c1`, the pinned model-manifest hash,
+host/toolchain conditions, unique cells, and recomputed throughput and summary
+fields.
+
+This is a **dense projection microbenchmark** with a 32-token prefill and
+internal decode-step wall time. It does not establish end-to-end server
+throughput, concurrent long-prompt behavior, tail latency, or MoE/hybrid
+performance. Those require workload-matched serving evidence.
+
+## Historical investigation (M3 Max, 2026-07-17)
+
+The remainder of this page preserves the investigation that found the original
+RowExact bottleneck and led to the Shared default. Its M3 Max numbers are
+historical; use the M5 Max certification above for the current ceiling.
 
 ## Why batched decode
 
@@ -33,7 +71,7 @@ were both rejected and Coder-Next was out of scope. That was true then; Phase
 3.5–3.7 lifted linear + qwen3-MoE. See
 [batched-hybrid-moe-linear-decode.md](batched-hybrid-moe-linear-decode.md).
 
-## Ceiling measurement (dense, the supported path)
+## Initial ceiling measurement (dense, historical RowExact baseline)
 
 `batched-decode-ceiling-probe` (new microbench): prefill one 32-token prompt,
 seed N clones into a `BatchedDecodeSession`, step the cohort, report aggregate
@@ -79,7 +117,7 @@ barely amortizes. Far from the ×2–4 premise.
   batched forward (`decode_batched_forward` / `layer_forward_batched`), the
   Phase 3.3 first move.
 
-## Conclusion: viable, but the first work is fixing DENSE amortization
+## Initial conclusion: viable, but dense amortization needed fixing
 
 The lever is real — the weight-bound matmuls amortize ~5× at batch=8 in
 isolation — but the AX batched forward captures almost none of it (1.24×). The

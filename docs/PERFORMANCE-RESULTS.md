@@ -44,7 +44,8 @@ denominator.
 | 6-bit exact sampled-MTP comparison | AX Engine **v6.13.1** AX-only | Apple **M5 Max** 128 GB | 2026-08-06 |
 | Qwen3.6 MTP peer (MTPLX / lightning-mlx) | AX **6.13.3** · MTPLX **2.1.0** · lightning-mlx **0.6.10** | Apple **M5 Max** 128 GB | 2026-08-07 |
 | Direct generation snapshot | AX Engine **v6.13.3** AX-only · separate-run `mlx-lm` **0.31.3** · separate-run `llama.cpp` **b10050** | Apple **M5 Max** 128 GB | 2026-08-07 |
-| Embeddings | AX-only refresh + retained peer medians | Apple **M5 Max** 128 GB | 2026-07-27 |
+| Embeddings | AX Engine **6.13.4** · same-session `mlx-lm` / `mlx-embeddings` paired v3 | Apple **M5 Max** 128 GB | 2026-08-07 |
+| [Dense batched-decode ceiling](performance/batched-decode-ceiling.md) | AX Engine **6.13.5** · Shared / RowExact paired microbenchmark | Apple **M5 Max** 128 GB | 2026-08-07 |
 
 The current AX, `mlx_lm`, and shape-compatible llama.cpp direct snapshots were
 all refreshed on the same M5 Max, but in separate serialized runs. Their
@@ -971,103 +972,95 @@ sustained-ingest claim.
 
 #### Qwen3-Embedding ingest scale
 
-The current-main Qwen3 AX-only refresh covers 0.6B / 4B / 8B (2026-07-27,
-`v6.11.1`). It is shown beside the retained 2026-07-12 `mlx-lm` medians as a
-**cross-run directional view**, not a same-session paired result. The current
-chart inputs are retained pre-v3 artifacts and are accepted only through the
-historical `--allow-legacy` path; they predate the current completion and
-benchmark-condition boundaries. Retained-reference differences are
-intentionally ineligible for `paired_delta` claims because they come from
-separate runs. The percentages below describe direction against the retained
-reference only, not a locked engine-to-engine delta.
+The current Qwen matrix is a same-session paired v3 run of AX Engine **6.13.4**
+against `mlx-lm`. AX wins **18 of 18** sustained-ingest shapes, with a
+**+1.56% geometric-mean** throughput delta and a **+0.02% to +3.27%** range.
+That is sustained-ingest parity slightly favoring AX, not a large uniform win.
 
-For larger RAG ingest jobs, use the sustained scale harness instead of
-extrapolating from one isolated batch. The scale harness keeps the same
-contiguous CPU `float32 [B,H]` output layout but embeds a fixed corpus of 512
-chunks per trial, flushed at **batch sizes 8 / 32 / 64**. Both retained and
-fresh runs use 2 warmups, 5 measured trials, and a 15-second cooldown. Each
-measured pass is a multi-batch ingest run. p95 batch latency is shown because
-larger batches increase per-flush latency even when throughput (tok/s) is
-steady.
+For larger RAG ingest jobs, use this sustained scale harness instead of
+extrapolating from one isolated batch. It embeds the same deterministic corpus
+of 512 chunks through both engines, returns the same contiguous CPU
+`float32 [B,H]` layout, and alternates paired engine order. Every shape uses
+2 warmups, 5 measured trials, and a 15-second cooldown before each measured
+engine pass. p95 batch latency is shown because larger batches increase
+per-flush latency even when throughput is steady.
 
 The current runtime enables length-affinity batching and calibrated `max_len`
 buckets by default. Because this scale corpus uses uniform fixed-length chunks,
 it does not isolate their mixed-length batch benefit.
 
-Fresh AX-only artifact:
-`benchmarks/results/embedding/embedding-scale/2026-07-27-e13cb731-m5max-ax-only-qwen/2026-07-27-004454/`.
+Paired source:
+`benchmarks/results/embedding/embedding-scale/2026-08-07-qwen-paired-v3-refresh/2026-08-07-121623/`.
 
 The chart overlays all **18 batched shapes** (3 models × 2 chunk lengths × 3
-batch sizes), grouped 0.6B → 4B → 8B (`mlx-lm` yellow retained reference, AX
-green fresh run). Each box summarizes the six chunk/batch shapes for that
-model; both series are batched encode, but their cross-run gap is directional.
+batch sizes), grouped 0.6B → 4B → 8B (`mlx-lm` yellow, AX green). Each box
+summarizes the six paired chunk/batch shapes for that model; both series are
+matrix-batched encode.
 
-<img src="assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot showing retained mlx-lm and fresh AX Engine ingest throughput for Qwen3-Embedding 0.6B, 4B, and 8B at batch sizes 8, 32, and 64">
+<img src="assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot showing same-session paired mlx-lm and AX Engine ingest throughput for Qwen3-Embedding 0.6B, 4B, and 8B at batch sizes 8, 32, and 64">
 
-| Model | Workload | Batch | Batches/trial | Retained mlx-lm tok/s | Fresh AX-only tok/s | Directional vs retained | AX chunks/s | AX p95 batch ms |
+| Model | Workload | Batch | Batches/trial | `mlx-lm` tok/s | AX tok/s | AX vs `mlx-lm` | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 48,901.2 | 48,769.6 | −0.3% | 190.5 | 41.2 |
-|  |  | 32 | 16 | 49,988.0 | 49,985.3 | −0.0% | 195.3 | 180.7 |
-|  |  | 64 | 8 | 49,878.6 | 48,477.7 | −2.8% | 189.4 | 416.7 |
-|  | 512 x 512-token chunks | 8 | 64 | 48,920.9 | 47,276.2 | −3.4% | 92.3 | 88.2 |
-|  |  | 32 | 16 | 49,090.2 | 47,396.2 | −3.5% | 92.6 | 405.1 |
-|  |  | 64 | 8 | 48,650.8 | 46,886.7 | −3.6% | 91.6 | 826.7 |
-| Qwen3-Embedding 4B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 6,591.1 | 6,688.3 | +1.5% | 26.1 | 319.8 |
-|  |  | 32 | 16 | 6,463.0 | 6,594.0 | +2.0% | 25.8 | 1,294.3 |
-|  |  | 64 | 8 | 6,471.9 | 6,533.4 | +0.9% | 25.5 | 2,601.1 |
-|  | 512 x 512-token chunks | 8 | 64 | 6,416.5 | 6,408.7 | −0.1% | 12.5 | 657.2 |
-|  |  | 32 | 16 | 6,138.0 | 6,299.7 | +2.6% | 12.3 | 2,684.0 |
-|  |  | 64 | 8 | 6,307.6 | 6,294.1 | −0.2% | 12.3 | 5,349.6 |
-| Qwen3-Embedding 8B 4-bit DWQ | 512 x 256-token chunks | 8 | 64 | 3,379.7 | 3,589.5 | +6.2% | 14.0 | 595.0 |
-|  |  | 32 | 16 | 3,266.7 | 3,442.5 | +5.4% | 13.4 | 2,464.1 |
-|  |  | 64 | 8 | 3,359.3 | 3,445.1 | +2.6% | 13.5 | 4,910.0 |
-|  | 512 x 512-token chunks | 8 | 64 | 3,327.1 | 3,407.4 | +2.4% | 6.7 | 1,222.9 |
-|  |  | 32 | 16 | 3,260.3 | 3,368.7 | +3.3% | 6.6 | 4,959.9 |
-|  |  | 64 | 8 | 3,333.9 | 3,368.6 | +1.0% | 6.6 | 9,883.8 |
+| Qwen3-Embedding 0.6B 8-bit | 512 × 256-token chunks | 8 | 64 | 49,103.2 | 49,329.4 | +0.5% | 192.7 | 41.1 |
+|  |  | 32 | 16 | 50,394.0 | 50,486.2 | +0.2% | 197.2 | 169.5 |
+|  |  | 64 | 8 | 50,176.2 | 50,330.6 | +0.3% | 196.6 | 346.7 |
+|  | 512 × 512-token chunks | 8 | 64 | 49,111.6 | 49,122.3 | +0.0% | 95.9 | 82.9 |
+|  |  | 32 | 16 | 49,076.4 | 49,233.5 | +0.3% | 96.2 | 345.0 |
+|  |  | 64 | 8 | 49,093.8 | 49,261.7 | +0.3% | 96.2 | 693.1 |
+| Qwen3-Embedding 4B 4-bit DWQ | 512 × 256-token chunks | 8 | 64 | 6,128.6 | 6,193.5 | +1.1% | 24.2 | 361.4 |
+|  |  | 32 | 16 | 6,330.7 | 6,405.3 | +1.2% | 25.0 | 1,359.1 |
+|  |  | 64 | 8 | 6,429.8 | 6,591.8 | +2.5% | 25.7 | 2,574.7 |
+|  | 512 × 512-token chunks | 8 | 64 | 6,331.5 | 6,480.6 | +2.4% | 12.7 | 682.7 |
+|  |  | 32 | 16 | 6,191.7 | 6,322.0 | +2.1% | 12.3 | 2,679.5 |
+|  |  | 64 | 8 | 6,268.8 | 6,393.3 | +2.0% | 12.5 | 5,215.2 |
+| Qwen3-Embedding 8B 4-bit DWQ | 512 × 256-token chunks | 8 | 64 | 3,462.4 | 3,575.5 | +3.3% | 14.0 | 605.3 |
+|  |  | 32 | 16 | 3,454.9 | 3,551.6 | +2.8% | 13.9 | 2,432.9 |
+|  |  | 64 | 8 | 3,426.5 | 3,499.6 | +2.1% | 13.7 | 4,773.5 |
+|  | 512 × 512-token chunks | 8 | 64 | 3,395.1 | 3,474.2 | +2.3% | 6.8 | 1,240.7 |
+|  |  | 32 | 16 | 3,368.3 | 3,443.5 | +2.2% | 6.7 | 4,890.1 |
+|  |  | 64 | 8 | 3,387.2 | 3,473.7 | +2.6% | 6.8 | 9,595.4 |
 
 #### EmbeddingGemma ingest scale
 
-The current-main EmbeddingGemma AX-only refresh (2026-07-27, `v6.11.1`) is
-compared with the retained 2026-07-02 `mlx-embeddings` medians. It is a
-cross-run directional view, not a paired delta. Both inputs are retained
-pre-v3 artifacts accepted only as historical context; do not interpret the
-percentages as an exact engine-to-engine claim because retained reference and
-fresh AX data are separate runs.
+The current EmbeddingGemma matrix is a same-session paired v3 run of AX Engine
+**6.13.4** against `mlx-embeddings`. AX wins **6 of 6** shapes, with a
+**+7.99% geometric-mean** throughput delta and a **+6.05% to +9.73%** range.
+This is a modest, consistent sustained-ingest improvement.
 
 EmbeddingGemma uses `mlx-embeddings` as the sustained reference because its
 full sentence-transformers route includes mean pooling, the Dense projection
 head, and L2 normalization. The chart uses one `EmbeddingGemma 300M` group and
 nests `mlx-embeddings` (yellow) plus AX Engine (green) inside it; each engine
-box summarizes the six chunk/batch shapes listed below. The two series are
-cross-run directional overlays.
+box summarizes the six paired chunk/batch shapes listed below.
 
-<img src="assets/perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg" alt="Grouped box-and-whisker plot showing retained mlx-embeddings and fresh AX Engine ingest throughput for EmbeddingGemma 300M workloads">
+<img src="assets/perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg" alt="Grouped box-and-whisker plot showing same-session paired mlx-embeddings and AX Engine ingest throughput for EmbeddingGemma 300M workloads">
 
-| Model | Workload | Batch | Batches/trial | Retained `mlx-embeddings` tok/s | Fresh AX-only tok/s | Directional vs retained | AX chunks/s | AX p95 batch ms |
+| Model | Workload | Batch | Batches/trial | `mlx-embeddings` tok/s | AX tok/s | AX vs `mlx-embeddings` | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| EmbeddingGemma 300M 8-bit | 512 x 256-token chunks | 8 | 64 | 129,909.0 | 129,495.3 | −0.3% | 505.8 | 18.9 |
-|  |  | 32 | 16 | 148,284.8 | 155,860.1 | +5.1% | 608.8 | 65.0 |
-|  |  | 64 | 8 | 149,976.1 | 151,373.5 | +0.9% | 591.3 | 163.6 |
-|  | 512 x 512-token chunks | 8 | 64 | 127,604.8 | 137,355.6 | +7.6% | 268.3 | 28.1 |
-|  |  | 32 | 16 | 140,105.8 | 147,308.6 | +5.1% | 287.7 | 132.0 |
-|  |  | 64 | 8 | 132,121.8 | 133,318.4 | +0.9% | 260.4 | 346.9 |
+| EmbeddingGemma 300M 8-bit | 512 × 256-token chunks | 8 | 64 | 135,576.2 | 145,045.2 | +7.0% | 566.6 | 14.0 |
+|  |  | 32 | 16 | 152,373.0 | 161,597.0 | +6.1% | 631.2 | 57.7 |
+|  |  | 64 | 8 | 147,662.9 | 161,349.9 | +9.3% | 630.3 | 122.2 |
+|  | 512 × 512-token chunks | 8 | 64 | 136,104.8 | 145,163.7 | +6.7% | 283.5 | 27.8 |
+|  |  | 32 | 16 | 137,755.6 | 150,555.3 | +9.3% | 294.1 | 116.9 |
+|  |  | 64 | 8 | 130,000.9 | 142,650.2 | +9.7% | 278.6 | 253.5 |
 
-Sources:
-Qwen3 0.6B / 4B / 8B reference rows come from the retained paired artifact
-`benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`;
-fresh AX-only rows come from
-`benchmarks/results/embedding/embedding-scale/2026-07-27-e13cb731-m5max-ax-only-qwen/2026-07-27-004454/`.
-EmbeddingGemma reference rows come from
-`benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`
-and fresh AX-only rows from
-`benchmarks/results/embedding/embedding-scale/2026-07-27-e13cb731-m5max-ax-only-embeddinggemma/2026-07-27-021706/`.
-These pre-v3 artifacts pass only the explicit historical `--allow-legacy`
-validation path; retained-reference differences remain directional because the
-references are separate runs, not a paired matrix. All scale runs use Hugging
-Face snapshot paths, median tok/s, batch sizes 8/32/64, 512 chunks per trial,
-l2-normalized output, 2 warmups, 5 measured trials, and a 15-second cooldown
-between measured passes. Qwen uses AX last-token pooling; EmbeddingGemma uses
-AX mean pooling + Dense head.
+Paired source:
+`benchmarks/results/embedding/embedding-scale/2026-08-07-embeddinggemma-paired-v3-refresh/2026-08-07-151606/`.
+
+Both artifacts are `ax.embedding_ingest_scale.v3`, completed successfully, and
+pass `check_embedding_publish_gate.py --claim paired_delta
+--require-clean-tree`. They were recorded on an Apple M5 Max 128 GB from clean
+AX Engine 6.13.4 commit `a20784e979c47b857f114bdd59621119679bb9a9`.
+The AX extension and reference runtime resolve the same MLX 0.32.0
+`libmlx.dylib` fingerprint. The model correctness verifier passed before the
+campaign for all three Qwen checkpoints and EmbeddingGemma.
+
+All scale rows use Hugging Face snapshot paths, median tok/s, batch sizes
+8/32/64, 512 chunks per trial, l2-normalized output, 2 warmups, 5 measured
+trials, 15-second cooldowns, and interleaved alternating engine order. Qwen
+uses last-token pooling on both routes; EmbeddingGemma uses mean pooling plus
+the Dense head on both routes.
+
 Single-batch cooled artifacts remain under
 `benchmarks/results/embedding/embedding-fair/` for latency diagnostics
 (short-query headlined as ms/item), but they are intentionally not published
@@ -1075,25 +1068,23 @@ here as headline throughput. API semantics, pooling modes, micro-batching
 behavior, and cooldown profiles are documented in
 [`EMBEDDINGS.md`](EMBEDDINGS.md).
 
-Reproduce the sustained Qwen AX-only rows with:
+Reproduce the sustained paired Qwen matrix with:
 
 ```bash
-python scripts/bench_embedding_ingest_scale.py \
+.venv/bin/python scripts/bench_embedding_ingest_scale.py \
   --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
   --model qwen3-embedding-4b-4bit-dwq=/path/to/Qwen3-Embedding-4B-4bit-DWQ/snapshots/<sha> \
   --model qwen3-embedding-8b-4bit-dwq=/path/to/Qwen3-Embedding-8B-4bit-DWQ/snapshots/<sha> \
   --batch-sizes 8,32,64 --chunk-tokens 256,512 \
-  --total-chunks 512 --warmup 2 --trials 5 --cooldown 15 \
-  --ax-only
+  --total-chunks 512 --warmup 2 --trials 5 --cooldown 15
 ```
 
-Reproduce the sustained EmbeddingGemma AX rows with:
+Reproduce the sustained paired EmbeddingGemma matrix with:
 
 ```bash
-python scripts/bench_embedding_ingest_scale.py \
+.venv/bin/python scripts/bench_embedding_ingest_scale.py \
   --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
   --reference mlx_embeddings --pooling mean \
   --batch-sizes 8,32,64 --chunk-tokens 256,512 \
-  --total-chunks 512 --warmup 2 --trials 5 --cooldown 15 \
-  --ax-only
+  --total-chunks 512 --warmup 2 --trials 5 --cooldown 15
 ```

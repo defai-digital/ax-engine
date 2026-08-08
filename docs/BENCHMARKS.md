@@ -183,13 +183,16 @@ RUN_DATE=2026-08-07
 
 .venv/bin/python scripts/bench_batched_decode_ceiling.py \
   /path/to/Llama-3.1-8B-Instruct-4bit-snapshot \
-  --output-dir benchmarks/results/inference/mlx-inference/${RUN_DATE}-batched-decode-ceiling-m5max
+  --output-dir benchmarks/results/inference/mlx-inference/${RUN_DATE}-batched-decode-ceiling-m5max-v6.13.5
 ```
 
 The wrapper exits nonzero unless every batch/policy/repetition cell is unique,
 its throughput fields are internally consistent, the stored summary exactly
 recomputes from the raw trials, full-cohort greedy hashes agree, and the clean
 build plus host-condition gates pass.
+
+The current checked-in result is
+`benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/`.
 
 The single-client and S1 serving campaigns have additional process-order,
 cache-isolation, and availability gates described in the next section. After

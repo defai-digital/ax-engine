@@ -348,33 +348,16 @@ MTP_6BIT_ROW_GAP = 32.0
 MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
 
-# Retained mlx-lm reference plus a fresh AX-only refresh for all Qwen3 sizes.
+# Same-session v3 paired artifacts used by the public embedding charts.
 EMBEDDING_SCALE_PAIRED_ARTIFACT = Path(
-    "benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/"
-    "2026-07-12-145710/embedding_ingest_scale.json"
-)
-# Historical overlay path retained for optional diagnostic reloads / tests.
-EMBEDDING_SCALE_REFERENCE_ARTIFACT = Path(
-    "benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/"
-    "2026-07-02-215823/embedding_ingest_scale.json"
-)
-EMBEDDING_SCALE_AX_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-27-e13cb731-m5max-ax-only-qwen/"
-    "2026-07-27-004454/embedding_ingest_scale.json"
+    "2026-08-07-qwen-paired-v3-refresh/"
+    "2026-08-07-121623/embedding_ingest_scale.json"
 )
-# Back-compat aliases used by older call sites and tests.
-EMBEDDING_SCALE_PAIRED_06_ARTIFACT = EMBEDDING_SCALE_PAIRED_ARTIFACT
-EMBEDDING_SCALE_AX_OVERLAY_ARTIFACT = EMBEDDING_SCALE_AX_ARTIFACT
-EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
+EMBEDDINGGEMMA_SCALE_PAIRED_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-02-embeddinggemma-paired-cooldown15-refresh/"
-    "2026-07-02-175206/embedding_ingest_scale.json"
-)
-EMBEDDINGGEMMA_SCALE_AX_ARTIFACT = Path(
-    "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-27-e13cb731-m5max-ax-only-embeddinggemma/"
-    "2026-07-27-021706/embedding_ingest_scale.json"
+    "2026-08-07-embeddinggemma-paired-v3-refresh/"
+    "2026-08-07-151606/embedding_ingest_scale.json"
 )
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
 EMBEDDINGGEMMA_SCALE_CHART_OUTPUT = (
@@ -3224,9 +3207,8 @@ def load_embedding_paired_scale_delta_rows(
 
 
 def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    # Publication chart: retained mlx-lm reference plus AX-only refresh.
-    return load_embedding_overlay_scale_delta_rows(
-        repo_root, EMBEDDING_SCALE_PAIRED_ARTIFACT, EMBEDDING_SCALE_AX_ARTIFACT
+    return load_embedding_paired_scale_delta_rows(
+        repo_root, EMBEDDING_SCALE_PAIRED_ARTIFACT
     )
 
 
@@ -3738,13 +3720,13 @@ def main() -> int:
             "box=IQR | whiskers=min/max | dots=six chunk×batch shapes."
         ),
         source_label=(
-            "Sources: retained 2026-07-12 mlx-lm reference + 2026-07-27 "
-            "current-main AX-only refresh (0.6B/4B/8B); cross-run directional view, not B=1"
+            "Source: 2026-08-07 same-session paired v3 run "
+            "(0.6B/4B/8B); 18/18 AX wins, not B=1"
         ),
         ax_label=(
             "AX Engine v"
             + embedding_artifact_engine_version(
-                repo_root, EMBEDDING_SCALE_AX_ARTIFACT
+                repo_root, EMBEDDING_SCALE_PAIRED_ARTIFACT
             )
         ),
         expected_group_labels=EMBEDDING_MODEL_CHART_ORDER[:3],
@@ -3754,10 +3736,8 @@ def main() -> int:
 
     embeddinggemma_scale_output_path = args.output_dir / EMBEDDINGGEMMA_SCALE_CHART_OUTPUT
     embeddinggemma_scale_content = render_embedding_box_chart(
-        load_embedding_overlay_scale_delta_rows(
-            repo_root,
-            EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT,
-            EMBEDDINGGEMMA_SCALE_AX_ARTIFACT,
+        load_embedding_paired_scale_delta_rows(
+            repo_root, EMBEDDINGGEMMA_SCALE_PAIRED_ARTIFACT
         ),
         title="EmbeddingGemma ingest scale",
         subtitle=(
@@ -3765,13 +3745,13 @@ def main() -> int:
             "chunk/batch shapes."
         ),
         source_label=(
-            "Sources: 2026-07-02 EmbeddingGemma paired reference + "
-            "2026-07-27 current-main AX-only refresh; cross-run directional view"
+            "Source: 2026-08-07 same-session paired v3 run; "
+            "6/6 AX wins"
         ),
         ax_label=(
             "AX Engine v"
             + embedding_artifact_engine_version(
-                repo_root, EMBEDDINGGEMMA_SCALE_AX_ARTIFACT
+                repo_root, EMBEDDINGGEMMA_SCALE_PAIRED_ARTIFACT
             )
         ),
         expected_group_labels=(EMBEDDING_MODEL_CHART_ORDER[3],),

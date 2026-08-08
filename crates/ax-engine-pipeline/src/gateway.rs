@@ -246,7 +246,7 @@ async fn completions(
             })
             .into_response()
         }
-        Err(error) => api_error(StatusCode::BAD_GATEWAY, &error.to_string()),
+        Err(error) => generate_failure_response(&error),
     }
 }
 
@@ -431,7 +431,7 @@ async fn chat_completions(
             })
             .into_response()
         }
-        Err(error) => api_error(StatusCode::BAD_GATEWAY, &error.to_string()),
+        Err(error) => generate_failure_response(&error),
     }
 }
 
@@ -639,6 +639,19 @@ fn api_error(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
+/// An expired generation deadline is a gateway timeout (504), not a bad
+/// upstream response (502): retry policies and error-rate classifiers
+/// distinguish the two.
+fn generate_failure_response(error: &PipelineClientError) -> Response {
+    let status = match error {
+        PipelineClientError::DeadlineExceeded | PipelineClientError::CloseDeadlineExceeded => {
+            StatusCode::GATEWAY_TIMEOUT
+        }
+        _ => StatusCode::BAD_GATEWAY,
+    };
+    api_error(status, &error.to_string())
+}
+
 fn seed_request_id() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -844,6 +857,18 @@ mod tests {
         assert_eq!(stream_delta("", "hello"), Some("hello".to_string()));
         assert_eq!(stream_delta("hel", "hello"), Some("lo".to_string()));
         assert_eq!(stream_delta("hello", "hello"), None);
+    }
+
+    #[test]
+    fn generate_failure_maps_deadline_to_gateway_timeout() {
+        let response = generate_failure_response(&PipelineClientError::DeadlineExceeded);
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+
+        let response = generate_failure_response(&PipelineClientError::CloseDeadlineExceeded);
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+
+        let response = generate_failure_response(&PipelineClientError::EmptyTokenStep);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[test]

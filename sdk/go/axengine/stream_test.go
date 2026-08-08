@@ -55,6 +55,24 @@ func TestSSEReaderDefaultEvent(t *testing.T) {
 	}
 }
 
+func TestSSEReaderDataLessEventResetsEventType(t *testing.T) {
+	// An `event:` with no `data:` dispatches nothing, but the event type
+	// must reset per the SSE spec — the next data event is "message",
+	// not the stale "ping".
+	input := "event: ping\n\ndata: real\n\n"
+	r := NewSSEReader(strings.NewReader(input))
+	ev, ok := r.Next()
+	if !ok {
+		t.Fatal("expected event")
+	}
+	if ev.Event != "message" {
+		t.Errorf("event after data-less reset: got %q want %q", ev.Event, "message")
+	}
+	if ev.Data != "real" {
+		t.Errorf("data: got %q want %q", ev.Data, "real")
+	}
+}
+
 func TestSSEReaderSkipsComments(t *testing.T) {
 	input := ": keep-alive\n\ndata: real\n\n"
 	r := NewSSEReader(strings.NewReader(input))

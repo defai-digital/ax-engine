@@ -1509,9 +1509,8 @@ impl MlxRunner {
         // Cover load-time JIT warm-up with the same arithmetic contract used
         // by production decode. The scope is runner-local and restores on
         // every early return.
-        let _qwen_linear_mtp_exact_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(
-            qwen_linear_mtp_exact_enabled && !disable_ngram_acceleration,
-        );
+        let _qwen_linear_mtp_exact_scope =
+            crate::fastpath::scoped_qwen_linear_mtp_exact(qwen_linear_mtp_exact_enabled);
         let (gemma4_assistant_mtp_status, gemma4_assistant_mtp) =
             load_gemma4_assistant_mtp_runtime(&cfg, &weights.gemma4_assistant_mtp);
         let mtp_model_policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
@@ -2942,9 +2941,12 @@ impl ExecutionRunner for MlxRunner {
         // Keep exact arithmetic model-scoped. This prevents one resident Qwen
         // MTP model from changing the projection path of another model in the
         // same server process.
-        let _qwen_linear_mtp_exact_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(
-            self.qwen_linear_mtp_exact_enabled && self.mtp_requested,
+        let exact_arithmetic_enabled = qwen_linear_mtp_exact_scope_for_request(
+            self.qwen_linear_mtp_exact_enabled,
+            self.mtp_requested,
         );
+        let _qwen_linear_mtp_exact_scope =
+            crate::fastpath::scoped_qwen_linear_mtp_exact(exact_arithmetic_enabled);
         let step_id = input.execution_batch.step_id;
         let mut request_updates = Vec::new();
         let logits_handles = Vec::new();
@@ -2997,7 +2999,7 @@ impl ExecutionRunner for MlxRunner {
         upsert_route_decision(
             &mut route_metadata.crossover_decisions,
             "ax_mlx_qwen_linear_mtp_exact_enabled",
-            u32::from(self.qwen_linear_mtp_exact_enabled && self.mtp_requested),
+            u32::from(exact_arithmetic_enabled),
         );
         upsert_route_decision(
             &mut route_metadata.crossover_decisions,
@@ -10112,6 +10114,13 @@ fn select_linear_mtp_correction_token(
 /// singleton replay.
 const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
 
+const fn qwen_linear_mtp_exact_scope_for_request(
+    resolved_profile_enabled: bool,
+    _mtp_requested: bool,
+) -> bool {
+    resolved_profile_enabled
+}
+
 fn qwen_linear_mtp_exact_tensor_supported(
     source_quantized: bool,
     quantization: Option<(&str, u32, u32)>,
@@ -11919,6 +11928,14 @@ mod tests {
             select_linear_mtp_correction_token(0.7, Some(440), Some(271), Some(13_661), 13_661,),
             271
         );
+    }
+
+    #[test]
+    fn qwen_linear_exact_arithmetic_does_not_depend_on_mtp_request() {
+        assert!(qwen_linear_mtp_exact_scope_for_request(true, true));
+        assert!(qwen_linear_mtp_exact_scope_for_request(true, false));
+        assert!(!qwen_linear_mtp_exact_scope_for_request(false, true));
+        assert!(!qwen_linear_mtp_exact_scope_for_request(false, false));
     }
 
     #[test]

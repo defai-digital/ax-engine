@@ -76,7 +76,7 @@ Apple M3 Max, MLX 0.32.0. "Parity" = greedy decode-trace FNV checksum.
 | Outcome | What | Evidence |
 | --- | --- | --- |
 | **Shipped, default-on for eligible families** | `AX_MLX_AUTO_BUFFER_CAPS` — raise MLX per-buffer caps so `gather_qmm` stops splitting MoE command buffers. Coder-Next **1.25×** decode, parity clean — the raise is now scoped to `qwen3_next`, the family with positive server-path evidence. Unlimited-OCR, Gemma, and `qwen3_5` (Qwen3.5/3.6) retain MLX defaults: M5/MLX 0.32 A/Bs found the raised pair slower (OCR −26% e2e; Gemma −32% p2048 prefill; 35B-A3B server prefill −20…−47% with a one-way per-request degradation and flat decode). | [gather-qmm-async-serialization.md](gather-qmm-async-serialization.md) |
-| **Shipped, default-on** | `AX_MLX_BATCHED_SHARED_PROJ` — Shared batched projection policy for dense continuous decode: **+56%** aggregate at **B=8** (RowExact 65 → Shared 97 tok/s on Llama-8B), token-identical. | [batched-decode-ceiling.md](batched-decode-ceiling.md) |
+| **Shipped, default-on** | `AX_MLX_BATCHED_SHARED_PROJ` — strict M5 dense probe at **B=8**: RowExact **102.6** → Shared **328.9 aggregate tok/s** (**3.20×**, 5/5 paired wins); Shared scales **4.01×** from B=1 and full-cohort hashes match. Microbenchmark evidence, not end-to-end serving or MoE. | [batched-decode-ceiling.md](batched-decode-ceiling.md) |
 | **Shipped** | Runner split (5 slices, −4.2k lines) + decode-skeleton I1/I2 (typed direct-pipeline state, centralized barrier/readback). | internal spec |
 | **Opt-in, uncertified** | Batched decode for the Qwen3-Next hybrid (MoE + linear attention). Correct forward (B=1 token-exact), amortizes **1.73/2.64/3.84×** at B=2/4/8, but B>1 drifts from per-row (batched-MoE `gather_qmm` reductions) → fails bit-exact greedy parity, stays behind `AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED`. | [batched-hybrid-moe-linear-decode.md](batched-hybrid-moe-linear-decode.md) |
 | **Closed by decision** | Phase 2 decode-skeleton unification — banked I1/I2 + split; the `DecodeRoute` trait fold (I4–I7) is parked: both drivers dissolved (batched extension shipped without it; overlap fix is upstream-gated). | internal spec §8 |
@@ -95,7 +95,7 @@ artifact.
 | [decode-gap.md](decode-gap.md) | Direct-decode gap analysis against `mlx_lm.benchmark` |
 | [gather-qmm-async-serialization.md](gather-qmm-async-serialization.md) | `gather_qmm` buffer-accounting root cause + the shipped auto-buffer-caps fix |
 | [ax-decode-overlap-residual.md](ax-decode-overlap-residual.md) | Why the decode overlap residual is host-graph-encoding-bound, not a sync bug |
-| [batched-decode-ceiling.md](batched-decode-ceiling.md) | Batched-decode amortization ceiling + the Shared projection default-flip |
+| [batched-decode-ceiling.md](batched-decode-ceiling.md) | Current M5 dense batched-decode certification + historical Shared projection investigation |
 | [batched-hybrid-moe-linear-decode.md](batched-hybrid-moe-linear-decode.md) | Phase 3.7 hybrid (MoE + linear) batched decode: capability, amortization, drift |
 | [fair-prefill-serving-ab.md](fair-prefill-serving-ab.md) | Fair chunked-prefill interleave serving A/B (decode-step tail vs TTFT trade) |
 | [moe-bandwidth-gap.md](moe-bandwidth-gap.md) | Qwen3-Coder-Next MoE bandwidth diagnosis |

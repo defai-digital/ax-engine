@@ -324,7 +324,7 @@ impl RequestManager {
                     record.memory_blocked_step_count.saturating_add(1);
                 record.memory_blocked_step_count
             };
-            if blocked_count > MEMORY_BLOCKED_STEP_LIMIT {
+            if blocked_count >= MEMORY_BLOCKED_STEP_LIMIT {
                 // Starvation bound (mistral.rs WAITING_TIMEOUT practice): a
                 // request that cannot obtain KV for this many consecutive
                 // steps will never make progress — fail it with a controlled

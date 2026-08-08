@@ -56,12 +56,16 @@ print(response.choices[0].message.content ?? "")
 ```swift
 let client = AxEngineClient(
     baseURL: URL(string: "http://127.0.0.1:31418")!,  // default
-    session: .shared                                  // default
+    session: .shared,                                 // default
+    headers: ["Authorization": "Bearer token"],       // default: none
+    requestTimeout: 300                               // default: 300 s
 )
 ```
 
-For authenticated servers, set a custom `URLSession` with a delegate or add the
-`Authorization` header through a custom `URLRequest` interceptor.
+For servers started with `--api-key`, pass the key through `headers` — every
+request (streaming and blocking) carries them. `requestTimeout` is the
+per-request idle timeout; URLSession's 60 s default fails long blocking
+generations, so the client matches the Ruby SDK's 300 s default.
 
 ## API Reference
 

@@ -1,0 +1,2072 @@
+{
+  "build": {
+    "benchmark_binary": "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+    "benchmark_binary_sha256": "5c839431164c29db5c6727a76ca35aacd13fd9f98b3dca14ce2a83001a64857e",
+    "build_profile": "release",
+    "commit": "93b897731b8863365465df5b08ee174cb9fc56c1",
+    "engine_version": "6.13.5",
+    "git_tracked_dirty": false,
+    "git_tracked_status": [],
+    "server_binary": "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/ax-engine-server"
+  },
+  "completed_at": "2026-08-07T15:40:50.994104-04:00",
+  "cooldown_seconds": 15.0,
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_build": "25F84",
+    "os_version": "26.5.2",
+    "performance_conditions": {
+      "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+      "cpu_power_status_recorded": false,
+      "load_average": {
+        "fifteen_minutes": 1.448,
+        "five_minutes": 2.129,
+        "one_minute": 4.7
+      },
+      "performance_warning_recorded": false,
+      "power_source": "AC Power",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "top_processes_cpu": [
+        {
+          "command": "WindowServer",
+          "cpu_percent": 5.2,
+          "pid": 938,
+          "state": "Ss"
+        },
+        {
+          "command": "syspolicyd",
+          "cpu_percent": 2.2,
+          "pid": 40052,
+          "state": "Ss"
+        },
+        {
+          "command": "curl",
+          "cpu_percent": 1.9,
+          "pid": 27994,
+          "state": "S"
+        },
+        {
+          "command": "Python",
+          "cpu_percent": 1.6,
+          "pid": 27330,
+          "state": "Ss"
+        },
+        {
+          "command": "notifyd",
+          "cpu_percent": 1.5,
+          "pid": 931,
+          "state": "Ss"
+        },
+        {
+          "command": "opendirectoryd",
+          "cpu_percent": 1.2,
+          "pid": 905,
+          "state": "Ss"
+        },
+        {
+          "command": "launchd",
+          "cpu_percent": 1.1,
+          "pid": 1,
+          "state": "Ss"
+        },
+        {
+          "command": "curl",
+          "cpu_percent": 1.0,
+          "pid": 27912,
+          "state": "S"
+        }
+      ]
+    },
+    "platform": "darwin",
+    "toolchain": {
+      "cargo_version": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
+      "homebrew_mlx": "mlx 0.32.0",
+      "homebrew_mlx_c": "mlx-c 0.6.0_3",
+      "macos_sdk_version": "26.5",
+      "python_mlx": "0.32.0",
+      "python_mlx_lm": "0.31.3",
+      "rustc_version": [
+        "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
+        "binary: rustc",
+        "commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+        "commit-date: 2026-07-14",
+        "host: aarch64-apple-darwin",
+        "release: 1.97.1",
+        "LLVM version: 22.1.8"
+      ],
+      "xcodebuild_version": [
+        "Xcode 26.6",
+        "Build version 17F113"
+      ]
+    }
+  },
+  "max_load_average": 2.0,
+  "max_top_process_cpu_percent": 50.0,
+  "model": {
+    "manifest_sha256": "97e46135fdbcda0763262e062843821646018eca4e34e480a00059deb7ae5fbc",
+    "path": "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2"
+  },
+  "prefill_len": 32,
+  "probe_contract": {
+    "batches": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "measured_steps_per_batch": 64,
+    "timing_scope": "internal_batched_decode_step_wall",
+    "warmup_steps_per_batch": 8
+  },
+  "publication_candidate": true,
+  "publication_reasons": [],
+  "repetitions": 5,
+  "schema_version": "ax.batched_decode_ceiling.v1",
+  "started_at": "2026-08-07T15:34:36.520751-04:00",
+  "status": "complete",
+  "summary": {
+    "paired_batch8_shared_over_row_exact": {
+      "losses": 0,
+      "median_ratio": 3.20253164556962,
+      "ratios": [
+        3.219178082191781,
+        3.1939571150097468,
+        3.1951219512195124,
+        3.20253164556962,
+        3.20253164556962
+      ],
+      "ties": 0,
+      "wins": 5
+    },
+    "policies": {
+      "row_exact": {
+        "batches": {
+          "1": {
+            "cohort_fnv": [
+              "5277451e1f274a3f"
+            ],
+            "max_aggregate_tok_s": 82.4,
+            "median_aggregate_tok_s": 82.2,
+            "median_scaling_vs_batch1": 1.0,
+            "median_step_us": 12166.0,
+            "min_aggregate_tok_s": 80.2
+          },
+          "2": {
+            "cohort_fnv": [
+              "a5cf1c43c27f4e75"
+            ],
+            "max_aggregate_tok_s": 91.2,
+            "median_aggregate_tok_s": 91.1,
+            "median_scaling_vs_batch1": 1.108272506082725,
+            "median_step_us": 21962.0,
+            "min_aggregate_tok_s": 90.9
+          },
+          "4": {
+            "cohort_fnv": [
+              "b980c692f8e0e4cd"
+            ],
+            "max_aggregate_tok_s": 99.6,
+            "median_aggregate_tok_s": 99.2,
+            "median_scaling_vs_batch1": 1.2068126520681266,
+            "median_step_us": 40326.0,
+            "min_aggregate_tok_s": 99.1
+          },
+          "8": {
+            "cohort_fnv": [
+              "846ac67aca8bad7d"
+            ],
+            "max_aggregate_tok_s": 102.7,
+            "median_aggregate_tok_s": 102.6,
+            "median_scaling_vs_batch1": 1.2481751824817517,
+            "median_step_us": 77970.0,
+            "min_aggregate_tok_s": 102.2
+          }
+        }
+      },
+      "shared": {
+        "batches": {
+          "1": {
+            "cohort_fnv": [
+              "5277451e1f274a3f"
+            ],
+            "max_aggregate_tok_s": 82.2,
+            "median_aggregate_tok_s": 82.1,
+            "median_scaling_vs_batch1": 1.0,
+            "median_step_us": 12182.0,
+            "min_aggregate_tok_s": 82.0
+          },
+          "2": {
+            "cohort_fnv": [
+              "a5cf1c43c27f4e75"
+            ],
+            "max_aggregate_tok_s": 147.3,
+            "median_aggregate_tok_s": 146.8,
+            "median_scaling_vs_batch1": 1.788063337393423,
+            "median_step_us": 13625.0,
+            "min_aggregate_tok_s": 145.1
+          },
+          "4": {
+            "cohort_fnv": [
+              "b980c692f8e0e4cd"
+            ],
+            "max_aggregate_tok_s": 271.6,
+            "median_aggregate_tok_s": 271.0,
+            "median_scaling_vs_batch1": 3.300852618757613,
+            "median_step_us": 14761.0,
+            "min_aggregate_tok_s": 268.3
+          },
+          "8": {
+            "cohort_fnv": [
+              "846ac67aca8bad7d"
+            ],
+            "max_aggregate_tok_s": 329.0,
+            "median_aggregate_tok_s": 328.9,
+            "median_scaling_vs_batch1": 4.006090133982948,
+            "median_step_us": 24325.0,
+            "min_aggregate_tok_s": 327.5
+          }
+        }
+      }
+    },
+    "ratio_of_batch8_medians": 3.205653021442495
+  },
+  "trial_order": "alternating_by_repetition",
+  "trials": [
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 12.573147832998075,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "1"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.494,
+          "five_minutes": 2.007,
+          "one_minute": 1.985
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.9,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.7,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "SafariBookmarksSyncAgent",
+            "cpu_percent": 0.3,
+            "pid": 1570,
+            "state": "S"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.1,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "sshd-session: akiralam@notty",
+            "cpu_percent": 0.0,
+            "pid": 27329,
+            "state": "S"
+          },
+          {
+            "command": "sshd-session: akiralam [priv]",
+            "cpu_percent": 0.0,
+            "pid": 27326,
+            "state": "Ss"
+          },
+          {
+            "command": "MTLCompilerService",
+            "cpu_percent": 0.0,
+            "pid": 17502,
+            "state": "Ss"
+          },
+          {
+            "command": "-zsh",
+            "cpu_percent": 0.0,
+            "pid": 15711,
+            "state": "S+"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.488,
+          "five_minutes": 2.008,
+          "one_minute": 1.99
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.5,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "notifyd",
+            "cpu_percent": 0.6,
+            "pid": 931,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.4,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "launchd",
+            "cpu_percent": 0.3,
+            "pid": 1,
+            "state": "Ss"
+          },
+          {
+            "command": "runningboardd",
+            "cpu_percent": 0.3,
+            "pid": 946,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.3,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "cfprefsd",
+            "cpu_percent": 0.2,
+            "pid": 940,
+            "state": "Ss"
+          },
+          {
+            "command": "configd",
+            "cpu_percent": 0.1,
+            "pid": 876,
+            "state": "Ss"
+          }
+        ]
+      },
+      "policy": "shared",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-01-shared.log",
+      "repetition": 1,
+      "rows": [
+        {
+          "aggregate_tok_s": 82.1,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 82.1,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12182.0
+        },
+        {
+          "aggregate_tok_s": 146.8,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 73.4,
+          "scaling_vs_batch1": 1.79,
+          "step_us": 13625.0
+        },
+        {
+          "aggregate_tok_s": 269.7,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 67.4,
+          "scaling_vs_batch1": 3.29,
+          "step_us": 14831.0
+        },
+        {
+          "aggregate_tok_s": 329.0,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 41.1,
+          "scaling_vs_batch1": 4.01,
+          "step_us": 24313.0
+        }
+      ]
+    },
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 11.383202916942537,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "0"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.514,
+          "five_minutes": 2.002,
+          "one_minute": 1.953
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 7.1,
+            "pid": 938,
+            "state": "Rs"
+          },
+          {
+            "command": "cloudd",
+            "cpu_percent": 5.0,
+            "pid": 1212,
+            "state": "S"
+          },
+          {
+            "command": "SafariBookmarksSyncAgent",
+            "cpu_percent": 4.9,
+            "pid": 1570,
+            "state": "S"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 3.7,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "dasd",
+            "cpu_percent": 1.3,
+            "pid": 916,
+            "state": "Ss"
+          },
+          {
+            "command": "Finder",
+            "cpu_percent": 1.1,
+            "pid": 1213,
+            "state": "S"
+          },
+          {
+            "command": "searchpartyd",
+            "cpu_percent": 0.8,
+            "pid": 1112,
+            "state": "Ss"
+          },
+          {
+            "command": "cfprefsd",
+            "cpu_percent": 0.6,
+            "pid": 1159,
+            "state": "S"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.502,
+          "five_minutes": 2.005,
+          "one_minute": 1.982
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.7,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "dasd",
+            "cpu_percent": 1.9,
+            "pid": 916,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 1.6,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "bluetoothd",
+            "cpu_percent": 1.2,
+            "pid": 930,
+            "state": "Ss"
+          },
+          {
+            "command": "UserEventAgent",
+            "cpu_percent": 0.6,
+            "pid": 866,
+            "state": "Ss"
+          },
+          {
+            "command": "searchpartyd",
+            "cpu_percent": 0.6,
+            "pid": 1112,
+            "state": "Ss"
+          },
+          {
+            "command": "logd",
+            "cpu_percent": 0.5,
+            "pid": 864,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.4,
+            "pid": 1279,
+            "state": "S"
+          }
+        ]
+      },
+      "policy": "row_exact",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-01-row_exact.log",
+      "repetition": 1,
+      "rows": [
+        {
+          "aggregate_tok_s": 82.2,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 82.2,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12166.0
+        },
+        {
+          "aggregate_tok_s": 91.1,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 45.5,
+          "scaling_vs_batch1": 1.11,
+          "step_us": 21963.0
+        },
+        {
+          "aggregate_tok_s": 99.6,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 24.9,
+          "scaling_vs_batch1": 1.21,
+          "step_us": 40173.0
+        },
+        {
+          "aggregate_tok_s": 102.2,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 12.8,
+          "scaling_vs_batch1": 1.24,
+          "step_us": 78309.0
+        }
+      ]
+    },
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 11.383616458973847,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "0"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.492,
+          "five_minutes": 1.905,
+          "one_minute": 1.575
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 6.2,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.8,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "Python",
+            "cpu_percent": 0.3,
+            "pid": 27330,
+            "state": "Ss"
+          },
+          {
+            "command": "VTEncoderXPCService",
+            "cpu_percent": 0.1,
+            "pid": 9074,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.1,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "Finder",
+            "cpu_percent": 0.1,
+            "pid": 1213,
+            "state": "S"
+          },
+          {
+            "command": "sshd-session: akiralam [priv]",
+            "cpu_percent": 0.0,
+            "pid": 27326,
+            "state": "Ss"
+          },
+          {
+            "command": "MTLCompilerService",
+            "cpu_percent": 0.0,
+            "pid": 17502,
+            "state": "Ss"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.492,
+          "five_minutes": 1.919,
+          "one_minute": 1.593
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 7.5,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 3.8,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "Finder",
+            "cpu_percent": 1.8,
+            "pid": 1213,
+            "state": "S"
+          },
+          {
+            "command": "VTEncoderXPCService",
+            "cpu_percent": 0.6,
+            "pid": 9074,
+            "state": "Ss"
+          },
+          {
+            "command": "cfprefsd",
+            "cpu_percent": 0.1,
+            "pid": 1159,
+            "state": "S"
+          },
+          {
+            "command": "Python",
+            "cpu_percent": 0.0,
+            "pid": 27330,
+            "state": "Ss"
+          },
+          {
+            "command": "sshd-session: akiralam@notty",
+            "cpu_percent": 0.0,
+            "pid": 27329,
+            "state": "S"
+          },
+          {
+            "command": "sshd-session: akiralam [priv]",
+            "cpu_percent": 0.0,
+            "pid": 27326,
+            "state": "Ss"
+          }
+        ]
+      },
+      "policy": "row_exact",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-02-row_exact.log",
+      "repetition": 2,
+      "rows": [
+        {
+          "aggregate_tok_s": 80.2,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 80.2,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12476.0
+        },
+        {
+          "aggregate_tok_s": 90.9,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 45.5,
+          "scaling_vs_batch1": 1.13,
+          "step_us": 21995.0
+        },
+        {
+          "aggregate_tok_s": 99.5,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 24.9,
+          "scaling_vs_batch1": 1.24,
+          "step_us": 40197.0
+        },
+        {
+          "aggregate_tok_s": 102.6,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 12.8,
+          "scaling_vs_batch1": 1.28,
+          "step_us": 77970.0
+        }
+      ]
+    },
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 5.038176540983841,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "1"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.498,
+          "five_minutes": 1.896,
+          "one_minute": 1.656
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 20.4,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 16.5,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "VTEncoderXPCService",
+            "cpu_percent": 0.8,
+            "pid": 9074,
+            "state": "Ss"
+          },
+          {
+            "command": "ControlCenter",
+            "cpu_percent": 0.4,
+            "pid": 1209,
+            "state": "S"
+          },
+          {
+            "command": "corebrightnessd",
+            "cpu_percent": 0.1,
+            "pid": 933,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.1,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "replayd",
+            "cpu_percent": 0.1,
+            "pid": 1249,
+            "state": "S"
+          },
+          {
+            "command": "spotlightknowledged.updater",
+            "cpu_percent": 0.1,
+            "pid": 1333,
+            "state": "S"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.489,
+          "five_minutes": 1.877,
+          "one_minute": 1.54
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.4,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "dasd",
+            "cpu_percent": 5.1,
+            "pid": 916,
+            "state": "Ss"
+          },
+          {
+            "command": "searchpartyd",
+            "cpu_percent": 2.6,
+            "pid": 1112,
+            "state": "Ss"
+          },
+          {
+            "command": "UserEventAgent",
+            "cpu_percent": 1.4,
+            "pid": 866,
+            "state": "Ss"
+          },
+          {
+            "command": "Python",
+            "cpu_percent": 1.2,
+            "pid": 27330,
+            "state": "Ss"
+          },
+          {
+            "command": "PerfPowerServices",
+            "cpu_percent": 1.1,
+            "pid": 85669,
+            "state": "Ss"
+          },
+          {
+            "command": "launchd",
+            "cpu_percent": 0.9,
+            "pid": 1,
+            "state": "Ss"
+          },
+          {
+            "command": "runningboardd",
+            "cpu_percent": 0.4,
+            "pid": 946,
+            "state": "Ss"
+          }
+        ]
+      },
+      "policy": "shared",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-02-shared.log",
+      "repetition": 2,
+      "rows": [
+        {
+          "aggregate_tok_s": 82.2,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 82.2,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12158.0
+        },
+        {
+          "aggregate_tok_s": 147.3,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 73.7,
+          "scaling_vs_batch1": 1.79,
+          "step_us": 13576.0
+        },
+        {
+          "aggregate_tok_s": 271.6,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 67.9,
+          "scaling_vs_batch1": 3.3,
+          "step_us": 14730.0
+        },
+        {
+          "aggregate_tok_s": 327.7,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 41.0,
+          "scaling_vs_batch1": 3.98,
+          "step_us": 24414.0
+        }
+      ]
+    },
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 5.0533146660309285,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "1"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.486,
+          "five_minutes": 1.837,
+          "one_minute": 1.469
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 21.1,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 18.0,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "VTEncoderXPCService",
+            "cpu_percent": 0.8,
+            "pid": 9074,
+            "state": "Ss"
+          },
+          {
+            "command": "Finder",
+            "cpu_percent": 0.2,
+            "pid": 1213,
+            "state": "S"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.2,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "ControlCenter",
+            "cpu_percent": 0.1,
+            "pid": 1209,
+            "state": "S"
+          },
+          {
+            "command": "spotlightknowledged.updater",
+            "cpu_percent": 0.1,
+            "pid": 1333,
+            "state": "S"
+          },
+          {
+            "command": "corebrightnessd",
+            "cpu_percent": 0.1,
+            "pid": 933,
+            "state": "Ss"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.489,
+          "five_minutes": 1.851,
+          "one_minute": 1.51
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 8.0,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "cloudd",
+            "cpu_percent": 5.2,
+            "pid": 1212,
+            "state": "S"
+          },
+          {
+            "command": "SafariBookmarksSyncAgent",
+            "cpu_percent": 4.2,
+            "pid": 1570,
+            "state": "S"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 3.9,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "cfprefsd",
+            "cpu_percent": 1.2,
+            "pid": 1159,
+            "state": "S"
+          },
+          {
+            "command": "Finder",
+            "cpu_percent": 1.1,
+            "pid": 1213,
+            "state": "S"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.9,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "notifyd",
+            "cpu_percent": 0.7,
+            "pid": 931,
+            "state": "Ss"
+          }
+        ]
+      },
+      "policy": "shared",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-03-shared.log",
+      "repetition": 3,
+      "rows": [
+        {
+          "aggregate_tok_s": 82.1,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 82.1,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12181.0
+        },
+        {
+          "aggregate_tok_s": 147.0,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 73.5,
+          "scaling_vs_batch1": 1.79,
+          "step_us": 13608.0
+        },
+        {
+          "aggregate_tok_s": 271.0,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 67.7,
+          "scaling_vs_batch1": 3.3,
+          "step_us": 14761.0
+        },
+        {
+          "aggregate_tok_s": 327.5,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 40.9,
+          "scaling_vs_batch1": 3.99,
+          "step_us": 24425.0
+        }
+      ]
+    },
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 11.38414020894561,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "0"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.466,
+          "five_minutes": 1.753,
+          "one_minute": 1.251
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.7,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.7,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "notifyd",
+            "cpu_percent": 0.4,
+            "pid": 931,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.1,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "launchd",
+            "cpu_percent": 0.1,
+            "pid": 1,
+            "state": "Ss"
+          },
+          {
+            "command": "mdworker_shared",
+            "cpu_percent": 0.0,
+            "pid": 28173,
+            "state": "S"
+          },
+          {
+            "command": "Python",
+            "cpu_percent": 0.0,
+            "pid": 27330,
+            "state": "Ss"
+          },
+          {
+            "command": "sshd-session: akiralam@notty",
+            "cpu_percent": 0.0,
+            "pid": 27329,
+            "state": "S"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.472,
+          "five_minutes": 1.779,
+          "one_minute": 1.297
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.0,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.1,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.1,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "sleep",
+            "cpu_percent": 0.0,
+            "pid": 28284,
+            "state": "S"
+          },
+          {
+            "command": "mdworker_shared",
+            "cpu_percent": 0.0,
+            "pid": 28174,
+            "state": "S"
+          },
+          {
+            "command": "mdworker_shared",
+            "cpu_percent": 0.0,
+            "pid": 28173,
+            "state": "S"
+          },
+          {
+            "command": "Python",
+            "cpu_percent": 0.0,
+            "pid": 27330,
+            "state": "Ss"
+          },
+          {
+            "command": "sshd-session: akiralam@notty",
+            "cpu_percent": 0.0,
+            "pid": 27329,
+            "state": "S"
+          }
+        ]
+      },
+      "policy": "row_exact",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-03-row_exact.log",
+      "repetition": 3,
+      "rows": [
+        {
+          "aggregate_tok_s": 82.4,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 82.4,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12142.0
+        },
+        {
+          "aggregate_tok_s": 91.1,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 45.5,
+          "scaling_vs_batch1": 1.11,
+          "step_us": 21962.0
+        },
+        {
+          "aggregate_tok_s": 99.1,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 24.8,
+          "scaling_vs_batch1": 1.2,
+          "step_us": 40366.0
+        },
+        {
+          "aggregate_tok_s": 102.5,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 12.8,
+          "scaling_vs_batch1": 1.24,
+          "step_us": 78028.0
+        }
+      ]
+    },
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 11.368361957953312,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "0"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.451,
+          "five_minutes": 1.691,
+          "one_minute": 1.158
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 6.4,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "dasd",
+            "cpu_percent": 0.9,
+            "pid": 916,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.7,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "searchpartyd",
+            "cpu_percent": 0.3,
+            "pid": 1112,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.2,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "runningboardd",
+            "cpu_percent": 0.2,
+            "pid": 946,
+            "state": "Ss"
+          },
+          {
+            "command": "UserEventAgent",
+            "cpu_percent": 0.2,
+            "pid": 866,
+            "state": "Ss"
+          },
+          {
+            "command": "launchd",
+            "cpu_percent": 0.2,
+            "pid": 1,
+            "state": "Ss"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.463,
+          "five_minutes": 1.732,
+          "one_minute": 1.275
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "launchd",
+            "cpu_percent": 18.3,
+            "pid": 1,
+            "state": "Ss"
+          },
+          {
+            "command": "WindowServer",
+            "cpu_percent": 6.9,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 1.3,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 1.1,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "bluetoothd",
+            "cpu_percent": 0.6,
+            "pid": 930,
+            "state": "Ss"
+          },
+          {
+            "command": "notifyd",
+            "cpu_percent": 0.6,
+            "pid": 931,
+            "state": "Ss"
+          },
+          {
+            "command": "Finder",
+            "cpu_percent": 0.2,
+            "pid": 1213,
+            "state": "S"
+          },
+          {
+            "command": "cfprefsd",
+            "cpu_percent": 0.2,
+            "pid": 940,
+            "state": "Ss"
+          }
+        ]
+      },
+      "policy": "row_exact",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-04-row_exact.log",
+      "repetition": 4,
+      "rows": [
+        {
+          "aggregate_tok_s": 82.1,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 82.1,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12180.0
+        },
+        {
+          "aggregate_tok_s": 91.2,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 45.6,
+          "scaling_vs_batch1": 1.11,
+          "step_us": 21922.0
+        },
+        {
+          "aggregate_tok_s": 99.2,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 24.8,
+          "scaling_vs_batch1": 1.21,
+          "step_us": 40334.0
+        },
+        {
+          "aggregate_tok_s": 102.7,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 12.8,
+          "scaling_vs_batch1": 1.25,
+          "step_us": 77884.0
+        }
+      ]
+    },
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 5.054530124994926,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "1"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.457,
+          "five_minutes": 1.695,
+          "one_minute": 1.353
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.9,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "rapportd",
+            "cpu_percent": 0.3,
+            "pid": 1202,
+            "state": "S"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.3,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "bluetoothd",
+            "cpu_percent": 0.3,
+            "pid": 930,
+            "state": "Ss"
+          },
+          {
+            "command": "sharingd",
+            "cpu_percent": 0.2,
+            "pid": 1283,
+            "state": "S"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.1,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "corebrightnessd",
+            "cpu_percent": 0.1,
+            "pid": 933,
+            "state": "Ss"
+          },
+          {
+            "command": "ContinuityCaptureAgent",
+            "cpu_percent": 0.1,
+            "pid": 1167,
+            "state": "S"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.442,
+          "five_minutes": 1.657,
+          "one_minute": 1.123
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.3,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "Python",
+            "cpu_percent": 2.0,
+            "pid": 27330,
+            "state": "Ss"
+          },
+          {
+            "command": "Finder",
+            "cpu_percent": 0.7,
+            "pid": 1213,
+            "state": "S"
+          },
+          {
+            "command": "notifyd",
+            "cpu_percent": 0.5,
+            "pid": 931,
+            "state": "Ss"
+          },
+          {
+            "command": "launchd",
+            "cpu_percent": 0.4,
+            "pid": 1,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.3,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "cfprefsd",
+            "cpu_percent": 0.2,
+            "pid": 940,
+            "state": "Ss"
+          },
+          {
+            "command": "cfprefsd",
+            "cpu_percent": 0.2,
+            "pid": 1159,
+            "state": "S"
+          }
+        ]
+      },
+      "policy": "shared",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-04-shared.log",
+      "repetition": 4,
+      "rows": [
+        {
+          "aggregate_tok_s": 82.0,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 82.0,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12201.0
+        },
+        {
+          "aggregate_tok_s": 145.5,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 72.8,
+          "scaling_vs_batch1": 1.78,
+          "step_us": 13744.0
+        },
+        {
+          "aggregate_tok_s": 271.2,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 67.8,
+          "scaling_vs_batch1": 3.31,
+          "step_us": 14751.0
+        },
+        {
+          "aggregate_tok_s": 328.9,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 41.1,
+          "scaling_vs_batch1": 4.01,
+          "step_us": 24325.0
+        }
+      ]
+    },
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 5.068832917022519,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "1"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.457,
+          "five_minutes": 1.683,
+          "one_minute": 1.419
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.6,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.4,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "corebrightnessd",
+            "cpu_percent": 0.1,
+            "pid": 933,
+            "state": "Ss"
+          },
+          {
+            "command": "sleep",
+            "cpu_percent": 0.0,
+            "pid": 28284,
+            "state": "S"
+          },
+          {
+            "command": "mdworker_shared",
+            "cpu_percent": 0.0,
+            "pid": 28174,
+            "state": "S"
+          },
+          {
+            "command": "mdworker_shared",
+            "cpu_percent": 0.0,
+            "pid": 28173,
+            "state": "S"
+          },
+          {
+            "command": "Python",
+            "cpu_percent": 0.0,
+            "pid": 27330,
+            "state": "Ss"
+          },
+          {
+            "command": "sshd-session: akiralam@notty",
+            "cpu_percent": 0.0,
+            "pid": 27329,
+            "state": "S"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.442,
+          "five_minutes": 1.644,
+          "one_minute": 1.194
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 5.1,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "SafariBookmarksSyncAgent",
+            "cpu_percent": 2.0,
+            "pid": 1570,
+            "state": "S"
+          },
+          {
+            "command": "notifyd",
+            "cpu_percent": 0.6,
+            "pid": 931,
+            "state": "Ss"
+          },
+          {
+            "command": "launchd",
+            "cpu_percent": 0.3,
+            "pid": 1,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.3,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "cfprefsd",
+            "cpu_percent": 0.2,
+            "pid": 940,
+            "state": "Ss"
+          },
+          {
+            "command": "logd",
+            "cpu_percent": 0.1,
+            "pid": 864,
+            "state": "Ss"
+          },
+          {
+            "command": "powerd",
+            "cpu_percent": 0.1,
+            "pid": 878,
+            "state": "Ss"
+          }
+        ]
+      },
+      "policy": "shared",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-05-shared.log",
+      "repetition": 5,
+      "rows": [
+        {
+          "aggregate_tok_s": 82.0,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 82.0,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12203.0
+        },
+        {
+          "aggregate_tok_s": 145.1,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 72.5,
+          "scaling_vs_batch1": 1.77,
+          "step_us": 13785.0
+        },
+        {
+          "aggregate_tok_s": 268.3,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 67.1,
+          "scaling_vs_batch1": 3.27,
+          "step_us": 14909.0
+        },
+        {
+          "aggregate_tok_s": 328.9,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 41.1,
+          "scaling_vs_batch1": 4.01,
+          "step_us": 24321.0
+        }
+      ]
+    },
+    {
+      "command": [
+        "/Users/akiralam/code/ax-engine-readme-batched-20260807/target/release/batched-decode-ceiling-probe",
+        "/Volumes/Ext4T/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit/snapshots/90215b22ec18e72f623dde2ea7af4097025160e2",
+        "32"
+      ],
+      "elapsed_seconds": 11.373573582968675,
+      "environment": {
+        "AX_MLX_BATCHED_PROFILE": "0",
+        "AX_MLX_BATCHED_SHARED_PROJ": "0"
+      },
+      "performance_conditions_end": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.48,
+          "five_minutes": 1.729,
+          "one_minute": 1.74
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 6.6,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "cloudd",
+            "cpu_percent": 4.4,
+            "pid": 1212,
+            "state": "S"
+          },
+          {
+            "command": "SafariBookmarksSyncAgent",
+            "cpu_percent": 2.4,
+            "pid": 1570,
+            "state": "S"
+          },
+          {
+            "command": "accountsd",
+            "cpu_percent": 1.2,
+            "pid": 1171,
+            "state": "S"
+          },
+          {
+            "command": "Python",
+            "cpu_percent": 0.6,
+            "pid": 27330,
+            "state": "Ss"
+          },
+          {
+            "command": "apsd",
+            "cpu_percent": 0.4,
+            "pid": 906,
+            "state": "Ss"
+          },
+          {
+            "command": "cfprefsd",
+            "cpu_percent": 0.4,
+            "pid": 1159,
+            "state": "S"
+          },
+          {
+            "command": "adid",
+            "cpu_percent": 0.3,
+            "pid": 1338,
+            "state": "Ss"
+          }
+        ]
+      },
+      "performance_conditions_start": {
+        "battery_status": "-InternalBattery-0 (id=57540707)\t80%; AC attached; not charging present: true",
+        "cpu_power_status_recorded": false,
+        "load_average": {
+          "fifteen_minutes": 1.454,
+          "five_minutes": 1.666,
+          "one_minute": 1.405
+        },
+        "performance_warning_recorded": false,
+        "power_source": "AC Power",
+        "thermal_status_lines": [
+          "Note: No thermal warning level has been recorded",
+          "Note: No performance warning level has been recorded",
+          "Note: No CPU power status has been recorded"
+        ],
+        "thermal_warning_recorded": false,
+        "top_processes_cpu": [
+          {
+            "command": "WindowServer",
+            "cpu_percent": 6.1,
+            "pid": 938,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 3.5,
+            "pid": 1279,
+            "state": "S"
+          },
+          {
+            "command": "Finder",
+            "cpu_percent": 1.0,
+            "pid": 1213,
+            "state": "S"
+          },
+          {
+            "command": "notifyd",
+            "cpu_percent": 0.6,
+            "pid": 931,
+            "state": "Ss"
+          },
+          {
+            "command": "VTEncoderXPCService",
+            "cpu_percent": 0.6,
+            "pid": 9074,
+            "state": "Ss"
+          },
+          {
+            "command": "launchd",
+            "cpu_percent": 0.4,
+            "pid": 1,
+            "state": "Ss"
+          },
+          {
+            "command": "RustDesk",
+            "cpu_percent": 0.2,
+            "pid": 15682,
+            "state": "S"
+          },
+          {
+            "command": "powerd",
+            "cpu_percent": 0.1,
+            "pid": 878,
+            "state": "Ss"
+          }
+        ]
+      },
+      "policy": "row_exact",
+      "raw_log": "benchmarks/results/inference/mlx-inference/2026-08-07-batched-decode-ceiling-m5max-v6.13.5/logs/rep-05-row_exact.log",
+      "repetition": 5,
+      "rows": [
+        {
+          "aggregate_tok_s": 82.2,
+          "batch": 1,
+          "cohort_fnv": "5277451e1f274a3f",
+          "per_request_tok_s": 82.2,
+          "scaling_vs_batch1": 1.0,
+          "step_us": 12160.0
+        },
+        {
+          "aggregate_tok_s": 91.1,
+          "batch": 2,
+          "cohort_fnv": "a5cf1c43c27f4e75",
+          "per_request_tok_s": 45.6,
+          "scaling_vs_batch1": 1.11,
+          "step_us": 21953.0
+        },
+        {
+          "aggregate_tok_s": 99.2,
+          "batch": 4,
+          "cohort_fnv": "b980c692f8e0e4cd",
+          "per_request_tok_s": 24.8,
+          "scaling_vs_batch1": 1.21,
+          "step_us": 40326.0
+        },
+        {
+          "aggregate_tok_s": 102.7,
+          "batch": 8,
+          "cohort_fnv": "846ac67aca8bad7d",
+          "per_request_tok_s": 12.8,
+          "scaling_vs_batch1": 1.25,
+          "step_us": 77932.0
+        }
+      ]
+    }
+  ]
+}

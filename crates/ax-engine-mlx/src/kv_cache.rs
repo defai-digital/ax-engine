@@ -6446,9 +6446,15 @@ mod tests {
 
     // ── Phase 3b: per-layer KV-cache quantization ──
 
-    /// Serializes env-mutating KV-quant tests (mirrors the pattern in
-    /// `disk_prefix_cache`'s test module).
-    static KV_QUANT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Guards `AX_KV_QUANT` across concurrently-running tests.
+    ///
+    /// `set_kv_quant_table` reads the env var live, so the kill-switch test
+    /// holds the write lock while `AX_KV_QUANT=0` is set, and every other
+    /// KV-quant test holds a read lock for its whole scope. Read-locking only
+    /// the mutating test (the pre-fix state) left the readers racing the
+    /// kill-switch scope: a table set while `AX_KV_QUANT=0` was visible is
+    /// silently dropped and `layer_is_quantized` asserts fail intermittently.
+    static KV_QUANT_ENV_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
     struct KvQuantEnvGuard {
         previous: Option<String>,
@@ -6457,7 +6463,8 @@ mod tests {
     impl KvQuantEnvGuard {
         fn set(value: &str) -> Self {
             let previous = std::env::var(AX_KV_QUANT_ENV).ok();
-            // SAFETY: KV_QUANT_ENV_LOCK is held for the whole test scope.
+            // SAFETY: the KV_QUANT_ENV_LOCK write lock is held for the whole
+            // test scope, so no reader observes a mid-mutation environment.
             unsafe { std::env::set_var(AX_KV_QUANT_ENV, value) };
             Self { previous }
         }
@@ -6465,7 +6472,8 @@ mod tests {
 
     impl Drop for KvQuantEnvGuard {
         fn drop(&mut self) {
-            // SAFETY: KV_QUANT_ENV_LOCK is held for the whole test scope.
+            // SAFETY: the KV_QUANT_ENV_LOCK write lock is held for the whole
+            // test scope, so no reader observes a mid-mutation environment.
             unsafe {
                 match &self.previous {
                     Some(value) => std::env::set_var(AX_KV_QUANT_ENV, value),
@@ -6522,6 +6530,7 @@ mod tests {
 
     #[test]
     fn kv_quant_mixed_table_matches_dense_within_bits_bounds() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         const H: usize = 2;
         const D: usize = 128;
         let table = vec![spec(8, 64), None, spec(4, 32)];
@@ -6583,6 +6592,7 @@ mod tests {
 
     #[test]
     fn kv_quant_decode_steps_after_prefill_stay_consistent() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         const H: usize = 2;
         const D: usize = 128;
         let table = vec![spec(8, 64), spec(4, 32)];
@@ -6628,6 +6638,7 @@ mod tests {
 
     #[test]
     fn kv_quant_trim_to_then_reappend_stays_consistent() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         const H: usize = 1;
         const D: usize = 128;
         let mut quant = MlxKVCache::new_contiguous(1);
@@ -6673,6 +6684,7 @@ mod tests {
 
     #[test]
     fn kv_quant_serialize_roundtrip_and_requantize_on_first_append() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         const H: usize = 2;
         const D: usize = 128;
         let table = vec![spec(8, 64), spec(4, 32)];
@@ -6731,6 +6743,7 @@ mod tests {
 
     #[test]
     fn kv_quant_usage_snapshot_reflects_packed_sizes() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         const H: usize = 2;
         const D: usize = 128;
         let mut quant = MlxKVCache::new_contiguous(1);
@@ -6765,7 +6778,7 @@ mod tests {
 
     #[test]
     fn kv_quant_env_zero_disables_table() {
-        let _lock = KV_QUANT_ENV_LOCK.lock().expect("env lock");
+        let _lock = KV_QUANT_ENV_LOCK.write().expect("env lock");
         let _guard = KvQuantEnvGuard::set("0");
         let mut cache = MlxKVCache::new_contiguous(1);
         cache.set_kv_quant_table(vec![spec(4, 32)]);
@@ -6785,6 +6798,7 @@ mod tests {
 
     #[test]
     fn kv_quant_table_length_mismatch_is_ignored() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         let mut cache = MlxKVCache::new_contiguous(3);
         cache.set_kv_quant_table(vec![spec(4, 32), None]);
         let k = kv_tokens_bf16(8, 1, 128, 9);
@@ -6796,6 +6810,7 @@ mod tests {
 
     #[test]
     fn kv_quant_invalid_spec_is_rejected_per_layer() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         let mut cache = MlxKVCache::new_contiguous(2);
         cache.set_kv_quant_table(vec![
             Some(KvQuantSpec {
@@ -6816,6 +6831,7 @@ mod tests {
 
     #[test]
     fn kv_quant_ring_engagement_demotes_layer_to_dense() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         const D: usize = 128;
         let mut cache = MlxKVCache::new_contiguous(1);
         cache.set_kv_quant_table(vec![spec(8, 64)]);
@@ -6841,6 +6857,7 @@ mod tests {
 
     #[test]
     fn kv_quant_protected_prefix_ring_demotes_layer_to_dense() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         const D: usize = 128;
         let mut cache = MlxKVCache::new_contiguous(1);
         cache.set_kv_quant_table(vec![spec(8, 64)]);
@@ -6865,6 +6882,7 @@ mod tests {
 
     #[test]
     fn kv_quant_layers_never_take_paged_route() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         let config = FaBlockPoolConfig {
             block_size_tokens: 4,
             max_blocks: 32,
@@ -6902,6 +6920,7 @@ mod tests {
 
     #[test]
     fn kv_quant_clone_deep_copies_buffers_and_spec() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         const D: usize = 128;
         let mut cache = MlxKVCache::new_contiguous(1);
         cache.set_kv_quant_table(vec![spec(8, 64)]);
@@ -6938,6 +6957,7 @@ mod tests {
 
     #[test]
     fn kv_quant_repage_skips_quantized_layers() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         const D: usize = 128;
         let mut dense_source = MlxKVCache::new_contiguous(2);
         dense_source.set_kv_quant_table(vec![spec(4, 32), None]);
@@ -6991,6 +7011,7 @@ mod tests {
 
     #[test]
     fn kv_quant_table_injection_demotes_already_paged_layer() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         // Prefix-restore adoption can inject the table onto a cache whose
         // layers already hold paged storage; the spec'd layer must demote to
         // contiguous at injection and quantize on its next append.
@@ -7027,6 +7048,7 @@ mod tests {
     /// `kv_cache_quant` table must reach the cache it creates.
     #[test]
     fn kv_quant_config_table_reaches_cache_via_pipeline_creation() {
+        let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
         let config = crate::model::ModelConfig {
             compile_cache_identity: 1,
             model_family: "qwen3".to_string(),

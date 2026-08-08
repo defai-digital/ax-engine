@@ -106,6 +106,34 @@ final class AxEngineClientTests: XCTestCase {
         XCTAssertEqual(resp.modelId, "qwen3_dense")
     }
 
+    func testCustomHeadersAndTimeoutAreAppliedToRequests() async throws {
+        MockURLProtocol.handler = { req in
+            XCTAssertEqual(
+                req.value(forHTTPHeaderField: "Authorization"),
+                "Bearer test-key-1234567890"
+            )
+            XCTAssertEqual(req.timeoutInterval, 30)
+            return jsonResponse(["status": "ok", "service": "ax-engine-server", "model_id": "qwen3_dense"])
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = AxEngineClient(
+            session: URLSession(configuration: config),
+            headers: ["Authorization": "Bearer test-key-1234567890"],
+            requestTimeout: 30
+        )
+        let resp = try await client.health()
+        XCTAssertEqual(resp.status, "ok")
+    }
+
+    func testDefaultTimeoutMatchesRubyClientDefault() async throws {
+        MockURLProtocol.handler = { req in
+            XCTAssertEqual(req.timeoutInterval, 300)
+            return jsonResponse(["status": "ok", "service": "ax-engine-server", "model_id": "qwen3_dense"])
+        }
+        _ = try await makeClient().health()
+    }
+
     func testChatCompletion() async throws {
         MockURLProtocol.handler = { req in
             XCTAssertEqual(req.httpMethod, "POST")

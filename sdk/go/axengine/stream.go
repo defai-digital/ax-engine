@@ -41,6 +41,10 @@ func (s *SSEReader) Next() (*SSEEvent, bool) {
 
 		if line == "" {
 			if s.dataBuf.Len() == 0 {
+				// An `event:` line with no `data:` dispatches nothing, but
+				// the event type still resets per the SSE spec — otherwise
+				// the stale name leaks into the next event.
+				s.event = "message"
 				continue
 			}
 			data := strings.TrimSuffix(s.dataBuf.String(), "\n")

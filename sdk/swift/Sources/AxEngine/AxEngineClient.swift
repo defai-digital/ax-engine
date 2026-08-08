@@ -20,15 +20,29 @@ public final class AxEngineClient: @unchecked Sendable {
 
     private let baseURL: URL
     private let session: URLSession
+    private let headers: [String: String]
+    private let requestTimeout: TimeInterval
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
+    /// - Parameters:
+    ///   - baseURL: Server root URL.
+    ///   - session: URLSession used for all requests.
+    ///   - headers: Default headers added to every request, e.g.
+    ///     `["Authorization": "Bearer <api-key>"]` for servers started with `--api-key`.
+    ///   - requestTimeout: Per-request idle timeout in seconds. URLSession's
+    ///     60s default fails blocking generations that take longer; the Go and
+    ///     Ruby clients default to 300s.
     public init(
         baseURL: URL = URL(string: "http://127.0.0.1:31418")!,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        headers: [String: String] = [:],
+        requestTimeout: TimeInterval = 300
     ) {
         self.baseURL = baseURL
         self.session = session
+        self.headers = headers
+        self.requestTimeout = requestTimeout
 
         encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -200,6 +214,10 @@ public final class AxEngineClient: @unchecked Sendable {
         urlRequest.httpMethod = "POST"
         urlRequest.httpBody = try encoder.encode(body)
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.timeoutInterval = requestTimeout
+        for (field, value) in headers {
+            urlRequest.setValue(value, forHTTPHeaderField: field)
+        }
         return try await execute(urlRequest)
     }
 
@@ -253,6 +271,10 @@ public final class AxEngineClient: @unchecked Sendable {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = method
         request.httpBody = body
+        request.timeoutInterval = requestTimeout
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
         return request
     }
 

@@ -786,28 +786,41 @@ pub fn clear_all_layer_decode_caches() {
 mod tests {
     use super::*;
 
+    /// Guards the process-global compile caches across concurrently-running
+    /// tests. The `test_clear_*` tests wipe whole caches, so they hold the
+    /// write lock; tests that assert cache contents hold a read lock for
+    /// their whole scope (their keys are disjoint, so they never disturb one
+    /// another). Without this, a clear landing between a sibling test's
+    /// apply and its `contains_key` assert fails the sibling intermittently.
+    static GLOBAL_CACHE_TEST_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
     #[test]
     fn test_clear_moe_cache_does_not_panic() {
+        let _exclusive = GLOBAL_CACHE_TEST_LOCK.write().expect("cache test lock");
         clear_layer_moe_decode_cache();
     }
 
     #[test]
     fn test_clear_dense_ffn_cache_does_not_panic() {
+        let _exclusive = GLOBAL_CACHE_TEST_LOCK.write().expect("cache test lock");
         clear_layer_dense_ffn_decode_cache();
     }
 
     #[test]
     fn test_clear_per_layer_input_gate_cache_does_not_panic() {
+        let _exclusive = GLOBAL_CACHE_TEST_LOCK.write().expect("cache test lock");
         clear_per_layer_input_gate_decode_cache();
     }
 
     #[test]
     fn test_clear_gemma4_dual_path_cache_does_not_panic() {
+        let _exclusive = GLOBAL_CACHE_TEST_LOCK.write().expect("cache test lock");
         clear_layer_gemma4_dual_path_cache();
     }
 
     #[test]
     fn test_clear_all_layer_decode_caches_does_not_panic() {
+        let _exclusive = GLOBAL_CACHE_TEST_LOCK.write().expect("cache test lock");
         clear_all_layer_decode_caches();
     }
 
@@ -847,6 +860,7 @@ mod tests {
     fn dense_ffn_refresh_threshold_evicts_key_for_recompilation() {
         use mlx_sys::MlxDtype;
 
+        let _shared = GLOBAL_CACHE_TEST_LOCK.read().expect("cache test lock");
         // Layer index far above any real model's layer count so this test
         // never collides with entries from other tests on the same thread.
         const LAYER: usize = 900_001;
@@ -920,6 +934,7 @@ mod tests {
     fn dense_ffn_cache_separates_model_identities_on_same_thread() {
         use mlx_sys::MlxDtype;
 
+        let _shared = GLOBAL_CACHE_TEST_LOCK.read().expect("cache test lock");
         const LAYER: usize = 900_002;
         const MODEL_A: u64 = 700_002;
         const MODEL_B: u64 = 700_003;

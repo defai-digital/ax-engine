@@ -195,19 +195,20 @@ The current single-batch diagnostic snapshot for Qwen is
 The current single-batch diagnostic snapshot for EmbeddingGemma is
 `benchmarks/results/embedding/embedding-fair/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-143425/`.
 The current README Qwen ingest-scale snapshot is
-`benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`
-(schema `ax.embedding_ingest_scale.v2`, same-session paired 0.6B / 4B / 8B).
+`benchmarks/results/embedding/embedding-scale/2026-08-07-qwen-paired-v3-refresh/2026-08-07-121623/`
+(schema `ax.embedding_ingest_scale.v3`, same-session paired 0.6B / 4B / 8B).
 The current EmbeddingGemma ingest-scale snapshot is
-`benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`
-with a later AX-only refresh for directional AX absolute numbers. The Qwen
-paired artifacts use 2 warmups, 5 measured trials, 15-second cooldowns
-before measured engine passes, alternating paired order, and median tok/s,
-plus host / `runtime_identity` libmlx fingerprints. The fair artifacts keep
-the complete short-query (ms/item primary) plus 16/64/256-token matrix in
-`summary.md`. The Qwen reference comparison uses `mlx-lm` as the baseline
-backend. EmbeddingGemma uses `mlx-embeddings` with mean pooling because
-`mlx-lm` does not provide the comparable EmbeddingGemma route used by this
-harness.
+`benchmarks/results/embedding/embedding-scale/2026-08-07-embeddinggemma-paired-v3-refresh/2026-08-07-151606/`.
+Both current scale artifacts use 2 warmups, 5 measured trials, 15-second
+cooldowns before measured engine passes, interleaved alternating order, and
+median tok/s, plus host and `runtime_identity` MLX fingerprints. They were
+recorded on an Apple M5 Max 128 GB from clean AX Engine 6.13.4 commit
+`a20784e979c47b857f114bdd59621119679bb9a9`, and both pass the paired-delta
+publication gate. The fair artifacts keep the complete short-query (ms/item
+primary) plus 16/64/256-token matrix in `summary.md`. Qwen uses `mlx-lm` as
+the baseline backend. EmbeddingGemma uses `mlx-embeddings` with mean pooling
+because `mlx-lm` does not provide the comparable EmbeddingGemma route used by
+this harness.
 
 ## Sustained vs intermittent profiles
 
@@ -227,11 +228,7 @@ pattern, and do not mix cooled and hot-loop artifacts in one comparison.
 
 The current README scale snapshot is:
 
-`benchmarks/results/embedding/embedding-scale/2026-07-12-qwen-paired-v2/2026-07-12-145710/`
-
-This retained v2 artifact predates the v3 completion and benchmark-condition
-boundaries. It is kept as historical chart context through `--allow-legacy`;
-new public claims must use a v3 artifact.
+`benchmarks/results/embedding/embedding-scale/2026-08-07-qwen-paired-v3-refresh/2026-08-07-121623/`
 
 It runs Qwen3-Embedding 0.6B 8-bit plus Qwen3-Embedding 4B/8B 4-bit DWQ against
 `mlx-lm` in one same-session paired process, using last-token pooling and
@@ -246,10 +243,17 @@ Read the scale table differently from the single-batch diagnostic artifacts.
 The diagnostic artifacts answer "how fast is this isolated batch shape when both
 engines return a caller-consumable matrix?" The scale table answers "does that
 rate hold when a RAG worker keeps feeding many batches, and what flush latency
-does the chosen batch size create?" For the current Qwen snapshot, AX ranges
-from 1.4% behind to 3.8% ahead across the 18 shapes, so read those rows as
-sustained ingest parity (slightly favoring AX) rather than a stable per-shape
-ranking.
+does the chosen batch size create?" In the current Qwen snapshot, AX wins all
+18 shapes, with a +1.56% geometric mean and a +0.02% to +3.27% range. Read
+that as sustained-ingest parity slightly favoring AX, not a large uniform win.
+
+The current EmbeddingGemma scale snapshot is:
+
+`benchmarks/results/embedding/embedding-scale/2026-08-07-embeddinggemma-paired-v3-refresh/2026-08-07-151606/`
+
+AX wins all 6 EmbeddingGemma shapes against same-session `mlx-embeddings`, with
+a +7.99% geometric mean and a +6.05% to +9.73% range. Read that as a modest,
+consistent sustained-ingest improvement.
 
 Reproduce the scale snapshot with:
 

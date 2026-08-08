@@ -739,31 +739,23 @@ class ReadmePerformanceChartTests(unittest.TestCase):
     def test_embedding_scale_charts_use_embedding_results_tree(self) -> None:
         self.assertIn(
             "benchmarks/results/embedding/embedding-scale/",
-            charts.EMBEDDING_SCALE_REFERENCE_ARTIFACT.as_posix(),
+            charts.EMBEDDING_SCALE_PAIRED_ARTIFACT.as_posix(),
         )
         self.assertIn(
             "benchmarks/results/embedding/embedding-scale/",
-            charts.EMBEDDING_SCALE_AX_ARTIFACT.as_posix(),
-        )
-        self.assertIn(
-            "benchmarks/results/embedding/embedding-scale/",
-            charts.EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT.as_posix(),
-        )
-        self.assertIn(
-            "benchmarks/results/embedding/embedding-scale/",
-            charts.EMBEDDINGGEMMA_SCALE_AX_ARTIFACT.as_posix(),
+            charts.EMBEDDINGGEMMA_SCALE_PAIRED_ARTIFACT.as_posix(),
         )
         self.assertEqual(
             charts.embedding_artifact_engine_version(
-                charts.REPO_ROOT, charts.EMBEDDING_SCALE_AX_ARTIFACT
+                charts.REPO_ROOT, charts.EMBEDDING_SCALE_PAIRED_ARTIFACT
             ),
-            "6.11.1",
+            "6.13.4",
         )
         self.assertEqual(
             charts.embedding_artifact_engine_version(
-                charts.REPO_ROOT, charts.EMBEDDINGGEMMA_SCALE_AX_ARTIFACT
+                charts.REPO_ROOT, charts.EMBEDDINGGEMMA_SCALE_PAIRED_ARTIFACT
             ),
-            "6.11.1",
+            "6.13.4",
         )
 
     def test_embedding_box_chart_requires_six_unique_scale_shapes(self) -> None:

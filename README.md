@@ -269,11 +269,14 @@ mixed prefill+decode routes, backed by a paged logical KV ledger. Full design:
   decode tok/s, error rate) that [AX Serving](docs/AX-SERVING.md) and other
   routers consume for node selection; token scheduling itself stays on-box
 
-**Open gate — batched-decode throughput.** The mechanism is wired and
-certification-gated, but on MLX the batched forward barely amortizes weight
-reads: measured **1.24×** aggregate at batch=8 (Llama-3.1-8B-4bit, M3 Max,
-MLX 0.32.0). Until that ceiling lifts, AX does not claim production continuous
-batching for concurrent long prompts — see
+**Current dense batched-decode ceiling.** On the strict M5 Max projection
+probe, the default Shared policy reaches **328.9 aggregate tok/s at B=8**
+(**4.01×** its B=1 throughput), versus **102.6 tok/s / 1.25×** for the
+RowExact fallback. The paired Shared/RowExact ratio is **3.20×** with five of
+five wins and identical full-cohort greedy hashes. This is a dense
+Llama-3.1-8B, 32-token-prefill microbenchmark—not an end-to-end serving,
+long-prompt, or MoE claim. Production continuous-batching claims still require
+matching serving evidence—see
 [Batched decode ceiling](docs/performance/batched-decode-ceiling.md) and
 [Long Context claim boundaries](docs/LONG-CONTEXT.md#claim-boundaries).
 
@@ -291,7 +294,7 @@ serving, MTP, direct, or embedding rows, and do not mix **M3 Max** vs
 | **Multi-model (S1)** | AX one process · multi-process peer MLX server | **All locked gates** · thr **5.03×** | M5 Max · 2026-08-06 |
 | **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | Exact 6-bit MTP: **14/15 wins**, **1.68× GM**; peer: AX trails MTPLX, beats lightning-mlx **2/3** | M5 Max · 2026-08-06/07 |
 | **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | AX **30/30** decode wins vs separate-run mlx-lm · **+4.6% GM** | M5 Max · 2026-08-07 · separate runs |
-| Embeddings | AX · mlx-lm / mlx-embeddings | Ingest scale tables in docs | M5 Max · 2026-07-27 |
+| Embeddings | AX · mlx-lm / mlx-embeddings | Qwen **18/18** wins, **+1.56% GM**; EmbeddingGemma **6/6**, **+7.99% GM** | M5 Max · 2026-08-07 · same-session paired |
 
 Full tables, charts, and methodology:
 [Performance Results](docs/PERFORMANCE-RESULTS.md) ·
@@ -371,6 +374,11 @@ separate-run `mlx_lm` 0.31.3 snapshot, AX wins all 30 comparable decode cells
 (**+4.6%** geometric mean), while prefill is **10.6% lower** and TTFT is
 **11.9% higher**. This is cross-run evidence, not a same-session peer
 benchmark or a clean release-to-release comparison.
+
+The fresh same-session embedding matrix is positive but not one uniform-sized
+win: Qwen3-Embedding wins all 18 sustained-ingest shapes with a **+1.56%**
+geometric mean (near parity to modestly faster), while EmbeddingGemma wins all
+six shapes with **+7.99%** geometric mean throughput.
 
 Non-speculative decode/prefill/TTFT (Gemma 4 and Qwen 3.6 box plots from fresh
 separate-run AX, `mlx_lm`, and llama.cpp **b10050** Metal snapshots), embedding ingest scale,
