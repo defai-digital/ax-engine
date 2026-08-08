@@ -7206,6 +7206,249 @@ mod tests {
         assert_eq!(weight.group_size, 64);
     }
 
+    /// AXQ 35B-A3B MTP sidecars ship fused `mlp.experts.gate_up_proj` +
+    /// `mlp.experts.down_proj` rather than split `mlp.{gate,up,down}_proj`.
+    /// `load_mtp` must attach those tensors so MoE MTP is available for formal A/B.
+    #[test]
+    fn load_mtp_accepts_moe_fused_experts_gate_up_packing() {
+        // Minimal shapes matching the Qwen3.5/3.6 MoE MTP layout (scaled down).
+        let hidden = 32usize;
+        let head_dim = 8usize;
+        let n_heads = 2usize;
+        let n_kv = 1usize;
+        let n_experts = 4usize;
+        let inter = 16usize;
+        let q_rows = n_heads * head_dim * 2; // queries + gate
+        let k_rows = n_kv * head_dim;
+
+        let mut name_map = HashMap::new();
+        let put = |map: &mut HashMap<String, MlxArray>, key: &str, shape: &[i32]| {
+            map.insert(key.to_string(), zeros(shape, MlxDtype::Bfloat16, None));
+        };
+        put(&mut name_map, "mtp.pre_fc_norm_embedding.weight", &[hidden as i32]);
+        put(&mut name_map, "mtp.pre_fc_norm_hidden.weight", &[hidden as i32]);
+        put(&mut name_map, "mtp.norm.weight", &[hidden as i32]);
+        put(
+            &mut name_map,
+            "mtp.fc.weight",
+            &[hidden as i32, (2 * hidden) as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.input_layernorm.weight",
+            &[hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.post_attention_layernorm.weight",
+            &[hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.q_norm.weight",
+            &[head_dim as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.k_norm.weight",
+            &[head_dim as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.q_proj.weight",
+            &[q_rows as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.k_proj.weight",
+            &[k_rows as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.v_proj.weight",
+            &[k_rows as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.o_proj.weight",
+            &[hidden as i32, q_rows as i32],
+        );
+        // Router + shared expert (dense) + fused routed experts (MoE packing).
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.gate.weight",
+            &[n_experts as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.shared_expert_gate.weight",
+            &[1, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.shared_expert.gate_proj.weight",
+            &[inter as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.shared_expert.up_proj.weight",
+            &[inter as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.shared_expert.down_proj.weight",
+            &[hidden as i32, inter as i32],
+        );
+        // No `.weight` suffix on fused expert keys (matches axquant 35B sidecars).
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.experts.gate_up_proj",
+            &[n_experts as i32, (2 * inter) as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.experts.down_proj",
+            &[n_experts as i32, hidden as i32, inter as i32],
+        );
+
+        let lm_head = QuantizedWeight::new(
+            zeros(&[64, hidden as i32], MlxDtype::Bfloat16, None),
+            None,
+            None,
+        );
+        let mtp = load_mtp(
+            &mut name_map,
+            &lm_head,
+            1,
+            MlxSamplingParams::new(0.0, 1.0, 0),
+            None,
+            None,
+            MtpNormLayout::MlxMultiplier,
+        )
+        .expect("MoE fused-experts MTP sidecar must load");
+
+        assert_eq!(mtp.max_depth, 1);
+        assert_eq!(mtp.head_dim, head_dim);
+        assert_eq!(mtp.n_heads, n_heads);
+        assert_eq!(mtp.n_kv_heads, n_kv);
+        assert!(
+            mtp.ffn_layer.router_proj.is_some(),
+            "router must attach for MoE MTP"
+        );
+        assert!(
+            mtp.ffn_layer.gate_up_exps_packed.is_some(),
+            "fused experts.gate_up_proj must populate gate_up_exps_packed"
+        );
+        assert!(
+            mtp.ffn_layer.down_exps.is_some(),
+            "experts.down_proj must populate down_exps"
+        );
+        assert!(
+            mtp.ffn_layer.gate_exps.is_none() && mtp.ffn_layer.up_exps.is_none(),
+            "split expert projs should stay empty when only fused packing is present"
+        );
+    }
+
+    #[test]
+    fn load_mtp_rejects_incomplete_moe_without_expert_packs() {
+        let hidden = 32usize;
+        let head_dim = 8usize;
+        let q_rows = 2 * head_dim * 2;
+        let k_rows = head_dim;
+        let mut name_map = HashMap::new();
+        let put = |map: &mut HashMap<String, MlxArray>, key: &str, shape: &[i32]| {
+            map.insert(key.to_string(), zeros(shape, MlxDtype::Bfloat16, None));
+        };
+        put(&mut name_map, "mtp.pre_fc_norm_embedding.weight", &[hidden as i32]);
+        put(&mut name_map, "mtp.pre_fc_norm_hidden.weight", &[hidden as i32]);
+        put(&mut name_map, "mtp.norm.weight", &[hidden as i32]);
+        put(
+            &mut name_map,
+            "mtp.fc.weight",
+            &[hidden as i32, (2 * hidden) as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.input_layernorm.weight",
+            &[hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.post_attention_layernorm.weight",
+            &[hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.q_norm.weight",
+            &[head_dim as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.k_norm.weight",
+            &[head_dim as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.q_proj.weight",
+            &[q_rows as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.k_proj.weight",
+            &[k_rows as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.v_proj.weight",
+            &[k_rows as i32, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.self_attn.o_proj.weight",
+            &[hidden as i32, q_rows as i32],
+        );
+        // Router present → MoE path, but no expert tensors → must fail closed.
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.gate.weight",
+            &[4, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.shared_expert.gate_proj.weight",
+            &[16, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.shared_expert.up_proj.weight",
+            &[16, hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.layers.0.mlp.shared_expert.down_proj.weight",
+            &[hidden as i32, 16],
+        );
+
+        let lm_head = QuantizedWeight::new(
+            zeros(&[64, hidden as i32], MlxDtype::Bfloat16, None),
+            None,
+            None,
+        );
+        assert!(
+            load_mtp(
+                &mut name_map,
+                &lm_head,
+                1,
+                MlxSamplingParams::new(0.0, 1.0, 0),
+                None,
+                None,
+                MtpNormLayout::MlxMultiplier,
+            )
+            .is_none(),
+            "incomplete MoE MTP (router without expert packs) must not attach"
+        );
+    }
+
     #[test]
     fn parse_mtp_sidecar_bits_hint_detects_int8() {
         assert_eq!(
