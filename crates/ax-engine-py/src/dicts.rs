@@ -280,6 +280,43 @@ pub(crate) fn step_report_dict<'py>(
     dict.set_item("ttft_events", report.ttft_events)?;
     dict.set_item("prefix_hits", report.prefix_hits)?;
     dict.set_item("kv_usage_blocks", report.kv_usage_blocks)?;
+    dict.set_item(
+        "kv_allocated_blocks_total",
+        report.kv_allocated_blocks_total,
+    )?;
+    dict.set_item("kv_released_blocks_total", report.kv_released_blocks_total)?;
+    dict.set_item("kv_cache_evictions_total", report.kv_cache_evictions_total)?;
+    dict.set_item("kv_free_blocks", report.kv_free_blocks)?;
+    dict.set_item("kv_block_tables", report.kv_block_tables)?;
+    dict.set_item("kv_prompt_entries", report.kv_prompt_entries)?;
+    dict.set_item("kv_block_ref_entries", report.kv_block_ref_entries)?;
+    dict.set_item(
+        "kv_live_prefix_index_keys",
+        report.kv_live_prefix_index_keys,
+    )?;
+    dict.set_item(
+        "kv_live_prefix_request_refs",
+        report.kv_live_prefix_request_refs,
+    )?;
+    dict.set_item("kv_cached_blocks", report.kv_cached_blocks)?;
+    dict.set_item(
+        "kv_cached_child_index_keys",
+        report.kv_cached_child_index_keys,
+    )?;
+    dict.set_item("kv_cached_child_edges", report.kv_cached_child_edges)?;
+    dict.set_item("request_active_records", report.request_active_records)?;
+    dict.set_item(
+        "request_terminal_snapshots",
+        report.request_terminal_snapshots,
+    )?;
+    dict.set_item(
+        "request_terminal_snapshot_order",
+        report.request_terminal_snapshot_order,
+    )?;
+    dict.set_item(
+        "request_terminal_snapshot_bytes",
+        report.request_terminal_snapshot_bytes,
+    )?;
     dict.set_item("waiting_requests", report.waiting_requests)?;
     dict.set_item("evictions", report.evictions)?;
     dict.set_item("preempted_requests", report.preempted_requests)?;
