@@ -46,6 +46,17 @@ This per-family quality grade is intentionally distinct from the runtime
 `mlx_lm_delegated` / `llama_cpp`), which records *which backend runs a
 resolved session*, not how well a family is supported.
 
+### Host memory fit (16 GB vs 32 GB+)
+
+| Host class | Practical model choices |
+| --- | --- |
+| **16 GB** (base Mac mini M4 and similar) | One compact **4-bit** pack at a time — e.g. Qwen 3.5 9B AXQ / OptiQ, small embeddings. Prefer short context; do not multi-model. |
+| **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
+| **64 GB+** | Comfortable always-on multi-role local server |
+
+Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
+Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
+
 The current Certified families are `qwen3` (dense and MoE), `qwen3_5` /
 `qwen3_next` (Qwen 3.5/3.6), `qwen3_vl`, `gemma4` / `gemma4_vl`,
 `glm4_moe_lite`, `gpt_oss`, and `deepseek_v3` / `deepseek_v32`. Registered
@@ -56,6 +67,20 @@ when its family label is otherwise Certified — the tier reflects the path that
 actually runs. Unknown family labels resolve to Compatible with the
 manifest-probing caveat: loadability is decided by
 `ArchitectureSpec::from_manifest`, never by name allowlists.
+
+DeepSeek caveats:
+
+- `deepseek_v32` currently runs the shared `DeepseekV3` forward route with
+  dense MLA; V3.2-style sparse-attention indexer tensors, if present in a
+  checkpoint, are not consumed by the runtime. Certified checkpoints are the
+  dense-MLA contract only.
+- `deepseek_v4` (DeepSeek V4 Flash) is a different architecture
+  (hyper-connections, CSA/HCA compressed attention with a learned indexer,
+  sqrtsoftplus + hash routing). A repo-owned AX-native graph has landed and
+  the family is registered **Experimental**: it converts and loads through the
+  AX-native path, but it has no on-hardware validation, benchmark rows, or
+  certification evidence yet, and it is not a support claim. Delegated
+  adapters must not be used to present V4 as supported.
 
 A model moves between tiers by landing evidence, not by renaming:
 
@@ -447,6 +472,7 @@ Experimental direct-support model families:
 | Family | Model ID | Current scope | Notes |
 | --- | --- | --- | --- |
 | DiffusionGemma | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Experimental repo-owned MLX block-diffusion path | Experimental rows live under [Performance Results](PERFORMANCE-RESULTS.md#diffusiongemma); benchmark boundary is first committed 256-token diffusion block, not autoregressive TTFT/decode. See [DiffusionGemma experimental support](DIFFUSIONGEMMA.md). |
+| DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | Experimental repo-owned MLX path: hyper-connections, re-parameterized MLA, CSA/HCA compressor + LID indexer, sqrtsoftplus + hash routing | No on-hardware validation or benchmark evidence yet. ~284B MoE; needs a 256 GB class host (~160 GB at 4-bit) — smaller hosts fail the load memory preflight. MTP/DSpark speculative decode is not wired. Not a support claim. |
 
 All direct-support models use MLX safetensors format with the AX
 `model-manifest.json` descriptor. Adding a new direct-support architecture

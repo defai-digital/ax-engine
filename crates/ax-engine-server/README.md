@@ -8,8 +8,8 @@ Current scope:
 
 - local single-process preview server
 - built entirely on `ax-engine-sdk`
-- native MLX builds fail closed outside the supported M2 Max-or-newer,
-  macOS 26+, 32 GB contract
+- native MLX builds fail closed outside supported Apple Silicon (M2 or newer,
+  macOS 26+; 16 GB light / 32 GB+ full stack)
 - portable `delegated-server` builds omit MLX linkage and retain local
   `mlx_lm.server` and llama.cpp compatibility paths
 - explicit runtime metadata reporting, including `selected_backend`,

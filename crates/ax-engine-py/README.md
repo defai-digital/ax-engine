@@ -23,7 +23,8 @@ Without `uv`, use `python3.11 -m venv .venv`, activate it, and install with
 `python -m pip`. Keep one installation channel active per shell when Homebrew
 is installed too.
 
-Requires macOS 26+, Apple Silicon (M2 Max or newer), Python 3.11+.
+Requires macOS 26+, Apple Silicon (M2 or newer), Python 3.11+. 16 GB is enough
+for compact single models; 32 GB+ for multi-model / larger packs.
 The current macOS arm64 wheel also includes the `ax-engine` orchestration CLI
 plus bundled `ax-engine-server` and `ax-engine-bench` binaries when you need a
 wheel-only install.
@@ -135,7 +136,7 @@ python3 -m pip install --upgrade "ax-engine[multimodal]>=6.13.5,<7"
 ## Requirements
 
 - macOS 26 (Tahoe) or later
-- Apple Silicon — M2 Max / M2 Ultra / M3 / M4 family (32 GB RAM minimum)
+- Apple Silicon — M2 or newer (16 GB light / single compact model; 32 GB+ full stack)
 - Python 3.11+
 
 ## Project

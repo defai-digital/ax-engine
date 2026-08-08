@@ -17,8 +17,9 @@ The current preview server is intentionally narrow:
 
 - single-process local server
 - built entirely on the Rust SDK contract
-- native MLX builds fail closed outside the supported M2 Max-or-newer,
-  macOS 26+, 32 GB contract; Linux uses the explicit delegated-only build
+- native MLX builds fail closed outside supported Apple Silicon (M2 or newer
+  on macOS 26+); 16 GB is fine for compact single models, 32 GB+ for
+  multi-model / larger packs; Linux uses the explicit delegated-only build
 - explicit backend and support-tier reporting
 - multi-model registry: optional concurrent loaded models with per-request
   `model` routing (`POST /v1/model/load` `load_mode=add` / unload) — scoped
@@ -500,8 +501,9 @@ generate the manifest first with:
 cargo run -p ax-engine-core --bin generate-manifest -- /absolute/path/to/model
 ```
 
-The preview server requires a local Apple M2 Max-or-newer host running
-macOS 26 (Tahoe) or later with 32 GB RAM minimum.
+The preview server requires a local Apple Silicon host (M2 or newer) running
+macOS 26 (Tahoe) or later. Compact single models work on 16 GB (for example
+Mac mini M4); plan on 32 GB+ for multi-model serving and larger packs.
 On M1 Macs or unsupported configurations, startup fails closed instead of
 exposing an unsupported partial runtime.
 

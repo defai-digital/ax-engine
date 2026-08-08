@@ -17,8 +17,11 @@ Additional native families (GLM 4.7 Flash, Nemotron Omni, Unlimited-OCR, Whisper
 MiniCPM-V, and others) are documented under
 [Supported Models](docs/SUPPORTED-MODELS.md).
 
-**Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 Max or newer, 32 GB+ unified
-memory).**
+**Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 or newer).** For compact
+single models (for example Qwen 3.5 9B AXQ 4-bit), **16 GB** unified memory is
+enough — including base **Mac mini M4 16 GB**. For multi-model serving, longer
+contexts, and larger packs (27B/35B class), plan on **32 GB+** (64 GB
+recommended).
 
 ## Why AX Engine
 

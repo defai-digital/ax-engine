@@ -9,8 +9,38 @@ boundaries.
 
 ## What hardware does AX Engine support?
 
-AX Engine targets high-memory Apple Silicon Macs running macOS 26 (Tahoe) or
-later.
+AX Engine runs on Apple Silicon Macs with macOS 26 (Tahoe) or later. There are
+two practical tiers: a **light host** for one compact model, and a **full local
+server** envelope for multi-model / larger packs.
+
+### Light host (smaller models, including Mac mini M4 16 GB)
+
+Many users run a base **Mac mini M4 with 16 GB** unified memory. That class is
+a supported **light** configuration for a **single compact 4-bit model** and
+short-to-moderate context — not for multi-model residency or 27B/35B stacks.
+
+| Machine | Memory | Best fit |
+| --- | ---: | --- |
+| Mac mini M4 (base) | 16 GB | One compact chat model (e.g. Qwen 3.5 9B AXQ / OptiQ 4-bit), embeddings, or other small packs |
+| MacBook Air / Pro M3–M4 with 16–24 GB | 16–24 GB | Same light single-model use |
+
+Validated light-host example: **Mac mini M4 / 16 GB** serving
+`AutomatosX` **Qwen 3.5 9B AXQ 4-bit MTP** end-to-end (load + OpenAI chat).
+After load, free memory is tight (~1 GB class) — keep **one model**, avoid long
+context and concurrent large requests.
+
+Good starting downloads on 16 GB:
+
+```text
+ax-engine download ax-qwen3.5-9b          # OptiQ 4-bit MTP (catalog default)
+# or an explicit AXQ 4-bit pack from https://huggingface.co/AutomatosX/models
+ax-engine serve <model-dir-or-alias> --port 31418
+```
+
+Prefer **4-bit** over 6-bit on 16 GB. Skip multi-model (`load_mode=add`), large
+coding packs, and Qwen 3.6 27B/35B unless you upgrade memory.
+
+### Full local server (multi-model / larger models)
 
 | Machine | Minimum spec | Suggested spec |
 | --- | --- | --- |
@@ -18,11 +48,11 @@ later.
 | MacBook Pro 14" / 16" | M2 Max, 32 GB | M3 Max, 96 GB |
 | Mac Studio | M2 Max / M2 Ultra, 32 GB | M4 Max, 96 GB |
 
-Later Pro, Max, and Ultra chip variants are supported when the machine has at
-least 32 GB unified memory. M1, base M2, and smaller-memory machines are outside
-the supported repo-owned MLX runtime contract.
+Use **32 GB+** for multi-model serving, longer contexts, and larger packs
+(Gemma 26B/31B, Qwen 3.6 27B/35B, coder stacks). M1 hosts remain outside the
+repo-owned MLX runtime contract.
 
-For a typical local model stack, start with one of these higher-memory
+For a typical multi-role local stack, start with one of these higher-memory
 configurations:
 
 | Hardware | Recommended memory | Best fit |
@@ -116,15 +146,18 @@ AX Engine v6 is the current serving-oriented runtime line. The active serving
 roadmap and evidence gates live in
 [Roadmap](ROADMAP.md).
 
-## Why does the repo-owned MLX runtime require M2 Max or newer?
+## Why does the repo-owned MLX runtime require recent Apple Silicon?
 
 The repo-owned MLX runtime is a supported performance contract, not only a
-best-effort code path. AX fails closed on M1 and base M2 Apple Silicon because
-current runtime, benchmark, and support claims are scoped to macOS 26
-(Tahoe) or later on Apple M2 Max or newer hosts with 32 GB RAM minimum.
+best-effort code path. AX fails closed on **M1** Apple Silicon. Runtime host
+checks accept **Apple M2 or newer** on macOS 26 (Tahoe)+; published throughput
+and multi-model claims are still scoped to **higher-memory** hosts (**32 GB+**,
+often M2 Max / M4 Pro class). **16 GB** machines (for example base Mac mini M4)
+are intentional for **compact single-model** use — see [What hardware does AX
+Engine support?](#what-hardware-does-ax-engine-support).
 `AX_ALLOW_UNSUPPORTED_HOST=1` is only for internal development or CI bring-up;
-it does not make the host supported and should not be used for published
-benchmark numbers.
+it does not make an unsupported SoC supported and should not be used for
+published benchmark numbers.
 
 Delegated routes are separate. A non-MLX or GGUF workflow can use `llama.cpp`,
 and unsupported MLX text models can use an explicitly configured

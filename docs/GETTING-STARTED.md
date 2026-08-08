@@ -287,16 +287,21 @@ For the current crate layering and dependency-boundary guidance, see
 ## Requirements
 
 - macOS 26 (Tahoe) or later
-- Apple Silicon M2 Max or newer with 32 GB RAM minimum
+- Apple Silicon **M2 or newer**
+  - **Light host (16 GB):** base Mac mini M4 and similar — one compact 4-bit
+    model (for example Qwen 3.5 9B AXQ / OptiQ), short-to-moderate context
+  - **Full local server (32 GB+):** multi-model serving, longer contexts, and
+    larger packs (27B/35B class); **64 GB** recommended for a comfortable stack
 - Rust 1.88+ for source builds
 - `mlx` for source-built MLX runtime binaries
 - a running `mlx_lm.server` for `mlx_lm_delegated`
 - a llama.cpp server or CLI target for `llama_cpp`
 
-Validated machines include Mac Studio (M2 Max / M2 Ultra and later), MacBook
-Pro with M2 Max or newer, Mac Mini M4 Pro, and Mac Studio / Mac Pro with M4
-Ultra or M5 Ultra. Macs with less than 32 GB RAM are outside the tested
-performance envelope.
+Validated machines include **Mac mini M4 16 GB** (compact single-model smoke),
+Mac Studio (M2 Max / M2 Ultra and later), MacBook Pro with M2 Max or newer,
+Mac Mini M4 Pro 32 GB+, and Mac Studio / Mac Pro with M4 Ultra or M5 Ultra.
+Published multi-model and large-pack performance evidence is still gathered on
+**32 GB+** hosts.
 
 Runtime surfaces fail closed when a backend is unavailable instead of silently
 pretending support exists.
