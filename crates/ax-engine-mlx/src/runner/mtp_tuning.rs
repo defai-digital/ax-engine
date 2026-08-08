@@ -120,6 +120,21 @@ pub(super) fn mtp_bypass_min_samples() -> u32 {
     })
 }
 
+/// Minimum remaining generation budget (tokens) required to schedule MTP draft.
+///
+/// When fewer than this many tokens remain on the request budget, draft/verify
+/// fixed cost cannot amortize (ADR-020 short-output policy). Default **16**.
+/// Formal harnesses that must force MTP set `AX_MLX_MTP_MIN_REMAINING_TOKENS=0`.
+pub(super) fn mtp_min_remaining_tokens() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_MIN_REMAINING_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(16)
+    })
+}
+
 /// EWMA MTP-only acceptance rate below which the per-request MTP bypass fires.
 ///
 /// When the MTP head's own acceptance (cascade-corrected, isolating MTP from

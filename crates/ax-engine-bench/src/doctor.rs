@@ -78,12 +78,22 @@ impl DoctorStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct DoctorInstallReport {
+    /// Workspace package version (`CARGO_PKG_VERSION`) of this binary.
+    pub(crate) version: String,
+    /// How the binary was resolved for workflow purposes (e.g. installed_tools).
+    pub(crate) mode: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct DoctorReport {
     pub(crate) schema_version: String,
     pub(crate) mlx_target: String,
     pub(crate) status: DoctorStatus,
     pub(crate) mlx_runtime_ready: bool,
     pub(crate) bringup_allowed: bool,
+    /// Install provenance used by AXQuant A/B release binding.
+    pub(crate) install: DoctorInstallReport,
     pub(crate) workflow: DoctorWorkflowReport,
     pub(crate) runtime_assets: DoctorRuntimeAssetsReport,
     pub(crate) model_artifacts: DoctorModelArtifactsReport,
@@ -418,6 +428,10 @@ fn build_doctor_report_with_runtime_assets(
         status,
         mlx_runtime_ready,
         bringup_allowed,
+        install: DoctorInstallReport {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            mode: "ax-engine-bench".to_string(),
+        },
         workflow: DoctorWorkflowReport::unknown(),
         runtime_assets: runtime_assets.clone(),
         model_artifacts,
