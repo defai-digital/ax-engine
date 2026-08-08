@@ -2992,19 +2992,30 @@ fn load_mtp(
     let shared_up_proj = mtp_take_weight(name_map, &format!("{p}.mlp.shared_expert.up_proj"), bits);
     let shared_down_proj =
         mtp_take_weight(name_map, &format!("{p}.mlp.shared_expert.down_proj"), bits);
+    // Routed-expert layouts (prefer split, fall back to MLX fused packing):
+    //   1) mlp.{gate,up,down}_proj stacked experts (legacy / HF-style)
+    //   2) mlp.experts.gate_up_proj + mlp.experts.down_proj (Qwen3.5/3.6 MoE
+    //      A3B sidecars from axquant; matches main-model FfnGateUpExpsPacked)
     let gate_exps = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"), bits);
     let up_exps = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"), bits);
-    let down_exps = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits);
+    let down_exps = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits).or_else(|| {
+        mtp_take_weight(name_map, &format!("{p}.mlp.experts.down_proj"), bits)
+    });
+    let gate_up_exps_packed = if gate_exps.is_none() && up_exps.is_none() {
+        mtp_take_weight(name_map, &format!("{p}.mlp.experts.gate_up_proj"), bits)
+    } else {
+        None
+    };
     let has_moe_ffn = router_proj.is_some();
     let (gate_proj, up_proj, down_proj, gate_exps, up_exps, down_exps) = if has_moe_ffn {
         (None, None, None, gate_exps, up_exps, down_exps)
     } else {
         (gate_exps, up_exps, down_exps, None, None, None)
     };
+    let moe_experts_complete = down_exps.is_some()
+        && (gate_up_exps_packed.is_some() || (gate_exps.is_some() && up_exps.is_some()));
     if has_moe_ffn
-        && (gate_exps.is_none()
-            || up_exps.is_none()
-            || down_exps.is_none()
+        && (!moe_experts_complete
             || shared_gate_proj.is_none()
             || shared_up_proj.is_none()
             || shared_down_proj.is_none())
@@ -3110,7 +3121,7 @@ fn load_mtp(
         shared_gate_proj,
         shared_up_proj,
         shared_down_proj,
-        gate_up_exps_packed: None,
+        gate_up_exps_packed,
         gate_exps,
         up_exps,
         down_exps,
