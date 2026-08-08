@@ -1556,6 +1556,9 @@ impl MlxRunner {
                 .map(|_| 1),
             qwen_linear_attention: cfg.linear_attention.is_some(),
             qwen_linear_exact_enabled: qwen_linear_mtp_exact_enabled,
+            // ADR-020: product default stays direct-fallback for Qwen linear
+            // until Tier 2 promotion; formal harness opts in explicitly.
+            qwen_linear_certification_candidate: qwen_linear_mtp_certification_candidate_from_env(),
         });
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
@@ -1749,7 +1752,8 @@ impl MlxRunner {
                 mtp_depth = weights.mtp.as_ref().map_or(0, |head| head.max_depth),
                 exact_profile_eligible = qwen_linear_mtp_exact_eligible,
                 exact_profile_selection = qwen_linear_mtp_exact_selection.route_code(),
-                "Qwen linear-attention MTP is not exact-profile eligible; using direct decode",
+                certification_candidate = mtp_model_policy.is_qwen_linear_certification_candidate(),
+                "Qwen linear-attention MTP uncertified or ineligible; using direct decode (ADR-020)",
             );
         } else if mtp_model_policy.has_conflicting_drafters() {
             tracing::error!(
@@ -8158,13 +8162,13 @@ impl MlxRunner {
                 // rejected speculative token. Verify on a clone; adopt it only
                 // when the full draft is accepted, otherwise recompute the
                 // committed prefix on the original cache.
-                // The Qwen exact profile keeps its invariant-projection
-                // arithmetic enabled, but recurrent linear-attention state is
-                // currently committed only through singleton replay. A formal
-                // greedy A/B check found a deterministic late-token mismatch
-                // in the otherwise eligible multi-token checkpoint path. Do
-                // not adopt or restore a batched verifier cache until a
-                // sequence-level equivalence proof covers that path.
+                // Exact profile + drafts within QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS
+                // use the lazy committed-prefix checkpoint (full accept adopts
+                // the verify cache; complete miss restores; partial recompute).
+                // AX_MLX_MTP_LINEAR_EXACT_REPLAY!=0 is a kill switch that forces
+                // singleton replay (diagnostic / fail-closed). ADR-020: keep
+                // the kill switch available, but formal Tier 2 measures with
+                // the checkpoint path (env=0) that previously cleared 1.20×.
                 let replay_kill_switch = std::env::var("AX_MLX_MTP_LINEAR_EXACT_REPLAY")
                     .map(|value| value != "0")
                     .unwrap_or(false);
@@ -8851,6 +8855,33 @@ impl MlxRunner {
                 },
                 &cfg,
             );
+        }
+
+        // ADR-020 short remaining-budget bypass: draft/verify fixed cost cannot
+        // amortize when few tokens remain. Formal harnesses that must force MTP
+        // set AX_MLX_MTP_MIN_REMAINING_TOKENS=0. Latched for the rest of the
+        // request because remaining budget only decreases.
+        if !state.mtp_bypassed {
+            let min_remaining = mtp_min_remaining_tokens();
+            if min_remaining > 0
+                && let Some(request_ctx) = ctx
+            {
+                let remaining = request_ctx
+                    .max_output_tokens
+                    .saturating_sub(request_ctx.generated_len);
+                if remaining < min_remaining {
+                    state.mtp_bypassed = true;
+                    state.mtp_telemetry.record_short_budget_bypass();
+                    state.mtp_pending_draft.clear();
+                    state.mtp_pending_draft_lazy = None;
+                    state.mtp_pending_draft_log_probs.clear();
+                    state.mtp_pending_draft_distributions.clear();
+                    state.mtp_pending_draft_sources.clear();
+                    state.mtp_skip_logits = None;
+                    state.mtp_skip_argmax = None;
+                    state.mtp_skip_hidden = None;
+                }
+            }
         }
 
         // Per-request MTP bypass: once MTP-only acceptance EWMA has enough
@@ -10223,10 +10254,12 @@ fn select_linear_mtp_correction_token(
     }
 }
 
-/// Maximum draft length for which the exact arithmetic implementation is
-/// available. Recurrent-state commits still use singleton replay for every
-/// draft length until the multi-token checkpoint path has sequence-level
-/// equivalence coverage.
+/// Maximum draft length served by the exact lazy-checkpoint path.
+///
+/// The invariant-projection arithmetic contract is validated for a 1-4 token
+/// verifier (up to three drafts plus the committed token). Longer drafts keep
+/// fail-closed singleton replay. `AX_MLX_MTP_LINEAR_EXACT_REPLAY!=0` forces
+/// singleton replay at any depth (diagnostic kill switch).
 const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
 
 const fn qwen_linear_mtp_exact_scope_for_request(
@@ -10282,14 +10315,17 @@ fn qwen_linear_mtp_exact_model_eligible(
 }
 
 fn linear_mtp_requires_singleton_replay(
-    _pending_len: usize,
-    _exact_profile_enabled: bool,
-    _replay_kill_switch: bool,
+    pending_len: usize,
+    exact_profile_enabled: bool,
+    replay_kill_switch: bool,
 ) -> bool {
-    // Fail closed: the environment flag remains accepted for compatibility,
-    // but `0` may not re-enable a recurrent-state path which has failed an
-    // exact greedy certification check.
-    true
+    // Exact profile drafts within the validated verifier width ride the lazy
+    // checkpoint path (fast accept/restore). Kill switch, empty drafts, or
+    // longer drafts keep fail-closed singleton recompute.
+    pending_len == 0
+        || pending_len > QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS
+        || !exact_profile_enabled
+        || replay_kill_switch
 }
 
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
@@ -12054,12 +12090,14 @@ mod tests {
     }
 
     #[test]
-    fn linear_mtp_checkpoint_fails_closed_to_singleton_replay() {
-        assert!(linear_mtp_requires_singleton_replay(1, true, false));
+    fn linear_mtp_checkpoint_uses_exact_profile_within_verified_depth() {
+        // Depth 1-3 + exact + no kill switch → checkpoint path (not singleton).
+        assert!(!linear_mtp_requires_singleton_replay(1, true, false));
+        assert!(!linear_mtp_requires_singleton_replay(2, true, false));
+        assert!(!linear_mtp_requires_singleton_replay(3, true, false));
+        // Kill switch, non-exact, empty, or depth>3 → singleton recompute.
         assert!(linear_mtp_requires_singleton_replay(1, false, false));
         assert!(linear_mtp_requires_singleton_replay(1, true, true));
-        assert!(linear_mtp_requires_singleton_replay(2, true, false));
-        assert!(linear_mtp_requires_singleton_replay(3, true, false));
         assert!(linear_mtp_requires_singleton_replay(4, true, false));
         assert!(linear_mtp_requires_singleton_replay(0, true, false));
         assert!(linear_mtp_requires_singleton_replay(2, false, false));
@@ -18089,6 +18127,8 @@ mod tests {
         // Default min_samples is 8: enough EWMA stabilization without
         // excessive warm-up delay.
         assert_eq!(mtp_bypass_min_samples(), 8);
+        // ADR-020 default short remaining-budget floor (formal harnesses use 0).
+        assert_eq!(mtp_min_remaining_tokens(), 16);
         // Default threshold is 0.50: MTP is bypassed only when acceptance
         // is clearly worse than break-even.
         let threshold = mtp_bypass_threshold();

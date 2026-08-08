@@ -17,6 +17,9 @@ pub(super) struct MtpTelemetry {
     pub(super) proposal_law_conflicts: u32,
     pub(super) optimistic_steps: u32,
     pub(super) direct_fallback_steps: u32,
+    /// Steps where MTP was skipped because remaining output budget was below
+    /// `AX_MLX_MTP_MIN_REMAINING_TOKENS` (ADR-020).
+    pub(super) short_budget_bypass_steps: u32,
     pub(super) residual_correction_tokens: u32,
     pub(super) draft_tokens: u32,
     pub(super) accepted_tokens: u32,
@@ -152,6 +155,10 @@ impl MtpTelemetry {
     pub(super) fn record_direct_fallback(&mut self) {
         self.record_correctness_mode(MtpCorrectnessMode::DirectFallback, MtpProposalLaw::Unknown);
         self.direct_fallback_steps = self.direct_fallback_steps.saturating_add(1);
+    }
+
+    pub(super) fn record_short_budget_bypass(&mut self) {
+        self.short_budget_bypass_steps = self.short_budget_bypass_steps.saturating_add(1);
     }
 
     pub(super) fn record_optimistic_step(&mut self) {
@@ -479,6 +486,9 @@ impl MtpTelemetry {
         self.direct_fallback_steps = self
             .direct_fallback_steps
             .saturating_add(other.direct_fallback_steps);
+        self.short_budget_bypass_steps = self
+            .short_budget_bypass_steps
+            .saturating_add(other.short_budget_bypass_steps);
         self.residual_correction_tokens = self
             .residual_correction_tokens
             .saturating_add(other.residual_correction_tokens);
@@ -729,6 +739,10 @@ impl MtpTelemetry {
             ("ax_mtp_proposal_law_conflicts", self.proposal_law_conflicts),
             ("ax_mtp_optimistic_steps", self.optimistic_steps),
             ("ax_mtp_direct_fallback_steps", self.direct_fallback_steps),
+            (
+                "ax_mtp_short_budget_bypass_steps",
+                self.short_budget_bypass_steps,
+            ),
             (
                 "ax_mtp_residual_correction_tokens",
                 self.residual_correction_tokens,
