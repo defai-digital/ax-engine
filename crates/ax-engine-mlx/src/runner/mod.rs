@@ -8607,111 +8607,45 @@ impl MlxRunner {
                     && self.weights.deepseek_v4_nextn.is_none()
                     && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
                 if gemma_sequential_oracle {
-                    // Multi-token on a production-cache clone (pure ring cannot
-                    // trim overshoot on the live cache). Full accept adopts the
-                    // clone for speed; any reject falls back to pure direct
-                    // double-buffer commit so greedy A/B stays exact.
+                    // Verify drafts against the pure direct double-buffer
+                    // pipeline (same production path as empty-draft steps and
+                    // MTP-off). forward_argmax sequential alone still desynced
+                    // from double-buffer + pure-ring geometry under formal A/B.
                     let verify_forward_started = Instant::now();
-                    let mut verify_cache = state.cache.clone();
-                    let (logits_mt, post_norm_all) = forward_all_positions_with_post_norm(
-                        &self.cfg,
-                        &self.weights,
-                        &verify_input,
-                        &mut verify_cache,
-                        token_offset,
-                    );
-                    verify_cache.advance(verify_len);
-                    let predicted_arr = argmax(&logits_mt, None);
-                    {
-                        let kv_refs = verify_cache.collect_eval_refs();
-                        let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
-                        targets.push(&predicted_arr);
-                        targets.push(&post_norm_all);
-                        targets.extend(kv_refs);
-                        eval(&targets);
+                    let final_by_max = false;
+                    let mut ac = 0usize;
+                    let mut predicted: Vec<u32> = Vec::with_capacity(pending.len() + 1);
+                    let mut correction = 0u32;
+                    for &draft in &pending {
+                        let tok = self.run_direct_pipeline_decode(
+                            state,
+                            verify_input[0],
+                            final_by_max,
+                            false,
+                        );
+                        predicted.push(tok);
+                        if tok != draft {
+                            correction = tok;
+                            break;
+                        }
+                        ac += 1;
+                        correction = tok;
+                    }
+                    let all_accepted = ac == pending.len();
+                    if all_accepted {
+                        // Bonus / correction after full accept.
+                        correction = self.run_direct_pipeline_decode(
+                            state,
+                            verify_input[0],
+                            final_by_max,
+                            false,
+                        );
+                        predicted.push(correction);
                     }
                     mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                    let mt_predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
-                    let mt_ac = crate::ngram_accel::greedy_draft_target_accept_count(
-                        &pending,
-                        &mt_predicted,
-                    );
-                    let accept_started = Instant::now();
-                    let (ac, all_accepted, correction, predicted, draft_hidden, logits_all) =
-                        if mt_ac == pending.len() && !pending.is_empty() {
-                            // Full multi-token accept: adopt clone (no trim).
-                            // Bonus token is mt_predicted[pending.len()].
-                            let correction = mt_predicted
-                                .get(pending.len())
-                                .copied()
-                                .unwrap_or(0);
-                            state.cache = verify_cache;
-                            state.pending_direct = None;
-                            let draft_hidden = slice_post_norm_hidden(
-                                &post_norm_all,
-                                mt_ac,
-                                self.cfg.hidden_size,
-                            );
-                            let logits_all = mlx_sys::zeros(
-                                &[1_i32, vocab],
-                                mlx_sys::MlxDtype::Float32,
-                                None,
-                            );
-                            (
-                                mt_ac,
-                                true,
-                                correction,
-                                mt_predicted,
-                                draft_hidden,
-                                logits_all,
-                            )
-                        } else {
-                            // Reject path: pure direct (exact). Drop clone.
-                            drop(verify_cache);
-                            let final_by_max = false;
-                            let mut ac = 0usize;
-                            let mut predicted: Vec<u32> =
-                                Vec::with_capacity(pending.len() + 1);
-                            let mut correction = 0u32;
-                            for &draft in &pending {
-                                let tok = self.run_direct_pipeline_decode(
-                                    state,
-                                    verify_input[0],
-                                    final_by_max,
-                                    false,
-                                );
-                                predicted.push(tok);
-                                if tok != draft {
-                                    correction = tok;
-                                    break;
-                                }
-                                ac += 1;
-                                correction = tok;
-                            }
-                            let all_accepted = ac == pending.len();
-                            if all_accepted {
-                                correction = self.run_direct_pipeline_decode(
-                                    state,
-                                    verify_input[0],
-                                    final_by_max,
-                                    false,
-                                );
-                                predicted.push(correction);
-                            }
-                            let draft_hidden = slice_post_norm_hidden(
-                                &post_norm_all,
-                                ac,
-                                self.cfg.hidden_size,
-                            );
-                            let logits_all = mlx_sys::zeros(
-                                &[1_i32, vocab],
-                                mlx_sys::MlxDtype::Float32,
-                                None,
-                            );
-                            (ac, all_accepted, correction, predicted, draft_hidden, logits_all)
-                        };
-                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
                     mtp_timings.verify_eval_wall_us = 0;
+                    let accept_started = Instant::now();
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
                     let rejected_count = pending.len() - ac;
                     if rejected_count > 0 {
                         let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
@@ -8726,6 +8660,15 @@ impl MlxRunner {
                         state.mtp_decode_count = new_mtp_len;
                     }
                     mtp_timings.rollback_wall_us = 0;
+                    // Direct pipeline already owns pending_direct; keep it.
+                    let hidden_size = self.cfg.hidden_size;
+                    let draft_hidden = mlx_sys::zeros(
+                        &[1_i32, 1, hidden_size as i32],
+                        mlx_sys::MlxDtype::Bfloat16,
+                        None,
+                    );
+                    let logits_all =
+                        mlx_sys::zeros(&[1_i32, vocab], mlx_sys::MlxDtype::Float32, None);
                     (
                         logits_all,
                         draft_hidden,
