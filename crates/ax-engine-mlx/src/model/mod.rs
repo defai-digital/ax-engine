@@ -1731,12 +1731,14 @@ pub fn forward_all_positions_with_post_norm_ids(
             // Cache refs travel with the hidden state: a linear-attention
             // layer's updated recurrent state is a side output that the
             // hidden state does not always depend on, so submitting `hidden`
-            // alone would leave that work unscheduled.
+            // alone would leave that work unscheduled. Mirrors the
+            // cache-ref batching used by cache-only prefill chunks
+            // (`async_eval_kv_refs`) and the verify terminal `eval`.
             let cache_refs = cache.collect_eval_refs();
             let mut refs: Vec<&MlxArray> = Vec::with_capacity(1 + cache_refs.len());
             refs.push(&hidden);
             refs.extend(cache_refs);
-            mlx_sys::async_eval(&refs);
+            async_eval(&refs);
         }
     }
 

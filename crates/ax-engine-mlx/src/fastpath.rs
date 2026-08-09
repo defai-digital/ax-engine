@@ -174,12 +174,16 @@ pub fn batched_prefill_token_budget_override() -> Option<u32> {
 /// changes no operand, shape, or reduction order. Only the synchronisation
 /// point moves.
 ///
-/// Pair it with a raised `MLX_MAX_MB_PER_BUFFER` on MoE checkpoints. MLX
-/// charges a `gather_qmm`'s full expert stack against its per-command-buffer
-/// byte cap, so at the default cap every MoE layer already forces a
-/// command-buffer split and the submit degenerates into a barrier — which
-/// would make chunked submission slower, not faster. See
-/// `docs/performance/gather-qmm-async-serialization.md`.
+/// **Buffer caps:** MLX charges a `gather_qmm`'s full expert stack against
+/// `MLX_MAX_MB_PER_BUFFER`, so a too-low cap can split every MoE layer into
+/// its own command buffer and blunt the overlap (see
+/// `docs/performance/gather-qmm-async-serialization.md`). Do **not** raise
+/// the cap solely to improve the speculative/direct A/B ratio on Qwen3.6
+/// MoE: raising it lifts direct decode as well (and can regress prefill on
+/// the `qwen3_5` family, which is why auto buffer caps exclude that family).
+/// Measure absolute tok/s with the product buffer policy you already ship.
+///
+/// Measured sweet spot on 35B-A3B AXQ: interval **8** (default remains off).
 pub fn mtp_verify_submit_layer_interval() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED.get_or_init(|| {
