@@ -10827,7 +10827,7 @@ fn truncate_sampled_tokens_for_stop(
 /// `finish_reason=stop`). Does not invent an EOS token id. Distinct from
 /// `no_repeat_ngram_size` logit bans.
 fn apply_loop_detection_stop(
-    sampled_tokens: Vec<u32>,
+    mut sampled_tokens: Vec<u32>,
     stop_reason: Option<StopReason>,
     generated_history: &[u32],
     loop_cfg: Option<ax_engine_core::LoopDetectionConfig>,
@@ -10838,12 +10838,17 @@ fn apply_loop_detection_stop(
     let Some(cfg) = loop_cfg.filter(|c| c.is_enabled()) else {
         return (sampled_tokens, stop_reason);
     };
-    let mut probe =
-        Vec::with_capacity(generated_history.len().saturating_add(sampled_tokens.len()));
+    // Multi-token MTP can cross the loop threshold mid-batch. Truncate to the
+    // shortest prefix that triggers detection so MTP-on matches single-token
+    // direct decode (which stops on the token that first completes the loop).
+    let mut probe = Vec::with_capacity(generated_history.len().saturating_add(1));
     probe.extend_from_slice(generated_history);
-    probe.extend_from_slice(&sampled_tokens);
-    if ax_engine_core::detects_loop(&probe, cfg) {
-        return (sampled_tokens, Some(StopReason::LoopDetected));
+    for index in 0..sampled_tokens.len() {
+        probe.push(sampled_tokens[index]);
+        if ax_engine_core::detects_loop(&probe, cfg) {
+            sampled_tokens.truncate(index + 1);
+            return (sampled_tokens, Some(StopReason::LoopDetected));
+        }
     }
     (sampled_tokens, stop_reason)
 }
@@ -12372,6 +12377,25 @@ mod tests {
         // When mtp_requested is wrongly left true, the *predicate* fails, which
         // is why decode_one also forces pipeline from disable_ngram alone.
         assert!(!should_use_session_direct_pipeline(true, true, true, true));
+    }
+
+    #[test]
+    fn loop_detection_truncates_multi_token_batch_at_first_trigger() {
+        // Pattern of period 2, min_count 4 → needs 8 tokens. History has 6;
+        // a multi-token MTP batch of 4 would overshoot if kept whole.
+        let cfg = ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT;
+        let history = vec![10u32, 20, 10, 20, 10, 20];
+        let batch = vec![10u32, 20, 10, 20]; // 1st+2nd complete 4×(10,20)
+        let (kept, reason) = apply_loop_detection_stop(batch, None, &history, Some(cfg));
+        assert_eq!(kept, vec![10u32, 20], "stop at the token that first completes the loop");
+        assert!(matches!(reason, Some(StopReason::LoopDetected)));
+        // History of 7 already has 3 full pairs + one half; the next 20 completes
+        // the 4th pair. Single-token path keeps that completing token.
+        let history7 = vec![10u32, 20, 10, 20, 10, 20, 10];
+        let (kept1, reason1) =
+            apply_loop_detection_stop(vec![20u32], None, &history7, Some(cfg));
+        assert_eq!(kept1, vec![20u32]);
+        assert!(matches!(reason1, Some(StopReason::LoopDetected)));
     }
 
     #[test]
