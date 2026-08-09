@@ -420,6 +420,33 @@ pub(crate) fn full_precision_attention(
         None if seq > 1 => ScaledDotProductAttentionMask::Causal,
         None => ScaledDotProductAttentionMask::None,
     };
+    // Multi-token teacher-forced verify (seq > 1) accumulates bf16 SDPA drift
+    // vs singleton pure-direct decode; near-ties (Gemma period-6 cycle break)
+    // flip argmax. Upcast Q/K/V for the SDPA, then restore the input dtype.
+    if seq > 1 && fastpath::multi_token_f32_attention_enabled() {
+        let q_dtype = q_rope.dtype();
+        let q = if q_dtype != MlxDtype::Float32 {
+            astype(q_rope, MlxDtype::Float32, None)
+        } else {
+            q_rope.clone()
+        };
+        let k = if cached_k.dtype() != MlxDtype::Float32 {
+            astype(cached_k, MlxDtype::Float32, None)
+        } else {
+            cached_k.clone()
+        };
+        let v = if cached_v.dtype() != MlxDtype::Float32 {
+            astype(cached_v, MlxDtype::Float32, None)
+        } else {
+            cached_v.clone()
+        };
+        let out =
+            scaled_dot_product_attention_with_mask(&q, &k, &v, query_scale, mask, None);
+        if q_dtype != MlxDtype::Float32 {
+            return astype(&out, q_dtype, None);
+        }
+        return out;
+    }
     scaled_dot_product_attention_with_mask(q_rope, cached_k, cached_v, query_scale, mask, None)
 }
 

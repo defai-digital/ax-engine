@@ -740,8 +740,60 @@ env_flag_default_on!(
     /// media-overlay masks span the full context (media blocks may attend
     /// beyond the window), and the view width follows the hoisted mask, so
     /// those forwards keep full views.
-    multi_token_window_views_enabled,
+    multi_token_window_views_enabled_env,
     "AX_MLX_MULTI_TOKEN_WINDOW_VIEWS"
+);
+
+/// Thread-local override for multi-token window views (None = use env default).
+/// Used by Gemma assistant-MTP greedy verify to force full-context views so
+/// long-prompt agent-coding matches sequential pure-direct at the sliding ring.
+thread_local! {
+    static MULTI_TOKEN_WINDOW_VIEWS_SCOPE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Scoped override for [`multi_token_window_views_enabled`].
+#[must_use]
+pub(crate) struct MultiTokenWindowViewsScope {
+    previous: Option<bool>,
+}
+
+impl Drop for MultiTokenWindowViewsScope {
+    fn drop(&mut self) {
+        MULTI_TOKEN_WINDOW_VIEWS_SCOPE.with(|c| c.set(self.previous));
+    }
+}
+
+/// Force multi-token window views on/off for the current thread until drop.
+pub(crate) fn scoped_multi_token_window_views(enabled: bool) -> MultiTokenWindowViewsScope {
+    let previous = MULTI_TOKEN_WINDOW_VIEWS_SCOPE.with(|c| {
+        let previous = c.get();
+        c.set(Some(enabled));
+        previous
+    });
+    MultiTokenWindowViewsScope { previous }
+}
+
+/// Whether multi-token sliding layers use the retained window view.
+///
+/// Thread-local scope (Gemma assistant-MTP exact path) overrides the env default.
+pub fn multi_token_window_views_enabled() -> bool {
+    MULTI_TOKEN_WINDOW_VIEWS_SCOPE.with(|c| {
+        c.get()
+            .unwrap_or_else(multi_token_window_views_enabled_env)
+    })
+}
+
+env_flag_default_on!(
+    /// `AX_MLX_MULTI_TOKEN_F32_ATTENTION` — upcast Q/K/V to f32 for SDPA on
+    /// multi-token forwards (`seq > 1`) so teacher-forced verify stays closer
+    /// to sequential singleton decode under bf16 accumulation drift.
+    ///
+    /// **Default: ON** for Gemma assistant-MTP Tier 2 greedy exactness
+    /// (period-6 cycle-break near-ties). Kill-switch via
+    /// `AX_MLX_MULTI_TOKEN_F32_ATTENTION=0`. Singleton decode (`seq == 1`) is
+    /// unchanged.
+    multi_token_f32_attention_enabled,
+    "AX_MLX_MULTI_TOKEN_F32_ATTENTION"
 );
 
 env_flag!(

@@ -7853,11 +7853,9 @@ impl MlxRunner {
         use mlx_sys::{argmax, eval};
 
         // Gemma assistant-MTP greedy exact path with no pending draft: pure
-        // direct double-buffer (matches MTP-off / AX_NO_SPEC). Multi-token
-        // verify for pending drafts uses a production-cache clone: full accept
-        // adopts the clone for speed; any reject falls back to pure direct.
-        // Empty-draft pure-direct only in sequential-oracle mode (exact A/B).
-        // With SEQUENTIAL_ORACLE=0 multi-token owns every step so production KV
+        // direct double-buffer (matches MTP-off / AX_NO_SPEC). Empty-draft
+        // pure-direct only in sequential-oracle mode (exact A/B). With
+        // SEQUENTIAL_ORACLE=0 multi-token owns every step so production KV
         // is never mixed with pure-direct mid-stream.
         let gemma_greedy_exact = sampling.temperature <= 0.0
             && self.gemma4_assistant_mtp.is_some()
@@ -8621,6 +8619,8 @@ impl MlxRunner {
                 // SEQUENTIAL_ORACLE=0 → multi-token full-accept only; pure-direct
                 // on reject (avoids multi-token pos0 contamination, smoke18 t0)
                 // and when history is looping (smoke18 t4 cycle false-accept).
+                // SEQUENTIAL_ORACLE=1 → always pure-direct (exact, ~0.91×).
+                // SEQUENTIAL_ORACLE=0 → pure multi-token always-adopt (smoke18).
                 let force_pure_direct =
                     crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
                 let gemma_sequential_oracle = gemma_assistant_draft && force_pure_direct;
@@ -8692,23 +8692,21 @@ impl MlxRunner {
                         predicted,
                     )
                 } else if gemma_multitoken_adopt {
-                    // Pure multi-token (smoke18): clone, accept/trim, adopt.
-                    // Formal general long clears ≥1.20×/≥1.10×; remaining
-                    // exactness gaps are loop-continuation false accepts
-                    // (first_diff@16 cycle) and rare early breaks.
+                    // In-place multi-token + f32 SDPA always-adopt.
+                    // formal4: 12B6 general + all 31B profiles release_ready.
                     let verify_forward_started = Instant::now();
-                    let mut verify_cache = state.cache.clone();
+                    state.pending_direct = None;
                     let (logits_mt, post_norm_all) = forward_all_positions_with_post_norm(
                         &self.cfg,
                         &self.weights,
                         &verify_input,
-                        &mut verify_cache,
+                        &mut state.cache,
                         token_offset,
                     );
-                    verify_cache.advance(verify_len);
+                    state.cache.advance(verify_len);
                     let predicted_arr = argmax(&logits_mt, None);
                     {
-                        let kv_refs = verify_cache.collect_eval_refs();
+                        let kv_refs = state.cache.collect_eval_refs();
                         let mut targets: Vec<&MlxArray> =
                             Vec::with_capacity(2 + kv_refs.len());
                         targets.push(&predicted_arr);
@@ -8726,9 +8724,12 @@ impl MlxRunner {
                     let all_accepted = ac == pending.len();
                     let correction = predicted.get(ac).copied().unwrap_or(0);
                     let committed_len = token_offset + 1 + ac;
-                    let _ = verify_cache.trim_to(committed_len);
-                    state.cache = verify_cache;
-                    state.pending_direct = None;
+                    if !state.cache.trim_to(committed_len) {
+                        tracing::warn!(
+                            committed_len,
+                            "Gemma multi-token production trim refused"
+                        );
+                    }
                     mtp_timings.accept_wall_us = elapsed_us(accept_started);
                     mtp_timings.verify_eval_wall_us = 0;
                     let rejected_count = pending.len() - ac;
@@ -11012,6 +11013,7 @@ fn truncate_sampled_tokens_for_stop(
 /// Keeps emitted tokens and sets [`StopReason::LoopDetected`] (maps to OpenAI
 /// `finish_reason=stop`). Does not invent an EOS token id. Distinct from
 /// `no_repeat_ngram_size` logit bans.
+
 
 fn apply_loop_detection_stop(
     mut sampled_tokens: Vec<u32>,
