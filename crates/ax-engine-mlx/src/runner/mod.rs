@@ -8612,6 +8612,11 @@ impl MlxRunner {
                         state.mtp_decode_count = new_mtp_len;
                     }
                     mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    // Sequential commits advanced the production cache outside
+                    // the double-buffer direct pipeline. Drop any pending direct
+                    // lazy token so a later empty-draft direct fallthrough does
+                    // not continue a desynced pipeline (would break greedy A/B).
+                    state.pending_direct = None;
                     // Placeholder logits: greedy tail sampling returns
                     // correction_argmax_tok without reading the buffer.
                     let logits_all =
@@ -8759,6 +8764,10 @@ impl MlxRunner {
                         state.mtp_decode_count = new_mtp_len;
                     }
                     mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    // Multi-token verify advanced production KV outside the
+                    // double-buffer direct pipeline; drop any pending direct
+                    // token so empty-draft fallthrough cannot desync.
+                    state.pending_direct = None;
                     let draft_hidden =
                         slice_post_norm_hidden(&post_norm_all, ac, self.mtp_draft_hidden_width());
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
@@ -9814,12 +9823,22 @@ impl MlxRunner {
         // if the engine's deterministic-argmax bit was not latched (bench
         // requests often omit `deterministic: true` and inherit a non-det
         // session default while still sending temperature=0).
-        if should_bootstrap_direct_pipeline(
+        //
+        // Gemma assistant-MTP greedy exact path (sequential oracle, default ON)
+        // must prime the same way: empty-draft steps fall through to
+        // run_direct_pipeline_decode, and without this bootstrap they diverge
+        // from MTP-off pure direct (formal 12B trial-6 shape).
+        let gemma_exact_direct_bootstrap = self.gemma4_assistant_mtp.is_some()
+            && self.weights.deepseek_v4_nextn.is_none()
+            && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
+            && is_greedy;
+        if (should_bootstrap_direct_pipeline(
             self.disable_ngram_acceleration,
             state.ngram_acceleration_disabled_for_request,
             self.has_mtp(),
             mtp_uses_direct_pipeline,
-        ) && (is_greedy || (self.disable_ngram_acceleration && temperature <= 0.0))
+        ) || gemma_exact_direct_bootstrap)
+            && (is_greedy || (self.disable_ngram_acceleration && temperature <= 0.0))
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token
         {
