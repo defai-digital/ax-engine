@@ -92,7 +92,8 @@ use crate::mtp_adaptive_gate::{
 use crate::ngram_accel::{
     NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
     classify_prompt_class, ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
-    recompute_committed_prefix_with_argmax, single_decode_with_sampling_buffers,
+    recompute_committed_prefix_with_argmax, sequential_greedy_mtp_verify,
+    single_decode_with_sampling_buffers,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64, sample_categorical_into,
@@ -2391,6 +2392,7 @@ impl MlxRunner {
             ignore_eos: bool,
             sampling: MlxSamplingParams,
             state: RequestState,
+            last_token: u32,
             pending: Vec<u32>,
             pending_sources: Vec<MtpDraftSource>,
             token_offset: usize,
@@ -2472,6 +2474,7 @@ impl MlxRunner {
                     ignore_eos: ctx.ignore_eos,
                     sampling,
                     state,
+                    last_token,
                     pending,
                     pending_sources,
                     token_offset,
@@ -2508,44 +2511,100 @@ impl MlxRunner {
         let mut continuing = Vec::with_capacity(row_count);
         let mut runs = Vec::with_capacity(row_count);
         for (row_ordinal, mut row) in rows.into_iter().enumerate() {
-            let predicted = row.predicted.data_u32().to_vec();
-            let accept_started = Instant::now();
-            let accept_count = row
-                .pending
-                .iter()
-                .zip(predicted.iter())
-                .take_while(|(draft, target)| draft == target)
-                .count();
-            let accept_wall_us = elapsed_us(accept_started);
+            // Greedy coalesced path: roll back multi-token teacher-forced KV and
+            // re-verify with the sequential production oracle so accepted drafts
+            // match MTP-off greedy (same contract as single-item run_mtp_decode).
+            let (accept_count, draft_hidden, tail_token, accept_wall_us, rollback_wall_us) =
+                if row.sampling.temperature <= 0.0 {
+                    let accept_started = Instant::now();
+                    let trimmed_back = row.state.cache.trim_to(row.token_offset);
+                    if !trimmed_back {
+                        should_clear_cache = true;
+                        runs.push((
+                            row.item_index,
+                            errored_item_run(
+                                row.request_id,
+                                "coalesced Gemma assistant-MTP sequential rollback was refused",
+                            ),
+                        ));
+                        continue;
+                    }
+                    let seq = sequential_greedy_mtp_verify(
+                        &self.cfg,
+                        &self.weights,
+                        &mut row.state.cache,
+                        row.last_token,
+                        &row.pending,
+                        row.token_offset,
+                    );
+                    let accept_wall_us = elapsed_us(accept_started);
+                    let rejected_count = row.pending.len().saturating_sub(seq.accept_count);
+                    if rejected_count > 0 {
+                        let new_mtp_len =
+                            row.state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(cache) = row.state.mtp_cache.as_mut() {
+                            let _ = cache.trim_to(new_mtp_len);
+                        }
+                        row.state.mtp_decode_count = new_mtp_len;
+                    }
+                    (
+                        seq.accept_count,
+                        seq.draft_hidden,
+                        seq.correction_token,
+                        accept_wall_us,
+                        0,
+                    )
+                } else {
+                    let predicted = row.predicted.data_u32().to_vec();
+                    let accept_started = Instant::now();
+                    let accept_count = row
+                        .pending
+                        .iter()
+                        .zip(predicted.iter())
+                        .take_while(|(draft, target)| draft == target)
+                        .count();
+                    let accept_wall_us = elapsed_us(accept_started);
 
-            let rollback_started = Instant::now();
-            let committed_len = row.token_offset + 1 + accept_count;
-            let trimmed = row.state.cache.trim_to(committed_len);
-            let rejected_count = row.pending.len().saturating_sub(accept_count);
-            if rejected_count > 0 {
-                let new_mtp_len = row.state.mtp_decode_count.saturating_sub(rejected_count);
-                if let Some(cache) = row.state.mtp_cache.as_mut() {
-                    let _ = cache.trim_to(new_mtp_len);
-                }
-                row.state.mtp_decode_count = new_mtp_len;
-            }
-            let rollback_wall_us = elapsed_us(rollback_started);
-            if !trimmed {
-                should_clear_cache = true;
-                runs.push((
-                    row.item_index,
-                    errored_item_run(
-                        row.request_id,
-                        "coalesced Gemma assistant-MTP rollback trim was refused",
-                    ),
-                ));
-                continue;
-            }
+                    let rollback_started = Instant::now();
+                    let committed_len = row.token_offset + 1 + accept_count;
+                    let trimmed = row.state.cache.trim_to(committed_len);
+                    let rejected_count = row.pending.len().saturating_sub(accept_count);
+                    if rejected_count > 0 {
+                        let new_mtp_len =
+                            row.state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(cache) = row.state.mtp_cache.as_mut() {
+                            let _ = cache.trim_to(new_mtp_len);
+                        }
+                        row.state.mtp_decode_count = new_mtp_len;
+                    }
+                    let rollback_wall_us = elapsed_us(rollback_started);
+                    if !trimmed {
+                        should_clear_cache = true;
+                        runs.push((
+                            row.item_index,
+                            errored_item_run(
+                                row.request_id,
+                                "coalesced Gemma assistant-MTP rollback trim was refused",
+                            ),
+                        ));
+                        continue;
+                    }
 
-            let draft_hidden =
-                slice_post_norm_hidden(&row.post_norm_all, accept_count, self.cfg.hidden_size);
+                    let draft_hidden = slice_post_norm_hidden(
+                        &row.post_norm_all,
+                        accept_count,
+                        self.cfg.hidden_size,
+                    );
+                    let tail_token = predicted.get(accept_count).copied().unwrap_or(0);
+                    (
+                        accept_count,
+                        draft_hidden,
+                        tail_token,
+                        accept_wall_us,
+                        rollback_wall_us,
+                    )
+                };
             let tail_sample_started = Instant::now();
-            let tail_token = predicted.get(accept_count).copied().unwrap_or(0);
             let tail_sample_wall_us = elapsed_us(tail_sample_started);
             let mut result = row.pending[..accept_count].to_vec();
             result.push(tail_token);
@@ -8470,153 +8529,214 @@ impl MlxRunner {
                     predicted,
                 )
             } else {
-                let verify_forward_started = Instant::now();
-                let (logits_all, post_norm_all) = if self.weights.deepseek_v4_nextn.is_some() {
-                    // V4 nextn consumes the packed pre-collapse residual; the
-                    // second return is `[1, seq, hc*hidden]`, not post-norm.
-                    crate::model::deepseek_v4_forward_all_positions_with_packed(
+                // Greedy Gemma4 assistant-MTP: multi-token teacher-forced
+                // argmax can disagree with singleton production decode (shared
+                // KV / sliding window / softcap path). Formal pilots accepted
+                // drafts that sequential greedy would not emit, breaking
+                // MTP-off/on exactness. Fail closed via sequential oracle.
+                let gemma_sequential_oracle = sampling.temperature <= 0.0
+                    && !pending.is_empty()
+                    && state
+                        .mtp_pending_draft_sources
+                        .iter()
+                        .any(|source| *source == MtpDraftSource::Gemma4Assistant)
+                    && self.weights.deepseek_v4_nextn.is_none();
+                if gemma_sequential_oracle {
+                    let verify_forward_started = Instant::now();
+                    let seq = sequential_greedy_mtp_verify(
                         &self.cfg,
                         &self.weights,
-                        &verify_input,
                         &mut state.cache,
+                        verify_input[0],
+                        &pending,
                         token_offset,
+                    );
+                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                    mtp_timings.verify_eval_wall_us = 0;
+                    let ac = seq.accept_count;
+                    let all_accepted = ac == pending.len();
+                    let accept_started = Instant::now();
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
+                    let rollback_started = Instant::now();
+                    // Sequential path already advanced cache by 1+ac; no
+                    // multi-token overshoot to trim. Rejected draft positions
+                    // were never written.
+                    let rejected_count = pending.len() - ac;
+                    if rejected_count > 0 {
+                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(ref mut c) = state.mtp_cache
+                            && !c.trim_to(new_mtp_len)
+                        {
+                            tracing::warn!(
+                                new_mtp_len,
+                                "MTP head cache trim refused; draft quality may degrade"
+                            );
+                        }
+                        state.mtp_decode_count = new_mtp_len;
+                    }
+                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    // Placeholder logits: greedy tail sampling returns
+                    // correction_argmax_tok without reading the buffer.
+                    let logits_all =
+                        mlx_sys::zeros(&[1_i32, vocab], mlx_sys::MlxDtype::Float32, None);
+                    (
+                        logits_all,
+                        seq.draft_hidden,
+                        ac,
+                        all_accepted,
+                        seq.correction_token,
+                        false,
+                        seq.predicted,
                     )
                 } else {
-                    forward_all_positions_with_post_norm(
-                        &self.cfg,
-                        &self.weights,
-                        &verify_input,
-                        &mut state.cache,
-                        token_offset,
-                    )
-                };
-                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                state.cache.advance(verify_len);
-                // Target probabilities for rejection-sampling acceptance.
-                let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
-                let target_prob_workspace =
-                    if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
-                        &mut state.mtp_target_prob_workspace
-                    } else {
-                        &mut local_target_prob_workspace
-                    };
-                let target_softmax_started = Instant::now();
-                let lazy_target_probs = compute_mtp_target_probs(
-                    &logits_all,
-                    &pending,
-                    acceptance_log_probs,
-                    vocab,
-                    sampling,
-                    self.mtp_target_softmax_topk,
-                    target_filter,
-                    target_prob_workspace,
-                );
-                mtp_timings.target_softmax_wall_us = mtp_timings
-                    .target_softmax_wall_us
-                    .saturating_add(elapsed_us(target_softmax_started));
-                // Always compute argmax for the correction/bonus fallback.
-                let predicted_arr = Some(argmax(&logits_all, None));
-                let kv_refs2 = state.cache.collect_eval_refs();
-                let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
-                targets.push(predicted_arr.as_ref().unwrap());
-                targets.push(&post_norm_all);
-                if let Some(ref ltp) = lazy_target_probs {
-                    ltp.push_eval_targets(&mut targets);
-                }
-                targets.extend(kv_refs2);
-                let verify_eval_started = Instant::now();
-                eval(&targets);
-                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
-                let accept_started = Instant::now();
-                let predicted: Vec<u32> = predicted_arr
-                    .as_ref()
-                    .map(|arr| arr.data_u32().to_vec())
-                    .unwrap_or_default();
-                let target_softmax_extract_started = Instant::now();
-                let target_probs_cpu = lazy_target_probs
-                    .as_ref()
-                    .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
-                mtp_timings.target_softmax_wall_us = mtp_timings
-                    .target_softmax_wall_us
-                    .saturating_add(elapsed_us(target_softmax_extract_started));
-                let target_distributions_cpu: Option<&[TokenDistribution]> = None;
-
-                let accept = mtp_accept_count(
-                    &pending,
-                    acceptance_log_probs,
-                    &state.mtp_pending_draft_distributions,
-                    &state.mtp_pending_draft_sources,
-                    target_probs_cpu,
-                    target_distributions_cpu,
-                    &predicted,
-                    &mut state.rng,
-                    draft_log_prob_temperature,
-                    sampling.temperature,
-                    model_acceptance_mode,
-                    mtp_ngram_acceptance_mode_from_env(),
-                );
-                let ac = accept.accept_count;
-                let all_accepted = accept.all_accepted;
-                let exact_rejection_correction = (!all_accepted
-                    && proposal_law == MtpProposalLaw::DeterministicDelta)
-                    .then(|| {
-                        sample_exact_mtp_delta_rejection_correction(
-                            &logits_all,
-                            ac,
-                            vocab,
-                            sampling,
-                            pending[ac],
-                            &mut state.rng,
+                    let verify_forward_started = Instant::now();
+                    let (logits_all, post_norm_all) = if self.weights.deepseek_v4_nextn.is_some() {
+                        // V4 nextn consumes the packed pre-collapse residual; the
+                        // second return is `[1, seq, hc*hidden]`, not post-norm.
+                        crate::model::deepseek_v4_forward_all_positions_with_packed(
+                            &self.cfg,
+                            &self.weights,
+                            &verify_input,
+                            &mut state.cache,
+                            token_offset,
                         )
-                    })
-                    .flatten();
-                let exact_residual_correction_applied = exact_rejection_correction.is_some();
-                mtp_timings.accept_wall_us = elapsed_us(accept_started);
-
-                let rollback_started = Instant::now();
-                let committed_len = token_offset + 1 + ac;
-                let trimmed = state.cache.trim_to(committed_len);
-                debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
-                if !trimmed {
-                    // Ring slack is sized to absorb a full draft-depth
-                    // rollback; a refusal means rejected-draft KV stays
-                    // attendable. There is no cheap recovery at this point —
-                    // surface it instead of silently degrading output.
-                    tracing::error!(
-                        committed_len,
-                        "speculative rollback trim refused by rotated KV ring"
+                    } else {
+                        forward_all_positions_with_post_norm(
+                            &self.cfg,
+                            &self.weights,
+                            &verify_input,
+                            &mut state.cache,
+                            token_offset,
+                        )
+                    };
+                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                    state.cache.advance(verify_len);
+                    // Target probabilities for rejection-sampling acceptance.
+                    let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
+                    let target_prob_workspace =
+                        if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
+                            &mut state.mtp_target_prob_workspace
+                        } else {
+                            &mut local_target_prob_workspace
+                        };
+                    let target_softmax_started = Instant::now();
+                    let lazy_target_probs = compute_mtp_target_probs(
+                        &logits_all,
+                        &pending,
+                        acceptance_log_probs,
+                        vocab,
+                        sampling,
+                        self.mtp_target_softmax_topk,
+                        target_filter,
+                        target_prob_workspace,
                     );
-                }
+                    mtp_timings.target_softmax_wall_us = mtp_timings
+                        .target_softmax_wall_us
+                        .saturating_add(elapsed_us(target_softmax_started));
+                    // Always compute argmax for the correction/bonus fallback.
+                    let predicted_arr = Some(argmax(&logits_all, None));
+                    let kv_refs2 = state.cache.collect_eval_refs();
+                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
+                    targets.push(predicted_arr.as_ref().unwrap());
+                    targets.push(&post_norm_all);
+                    if let Some(ref ltp) = lazy_target_probs {
+                        ltp.push_eval_targets(&mut targets);
+                    }
+                    targets.extend(kv_refs2);
+                    let verify_eval_started = Instant::now();
+                    eval(&targets);
+                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                    let accept_started = Instant::now();
+                    let predicted: Vec<u32> = predicted_arr
+                        .as_ref()
+                        .map(|arr| arr.data_u32().to_vec())
+                        .unwrap_or_default();
+                    let target_softmax_extract_started = Instant::now();
+                    let target_probs_cpu = lazy_target_probs
+                        .as_ref()
+                        .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                    mtp_timings.target_softmax_wall_us = mtp_timings
+                        .target_softmax_wall_us
+                        .saturating_add(elapsed_us(target_softmax_extract_started));
+                    let target_distributions_cpu: Option<&[TokenDistribution]> = None;
 
-                // Trim MTP KV cache: remove rejected draft entries.
-                let rejected_count = pending.len() - ac;
-                if rejected_count > 0 {
-                    let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
-                    if let Some(ref mut c) = state.mtp_cache
-                        && !c.trim_to(new_mtp_len)
-                    {
-                        tracing::warn!(
-                            new_mtp_len,
-                            "MTP head cache trim refused; draft quality may degrade"
+                    let accept = mtp_accept_count(
+                        &pending,
+                        acceptance_log_probs,
+                        &state.mtp_pending_draft_distributions,
+                        &state.mtp_pending_draft_sources,
+                        target_probs_cpu,
+                        target_distributions_cpu,
+                        &predicted,
+                        &mut state.rng,
+                        draft_log_prob_temperature,
+                        sampling.temperature,
+                        model_acceptance_mode,
+                        mtp_ngram_acceptance_mode_from_env(),
+                    );
+                    let ac = accept.accept_count;
+                    let all_accepted = accept.all_accepted;
+                    let exact_rejection_correction = (!all_accepted
+                        && proposal_law == MtpProposalLaw::DeterministicDelta)
+                        .then(|| {
+                            sample_exact_mtp_delta_rejection_correction(
+                                &logits_all,
+                                ac,
+                                vocab,
+                                sampling,
+                                pending[ac],
+                                &mut state.rng,
+                            )
+                        })
+                        .flatten();
+                    let exact_residual_correction_applied = exact_rejection_correction.is_some();
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                    let rollback_started = Instant::now();
+                    let committed_len = token_offset + 1 + ac;
+                    let trimmed = state.cache.trim_to(committed_len);
+                    debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
+                    if !trimmed {
+                        // Ring slack is sized to absorb a full draft-depth
+                        // rollback; a refusal means rejected-draft KV stays
+                        // attendable. There is no cheap recovery at this point —
+                        // surface it instead of silently degrading output.
+                        tracing::error!(
+                            committed_len,
+                            "speculative rollback trim refused by rotated KV ring"
                         );
                     }
-                    state.mtp_decode_count = new_mtp_len;
+
+                    // Trim MTP KV cache: remove rejected draft entries.
+                    let rejected_count = pending.len() - ac;
+                    if rejected_count > 0 {
+                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(ref mut c) = state.mtp_cache
+                            && !c.trim_to(new_mtp_len)
+                        {
+                            tracing::warn!(
+                                new_mtp_len,
+                                "MTP head cache trim refused; draft quality may degrade"
+                            );
+                        }
+                        state.mtp_decode_count = new_mtp_len;
+                    }
+                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, ac, self.mtp_draft_hidden_width());
+                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                    (
+                        logits_all,
+                        draft_hidden,
+                        ac,
+                        all_accepted,
+                        exact_rejection_correction
+                            .or(accept.rejection_correction)
+                            .unwrap_or(correction_argmax_tok),
+                        exact_residual_correction_applied,
+                        predicted,
+                    )
                 }
-                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                let draft_hidden =
-                    slice_post_norm_hidden(&post_norm_all, ac, self.mtp_draft_hidden_width());
-                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                (
-                    logits_all,
-                    draft_hidden,
-                    ac,
-                    all_accepted,
-                    exact_rejection_correction
-                        .or(accept.rejection_correction)
-                        .unwrap_or(correction_argmax_tok),
-                    exact_residual_correction_applied,
-                    predicted,
-                )
             }
         };
 
