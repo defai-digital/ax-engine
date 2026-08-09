@@ -9762,7 +9762,18 @@ impl MlxRunner {
         // post-latch appends are decode-sized (1 for direct steps, ≤ slack
         // for speculative verifies) and the predicate is deterministic per
         // request, making re-runs idempotent.
-        let mtp_ring_slack = if !has_mtp {
+        // Gemma assistant greedy exact path must use the same sliding-KV
+        // geometry as pure session-direct (AX_NO_SPEC): pure ring slack 0.
+        // Bounded MTP rings change append/trim layout and cause greedy A/B
+        // drift after a handful of tokens even when production decode is the
+        // direct pipeline (formal 12B trial-6). Sequential oracle does not
+        // multi-token overshoot-trim the production cache, so pure rings are
+        // safe under the exact path.
+        let gemma_exact_pure_ring = self.gemma4_assistant_mtp.is_some()
+            && self.weights.deepseek_v4_nextn.is_none()
+            && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
+            && is_greedy;
+        let mtp_ring_slack = if !has_mtp || gemma_exact_pure_ring {
             Some(0)
         } else if self.gemma4_assistant_mtp.is_some()
             && self.weights.mtp.is_none()
@@ -9776,16 +9787,21 @@ impl MlxRunner {
         } else {
             None
         };
-        let rotating_latch = request_rotating_sliding_slack(
-            self.rotating_sliding_decode,
-            crate::fastpath::rotating_sliding_decode_enabled(),
-            crate::fastpath::rotating_bounded_rollback_enabled(),
-            rotating_bounded_family_eligible(&self.cfg),
-            state.ngram_acceleration_disabled_for_request,
-            state.ngram_request_disable_reason,
-            mtp_ring_slack,
-            is_greedy,
-        );
+        let rotating_latch = if gemma_exact_pure_ring {
+            // Match pure session-direct: always pure ring (slack 0).
+            Some(0)
+        } else {
+            request_rotating_sliding_slack(
+                self.rotating_sliding_decode,
+                crate::fastpath::rotating_sliding_decode_enabled(),
+                crate::fastpath::rotating_bounded_rollback_enabled(),
+                rotating_bounded_family_eligible(&self.cfg),
+                state.ngram_acceleration_disabled_for_request,
+                state.ngram_request_disable_reason,
+                mtp_ring_slack,
+                is_greedy,
+            )
+        };
         state.rotating_sliding_latch =
             Some((rotating_latch.is_some(), rotating_latch.unwrap_or(0)));
         state
