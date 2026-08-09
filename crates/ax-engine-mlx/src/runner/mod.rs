@@ -8607,11 +8607,30 @@ impl MlxRunner {
                     && self.weights.deepseek_v4_nextn.is_none()
                     && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
                 if gemma_sequential_oracle {
-                    // Verify drafts against the pure direct double-buffer
-                    // pipeline (same production path as empty-draft steps and
-                    // MTP-off). forward_argmax sequential alone still desynced
-                    // from double-buffer + pure-ring geometry under formal A/B.
+                    // Multi-token on a cache clone for draft_hidden (never
+                    // mutates production under pure ring). Commit only via pure
+                    // direct double-buffer so greedy A/B matches MTP-off.
                     let verify_forward_started = Instant::now();
+                    let mut verify_cache = state.cache.clone();
+                    let (_logits_mt, post_norm_all) = forward_all_positions_with_post_norm(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut verify_cache,
+                        token_offset,
+                    );
+                    verify_cache.advance(verify_len);
+                    {
+                        let kv_refs = verify_cache.collect_eval_refs();
+                        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+                        targets.push(&post_norm_all);
+                        targets.extend(kv_refs);
+                        eval(&targets);
+                    }
+                    drop(verify_cache);
+                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                    mtp_timings.verify_eval_wall_us = 0;
+                    // Pure-direct commit (continuous double-buffer with MTP-off).
                     let final_by_max = false;
                     let mut ac = 0usize;
                     let mut predicted: Vec<u32> = Vec::with_capacity(pending.len() + 1);
@@ -8633,7 +8652,6 @@ impl MlxRunner {
                     }
                     let all_accepted = ac == pending.len();
                     if all_accepted {
-                        // Bonus / correction after full accept.
                         correction = self.run_direct_pipeline_decode(
                             state,
                             verify_input[0],
@@ -8642,8 +8660,6 @@ impl MlxRunner {
                         );
                         predicted.push(correction);
                     }
-                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                    mtp_timings.verify_eval_wall_us = 0;
                     let accept_started = Instant::now();
                     mtp_timings.accept_wall_us = elapsed_us(accept_started);
                     let rejected_count = pending.len() - ac;
@@ -8660,12 +8676,10 @@ impl MlxRunner {
                         state.mtp_decode_count = new_mtp_len;
                     }
                     mtp_timings.rollback_wall_us = 0;
-                    // Direct pipeline already owns pending_direct; keep it.
-                    let hidden_size = self.cfg.hidden_size;
-                    let draft_hidden = mlx_sys::zeros(
-                        &[1_i32, 1, hidden_size as i32],
-                        mlx_sys::MlxDtype::Bfloat16,
-                        None,
+                    let draft_hidden = slice_post_norm_hidden(
+                        &post_norm_all,
+                        ac,
+                        self.cfg.hidden_size,
                     );
                     let logits_all =
                         mlx_sys::zeros(&[1_i32, vocab], mlx_sys::MlxDtype::Float32, None);
