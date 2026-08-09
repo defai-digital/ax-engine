@@ -2998,9 +2998,8 @@ fn load_mtp(
     //      A3B sidecars from axquant; matches main-model FfnGateUpExpsPacked)
     let gate_exps = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"), bits);
     let up_exps = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"), bits);
-    let down_exps = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits).or_else(|| {
-        mtp_take_weight(name_map, &format!("{p}.mlp.experts.down_proj"), bits)
-    });
+    let down_exps = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits)
+        .or_else(|| mtp_take_weight(name_map, &format!("{p}.mlp.experts.down_proj"), bits));
     let gate_up_exps_packed = if gate_exps.is_none() && up_exps.is_none() {
         mtp_take_weight(name_map, &format!("{p}.mlp.experts.gate_up_proj"), bits)
     } else {
@@ -7225,8 +7224,16 @@ mod tests {
         let put = |map: &mut HashMap<String, MlxArray>, key: &str, shape: &[i32]| {
             map.insert(key.to_string(), zeros(shape, MlxDtype::Bfloat16, None));
         };
-        put(&mut name_map, "mtp.pre_fc_norm_embedding.weight", &[hidden as i32]);
-        put(&mut name_map, "mtp.pre_fc_norm_hidden.weight", &[hidden as i32]);
+        put(
+            &mut name_map,
+            "mtp.pre_fc_norm_embedding.weight",
+            &[hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.pre_fc_norm_hidden.weight",
+            &[hidden as i32],
+        );
         put(&mut name_map, "mtp.norm.weight", &[hidden as i32]);
         put(
             &mut name_map,
@@ -7359,8 +7366,16 @@ mod tests {
         let put = |map: &mut HashMap<String, MlxArray>, key: &str, shape: &[i32]| {
             map.insert(key.to_string(), zeros(shape, MlxDtype::Bfloat16, None));
         };
-        put(&mut name_map, "mtp.pre_fc_norm_embedding.weight", &[hidden as i32]);
-        put(&mut name_map, "mtp.pre_fc_norm_hidden.weight", &[hidden as i32]);
+        put(
+            &mut name_map,
+            "mtp.pre_fc_norm_embedding.weight",
+            &[hidden as i32],
+        );
+        put(
+            &mut name_map,
+            "mtp.pre_fc_norm_hidden.weight",
+            &[hidden as i32],
+        );
         put(&mut name_map, "mtp.norm.weight", &[hidden as i32]);
         put(
             &mut name_map,

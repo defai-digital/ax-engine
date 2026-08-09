@@ -1705,6 +1705,13 @@ pub fn forward_all_positions_with_post_norm_ids(
     let masks =
         build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, ids_1d, &hidden);
+    let layer_count = weights.layers.len();
+    // Chunked submit (`AX_MLX_MTP_VERIFY_SUBMIT_LAYERS`, default off).
+    let submit_interval = crate::fastpath::verify_submit_interval_for_build(
+        seq,
+        layer_count,
+        crate::fastpath::mtp_verify_submit_layer_interval(),
+    );
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward(
@@ -1717,6 +1724,22 @@ pub fn forward_all_positions_with_post_norm_ids(
             pli,
             Some(&masks[li]),
         );
+        // Hand the layers built so far to the GPU and keep building. The last
+        // chunk is left for the caller's `eval`, which has to block anyway and
+        // already carries the cache refs.
+        if submit_interval > 0 && li + 1 < layer_count && (li + 1) % submit_interval == 0 {
+            // Cache refs travel with the hidden state: a linear-attention
+            // layer's updated recurrent state is a side output that the
+            // hidden state does not always depend on, so submitting `hidden`
+            // alone would leave that work unscheduled. Mirrors the
+            // cache-ref batching used by cache-only prefill chunks
+            // (`async_eval_kv_refs`) and the verify terminal `eval`.
+            let cache_refs = cache.collect_eval_refs();
+            let mut refs: Vec<&MlxArray> = Vec::with_capacity(1 + cache_refs.len());
+            refs.push(&hidden);
+            refs.extend(cache_refs);
+            async_eval(&refs);
+        }
     }
 
     let seq_i = seq as i32;
