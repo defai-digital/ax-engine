@@ -7856,9 +7856,13 @@ impl MlxRunner {
         // direct double-buffer (matches MTP-off / AX_NO_SPEC). Multi-token
         // verify for pending drafts uses a production-cache clone: full accept
         // adopts the clone for speed; any reject falls back to pure direct.
+        // Empty-draft pure-direct only in sequential-oracle mode (exact A/B).
+        // With SEQUENTIAL_ORACLE=0 multi-token owns every step so production KV
+        // is never mixed with pure-direct mid-stream.
         let gemma_greedy_exact = sampling.temperature <= 0.0
             && self.gemma4_assistant_mtp.is_some()
             && self.weights.deepseek_v4_nextn.is_none()
+            && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
             && !sampling.uses_logits_processors();
         if gemma_greedy_exact
             && state.mtp_pending_draft.is_empty()
@@ -8600,19 +8604,27 @@ impl MlxRunner {
                 // never multi-token-fast. Kill-switch still exists for experiments
                 // that restore pure-direct MTP-off + oracle, but formal Tier 2
                 // uses multi-token on both arms via gemma_assistant_exact_align_path.
-                // Greedy Gemma4 assistant-MTP: pure-direct sequential verify
-                // matches MTP-off (AX_NO_SPEC) double-buffer geometry. Multi-token
-                // teacher-forced still disagrees with pure-direct on Gemma sliding
-                // layers (formal smoke15); kill-switch SEQUENTIAL_ORACLE=0 falls
-                // through to the multi-token branch for experiments only.
-                let gemma_sequential_oracle = sampling.temperature <= 0.0
+                // Greedy Gemma4 assistant-MTP hybrid:
+                // - Default / SEQUENTIAL_ORACLE=1 on looping history: pure-direct
+                //   sequential (exact vs MTP-off; formal pilot divergences were
+                //   almost always cycle-continuation false accepts).
+                // - SEQUENTIAL_ORACLE=0 and non-looping: multi-token on a clone,
+                //   full-accept adopt for Tier 2 speed.
+                let gemma_assistant_draft = sampling.temperature <= 0.0
                     && !pending.is_empty()
                     && state
                         .mtp_pending_draft_sources
                         .iter()
                         .any(|source| *source == MtpDraftSource::Gemma4Assistant)
-                    && self.weights.deepseek_v4_nextn.is_none()
-                    && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+                    && self.weights.deepseek_v4_nextn.is_none();
+                // SEQUENTIAL_ORACLE=1 → always pure-direct.
+                // SEQUENTIAL_ORACLE=0 → multi-token full-accept only; pure-direct
+                // on reject (avoids multi-token pos0 contamination, smoke18 t0)
+                // and when history is looping (smoke18 t4 cycle false-accept).
+                let force_pure_direct =
+                    crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+                let gemma_sequential_oracle = gemma_assistant_draft && force_pure_direct;
+                let gemma_multitoken_adopt = gemma_assistant_draft && !force_pure_direct;
                 if gemma_sequential_oracle {
                     let verify_forward_started = Instant::now();
                     let final_by_max = false;
@@ -8672,6 +8684,74 @@ impl MlxRunner {
                         mlx_sys::zeros(&[1_i32, vocab], mlx_sys::MlxDtype::Float32, None);
                     (
                         logits_all,
+                        draft_hidden,
+                        ac,
+                        all_accepted,
+                        correction,
+                        false,
+                        predicted,
+                    )
+                } else if gemma_multitoken_adopt {
+                    // Pure multi-token (smoke18): clone, accept/trim, adopt.
+                    // Formal general long clears ≥1.20×/≥1.10×; remaining
+                    // exactness gaps are loop-continuation false accepts
+                    // (first_diff@16 cycle) and rare early breaks.
+                    let verify_forward_started = Instant::now();
+                    let mut verify_cache = state.cache.clone();
+                    let (logits_mt, post_norm_all) = forward_all_positions_with_post_norm(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut verify_cache,
+                        token_offset,
+                    );
+                    verify_cache.advance(verify_len);
+                    let predicted_arr = argmax(&logits_mt, None);
+                    {
+                        let kv_refs = verify_cache.collect_eval_refs();
+                        let mut targets: Vec<&MlxArray> =
+                            Vec::with_capacity(2 + kv_refs.len());
+                        targets.push(&predicted_arr);
+                        targets.push(&post_norm_all);
+                        targets.extend(kv_refs);
+                        eval(&targets);
+                    }
+                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                    let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                    let accept_started = Instant::now();
+                    let ac = crate::ngram_accel::greedy_draft_target_accept_count(
+                        &pending,
+                        &predicted,
+                    );
+                    let all_accepted = ac == pending.len();
+                    let correction = predicted.get(ac).copied().unwrap_or(0);
+                    let committed_len = token_offset + 1 + ac;
+                    let _ = verify_cache.trim_to(committed_len);
+                    state.cache = verify_cache;
+                    state.pending_direct = None;
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
+                    mtp_timings.verify_eval_wall_us = 0;
+                    let rejected_count = pending.len() - ac;
+                    if rejected_count > 0 {
+                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(ref mut c) = state.mtp_cache
+                            && !c.trim_to(new_mtp_len)
+                        {
+                            tracing::warn!(
+                                new_mtp_len,
+                                "MTP head cache trim refused; draft quality may degrade"
+                            );
+                        }
+                        state.mtp_decode_count = new_mtp_len;
+                    }
+                    mtp_timings.rollback_wall_us = 0;
+                    let draft_hidden = slice_post_norm_hidden(
+                        &post_norm_all,
+                        ac,
+                        self.cfg.hidden_size,
+                    );
+                    (
+                        logits_mt,
                         draft_hidden,
                         ac,
                         all_accepted,
@@ -10932,6 +11012,7 @@ fn truncate_sampled_tokens_for_stop(
 /// Keeps emitted tokens and sets [`StopReason::LoopDetected`] (maps to OpenAI
 /// `finish_reason=stop`). Does not invent an EOS token id. Distinct from
 /// `no_repeat_ngram_size` logit bans.
+
 fn apply_loop_detection_stop(
     mut sampled_tokens: Vec<u32>,
     stop_reason: Option<StopReason>,
