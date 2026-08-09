@@ -1215,44 +1215,6 @@ impl MlxRunner {
         self.mtp_model_policy.has_attached_drafter()
     }
 
-    /// Gemma assistant packs under formal Tier 2 must use the multi-token-
-    /// compatible singleton route for BOTH MTP-off and MTP-on. Pure-direct
-    /// double-buffer is a different graph (async pending slot) and diverges
-    /// from multi-token teacher-forced argmax, so A/B exactness fails whenever
-    /// drafts are accepted on the multi-token path. Aligning both arms on
-    /// `forward_all_positions*` restores the speculative identity while
-    /// allowing full-accept multi-token speedups.
-    fn gemma_assistant_exact_align_path(&self) -> bool {
-        self.gemma4_assistant_mtp.is_some() && self.weights.deepseek_v4_nextn.is_none()
-    }
-
-    /// Single-token production decode matching multi-token verify position 0.
-    fn run_gemma_aligned_baseline_decode(
-        &self,
-        state: &mut RequestState,
-        last_token: u32,
-    ) -> u32 {
-        use mlx_sys::{argmax, eval};
-        let token_offset = state.cache.seq_len();
-        let (logits_all, _post_norm) = forward_all_positions_with_post_norm(
-            &self.cfg,
-            &self.weights,
-            &[last_token],
-            &mut state.cache,
-            token_offset,
-        );
-        state.cache.advance(1);
-        let predicted = argmax(&logits_all, None);
-        let kv_refs = state.cache.collect_eval_refs();
-        let mut targets: Vec<&mlx_sys::MlxArray> = Vec::with_capacity(1 + kv_refs.len());
-        targets.push(&predicted);
-        targets.extend(kv_refs);
-        eval(&targets);
-        // Drop any stale pure-direct pending slot — this path never owns one.
-        state.pending_direct = None;
-        predicted.data_u32().first().copied().unwrap_or(0)
-    }
-
     /// Request or suppress model-based MTP independently from the n-gram
     /// speculation switch. The process-wide `AX_NO_SPEC` kill switch remains
     /// authoritative and cannot be re-enabled through this setter.
@@ -2555,9 +2517,7 @@ impl MlxRunner {
             // single-item run_mtp_decode). Kill-switch
             // AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0 keeps multi-token
             // accept decisions (faster; re-check exactness before Tier 2).
-            // Multi-token aligned path: keep coalesced multi-token accepts.
-            let use_sequential_oracle = false
-                && row.sampling.temperature <= 0.0
+            let use_sequential_oracle = row.sampling.temperature <= 0.0
                 && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
             let (accept_count, draft_hidden, tail_token, accept_wall_us, rollback_wall_us) =
                 if use_sequential_oracle {
@@ -7310,21 +7270,16 @@ impl MlxRunner {
         // regress long-context Gemma to single-step decode (the 2026-07-26
         // decode@2048 failure mode). Speculative sessions still use the
         // stricter `should_use_session_direct_pipeline` predicate.
-        // Gemma assistant formal exact path: skip pure-direct so MTP-off uses
-        // the multi-token-compatible singleton route (see
-        // `gemma_assistant_exact_align_path`).
         let pure_direct_pipeline = self.disable_ngram_acceleration
             && !sampling.uses_logits_processors()
-            && (is_greedy || sampling.temperature <= 0.0)
-            && !self.gemma_assistant_exact_align_path();
-        let direct_pipeline = (pure_direct_pipeline
+            && (is_greedy || sampling.temperature <= 0.0);
+        let direct_pipeline = pure_direct_pipeline
             || should_use_session_direct_pipeline(
                 self.disable_ngram_acceleration,
                 is_greedy || sampling.temperature <= 0.0,
                 self.has_mtp(),
                 self.mtp_requested,
-            ))
-            && !self.gemma_assistant_exact_align_path();
+            );
         if direct_pipeline {
             let last_token = state
                 .next_model_last_token
@@ -7342,15 +7297,6 @@ impl MlxRunner {
             .next_model_last_token
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
-
-        // Gemma assistant MTP-off (AX_NO_SPEC): multi-token-aligned singleton.
-        if self.disable_ngram_acceleration
-            && self.gemma_assistant_exact_align_path()
-            && !sampling.uses_logits_processors()
-            && (is_greedy || sampling.temperature <= 0.0)
-        {
-            return vec![self.run_gemma_aligned_baseline_decode(state, last_token)];
-        }
 
         if ngram_request_disabled_direct_fast_path(
             is_greedy,
@@ -7657,11 +7603,6 @@ impl MlxRunner {
         // single-decode because the pipeline is argmax-only.
         if self.disable_ngram_acceleration {
             if !sampling.uses_logits_processors() && (is_greedy || sampling.temperature <= 0.0) {
-                if self.gemma_assistant_exact_align_path() {
-                    return Some(vec![
-                        self.run_gemma_aligned_baseline_decode(state, last_token),
-                    ]);
-                }
                 return Some(vec![self.run_direct_pipeline_decode(
                     state,
                     last_token,
@@ -7911,10 +7852,56 @@ impl MlxRunner {
         use crate::ngram_accel::sample_logit_row;
         use mlx_sys::{argmax, eval};
 
-        // Gemma assistant-MTP greedy: multi-token path owns empty-draft and
-        // verify steps. Pure-direct empty-draft was exact vs pure-direct
-        // MTP-off but cannot deliver Tier 2 speed; both arms now share the
-        // multi-token-compatible route (see gemma_assistant_exact_align_path).
+        // Gemma assistant-MTP greedy exact path with no pending draft: pure
+        // direct double-buffer (matches MTP-off / AX_NO_SPEC). Multi-token
+        // verify for pending drafts uses a production-cache clone: full accept
+        // adopts the clone for speed; any reject falls back to pure direct.
+        let gemma_greedy_exact = sampling.temperature <= 0.0
+            && self.gemma4_assistant_mtp.is_some()
+            && self.weights.deepseek_v4_nextn.is_none()
+            && !sampling.uses_logits_processors();
+        if gemma_greedy_exact
+            && state.mtp_pending_draft.is_empty()
+            && state.mtp_pending_draft_lazy.is_none()
+        {
+            let final_by_max_output = ctx
+                .map(|c| c.generated_len.saturating_add(1) >= c.max_output_tokens)
+                .unwrap_or(false);
+            let tok = self.run_direct_pipeline_decode(
+                state,
+                last_token,
+                final_by_max_output,
+                false,
+            );
+            let hidden_size = self.cfg.hidden_size;
+            let draft_hidden = mlx_sys::zeros(
+                &[1_i32, 1, hidden_size as i32],
+                mlx_sys::MlxDtype::Bfloat16,
+                None,
+            );
+            let draft_started = Instant::now();
+            let (draft, log_probs, distributions) =
+                self.gemma4_assistant_draft_token(state, tok, &draft_hidden, sampling);
+            let mut mtp_timings = MtpStepTimings::default();
+            mtp_timings.draft_wall_us = elapsed_us(draft_started);
+            mtp_timings.emitted_tokens = 1;
+            let drafted = draft.len();
+            state.mtp_pending_draft = draft;
+            state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_distributions = distributions;
+            state.mtp_pending_draft_sources =
+                vec![MtpDraftSource::Gemma4Assistant; drafted];
+            state
+                .mtp_telemetry
+                .record_step(drafted, 0, &state.mtp_pending_draft_sources, None, 0);
+            if drafted > 0 {
+                state
+                    .gemma4_assistant_mtp_telemetry
+                    .record_submitted(drafted, mtp_timings.draft_wall_us);
+            }
+            state.mtp_telemetry.record_timings(mtp_timings);
+            return vec![tok];
+        }
 
         // Async-scheduled draft (`AX_MLX_MTP_ASYNC_DRAFT`): in the greedy
         // exact-profile regime the verify graph chains directly on the lazy
@@ -8613,8 +8600,12 @@ impl MlxRunner {
                 // never multi-token-fast. Kill-switch still exists for experiments
                 // that restore pure-direct MTP-off + oracle, but formal Tier 2
                 // uses multi-token on both arms via gemma_assistant_exact_align_path.
-                let gemma_sequential_oracle = false
-                    && sampling.temperature <= 0.0
+                // Greedy Gemma4 assistant-MTP: pure-direct sequential verify
+                // matches MTP-off (AX_NO_SPEC) double-buffer geometry. Multi-token
+                // teacher-forced still disagrees with pure-direct on Gemma sliding
+                // layers (formal smoke15); kill-switch SEQUENTIAL_ORACLE=0 falls
+                // through to the multi-token branch for experiments only.
+                let gemma_sequential_oracle = sampling.temperature <= 0.0
                     && !pending.is_empty()
                     && state
                         .mtp_pending_draft_sources
@@ -8623,10 +8614,6 @@ impl MlxRunner {
                     && self.weights.deepseek_v4_nextn.is_none()
                     && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
                 if gemma_sequential_oracle {
-                    // Verify drafts against the pure direct double-buffer
-                    // pipeline (same production path as empty-draft steps and
-                    // MTP-off). forward_argmax sequential alone still desynced
-                    // from double-buffer + pure-ring geometry under formal A/B.
                     let verify_forward_started = Instant::now();
                     let final_by_max = false;
                     let mut ac = 0usize;
@@ -8649,7 +8636,6 @@ impl MlxRunner {
                     }
                     let all_accepted = ac == pending.len();
                     if all_accepted {
-                        // Bonus / correction after full accept.
                         correction = self.run_direct_pipeline_decode(
                             state,
                             verify_input[0],
@@ -8676,7 +8662,6 @@ impl MlxRunner {
                         state.mtp_decode_count = new_mtp_len;
                     }
                     mtp_timings.rollback_wall_us = 0;
-                    // Direct pipeline already owns pending_direct; keep it.
                     let hidden_size = self.cfg.hidden_size;
                     let draft_hidden = mlx_sys::zeros(
                         &[1_i32, 1, hidden_size as i32],
@@ -8694,6 +8679,7 @@ impl MlxRunner {
                         false,
                         predicted,
                     )
+
                 } else {
                     let verify_forward_started = Instant::now();
                     let (logits_all, post_norm_all) = if self.weights.deepseek_v4_nextn.is_some() {
@@ -9892,8 +9878,7 @@ impl MlxRunner {
         //
         // Gemma assistant multi-token-aligned path must NOT prime pure-direct
         // (pending_direct would desync multi-token production KV).
-        let gemma_exact_direct_bootstrap = false
-            && self.gemma4_assistant_mtp.is_some()
+        let gemma_exact_direct_bootstrap = self.gemma4_assistant_mtp.is_some()
             && self.weights.deepseek_v4_nextn.is_none()
             && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
             && is_greedy;
@@ -9969,11 +9954,6 @@ impl MlxRunner {
                     cache.reset();
                 }
                 if is_greedy && !sampling.uses_logits_processors() {
-                    if self.gemma_assistant_exact_align_path() {
-                        return vec![
-                            self.run_gemma_aligned_baseline_decode(state, last_token),
-                        ];
-                    }
                     return vec![self.run_direct_pipeline_decode(
                         state,
                         last_token,
