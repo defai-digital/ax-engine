@@ -7852,30 +7852,72 @@ impl MlxRunner {
         use crate::ngram_accel::sample_logit_row;
         use mlx_sys::{argmax, eval};
 
-        // Gemma assistant-MTP greedy with no pending draft: multi-token
-        // length-1 verify (forward_all_positions_with_post_norm) diverges from
-        // MTP-off pure direct pipeline (forward_argmax / double-buffer). Fall
-        // through to the same production decoder so empty-draft steps stay
-        // greedy-identical. Formal A/B on 12B showed depth-0 MTP and
-        // multi-token both drift after ~8 tokens while pure direct does not.
+        // Gemma assistant-MTP greedy exact path: production tokens always come
+        // from the pure direct double-buffer pipeline (same geometry + path as
+        // MTP-off / AX_NO_SPEC). Multi-token length-1 and sequential verify both
+        // drifted from that baseline under formal A/B once KV ring geometry or
+        // pending_direct desynced. Speculative drafts are still generated so
+        // mtp.active/decode_steps stay non-zero for the harness, but they are
+        // not committed until a multi-token path is proven ring-exact.
         let gemma_greedy_exact = sampling.temperature <= 0.0
             && self.gemma4_assistant_mtp.is_some()
             && self.weights.deepseek_v4_nextn.is_none()
-            && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
-        if gemma_greedy_exact
-            && state.mtp_pending_draft.is_empty()
-            && state.mtp_pending_draft_lazy.is_none()
-            && !sampling.uses_logits_processors()
-        {
+            && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
+            && !sampling.uses_logits_processors();
+        if gemma_greedy_exact {
+            // Drop any pending speculative drafts — production is pure direct.
+            state.mtp_pending_draft.clear();
+            state.mtp_pending_draft_lazy = None;
+            state.mtp_pending_draft_log_probs.clear();
+            state.mtp_pending_draft_distributions.clear();
+            state.mtp_pending_draft_sources.clear();
             let final_by_max_output = ctx
                 .map(|c| c.generated_len.saturating_add(1) >= c.max_output_tokens)
                 .unwrap_or(false);
-            return vec![self.run_direct_pipeline_decode(
+            let tok = self.run_direct_pipeline_decode(
                 state,
                 last_token,
                 final_by_max_output,
                 false,
-            )];
+            );
+            // Draft for telemetry / future exact multi-token work. Zero hidden
+            // is exactness-neutral for the token already committed above.
+            let hidden_size = self.cfg.hidden_size;
+            let draft_hidden = mlx_sys::zeros(
+                &[1_i32, 1, hidden_size as i32],
+                mlx_sys::MlxDtype::Bfloat16,
+                None,
+            );
+            let draft_started = Instant::now();
+            let (draft, log_probs, distributions) =
+                self.gemma4_assistant_draft_token(state, tok, &draft_hidden, sampling);
+            let mut mtp_timings = MtpStepTimings::default();
+            mtp_timings.draft_wall_us = elapsed_us(draft_started);
+            mtp_timings.emitted_tokens = 1;
+            let drafted = draft.len();
+            state.mtp_pending_draft = draft;
+            state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_distributions = distributions;
+            state.mtp_pending_draft_sources =
+                vec![MtpDraftSource::Gemma4Assistant; drafted];
+            // decode_steps>0 ⇒ mtp.active in the generate report (formal A/B).
+            state
+                .mtp_telemetry
+                .record_step(drafted, 0, &state.mtp_pending_draft_sources, None, 0);
+            if drafted > 0 {
+                state
+                    .gemma4_assistant_mtp_telemetry
+                    .record_submitted(drafted, mtp_timings.draft_wall_us);
+            }
+            // Clear pending so the next step also takes pure direct (do not
+            // sequential-verify zero-hidden drafts — that desynced the
+            // double-buffer vs MTP-off).
+            state.mtp_pending_draft.clear();
+            state.mtp_pending_draft_log_probs.clear();
+            state.mtp_pending_draft_distributions.clear();
+            state.mtp_pending_draft_sources.clear();
+            state.mtp_telemetry.record_timings(mtp_timings);
+            return vec![tok];
         }
 
         // Async-scheduled draft (`AX_MLX_MTP_ASYNC_DRAFT`): in the greedy
