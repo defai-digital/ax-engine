@@ -9,8 +9,7 @@ use crate::sampling::{
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
-    ModelConfig, forward, forward_all_positions, forward_all_positions_update_cache,
-    forward_all_positions_with_post_norm, forward_argmax,
+    ModelConfig, forward, forward_all_positions, forward_all_positions_update_cache, forward_argmax,
 };
 use crate::weights::ModelWeights;
 
@@ -1463,12 +1462,17 @@ pub struct SequentialGreedyMtpVerify {
 /// On exit the cache has advanced by `1 + accept_count` and matches sequential
 /// greedy for the committed prefix `[last_token] ++ drafts[..accept_count]`.
 ///
-/// Why this exists: Gemma4 assistant-MTP (and other multi-token teacher-forced
-/// paths with shared-KV / sliding-window / softcap) can produce intermediate
-/// argmax tokens that do **not** match singleton `forward` greedy. Accepting
-/// those drafts makes MTP-on diverge from MTP-off under temperature 0. This
-/// oracle is fail-closed: only drafts sequential production would emit are
-/// committed, so greedy A/B exactness holds even when drafts are accepted.
+/// Why this exists: Gemma4 assistant-MTP multi-token teacher-forced argmax can
+/// disagree with MTP-off direct decode. Direct greedy uses the
+/// `forward_argmax` / direct-pipeline route (argmax-only logits, singleton
+/// graph). An earlier oracle that re-ran `forward_all_positions_with_post_norm`
+/// still diverged from that production route. This implementation uses
+/// `forward_argmax` for every accept decision and correction token so MTP-on
+/// greedy commits match MTP-off under temperature 0.
+///
+/// `draft_hidden` is a zero placeholder: assistant draft seeding only affects
+/// subsequent draft quality (accept rate / speed), not the production tokens
+/// committed here. Prefer a dual-return production forward when one exists.
 pub(crate) fn sequential_greedy_mtp_verify(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1481,21 +1485,19 @@ pub(crate) fn sequential_greedy_mtp_verify(
     let mut predicted: Vec<u32> = Vec::with_capacity(drafts.len().saturating_add(1));
     let mut accept_count = 0usize;
 
-    // Consume last_token (previous emission) and predict drafts[0].
-    let (logits, post_norm) =
-        forward_all_positions_with_post_norm(cfg, weights, &[last_token], cache, token_offset);
+    // Match direct production (`recompute_committed_prefix_with_argmax` /
+    // `run_direct_pipeline_decode`), not multi-token teacher-forced.
+    let mut last_logits = forward_argmax(cfg, weights, &[last_token], cache, token_offset);
     cache.advance(1);
-    let pred_arr = argmax(&logits, None);
+    let pred_arr = argmax(&last_logits, None);
     {
         let kv_refs = cache.collect_eval_refs();
-        let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
         targets.push(&pred_arr);
-        targets.push(&post_norm);
         targets.extend(kv_refs);
         eval(&targets);
     }
     let mut next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
-    let mut last_post_norm = post_norm;
     predicted.push(next_tok);
 
     for (index, &draft) in drafts.iter().enumerate() {
@@ -1503,35 +1505,25 @@ pub(crate) fn sequential_greedy_mtp_verify(
             break;
         }
         accept_count += 1;
-        let (logits, post_norm) = forward_all_positions_with_post_norm(
-            cfg,
-            weights,
-            &[draft],
-            cache,
-            token_offset + 1 + index,
-        );
+        last_logits = forward_argmax(cfg, weights, &[draft], cache, token_offset + 1 + index);
         cache.advance(1);
-        let pred_arr = argmax(&logits, None);
+        let pred_arr = argmax(&last_logits, None);
         {
             let kv_refs = cache.collect_eval_refs();
-            let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+            let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
             targets.push(&pred_arr);
-            targets.push(&post_norm);
             targets.extend(kv_refs);
             eval(&targets);
         }
         next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
-        last_post_norm = post_norm;
         predicted.push(next_tok);
     }
 
-    // Match multi-token draft_hidden indexing: post-norm after the last
-    // committed token (last_token when ac=0, else drafts[ac-1]).
-    let draft_hidden = slice(
-        &last_post_norm,
-        &[0, 0, 0],
-        &[1, 1, hidden_size as i32],
-        &[1, 1, 1],
+    // Exactness depends only on accept_count + correction_token. Zero hidden
+    // keeps the production cache on the forward_argmax path exclusively.
+    let draft_hidden = mlx_sys::zeros(
+        &[1_i32, 1, hidden_size as i32],
+        MlxDtype::Bfloat16,
         None,
     );
 
