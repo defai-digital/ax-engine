@@ -7852,6 +7852,32 @@ impl MlxRunner {
         use crate::ngram_accel::sample_logit_row;
         use mlx_sys::{argmax, eval};
 
+        // Gemma assistant-MTP greedy with no pending draft: multi-token
+        // length-1 verify (forward_all_positions_with_post_norm) diverges from
+        // MTP-off pure direct pipeline (forward_argmax / double-buffer). Fall
+        // through to the same production decoder so empty-draft steps stay
+        // greedy-identical. Formal A/B on 12B showed depth-0 MTP and
+        // multi-token both drift after ~8 tokens while pure direct does not.
+        let gemma_greedy_exact = sampling.temperature <= 0.0
+            && self.gemma4_assistant_mtp.is_some()
+            && self.weights.deepseek_v4_nextn.is_none()
+            && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+        if gemma_greedy_exact
+            && state.mtp_pending_draft.is_empty()
+            && state.mtp_pending_draft_lazy.is_none()
+            && !sampling.uses_logits_processors()
+        {
+            let final_by_max_output = ctx
+                .map(|c| c.generated_len.saturating_add(1) >= c.max_output_tokens)
+                .unwrap_or(false);
+            return vec![self.run_direct_pipeline_decode(
+                state,
+                last_token,
+                final_by_max_output,
+                false,
+            )];
+        }
+
         // Async-scheduled draft (`AX_MLX_MTP_ASYNC_DRAFT`): in the greedy
         // exact-profile regime the verify graph chains directly on the lazy
         // token arrays, so extraction defers past the verify graph build
@@ -8539,7 +8565,11 @@ impl MlxRunner {
                 // KV / sliding window / softcap path). Formal pilots accepted
                 // drafts that sequential greedy would not emit, breaking
                 // MTP-off/on exactness. Fail closed via sequential oracle
-                // (kill-switch: AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0).
+                // (kill-switch: AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0
+                // restores multi-token for experiments only).
+                // Empty pending is handled at run_mtp_decode entry (direct
+                // pipeline) so this branch always has drafts when the oracle
+                // is engaged.
                 let gemma_sequential_oracle = sampling.temperature <= 0.0
                     && !pending.is_empty()
                     && state
