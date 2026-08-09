@@ -2511,11 +2511,16 @@ impl MlxRunner {
         let mut continuing = Vec::with_capacity(row_count);
         let mut runs = Vec::with_capacity(row_count);
         for (row_ordinal, mut row) in rows.into_iter().enumerate() {
-            // Greedy coalesced path: roll back multi-token teacher-forced KV and
-            // re-verify with the sequential production oracle so accepted drafts
-            // match MTP-off greedy (same contract as single-item run_mtp_decode).
+            // Greedy coalesced path: optionally roll back multi-token
+            // teacher-forced KV and re-verify with the sequential production
+            // oracle so accepted drafts match MTP-off greedy (same contract as
+            // single-item run_mtp_decode). Kill-switch
+            // AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0 keeps multi-token
+            // accept decisions (faster; re-check exactness before Tier 2).
+            let use_sequential_oracle = row.sampling.temperature <= 0.0
+                && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
             let (accept_count, draft_hidden, tail_token, accept_wall_us, rollback_wall_us) =
-                if row.sampling.temperature <= 0.0 {
+                if use_sequential_oracle {
                     let accept_started = Instant::now();
                     let trimmed_back = row.state.cache.trim_to(row.token_offset);
                     if !trimmed_back {
@@ -8533,14 +8538,16 @@ impl MlxRunner {
                 // argmax can disagree with singleton production decode (shared
                 // KV / sliding window / softcap path). Formal pilots accepted
                 // drafts that sequential greedy would not emit, breaking
-                // MTP-off/on exactness. Fail closed via sequential oracle.
+                // MTP-off/on exactness. Fail closed via sequential oracle
+                // (kill-switch: AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0).
                 let gemma_sequential_oracle = sampling.temperature <= 0.0
                     && !pending.is_empty()
                     && state
                         .mtp_pending_draft_sources
                         .iter()
                         .any(|source| *source == MtpDraftSource::Gemma4Assistant)
-                    && self.weights.deepseek_v4_nextn.is_none();
+                    && self.weights.deepseek_v4_nextn.is_none()
+                    && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
                 if gemma_sequential_oracle {
                     let verify_forward_started = Instant::now();
                     let seq = sequential_greedy_mtp_verify(

@@ -253,6 +253,21 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE` — under temperature 0,
+    /// re-verify Gemma assistant drafts with singleton production forwards so
+    /// accepted tokens match MTP-off greedy (multi-token teacher-forced argmax
+    /// can disagree on shared-KV / sliding-window / softcap paths).
+    ///
+    /// **Default: ON** for exactness. Kill-switch via
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0` restores multi-token
+    /// verify (faster; formal pilots must re-check exactness before claiming
+    /// Tier 2). Coalesced greedy verify still uses the sequential oracle when
+    /// this flag is on.
+    gemma4_assistant_mtp_sequential_oracle_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DECODE_MTP_TARGET_PROB_WORKSPACE` — reuse request-local CPU
     /// buffers while building/extracting MTP target probabilities.
     ///
