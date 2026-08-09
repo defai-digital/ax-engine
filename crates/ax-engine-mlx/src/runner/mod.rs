@@ -7860,7 +7860,8 @@ impl MlxRunner {
         let gemma_greedy_exact = sampling.temperature <= 0.0
             && self.gemma4_assistant_mtp.is_some()
             && self.weights.deepseek_v4_nextn.is_none()
-            && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
+            && (crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
+                || self.cfg.moe_expert_count > 0)
             && !sampling.uses_logits_processors();
         if gemma_greedy_exact
             && state.mtp_pending_draft.is_empty()
@@ -8621,8 +8622,12 @@ impl MlxRunner {
                 // and when history is looping (smoke18 t4 cycle false-accept).
                 // SEQUENTIAL_ORACLE=1 → always pure-direct (exact, ~0.91×).
                 // SEQUENTIAL_ORACLE=0 → pure multi-token always-adopt (smoke18).
+                // SEQUENTIAL_ORACLE or MoE experts → pure-direct (exact; MoE
+                // multi-token still diverges early). Dense multi-token f32 is
+                // exact for 12B6 general + all 31B (formal4).
                 let force_pure_direct =
-                    crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+                    crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
+                        || self.cfg.moe_expert_count > 0;
                 let gemma_sequential_oracle = gemma_assistant_draft && force_pure_direct;
                 let gemma_multitoken_adopt = gemma_assistant_draft && !force_pure_direct;
                 if gemma_sequential_oracle {
@@ -11013,6 +11018,7 @@ fn truncate_sampled_tokens_for_stop(
 /// Keeps emitted tokens and sets [`StopReason::LoopDetected`] (maps to OpenAI
 /// `finish_reason=stop`). Does not invent an EOS token id. Distinct from
 /// `no_repeat_ngram_size` logit bans.
+
 
 
 fn apply_loop_detection_stop(
