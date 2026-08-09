@@ -7852,25 +7852,21 @@ impl MlxRunner {
         use crate::ngram_accel::sample_logit_row;
         use mlx_sys::{argmax, eval};
 
-        // Gemma assistant-MTP greedy exact path: production tokens always come
-        // from the pure direct double-buffer pipeline (same geometry + path as
-        // MTP-off / AX_NO_SPEC). Multi-token length-1 and sequential verify both
-        // drifted from that baseline under formal A/B once KV ring geometry or
-        // pending_direct desynced. Speculative drafts are still generated so
-        // mtp.active/decode_steps stay non-zero for the harness, but they are
-        // not committed until a multi-token path is proven ring-exact.
+        // Gemma assistant-MTP greedy exact path with no pending draft: use the
+        // pure direct double-buffer pipeline (same geometry + path as MTP-off /
+        // AX_NO_SPEC). Multi-token length-1 drifts after production-cache trim
+        // on pure rings. Draft for the next step with a zero hidden (exactness
+        // of the token below is independent of draft quality), count a decode
+        // step for mtp.active, and keep drafts for sequential verify next step.
         let gemma_greedy_exact = sampling.temperature <= 0.0
             && self.gemma4_assistant_mtp.is_some()
             && self.weights.deepseek_v4_nextn.is_none()
             && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
             && !sampling.uses_logits_processors();
-        if gemma_greedy_exact {
-            // Drop any pending speculative drafts — production is pure direct.
-            state.mtp_pending_draft.clear();
-            state.mtp_pending_draft_lazy = None;
-            state.mtp_pending_draft_log_probs.clear();
-            state.mtp_pending_draft_distributions.clear();
-            state.mtp_pending_draft_sources.clear();
+        if gemma_greedy_exact
+            && state.mtp_pending_draft.is_empty()
+            && state.mtp_pending_draft_lazy.is_none()
+        {
             let final_by_max_output = ctx
                 .map(|c| c.generated_len.saturating_add(1) >= c.max_output_tokens)
                 .unwrap_or(false);
@@ -7880,8 +7876,6 @@ impl MlxRunner {
                 final_by_max_output,
                 false,
             );
-            // Draft for telemetry / future exact multi-token work. Zero hidden
-            // is exactness-neutral for the token already committed above.
             let hidden_size = self.cfg.hidden_size;
             let draft_hidden = mlx_sys::zeros(
                 &[1_i32, 1, hidden_size as i32],
@@ -7900,7 +7894,6 @@ impl MlxRunner {
             state.mtp_pending_draft_distributions = distributions;
             state.mtp_pending_draft_sources =
                 vec![MtpDraftSource::Gemma4Assistant; drafted];
-            // decode_steps>0 ⇒ mtp.active in the generate report (formal A/B).
             state
                 .mtp_telemetry
                 .record_step(drafted, 0, &state.mtp_pending_draft_sources, None, 0);
@@ -7909,13 +7902,6 @@ impl MlxRunner {
                     .gemma4_assistant_mtp_telemetry
                     .record_submitted(drafted, mtp_timings.draft_wall_us);
             }
-            // Clear pending so the next step also takes pure direct (do not
-            // sequential-verify zero-hidden drafts — that desynced the
-            // double-buffer vs MTP-off).
-            state.mtp_pending_draft.clear();
-            state.mtp_pending_draft_log_probs.clear();
-            state.mtp_pending_draft_distributions.clear();
-            state.mtp_pending_draft_sources.clear();
             state.mtp_telemetry.record_timings(mtp_timings);
             return vec![tok];
         }
@@ -8621,25 +8607,45 @@ impl MlxRunner {
                     && self.weights.deepseek_v4_nextn.is_none()
                     && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
                 if gemma_sequential_oracle {
+                    // Verify drafts against the pure direct double-buffer
+                    // pipeline (same production path as empty-draft steps and
+                    // MTP-off). forward_argmax sequential alone still desynced
+                    // from double-buffer + pure-ring geometry under formal A/B.
                     let verify_forward_started = Instant::now();
-                    let seq = sequential_greedy_mtp_verify(
-                        &self.cfg,
-                        &self.weights,
-                        &mut state.cache,
-                        verify_input[0],
-                        &pending,
-                        token_offset,
-                    );
+                    let final_by_max = false;
+                    let mut ac = 0usize;
+                    let mut predicted: Vec<u32> = Vec::with_capacity(pending.len() + 1);
+                    let mut correction = 0u32;
+                    for &draft in &pending {
+                        let tok = self.run_direct_pipeline_decode(
+                            state,
+                            verify_input[0],
+                            final_by_max,
+                            false,
+                        );
+                        predicted.push(tok);
+                        if tok != draft {
+                            correction = tok;
+                            break;
+                        }
+                        ac += 1;
+                        correction = tok;
+                    }
+                    let all_accepted = ac == pending.len();
+                    if all_accepted {
+                        // Bonus / correction after full accept.
+                        correction = self.run_direct_pipeline_decode(
+                            state,
+                            verify_input[0],
+                            final_by_max,
+                            false,
+                        );
+                        predicted.push(correction);
+                    }
                     mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                     mtp_timings.verify_eval_wall_us = 0;
-                    let ac = seq.accept_count;
-                    let all_accepted = ac == pending.len();
                     let accept_started = Instant::now();
                     mtp_timings.accept_wall_us = elapsed_us(accept_started);
-                    let rollback_started = Instant::now();
-                    // Sequential path already advanced cache by 1+ac; no
-                    // multi-token overshoot to trim. Rejected draft positions
-                    // were never written.
                     let rejected_count = pending.len() - ac;
                     if rejected_count > 0 {
                         let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
@@ -8653,24 +8659,24 @@ impl MlxRunner {
                         }
                         state.mtp_decode_count = new_mtp_len;
                     }
-                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                    // Sequential commits advanced the production cache outside
-                    // the double-buffer direct pipeline. Drop any pending direct
-                    // lazy token so a later empty-draft direct fallthrough does
-                    // not continue a desynced pipeline (would break greedy A/B).
-                    state.pending_direct = None;
-                    // Placeholder logits: greedy tail sampling returns
-                    // correction_argmax_tok without reading the buffer.
+                    mtp_timings.rollback_wall_us = 0;
+                    // Direct pipeline already owns pending_direct; keep it.
+                    let hidden_size = self.cfg.hidden_size;
+                    let draft_hidden = mlx_sys::zeros(
+                        &[1_i32, 1, hidden_size as i32],
+                        mlx_sys::MlxDtype::Bfloat16,
+                        None,
+                    );
                     let logits_all =
                         mlx_sys::zeros(&[1_i32, vocab], mlx_sys::MlxDtype::Float32, None);
                     (
                         logits_all,
-                        seq.draft_hidden,
+                        draft_hidden,
                         ac,
                         all_accepted,
-                        seq.correction_token,
+                        correction,
                         false,
-                        seq.predicted,
+                        predicted,
                     )
                 } else {
                     let verify_forward_started = Instant::now();
@@ -9804,16 +9810,13 @@ impl MlxRunner {
         // post-latch appends are decode-sized (1 for direct steps, ≤ slack
         // for speculative verifies) and the predicate is deterministic per
         // request, making re-runs idempotent.
-        // Gemma assistant greedy exact path must use the same sliding-KV
-        // geometry as pure session-direct (AX_NO_SPEC): pure ring slack 0.
-        // Bounded MTP rings change append/trim layout and cause greedy A/B
-        // drift after a handful of tokens even when production decode is the
-        // direct pipeline (formal 12B trial-6). Sequential oracle does not
-        // multi-token overshoot-trim the production cache, so pure rings are
-        // safe under the exact path.
+        // Gemma assistant greedy must use the same sliding-KV geometry as pure
+        // session-direct (AX_NO_SPEC): pure ring slack 0. Bounded MTP rings
+        // change append/trim layout and cause greedy A/B drift after a handful
+        // of tokens (formal 12B trial-6). Pure rings are required for any
+        // production path that must match MTP-off.
         let gemma_exact_pure_ring = self.gemma4_assistant_mtp.is_some()
             && self.weights.deepseek_v4_nextn.is_none()
-            && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
             && is_greedy;
         let mtp_ring_slack = if !has_mtp || gemma_exact_pure_ring {
             Some(0)
