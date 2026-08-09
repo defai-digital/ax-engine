@@ -1736,7 +1736,15 @@ pub fn forward_all_positions_with_post_norm_ids(
         // Re-submitting the full cache every chunk (often hundreds of arrays)
         // inflated `async_eval` task counts and re-introduced gather_qmm
         // backpressure on MoE, which is the opposite of the overlap goal.
-        if submit_interval > 0 && li + 1 < layer_count && (li + 1) % submit_interval == 0 {
+        let submitted = submit_interval > 0
+            && li + 1 < layer_count
+            && (li + 1) % submit_interval == 0;
+        if submitted {
+            async_eval(&[&hidden]);
+        } else if crate::fastpath::pipeline_hint_should_fire(li, layer_count) {
+            // Same residual-only hint as prefill/direct layer loops. Skip when
+            // the chunked-submit interval already fired this layer to avoid
+            // double async_eval on the same residual.
             async_eval(&[&hidden]);
         }
     }
@@ -1747,6 +1755,12 @@ pub fn forward_all_positions_with_post_norm_ids(
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
     let logits_out = reshape(&logits_f32, &[seq_i, cfg.vocab_size as i32], None);
+    // When chunked submit is active, also kick the lm_head/norm tail so GPU
+    // work continues while the caller builds argmax + cache-ref eval targets.
+    // Exactness-preserving: only schedules already-built arrays.
+    if submit_interval > 0 {
+        async_eval(&[&logits_out, &normed]);
+    }
     (logits_out, normed)
 }
 
