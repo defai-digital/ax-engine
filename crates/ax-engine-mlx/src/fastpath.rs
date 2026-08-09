@@ -152,6 +152,65 @@ pub fn batched_prefill_token_budget_override() -> Option<u32> {
     })
 }
 
+/// `AX_MLX_MTP_VERIFY_SUBMIT_LAYERS` — submit the speculative verify graph to
+/// the GPU every N transformer layers instead of only at the end of the build.
+///
+/// **Default: 0 (off).** Set to a positive layer interval to enable.
+///
+/// The verify forward is the one decode graph with no double buffer: the host
+/// builds every layer, then blocks in `eval`. On a dense model that build is a
+/// small share of a step, because the step itself is long — it streams every
+/// weight. On a sparse-expert model it is not: the step reads only the routed
+/// experts and is several times shorter, so the same absolute build cost
+/// becomes ~40% of a step, paid with the GPU idle. Measured on Qwen3.6-35B-A3B
+/// AXQ (`df-macbookpro-m5`, AX Engine 6.14.0): 4.1 ms of build against a
+/// 10.4 ms eval, on every speculative step.
+///
+/// Submitting each chunk with `async_eval` lets the GPU start the early layers
+/// while the host still builds the later ones — the same overlap
+/// `async_eval_kv_refs` already gives cache-only prefill chunks.
+///
+/// Exactness-preserving: `async_eval` schedules an already-built graph and
+/// changes no operand, shape, or reduction order. Only the synchronisation
+/// point moves.
+///
+/// **Buffer caps:** MLX charges a `gather_qmm`'s full expert stack against
+/// `MLX_MAX_MB_PER_BUFFER`, so a too-low cap can split every MoE layer into
+/// its own command buffer and blunt the overlap (see
+/// `docs/performance/gather-qmm-async-serialization.md`). Do **not** raise
+/// the cap solely to improve the speculative/direct A/B ratio on Qwen3.6
+/// MoE: raising it lifts direct decode as well (and can regress prefill on
+/// the `qwen3_5` family, which is why auto buffer caps exclude that family).
+/// Measure absolute tok/s with the product buffer policy you already ship.
+///
+/// Measured sweet spot on 35B-A3B AXQ: interval **8** (default remains off).
+pub fn mtp_verify_submit_layer_interval() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_VERIFY_SUBMIT_LAYERS")
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+            .unwrap_or(0)
+    })
+}
+
+/// Resolve the chunked-submit interval for one forward build.
+///
+/// Single-position builds return `0`: a `seq == 1` decode step is the direct
+/// pipeline's, and that path already double-buffers. An interval at or beyond
+/// the layer count also returns `0` — the sole submit it would schedule is the
+/// caller's own terminating `eval`, so it is pure overhead.
+pub(crate) fn verify_submit_interval_for_build(
+    seq: usize,
+    layer_count: usize,
+    configured: usize,
+) -> usize {
+    if seq <= 1 || configured == 0 || configured >= layer_count {
+        return 0;
+    }
+    configured
+}
+
 /// `AX_MLX_BATCHED_PREFILL_ROWS` — cap on rows per batched prefill cohort.
 /// Default 8; `0` disables the cap.
 pub fn batched_prefill_max_rows() -> u32 {
@@ -2814,6 +2873,22 @@ mod tests {
             "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF_ENABLED",
             "1"
         ));
+    }
+
+    #[test]
+    fn verify_chunked_submit_is_opt_in_and_multi_position_only() {
+        // Default (unset env resolves to 0) never splits a build.
+        assert_eq!(verify_submit_interval_for_build(2, 40, 0), 0);
+        // A single-position build belongs to the direct pipeline, which
+        // already double-buffers; splitting it would only add submits.
+        assert_eq!(verify_submit_interval_for_build(1, 40, 8), 0);
+        // A speculative verify build splits at the configured interval.
+        assert_eq!(verify_submit_interval_for_build(2, 40, 8), 8);
+        assert_eq!(verify_submit_interval_for_build(5, 40, 4), 4);
+        // An interval that cannot produce a submit before the caller's own
+        // terminating eval is pure overhead, so it is refused.
+        assert_eq!(verify_submit_interval_for_build(2, 40, 40), 0);
+        assert_eq!(verify_submit_interval_for_build(2, 40, 64), 0);
     }
 
     #[test]
