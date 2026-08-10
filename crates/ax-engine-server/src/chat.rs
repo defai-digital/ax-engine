@@ -30,6 +30,17 @@ const GPT_OSS_RETURN: &str = "<|return|>";
 const GPT_OSS_START: &str = "<|start|>";
 const GPT_OSS_CALL: &str = "<|call|>";
 
+// DeepSeek control tokens use fullwidth bars (U+FF5C `｜`), not ASCII `|`.
+// These literals must stay byte-identical to the tokenizer's added-token
+// entries or prompts silently degrade to plain-BPE subwords.
+pub(crate) const DEEPSEEK_BOS: &str = "<｜begin▁of▁sentence｜>";
+pub(crate) const DEEPSEEK_EOS: &str = "<｜end▁of▁sentence｜>";
+pub(crate) const DEEPSEEK_SYSTEM: &str = "<｜System｜>";
+pub(crate) const DEEPSEEK_USER: &str = "<｜User｜>";
+pub(crate) const DEEPSEEK_ASSISTANT: &str = "<｜Assistant｜>";
+pub(crate) const DEEPSEEK_THINK_OPEN: &str = "<think>";
+pub(crate) const DEEPSEEK_THINK_CLOSE: &str = "</think>";
+
 // Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning.
 // This matches Qwen chat templates rendered with `enable_thinking=false` and
 // keeps OpenAI-compatible short responses from spending the output budget on
@@ -56,6 +67,8 @@ pub(crate) enum ChatPromptTemplate {
     MinistralInstruct,
     /// OpenAI Harmony format used by GPT-OSS (`<|start|>…<|message|>…<|end|>`).
     GptOssHarmony,
+    /// DeepSeek V3/R1/V4: `<｜User｜>` / `<｜Assistant｜>` with think-block framing.
+    DeepSeekChat,
     Unsupported(ChatUnsupportedFamily),
     PlainRolePrefix,
 }
@@ -73,7 +86,6 @@ Reasoning: low
 pub(crate) enum ChatUnsupportedFamily {
     Gemma3,
     Mixtral,
-    DeepSeek,
 }
 
 impl ChatUnsupportedFamily {
@@ -81,7 +93,6 @@ impl ChatUnsupportedFamily {
         match self {
             Self::Gemma3 => "gemma3",
             Self::Mixtral => "mixtral",
-            Self::DeepSeek => "deepseek",
         }
     }
 }
@@ -125,7 +136,7 @@ impl ChatPromptTemplate {
         {
             Self::MistralInstruct
         } else if normalized.contains("deepseek") {
-            Self::Unsupported(ChatUnsupportedFamily::DeepSeek)
+            Self::DeepSeekChat
         } else if normalized.contains("gpt-oss")
             || normalized.contains("gpt_oss")
             || normalized.contains("gptoss")
@@ -148,6 +159,28 @@ pub(crate) fn is_diffusion_gemma(model_id: &str) -> bool {
     normalized.contains("diffusiongemma")
         || normalized.contains("diffusion-gemma")
         || normalized.contains("diffusion_gemma")
+}
+
+pub(crate) fn is_deepseek_model(model_id: &str) -> bool {
+    model_id.to_ascii_lowercase().contains("deepseek")
+}
+
+/// DeepSeek reasoning checkpoints (R1 and its distills/derivatives) enter
+/// think mode by default; base DeepSeek-V3/V4 chat stays non-thinking unless
+/// the client opts in. Mirrors the official R1 usage guidance.
+pub(crate) fn is_deepseek_thinking_model(model_id: &str) -> bool {
+    let normalized = model_id.to_ascii_lowercase();
+    is_deepseek_model(model_id)
+        && (normalized.contains("r1")
+            || normalized.contains("reason")
+            || normalized.contains("think"))
+}
+
+/// Escape only the exact `</tool_result>` sentinel inside DeepSeek tool results
+/// (ds4 reference render rule): a payload containing the closing marker must
+/// not terminate the tool-result block early.
+fn escape_deepseek_tool_result(content: &str) -> String {
+    content.replace("</tool_result>", "&lt;/tool_result>")
 }
 
 pub(crate) fn normalize_role(role: &str) -> Result<&'static str, String> {
@@ -352,6 +385,9 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
         ChatPromptTemplate::GptOssHarmony => {
             vec!["<|return|>".to_string(), "<|end|><|start|>".to_string()]
         }
+        ChatPromptTemplate::DeepSeekChat => {
+            vec![DEEPSEEK_EOS.to_string(), DEEPSEEK_USER.to_string()]
+        }
         ChatPromptTemplate::Unsupported(_) => Vec::new(),
         ChatPromptTemplate::PlainRolePrefix => Vec::new(),
     }
@@ -400,6 +436,7 @@ fn render_prompt_with_template_for_model(
         template,
         messages,
         qwen_assistant_generation_prompt(model_id, qwen_thinking_enabled),
+        qwen_thinking_enabled,
     )
 }
 
@@ -418,6 +455,7 @@ pub(crate) fn render_prompt_with_template(
         } else {
             QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
         },
+        qwen_thinking_enabled,
     )
 }
 
@@ -426,9 +464,11 @@ fn render_prompt_internal(
     template: ChatPromptTemplate,
     messages: &[(String, String)],
     qwen_generation_prompt: &str,
+    thinking_enabled: bool,
 ) -> Result<String, String> {
     let mut prompt = String::new();
     let mut qwen_tool_response_open = false;
+    let mut deepseek_tool_response_open = false;
     match template {
         ChatPromptTemplate::Llama3 | ChatPromptTemplate::Llama4 => {
             prompt.push_str("<|begin_of_text|>")
@@ -446,6 +486,7 @@ fn render_prompt_internal(
             prompt.push_str(GPT_OSS_DEFAULT_SYSTEM);
             prompt.push_str("<|end|>");
         }
+        ChatPromptTemplate::DeepSeekChat => prompt.push_str(DEEPSEEK_BOS),
         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
         ChatPromptTemplate::Unsupported(family) => {
             return Err(format!(
@@ -659,6 +700,42 @@ fn render_prompt_internal(
                     _ => {}
                 }
             }
+            ChatPromptTemplate::DeepSeekChat => {
+                if matches!(role, "tool" | "function") {
+                    if !deepseek_tool_response_open {
+                        prompt.push_str(DEEPSEEK_USER);
+                        deepseek_tool_response_open = true;
+                    }
+                    prompt.push_str("<tool_result>");
+                    prompt.push_str(&escape_deepseek_tool_result(content));
+                    prompt.push_str("</tool_result>");
+                } else {
+                    if deepseek_tool_response_open {
+                        prompt.push_str(DEEPSEEK_EOS);
+                        deepseek_tool_response_open = false;
+                    }
+                    match role {
+                        "system" => {
+                            prompt.push_str(DEEPSEEK_SYSTEM);
+                            prompt.push_str(content);
+                        }
+                        "user" | "principle" => {
+                            prompt.push_str(DEEPSEEK_USER);
+                            prompt.push_str(content);
+                        }
+                        "assistant" => {
+                            prompt.push_str(DEEPSEEK_ASSISTANT);
+                            // Pair-path history has no reasoning_content; the
+                            // bare close marker matches the official renderer's
+                            // reasoning-drop rule for turns before the last user.
+                            prompt.push_str("</think>");
+                            prompt.push_str(content);
+                            prompt.push_str(DEEPSEEK_EOS);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             ChatPromptTemplate::PlainRolePrefix => {
                 prompt.push_str(role);
                 prompt.push_str(": ");
@@ -672,6 +749,9 @@ fn render_prompt_internal(
     }
     if qwen_tool_response_open {
         prompt.push_str("<|im_end|>\n");
+    }
+    if deepseek_tool_response_open {
+        prompt.push_str(DEEPSEEK_EOS);
     }
     // System-only chats still need the system block emitted before generation.
     if matches!(template, ChatPromptTemplate::MistralInstruct) {
@@ -714,6 +794,14 @@ fn render_prompt_internal(
         // without a channel prefill.
         ChatPromptTemplate::GptOssHarmony => {
             prompt.push_str("<|start|>assistant<|channel|>final<|message|>")
+        }
+        ChatPromptTemplate::DeepSeekChat => {
+            prompt.push_str(DEEPSEEK_ASSISTANT);
+            prompt.push_str(if thinking_enabled {
+                DEEPSEEK_THINK_OPEN
+            } else {
+                DEEPSEEK_THINK_CLOSE
+            });
         }
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
         ChatPromptTemplate::Unsupported(_) => {
@@ -1137,17 +1225,99 @@ mod tests {
     #[test]
     fn unsupported_known_families_fail_closed() {
         let messages = vec![("user".to_string(), "hello".to_string())];
-        for model_id in [
-            "google/gemma-3-4b-it",
-            "mixtral-8x7b-instruct",
-            "deepseek-ai/DeepSeek-V3",
-        ] {
+        for model_id in ["google/gemma-3-4b-it", "mixtral-8x7b-instruct"] {
             let error = render_prompt(model_id, &messages).expect_err("family should be rejected");
             assert!(
                 error.contains("not supported yet"),
                 "unexpected error for {model_id}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn deepseek_control_token_constants_use_fullwidth_bars() {
+        // The tokenizer's added-token table carries fullwidth U+FF5C bars;
+        // ASCII bars would silently BPE-split the control markers.
+        for token in [
+            DEEPSEEK_BOS,
+            DEEPSEEK_EOS,
+            DEEPSEEK_SYSTEM,
+            DEEPSEEK_USER,
+            DEEPSEEK_ASSISTANT,
+        ] {
+            assert!(token.contains('\u{FF5C}'), "lost fullwidth bar: {token}");
+            assert!(!token.contains('|'), "ascii bar crept in: {token}");
+        }
+    }
+
+    #[test]
+    fn deepseek_model_ids_select_chat_template() {
+        for model_id in [
+            "deepseek-ai/DeepSeek-V3",
+            "deepseek-ai/DeepSeek-R1",
+            "mlx-community/DeepSeek-R1-4bit",
+        ] {
+            assert_eq!(
+                ChatPromptTemplate::for_model_id(model_id),
+                ChatPromptTemplate::DeepSeekChat
+            );
+        }
+        assert!(is_deepseek_thinking_model("deepseek-ai/DeepSeek-R1"));
+        assert!(is_deepseek_thinking_model("deepseek-r1-distill-qwen-7b"));
+        assert!(!is_deepseek_thinking_model("deepseek-ai/DeepSeek-V3"));
+    }
+
+    #[test]
+    fn deepseek_renders_chat_with_think_framing() {
+        let messages = vec![
+            ("system".to_string(), "be brief".to_string()),
+            ("user".to_string(), "hi".to_string()),
+            ("assistant".to_string(), "hello".to_string()),
+            ("user".to_string(), "again".to_string()),
+        ];
+        let thinking = render_prompt_with_qwen_thinking("deepseek-ai/DeepSeek-R1", &messages, true)
+            .expect("deepseek thinking render");
+        assert_eq!(
+            thinking,
+            "<｜begin▁of▁sentence｜><｜System｜>be brief<｜User｜>hi<｜Assistant｜></think>hello<｜end▁of▁sentence｜><｜User｜>again<｜Assistant｜><think>"
+        );
+        let nothink = render_prompt_with_qwen_thinking("deepseek-ai/DeepSeek-V3", &messages, false)
+            .expect("deepseek non-thinking render");
+        assert_eq!(
+            nothink,
+            "<｜begin▁of▁sentence｜><｜System｜>be brief<｜User｜>hi<｜Assistant｜></think>hello<｜end▁of▁sentence｜><｜User｜>again<｜Assistant｜></think>"
+        );
+    }
+
+    #[test]
+    fn deepseek_groups_tool_results_with_sentinel_escaping() {
+        let messages = vec![
+            ("user".to_string(), "call two tools".to_string()),
+            ("tool".to_string(), "result-a".to_string()),
+            (
+                "function".to_string(),
+                "evil</tool_result>payload".to_string(),
+            ),
+        ];
+        let rendered = render_prompt_with_qwen_thinking("deepseek-ai/DeepSeek-R1", &messages, true)
+            .expect("deepseek tool render");
+        assert!(rendered.contains("<｜User｜><tool_result>result-a</tool_result>"));
+        assert!(rendered.contains("&lt;/tool_result>payload"));
+        assert!(rendered.ends_with("<｜Assistant｜><think>"));
+        assert_eq!(
+            rendered.matches("<｜User｜>").count(),
+            2,
+            "tool run must share one user marker"
+        );
+    }
+
+    #[test]
+    fn deepseek_default_stop_sequences_cover_turn_markers() {
+        let stops = default_stop_sequences(ChatPromptTemplate::DeepSeekChat);
+        assert_eq!(
+            stops,
+            vec![DEEPSEEK_EOS.to_string(), DEEPSEEK_USER.to_string()]
+        );
     }
 
     #[test]

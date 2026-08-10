@@ -1257,10 +1257,14 @@ pub(crate) fn openai_chat_prompt_render_options(
     request: &OpenAiChatCompletionHttpRequest,
 ) -> ChatPromptRenderOptions {
     let template = request.chat_template_kwargs.as_ref();
+    let model_id = request.model.as_deref().unwrap_or("");
     ChatPromptRenderOptions {
         enable_thinking: template
             .and_then(|kwargs| kwargs.enable_thinking)
-            .unwrap_or_else(|| openai_reasoning_is_enabled(request.reasoning.as_ref())),
+            .unwrap_or_else(|| {
+                openai_reasoning_is_enabled(request.reasoning.as_ref())
+                    || chat::is_deepseek_thinking_model(model_id)
+            }),
         preserve_thinking: template
             .and_then(|kwargs| kwargs.preserve_thinking)
             .unwrap_or(false),
