@@ -428,6 +428,7 @@ pub(crate) fn full_precision_attention(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn full_precision_attention_with_window(
     q_rope: &MlxArray,
     cached_k: &MlxArray,
@@ -619,9 +620,10 @@ pub(crate) fn full_precision_attention_with_window(
             }
         }
     }
-    if fastpath::multi_token_f32_attention_enabled()
-        && (seq > 1 || fastpath::force_f32_attention_enabled())
-    {
+    // Keep seq==1 on bf16: enabling f32 for pure-direct regressed formal
+    // 12B6 general exactness. Multi-token (seq > 1) uses f32 below (or the
+    // dense long bf16 fold above when eligible).
+    if fastpath::multi_token_f32_attention_enabled() && seq > 1 {
         let q_dtype = q_rope.dtype();
         let q = if q_dtype != MlxDtype::Float32 {
             astype(q_rope, MlxDtype::Float32, None)

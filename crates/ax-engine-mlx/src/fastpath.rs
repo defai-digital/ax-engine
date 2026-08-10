@@ -744,52 +744,22 @@ env_flag_default_on!(
     "AX_MLX_MULTI_TOKEN_WINDOW_VIEWS"
 );
 
-/// Thread-local override for multi-token window views (None = use env default).
-/// Used by Gemma assistant-MTP greedy verify to force full-context views so
-/// long-prompt agent-coding matches sequential pure-direct at the sliding ring.
-thread_local! {
-    static MULTI_TOKEN_WINDOW_VIEWS_SCOPE: Cell<Option<bool>> = const { Cell::new(None) };
+/// Whether multi-token sliding layers use the retained window view.
+///
+/// Controlled by `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS` (default ON). Pure-direct
+/// rings and multi-token `window + seq - 1` views share geometry, so no
+/// request-local override is required for Gemma assistant-MTP exactness.
+pub fn multi_token_window_views_enabled() -> bool {
+    multi_token_window_views_enabled_env()
 }
 
-/// Scoped override for [`multi_token_window_views_enabled`].
-#[must_use]
-/// Thread-local: force f32 SDPA even for seq==1 (MoE pure-direct / multi-token
-/// pos0 identity). Dense must stay bf16 on seq==1 (12B6 formal regression).
-thread_local! {
-    static FORCE_F32_ATTENTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-pub(crate) struct ForceF32AttentionScope {
-    prev: bool,
-}
-
-impl ForceF32AttentionScope {
-    pub(crate) fn new(enabled: bool) -> Self {
-        let prev = FORCE_F32_ATTENTION.with(|c| c.replace(enabled));
-        Self { prev }
-    }
-}
-
-impl Drop for ForceF32AttentionScope {
-    fn drop(&mut self) {
-        FORCE_F32_ATTENTION.with(|c| c.set(self.prev));
-    }
-}
-
-pub(crate) fn scoped_force_f32_attention(enabled: bool) -> ForceF32AttentionScope {
-    ForceF32AttentionScope::new(enabled)
-}
-
-pub(crate) fn force_f32_attention_enabled() -> bool {
-    FORCE_F32_ATTENTION.with(|c| c.get())
-}
-
-/// MoE multi-token identity: keep SDPA/projections on bf16 singleton-compatible
-/// path (no f32 multi-token upcast) so teacher-forced matches pure-direct.
 thread_local! {
     static MOE_MT_BF16_IDENTITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// MoE multi-token identity: keep SDPA/projections on bf16 singleton-compatible
+/// path (no f32 multi-token upcast) so teacher-forced matches pure-direct.
+#[must_use]
 pub(crate) struct MoeMtBf16IdentityScope {
     prev: bool,
 }
@@ -813,34 +783,6 @@ pub(crate) fn scoped_moe_mt_bf16_identity(enabled: bool) -> MoeMtBf16IdentitySco
 
 pub(crate) fn moe_mt_bf16_identity_enabled() -> bool {
     MOE_MT_BF16_IDENTITY.with(|c| c.get())
-}
-
-pub(crate) struct MultiTokenWindowViewsScope {
-    previous: Option<bool>,
-}
-
-impl Drop for MultiTokenWindowViewsScope {
-    fn drop(&mut self) {
-        MULTI_TOKEN_WINDOW_VIEWS_SCOPE.with(|c| c.set(self.previous));
-    }
-}
-
-/// Force multi-token window views on/off for the current thread until drop.
-pub(crate) fn scoped_multi_token_window_views(enabled: bool) -> MultiTokenWindowViewsScope {
-    let previous = MULTI_TOKEN_WINDOW_VIEWS_SCOPE.with(|c| {
-        let previous = c.get();
-        c.set(Some(enabled));
-        previous
-    });
-    MultiTokenWindowViewsScope { previous }
-}
-
-/// Whether multi-token sliding layers use the retained window view.
-///
-/// Thread-local scope (Gemma assistant-MTP exact path) overrides the env default.
-pub fn multi_token_window_views_enabled() -> bool {
-    MULTI_TOKEN_WINDOW_VIEWS_SCOPE
-        .with(|c| c.get().unwrap_or_else(multi_token_window_views_enabled_env))
 }
 
 env_flag!(

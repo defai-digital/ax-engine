@@ -358,8 +358,7 @@ fn layer_shell_post_attention(
                     let h2_all =
                         moe_experts_forward_gemma4(cfg, w, &h2_normed_all, &idx_all, &wts_all);
                     let mut rows = Vec::with_capacity(seq);
-                    for t in 0..seq {
-                        let h1 = &h1_rows[t];
+                    for (t, h1) in h1_rows.iter().enumerate() {
                         let h2 = slice(
                             &h2_all,
                             &[0, t as i32, 0],

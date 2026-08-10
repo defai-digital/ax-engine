@@ -7993,9 +7993,11 @@ impl MlxRunner {
             let draft_started = Instant::now();
             let (draft, log_probs, distributions) =
                 self.gemma4_assistant_draft_token(state, tok, &draft_hidden, sampling);
-            let mut mtp_timings = MtpStepTimings::default();
-            mtp_timings.draft_wall_us = elapsed_us(draft_started);
-            mtp_timings.emitted_tokens = 1;
+            let mtp_timings = MtpStepTimings {
+                draft_wall_us: elapsed_us(draft_started),
+                emitted_tokens: 1,
+                ..MtpStepTimings::default()
+            };
             let drafted = draft.len();
             state.mtp_pending_draft = draft;
             state.mtp_pending_draft_log_probs = log_probs;
@@ -8726,8 +8728,7 @@ impl MlxRunner {
                     && !pending.is_empty()
                     && state
                         .mtp_pending_draft_sources
-                        .iter()
-                        .any(|source| *source == MtpDraftSource::Gemma4Assistant)
+                        .contains(&MtpDraftSource::Gemma4Assistant)
                     && self.weights.deepseek_v4_nextn.is_none();
                 // SEQUENTIAL_ORACLE=1 → always pure-direct.
                 // SEQUENTIAL_ORACLE=0 → multi-token full-accept only; pure-direct
@@ -10317,16 +10318,6 @@ fn ngram_draft_is_cycle(draft: &[u32], recent: &[u32]) -> bool {
     false
 }
 
-/// True when the last `run` tokens are identical (flat cycle). Gemma MoE
-/// multi-token near-ties often flip exactly at a period-6 / flat-run break.
-fn gemma_recent_is_flat_cycle(recent: &[u32], run: usize) -> bool {
-    if run == 0 || recent.len() < run {
-        return false;
-    }
-    let tail = &recent[recent.len() - run..];
-    tail.iter().all(|&t| t == tail[0])
-}
-
 fn gemma4_moe_long_mt_enabled() -> bool {
     std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
@@ -10374,10 +10365,10 @@ fn mtp_next_adaptive_depth(
     accept_count: usize,
     consecutive_misses: u32,
     // Gemma assistant formal gen: short low-accept trials stack reject-cost
-    // steps (median 0.63–0.79×). One complete miss (or majority-reject under
-    // the short-ctx early-gen gate) stops further drafting so remaining tokens
-    // use empty pure path (~1.0×). Agent coding keeps high accept so this
-    // rarely trips on long winning trials.
+    // steps (median 0.63–0.79×). One complete miss (or half-or-worse accept
+    // under the short-ctx early-gen gate) stops further drafting so remaining
+    // tokens use empty pure path (~1.0×). Agent coding keeps high accept so
+    // this rarely trips on long winning trials.
     aggressive_miss_to_zero: bool,
 ) -> usize {
     if max_depth == 0 {
@@ -10398,11 +10389,12 @@ fn mtp_next_adaptive_depth(
         return current_depth.saturating_add(1).min(max_depth);
     }
 
-    // Short-gen stop-loss: complete miss, or majority reject (accept < half of
-    // drafts) on the aggressive short-ctx early-gen path. Partial 1/2 accepts
-    // on tiny gens still stack draft+verify cost that kills formal median.
+    // Short-gen stop-loss: complete miss, or half-or-worse accept rate on the
+    // aggressive short-ctx early-gen path. Gemma assistant max depth is 2, so
+    // "majority reject" as strict <50% only ever matched complete miss; half
+    // accepts (1/2) still stack draft+verify cost that kills formal median.
     if aggressive_miss_to_zero
-        && (accept_count == 0 || accept_count.saturating_mul(2) < pending_len)
+        && (accept_count == 0 || accept_count.saturating_mul(2) <= pending_len)
     {
         return 0;
     }
@@ -11193,7 +11185,6 @@ fn truncate_sampled_tokens_for_stop(
 /// Keeps emitted tokens and sets [`StopReason::LoopDetected`] (maps to OpenAI
 /// `finish_reason=stop`). Does not invent an EOS token id. Distinct from
 /// `no_repeat_ngram_size` logit bans.
-
 fn apply_loop_detection_stop(
     mut sampled_tokens: Vec<u32>,
     stop_reason: Option<StopReason>,
@@ -11678,10 +11669,8 @@ fn request_rotating_sliding_slack(
     // set mtp_ring_slack > 0 even under AX_NO_SPEC so MTP-off/on share bounded
     // geometry (required for multi-token append/trim and greedy A/B identity).
     if session_rotating && is_greedy {
-        if let Some(slack) = mtp_ring_slack {
-            if slack > 0 {
-                return Some(ROTATING_BOUNDED_ROLLBACK_SLACK.max(slack));
-            }
+        if let Some(slack) = mtp_ring_slack.filter(|s| *s > 0) {
+            return Some(ROTATING_BOUNDED_ROLLBACK_SLACK.max(slack));
         }
         return Some(0);
     }
@@ -13702,10 +13691,12 @@ mod tests {
         // Gemma assistant: first complete miss ends drafting (gen median stop-loss).
         assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 0, 0, true), 0);
         assert_eq!(mtp_next_adaptive_depth(1, 2, 1, 0, 3, true), 0);
-        // Majority-reject (1/3) on the aggressive short-gen path also stops.
+        // Half-or-worse accept on the aggressive short-gen path also stops
+        // (1/3 and the common Gemma depth-2 case 1/2).
         assert_eq!(mtp_next_adaptive_depth(2, 2, 3, 1, 0, true), 0);
-        // Exact half-accept (1/2) is not majority-reject; progressive floor applies.
-        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 1, 0, true), 2);
+        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 1, 0, true), 0);
+        // Better than half (2/3) keeps progressive floor / clamp logic.
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 3, 2, 0, true), 2);
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {

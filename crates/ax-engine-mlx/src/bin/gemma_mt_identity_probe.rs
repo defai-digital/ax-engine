@@ -268,7 +268,7 @@ fn run() -> Result<(), String> {
 
     // Mid-decode multi-token: pure-direct N steps, then MT teacher-forced vs more PD.
     // Formal A/B first_diff often appears after a few decode tokens (not at prefill).
-    let warm = steps.min(8).max(3);
+    let warm = steps.clamp(3, 8);
     let (mut cache_pd, boot_pd) = prefill(&cfg, &weights, &ids);
     let (mut cache_mt_mid, _) = prefill(&cfg, &weights, &ids);
     let mut hist = vec![boot_pd];

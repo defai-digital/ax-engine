@@ -24,102 +24,8 @@ pub(crate) enum ProjectionBatchPolicy {
     RowExact,
 }
 
-static INVARIANT_AFFINE_PROJECTION_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static INVARIANT_AFFINE_QMV_FAST_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static INVARIANT_DENSE_PROJECTION_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
-
-/// Affine projection for one to four rows with an invariant per-row reduction.
-///
-/// A threadgroup owns one output row. Each thread dequantizes its weight value
-/// once, then accumulates all active input rows independently. Consequently a
-/// row sees the same FMA and simd-reduction order whether `Leading` is one or
-/// four, while the packed weights are read only once for the whole microbatch.
-const INVARIANT_AFFINE_PROJECTION_KERNEL_SOURCE: &str = r#"
-    uint flat = thread_position_in_grid.x;
-    uint row = flat / 256;
-    uint tid = flat % 256;
-    uint lane = tid % 32;
-    uint sg = tid / 32;
-    if (row >= OutDim) {
-        return;
-    }
-
-    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    const uint row_base = row * PackedCols;
-    const uint scale_row = row * GroupCount;
-
-    if (Bits == 6) {
-        // MLX stores sixteen 6-bit values as one contiguous 96-bit block
-        // (three uint words). Decode the block once, including values which
-        // straddle a word boundary, and reuse every dequantized value across
-        // all speculative rows.
-        const uint ValuesPerBlock = 16;
-        const uint WordsPerBlock = 3;
-        const uint BlockCount = InputDim / ValuesPerBlock;
-        for (uint block = tid; block < BlockCount; block += 256) {
-            uint packed_words[WordsPerBlock];
-            uint packed_base = row_base + block * WordsPerBlock;
-            for (uint word = 0; word < WordsPerBlock; ++word) {
-                packed_words[word] = weight[packed_base + word];
-            }
-            for (uint value = 0; value < ValuesPerBlock; ++value) {
-                uint input_col = block * ValuesPerBlock + value;
-                uint bit_offset = value * Bits;
-                uint word = bit_offset / 32;
-                uint shift = bit_offset % 32;
-                uint q = packed_words[word] >> shift;
-                if (shift + Bits > 32) {
-                    q |= packed_words[word + 1] << (32 - shift);
-                }
-                q &= QuantMask;
-                uint group = input_col / GroupSize;
-                uint scale_idx = scale_row + group;
-                float scale = static_cast<float>(scales[scale_idx]);
-                float bias = static_cast<float>(biases[scale_idx]);
-                float w = static_cast<float>(q) * scale + bias;
-                for (uint token = 0; token < (uint)Leading; ++token) {
-                    float x_v = static_cast<float>(x[token * InputDim + input_col]);
-                    acc[token] = fma(x_v, w, acc[token]);
-                }
-            }
-        }
-    } else {
-        for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
-            uint packed = weight[row_base + packed_col];
-            for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
-                uint input_col = packed_col * PackFactor + packed_lane;
-                uint q = (packed >> (packed_lane * Bits)) & QuantMask;
-                uint group = input_col / GroupSize;
-                uint scale_idx = scale_row + group;
-                float scale = static_cast<float>(scales[scale_idx]);
-                float bias = static_cast<float>(biases[scale_idx]);
-                float w = static_cast<float>(q) * scale + bias;
-                for (uint token = 0; token < (uint)Leading; ++token) {
-                    float x_v = static_cast<float>(x[token * InputDim + input_col]);
-                    acc[token] = fma(x_v, w, acc[token]);
-                }
-            }
-        }
-    }
-
-    threadgroup float partials[32]; // four rows × eight simdgroups
-    for (uint token = 0; token < (uint)Leading; ++token) {
-        float sum = simd_sum(acc[token]);
-        if (lane == 0) {
-            partials[token * 8 + sg] = sum;
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (tid == 0) {
-        for (uint token = 0; token < (uint)Leading; ++token) {
-            float total = 0.0f;
-            for (uint group = 0; group < 8; ++group) {
-                total += partials[token * 8 + group];
-            }
-            out[token * OutDim + row] = static_cast<OutT>(total);
-        }
-    }
-"#;
 
 /// Microbatch form of MLX 0.32's affine `qmv_fast` reduction.
 ///
@@ -276,7 +182,7 @@ const INVARIANT_AFFINE_QMV_FAST_KERNEL_SOURCE: &str = r#"
     }
 "#;
 
-/// Dense counterpart of [`INVARIANT_AFFINE_PROJECTION_KERNEL_SOURCE`].
+/// Dense (non-quantized) microbatch projection with invariant per-row reduction.
 const INVARIANT_DENSE_PROJECTION_KERNEL_SOURCE: &str = r#"
     uint flat = thread_position_in_grid.x;
     uint row = flat / 256;
@@ -399,7 +305,6 @@ pub(crate) fn qw_with_policy(
         if shape[0] == 1 && shape[1] > 1 {
             let cols: Vec<MlxArray> = (0..shape[1])
                 .map(|t| {
-                    let t = t as i32;
                     let row = slice(x, &[0, t, 0], &[1, t + 1, shape[2]], &[1, 1, 1], None);
                     qw_direct_mlx(&contiguous(&row, None), qw)
                 })
@@ -546,113 +451,93 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
             let packed_rem = rem * qw.bits / 32;
             let groups_al = aligned / qw.group_size;
             let groups_rem = rem / qw.group_size;
-            if weight_shape[1] == packed_al + packed_rem {
-                if let (Some(scales), Some(biases)) = (qw.scales.as_ref(), qw.biases.as_ref()) {
-                    if scales.shape() == [out_dim, input_dim / qw.group_size]
-                        && biases.shape() == scales.shape()
-                    {
-                        let x_al = slice_trailing_cols(x, 0, aligned);
-                        let x_rem = slice_trailing_cols(x, aligned, input_dim);
-                        let w_al = contiguous(
-                            &slice(&qw.weight, &[0, 0], &[out_dim, packed_al], &[1, 1], None),
-                            None,
-                        );
-                        let w_rem = contiguous(
-                            &slice(
-                                &qw.weight,
-                                &[0, packed_al],
-                                &[out_dim, packed_al + packed_rem],
-                                &[1, 1],
-                                None,
-                            ),
-                            None,
-                        );
-                        let s_al = contiguous(
-                            &slice(scales, &[0, 0], &[out_dim, groups_al], &[1, 1], None),
-                            None,
-                        );
-                        let s_rem = contiguous(
-                            &slice(
-                                scales,
-                                &[0, groups_al],
-                                &[out_dim, groups_al + groups_rem],
-                                &[1, 1],
-                                None,
-                            ),
-                            None,
-                        );
-                        let b_al = contiguous(
-                            &slice(biases, &[0, 0], &[out_dim, groups_al], &[1, 1], None),
-                            None,
-                        );
-                        let b_rem = contiguous(
-                            &slice(
-                                biases,
-                                &[0, groups_al],
-                                &[out_dim, groups_al + groups_rem],
-                                &[1, 1],
-                                None,
-                            ),
-                            None,
-                        );
-                        let qw_al = QuantizedWeight {
-                            weight: w_al,
-                            scales: Some(s_al),
-                            biases: Some(b_al),
-                            group_size: qw.group_size,
-                            bits: qw.bits,
-                            mode: qw.mode.clone(),
-                            linear_bias: None,
-                        };
-                        let qw_rem = QuantizedWeight {
-                            weight: w_rem,
-                            scales: Some(s_rem),
-                            biases: Some(b_rem),
-                            group_size: qw.group_size,
-                            bits: qw.bits,
-                            mode: qw.mode.clone(),
-                            linear_bias: None,
-                        };
-                        // The aligned prefix hits qmv_fast.
-                        let y_al = invariant_projection_metal_impl(&x_al, &qw_al)?;
-                        // Remainder: MLX singleton (Leading=1) or RowExact MLX
-                        // (Leading>1) so multi-token matches pure-direct.
-                        let y_rem = if leading > 1 {
-                            let x_rem_shape = x_rem.shape();
-                            // x_rem is [1, S, rem] or similar with leading product S.
-                            let seq = x_rem_shape[x_rem_shape.len() - 2];
-                            let cols: Vec<MlxArray> = (0..seq)
-                                .map(|t| {
-                                    let t = t as i32;
-                                    let ndim = x_rem_shape.len();
-                                    let mut starts = vec![0_i32; ndim];
-                                    let mut ends: Vec<i32> = x_rem_shape.to_vec();
-                                    starts[ndim - 2] = t;
-                                    ends[ndim - 2] = t + 1;
-                                    let strides = vec![1_i32; ndim];
-                                    let row = contiguous(
-                                        &slice(&x_rem, &starts, &ends, &strides, None),
-                                        None,
-                                    );
-                                    mlx_sys::quantized_matmul_with_mode(
-                                        &row,
-                                        &qw_rem.weight,
-                                        qw_rem.scales.as_ref().unwrap(),
-                                        qw_rem.biases.as_ref(),
-                                        true,
-                                        Some(qw_rem.group_size),
-                                        Some(qw_rem.bits),
-                                        qw_rem.mlx_quantization_mode(),
-                                        None,
-                                    )
-                                })
-                                .collect();
-                            let refs: Vec<&MlxArray> = cols.iter().collect();
-                            // Concat on the sequence axis (second-to-last for 3D).
-                            concatenate(&refs, (x_rem_shape.len() - 2) as i32, None)
-                        } else {
+            if weight_shape[1] == packed_al + packed_rem
+                && let (Some(scales), Some(biases)) = (qw.scales.as_ref(), qw.biases.as_ref())
+                && scales.shape() == [out_dim, input_dim / qw.group_size]
+                && biases.shape() == scales.shape()
+            {
+                let x_al = slice_trailing_cols(x, 0, aligned);
+                let x_rem = slice_trailing_cols(x, aligned, input_dim);
+                let w_al = contiguous(
+                    &slice(&qw.weight, &[0, 0], &[out_dim, packed_al], &[1, 1], None),
+                    None,
+                );
+                let w_rem = contiguous(
+                    &slice(
+                        &qw.weight,
+                        &[0, packed_al],
+                        &[out_dim, packed_al + packed_rem],
+                        &[1, 1],
+                        None,
+                    ),
+                    None,
+                );
+                let s_al = contiguous(
+                    &slice(scales, &[0, 0], &[out_dim, groups_al], &[1, 1], None),
+                    None,
+                );
+                let s_rem = contiguous(
+                    &slice(
+                        scales,
+                        &[0, groups_al],
+                        &[out_dim, groups_al + groups_rem],
+                        &[1, 1],
+                        None,
+                    ),
+                    None,
+                );
+                let b_al = contiguous(
+                    &slice(biases, &[0, 0], &[out_dim, groups_al], &[1, 1], None),
+                    None,
+                );
+                let b_rem = contiguous(
+                    &slice(
+                        biases,
+                        &[0, groups_al],
+                        &[out_dim, groups_al + groups_rem],
+                        &[1, 1],
+                        None,
+                    ),
+                    None,
+                );
+                let qw_al = QuantizedWeight {
+                    weight: w_al,
+                    scales: Some(s_al),
+                    biases: Some(b_al),
+                    group_size: qw.group_size,
+                    bits: qw.bits,
+                    mode: qw.mode.clone(),
+                    linear_bias: None,
+                };
+                let qw_rem = QuantizedWeight {
+                    weight: w_rem,
+                    scales: Some(s_rem),
+                    biases: Some(b_rem),
+                    group_size: qw.group_size,
+                    bits: qw.bits,
+                    mode: qw.mode.clone(),
+                    linear_bias: None,
+                };
+                // The aligned prefix hits qmv_fast.
+                let y_al = invariant_projection_metal_impl(&x_al, &qw_al)?;
+                // Remainder: MLX singleton (Leading=1) or RowExact MLX
+                // (Leading>1) so multi-token matches pure-direct.
+                let y_rem = if leading > 1 {
+                    let x_rem_shape = x_rem.shape();
+                    // x_rem is [1, S, rem] or similar with leading product S.
+                    let seq = x_rem_shape[x_rem_shape.len() - 2];
+                    let cols: Vec<MlxArray> = (0..seq)
+                        .map(|t| {
+                            let ndim = x_rem_shape.len();
+                            let mut starts = vec![0_i32; ndim];
+                            let mut ends: Vec<i32> = x_rem_shape.to_vec();
+                            starts[ndim - 2] = t;
+                            ends[ndim - 2] = t + 1;
+                            let strides = vec![1_i32; ndim];
+                            let row =
+                                contiguous(&slice(&x_rem, &starts, &ends, &strides, None), None);
                             mlx_sys::quantized_matmul_with_mode(
-                                &x_rem,
+                                &row,
                                 &qw_rem.weight,
                                 qw_rem.scales.as_ref().unwrap(),
                                 qw_rem.biases.as_ref(),
@@ -662,10 +547,25 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
                                 qw_rem.mlx_quantization_mode(),
                                 None,
                             )
-                        };
-                        return Some(add(&y_al, &y_rem, None));
-                    }
-                }
+                        })
+                        .collect();
+                    let refs: Vec<&MlxArray> = cols.iter().collect();
+                    // Concat on the sequence axis (second-to-last for 3D).
+                    concatenate(&refs, (x_rem_shape.len() - 2) as i32, None)
+                } else {
+                    mlx_sys::quantized_matmul_with_mode(
+                        &x_rem,
+                        &qw_rem.weight,
+                        qw_rem.scales.as_ref().unwrap(),
+                        qw_rem.biases.as_ref(),
+                        true,
+                        Some(qw_rem.group_size),
+                        Some(qw_rem.bits),
+                        qw_rem.mlx_quantization_mode(),
+                        None,
+                    )
+                };
+                return Some(add(&y_al, &y_rem, None));
             }
         }
     }
@@ -797,7 +697,6 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
             let out = if shape.len() == 3 && shape[0] == 1 && shape[1] > 1 {
                 let cols: Vec<MlxArray> = (0..shape[1])
                     .map(|t| {
-                        let t = t as i32;
                         let row = contiguous(
                             &slice(x, &[0, t, 0], &[1, t + 1, shape[2]], &[1, 1, 1], None),
                             None,
@@ -1225,7 +1124,7 @@ mod tests {
         let weight_data: Vec<f32> = (0..input_dim * output_dim)
             .map(|index| ((index % 127) as f32 - 63.0) * 0.015625)
             .collect();
-        let weight = array_f32(&weight_data, &[output_dim as i32, input_dim as i32]);
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
         let quantized = quantize(
             &weight,
             Some(64),
@@ -1246,21 +1145,21 @@ mod tests {
         let input_data: Vec<f32> = (0..2 * input_dim)
             .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)
             .collect();
-        let input = array_f32(&input_data, &[2, 1, input_dim as i32]);
+        let input = array_f32(&input_data, &[2, 1, input_dim]);
         let batched = qw_with_policy(&input, &weight, ProjectionBatchPolicy::RowExact);
 
-        for row in 0..2 {
-            let row_start = row * input_dim;
+        for row in 0..2i32 {
+            let row_start = (row as usize) * (input_dim as usize);
             let single_input = array_f32(
-                &input_data[row_start..row_start + input_dim],
-                &[1, 1, input_dim as i32],
+                &input_data[row_start..row_start + input_dim as usize],
+                &[1, 1, input_dim],
             );
             let expected = qw(&single_input, &weight);
             let actual = contiguous(
                 &slice(
                     &batched,
-                    &[row as i32, 0, 0],
-                    &[row as i32 + 1, 1, output_dim as i32],
+                    &[row, 0, 0],
+                    &[row + 1, 1, output_dim],
                     &[1, 1, 1],
                     None,
                 ),
@@ -1347,7 +1246,7 @@ mod tests {
         let weight_data: Vec<f32> = (0..input_dim * output_dim)
             .map(|i| ((i % 251) as f32 - 125.0) * 0.00390625)
             .collect();
-        let source = array_f32(&weight_data, &[output_dim as i32, input_dim as i32]);
+        let source = array_f32(&weight_data, &[output_dim, input_dim]);
         let q = quantize(
             &source,
             Some(group_size),
@@ -1369,7 +1268,7 @@ mod tests {
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
             .collect();
         let input = astype(
-            &array_f32(&input_data, &[1, 3, input_dim as i32]),
+            &array_f32(&input_data, &[1, 3, input_dim]),
             MlxDtype::Bfloat16,
             None,
         );
@@ -1379,7 +1278,7 @@ mod tests {
                 &slice(
                     &input,
                     &[0, row, 0],
-                    &[1, row + 1, input_dim as i32],
+                    &[1, row + 1, input_dim],
                     &[1, 1, 1],
                     None,
                 ),
@@ -1400,7 +1299,7 @@ mod tests {
                 &slice(
                     &mb,
                     &[0, row, 0],
-                    &[1, row + 1, output_dim as i32],
+                    &[1, row + 1, output_dim],
                     &[1, 1, 1],
                     None,
                 ),
@@ -1433,7 +1332,7 @@ mod tests {
         let weight_data: Vec<f32> = (0..input_dim * output_dim)
             .map(|i| ((i % 251) as f32 - 125.0) * 0.00390625)
             .collect();
-        let source = array_f32(&weight_data, &[output_dim as i32, input_dim as i32]);
+        let source = array_f32(&weight_data, &[output_dim, input_dim]);
         let q = quantize(
             &source,
             Some(group_size),
@@ -1455,7 +1354,7 @@ mod tests {
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
             .collect();
         let input = astype(
-            &array_f32(&input_data, &[1, 1, input_dim as i32]),
+            &array_f32(&input_data, &[1, 1, input_dim]),
             MlxDtype::Bfloat16,
             None,
         );
@@ -1482,7 +1381,6 @@ mod tests {
         assert!(maxd < 1e-3, "qmv 2816 vs MLX maxΔ={maxd}");
     }
 
-    #[test]
     #[test]
     fn invariant_gemma26_shapes_self_consistent_and_mlx() {
         // Realistic Gemma 26B-A4B projection shapes under Shared microbatch S=3.
@@ -1660,16 +1558,17 @@ mod tests {
         assert_eq!(da, db, "2d vs 3d shape mismatch maxd={maxd}");
     }
 
+    #[test]
     fn invariant_nonfast_2112_matches_mlx_singleton() {
         // intermediate_size-like: non-fast path must match MLX bitexact.
-        let input_dim = 2112;
-        let output_dim = 64;
+        let input_dim: i32 = 2112;
+        let output_dim: i32 = 64;
         let bits = 6;
         let group_size = 32;
-        let weight_data: Vec<f32> = (0..input_dim * output_dim)
+        let weight_data: Vec<f32> = (0..(input_dim * output_dim) as usize)
             .map(|i| ((i % 251) as f32 - 125.0) * 0.00390625)
             .collect();
-        let source = array_f32(&weight_data, &[output_dim as i32, input_dim as i32]);
+        let source = array_f32(&weight_data, &[output_dim, input_dim]);
         let q = quantize(
             &source,
             Some(group_size),
@@ -1687,11 +1586,11 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
         };
-        let input_data: Vec<f32> = (0..input_dim)
+        let input_data: Vec<f32> = (0..input_dim as usize)
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
             .collect();
         let input = astype(
-            &array_f32(&input_data, &[1, 1, input_dim as i32]),
+            &array_f32(&input_data, &[1, 1, input_dim]),
             MlxDtype::Bfloat16,
             None,
         );
