@@ -896,6 +896,7 @@ fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
         }],
         request_multimodal_inputs: Vec::new(),
     };
@@ -5242,6 +5243,7 @@ fn copied_prefix_blocks_persist_into_layer_cache_for_future_native_decode() {
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
         }],
         request_multimodal_inputs: Vec::new(),
     };
@@ -9251,6 +9253,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 ignore_eos: false,
                 tool_call_mode: false,
                 structured_output_mode: false,
+                min_p: None,
             }],
             request_multimodal_inputs: Vec::new(),
         };
@@ -9359,6 +9362,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 ignore_eos: false,
                 tool_call_mode: false,
                 structured_output_mode: false,
+                min_p: None,
             }],
             request_multimodal_inputs: Vec::new(),
         };
@@ -9668,6 +9672,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                 ignore_eos: false,
                 tool_call_mode: false,
                 structured_output_mode: false,
+                min_p: None,
             }],
             request_multimodal_inputs: Vec::new(),
         };
@@ -9775,6 +9780,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                     ignore_eos: false,
                     tool_call_mode: false,
                     structured_output_mode: false,
+                    min_p: None,
                 }],
                 request_multimodal_inputs: Vec::new(),
             };

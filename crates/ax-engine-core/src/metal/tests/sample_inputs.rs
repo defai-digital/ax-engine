@@ -91,6 +91,7 @@ pub(super) fn sample_runner_input() -> RunnerInput {
                 ignore_eos: false,
                 tool_call_mode: false,
                 structured_output_mode: false,
+                min_p: None,
             },
             RunnerRequestContext {
                 request_id: RequestId(9),
@@ -110,6 +111,7 @@ pub(super) fn sample_runner_input() -> RunnerInput {
                 ignore_eos: false,
                 tool_call_mode: false,
                 structured_output_mode: false,
+                min_p: None,
             },
         ],
         request_multimodal_inputs: Vec::new(),
@@ -201,6 +203,7 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
                 ignore_eos: false,
                 tool_call_mode: false,
                 structured_output_mode: false,
+                min_p: None,
             },
             RunnerRequestContext {
                 request_id: RequestId(11),
@@ -220,6 +223,7 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
                 ignore_eos: false,
                 tool_call_mode: false,
                 structured_output_mode: false,
+                min_p: None,
             },
         ],
         request_multimodal_inputs: Vec::new(),
@@ -284,6 +288,7 @@ pub(super) fn sample_prefill_only_runner_input() -> RunnerInput {
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
         }],
         request_multimodal_inputs: Vec::new(),
     }
@@ -347,6 +352,7 @@ pub(super) fn sample_decode_continuation_runner_input() -> RunnerInput {
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
         }],
         request_multimodal_inputs: Vec::new(),
     }

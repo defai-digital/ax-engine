@@ -416,6 +416,7 @@ impl GenerateSampling {
             temperature: self.temperature,
             top_p: self.top_p,
             top_k: self.top_k,
+            min_p: self.min_p,
             repetition_penalty: self.repetition_penalty,
             repetition_context_size: self.repetition_context_size,
             no_repeat_ngram_size: self.no_repeat_ngram_size,

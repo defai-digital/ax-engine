@@ -1040,6 +1040,7 @@ impl EngineCore {
                     temperature: record.sampling_params.temperature,
                     top_p: record.sampling_params.top_p,
                     top_k: record.sampling_params.top_k,
+                    min_p: record.sampling_params.min_p,
                     repetition_penalty: record.sampling_params.repetition_penalty,
                     repetition_context_size: record.sampling_params.repetition_context_size,
                     no_repeat_ngram_size: record.sampling_params.no_repeat_ngram_size,

@@ -41,6 +41,9 @@ pub struct MlxSamplingParams {
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: u32,
+    /// Minimum-probability filter relative to the most likely candidate
+    /// (`prob >= min_p * max_prob`). `None` disables it; inert for greedy.
+    pub min_p: Option<f32>,
     pub repetition_penalty: f32,
     pub repetition_context_size: Option<u32>,
     pub no_repeat_ngram_size: u32,
@@ -53,6 +56,7 @@ impl MlxSamplingParams {
             temperature,
             top_p,
             top_k,
+            min_p: None,
             repetition_penalty: 1.0,
             repetition_context_size: None,
             no_repeat_ngram_size: 0,
@@ -72,6 +76,16 @@ impl MlxSamplingParams {
         self.repetition_penalty = repetition_penalty;
         self.repetition_context_size = repetition_context_size;
         self
+    }
+
+    pub const fn with_min_p(mut self, min_p: Option<f32>) -> Self {
+        self.min_p = min_p;
+        self
+    }
+
+    pub fn uses_min_p(self) -> bool {
+        self.min_p
+            .is_some_and(|min_p| min_p.is_finite() && min_p > 0.0)
     }
 
     pub fn uses_repetition_penalty(self) -> bool {
@@ -229,7 +243,7 @@ pub fn sample_categorical_into(
     // Fast path: no top-k/top-p filtering. Avoids index-tracking allocation
     // and the extra O(vocab) filtered_sum pass — the common case for plain
     // temperature sampling.
-    if sampling.top_k == 0 && sampling.top_p >= 1.0 {
+    if sampling.top_k == 0 && sampling.top_p >= 1.0 && !sampling.uses_min_p() {
         probs_buf.clear();
         probs_buf.extend(logits.iter().map(|&l| {
             let p = ((l - max_l) * inv_temp).exp();
@@ -266,6 +280,19 @@ pub fn sample_categorical_into(
         return argmax_f32(logits);
     }
 
+    if sampling.uses_min_p() {
+        let min_p = sampling.min_p.unwrap_or(0.0);
+        let max_prob = candidates_buf
+            .iter()
+            .map(|(_, prob)| *prob)
+            .fold(0.0f32, f32::max);
+        let cutoff = min_p * max_prob;
+        candidates_buf.retain(|(_, prob)| *prob >= cutoff);
+        if candidates_buf.is_empty() {
+            return argmax_f32(logits);
+        }
+    }
+
     apply_top_k_top_p(candidates_buf, sampling.top_k, sampling.top_p);
     let filtered_sum: f32 = candidates_buf.iter().map(|(_, p)| *p).sum();
     if filtered_sum == 0.0 || !filtered_sum.is_finite() {
@@ -297,6 +324,7 @@ pub fn sample_categorical_with_topk_gpu(
     if !fastpath::decode_sampling_gpu_topk_enabled()
         || sampling.temperature <= 0.0
         || sampling.top_k == 0
+        || sampling.uses_min_p()
         || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
@@ -338,6 +366,7 @@ pub fn sample_categorical_with_topp_gpu(
         || sampling.temperature <= 0.0
         || sampling.top_k != 0
         || !(sampling.top_p > 0.0 && sampling.top_p < 1.0)
+        || sampling.uses_min_p()
         || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
@@ -935,6 +964,66 @@ mod tests {
             sample_categorical(&logits, MlxSamplingParams::greedy(), &[], &mut rng),
             1
         );
+    }
+
+    #[test]
+    fn min_p_drops_tokens_below_relative_threshold() {
+        // Token 0 has ~99.9% probability at temp 1; tokens 1..4 are far below
+        // 0.05 * max_prob, so with enough draws only token 0 can appear.
+        let logits = vec![10.0_f32, 1.0, 1.0, 1.0, 1.0];
+        let mut rng = Xorshift64::new(3);
+        let sampling = MlxSamplingParams::new(1.0, 1.0, 0).with_min_p(Some(0.05));
+        for _ in 0..64 {
+            assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 0);
+        }
+    }
+
+    #[test]
+    fn min_p_keeps_comparable_tokens() {
+        // Two tokens within the threshold: both must be reachable.
+        let logits = vec![2.0_f32, 1.9, 0.0];
+        let mut rng = Xorshift64::new(11);
+        let sampling = MlxSamplingParams::new(1.0, 1.0, 0).with_min_p(Some(0.2));
+        let mut seen: std::collections::HashSet<u32> = Default::default();
+        for _ in 0..400 {
+            seen.insert(sample_categorical(&logits, sampling, &[], &mut rng));
+        }
+        assert!(seen.contains(&0) && seen.contains(&1), "got {seen:?}");
+        assert!(!seen.contains(&2), "token 2 must be filtered: {seen:?}");
+    }
+
+    #[test]
+    fn min_p_extreme_value_falls_back_to_argmax() {
+        // A cutoff above every probability empties the candidate set; the
+        // sampler must fall back to argmax rather than panic.
+        let logits = vec![0.5_f32, 3.0, 1.0];
+        let mut rng = Xorshift64::new(5);
+        let sampling = MlxSamplingParams::new(1.0, 1.0, 0).with_min_p(Some(2.0));
+        assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 1);
+    }
+
+    #[test]
+    fn min_p_is_inert_for_greedy_argmax() {
+        let logits = vec![0.1_f32, 5.0, 1.0];
+        let mut rng = Xorshift64::new(9);
+        let sampling = MlxSamplingParams::greedy().with_min_p(Some(0.9));
+        assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 1);
+    }
+
+    #[test]
+    fn min_p_none_keeps_exact_prior_distribution() {
+        // Same seed, min_p=None vs absent params: identical token stream.
+        let logits = vec![1.2_f32, 0.8, 2.1, 0.3, 1.7];
+        let plain = MlxSamplingParams::new(0.7, 1.0, 0);
+        let with_none = MlxSamplingParams::new(0.7, 1.0, 0).with_min_p(None);
+        let mut a = Xorshift64::new(21);
+        let mut b = Xorshift64::new(21);
+        for _ in 0..64 {
+            assert_eq!(
+                sample_categorical(&logits, plain, &[], &mut a),
+                sample_categorical(&logits, with_none, &[], &mut b)
+            );
+        }
     }
 
     #[test]

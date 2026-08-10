@@ -1934,6 +1934,7 @@ fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) ->
 /// request identically to its single-sequence decode.
 fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams {
     MlxSamplingParams::new(ctx.temperature, ctx.top_p, ctx.top_k)
+        .with_min_p(ctx.min_p)
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
         .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
 }
@@ -4584,6 +4585,7 @@ impl MlxRunner {
         let sampling = ctx
             .map(|c| {
                 MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
+                    .with_min_p(c.min_p)
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
             })
@@ -11788,6 +11790,7 @@ mod tests {
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
         }
     }
 
@@ -14035,6 +14038,7 @@ mod tests {
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
         };
         assert!(!prefill_item_completes_prompt(&item, Some(&first_context)));
 

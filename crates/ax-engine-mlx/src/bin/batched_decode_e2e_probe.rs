@@ -168,6 +168,7 @@ fn ctx(
         ignore_eos: true, // fixed-length streams for comparison
         tool_call_mode: false,
         structured_output_mode: false,
+        min_p: None,
     }
 }
 
