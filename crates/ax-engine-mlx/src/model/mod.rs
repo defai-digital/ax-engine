@@ -1661,6 +1661,18 @@ pub fn forward_all_positions_with_post_norm_greedy(
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
     let seq = token_ids.len();
+    // LONG_MT aligns both the materialized S=1 baseline and the multi-token
+    // verifier on the invariant affine projection kernel. RowExact MLX reads
+    // every quantized weight once per verify row; the invariant kernel keeps
+    // the singleton qmv reduction order while reusing each weight load across
+    // the microbatch. Scope it here so empty-draft S=1 and verify S>1 cannot
+    // acquire different arithmetic contracts.
+    let moe_long_mt = cfg.moe_expert_count > 0
+        && token_offset >= 512
+        && std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+    let _moe_invariant = moe_long_mt.then(|| crate::fastpath::scoped_qwen_linear_mtp_exact(true));
     // MoE multi-token: per-pos SDPA, pos0-exact/rest-Shared QKV, RowExact
     // dense/o_proj, batched experts. Empty-draft real post_norm.
     // Keep multi-token window views ON (default) so long-prompt agent uses

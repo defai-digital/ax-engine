@@ -371,9 +371,17 @@ pub(crate) fn qw_with_policy(
     policy: ProjectionBatchPolicy,
 ) -> MlxArray {
     let shape = x.shape();
-    // RowExact: always per-row MLX (no invariant). Invariant is for Shared
-    // microbatch==singleton; applying it to RowExact can introduce split-path
-    // ulp drift vs pure-direct MLX (h=2816) and false A/B fails.
+    // Under an invariant projection scope, the S=1 baseline uses this same
+    // kernel through Shared and S>1 RowExact must use it too. The scope owner
+    // is responsible for applying the arithmetic contract symmetrically.
+    if policy == ProjectionBatchPolicy::RowExact
+        && fastpath::qwen_linear_mtp_exact_enabled()
+        && let Some(invariant) = invariant_projection_metal_impl(x, qw)
+    {
+        return invariant;
+    }
+    // Outside an invariant scope, RowExact stays on per-row MLX so it matches
+    // an ordinary pure-direct singleton.
     if policy == ProjectionBatchPolicy::RowExact && shape.len() == 3 {
         // Batch-decode: B>1, S=1 — one projection per batch row.
         if shape[0] > 1 && shape[1] == 1 {
@@ -512,21 +520,26 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
         return None;
     }
 
-    // Split non-512-aligned dims: qmv_fast on the 512-aligned prefix (amortized
-    // + MLX-bitexact) + MLX on the remainder. Both pure-direct and multi-token
-    // use this split so A/B identity holds. Critical for Gemma h=2816.
+    // Split dimensions that are not aligned to one complete qmv_fast lane
+    // block: 512 values for 4-bit, 256 for 6/8-bit. Both pure-direct and
+    // multi-token use this split so A/B identity holds.
+    let qmv_block_size = match qw.bits {
+        4 => 512,
+        6 | 8 => 256,
+        _ => 512,
+    };
     if matches!(
         qw.mlx_quantization_mode(),
         mlx_sys::MlxQuantizationMode::Affine
     ) && qw.bits > 0
         && qw.bits <= 8
         && qw.group_size > 0
-        && input_dim % 512 != 0
-        && input_dim > 512
+        && input_dim % qmv_block_size != 0
+        && input_dim > qmv_block_size
         && input_dim % qw.group_size == 0
         && (input_dim * qw.bits) % 32 == 0
     {
-        let aligned = (input_dim / 512) * 512;
+        let aligned = (input_dim / qmv_block_size) * qmv_block_size;
         let rem = input_dim - aligned;
         if aligned > 0 && rem > 0 && rem % qw.group_size == 0 && (rem * qw.bits) % 32 == 0 {
             let packed_al = aligned * qw.bits / 32;
@@ -600,7 +613,7 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
                             mode: qw.mode.clone(),
                             linear_bias: None,
                         };
-                        // aligned hits qmv_fast (input_dim % 512 == 0).
+                        // The aligned prefix hits qmv_fast.
                         let y_al = invariant_projection_metal_impl(&x_al, &qw_al)?;
                         // Remainder: MLX singleton (Leading=1) or RowExact MLX
                         // (Leading>1) so multi-token matches pure-direct.
@@ -747,9 +760,10 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
             6 | 8 => 8,
             _ => 0,
         };
+        let block_size = values_per_thread * 32;
         let qmv_fast_eligible = values_per_thread > 0
             && out_dim % 8 == 0
-            && input_dim % 512 == 0
+            && input_dim % block_size == 0
             && qw.group_size >= values_per_thread
             && qw.group_size % values_per_thread == 0;
         if qmv_fast_eligible {
@@ -1410,9 +1424,8 @@ mod tests {
     }
 
     #[test]
-    fn invariant_nonfast_2816_matches_mlx_singleton() {
-        // Gemma hidden=2816 uses split path (2560 qmv_fast + 256 MLX).
-        // Absolute MLX match is ulp-level only; self-consistency is required.
+    fn invariant_qmv_2816_matches_mlx_singleton() {
+        // Gemma hidden=2816 is eleven complete 6-bit qmv lane blocks.
         let input_dim = 2816;
         let output_dim = 64;
         let bits = 6;
@@ -1446,7 +1459,7 @@ mod tests {
             MlxDtype::Bfloat16,
             None,
         );
-        let inv = invariant_projection_metal_impl(&input, &weight).expect("split 2816");
+        let inv = invariant_projection_metal_impl(&input, &weight).expect("qmv 2816");
         let mlx = quantized_matmul(
             &input,
             &q[0],
@@ -1466,8 +1479,7 @@ mod tests {
         for i in 0..da.len() {
             maxd = maxd.max((da[i] - db[i]).abs());
         }
-        // Split sum vs full MLX has float-assoc ulps; keep tight bound.
-        assert!(maxd < 1e-3, "split 2816 vs full MLX maxΔ={maxd}");
+        assert!(maxd < 1e-3, "qmv 2816 vs MLX maxΔ={maxd}");
     }
 
     #[test]

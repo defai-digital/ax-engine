@@ -7283,10 +7283,21 @@ impl MlxRunner {
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
                 .unwrap_or(0);
-            // MoE: double-buffer for MTP-off (smokef118: sequential S=1 for
-            // MTP-off diverged first_diff@1 vs multi-token MTP-on on short;
-            // smokef133 sequential long self-looped 74418 without double-buffer
-            // prime alignment).
+            // LONG_MT uses the materialized singleton arithmetic that the
+            // batched-singleton verifier matches. Keep this request-stable:
+            // short requests that started on the double buffer must not switch
+            // merely because generation later crosses position 512.
+            let gemma_moe_long_mt_singleton = self.gemma_moe_aligned_greedy_decode()
+                && gemma4_moe_long_mt_enabled()
+                && state.cache.seq_len() >= 512
+                && state.pending_direct.is_none()
+                && state.direct_pipeline_emitted_tokens == 0;
+            if gemma_moe_long_mt_singleton {
+                return vec![self.run_gemma_sequential_pure_direct(state, last_token)];
+            }
+            // Default MoE baseline stays on the double buffer. Earlier short
+            // S=1 alignment drifted at token 1; an S=1 long path that retained
+            // the direct bootstrap double-wrote 74418 and self-looped.
             return vec![self.run_direct_pipeline_decode(
                 state,
                 last_token,
@@ -7370,6 +7381,7 @@ impl MlxRunner {
         }
         let tok = predicted.data_u32()[0];
         state.next_model_last_token = Some(tok);
+        state.decode_telemetry.record_production_decode_eval();
         tok
     }
 
@@ -7742,9 +7754,7 @@ impl MlxRunner {
         // formal LONG_MT reaches first_diff@89 (EOS near-tie) at ~1.16× long.
         // Residual recheck / path alignment attempts desynced earlier. Fail-closed
         // long pure-direct for release exact (smokef132). Opt-in LONG_MT=1.
-        let allow_long_mt = std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let allow_long_mt = gemma4_moe_long_mt_enabled();
         if self.cfg.moe_expert_count > 0 && base_position >= 512 && !allow_long_mt {
             max_depth = 0;
         }
@@ -7925,12 +7935,14 @@ impl MlxRunner {
             // - long: double-buffer pure-direct = MTP-off twin (identity).
             // Multi-token draft verify uses dual-edge + cycle residual recheck.
             let token_offset = state.cache.seq_len();
-            let moe_long = self.cfg.moe_expert_count > 0 && token_offset >= 512;
+            let moe_long_fail_closed = self.cfg.moe_expert_count > 0
+                && token_offset >= 512
+                && !gemma4_moe_long_mt_enabled();
             let moe_force_direct = self.cfg.moe_expert_count > 0
                 && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
             let (tok, draft_hidden) = if self.cfg.moe_expert_count > 0
                 && !moe_force_direct
-                && !moe_long
+                && !moe_long_fail_closed
             {
                 use crate::model::forward_all_positions_with_post_norm_greedy;
                 use mlx_sys::{argmax, eval};
@@ -8804,12 +8816,9 @@ impl MlxRunner {
                     )
                 } else if gemma_multitoken_adopt {
                     // In-place multi-token always-adopt + dual-edge window.
-                    // MoE long: multi-token residual can near-tie flip vs
-                    // double-buffer MTP-off at a flat 3-cycle break (smokef127
-                    // first_diff@89: MT wants 236761, PD wants 4th 236771).
-                    // When residual breaks a flat cycle, re-resolve with the
-                    // double-buffer pure-direct write of the last accepted
-                    // input so residual matches MTP-off.
+                    // LONG_MT aligns attention reductions and quantized
+                    // projections with its materialized S=1 baseline; no
+                    // accepted KV is replayed or rewritten mid-stream.
                     let verify_forward_started = Instant::now();
                     state.pending_direct = None;
                     let (logits_mt, post_norm_all) = forward_all_positions_with_post_norm_greedy(
@@ -10072,13 +10081,26 @@ impl MlxRunner {
             && self.weights.deepseek_v4_nextn.is_none()
             && is_greedy
             && (crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
-                || (self.cfg.moe_expert_count > 0 && state.cache.seq_len() >= 512));
+                || (self.cfg.moe_expert_count > 0
+                    && state.cache.seq_len() >= 512
+                    && !gemma4_moe_long_mt_enabled()));
+        // The LONG_MT identity route deliberately uses materialized S=1 for
+        // MTP-off and an S=1 target step to seed MTP-on. Priming the lazy
+        // double buffer here writes that bootstrap token a second time and
+        // produces the proven 74418 self-loop.
+        let gemma_moe_long_mt_singleton = self.gemma4_assistant_mtp.is_some()
+            && self.cfg.moe_expert_count > 0
+            && self.weights.deepseek_v4_nextn.is_none()
+            && is_greedy
+            && state.cache.seq_len() >= 512
+            && gemma4_moe_long_mt_enabled();
         if (should_bootstrap_direct_pipeline(
             self.disable_ngram_acceleration,
             state.ngram_acceleration_disabled_for_request,
             self.has_mtp(),
             mtp_uses_direct_pipeline,
         ) || gemma_exact_direct_bootstrap)
+            && !gemma_moe_long_mt_singleton
             && (is_greedy || (self.disable_ngram_acceleration && temperature <= 0.0))
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token
@@ -10286,6 +10308,12 @@ fn gemma_recent_is_flat_cycle(recent: &[u32], run: usize) -> bool {
     }
     let tail = &recent[recent.len() - run..];
     tail.iter().all(|&t| t == tail[0])
+}
+
+fn gemma4_moe_long_mt_enabled() -> bool {
+    std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 /// Compute the think-block state after observing a sequence of tokens, without

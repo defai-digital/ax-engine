@@ -1,11 +1,12 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, concatenate, contiguous,
-    eval, qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm,
-    rope, scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, broadcast_to,
+    concatenate, contiguous, eval,
+    qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
+    scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
     slice_update, transpose,
 };
 #[cfg(test)]
-use mlx_sys::{broadcast_to, matmul, multiply, slice, softmax_precise};
+use mlx_sys::{matmul, multiply, slice, softmax_precise};
 
 use crate::attention_mask::{create_causal_mask, create_ring_sliding_mask};
 use crate::fastpath;
@@ -461,18 +462,46 @@ pub(crate) fn full_precision_attention_with_window(
             let hk = k_shape.get(1).copied().unwrap_or(hq);
             let key_len = k_shape.get(2).copied().unwrap_or(1) as usize;
             let hist = key_len.saturating_sub(seq);
-            // Ring multi-token: one fused SDPA with the full ring validity
-            // mask (per-row loop was exact but ~3× slower on long agent).
-            if ring_layout.is_some() {
-                let ring_mask = mask_opt
-                    .as_ref()
-                    .expect("rotating multi-token attention requires a ring mask");
-                return scaled_dot_product_attention_with_mask(
-                    q_rope,
-                    cached_k,
-                    cached_v,
+            // Fold query positions into the batch dimension so MLX dispatches
+            // its singleton-query reduction for every row in one call. A
+            // native q_len=seq dispatch uses a different bf16 reduction and
+            // accumulates small KV/residual drift; the formal Gemma 26B long
+            // loop eventually flips an EOS near-tie. Separate singleton calls
+            // are exact but lose the multi-token speedup.
+            let generated_mask;
+            debug_assert!(ring_layout.is_none() || mask_opt.is_some());
+            let position_mask = if let Some(mask) = mask_opt.as_ref() {
+                mask
+            } else {
+                generated_mask = create_causal_mask(seq, hist, sliding_window);
+                &generated_mask
+            };
+            if b == 1
+                && k_shape.first().copied() == Some(1)
+                && position_mask.shape() == vec![seq as i32, key_len as i32]
+            {
+                let q_singletons = reshape(
+                    &transpose(q_rope, &[0, 2, 1, 3], None),
+                    &[seq as i32, hq, 1, d],
+                    None,
+                );
+                let k_singletons =
+                    broadcast_to(cached_k, &[seq as i32, hk, key_len as i32, d], None);
+                let v_singletons =
+                    broadcast_to(cached_v, &[seq as i32, hk, key_len as i32, d], None);
+                let mask_singletons =
+                    reshape(position_mask, &[seq as i32, 1, 1, key_len as i32], None);
+                let out_singletons = scaled_dot_product_attention_with_mask(
+                    &q_singletons,
+                    &k_singletons,
+                    &v_singletons,
                     query_scale,
-                    ScaledDotProductAttentionMask::Array(ring_mask),
+                    ScaledDotProductAttentionMask::Array(&mask_singletons),
+                    None,
+                );
+                return transpose(
+                    &reshape(&out_singletons, &[1, seq as i32, hq, d], None),
+                    &[0, 2, 1, 3],
                     None,
                 );
             }
