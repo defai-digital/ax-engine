@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use ax_engine_core::qwen3_vl::Qwen3VlRuntimeInputs;
 use ax_engine_core::vl_geometry::{
     MropeSections, deepstack_injection_layers, mrope_position_ids, scatter_merge_indices,
-    vit_soft_token_count,
 };
 use ax_engine_core::{NativeTensorRole, NativeTensorSpec};
 use mlx_sys::{
@@ -63,23 +62,14 @@ impl Qwen3VlImageGeometry {
     }
 
     pub fn soft_token_count(self) -> Result<u32, Qwen3VlError> {
-        vit_soft_token_count(
-            self.height,
-            self.width,
-            self.patch_size,
-            self.spatial_merge_size,
-            self.max_soft_tokens,
-        )
-        .ok_or_else(|| {
-            Qwen3VlError::InvalidGeometry(format!(
-                "h={} w={} patch={} merge={} max={}",
-                self.height,
-                self.width,
-                self.patch_size,
-                self.spatial_merge_size,
-                self.max_soft_tokens
-            ))
-        })
+        // Qwen3-VL spatial merge emits one soft token per merged grid cell
+        // `(h/p/merge)×(w/p/merge)`, matching MRoPE `grid_hw` and the runtime
+        // check in `qwen_mrope_position_axes`. Do not use the Gemma pooling
+        // product helper `vit_soft_token_count` here: for a 3×3 patch grid with
+        // merge 2 it overcounts (product 2 vs grid 1×1 = 1).
+        let (gh, gw) = self.grid_hw()?;
+        let count = gh.saturating_mul(gw);
+        Ok(count.min(self.max_soft_tokens))
     }
 
     pub fn mrope_sections(self) -> Result<MropeSections, Qwen3VlError> {
@@ -1326,6 +1316,33 @@ mod tests {
         assert_eq!(geometry.soft_token_count().unwrap(), 196);
         assert_eq!(plan_mrope_for_images(&[geometry]).unwrap().len(), 196 * 3);
         assert_eq!(deepstack_layers(3, 36), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn soft_token_count_matches_grid_hw_on_non_merge_aligned_patch_grid() {
+        // 3×3 patch grid with merge 2: soft tokens must be grid_h×grid_w (1),
+        // not the product-overcount (9/4=2). MRoPE and scatter share this count.
+        let geometry = Qwen3VlImageGeometry {
+            height: 48,
+            width: 48,
+            patch_size: 16,
+            spatial_merge_size: 2,
+            max_soft_tokens: 1024,
+        };
+        let (gh, gw) = geometry.grid_hw().expect("grid");
+        assert_eq!((gh, gw), (1, 1));
+        assert_eq!(geometry.soft_token_count().unwrap(), gh * gw);
+        assert_eq!(plan_mrope_for_images(&[geometry]).unwrap().len(), 3);
+        // Collapsed merge axis must fail closed for both APIs.
+        let collapsed = Qwen3VlImageGeometry {
+            height: 16,
+            width: 64,
+            patch_size: 16,
+            spatial_merge_size: 2,
+            max_soft_tokens: 1024,
+        };
+        assert!(collapsed.grid_hw().is_err());
+        assert!(collapsed.soft_token_count().is_err());
     }
 
     #[test]

@@ -370,7 +370,15 @@ impl BatchedDecodeSession {
     /// fewer physical tokens than its logical `seq_len`; copying it into the
     /// dense batched store would shift positions, so that request must remain
     /// on the per-item route.
+    ///
+    /// Also rejects Qwen VL caches with a non-zero multimodal RoPE position
+    /// delta: [`crate::model::decode_batched_forward`] advances rows by
+    /// physical `row_len` only and does not apply `mrope_decode_position`, so
+    /// seeding a visual-prefilled cache would desync rope offsets.
     pub fn can_seed(&self, prefill: &MlxKVCache) -> bool {
+        if prefill.mrope_position_delta() != 0 {
+            return false;
+        }
         let logical_len = prefill.seq_len() as i32;
         (0..self.cache.num_layers()).all(|layer| {
             if let Some((k, v)) = prefill.peek_layer_kv(layer) {
@@ -562,6 +570,21 @@ impl BatchedDecodeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn can_seed_rejects_visual_mrope_position_delta() {
+        // Batched decode uses physical row_len as the RoPE offset and does not
+        // apply MlxKVCache::mrope_decode_position. Visual prefills that stored a
+        // compressed multimodal position delta must stay on the per-item route.
+        let session = BatchedDecodeSession::new(1, 2);
+        let mut cache = MlxKVCache::new(1);
+        assert_eq!(cache.mrope_position_delta(), 0);
+        cache.set_mrope_position_delta(12);
+        assert!(
+            !session.can_seed(&cache),
+            "non-zero mrope_position_delta must not seed a batched cohort"
+        );
+    }
 
     #[test]
     fn model_eligibility_guards() {
