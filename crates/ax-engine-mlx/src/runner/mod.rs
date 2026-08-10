@@ -9377,6 +9377,10 @@ impl MlxRunner {
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
+                    let draft_temperature = crate::mtp::deepseek_v4_mtp_effective_draft_temperature(
+                        state.ngram_in_think,
+                        sampling.temperature,
+                    );
                     let (draft, log_probs, distributions, added, _top2_margins) =
                         deepseek_v4_mtp_draft_tokens_gated(
                             &self.weights,
@@ -9387,6 +9391,7 @@ impl MlxRunner {
                             Some(state.mtp_adaptive_max_depth),
                             &mut state.rng,
                             gate,
+                            draft_temperature,
                         );
                     mtp_timings.mtp_draft_wall_us = mtp_timings
                         .mtp_draft_wall_us
