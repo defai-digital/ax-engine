@@ -16,9 +16,10 @@ pub(crate) use attention::{
     KVConcatBuffer, attention_mask_array, attention_with_sinks, bidirectional_attention,
     build_layer_masks_for_forward, build_layer_masks_with_media_ranges,
     direct_qk_norm_rope_route_enabled_for_family, flatten_attention_output_bhsd,
-    full_precision_attention, prepare_value_bhsd, prepare_value_bhsd_from_proj,
-    prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj_flat, qk_norm_rope_bhsd_from_proj_with_route,
+    full_precision_attention, full_precision_attention_with_window, prepare_value_bhsd,
+    prepare_value_bhsd_from_proj, prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_flat,
+    qk_norm_rope_bhsd_from_proj_with_route,
 };
 pub(crate) use deepseek_v4_attention::deepseek_v4_attention_forward;
 pub(crate) use hyper_connection::{hc_head, hc_post, hc_pre};
@@ -29,12 +30,14 @@ pub(crate) use mlp::moe_router_deepseek_v4;
 pub(crate) use mlp::per_layer_input_gate;
 pub(crate) use mlp::{
     attention_output_projection, attention_output_projection_batched,
-    attention_output_projection_with_post_norm, combine_gemma4_dual_path_outputs, ffn_swiglu,
-    ffn_swiglu_batched, flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs,
-    moe_experts_forward, moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
+    attention_output_projection_with_post_norm, attention_output_projection_with_post_norm_policy,
+    combine_gemma4_dual_path_outputs, ffn_swiglu, ffn_swiglu_batched, ffn_swiglu_row_exact,
+    flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs, moe_experts_forward,
+    moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
     moe_router_gpt_oss, moe_router_qwen3, per_layer_input_gate_project, qkv_project,
-    qkv_project_batched, qkv_project_embed, qkv_project_with_input_norm, shared_expert_forward,
+    qkv_project_batched, qkv_project_embed, qkv_project_pos0_exact_rest_shared,
+    qkv_project_row_exact, qkv_project_with_input_norm, shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;
 pub(super) use rope::{build_llama3_rope_freqs, build_yarn_rope_freqs};

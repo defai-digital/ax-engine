@@ -1205,13 +1205,10 @@ pub fn advance_direct_pipeline_with_timings(
     // Submit step N+1 to the GPU before waiting for step N.
     // KV cache is in next_token_arr's computation graph (via SDPA), so no extra
     // refs needed — they would only add one GPU command buffer per layer (≈85µs each).
+    // MoE invariant: blocking eval only (see start_direct_pipeline).
     let async_eval_started = Instant::now();
     async_eval(&[&prepared.next_pending]);
     prepared.timings.async_eval_wall_us = elapsed_us(async_eval_started);
-
-    // Diagnostic barrier: force step N+1 GPU completion before measuring the
-    // pending (step N) wait. Splits `async_eval` cost into "pure submit" vs
-    // "GPU-completion wait" by removing the double-buffer overlap.
     prepared.timings.next_complete_wall_us = if direct_pipeline_barrier_enabled() {
         let started = Instant::now();
         eval(&[&prepared.next_pending]);

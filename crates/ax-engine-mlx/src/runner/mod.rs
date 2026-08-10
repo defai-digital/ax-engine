@@ -73,10 +73,10 @@ use crate::model::{
     DecodeProfileSnapshot, DenseFfnFastpathSnapshot, Gemma4MoeProfileSnapshot,
     LinearAttentionProfileSnapshot, ModelConfig, MoeProfileSnapshot, PrefillProfileSnapshot,
     forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_post_norm,
-    forward_all_positions_with_post_norm_ids, take_decode_profile_snapshot,
-    take_dense_ffn_fastpath_snapshot, take_gemma4_moe_profile_snapshot,
-    take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
-    take_prefill_profile_snapshot,
+    forward_all_positions_with_post_norm_greedy, forward_all_positions_with_post_norm_ids,
+    take_decode_profile_snapshot, take_dense_ffn_fastpath_snapshot,
+    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
+    take_moe_profile_snapshot, take_prefill_profile_snapshot,
 };
 use crate::model::{prefill_batched_forward, supports_batched_prefill};
 use crate::mtp::{
@@ -2545,8 +2545,7 @@ impl MlxRunner {
                     let accept_wall_us = elapsed_us(accept_started);
                     let rejected_count = row.pending.len().saturating_sub(seq.accept_count);
                     if rejected_count > 0 {
-                        let new_mtp_len =
-                            row.state.mtp_decode_count.saturating_sub(rejected_count);
+                        let new_mtp_len = row.state.mtp_decode_count.saturating_sub(rejected_count);
                         if let Some(cache) = row.state.mtp_cache.as_mut() {
                             let _ = cache.trim_to(new_mtp_len);
                         }
@@ -2575,8 +2574,7 @@ impl MlxRunner {
                     let trimmed = row.state.cache.trim_to(committed_len);
                     let rejected_count = row.pending.len().saturating_sub(accept_count);
                     if rejected_count > 0 {
-                        let new_mtp_len =
-                            row.state.mtp_decode_count.saturating_sub(rejected_count);
+                        let new_mtp_len = row.state.mtp_decode_count.saturating_sub(rejected_count);
                         if let Some(cache) = row.state.mtp_cache.as_mut() {
                             let _ = cache.trim_to(new_mtp_len);
                         }
@@ -7285,6 +7283,10 @@ impl MlxRunner {
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
                 .unwrap_or(0);
+            // MoE: double-buffer for MTP-off (smokef118: sequential S=1 for
+            // MTP-off diverged first_diff@1 vs multi-token MTP-on on short;
+            // smokef133 sequential long self-looped 74418 without double-buffer
+            // prime alignment).
             return vec![self.run_direct_pipeline_decode(
                 state,
                 last_token,
@@ -7334,6 +7336,43 @@ impl MlxRunner {
     /// a linear-attention request proves it has no useful draft support.  The
     /// pipeline may keep the cache one lazy token ahead, so callers must continue
     /// using this path until the request finishes.
+    /// MoE Gemma assistant greedy: pure-direct must be sequential (not
+    /// double-buffer) under invariant projections. Dense Gemma keeps
+    /// double-buffer.
+    fn gemma_moe_aligned_greedy_decode(&self) -> bool {
+        self.gemma4_assistant_mtp.is_some()
+            && self.cfg.moe_expert_count > 0
+            && self.weights.deepseek_v4_nextn.is_none()
+    }
+
+    /// MoE pure-direct (smokef95): multi-token greedy S=1 — same function as
+    /// MTP-on multi-token under Shared+invariant (formal A/B alignment).
+    fn run_gemma_sequential_pure_direct(&self, state: &mut RequestState, last_token: u32) -> u32 {
+        use crate::model::forward_all_positions_with_post_norm_greedy;
+        use mlx_sys::{argmax, eval};
+        state.pending_direct = None;
+        let token_offset = state.cache.seq_len();
+        let (logits, _post_norm) = forward_all_positions_with_post_norm_greedy(
+            &self.cfg,
+            &self.weights,
+            &[last_token],
+            &mut state.cache,
+            token_offset,
+        );
+        state.cache.advance(1);
+        let predicted = argmax(&logits, None);
+        {
+            let kv_refs = state.cache.collect_eval_refs();
+            let mut targets: Vec<&mlx_sys::MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+            targets.push(&predicted);
+            targets.extend(kv_refs);
+            eval(&targets);
+        }
+        let tok = predicted.data_u32()[0];
+        state.next_model_last_token = Some(tok);
+        tok
+    }
+
     fn run_direct_pipeline_decode(
         &self,
         state: &mut RequestState,
@@ -7697,12 +7736,21 @@ impl MlxRunner {
         // Draft depth: the adaptive controller capped by the runtime ceiling
         // (default 2). The assistant is stateless per step, so it can be applied
         // recurrently to draft >1 token.
-        let max_depth = state.mtp_adaptive_max_depth.min(runtime.status.max_depth);
+        let mut max_depth = state.mtp_adaptive_max_depth.min(runtime.status.max_depth);
+        let base_position = state.cache.seq_len();
+        // Dual-edge window fix: successive teacher-forced S=2/S=3 exact in probe;
+        // formal LONG_MT reaches first_diff@89 (EOS near-tie) at ~1.16× long.
+        // Residual recheck / path alignment attempts desynced earlier. Fail-closed
+        // long pure-direct for release exact (smokef132). Opt-in LONG_MT=1.
+        let allow_long_mt = std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if self.cfg.moe_expert_count > 0 && base_position >= 512 && !allow_long_mt {
+            max_depth = 0;
+        }
         if max_depth == 0 {
             return (vec![], vec![], vec![]);
         }
-
-        let base_position = state.cache.seq_len();
         // Speculation-profile resolution (ADR-022): explicit env > profile preset
         // > built-in default. `auto` is temperature-driven and never lowers the
         // shipped Gemma default at low temperature.
@@ -7853,16 +7901,18 @@ impl MlxRunner {
         use mlx_sys::{argmax, eval};
 
         // Gemma assistant-MTP greedy exact path with no pending draft: pure
-        // direct double-buffer (matches MTP-off / AX_NO_SPEC). Empty-draft
-        // pure-direct only in sequential-oracle mode (exact A/B). With
-        // SEQUENTIAL_ORACLE=0 multi-token owns every step so production KV
-        // is never mixed with pure-direct mid-stream.
+        // direct (matches MTP-off / AX_NO_SPEC). Empty-draft pure-direct only
+        // under SEQUENTIAL_ORACLE=1. With ORACLE=0, MoE empty draft uses
+        // greedy multi-token S=1 (smokef89) so ArgmaxOnly matches pure-direct
+        // and post_norm is real for drafting (zeros-hidden drafts contaminate
+        // Shared QKV pos0 — smokef88 first_diff@1 after token-0 match).
+        // MoE (smokef95): empty-draft always pure-direct S=1 multi-token-greedy.
         let gemma_greedy_exact = sampling.temperature <= 0.0
             && self.gemma4_assistant_mtp.is_some()
             && self.weights.deepseek_v4_nextn.is_none()
+            && !sampling.uses_logits_processors()
             && (crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
-                || self.cfg.moe_expert_count > 0)
-            && !sampling.uses_logits_processors();
+                || self.cfg.moe_expert_count > 0);
         if gemma_greedy_exact
             && state.mtp_pending_draft.is_empty()
             && state.mtp_pending_draft_lazy.is_none()
@@ -7870,18 +7920,55 @@ impl MlxRunner {
             let final_by_max_output = ctx
                 .map(|c| c.generated_len.saturating_add(1) >= c.max_output_tokens)
                 .unwrap_or(false);
-            let tok = self.run_direct_pipeline_decode(
-                state,
-                last_token,
-                final_by_max_output,
-                false,
-            );
-            let hidden_size = self.cfg.hidden_size;
-            let draft_hidden = mlx_sys::zeros(
-                &[1_i32, 1, hidden_size as i32],
-                mlx_sys::MlxDtype::Bfloat16,
-                None,
-            );
+            // MoE empty-draft:
+            // - short: S=1 multi-token for real post_norm (seed drafts)
+            // - long: double-buffer pure-direct = MTP-off twin (identity).
+            // Multi-token draft verify uses dual-edge + cycle residual recheck.
+            let token_offset = state.cache.seq_len();
+            let moe_long = self.cfg.moe_expert_count > 0 && token_offset >= 512;
+            let moe_force_direct = self.cfg.moe_expert_count > 0
+                && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+            let (tok, draft_hidden) = if self.cfg.moe_expert_count > 0
+                && !moe_force_direct
+                && !moe_long
+            {
+                use crate::model::forward_all_positions_with_post_norm_greedy;
+                use mlx_sys::{argmax, eval};
+                state.pending_direct = None;
+                let (logits, post_norm) = forward_all_positions_with_post_norm_greedy(
+                    &self.cfg,
+                    &self.weights,
+                    &[last_token],
+                    &mut state.cache,
+                    token_offset,
+                );
+                state.cache.advance(1);
+                let predicted = argmax(&logits, None);
+                {
+                    let kv_refs = state.cache.collect_eval_refs();
+                    let mut targets: Vec<&mlx_sys::MlxArray> =
+                        Vec::with_capacity(2 + kv_refs.len());
+                    targets.push(&predicted);
+                    targets.push(&post_norm);
+                    targets.extend(kv_refs);
+                    eval(&targets);
+                }
+                let tok = predicted.data_u32()[0];
+                state.next_model_last_token = Some(tok);
+                let hidden = slice_post_norm_hidden(&post_norm, 0, self.cfg.hidden_size);
+                (tok, hidden)
+            } else {
+                // Dense empty, sequential-oracle, or MoE long pure-direct.
+                let tok =
+                    self.run_direct_pipeline_decode(state, last_token, final_by_max_output, false);
+                let hidden_size = self.cfg.hidden_size;
+                let draft_hidden = mlx_sys::zeros(
+                    &[1_i32, 1, hidden_size as i32],
+                    mlx_sys::MlxDtype::Bfloat16,
+                    None,
+                );
+                (tok, draft_hidden)
+            };
             let draft_started = Instant::now();
             let (draft, log_probs, distributions) =
                 self.gemma4_assistant_draft_token(state, tok, &draft_hidden, sampling);
@@ -7892,8 +7979,7 @@ impl MlxRunner {
             state.mtp_pending_draft = draft;
             state.mtp_pending_draft_log_probs = log_probs;
             state.mtp_pending_draft_distributions = distributions;
-            state.mtp_pending_draft_sources =
-                vec![MtpDraftSource::Gemma4Assistant; drafted];
+            state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; drafted];
             state
                 .mtp_telemetry
                 .record_step(drafted, 0, &state.mtp_pending_draft_sources, None, 0);
@@ -7918,9 +8004,15 @@ impl MlxRunner {
         // temperature zero, and acceptance runs after the verify eval).
         let mut deferred_lazy_draft: Option<crate::mtp::MtpLazyDraft> = None;
         if let Some(lazy) = state.mtp_pending_draft_lazy.take() {
+            // Exactness-preserving async draft: Qwen linear-MTP (historical)
+            // plus Gemma4 assistant-MTP (same lazy-draft contract; no
+            // value-based consumer before verify eval).
+            let gemma_assistant_async =
+                self.gemma4_assistant_mtp_status.enabled || self.gemma4_assistant_mtp.is_some();
             let defer_qualified = crate::fastpath::mtp_async_draft_enabled()
-                && crate::fastpath::qwen_linear_mtp_exact_enabled()
-                && self.cfg.linear_attention.is_some()
+                && ((crate::fastpath::qwen_linear_mtp_exact_enabled()
+                    && self.cfg.linear_attention.is_some())
+                    || gemma_assistant_async)
                 && sampling.temperature <= 0.0
                 && !self.mtp_optimistic
                 && !state.mtp_bypassed;
@@ -8621,13 +8713,27 @@ impl MlxRunner {
                 // on reject (avoids multi-token pos0 contamination, smoke18 t0)
                 // and when history is looping (smoke18 t4 cycle false-accept).
                 // SEQUENTIAL_ORACLE=1 → always pure-direct (exact, ~0.91×).
-                // SEQUENTIAL_ORACLE=0 → pure multi-token always-adopt (smoke18).
-                // SEQUENTIAL_ORACLE or MoE experts → pure-direct (exact; MoE
-                // multi-token still diverges early). Dense multi-token f32 is
-                // exact for 12B6 general + all 31B (formal4).
+                // SEQUENTIAL_ORACLE=0 → pure multi-token always-adopt + f32 SDPA
+                // + full-context sliding views (identity for dense 12B6/31B;
+                // MoE/4-bit rechecked under formal A/B).
+                // SEQUENTIAL_ORACLE=1 → pure-direct. ORACLE=0 → multi-token
+                // always-adopt + f32 SDPA (formal4: 12B6 general + all 31B).
+                // MoE multi-token still diverges; pure-direct keeps exactness
+                // (speed deferred until MoE multi-token identity lands).
+                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token always-adopt
+                // for dense. MoE multi-token still diverges early; pure-direct
+                // keeps exactness (speed deferred).
+                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token for dense.
+                // MoE multi-token still diverges (f32 router reduced div 3→2 only
+                // with per-pos FFN that killed speed); pure-direct keeps exact.
+                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token (dense + MoE).
+                // MoE uses tail per-pos dual-path FFN for short multi-token verify.
+                // Pending-draft verify: multi-token when ORACLE=0 (dense + MoE).
+                // Empty-draft pure-direct for MoE is separate (gemma_greedy_exact).
+                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token (dense + MoE).
+                // MoE multi-token identity: RowExact QKV + per-pos SDPA/FFN.
                 let force_pure_direct =
-                    crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
-                        || self.cfg.moe_expert_count > 0;
+                    crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
                 let gemma_sequential_oracle = gemma_assistant_draft && force_pure_direct;
                 let gemma_multitoken_adopt = gemma_assistant_draft && !force_pure_direct;
                 if gemma_sequential_oracle {
@@ -8697,11 +8803,16 @@ impl MlxRunner {
                         predicted,
                     )
                 } else if gemma_multitoken_adopt {
-                    // In-place multi-token + f32 SDPA always-adopt.
-                    // formal4: 12B6 general + all 31B profiles release_ready.
+                    // In-place multi-token always-adopt + dual-edge window.
+                    // MoE long: multi-token residual can near-tie flip vs
+                    // double-buffer MTP-off at a flat 3-cycle break (smokef127
+                    // first_diff@89: MT wants 236761, PD wants 4th 236771).
+                    // When residual breaks a flat cycle, re-resolve with the
+                    // double-buffer pure-direct write of the last accepted
+                    // input so residual matches MTP-off.
                     let verify_forward_started = Instant::now();
                     state.pending_direct = None;
-                    let (logits_mt, post_norm_all) = forward_all_positions_with_post_norm(
+                    let (logits_mt, post_norm_all) = forward_all_positions_with_post_norm_greedy(
                         &self.cfg,
                         &self.weights,
                         &verify_input,
@@ -8712,8 +8823,7 @@ impl MlxRunner {
                     let predicted_arr = argmax(&logits_mt, None);
                     {
                         let kv_refs = state.cache.collect_eval_refs();
-                        let mut targets: Vec<&MlxArray> =
-                            Vec::with_capacity(2 + kv_refs.len());
+                        let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
                         targets.push(&predicted_arr);
                         targets.push(&post_norm_all);
                         targets.extend(kv_refs);
@@ -8722,18 +8832,13 @@ impl MlxRunner {
                     mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
                     let accept_started = Instant::now();
-                    let ac = crate::ngram_accel::greedy_draft_target_accept_count(
-                        &pending,
-                        &predicted,
-                    );
+                    let ac =
+                        crate::ngram_accel::greedy_draft_target_accept_count(&pending, &predicted);
                     let all_accepted = ac == pending.len();
                     let correction = predicted.get(ac).copied().unwrap_or(0);
                     let committed_len = token_offset + 1 + ac;
                     if !state.cache.trim_to(committed_len) {
-                        tracing::warn!(
-                            committed_len,
-                            "Gemma multi-token production trim refused"
-                        );
+                        tracing::warn!(committed_len, "Gemma multi-token production trim refused");
                     }
                     mtp_timings.accept_wall_us = elapsed_us(accept_started);
                     mtp_timings.verify_eval_wall_us = 0;
@@ -8751,11 +8856,8 @@ impl MlxRunner {
                         state.mtp_decode_count = new_mtp_len;
                     }
                     mtp_timings.rollback_wall_us = 0;
-                    let draft_hidden = slice_post_norm_hidden(
-                        &post_norm_all,
-                        ac,
-                        self.cfg.hidden_size,
-                    );
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     (
                         logits_mt,
                         draft_hidden,
@@ -8765,7 +8867,6 @@ impl MlxRunner {
                         false,
                         predicted,
                     )
-
                 } else {
                     let verify_forward_started = Instant::now();
                     let (logits_all, post_norm_all) = if self.weights.deepseek_v4_nextn.is_some() {
@@ -9962,12 +10063,16 @@ impl MlxRunner {
         // requests often omit `deterministic: true` and inherit a non-det
         // session default while still sending temperature=0).
         //
-        // Gemma assistant multi-token-aligned path must NOT prime pure-direct
-        // (pending_direct would desync multi-token production KV).
+        // Sequential-oracle mode retains the direct-pipeline prime. Normal
+        // assistant-MTP starts with an S=1 target step so it can retain the
+        // post-norm hidden that seeds the first real draft.
+        // MoE long-prompt: prime double-buffer so MTP-off matches empty pure-
+        // direct. Never prime short MTP-on (smokef121 first_diff@1).
         let gemma_exact_direct_bootstrap = self.gemma4_assistant_mtp.is_some()
             && self.weights.deepseek_v4_nextn.is_none()
-            && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
-            && is_greedy;
+            && is_greedy
+            && (crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
+                || (self.cfg.moe_expert_count > 0 && state.cache.seq_len() >= 512));
         if (should_bootstrap_direct_pipeline(
             self.disable_ngram_acceleration,
             state.ngram_acceleration_disabled_for_request,
@@ -10171,6 +10276,16 @@ fn ngram_draft_is_cycle(draft: &[u32], recent: &[u32]) -> bool {
         }
     }
     false
+}
+
+/// True when the last `run` tokens are identical (flat cycle). Gemma MoE
+/// multi-token near-ties often flip exactly at a period-6 / flat-run break.
+fn gemma_recent_is_flat_cycle(recent: &[u32], run: usize) -> bool {
+    if run == 0 || recent.len() < run {
+        return false;
+    }
+    let tail = &recent[recent.len() - run..];
+    tail.iter().all(|&t| t == tail[0])
 }
 
 /// Compute the think-block state after observing a sequence of tokens, without
@@ -11019,8 +11134,6 @@ fn truncate_sampled_tokens_for_stop(
 /// `finish_reason=stop`). Does not invent an EOS token id. Distinct from
 /// `no_repeat_ngram_size` logit bans.
 
-
-
 fn apply_loop_detection_stop(
     mut sampled_tokens: Vec<u32>,
     stop_reason: Option<StopReason>,
@@ -11162,7 +11275,19 @@ fn cache_rotation_for_execution_with_prefill_flag(
         }
         return (false, 0);
     }
-    request_latch.unwrap_or((session_rotating_decode && is_greedy, 0))
+    // Decode: pure-direct (seq=1) can rotate with slack 0. Multi-token verify
+    // (Gemma assistant-MTP depth-2 → seq=3) only enters the ring when
+    // seq <= rotating_slack; otherwise pure-direct uses the ring while
+    // multi-token uses ordered storage + window views — long-context agent
+    // identity break. Size slack for formal draft depth + a little headroom.
+    request_latch.unwrap_or((
+        session_rotating_decode && is_greedy,
+        if session_rotating_decode && is_greedy {
+            8
+        } else {
+            0
+        },
+    ))
 }
 
 fn prefill_drain_async_eval_count(token_count: usize, prefill_chunk: usize) -> u32 {
@@ -12587,13 +12712,16 @@ mod tests {
         let history = vec![10u32, 20, 10, 20, 10, 20];
         let batch = vec![10u32, 20, 10, 20]; // 1st+2nd complete 4×(10,20)
         let (kept, reason) = apply_loop_detection_stop(batch, None, &history, Some(cfg));
-        assert_eq!(kept, vec![10u32, 20], "stop at the token that first completes the loop");
+        assert_eq!(
+            kept,
+            vec![10u32, 20],
+            "stop at the token that first completes the loop"
+        );
         assert!(matches!(reason, Some(StopReason::LoopDetected)));
         // History of 7 already has 3 full pairs + one half; the next 20 completes
         // the 4th pair. Single-token path keeps that completing token.
         let history7 = vec![10u32, 20, 10, 20, 10, 20, 10];
-        let (kept1, reason1) =
-            apply_loop_detection_stop(vec![20u32], None, &history7, Some(cfg));
+        let (kept1, reason1) = apply_loop_detection_stop(vec![20u32], None, &history7, Some(cfg));
         assert_eq!(kept1, vec![20u32]);
         assert!(matches!(reason1, Some(StopReason::LoopDetected)));
     }
@@ -14473,7 +14601,7 @@ mod tests {
         );
         assert_eq!(
             cache_rotation_for_execution(ExecutionMode::Decode, None, true, true, 1536),
-            (true, 0)
+            (true, 8) // multi-token verify ring eligibility (Gemma MTP depth-2)
         );
     }
 

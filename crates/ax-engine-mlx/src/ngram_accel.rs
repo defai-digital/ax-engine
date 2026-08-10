@@ -1521,11 +1521,7 @@ pub(crate) fn sequential_greedy_mtp_verify(
 
     // Exactness depends only on accept_count + correction_token. Zero hidden
     // keeps the production cache on the forward_argmax path exclusively.
-    let draft_hidden = mlx_sys::zeros(
-        &[1_i32, 1, hidden_size as i32],
-        MlxDtype::Bfloat16,
-        None,
-    );
+    let draft_hidden = mlx_sys::zeros(&[1_i32, 1, hidden_size as i32], MlxDtype::Bfloat16, None);
 
     SequentialGreedyMtpVerify {
         accept_count,
@@ -2509,8 +2505,14 @@ mod tests {
             greedy_draft_target_accept_count(&drafts, &[10, 20, 30, 99]),
             3
         );
-        assert_eq!(greedy_draft_target_accept_count(&drafts, &[10, 99, 30, 40]), 1);
-        assert_eq!(greedy_draft_target_accept_count(&drafts, &[99, 20, 30, 40]), 0);
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &[10, 99, 30, 40]),
+            1
+        );
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &[99, 20, 30, 40]),
+            0
+        );
         assert_eq!(greedy_draft_target_accept_count(&[], &target), 0);
     }
 

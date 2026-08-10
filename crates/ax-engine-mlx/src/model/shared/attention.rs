@@ -9,7 +9,7 @@ use mlx_sys::{broadcast_to, matmul, multiply, slice, softmax_precise};
 
 use crate::attention_mask::{create_causal_mask, create_ring_sliding_mask};
 use crate::fastpath;
-use crate::kv_cache::MlxKVCache;
+use crate::kv_cache::{MlxKVCache, SlidingRingLayout};
 
 use super::super::config::ModelConfig;
 use super::norm::{rms_norm_no_scale_bshd, use_flat_qk_norm_path};
@@ -415,6 +415,28 @@ pub(crate) fn full_precision_attention(
     seq: usize,
     mask_opt: &Option<MlxArray>,
 ) -> MlxArray {
+    full_precision_attention_with_window(
+        q_rope,
+        cached_k,
+        cached_v,
+        query_scale,
+        seq,
+        mask_opt,
+        None,
+        None,
+    )
+}
+
+pub(crate) fn full_precision_attention_with_window(
+    q_rope: &MlxArray,
+    cached_k: &MlxArray,
+    cached_v: &MlxArray,
+    query_scale: f32,
+    seq: usize,
+    mask_opt: &Option<MlxArray>,
+    sliding_window: Option<usize>,
+    ring_layout: Option<SlidingRingLayout>,
+) -> MlxArray {
     let mask = match mask_opt.as_ref() {
         Some(mask) => ScaledDotProductAttentionMask::Array(mask),
         None if seq > 1 => ScaledDotProductAttentionMask::Causal,
@@ -423,7 +445,94 @@ pub(crate) fn full_precision_attention(
     // Multi-token teacher-forced verify (seq > 1) accumulates bf16 SDPA drift
     // vs singleton pure-direct decode; near-ties (Gemma period-6 cycle break)
     // flip argmax. Upcast Q/K/V for the SDPA, then restore the input dtype.
-    if seq > 1 && fastpath::multi_token_f32_attention_enabled() {
+    // Keep seq==1 on bf16: enabling f32 for pure-direct too regressed formal
+    // 12B6 general exactness (smokef11).
+    // MoE multi-token: per-query-position bf16 SDPA (hist-sliced K/V). Needed
+    // with per-pos FFN for gen exactness (smokef51); dual-edge keep_start fixes
+    // successive long-prefill drift (rows 1+ must not attend expired left keys).
+    if fastpath::moe_mt_bf16_identity_enabled() {
+        if seq > 1 && seq <= 8 {
+            use mlx_sys::{concatenate, slice};
+            let q_shape = q_rope.shape();
+            let b = q_shape.first().copied().unwrap_or(1);
+            let hq = q_shape.get(1).copied().unwrap_or(1);
+            let d = *q_shape.last().unwrap_or(&1);
+            let k_shape = cached_k.shape();
+            let hk = k_shape.get(1).copied().unwrap_or(hq);
+            let key_len = k_shape.get(2).copied().unwrap_or(1) as usize;
+            let hist = key_len.saturating_sub(seq);
+            // Ring multi-token: one fused SDPA with the full ring validity
+            // mask (per-row loop was exact but ~3× slower on long agent).
+            if ring_layout.is_some() {
+                let ring_mask = mask_opt
+                    .as_ref()
+                    .expect("rotating multi-token attention requires a ring mask");
+                return scaled_dot_product_attention_with_mask(
+                    q_rope,
+                    cached_k,
+                    cached_v,
+                    query_scale,
+                    ScaledDotProductAttentionMask::Array(ring_mask),
+                    None,
+                );
+            }
+            let mut rows: Vec<MlxArray> = Vec::with_capacity(seq);
+            for t_idx in 0..seq {
+                let q_t = slice(
+                    q_rope,
+                    &[0, 0, t_idx as i32, 0],
+                    &[b, hq, (t_idx + 1) as i32, d],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let allow = hist + t_idx + 1;
+                // A retained multi-token view has `window + seq - 1` keys.
+                // Move both edges for each query; moving only the causal
+                // right edge lets later rows attend expired left-edge keys.
+                let keep_start = sliding_window
+                    .filter(|window| *window > 0)
+                    .map(|window| allow.saturating_sub(window))
+                    .unwrap_or(0) as i32;
+                let allow = allow as i32;
+                let k_t = slice(
+                    cached_k,
+                    &[0, 0, keep_start, 0],
+                    &[b, hk, allow, d],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let v_t = slice(
+                    cached_v,
+                    &[0, 0, keep_start, 0],
+                    &[b, hk, allow, d],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let out_t = scaled_dot_product_attention_with_mask(
+                    &q_t,
+                    &k_t,
+                    &v_t,
+                    query_scale,
+                    ScaledDotProductAttentionMask::None,
+                    None,
+                );
+                rows.push(out_t);
+            }
+            let refs: Vec<&MlxArray> = rows.iter().collect();
+            return concatenate(&refs, 2, None);
+        }
+        return scaled_dot_product_attention_with_mask(
+            q_rope,
+            cached_k,
+            cached_v,
+            query_scale,
+            mask,
+            None,
+        );
+    }
+    if fastpath::multi_token_f32_attention_enabled()
+        && (seq > 1 || fastpath::force_f32_attention_enabled())
+    {
         let q_dtype = q_rope.dtype();
         let q = if q_dtype != MlxDtype::Float32 {
             astype(q_rope, MlxDtype::Float32, None)
@@ -440,8 +549,7 @@ pub(crate) fn full_precision_attention(
         } else {
             cached_v.clone()
         };
-        let out =
-            scaled_dot_product_attention_with_mask(&q, &k, &v, query_scale, mask, None);
+        let out = scaled_dot_product_attention_with_mask(&q, &k, &v, query_scale, mask, None);
         if q_dtype != MlxDtype::Float32 {
             return astype(&out, q_dtype, None);
         }

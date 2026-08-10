@@ -753,6 +753,68 @@ thread_local! {
 
 /// Scoped override for [`multi_token_window_views_enabled`].
 #[must_use]
+/// Thread-local: force f32 SDPA even for seq==1 (MoE pure-direct / multi-token
+/// pos0 identity). Dense must stay bf16 on seq==1 (12B6 formal regression).
+thread_local! {
+    static FORCE_F32_ATTENTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) struct ForceF32AttentionScope {
+    prev: bool,
+}
+
+impl ForceF32AttentionScope {
+    pub(crate) fn new(enabled: bool) -> Self {
+        let prev = FORCE_F32_ATTENTION.with(|c| c.replace(enabled));
+        Self { prev }
+    }
+}
+
+impl Drop for ForceF32AttentionScope {
+    fn drop(&mut self) {
+        FORCE_F32_ATTENTION.with(|c| c.set(self.prev));
+    }
+}
+
+pub(crate) fn scoped_force_f32_attention(enabled: bool) -> ForceF32AttentionScope {
+    ForceF32AttentionScope::new(enabled)
+}
+
+pub(crate) fn force_f32_attention_enabled() -> bool {
+    FORCE_F32_ATTENTION.with(|c| c.get())
+}
+
+/// MoE multi-token identity: keep SDPA/projections on bf16 singleton-compatible
+/// path (no f32 multi-token upcast) so teacher-forced matches pure-direct.
+thread_local! {
+    static MOE_MT_BF16_IDENTITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) struct MoeMtBf16IdentityScope {
+    prev: bool,
+}
+
+impl MoeMtBf16IdentityScope {
+    pub(crate) fn new(enabled: bool) -> Self {
+        let prev = MOE_MT_BF16_IDENTITY.with(|c| c.replace(enabled));
+        Self { prev }
+    }
+}
+
+impl Drop for MoeMtBf16IdentityScope {
+    fn drop(&mut self) {
+        MOE_MT_BF16_IDENTITY.with(|c| c.set(self.prev));
+    }
+}
+
+pub(crate) fn scoped_moe_mt_bf16_identity(enabled: bool) -> MoeMtBf16IdentityScope {
+    MoeMtBf16IdentityScope::new(enabled)
+}
+
+pub(crate) fn moe_mt_bf16_identity_enabled() -> bool {
+    MOE_MT_BF16_IDENTITY.with(|c| c.get())
+}
+
 pub(crate) struct MultiTokenWindowViewsScope {
     previous: Option<bool>,
 }
@@ -777,11 +839,18 @@ pub(crate) fn scoped_multi_token_window_views(enabled: bool) -> MultiTokenWindow
 ///
 /// Thread-local scope (Gemma assistant-MTP exact path) overrides the env default.
 pub fn multi_token_window_views_enabled() -> bool {
-    MULTI_TOKEN_WINDOW_VIEWS_SCOPE.with(|c| {
-        c.get()
-            .unwrap_or_else(multi_token_window_views_enabled_env)
-    })
+    MULTI_TOKEN_WINDOW_VIEWS_SCOPE
+        .with(|c| c.get().unwrap_or_else(multi_token_window_views_enabled_env))
 }
+
+env_flag!(
+    /// `AX_MLX_GEMMA_MT_PERPOS_FFN` — per-position dense FFN on short multi-token
+    /// verify (seq 2..8). Improves 4-bit greedy exactness vs pure-direct but
+    /// collapses multi-token speed (smokef12/17). Opt-in for 4-bit identity
+    /// experiments; keep OFF for 6-bit / 31B formal Tier 2 speed.
+    gemma_mt_perpos_ffn_enabled,
+    "AX_MLX_GEMMA_MT_PERPOS_FFN"
+);
 
 env_flag_default_on!(
     /// `AX_MLX_MULTI_TOKEN_F32_ATTENTION` — upcast Q/K/V to f32 for SDPA on
@@ -790,8 +859,8 @@ env_flag_default_on!(
     ///
     /// **Default: ON** for Gemma assistant-MTP Tier 2 greedy exactness
     /// (period-6 cycle-break near-ties). Kill-switch via
-    /// `AX_MLX_MULTI_TOKEN_F32_ATTENTION=0`. Singleton decode (`seq == 1`) is
-    /// unchanged.
+    /// `AX_MLX_MULTI_TOKEN_F32_ATTENTION=0`. Singleton decode (`seq == 1`) stays
+    /// bf16 (enabling f32 on pure-direct regressed 12B6 general exactness).
     multi_token_f32_attention_enabled,
     "AX_MLX_MULTI_TOKEN_F32_ATTENTION"
 );

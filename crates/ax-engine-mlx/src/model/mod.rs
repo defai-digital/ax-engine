@@ -803,6 +803,7 @@ pub fn forward_argmax(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> MlxArray {
+    // MoE pure-direct: MLX singleton (smokef98 — no inv; Shared MT alone).
     forward_and_logits_mode(
         cfg,
         weights,
@@ -1647,6 +1648,62 @@ pub fn forward_all_positions(
 ///
 /// MTP heads use a selected row from the returned post-norm hidden states as
 /// the `main_hidden` for the first draft head's forward pass.
+/// Like [`forward_all_positions_with_post_norm`], but final logits match pure-direct
+/// greedy (`FinalLogitsMode::ArgmaxOnly`): native lm_head dtype, no softcap, no
+/// vocab-wide f32 cast. Used by Gemma assistant-MTP multi-token always-adopt so
+/// teacher-forced argmax agrees with singleton pure-direct on near-ties (4-bit
+/// cycle breaks) where softcap(f32(logits)) can flip vs bf16 argmax.
+pub fn forward_all_positions_with_post_norm_greedy(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> (MlxArray, MlxArray) {
+    let seq = token_ids.len();
+    // MoE multi-token: per-pos SDPA, pos0-exact/rest-Shared QKV, RowExact
+    // dense/o_proj, batched experts. Empty-draft real post_norm.
+    // Keep multi-token window views ON (default) so long-prompt agent uses
+    // window+seq-1 retained K/V matching pure-direct ring geometry. Forcing
+    // views OFF (smokef107) still diverged at first_diff@14; identity probe
+    // without rings is exact — formal A/B uses bounded rings after long prefill.
+    let _moe_bf16 = (cfg.moe_expert_count > 0 && seq > 1)
+        .then(|| crate::fastpath::scoped_moe_mt_bf16_identity(true));
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
+    let masks =
+        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        hidden = layer_forward(
+            cfg,
+            layer_w,
+            &hidden,
+            cache,
+            li,
+            token_offset,
+            pli,
+            Some(&masks[li]),
+        );
+    }
+    let seq_i = seq as i32;
+    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let logits = qw(&normed, &weights.lm_head);
+    // ArgmaxOnly: no softcap / no f32 cast (matches pure-direct greedy).
+    let logits_out = reshape(&logits, &[seq_i, cfg.vocab_size as i32], None);
+    (logits_out, normed)
+}
+
 pub fn forward_all_positions_with_post_norm(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1736,9 +1793,8 @@ pub fn forward_all_positions_with_post_norm_ids(
         // Re-submitting the full cache every chunk (often hundreds of arrays)
         // inflated `async_eval` task counts and re-introduced gather_qmm
         // backpressure on MoE, which is the opposite of the overlap goal.
-        let submitted = submit_interval > 0
-            && li + 1 < layer_count
-            && (li + 1) % submit_interval == 0;
+        let submitted =
+            submit_interval > 0 && li + 1 < layer_count && (li + 1) % submit_interval == 0;
         if submitted {
             async_eval(&[&hidden]);
         } else if crate::fastpath::pipeline_hint_should_fire(li, layer_count) {
@@ -3836,6 +3892,7 @@ pub fn forward_lazy_single_argmax(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> MlxArray {
+    // Match forward_argmax / multi-token MoE invariant (double-buffer path).
     forward_lazy_single_and_logits_mode(
         cfg,
         weights,
