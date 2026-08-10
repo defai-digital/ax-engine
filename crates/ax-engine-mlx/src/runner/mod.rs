@@ -512,6 +512,8 @@ struct RequestState {
     /// Initialized from prompt tokens. Used to gate n-gram acceleration to think
     /// regions only, where repetition density is high for reasoning models.
     ngram_in_think: bool,
+    /// Tokens emitted while inside an open think block (budget controller).
+    think_emitted_tokens: u32,
     /// Per-request n-gram self-tune: tracks draft tokens and accepted tokens
     /// for this request.  After warmup, if acceptance rate falls below the
     /// threshold, n-gram is disabled for the rest of the request (mirrors
@@ -615,6 +617,7 @@ impl RequestState {
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
+            think_emitted_tokens: 0,
             ngram_self_tune: NgramSelfTuneState::default(),
             mtp_ngram_utility_hysteresis_remaining: 0,
         }
@@ -5514,11 +5517,58 @@ impl MlxRunner {
                 &self.cfg.model_family,
             ),
         );
+        // Thinking-budget controller: force the think-close token when the
+        // answer reserve / think cap is exhausted or the loop detector fired
+        // inside an open think block (ds4-style soft+hard close).
+        let (sampled_tokens, stop_reason) = if let Some(ctx) = ctx
+            && !sampled_tokens.is_empty()
+            && stop_reason.is_none()
+            && think_budget_close_decision(
+                state.ngram_in_think,
+                self.cfg.think_end_token_id,
+                ctx.max_output_tokens.saturating_sub(ctx.generated_len),
+                state.think_emitted_tokens,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+                false,
+            ) {
+            state.pending_direct = None;
+            (
+                vec![self.cfg.think_end_token_id.expect("checked in decision")],
+                Some(StopReason::MaxOutputTokens),
+            )
+        } else if let Some(ctx) = ctx
+            && !sampled_tokens.is_empty()
+            && matches!(stop_reason, Some(StopReason::LoopDetected))
+            && think_budget_close_decision(
+                state.ngram_in_think,
+                self.cfg.think_end_token_id,
+                ctx.max_output_tokens.saturating_sub(ctx.generated_len),
+                state.think_emitted_tokens,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+                true,
+            )
+        {
+            state.pending_direct = None;
+            (
+                vec![self.cfg.think_end_token_id.expect("checked in decision")],
+                stop_reason,
+            )
+        } else {
+            (sampled_tokens, stop_reason)
+        };
         // Keep tokens for LoopDetected (and continuing decode).
         if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
+            let was_in_think = state.ngram_in_think;
             for &sampled_token in &sampled_tokens {
                 state.generated_tokens.push(sampled_token);
                 update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
+            }
+            if was_in_think {
+                state.think_emitted_tokens = state
+                    .think_emitted_tokens
+                    .saturating_add(sampled_tokens.len() as u32);
             }
         }
 
@@ -9884,6 +9934,126 @@ fn compute_think_state(cfg: &ModelConfig, current: bool, tokens: &[u32]) -> bool
     state
 }
 
+/// Decide whether the thinking-budget controller must force the think-close
+/// token at this step. Hard close: the answer reserve (or the per-request
+/// think budget) is exhausted. Soft close: the loop detector fired while
+/// still inside the think block (a stuck reasoning trace). The override is
+/// KV-exact — this step's forward already consumed the sampled token, and
+/// the close token rides its own forward as the step's emitted token.
+pub(crate) fn think_budget_close_decision(
+    in_think: bool,
+    think_end_token_id: Option<u32>,
+    remaining_budget: u32,
+    think_emitted_tokens: u32,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+    loop_detected: bool,
+) -> bool {
+    if !in_think || think_end_token_id.is_none() {
+        return false;
+    }
+    if max_think_tokens.is_some_and(|cap| think_emitted_tokens >= cap) {
+        return true;
+    }
+    if answer_reserve_tokens.is_some_and(|reserve| remaining_budget <= reserve) {
+        return true;
+    }
+    loop_detected
+}
+
+#[cfg(test)]
+mod think_budget_close_decision_tests {
+    use super::think_budget_close_decision;
+
+    #[test]
+    fn inactive_without_think_state_or_close_token() {
+        assert!(!think_budget_close_decision(
+            false,
+            Some(5),
+            0,
+            0,
+            Some(1),
+            Some(1),
+            true
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            None,
+            0,
+            0,
+            Some(1),
+            Some(1),
+            true
+        ));
+    }
+
+    #[test]
+    fn hard_close_on_answer_reserve() {
+        assert!(think_budget_close_decision(
+            true,
+            Some(5),
+            512,
+            100,
+            None,
+            Some(512),
+            false
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            Some(5),
+            513,
+            100,
+            None,
+            Some(512),
+            false
+        ));
+    }
+
+    #[test]
+    fn hard_close_on_think_cap() {
+        assert!(think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            4096,
+            Some(4096),
+            None,
+            false
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            4095,
+            Some(4096),
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn soft_close_only_on_loop_inside_think() {
+        assert!(think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            10,
+            None,
+            None,
+            true
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            10,
+            None,
+            None,
+            false
+        ));
+    }
+}
+
 /// Update `ngram_in_think` in-place after emitting a single token.
 /// Called in the main decode loop for every output token.
 fn update_ngram_think_state(cfg: &ModelConfig, in_think: &mut bool, token: u32) {
@@ -11791,6 +11961,8 @@ mod tests {
             tool_call_mode: false,
             structured_output_mode: false,
             min_p: None,
+            max_think_tokens: None,
+            answer_reserve_tokens: None,
         }
     }
 
@@ -14039,6 +14211,8 @@ mod tests {
             tool_call_mode: false,
             structured_output_mode: false,
             min_p: None,
+            max_think_tokens: None,
+            answer_reserve_tokens: None,
         };
         assert!(!prefill_item_completes_prompt(&item, Some(&first_context)));
 

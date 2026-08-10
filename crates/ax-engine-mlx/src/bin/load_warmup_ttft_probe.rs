@@ -55,6 +55,8 @@ fn greedy_ctx(prompt_len: usize, generated_len: usize, max_output: usize) -> Run
         tool_call_mode: false,
         structured_output_mode: false,
         min_p: None,
+        max_think_tokens: None,
+        answer_reserve_tokens: None,
     }
 }
 

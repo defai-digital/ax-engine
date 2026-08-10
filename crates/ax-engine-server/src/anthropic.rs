@@ -207,6 +207,8 @@ impl AnthropicMessagesRequest {
             logprobs: false,
             top_logprobs: None,
             reasoning: None,
+            ax_max_think_tokens: None,
+            ax_answer_reserve_tokens: None,
             chat_template_kwargs: None,
             metadata: None,
             multimodal_inputs: Default::default(),

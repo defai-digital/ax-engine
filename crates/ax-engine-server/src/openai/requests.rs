@@ -588,6 +588,11 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
+    let metadata = merge_thinking_budget_metadata(
+        metadata,
+        request.ax_max_think_tokens,
+        request.ax_answer_reserve_tokens,
+    );
 
     let user_stop = request
         .stop
@@ -1071,6 +1076,45 @@ fn openai_workload_metadata(
     let suffix = hints
         .keys()
         .map(|key| format!("{key}=true"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!("{metadata}; {suffix}"))
+}
+
+/// Merge the AX thinking-budget knobs into the workload metadata string the
+/// engine parses into [`RequestWorkloadHints`]. JSON metadata gains the keys
+/// directly; text metadata gets `key=value` suffixes.
+fn merge_thinking_budget_metadata(
+    metadata: Option<String>,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+) -> Option<String> {
+    if max_think_tokens.is_none() && answer_reserve_tokens.is_none() {
+        return metadata;
+    }
+    let mut keys = Vec::new();
+    if let Some(value) = max_think_tokens {
+        keys.push(("ax_max_think_tokens", value));
+    }
+    if let Some(value) = answer_reserve_tokens {
+        keys.push(("ax_answer_reserve_tokens", value));
+    }
+    let Some(metadata) = metadata else {
+        let object: Map<String, Value> = keys
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), Value::from(value)))
+            .collect();
+        return Some(Value::Object(object).to_string());
+    };
+    if let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&metadata) {
+        for (key, value) in keys {
+            object.entry(key).or_insert(Value::from(value));
+        }
+        return Some(Value::Object(object).to_string());
+    }
+    let suffix = keys
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join("; ");
     Some(format!("{metadata}; {suffix}"))

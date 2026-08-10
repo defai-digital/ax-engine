@@ -1994,6 +1994,31 @@ fn deepseek_request_defaults_thinking_from_model_id() {
 }
 
 #[tokio::test]
+async fn deepseek_thinking_budget_flows_into_workload_hints() {
+    let artifact_dir = minimal_tokenizer_artifact("deepseek-thinking-budget");
+    let state = native_mlx_openai_builder_state("deepseek-ai/DeepSeek-R1", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-R1",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 8192,
+        "ax_max_think_tokens": 4096,
+        "ax_answer_reserve_tokens": 512
+    }))
+    .expect("request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("chat builds");
+    let metadata = built
+        .generate_request
+        .metadata
+        .as_deref()
+        .expect("metadata carries budget hints");
+    let hints = RequestWorkloadHints::from_metadata(Some(metadata));
+    assert_eq!(hints.max_think_tokens, Some(4096));
+    assert_eq!(hints.answer_reserve_tokens, Some(512));
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn deepseek_thinking_defaults_apply_only_to_omitted_sampling_knobs() {
     let artifact_dir = minimal_tokenizer_artifact("deepseek-thinking-sampling");
     let state = native_mlx_openai_builder_state("deepseek-ai/DeepSeek-R1", &artifact_dir);

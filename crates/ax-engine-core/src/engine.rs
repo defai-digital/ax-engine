@@ -1048,6 +1048,8 @@ impl EngineCore {
                     ignore_eos: record.sampling_params.ignore_eos,
                     tool_call_mode: record.workload_hints.tool_call,
                     structured_output_mode: record.workload_hints.structured_output,
+                    max_think_tokens: record.workload_hints.max_think_tokens,
+                    answer_reserve_tokens: record.workload_hints.answer_reserve_tokens,
                 });
             }
         }
