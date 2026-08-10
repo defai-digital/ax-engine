@@ -1087,6 +1087,7 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
             sampling_probs_buf,
             sampling_logits_buf,
             sampling_candidates_buf,
+            None,
         );
     }
 
@@ -1480,6 +1481,54 @@ pub(crate) fn sample_logit_row(
     )
 }
 
+/// ds4 soft-close rank threshold (`soft_limit_think_close_rank = 3`).
+pub const THINK_SOFT_CLOSE_PROBE_RANK: usize = 3;
+
+/// Rank probe for the think soft-close: while inside the soft window of an
+/// open think block, single decode materializes logits and emits the
+/// think-close token early when the model itself ranks it within `rank`.
+/// On a miss, normal sampling runs against the same materialized row.
+#[derive(Clone, Copy, Debug)]
+pub struct ThinkSoftCloseProbe {
+    pub think_end_token_id: u32,
+    pub rank: usize,
+}
+
+/// Whether `think_end_token_id` sits within the top `rank` logits. Single
+/// pass keeping the running top-rank set descending; membership is
+/// unaffected by tie-breaking.
+pub(crate) fn think_soft_close_in_top_k(
+    logits: &[f32],
+    think_end_token_id: u32,
+    rank: usize,
+) -> bool {
+    if rank == 0 || logits.is_empty() {
+        return false;
+    }
+    let target = think_end_token_id as usize;
+    if target >= logits.len() {
+        return false;
+    }
+    let mut top: Vec<(usize, f32)> = Vec::with_capacity(rank);
+    for (idx, &value) in logits.iter().enumerate() {
+        if top.len() < rank {
+            top.push((idx, value));
+            if top.len() == rank {
+                top.sort_by(|a, b| b.1.total_cmp(&a.1));
+            }
+            continue;
+        }
+        if value > top[rank - 1].1 {
+            top[rank - 1] = (idx, value);
+            top.sort_by(|a, b| b.1.total_cmp(&a.1));
+        }
+    }
+    if top.len() < rank {
+        top.sort_by(|a, b| b.1.total_cmp(&a.1));
+    }
+    top.iter().any(|(idx, _)| *idx == target)
+}
+
 /// Single-token decode fallback (used when n-gram table has no prediction).
 ///
 /// Respects `temperature`: 0.0 → argmax, > 0.0 → categorical sampling.
@@ -1507,6 +1556,7 @@ pub fn single_decode(
         &mut probs_buf,
         &mut logits_buf,
         &mut candidates_buf,
+        None,
     )
 }
 
@@ -1523,12 +1573,37 @@ pub fn single_decode_with_sampling_buffers(
     sampling_probs_buf: &mut Vec<f32>,
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
+    soft_close: Option<ThinkSoftCloseProbe>,
 ) -> Vec<u32> {
     let token_offset = cache.seq_len();
     let logits = forward(cfg, weights, &[last_token], cache, token_offset);
     cache.advance(1);
 
-    let tok = if sampling.temperature > 0.0
+    let tok = if let Some(probe) = soft_close {
+        // Think soft-close window: materialize full logits so the rank probe
+        // can run before sampling; GPU sampling shortcuts are skipped. On a
+        // miss, CPU-sample the same materialized row (temperature <= 0 stays
+        // deterministic argmax inside sample_categorical_into).
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&logits);
+        targets.extend(kv_refs);
+        eval(&targets);
+        let logits_f32 = logits.data_f32();
+        if think_soft_close_in_top_k(logits_f32, probe.think_end_token_id, probe.rank) {
+            probe.think_end_token_id
+        } else {
+            sample_categorical_into(
+                logits_f32,
+                sampling,
+                repetition_tokens,
+                rng,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
+            )
+        }
+    } else if sampling.temperature > 0.0
         && !sampling.uses_logits_processors()
         && sampling.top_k == 0
         && sampling.top_p >= 1.0
@@ -1576,6 +1651,30 @@ pub fn single_decode_with_sampling_buffers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soft_close_probe_membership_by_rank() {
+        let logits = [0.1_f32, 5.0, 3.0, 4.0, 0.5];
+        // Top-3 are indices 1, 3, 2.
+        assert!(think_soft_close_in_top_k(&logits, 1, 3));
+        assert!(think_soft_close_in_top_k(&logits, 2, 3));
+        assert!(think_soft_close_in_top_k(&logits, 3, 3));
+        assert!(!think_soft_close_in_top_k(&logits, 0, 3));
+        assert!(!think_soft_close_in_top_k(&logits, 4, 3));
+        // Rank 1 only the argmax.
+        assert!(think_soft_close_in_top_k(&logits, 1, 1));
+        assert!(!think_soft_close_in_top_k(&logits, 3, 1));
+    }
+
+    #[test]
+    fn soft_close_probe_edge_cases() {
+        assert!(!think_soft_close_in_top_k(&[], 0, 3));
+        assert!(!think_soft_close_in_top_k(&[1.0, 2.0], 0, 0));
+        // Token id beyond the vocab slice.
+        assert!(!think_soft_close_in_top_k(&[1.0, 2.0], 9, 3));
+        // Fewer logits than rank: full set is the top set.
+        assert!(think_soft_close_in_top_k(&[1.0, 2.0], 0, 3));
+    }
 
     fn table_from_sequence(tokens: &[u32]) -> NgramTable {
         let mut t = NgramTable::new();
