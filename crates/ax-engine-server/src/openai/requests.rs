@@ -448,9 +448,13 @@ pub(crate) fn build_openai_chat_request(
         crate::metadata::model_supports_video(live),
     )?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
-    let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     let prompt_options = openai_chat_prompt_render_options(&request);
+    let sampling_params = default_deepseek_thinking_sampling_adjustments(
+        live,
+        prompt_options.enable_thinking,
+        OpenAiSamplingParams::from_chat_request(&request),
+    );
     // Cross-surface parity with the Ollama route's `think` gate: an explicit
     // request for thinking on a model that does not advertise reasoning is a
     // deterministic 400, not a silently open `<think>` block the model's
@@ -995,6 +999,30 @@ pub(crate) fn default_native_mlx_openai_repetition_penalty(
         return 1.1;
     }
     1.0
+}
+
+/// DeepSeek thinking-mode sampling defaults (ds4 reference parity):
+/// temperature 1.0 / top_p 1.0 / min_p 0.05 / top_k 0, applied only to knobs
+/// the client omitted — an explicit client value (including temperature 0 for
+/// deterministic benchmarking) always wins.
+pub(crate) fn default_deepseek_thinking_sampling_adjustments(
+    live: &LiveState,
+    thinking_enabled: bool,
+    mut params: OpenAiSamplingParams,
+) -> OpenAiSamplingParams {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx
+        || !thinking_enabled
+        || !chat::is_deepseek_model(live.model_id.as_ref())
+    {
+        return params;
+    }
+    params.temperature.get_or_insert(1.0);
+    params.top_p.get_or_insert(1.0);
+    params.min_p.get_or_insert(0.05);
+    if params.seed.is_none() {
+        params.seed = Some(default_openai_seed(params.temperature.unwrap_or(1.0)));
+    }
+    params
 }
 
 fn default_openai_seed(temperature: f32) -> u64 {

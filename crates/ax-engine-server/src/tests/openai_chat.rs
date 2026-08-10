@@ -1994,6 +1994,53 @@ fn deepseek_request_defaults_thinking_from_model_id() {
 }
 
 #[tokio::test]
+async fn deepseek_thinking_defaults_apply_only_to_omitted_sampling_knobs() {
+    let artifact_dir = minimal_tokenizer_artifact("deepseek-thinking-sampling");
+    let state = native_mlx_openai_builder_state("deepseek-ai/DeepSeek-R1", &artifact_dir);
+    let live = state.snapshot();
+
+    // Omitted knobs receive the DeepSeek thinking defaults.
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-R1",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 8
+    }))
+    .expect("request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("R1 chat builds");
+    assert_eq!(built.generate_request.sampling.temperature, 1.0);
+    assert_eq!(built.generate_request.sampling.top_p, 1.0);
+    assert_eq!(built.generate_request.sampling.min_p, Some(0.05));
+    assert_eq!(built.generate_request.sampling.top_k, 0);
+
+    // Explicit client values win over the defaults.
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-R1",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 8,
+        "temperature": 0.0,
+        "min_p": 0.2
+    }))
+    .expect("request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("greedy R1 chat builds");
+    assert_eq!(built.generate_request.sampling.temperature, 0.0);
+    assert_eq!(built.generate_request.sampling.min_p, Some(0.2));
+
+    // Thinking-off DeepSeek keeps the legacy greedy defaults.
+    let state = native_mlx_openai_builder_state("deepseek-ai/DeepSeek-V3", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-V3",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 8
+    }))
+    .expect("request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("V3 chat builds");
+    assert_eq!(built.generate_request.sampling.temperature, 0.0);
+    assert_eq!(built.generate_request.sampling.min_p, None);
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_chat_request_renders_deepseek_with_think_framing() {
     let state = test_app_state(|args| {
         args.model_id = "deepseek-ai/DeepSeek-V3".to_string();
