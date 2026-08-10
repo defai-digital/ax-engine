@@ -559,6 +559,66 @@ pub(crate) fn full_precision_attention_with_window(
             None,
         );
     }
+    // Dense multi-token long history: bf16 singleton-query fold (mirror moe_mt).
+    // Fold is required for q_len=1 reduction identity (12B6 agent first_diff@8);
+    // doing it under full-history f32 K/V upcast was exact but too slow
+    // (dense-sing-v4 agent weighted ~0.91×). MoE long already proves bf16 fold
+    // keeps greedy exactness. Short multi-token stays on the f32 batched path
+    // below (12B6 general release_ready; always-on fold regressed its weighted
+    // 1.215→1.180). Kill-switch: AX_MLX_DENSE_LONG_MT_BF16_FOLD=0 restores the
+    // prior f32 long fold.
+    if fastpath::multi_token_f32_attention_enabled()
+        && seq > 1
+        && seq <= 8
+        && fastpath::dense_long_mt_bf16_fold_enabled()
+    {
+        let q_shape = q_rope.shape();
+        let b = q_shape.first().copied().unwrap_or(1);
+        let hq = q_shape.get(1).copied().unwrap_or(1);
+        let d = *q_shape.last().unwrap_or(&1);
+        let k_shape = cached_k.shape();
+        let hk = k_shape.get(1).copied().unwrap_or(hq);
+        let key_len = k_shape.get(2).copied().unwrap_or(1) as usize;
+        let hist = key_len.saturating_sub(seq);
+        if key_len >= 512 {
+            let generated_mask;
+            let position_mask = if let Some(m) = mask_opt.as_ref() {
+                m
+            } else {
+                generated_mask = create_causal_mask(seq, hist, sliding_window);
+                &generated_mask
+            };
+            if b == 1
+                && k_shape.first().copied() == Some(1)
+                && position_mask.shape() == vec![seq as i32, key_len as i32]
+            {
+                let q_singletons = reshape(
+                    &transpose(q_rope, &[0, 2, 1, 3], None),
+                    &[seq as i32, hq, 1, d],
+                    None,
+                );
+                let k_singletons =
+                    broadcast_to(cached_k, &[seq as i32, hk, key_len as i32, d], None);
+                let v_singletons =
+                    broadcast_to(cached_v, &[seq as i32, hk, key_len as i32, d], None);
+                let mask_singletons =
+                    reshape(position_mask, &[seq as i32, 1, 1, key_len as i32], None);
+                let out_singletons = scaled_dot_product_attention_with_mask(
+                    &q_singletons,
+                    &k_singletons,
+                    &v_singletons,
+                    query_scale,
+                    ScaledDotProductAttentionMask::Array(&mask_singletons),
+                    None,
+                );
+                return transpose(
+                    &reshape(&out_singletons, &[1, seq as i32, hq, d], None),
+                    &[0, 2, 1, 3],
+                    None,
+                );
+            }
+        }
+    }
     if fastpath::multi_token_f32_attention_enabled()
         && (seq > 1 || fastpath::force_f32_attention_enabled())
     {
@@ -578,11 +638,9 @@ pub(crate) fn full_precision_attention_with_window(
         } else {
             cached_v.clone()
         };
-        // Dense multi-token (12B/31B): same singleton-query fold as moe_mt so
-        // verify matches pure-direct q_len=1 reduction (12B6 agent long first_diff@8).
-        // Gate on long history: short-context trials were already exact under
-        // batched f32 SDPA; folding every short verify regressed agent weighted
-        // speed (dense-sing-12b6-agent: exact@0.91 vs prior inexact@0.98).
+        // Dense multi-token short / fallback: f32 batched SDPA (exact for short
+        // gen). Long history normally takes the bf16 fold above; when that
+        // path is kill-switched, fall through to f32 fold for identity.
         if seq > 1 && seq <= 8 {
             let q_shape = q.shape();
             let b = q_shape.first().copied().unwrap_or(1);
@@ -592,12 +650,6 @@ pub(crate) fn full_precision_attention_with_window(
             let hk = k_shape.get(1).copied().unwrap_or(hq);
             let key_len = k_shape.get(2).copied().unwrap_or(1) as usize;
             let hist = key_len.saturating_sub(seq);
-            // One-call singleton-query fold (same as moe_mt). Required for dense
-            // f32 identity on long agent (first_diff@8 closed at dense-sing-12b6-agent);
-            // hist-sliced sequential SDPA regressed to first_diff@3/5 (dense-sing-v2).
-            // Always-on fold pulled 12B6 general weighted 1.215→1.180 (missed 1.20
-            // gate). Gate on long keys so short-ctx stays batched f32 (already
-            // exact) while multi-kilo agent prefill / SWA window views keep fold.
             if key_len >= 512 {
                 let generated_mask;
                 let position_mask = if let Some(m) = mask_opt.as_ref() {
@@ -615,10 +667,8 @@ pub(crate) fn full_precision_attention_with_window(
                         &[seq as i32, hq, 1, d],
                         None,
                     );
-                    let k_singletons =
-                        broadcast_to(&k, &[seq as i32, hk, key_len as i32, d], None);
-                    let v_singletons =
-                        broadcast_to(&v, &[seq as i32, hk, key_len as i32, d], None);
+                    let k_singletons = broadcast_to(&k, &[seq as i32, hk, key_len as i32, d], None);
+                    let v_singletons = broadcast_to(&v, &[seq as i32, hk, key_len as i32, d], None);
                     let mask_singletons =
                         reshape(position_mask, &[seq as i32, 1, 1, key_len as i32], None);
                     let out_singletons = scaled_dot_product_attention_with_mask(

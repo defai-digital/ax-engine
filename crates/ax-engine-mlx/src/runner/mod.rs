@@ -2648,9 +2648,11 @@ impl MlxRunner {
                 // Early short-context only: stop-loss reject storms on tiny
                 // gens (gen med killers) without aborting multi-token mid
                 // long-ish short-ctx gens (smokef139 trial3 1.20→1.04).
+                // Window 24 covers formal general short tails that still
+                // stack low-accept cost after the first dozen tokens.
                 self.gemma4_assistant_mtp.is_some()
                     && row.state.cache.seq_len() < 512
-                    && row.state.generated_tokens.len() < 16,
+                    && row.state.generated_tokens.len() < 24,
             );
             if accept_count == 0 {
                 row.state.mtp_consecutive_misses =
@@ -9234,9 +9236,11 @@ impl MlxRunner {
             // Early short-context only: stop-loss reject storms on tiny
             // gens (gen med killers) without aborting multi-token mid
             // long-ish short-ctx gens (smokef139 trial3 1.20→1.04).
+            // Window 24 covers formal general short tails that still
+            // stack low-accept cost after the first dozen tokens.
             self.gemma4_assistant_mtp.is_some()
                 && state.cache.seq_len() < 512
-                && state.generated_tokens.len() < 16,
+                && state.generated_tokens.len() < 24,
         );
         if adaptive_depth_accept == 0 && !pending.is_empty() {
             state.mtp_consecutive_misses = state.mtp_consecutive_misses.saturating_add(1);
@@ -10370,9 +10374,10 @@ fn mtp_next_adaptive_depth(
     accept_count: usize,
     consecutive_misses: u32,
     // Gemma assistant formal gen: short low-accept trials stack reject-cost
-    // steps (median 0.63–0.79×). One complete miss stops further drafting so
-    // remaining tokens use empty pure path (~1.0×). Agent coding keeps high
-    // accept so this rarely trips on long winning trials.
+    // steps (median 0.63–0.79×). One complete miss (or majority-reject under
+    // the short-ctx early-gen gate) stops further drafting so remaining tokens
+    // use empty pure path (~1.0×). Agent coding keeps high accept so this
+    // rarely trips on long winning trials.
     aggressive_miss_to_zero: bool,
 ) -> usize {
     if max_depth == 0 {
@@ -10393,10 +10398,16 @@ fn mtp_next_adaptive_depth(
         return current_depth.saturating_add(1).min(max_depth);
     }
 
+    // Short-gen stop-loss: complete miss, or majority reject (accept < half of
+    // drafts) on the aggressive short-ctx early-gen path. Partial 1/2 accepts
+    // on tiny gens still stack draft+verify cost that kills formal median.
+    if aggressive_miss_to_zero
+        && (accept_count == 0 || accept_count.saturating_mul(2) < pending_len)
+    {
+        return 0;
+    }
+
     if accept_count == 0 {
-        if aggressive_miss_to_zero {
-            return 0;
-        }
         // Progressive floor on consecutive complete misses: first miss keeps
         // floor at 2 (status quo); second drops to 1; third+ drops to 0.
         let floor = match consecutive_misses {
@@ -13691,6 +13702,10 @@ mod tests {
         // Gemma assistant: first complete miss ends drafting (gen median stop-loss).
         assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 0, 0, true), 0);
         assert_eq!(mtp_next_adaptive_depth(1, 2, 1, 0, 3, true), 0);
+        // Majority-reject (1/3) on the aggressive short-gen path also stops.
+        assert_eq!(mtp_next_adaptive_depth(2, 2, 3, 1, 0, true), 0);
+        // Exact half-accept (1/2) is not majority-reject; progressive floor applies.
+        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 1, 0, true), 2);
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {

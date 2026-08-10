@@ -865,6 +865,19 @@ env_flag_default_on!(
     "AX_MLX_MULTI_TOKEN_F32_ATTENTION"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_DENSE_LONG_MT_BF16_FOLD` — dense multi-token long history
+    /// (`key_len >= 512`) uses the same bf16 singleton-query fold as MoE
+    /// multi-token, avoiding full-history f32 K/V upcast.
+    ///
+    /// **Default: ON** for Gemma 12B/31B agent long Tier 2 speed (dense-sing-v4
+    /// was exact under f32 fold at ~0.91× weighted). Kill-switch via
+    /// `AX_MLX_DENSE_LONG_MT_BF16_FOLD=0` restores the prior f32 long fold.
+    /// Short multi-token still uses f32 batched SDPA for general exactness.
+    dense_long_mt_bf16_fold_enabled,
+    "AX_MLX_DENSE_LONG_MT_BF16_FOLD"
+);
+
 env_flag!(
     /// `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` — opt-in direct C++ route for
     /// Gemma4 dense post-attention residual + FFN + layer-scalar orchestration.
