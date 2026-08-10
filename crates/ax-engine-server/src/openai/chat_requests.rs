@@ -212,6 +212,12 @@ pub(crate) fn render_openai_chat_prompt_with_options(
     ) {
         return render_glm_openai_chat_prompt(model_id, messages, tools, tool_choice);
     }
+    if matches!(
+        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::ChatPromptTemplate::DeepSeekChat
+    ) {
+        return render_deepseek_openai_chat_prompt(model_id, messages, tools, options);
+    }
     let template = chat::ChatPromptTemplate::for_model_id(model_id);
     // Always use the dedicated Ministral renderer: structured tool-call history
     // can be present even when this request does not redeclare the tool schemas.
@@ -239,6 +245,54 @@ pub(crate) fn render_openai_chat_prompt_with_options(
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
     chat::render_prompt_with_qwen_thinking(model_id, &rendered_messages, options.enable_thinking)
         .map_err(chat_error_response)
+}
+
+/// DeepSeek V3/R1 chat renderer (ds4 reference parity): assistant history
+/// keeps `<think>reasoning</think>` only for turns after the last user message or
+/// when the conversation uses tools; earlier turns drop reasoning. Tool
+/// schemas and DSML tool-call encoding are not rendered yet (DSML support is
+/// tracked separately); tool *results* ride the pair path's escaping rules.
+fn render_deepseek_openai_chat_prompt(
+    model_id: &str,
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    options: ChatPromptRenderOptions,
+) -> Result<String, HttpErrorResponse> {
+    if messages.is_empty() {
+        return Err(empty_chat_messages_error());
+    }
+    let thinking = options.enable_thinking;
+    let tool_context = tools.map(openai_value_is_present).unwrap_or(false)
+        || messages.iter().any(|message| {
+            matches!(message.role.as_str(), "tool" | "function") || message.tool_calls.is_some()
+        });
+    let last_user_idx = messages
+        .iter()
+        .rposition(|message| matches!(message.role.as_str(), "user" | "tool" | "function"));
+    let mut pairs = Vec::with_capacity(messages.len());
+    for (index, message) in messages.iter().enumerate() {
+        let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        let content = render_openai_chat_content(message.content.as_ref())?;
+        if role == "assistant" && thinking {
+            let keep_reasoning = tool_context || last_user_idx.is_some_and(|last| index > last);
+            let reasoning = keep_reasoning
+                .then(|| message.reasoning_content.as_deref())
+                .flatten()
+                .map(str::trim)
+                .filter(|reasoning| !reasoning.is_empty());
+            let mut full = String::new();
+            if let Some(reasoning) = reasoning {
+                full.push_str(chat::DEEPSEEK_THINK_OPEN);
+                full.push_str(reasoning);
+                full.push_str(chat::DEEPSEEK_THINK_CLOSE);
+            }
+            full.push_str(&content);
+            pairs.push((role.to_string(), full));
+        } else {
+            pairs.push((role.to_string(), content));
+        }
+    }
+    chat::render_prompt_with_qwen_thinking(model_id, &pairs, thinking).map_err(chat_error_response)
 }
 
 /// Render an OpenAI chat request for the GLM 4.x family, including native GLM

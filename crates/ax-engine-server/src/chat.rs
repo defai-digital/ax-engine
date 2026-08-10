@@ -1104,6 +1104,23 @@ pub(crate) fn decode_gemma4_chat_output_with_reasoning(
     Ok((content, reasoning))
 }
 
+/// Decode a DeepSeek thinking-mode chat completion. Generation starts inside
+/// an open think block, so the output carries reasoning until the first
+/// close tag; unterminated output is all reasoning (never leaks to content).
+pub(crate) fn decode_deepseek_chat_output_with_reasoning(
+    tokenizer: &EngineTokenizer,
+    output_tokens: &[u32],
+) -> Result<(String, Option<String>), EngineTokenizerError> {
+    let text = tokenizer.decode(output_tokens, false)?;
+    let (reasoning, content) = match text.split_once(DEEPSEEK_THINK_CLOSE) {
+        Some((before, after)) => (before, after),
+        None => (text.as_str(), ""),
+    };
+    let reasoning = reasoning.trim();
+    let reasoning = (!reasoning.is_empty()).then(|| reasoning.to_string());
+    Ok((content.to_string(), reasoning))
+}
+
 /// GLM 4.x structural tool-call markers. They are *special* tokens in GLM's
 /// tokenizer, so a plain `skip_special_tokens` decode drops them and the
 /// tool-call parser never sees the call (it surfaces as `nameKeyValue` text).

@@ -468,7 +468,9 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
         == SelectedBackend::Mlx
         && matches!(
             chat::ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
-            chat::ChatPromptTemplate::QwenChatMl | chat::ChatPromptTemplate::Gemma4
+            chat::ChatPromptTemplate::QwenChatMl
+                | chat::ChatPromptTemplate::Gemma4
+                | chat::ChatPromptTemplate::DeepSeekChat
         );
     response_options
         .reject_unsupported_streaming_contract(request.stream, streaming_reasoning_supported)?;

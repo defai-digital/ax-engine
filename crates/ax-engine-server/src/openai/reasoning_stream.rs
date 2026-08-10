@@ -40,6 +40,15 @@ impl ThinkTagScanner {
         }
     }
 
+    /// DeepSeek thinking-mode streams start inside an open think block (the
+    /// prompt pre-fills the open tag), so seed the scanner accordingly.
+    pub(crate) fn new_inside_think() -> Self {
+        Self {
+            state: ThinkScanState::InThink,
+            buffer: String::new(),
+        }
+    }
+
     pub(crate) fn push(&mut self, text: &str) -> ThinkScanStep {
         let mut step = ThinkScanStep::default();
         if self.state == ThinkScanState::Passed {
@@ -137,6 +146,27 @@ mod tests {
         assert_eq!(step.reasoning, "plan the fix");
         assert_eq!(step.content, "the answer");
         assert_eq!(scanner.push(" continues").content, " continues");
+    }
+
+    #[test]
+    fn seeded_inside_think_routes_to_reasoning_until_close() {
+        let mut scanner = ThinkTagScanner::new_inside_think();
+        let step = scanner.push("step one");
+        assert_eq!(step.reasoning, "step one");
+        assert_eq!(step.content, "");
+        let step = scanner.push(" more</think>the answer");
+        assert_eq!(step.reasoning, " more");
+        assert_eq!(step.content, "the answer");
+        let step = scanner.push(" continues");
+        assert_eq!(step.content, " continues");
+    }
+
+    #[test]
+    fn seeded_inside_think_flushes_unterminated_as_reasoning() {
+        let mut scanner = ThinkTagScanner::new_inside_think();
+        assert_eq!(scanner.push("never closes").reasoning, "never closes");
+        let tail = scanner.finish();
+        assert_eq!(tail.reasoning, "");
     }
 
     #[test]

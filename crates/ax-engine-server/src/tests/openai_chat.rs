@@ -1923,6 +1923,48 @@ async fn openai_chat_request_preserves_text_metadata_when_adding_workload_hints(
 }
 
 #[test]
+fn deepseek_replays_reasoning_per_turn_rules() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1", "reasoning_content": "early-thought"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2", "reasoning_content": "late-thought"}
+    ]))
+    .expect("messages should deserialize");
+    let options = ChatPromptRenderOptions {
+        enable_thinking: true,
+        preserve_thinking: false,
+    };
+    let prompt = render_openai_chat_prompt_with_options(
+        "deepseek-ai/DeepSeek-R1",
+        &messages,
+        None,
+        None,
+        options,
+    )
+    .expect("deepseek replay should render");
+    // Turn before the last user drops reasoning (still renders bare close
+    // tag + answer); the last assistant turn keeps its reasoning.
+    assert!(!prompt.contains("early-thought"));
+    assert!(prompt.contains("a1"));
+    assert!(prompt.contains("<think>late-thought</think>a2"));
+    // Tool presence preserves prior reasoning (tool_context rule).
+    let tools = json!([{"type": "function", "function": {"name": "lookup", "parameters": {}}}]);
+    let with_tools = render_openai_chat_prompt_with_options(
+        "deepseek-ai/DeepSeek-R1",
+        &messages,
+        Some(&tools),
+        None,
+        ChatPromptRenderOptions {
+            enable_thinking: true,
+            preserve_thinking: false,
+        },
+    )
+    .expect("deepseek replay with tools should render");
+    assert!(with_tools.contains("<think>early-thought</think>a1"));
+}
+
+#[test]
 fn deepseek_request_defaults_thinking_from_model_id() {
     let r1: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "deepseek-ai/DeepSeek-R1",
