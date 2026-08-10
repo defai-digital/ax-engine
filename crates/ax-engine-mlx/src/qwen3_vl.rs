@@ -66,10 +66,22 @@ impl Qwen3VlImageGeometry {
         // `(h/p/merge)×(w/p/merge)`, matching MRoPE `grid_hw` and the runtime
         // check in `qwen_mrope_position_axes`. Do not use the Gemma pooling
         // product helper `vit_soft_token_count` here: for a 3×3 patch grid with
-        // merge 2 it overcounts (product 2 vs grid 1×1 = 1).
+        // merge 2 it overcounts (product 2 vs grid 1×1 = 1). Fail closed when
+        // the grid product exceeds `max_soft_tokens` so scatter/MRoPE lengths
+        // never silently diverge from a capped count.
         let (gh, gw) = self.grid_hw()?;
         let count = gh.saturating_mul(gw);
-        Ok(count.min(self.max_soft_tokens))
+        if count > self.max_soft_tokens {
+            return Err(Qwen3VlError::InvalidGeometry(format!(
+                "soft tokens {count} exceed max {} for {}x{} patch={} merge={}",
+                self.max_soft_tokens,
+                self.height,
+                self.width,
+                self.patch_size,
+                self.spatial_merge_size
+            )));
+        }
+        Ok(count)
     }
 
     pub fn mrope_sections(self) -> Result<MropeSections, Qwen3VlError> {
@@ -101,7 +113,12 @@ pub fn plan_mrope_for_images(
 ) -> Result<Vec<u32>, Qwen3VlError> {
     let mut result = Vec::new();
     for geometry in geometries {
-        result.extend(mrope_position_ids(geometry.mrope_sections()?));
+        // Gate on soft_token_count so MRoPE length stays consistent with
+        // plan_image_scatter when the grid product exceeds max_soft_tokens.
+        let expected = geometry.soft_token_count()?;
+        let ids = mrope_position_ids(geometry.mrope_sections()?);
+        debug_assert_eq!(ids.len(), expected as usize * 3);
+        result.extend(ids);
     }
     Ok(result)
 }
@@ -1343,6 +1360,23 @@ mod tests {
         };
         assert!(collapsed.grid_hw().is_err());
         assert!(collapsed.soft_token_count().is_err());
+    }
+
+    #[test]
+    fn soft_token_count_fails_closed_when_grid_exceeds_max() {
+        // 448² / 16 / 2 → 14×14 = 196 soft tokens. Capping max must not return
+        // a partial count that disagrees with grid_hw / MRoPE length.
+        let geometry = Qwen3VlImageGeometry {
+            height: 448,
+            width: 448,
+            patch_size: 16,
+            spatial_merge_size: 2,
+            max_soft_tokens: 10,
+        };
+        let (gh, gw) = geometry.grid_hw().expect("grid");
+        assert_eq!(gh * gw, 196);
+        assert!(geometry.soft_token_count().is_err());
+        assert!(plan_mrope_for_images(&[geometry]).is_err());
     }
 
     #[test]

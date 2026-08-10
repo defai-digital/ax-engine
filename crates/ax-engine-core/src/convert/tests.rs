@@ -4221,9 +4221,20 @@ fn rejects_qwen_rope_scaling_until_runtime_contract_is_manifested() {
     )
     .expect("default Qwen3-VL MRoPE describes axis assignment, not frequency scaling");
 
-    // HF ships Qwen3.5 MoE / text variants under distinct model_type strings that
-    // still use the same default-MRoPE object; convert must not reject them.
-    for model_type in ["qwen3_5", "qwen3.5", "qwen3_5_moe", "qwen3_5_text"] {
+    // HF ships Qwen3.5 / VL variants under distinct model_type strings that still
+    // use the same default-MRoPE object; convert must not reject any alias that
+    // `model_family_for_type` accepts for those families.
+    for model_type in [
+        "qwen3_vl",
+        "qwen3-vl",
+        "qwen3_vl_text",
+        "qwen3_vl_moe",
+        "qwen3-vl-moe",
+        "qwen3_5",
+        "qwen3.5",
+        "qwen3_5_moe",
+        "qwen3_5_text",
+    ] {
         validate_qwen_rope_scaling(
             &serde_json::json!({
                 "text_config": {

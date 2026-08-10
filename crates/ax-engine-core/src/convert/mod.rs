@@ -2316,12 +2316,21 @@ fn validate_qwen_rope_scaling(
     // Unified Qwen VL checkpoints describe their ordinary, unscaled RoPE plus
     // multimodal axis split in this object. `rope_type=default` does not scale
     // frequencies; the MRoPE fields are consumed by the native VL prefill path.
-    // Accept all HF model_type aliases that map to the qwen3_5 runtime family
-    // (plus dedicated VL types). Omitting `qwen3_5_moe` / `qwen3.5` used to
-    // reject valid default-MRoPE configs as unsupported rope_scaling.
+    // Accept all HF model_type aliases that map to Qwen VL / qwen3_5 families
+    // (must stay in sync with `model_family_for_type`). Omitting aliases such as
+    // `qwen3_5_moe` or hyphenated VL types used to reject valid default-MRoPE
+    // configs as unsupported rope_scaling.
     let is_qwen_mrope_family = matches!(
         model_type,
-        "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text"
+        "qwen3_vl"
+            | "qwen3-vl"
+            | "qwen3_vl_text"
+            | "qwen3_vl_moe"
+            | "qwen3-vl-moe"
+            | "qwen3_5"
+            | "qwen3.5"
+            | "qwen3_5_moe"
+            | "qwen3_5_text"
     );
     let is_default_mrope = is_qwen_mrope_family
         && rope_scaling.is_some_and(|value| {
