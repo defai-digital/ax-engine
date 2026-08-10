@@ -595,46 +595,50 @@ pub(crate) fn full_precision_attention_with_window(
             // One-call singleton-query fold (same as moe_mt). Required for dense
             // f32 identity on long agent (first_diff@8 closed at dense-sing-12b6-agent);
             // hist-sliced sequential SDPA regressed to first_diff@3/5 (dense-sing-v2).
-            // Mirror moe_mt: apply for all short multi-token verifies (seq 2..8).
-            let generated_mask;
-            let position_mask = if let Some(m) = mask_opt.as_ref() {
-                m
-            } else {
-                generated_mask = create_causal_mask(seq, hist, sliding_window);
-                &generated_mask
-            };
-            if b == 1
-                && k_shape.first().copied() == Some(1)
-                && position_mask.shape() == vec![seq as i32, key_len as i32]
-            {
-                let q_singletons = reshape(
-                    &transpose(&q, &[0, 2, 1, 3], None),
-                    &[seq as i32, hq, 1, d],
-                    None,
-                );
-                let k_singletons =
-                    broadcast_to(&k, &[seq as i32, hk, key_len as i32, d], None);
-                let v_singletons =
-                    broadcast_to(&v, &[seq as i32, hk, key_len as i32, d], None);
-                let mask_singletons =
-                    reshape(position_mask, &[seq as i32, 1, 1, key_len as i32], None);
-                let out_singletons = scaled_dot_product_attention_with_mask(
-                    &q_singletons,
-                    &k_singletons,
-                    &v_singletons,
-                    query_scale,
-                    ScaledDotProductAttentionMask::Array(&mask_singletons),
-                    None,
-                );
-                let out = transpose(
-                    &reshape(&out_singletons, &[1, seq as i32, hq, d], None),
-                    &[0, 2, 1, 3],
-                    None,
-                );
-                if q_dtype != MlxDtype::Float32 {
-                    return astype(&out, q_dtype, None);
+            // Always-on fold pulled 12B6 general weighted 1.215→1.180 (missed 1.20
+            // gate). Gate on long keys so short-ctx stays batched f32 (already
+            // exact) while multi-kilo agent prefill / SWA window views keep fold.
+            if key_len >= 512 {
+                let generated_mask;
+                let position_mask = if let Some(m) = mask_opt.as_ref() {
+                    m
+                } else {
+                    generated_mask = create_causal_mask(seq, hist, sliding_window);
+                    &generated_mask
+                };
+                if b == 1
+                    && k_shape.first().copied() == Some(1)
+                    && position_mask.shape() == vec![seq as i32, key_len as i32]
+                {
+                    let q_singletons = reshape(
+                        &transpose(&q, &[0, 2, 1, 3], None),
+                        &[seq as i32, hq, 1, d],
+                        None,
+                    );
+                    let k_singletons =
+                        broadcast_to(&k, &[seq as i32, hk, key_len as i32, d], None);
+                    let v_singletons =
+                        broadcast_to(&v, &[seq as i32, hk, key_len as i32, d], None);
+                    let mask_singletons =
+                        reshape(position_mask, &[seq as i32, 1, 1, key_len as i32], None);
+                    let out_singletons = scaled_dot_product_attention_with_mask(
+                        &q_singletons,
+                        &k_singletons,
+                        &v_singletons,
+                        query_scale,
+                        ScaledDotProductAttentionMask::Array(&mask_singletons),
+                        None,
+                    );
+                    let out = transpose(
+                        &reshape(&out_singletons, &[1, seq as i32, hq, d], None),
+                        &[0, 2, 1, 3],
+                        None,
+                    );
+                    if q_dtype != MlxDtype::Float32 {
+                        return astype(&out, q_dtype, None);
+                    }
+                    return out;
                 }
-                return out;
             }
         }
         let out = scaled_dot_product_attention_with_mask(&q, &k, &v, query_scale, mask, None);
