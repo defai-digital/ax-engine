@@ -1010,7 +1010,7 @@ pub(crate) fn default_native_mlx_openai_repetition_penalty(
 /// temperature 1.0 / top_p 1.0 / min_p 0.05 / top_k 0, applied only to knobs
 /// the client omitted — an explicit client value (including temperature 0 for
 /// deterministic benchmarking) always wins.
-pub(crate) fn default_deepseek_thinking_sampling_adjustments(
+fn default_deepseek_thinking_sampling_adjustments(
     live: &LiveState,
     thinking_enabled: bool,
     mut params: OpenAiSamplingParams,
