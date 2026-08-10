@@ -578,6 +578,65 @@ pub(crate) fn full_precision_attention_with_window(
         } else {
             cached_v.clone()
         };
+        // Dense multi-token (12B/31B): same singleton-query fold as moe_mt so
+        // verify matches pure-direct q_len=1 reduction (12B6 agent long first_diff@8).
+        // Gate on long history: short-context trials were already exact under
+        // batched f32 SDPA; folding every short verify regressed agent weighted
+        // speed (dense-sing-12b6-agent: exact@0.91 vs prior inexact@0.98).
+        if seq > 1 && seq <= 8 {
+            let q_shape = q.shape();
+            let b = q_shape.first().copied().unwrap_or(1);
+            let hq = q_shape.get(1).copied().unwrap_or(1);
+            let d = *q_shape.last().unwrap_or(&1);
+            let k_shape = k.shape();
+            let hk = k_shape.get(1).copied().unwrap_or(hq);
+            let key_len = k_shape.get(2).copied().unwrap_or(1) as usize;
+            let hist = key_len.saturating_sub(seq);
+            // One-call singleton-query fold (same as moe_mt). Required for dense
+            // f32 identity on long agent (first_diff@8 closed at dense-sing-12b6-agent);
+            // hist-sliced sequential SDPA regressed to first_diff@3/5 (dense-sing-v2).
+            // Mirror moe_mt: apply for all short multi-token verifies (seq 2..8).
+            let generated_mask;
+            let position_mask = if let Some(m) = mask_opt.as_ref() {
+                m
+            } else {
+                generated_mask = create_causal_mask(seq, hist, sliding_window);
+                &generated_mask
+            };
+            if b == 1
+                && k_shape.first().copied() == Some(1)
+                && position_mask.shape() == vec![seq as i32, key_len as i32]
+            {
+                let q_singletons = reshape(
+                    &transpose(&q, &[0, 2, 1, 3], None),
+                    &[seq as i32, hq, 1, d],
+                    None,
+                );
+                let k_singletons =
+                    broadcast_to(&k, &[seq as i32, hk, key_len as i32, d], None);
+                let v_singletons =
+                    broadcast_to(&v, &[seq as i32, hk, key_len as i32, d], None);
+                let mask_singletons =
+                    reshape(position_mask, &[seq as i32, 1, 1, key_len as i32], None);
+                let out_singletons = scaled_dot_product_attention_with_mask(
+                    &q_singletons,
+                    &k_singletons,
+                    &v_singletons,
+                    query_scale,
+                    ScaledDotProductAttentionMask::Array(&mask_singletons),
+                    None,
+                );
+                let out = transpose(
+                    &reshape(&out_singletons, &[1, seq as i32, hq, d], None),
+                    &[0, 2, 1, 3],
+                    None,
+                );
+                if q_dtype != MlxDtype::Float32 {
+                    return astype(&out, q_dtype, None);
+                }
+                return out;
+            }
+        }
         let out = scaled_dot_product_attention_with_mask(&q, &k, &v, query_scale, mask, None);
         if q_dtype != MlxDtype::Float32 {
             return astype(&out, q_dtype, None);
