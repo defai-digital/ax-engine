@@ -2645,6 +2645,12 @@ impl MlxRunner {
                 row.pending.len(),
                 accept_count,
                 row.state.mtp_consecutive_misses,
+                // Early short-context only: stop-loss reject storms on tiny
+                // gens (gen med killers) without aborting multi-token mid
+                // long-ish short-ctx gens (smokef139 trial3 1.20→1.04).
+                self.gemma4_assistant_mtp.is_some()
+                    && row.state.cache.seq_len() < 512
+                    && row.state.generated_tokens.len() < 16,
             );
             if accept_count == 0 {
                 row.state.mtp_consecutive_misses =
@@ -7931,9 +7937,10 @@ impl MlxRunner {
                 .map(|c| c.generated_len.saturating_add(1) >= c.max_output_tokens)
                 .unwrap_or(false);
             // MoE empty-draft:
-            // - short: S=1 multi-token for real post_norm (seed drafts)
-            // - long: double-buffer pure-direct = MTP-off twin (identity).
-            // Multi-token draft verify uses dual-edge + cycle residual recheck.
+            // - short: S=1 multi-token for real post_norm (seed drafts) and a
+            //   single KV geometry even after adaptive depth drops to 0
+            //   (do not mix double-buffer mid-stream — smokef137 agent div).
+            // - long fail-closed: double-buffer pure-direct = MTP-off twin.
             let token_offset = state.cache.seq_len();
             let moe_long_fail_closed = self.cfg.moe_expert_count > 0
                 && token_offset >= 512
@@ -9224,6 +9231,12 @@ impl MlxRunner {
             pending.len(),
             adaptive_depth_accept,
             state.mtp_consecutive_misses,
+            // Early short-context only: stop-loss reject storms on tiny
+            // gens (gen med killers) without aborting multi-token mid
+            // long-ish short-ctx gens (smokef139 trial3 1.20→1.04).
+            self.gemma4_assistant_mtp.is_some()
+                && state.cache.seq_len() < 512
+                && state.generated_tokens.len() < 16,
         );
         if adaptive_depth_accept == 0 && !pending.is_empty() {
             state.mtp_consecutive_misses = state.mtp_consecutive_misses.saturating_add(1);
@@ -10356,6 +10369,11 @@ fn mtp_next_adaptive_depth(
     pending_len: usize,
     accept_count: usize,
     consecutive_misses: u32,
+    // Gemma assistant formal gen: short low-accept trials stack reject-cost
+    // steps (median 0.63–0.79×). One complete miss stops further drafting so
+    // remaining tokens use empty pure path (~1.0×). Agent coding keeps high
+    // accept so this rarely trips on long winning trials.
+    aggressive_miss_to_zero: bool,
 ) -> usize {
     if max_depth == 0 {
         return 0;
@@ -10376,6 +10394,9 @@ fn mtp_next_adaptive_depth(
     }
 
     if accept_count == 0 {
+        if aggressive_miss_to_zero {
+            return 0;
+        }
         // Progressive floor on consecutive complete misses: first miss keeps
         // floor at 2 (status quo); second drops to 1; third+ drops to 0.
         let floor = match consecutive_misses {
@@ -13648,25 +13669,28 @@ mod tests {
     #[test]
     fn mtp_adaptive_depth_shrinks_on_partial_reject_and_recovers_on_full_accept() {
         // consecutive_misses=0 for all non-complete-miss cases.
-        assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0, 0), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2, 0), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1, 0), 2);
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1, 0), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2, 0), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3, 0), 0);
+        assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0, 0, false), 3);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2, 0, false), 2);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1, 0, false), 2);
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1, 0, false), 2);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2, 0, false), 3);
+        assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3, 0, false), 0);
     }
 
     #[test]
     fn mtp_adaptive_depth_progressive_floor_on_consecutive_misses() {
         // First complete miss (consecutive_misses=0): floor = 2.
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0, 0), 2);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0, 0, false), 2);
         // Second consecutive miss (consecutive_misses=1): floor = 1.
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 0, 1), 1);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 0, 1, false), 1);
         // Third+ consecutive miss (consecutive_misses=2): floor = 0.
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 2), 0);
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 5), 0);
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 2, false), 0);
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 5, false), 0);
         // Partial accept resets to normal floor logic (not complete miss path).
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 1, 3), 2);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 1, 3, false), 2);
+        // Gemma assistant: first complete miss ends drafting (gen median stop-loss).
+        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 0, 0, true), 0);
+        assert_eq!(mtp_next_adaptive_depth(1, 2, 1, 0, 3, true), 0);
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {
