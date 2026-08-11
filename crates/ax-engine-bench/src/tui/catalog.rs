@@ -85,7 +85,9 @@ impl Family {
     /// Three-tier quality grade for the registry family behind this catalog
     /// key (see `ax_engine_core::support_tier`).
     pub fn support_tier(&self) -> ax_engine_core::ModelSupportTier {
-        if self.key == "ax-qwen3.6-27b-axq" {
+        // Checkpoint-level AXQ candidates must not inherit architecture
+        // certification until their quality/runtime/memory gates pass.
+        if self.key == "ax-qwen3.6-27b-axq" || self.key == "ax-qwen3-vl-30b-a3b-axq" {
             return ax_engine_core::ModelSupportTier::Compatible;
         }
         ax_engine_core::support_tier_for_family(registry_family_label(&self.key))
@@ -112,6 +114,11 @@ pub(super) fn registry_family_label(key: &str) -> &str {
         // qwen3_next family (convert/model_family.rs) — grade against the
         // registry row that actually runs these models.
         "qwen3_next"
+    } else if k.starts_with("qwen3-vl") {
+        // Catalog rows currently cover the 30B-A3B MoE Instruct AXQ packs
+        // (`model_type=qwen3_vl_moe`). Dense `qwen3_vl` remains a valid
+        // runtime family; grade against the MoE row these packs use.
+        "qwen3_vl_moe"
     } else if k.starts_with("qwen3-coder-next") {
         "qwen3_next"
     } else if k.starts_with("qwen3-embedding") {
@@ -175,6 +182,7 @@ pub(super) fn family_display_name(key: &str) -> String {
         "ax-qwen3.6-27b" => "AX Qwen 3.6 27B".into(),
         "ax-qwen3.6-27b-axq" => "AX Qwen 3.6 27B AXQ candidates".into(),
         "ax-qwen3.6-35b" => "AX Qwen 3.6 35B".into(),
+        "ax-qwen3-vl-30b-a3b-axq" => "AX Qwen3-VL 30B-A3B Instruct AXQ".into(),
         "ax-gemma4-12b" => "AX Gemma 4 12B".into(),
         "ax-gemma4-26b" => "AX Gemma 4 26B".into(),
         "ax-gemma4-31b" => "AX Gemma 4 31B".into(),

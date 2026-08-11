@@ -40,10 +40,16 @@ ax-engine serve ax-qwen3.6-27b --port 31418 -- \
 ```
 
 Equivalent managed aliases are `ax-qwen3.5-9b` and `ax-qwen3.6-35b`.
-Qwen3-VL can be served from a prepared local model directory:
+Qwen3-VL can be served from a prepared local model directory, or from the
+managed Qwen3-VL 30B-A3B Instruct AXQ aliases:
 
 ```bash
 ax-engine serve /absolute/path/to/Qwen3-VL-8B-Instruct --port 31418 -- \
+  --total-blocks 2048 \
+  --max-batch-tokens 8192
+
+# Managed 30B-A3B Instruct AXQ candidate (pinned; no MTP)
+ax-engine serve ax-qwen3-vl-30b --port 31418 -- \
   --total-blocks 2048 \
   --max-batch-tokens 8192
 ```

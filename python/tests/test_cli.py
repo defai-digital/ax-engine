@@ -42,6 +42,8 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
     "AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ",
     "AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
+    "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP",
     "AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP",
     "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
@@ -73,7 +75,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 27)
+        self.assertEqual(len(targets), 29)
         self.assertTrue(all(target["alias"].startswith("ax-") for target in targets))
         self.assertTrue(
             all(not target["repo_id"].startswith("mlx-community/") for target in targets)
@@ -106,6 +108,18 @@ class AxEngineCliTests(unittest.TestCase):
             "qwen3.6-27b:axq-4bit": (
                 "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
                 "6182ccbc41c7397ff90670f740c6d9eacfa4b09f",
+            ),
+            "qwen3-vl-30b-a3b:axq": (
+                "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
+                "700ec2c305f5f80e4d7c841c5aec80b050b949c6",
+            ),
+            "qwen3-vl-30b-a3b:axq-4bit": (
+                "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
+                "1f4c21a0c9d4347294d3f082928fdfd854284383",
+            ),
+            "ax-qwen3-vl-30b": (
+                "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
+                "700ec2c305f5f80e4d7c841c5aec80b050b949c6",
             ),
         }
         for alias, (repo_id, revision) in cases.items():

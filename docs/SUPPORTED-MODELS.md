@@ -176,9 +176,10 @@ Two recommended sources:
   `model-manifest.json`, so one download produces a serve-ready MTP directory
   with no separate `download-mtp` step. OptiQ variants carry mixed 4/8-bit
   per-tensor quantization; embedding packs cover EmbeddingGemma 300M and
-  Qwen3-Embedding 0.6B/4B/8B. The managed catalog contains all 27 public
-  repositories in the organization; every currently published Qwen 3.5,
-  Qwen 3.6, and Gemma 4 variant is represented. The two AXQ Qwen 3.6 27B
+  Qwen3-Embedding 0.6B/4B/8B, and Qwen3-VL 30B-A3B Instruct AXQ packs. The
+  managed catalog contains all 29 public repositories in the organization;
+  every currently published Qwen 3.5, Qwen 3.6, Gemma 4, and Qwen3-VL 30B
+  AXQ variant is represented. The AXQ Qwen 3.6 27B and Qwen3-VL 30B
   snapshots are explicitly labeled `candidate` until their checkpoint
   certification gates pass.
 - [mlx-community](https://huggingface.co/mlx-community) — community MLX
@@ -279,6 +280,7 @@ idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 | `ax-qwen3.5-9b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.5-9B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3.6-27b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-27B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3.6-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
+| `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-a3b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-{4,6}bit` (candidate; no MTP) |
 | `ax-gemma4-12b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-12B-IT-MLX-{QAT-OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
 | `ax-gemma4-26b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
 | `ax-gemma4-31b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-31B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
@@ -295,12 +297,16 @@ idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 | --- | --- | --- | --- |
 | `qwen3.6-27b:axq`, `qwen3.6-27b:axq-6bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP` | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` | Candidate; preferred quality/default candidate |
 | `qwen3.6-27b:axq-4bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP` | `6182ccbc41c7397ff90670f740c6d9eacfa4b09f` | Candidate; compact fallback |
+| `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `700ec2c305f5f80e4d7c841c5aec80b050b949c6` | Candidate; vision MoE Instruct; preferred quality |
+| `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `1f4c21a0c9d4347294d3f082928fdfd854284383` | Candidate; vision MoE Instruct; compact fallback |
 
 The unqualified `:axq` selector intentionally means 6-bit. The bare
 `qwen3.6-27b` alias remains `mlx-community/Qwen3.6-27B-4bit`, while
-`ax-qwen3.6-27b` remains the AutomatosX OptiQ pack. Promotion requires the
-quality, runtime, memory, provenance, and published-evidence checks in the
-[Qwen 3.6 27B AXQ certification record](model-certifications/qwen3.6-27b-axq.md).
+`ax-qwen3.6-27b` remains the AutomatosX OptiQ pack. Qwen3-VL 30B AXQ packs
+have no MTP sidecar; promotion requires the quality, runtime, memory,
+provenance, and published-evidence checks in the
+[Qwen 3.6 27B AXQ certification record](model-certifications/qwen3.6-27b-axq.md)
+(same gate pattern for VL packs until a dedicated VL record lands).
 
 **Serve aliases — secondary research / enterprise Llama**
 

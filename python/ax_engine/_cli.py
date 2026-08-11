@@ -284,8 +284,9 @@ def _automatosx_profile(label: str, repo_name: str, aliases: tuple[str, ...] = (
 
 
 # Authoritative downloadable catalog: every public repository shown at
-# https://huggingface.co/AutomatosX/models on 2026-07-20. MTP repositories are
-# complete snapshots; downloading them never invokes the legacy MTP packager.
+# https://huggingface.co/AutomatosX/models (refreshed for Qwen3-VL 30B AXQ
+# packs). MTP repositories are complete snapshots; downloading them never
+# invokes the legacy MTP packager.
 AUTOMATOSX_MODEL_PROFILES = (
     _automatosx_profile(
         "ax-diffusiongemma-26b",
@@ -428,19 +429,51 @@ AUTOMATOSX_MODEL_PROFILES = (
         "AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
         ("ax-qwen36-35b", "ax-qwen3.6-35b-a3b", "ax-qwen3.6-35b-optiq-4bit"),
     ),
+    # Qwen3-VL 30B-A3B Instruct AXQ packs: vision MoE, no MTP. Explicit
+    # candidates — not Tier-1 certified; pin revisions until gates pass.
+    _automatosx_profile(
+        "ax-qwen3-vl-30b-a3b-axq-6bit",
+        "AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
+        (
+            "ax-qwen3-vl-30b-a3b-axq",
+            "ax-qwen3-vl-30b-axq",
+            "ax-qwen3-vl-30b-axq-6bit",
+            "ax-qwen3-vl-30b-6bit",
+            "ax-qwen3-vl-30b",
+            "ax-qwen3-vl-30b-a3b",
+            "qwen3-vl-30b-a3b:axq",
+            "qwen3-vl-30b-a3b:axq-6bit",
+        ),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-vl-30b-a3b-axq-4bit",
+        "AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
+        (
+            "ax-qwen3-vl-30b-axq-4bit",
+            "ax-qwen3-vl-30b-4bit",
+            "ax-qwen3-vl-30b-a3b-4bit",
+            "qwen3-vl-30b-a3b:axq-4bit",
+        ),
+    ),
 )
 
 MODEL_PROFILES = (*MODEL_PROFILES, *AUTOMATOSX_MODEL_PROFILES)
 
 # AXQ is admitted to the catalog as an explicit, revision-pinned candidate.
-# The bare qwen3.6-27b alias must not point at either row until checkpoint-level
-# quality, runtime, and memory gates are published and pass.
+# Bare family aliases must not silently promote these rows until
+# checkpoint-level quality, runtime, and memory gates are published and pass.
 _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP": (
         "6182ccbc41c7397ff90670f740c6d9eacfa4b09f"
     ),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP": (
         "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"
+    ),
+    "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit": (
+        "1f4c21a0c9d4347294d3f082928fdfd854284383"
+    ),
+    "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit": (
+        "700ec2c305f5f80e4d7c841c5aec80b050b949c6"
     ),
 }
 

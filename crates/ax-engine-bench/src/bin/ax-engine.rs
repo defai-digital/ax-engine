@@ -39,6 +39,12 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP" => {
             Some("8c37715c7b5f5ebca00eda6f73be47116a3e4ebc")
         }
+        "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit" => {
+            Some("1f4c21a0c9d4347294d3f082928fdfd854284383")
+        }
+        "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit" => {
+            Some("700ec2c305f5f80e4d7c841c5aec80b050b949c6")
+        }
         _ => None,
     }
 }
@@ -374,6 +380,40 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         aliases: &["ax-qwen3.6-35b-6bit", "ax-qwen36-35b-6bit"],
         downloadable: true,
         approx_size_bytes: Some(30_778_381_769),
+    },
+    // Qwen3-VL 30B-A3B Instruct AXQ packs: vision MoE (`qwen3_vl_moe`), no MTP.
+    // Explicit candidates — development evidence packs, not Tier-1 certified.
+    ModelProfile {
+        label: "ax-qwen3-vl-30b-a3b-axq-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-qwen3-vl-30b-a3b-axq-6bit",
+            "ax-qwen3-vl-30b-a3b-axq",
+            "ax-qwen3-vl-30b-axq",
+            "ax-qwen3-vl-30b-axq-6bit",
+            "ax-qwen3-vl-30b-6bit",
+            "ax-qwen3-vl-30b",
+            "ax-qwen3-vl-30b-a3b",
+            "qwen3-vl-30b-a3b:axq",
+            "qwen3-vl-30b-a3b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(23_318_717_145),
+    },
+    ModelProfile {
+        label: "ax-qwen3-vl-30b-a3b-axq-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
+        aliases: &[
+            "ax-qwen3-vl-30b-a3b-axq-4bit",
+            "ax-qwen3-vl-30b-axq-4bit",
+            "ax-qwen3-vl-30b-4bit",
+            "ax-qwen3-vl-30b-a3b-4bit",
+            "qwen3-vl-30b-a3b:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(18_891_118_762),
     },
     ModelProfile {
         label: "ax-gemma4-12b",
@@ -3705,7 +3745,7 @@ mod tests {
         assert!(!value.to_string().contains('\n'));
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 27] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 29] = [
         "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
         "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
         "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
@@ -3722,6 +3762,8 @@ mod tests {
         "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
         "AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ",
         "AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
+        "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
+        "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
         "AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP",
         "AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP",
         "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
@@ -3939,6 +3981,28 @@ mod tests {
             profile_revision(four),
             Some("6182ccbc41c7397ff90670f740c6d9eacfa4b09f")
         );
+
+        let vl_six = profile_for_model("qwen3-vl-30b-a3b:axq").unwrap();
+        assert_eq!(
+            vl_six.repo_id,
+            "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit"
+        );
+        assert_eq!(
+            profile_revision(vl_six),
+            Some("700ec2c305f5f80e4d7c841c5aec80b050b949c6")
+        );
+        assert_eq!(profile_certification(vl_six), Some("candidate"));
+
+        let vl_four = profile_for_model("ax-qwen3-vl-30b-4bit").unwrap();
+        assert_eq!(
+            vl_four.repo_id,
+            "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit"
+        );
+        assert_eq!(
+            profile_revision(vl_four),
+            Some("1f4c21a0c9d4347294d3f082928fdfd854284383")
+        );
+        assert_eq!(profile_certification(vl_four), Some("candidate"));
 
         let default = profile_for_model("qwen3.6-27b").unwrap();
         assert_eq!(default.repo_id, "mlx-community/Qwen3.6-27B-4bit");
