@@ -2539,9 +2539,37 @@ impl MlxRunner {
             // oracle so accepted drafts match MTP-off greedy (same contract as
             // single-item run_mtp_decode). Kill-switch
             // AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0 keeps multi-token
-            // accept decisions (faster; re-check exactness before Tier 2).
+            // accept decisions (faster; re-check exactness before Tier 2),
+            // except when the cycle-continuation guard forces sequential.
+            let oracle_on = crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+            let cycle_guard_on = crate::fastpath::gemma4_assistant_mtp_cycle_guard_enabled();
+            let mut cycle_history_buf =
+                [0u32; GEMMA_CYCLE_GUARD_MAX_PERIOD.saturating_mul(2).saturating_add(1)];
+            let cycle_history_len = if row.sampling.temperature <= 0.0
+                && !oracle_on
+                && cycle_guard_on
+            {
+                fill_gemma_cycle_history(
+                    &row.state.generated_tokens,
+                    row.last_token,
+                    &mut cycle_history_buf,
+                )
+            } else {
+                0
+            };
+            let cycle_hit = cycle_history_len > 0
+                && draft_continues_committed_cycle(
+                    &cycle_history_buf[..cycle_history_len],
+                    &row.pending,
+                );
             let use_sequential_oracle = row.sampling.temperature <= 0.0
-                && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+                && matches!(
+                    gemma_greedy_verify_route(oracle_on, cycle_guard_on, cycle_hit),
+                    GemmaGreedyVerifyRoute::SequentialOracle
+                );
+            if cycle_hit && !oracle_on {
+                row.state.mtp_telemetry.record_gemma_cycle_guard();
+            }
             let (accept_count, draft_hidden, tail_token, accept_wall_us, rollback_wall_us) =
                 if use_sequential_oracle {
                     let accept_started = Instant::now();
@@ -8875,12 +8903,43 @@ impl MlxRunner {
                 // MoE uses tail per-pos dual-path FFN for short multi-token verify.
                 // Pending-draft verify: multi-token when ORACLE=0 (dense + MoE).
                 // Empty-draft pure-direct for MoE is separate (gemma_greedy_exact).
-                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token (dense + MoE).
-                // MoE multi-token identity: RowExact QKV + per-pos SDPA/FFN.
+                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token (dense + MoE)
+                // unless the cycle-continuation guard forces pure-direct (formal
+                // pilot divergence mode: teacher-forced multi-token false-accepts
+                // cycle drafts while sequential greedy would break the loop).
                 let force_pure_direct =
                     crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
-                let gemma_sequential_oracle = gemma_assistant_draft && force_pure_direct;
-                let gemma_multitoken_adopt = gemma_assistant_draft && !force_pure_direct;
+                let cycle_guard_on =
+                    crate::fastpath::gemma4_assistant_mtp_cycle_guard_enabled();
+                let mut cycle_history_buf =
+                    [0u32; GEMMA_CYCLE_GUARD_MAX_PERIOD.saturating_mul(2).saturating_add(1)];
+                let cycle_history_len = if gemma_assistant_draft && !force_pure_direct && cycle_guard_on
+                {
+                    fill_gemma_cycle_history(
+                        &state.generated_tokens,
+                        verify_input[0],
+                        &mut cycle_history_buf,
+                    )
+                } else {
+                    0
+                };
+                let cycle_hit = cycle_history_len > 0
+                    && draft_continues_committed_cycle(
+                        &cycle_history_buf[..cycle_history_len],
+                        &pending,
+                    );
+                let verify_route = gemma_greedy_verify_route(
+                    force_pure_direct,
+                    cycle_guard_on && gemma_assistant_draft,
+                    cycle_hit,
+                );
+                let gemma_sequential_oracle = gemma_assistant_draft
+                    && matches!(verify_route, GemmaGreedyVerifyRoute::SequentialOracle);
+                let gemma_multitoken_adopt = gemma_assistant_draft
+                    && matches!(verify_route, GemmaGreedyVerifyRoute::MultiTokenAdopt);
+                if gemma_assistant_draft && cycle_hit && !force_pure_direct {
+                    state.mtp_telemetry.record_gemma_cycle_guard();
+                }
                 if gemma_sequential_oracle {
                     let verify_forward_started = Instant::now();
                     let final_by_max = false;

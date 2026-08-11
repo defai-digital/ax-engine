@@ -239,3 +239,258 @@ impl NgramSelfTuneState {
         }
     }
 }
+
+/// Longest period considered by the Gemma assistant-MTP cycle guard.
+///
+/// Formal pilot divergences were short-period cycle continuations (period 1–4
+/// stuck tokens / short loops). Caps keep the predicate O(1) and conservative.
+pub(super) const GEMMA_CYCLE_GUARD_MAX_PERIOD: usize = 16;
+
+/// Minimum full periods that must already appear at the history tail before a
+/// cycle is treated as "established" (avoids killing legitimate first repeats).
+pub(super) const GEMMA_CYCLE_GUARD_MIN_ESTABLISHED_PERIODS: usize = 2;
+
+/// Greedy Gemma assistant-MTP verify route under the formal multi-token profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GemmaGreedyVerifyRoute {
+    /// Singleton pure-direct sequential re-verify (exact vs MTP-off by construction).
+    SequentialOracle,
+    /// In-place multi-token teacher-forced adopt (speed path; formal profile default).
+    MultiTokenAdopt,
+}
+
+/// Resolve greedy Gemma assistant-MTP verify route.
+///
+/// - `oracle_on`: product default sequential oracle (`SEQUENTIAL_ORACLE=1`).
+/// - `guard_on`: cycle-continuation guard (default ON; only forces more oracle).
+/// - `cycle_hit`: draft continues an established tail cycle in committed history.
+///
+/// The guard never routes *away* from the oracle: it only adds oracle steps
+/// under formal `ORACLE=0` multi-token measurement when history is looping.
+pub(super) const fn gemma_greedy_verify_route(
+    oracle_on: bool,
+    guard_on: bool,
+    cycle_hit: bool,
+) -> GemmaGreedyVerifyRoute {
+    if oracle_on || (guard_on && cycle_hit) {
+        GemmaGreedyVerifyRoute::SequentialOracle
+    } else {
+        GemmaGreedyVerifyRoute::MultiTokenAdopt
+    }
+}
+
+/// True when `draft` begins by continuing a repetition cycle already
+/// established (≥ [`GEMMA_CYCLE_GUARD_MIN_ESTABLISHED_PERIODS`] full periods)
+/// at the tail of committed `history`.
+///
+/// Pure decision rule used before multi-token always-adopt under formal
+/// `SEQUENTIAL_ORACLE=0`. Cycle-continuation false accepts were the dominant
+/// formal-pilot divergence mode (teacher-forced multi-token matching a looping
+/// draft while sequential greedy would break the cycle).
+pub(super) fn draft_continues_committed_cycle(history: &[u32], draft: &[u32]) -> bool {
+    if draft.is_empty() || history.is_empty() {
+        return false;
+    }
+    let min_periods = GEMMA_CYCLE_GUARD_MIN_ESTABLISHED_PERIODS;
+    let max_period = GEMMA_CYCLE_GUARD_MAX_PERIOD;
+    for period in 1..=max_period {
+        let need = period.saturating_mul(min_periods);
+        if history.len() < need {
+            continue;
+        }
+        let tail = &history[history.len() - need..];
+        if !tail_is_exact_period(tail, period) {
+            continue;
+        }
+        // Draft must continue the established period phase from the history tip.
+        if draft_matches_period_continuation(history, period, draft) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Build a short cycle-history view ending with `last_token` (the verify root).
+///
+/// `generated_tokens` may already include `last_token` (after emission) or may
+/// lag by one token on the empty-draft → pending handoff. Returns the number of
+/// tokens written into `buf` (≤ `buf.len()`).
+pub(super) fn fill_gemma_cycle_history(
+    generated: &[u32],
+    last_token: u32,
+    buf: &mut [u32],
+) -> usize {
+    if buf.is_empty() {
+        return 0;
+    }
+    let include_last = generated.last() != Some(&last_token);
+    let take_from_generated = if include_last {
+        buf.len().saturating_sub(1).min(generated.len())
+    } else {
+        buf.len().min(generated.len())
+    };
+    let start = generated.len().saturating_sub(take_from_generated);
+    let src = &generated[start..];
+    buf[..src.len()].copy_from_slice(src);
+    let mut n = src.len();
+    if include_last && n < buf.len() {
+        buf[n] = last_token;
+        n += 1;
+    }
+    n
+}
+
+fn tail_is_exact_period(tail: &[u32], period: usize) -> bool {
+    if period == 0 || tail.len() < period.saturating_mul(2) || !tail.len().is_multiple_of(period) {
+        return false;
+    }
+    for i in period..tail.len() {
+        if tail[i] != tail[i - period] {
+            return false;
+        }
+    }
+    true
+}
+
+fn draft_matches_period_continuation(history: &[u32], period: usize, draft: &[u32]) -> bool {
+    if period == 0 || history.len() < period {
+        return false;
+    }
+    let phase_base = history.len() - period;
+    for (j, &tok) in draft.iter().enumerate() {
+        if tok != history[phase_base + (j % period)] {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemma_greedy_verify_route_truth_table() {
+        use GemmaGreedyVerifyRoute::{MultiTokenAdopt, SequentialOracle};
+        assert_eq!(
+            gemma_greedy_verify_route(true, true, true),
+            SequentialOracle
+        );
+        assert_eq!(
+            gemma_greedy_verify_route(true, true, false),
+            SequentialOracle
+        );
+        assert_eq!(
+            gemma_greedy_verify_route(true, false, true),
+            SequentialOracle
+        );
+        assert_eq!(
+            gemma_greedy_verify_route(true, false, false),
+            SequentialOracle
+        );
+        assert_eq!(
+            gemma_greedy_verify_route(false, true, true),
+            SequentialOracle
+        );
+        assert_eq!(
+            gemma_greedy_verify_route(false, true, false),
+            MultiTokenAdopt
+        );
+        assert_eq!(
+            gemma_greedy_verify_route(false, false, true),
+            MultiTokenAdopt
+        );
+        assert_eq!(
+            gemma_greedy_verify_route(false, false, false),
+            MultiTokenAdopt
+        );
+    }
+
+    #[test]
+    fn draft_continues_period4_cycle_formal_pilot_shape() {
+        // Established period-4 cycle (3 periods) + draft continuing it.
+        // Multi-token would accept a cycle-continuation false accept at the
+        // 5th draft token while sequential greedy would break the cycle.
+        let history = [
+            3574, 711, 1161, 496, // period 1
+            3574, 711, 1161, 496, // period 2
+            3574, 711, 1161, 496, // period 3 (established)
+        ];
+        let draft = [3574, 711, 1161, 496, 2633];
+        // 2633 is not the period continuation (would be 3574); still the *prefix*
+        // continues the cycle — require full draft match for true.
+        assert!(
+            !draft_continues_committed_cycle(&history, &draft),
+            "wrong-phase / non-continuing draft must not trip the guard"
+        );
+        let continuing = [3574, 711, 1161, 496, 3574];
+        assert!(draft_continues_committed_cycle(&history, &continuing));
+    }
+
+    #[test]
+    fn draft_continues_period1_stuck_token_loop() {
+        let history = [7, 7, 7, 7];
+        assert!(draft_continues_committed_cycle(&history, &[7, 7]));
+        assert!(!draft_continues_committed_cycle(&history, &[7, 8]));
+    }
+
+    #[test]
+    fn non_repeating_history_does_not_trip_guard() {
+        let history: Vec<u32> = (1..40).collect();
+        let draft = [40, 41];
+        assert!(!draft_continues_committed_cycle(&history, &draft));
+    }
+
+    #[test]
+    fn single_unestablished_period_does_not_trip_guard() {
+        // Only one period present — not "established".
+        let history = [1, 2, 3, 4];
+        let draft = [1, 2];
+        assert!(!draft_continues_committed_cycle(&history, &draft));
+    }
+
+    #[test]
+    fn cycle_orthogonal_draft_on_looping_history_preserves_multitoken() {
+        let history = [10, 20, 10, 20, 10, 20];
+        // Established period-2, but draft is orthogonal (speed path kept).
+        assert!(!draft_continues_committed_cycle(&history, &[99, 100]));
+        assert!(draft_continues_committed_cycle(&history, &[10, 20, 10]));
+    }
+
+    #[test]
+    fn wrong_phase_draft_does_not_trip_guard() {
+        let history = [1, 2, 3, 1, 2, 3];
+        // Phase should continue at 1, not 2.
+        assert!(!draft_continues_committed_cycle(&history, &[2, 3, 1]));
+        assert!(draft_continues_committed_cycle(&history, &[1, 2, 3]));
+    }
+
+    #[test]
+    fn period_above_max_is_ignored() {
+        let period = GEMMA_CYCLE_GUARD_MAX_PERIOD + 1;
+        let mut history = Vec::new();
+        for _ in 0..2 {
+            for i in 0..period {
+                history.push(i as u32 + 1);
+            }
+        }
+        let draft: Vec<u32> = (1..=period as u32).collect();
+        assert!(!draft_continues_committed_cycle(&history, &draft));
+    }
+
+    #[test]
+    fn empty_draft_or_short_history_is_safe() {
+        assert!(!draft_continues_committed_cycle(&[1, 1, 1, 1], &[]));
+        assert!(!draft_continues_committed_cycle(&[], &[1]));
+        assert!(!draft_continues_committed_cycle(&[1], &[1]));
+    }
+
+    #[test]
+    fn fill_gemma_cycle_history_appends_last_token_when_missing() {
+        let mut buf = [0u32; 8];
+        let n = fill_gemma_cycle_history(&[1, 2, 3], 4, &mut buf);
+        assert_eq!(&buf[..n], &[1, 2, 3, 4]);
+        let n = fill_gemma_cycle_history(&[1, 2, 4], 4, &mut buf);
+        assert_eq!(&buf[..n], &[1, 2, 4]);
+    }
+}

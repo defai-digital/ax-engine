@@ -280,6 +280,21 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD` — under formal multi-token
+    /// verify (`SEQUENTIAL_ORACLE=0`), force the pure-direct sequential oracle
+    /// when the pending draft continues an established repetition cycle at the
+    /// committed history tail. Cycle-continuation false accepts were the
+    /// dominant formal Tier 2 divergence mode (teacher-forced multi-token
+    /// matching a loop draft while sequential greedy would break the cycle).
+    ///
+    /// **Default: ON** (exactness-preserving: only routes *more* steps to the
+    /// sequential oracle, never fewer). Kill-switch via
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD=0` for ablations.
+    gemma4_assistant_mtp_cycle_guard_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DECODE_MTP_TARGET_PROB_WORKSPACE` — reuse request-local CPU
     /// buffers while building/extracting MTP target probabilities.
     ///
@@ -2947,6 +2962,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_COMPILE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn gemma4_assistant_mtp_cycle_guard_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD_ENABLED",
             "1"
         ));
     }
