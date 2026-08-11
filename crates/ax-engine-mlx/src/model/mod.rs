@@ -4459,6 +4459,62 @@ mod tests {
         );
     }
 
+    fn deepseek_think_id_manifest(family: &str) -> NativeModelManifest {
+        // Reuse the qwen fixture skeleton but strip linear-attention fields so
+        // ModelConfig::from_manifest does not require Qwen-only validated knobs.
+        let mut m = qwen35_linear_manifest();
+        m.model_family = family.to_string();
+        m.vocab_size = 129_280;
+        m.linear_attention = Default::default();
+        m.think_start_token_id = None;
+        m.think_end_token_id = None;
+        m
+    }
+
+    #[test]
+    fn think_token_ids_follow_deepseek_tokenizer_generation() {
+        // DeepSeek V4 Flash/Pro official tokenizer.json: <think>=128821,
+        // </think>=128822. Manifests without recorded ids must still resolve
+        // so ngram_in_think / think-aware MTP draft T can engage (DI-DS-A001).
+        let cfg = ModelConfig::from_manifest(&deepseek_think_id_manifest("deepseek_v4"));
+        assert_eq!(
+            (cfg.think_start_token_id, cfg.think_end_token_id),
+            (Some(128_821), Some(128_822)),
+            "deepseek_v4 family defaults must match official V4 tokenizer"
+        );
+
+        // DeepSeek V3 / V3.1 / V3.2 / R1 tokenizer generation.
+        for family in ["deepseek_v3", "deepseek_v32"] {
+            let cfg = ModelConfig::from_manifest(&deepseek_think_id_manifest(family));
+            assert_eq!(
+                (cfg.think_start_token_id, cfg.think_end_token_id),
+                (Some(128_798), Some(128_799)),
+                "{family} family defaults must match official V3 tokenizer"
+            );
+        }
+
+        // Explicit converter-recorded ids still win (e.g. custom distill).
+        let mut m = deepseek_think_id_manifest("deepseek_v4");
+        m.think_start_token_id = Some(7);
+        m.think_end_token_id = Some(8);
+        let cfg = ModelConfig::from_manifest(&m);
+        assert_eq!(
+            (cfg.think_start_token_id, cfg.think_end_token_id),
+            (Some(7), Some(8))
+        );
+
+        // Partial pair completes from V4 family defaults.
+        let mut m = deepseek_think_id_manifest("deepseek_v4");
+        m.think_start_token_id = Some(128_821);
+        m.think_end_token_id = None;
+        let cfg = ModelConfig::from_manifest(&m);
+        assert_eq!(
+            (cfg.think_start_token_id, cfg.think_end_token_id),
+            (Some(128_821), Some(128_822)),
+            "partial deepseek_v4 think ids must complete from family defaults"
+        );
+    }
+
     fn glm4_moe_lite_manifest() -> NativeModelManifest {
         NativeModelManifest {
             schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),

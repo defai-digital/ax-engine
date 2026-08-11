@@ -473,10 +473,11 @@ fn infer_global_kv_head_count(
 /// Read `<think>` / `</think>` special-token ids from the model directory's
 /// `tokenizer.json` `added_tokens` list.
 ///
-/// Returns `(None, None)` when the file is absent, unparsable, or carries no
-/// think tokens — families without think blocks simply never define them, and
-/// the runtime falls back to family defaults for manifests converted before
-/// this field was recorded.
+/// Recognizes the content strings used by Qwen3 and DeepSeek (V3/V4/R1) chat
+/// templates. Returns `(None, None)` when the file is absent, unparsable, or
+/// carries no think tokens — families without think blocks simply never define
+/// them, and the runtime falls back to family defaults for manifests converted
+/// before this field was recorded (or converted without a tokenizer.json).
 fn parse_think_token_ids(model_dir: &Path) -> (Option<u32>, Option<u32>) {
     let path = model_dir.join("tokenizer.json");
     let Ok(bytes) = std::fs::read(&path) else {
@@ -492,6 +493,10 @@ fn parse_think_token_ids(model_dir: &Path) -> (Option<u32>, Option<u32>) {
     let mut end = None;
     for token in added {
         let id = token.get("id").and_then(|i| i.as_u64()).map(|i| i as u32);
+        // Qwen3 and DeepSeek (V3/R1/V4) both use these exact content strings;
+        // only the numeric ids differ (DeepSeek V3: 128798/128799, V4:
+        // 128821/128822). Matching content — not family — keeps conversion
+        // independent of model_type detection order.
         match token.get("content").and_then(|c| c.as_str()) {
             Some("<think>") => start = id,
             Some("</think>") => end = id,
@@ -501,7 +506,8 @@ fn parse_think_token_ids(model_dir: &Path) -> (Option<u32>, Option<u32>) {
     // Think-block gating needs both markers. A one-sided pair (corrupt or
     // partial tokenizer.json) must not pin the manifest to an unclosable
     // think state — leave both unset so the runtime can fall back to
-    // family/vocab defaults (Qwen3.6 27B 248k uses 248068/248069).
+    // family/vocab defaults (Qwen3.6 27B 248k uses 248068/248069; DeepSeek V4
+    // uses 128821/128822).
     match (start, end) {
         (Some(s), Some(e)) => (Some(s), Some(e)),
         _ => (None, None),

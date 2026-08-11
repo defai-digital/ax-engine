@@ -672,6 +672,23 @@ pub fn token_distribution(
         return TokenDistribution::new(vec![(argmax_f32(logits), 1.0)]);
     }
 
+    // Match `sample_categorical`: min_p relative threshold before top-k/top-p.
+    // Without this, residual correction / distribution consumers saw a
+    // different law than the primary sampler when min_p is set (DeepSeek
+    // thinking defaults min_p=0.05).
+    if sampling.uses_min_p() {
+        let min_p = sampling.min_p.unwrap_or(0.0);
+        let max_prob = candidates
+            .iter()
+            .map(|(_, prob)| *prob)
+            .fold(0.0f32, f32::max);
+        let cutoff = min_p * max_prob;
+        candidates.retain(|(_, prob)| *prob >= cutoff);
+        if candidates.is_empty() {
+            return TokenDistribution::new(vec![(argmax_f32(logits), 1.0)]);
+        }
+    }
+
     if sampling.top_k > 0 || sampling.top_p < 1.0 {
         apply_top_k_top_p(&mut candidates, sampling.top_k, sampling.top_p);
     }

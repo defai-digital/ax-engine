@@ -4871,9 +4871,51 @@ fn parse_think_token_ids_reads_added_tokens() {
         "partial think markers must leave both unset for family defaults"
     );
 
+    // DeepSeek V3/R1 and V4 use the same content strings with different ids
+    // (official tokenizer.json). Converter must record whatever the artifact
+    // ships so runtime family defaults only fill gaps.
+    let deepseek_v4 = unique_test_dir("think-token-ids-deepseek-v4");
+    fs::write(
+        deepseek_v4.join("tokenizer.json"),
+        serde_json::json!({
+            "added_tokens": [
+                {"id": 128821, "content": "<think>"},
+                {"id": 128822, "content": "</think>"},
+                {"id": 0, "content": "<｜begin▁of▁sentence｜>"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        super::parse_think_token_ids(&deepseek_v4),
+        (Some(128821), Some(128822)),
+        "DeepSeek V4 think markers must parse by content string"
+    );
+
+    let deepseek_v3 = unique_test_dir("think-token-ids-deepseek-v3");
+    fs::write(
+        deepseek_v3.join("tokenizer.json"),
+        serde_json::json!({
+            "added_tokens": [
+                {"id": 128798, "content": "<think>"},
+                {"id": 128799, "content": "</think>"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        super::parse_think_token_ids(&deepseek_v3),
+        (Some(128798), Some(128799)),
+        "DeepSeek V3/R1 think markers must parse by content string"
+    );
+
     let _ = fs::remove_dir_all(dir);
     let _ = fs::remove_dir_all(empty);
     let _ = fs::remove_dir_all(partial);
+    let _ = fs::remove_dir_all(deepseek_v4);
+    let _ = fs::remove_dir_all(deepseek_v3);
 }
 
 /// OptiQ / mlx-lm mixed-precision fixture: global 4-bit + named 8-bit overrides

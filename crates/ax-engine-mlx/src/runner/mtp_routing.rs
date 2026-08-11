@@ -153,8 +153,12 @@ pub(super) fn mtp_exact_sampling_supported(
     target_softmax_topk: Option<u32>,
 ) -> bool {
     if sampling.uses_logits_processors()
+        || sampling.uses_min_p()
         || crate::mtp::mtp_draft_mode_from_env() != crate::mtp::MtpDraftMode::Greedy
     {
+        // min_p requires the full-row / residual-filtered accept path (DeepSeek
+        // thinking defaults); the Qwen linear exact profile only covers plain
+        // temperature + optional top-k/top-p.
         return false;
     }
     sampling.temperature <= 0.0

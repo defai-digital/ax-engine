@@ -9742,6 +9742,22 @@ impl MlxRunner {
             let draft_started = Instant::now();
             let think_state_after_result =
                 compute_think_state(&self.cfg, state.ngram_in_think, &result);
+            // DI-DS-MTP residual: next draft (and the T locked into pending
+            // log-probs) must use post-result think state. Accept rescale for
+            // *this* step still uses the T carried from when pending was
+            // drafted (`mtp_pending_draft_log_prob_temperature`); only the
+            // new draft generation below must advance past `</think>` /
+            // `<think>` boundaries crossed by `result`.
+            let deepseek_next_draft_temperature = if self.weights.deepseek_v4_nextn.is_some() {
+                Some(crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
+                    think_state_after_result,
+                    sampling.temperature,
+                ))
+            } else {
+                None
+            };
+            let next_draft_log_prob_temperature = deepseek_next_draft_temperature
+                .unwrap_or(draft_log_prob_temperature_for_new_drafts);
             let mtp_post_think_guarded =
                 self.cfg.think_start_token_id.is_some() && !think_state_after_result;
             // Pure-MTP override: when AX_MLX_MTP_DISABLE_NGRAM_STACKING=1, skip the
@@ -9980,12 +9996,10 @@ impl MlxRunner {
                                 Some(hybrid_gate),
                             )
                         } else if self.weights.deepseek_v4_nextn.is_some() {
-                            // Same think-aware draft T as pure-MTP / accept rescale.
-                            let hybrid_draft_t =
-                                crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
-                                    state.ngram_in_think,
-                                    sampling.temperature,
-                                );
+                            // Same think-aware draft T as pure-MTP / accept rescale
+                            // (post-result think state; see deepseek_next_draft_temperature).
+                            let hybrid_draft_t = deepseek_next_draft_temperature
+                                .expect("deepseek nextn implies next-draft temperature");
                             deepseek_v4_mtp_draft_tokens_after_forced_prefix(
                                 &self.weights,
                                 &self.cfg,
@@ -10160,12 +10174,10 @@ impl MlxRunner {
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
-                    // Must match draft_log_prob_temperature / accept rescale.
-                    let draft_temperature =
-                        crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
-                            state.ngram_in_think,
-                            sampling.temperature,
-                        );
+                    // Must match next_draft_log_prob_temperature / accept rescale
+                    // on the following step (post-result think state).
+                    let draft_temperature = deepseek_next_draft_temperature
+                        .expect("deepseek nextn implies next-draft temperature");
                     let (draft, log_probs, distributions, added, _top2_margins) =
                         deepseek_v4_mtp_draft_tokens_gated(
                             &self.weights,
@@ -10204,9 +10216,10 @@ impl MlxRunner {
                 state.mtp_pending_draft_distributions.clear();
                 state.mtp_pending_draft_log_prob_temperature = None;
             } else {
-                // Lock accept rescale to the T used when these log-probs were written.
+                // Lock accept rescale to the T used when these log-probs were
+                // written (post-result think state for DeepSeek nextn).
                 state.mtp_pending_draft_log_prob_temperature =
-                    Some(draft_log_prob_temperature_for_new_drafts);
+                    Some(next_draft_log_prob_temperature);
             }
             if state.mtp_pending_draft.is_empty() {
                 state.mtp_pending_draft_sources.clear();
@@ -11390,17 +11403,27 @@ fn mtp_initial_adaptive_depth(model_family: &str, head_max_depth: usize) -> usiz
 
 /// Lazy target probability container for MTP rejection sampling.
 ///
-/// `Full` uses the existing full-vocab softmax path (default).
+/// `Full` uses the existing full-vocab softmax path (default): only the draft
+/// token probabilities are gathered on GPU.
+/// `FullRows` materializes the draft-target softmax rows so CPU-side filters
+/// (min_p, matching the primary sampler) can renorm before accept/reject.
 /// `TopK` gathers full-vocabulary softmax probabilities for only the top-k tokens
 /// per position, then does a CPU-side lookup for each draft token. This avoids
 /// transferring a `[verify_len, vocab]` softmax tensor to the CPU.
 enum LazyTargetProbs {
     Full(MlxArray),
+    /// Softmax rows for draft targets, shape `[pending_len, vocab]`.
+    FullRows {
+        probs: MlxArray,
+        vocab: i32,
+        min_p: Option<f32>,
+    },
     TopK {
         indices: MlxArray,
         probs: MlxArray,
         k: u32,
         top_p: f32,
+        min_p: Option<f32>,
     },
 }
 
@@ -11408,6 +11431,7 @@ impl LazyTargetProbs {
     fn push_eval_targets<'a>(&'a self, targets: &mut Vec<&'a MlxArray>) {
         match self {
             LazyTargetProbs::Full(arr) => targets.push(arr),
+            LazyTargetProbs::FullRows { probs, .. } => targets.push(probs),
             LazyTargetProbs::TopK { indices, probs, .. } => {
                 targets.push(indices);
                 targets.push(probs);
@@ -11426,11 +11450,27 @@ impl LazyTargetProbs {
                 workspace.target_probs.extend_from_slice(arr.data_f32());
                 Some(workspace.target_probs.as_slice())
             }
+            LazyTargetProbs::FullRows {
+                probs,
+                vocab,
+                min_p,
+            } => {
+                let vocab = *vocab as usize;
+                let data = probs.data_f32();
+                workspace.target_probs.reserve(pending.len());
+                for (i, &needle) in pending.iter().enumerate() {
+                    let row = &data[i * vocab..(i + 1) * vocab];
+                    let probability = filtered_target_token_probability(row, needle, *min_p, 1.0, 0);
+                    workspace.target_probs.push(probability);
+                }
+                Some(workspace.target_probs.as_slice())
+            }
             LazyTargetProbs::TopK {
                 indices,
                 probs,
                 k,
                 top_p,
+                min_p,
             } => {
                 let k_val = *k as usize;
                 let indices_data = indices.data_u32();
@@ -11448,6 +11488,23 @@ impl LazyTargetProbs {
                         {
                             workspace.target_candidates.push((token, prob));
                         }
+                    }
+                    // min_p relative to the unfiltered max mass present in the
+                    // gathered candidates (top-k already truncated; when k=vocab
+                    // this matches full-row min_p).
+                    if let Some(min_p) = *min_p
+                        && min_p.is_finite()
+                        && min_p > 0.0
+                    {
+                        let max_prob = workspace
+                            .target_candidates
+                            .iter()
+                            .map(|(_, p)| *p)
+                            .fold(0.0f32, f32::max);
+                        let cutoff = min_p * max_prob;
+                        workspace
+                            .target_candidates
+                            .retain(|(_, prob)| *prob >= cutoff);
                     }
                     workspace.target_candidates.sort_by(
                         |(left_token, left_prob), (right_token, right_prob)| {
@@ -11484,6 +11541,70 @@ impl LazyTargetProbs {
             }
         }
     }
+}
+
+/// Probability of `token` under the target distribution after min_p / top-p /
+/// top-k filtering, renormalized over the kept mass. Matches the primary
+/// sampler's law so rejection sampling sees the same `p(token)`.
+fn filtered_target_token_probability(
+    row_probs: &[f32],
+    token: u32,
+    min_p: Option<f32>,
+    top_p: f32,
+    top_k: u32,
+) -> f32 {
+    let mut candidates: Vec<(u32, f32)> = row_probs
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &prob)| {
+            if prob > 0.0 && prob.is_finite() {
+                Some((idx as u32, prob))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if candidates.is_empty() {
+        return 0.0;
+    }
+    if let Some(min_p) = min_p
+        && min_p.is_finite()
+        && min_p > 0.0
+    {
+        let max_prob = candidates
+            .iter()
+            .map(|(_, p)| *p)
+            .fold(0.0f32, f32::max);
+        let cutoff = min_p * max_prob;
+        candidates.retain(|(_, p)| *p >= cutoff);
+        if candidates.is_empty() {
+            return 0.0;
+        }
+    }
+    candidates.sort_by(|(lt, lp), (rt, rp)| rp.total_cmp(lp).then_with(|| lt.cmp(rt)));
+    if top_k > 0 && (top_k as usize) < candidates.len() {
+        candidates.truncate(top_k as usize);
+    }
+    if top_p.is_finite() && top_p > 0.0 && top_p < 1.0 {
+        let mut cumulative = 0.0_f32;
+        let mut keep = 0_usize;
+        for (_, prob) in &candidates {
+            cumulative += *prob;
+            keep += 1;
+            if cumulative >= top_p {
+                break;
+            }
+        }
+        candidates.truncate(keep.max(1));
+    }
+    let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if filtered_sum <= 0.0 || !filtered_sum.is_finite() {
+        return 0.0;
+    }
+    candidates
+        .iter()
+        .find(|(t, _)| *t == token)
+        .map_or(0.0, |(_, p)| (*p / filtered_sum).max(0.0))
 }
 
 /// Filter parameters passed from the draft path to the target probability
@@ -11561,6 +11682,7 @@ fn compute_mtp_target_probs(
             probs: stacked_probs,
             k,
             top_p: target_sampling.top_p,
+            min_p: target_sampling.min_p.filter(|&m| m.is_finite() && m > 0.0),
         })
     } else if draft_filter.top_k > 0 || draft_filter.top_p < 1.0 {
         // Draft-path filter applied to target probs for rejection-sampling parity.
@@ -11606,6 +11728,19 @@ fn compute_mtp_target_probs(
             probs: stacked_probs,
             k: dk_i32 as u32,
             top_p: draft_filter.top_p,
+            min_p: target_sampling.min_p.filter(|&m| m.is_finite() && m > 0.0),
+        })
+    } else if target_sampling.uses_min_p() {
+        // DeepSeek thinking defaults min_p=0.05. Materialize draft-target
+        // softmax rows so extract can renorm under the same min_p law as the
+        // primary sampler (raw single-token take would inflate p_target).
+        let probs = softmax(&scaled, -1, None);
+        // logits_all rows 0..n are the draft targets (see comment above).
+        let draft_rows = slice(&probs, &[0, 0], &[n as i32, vocab], &[1, 1], None);
+        Some(LazyTargetProbs::FullRows {
+            probs: draft_rows,
+            vocab,
+            min_p: target_sampling.min_p,
         })
     } else {
         let probs = softmax(&scaled, -1, None);
@@ -13488,6 +13623,25 @@ mod tests {
             MlxSamplingParams::new(0.6, 0.95, 20),
             Some(128)
         ));
+        // DeepSeek thinking defaults min_p=0.05 — exact linear profile must not claim support.
+        assert!(!mtp_exact_sampling_supported(
+            MlxSamplingParams::new(1.0, 1.0, 0).with_min_p(Some(0.05)),
+            None
+        ));
+    }
+
+    #[test]
+    fn filtered_target_token_probability_applies_min_p() {
+        // probs: token0=0.9, token1=0.05, token2=0.05. min_p=0.1 → cutoff=0.09
+        // keeps only token0 → p(token0)=1.0, p(token1)=0.0.
+        let row = [0.9_f32, 0.05, 0.05];
+        assert!((filtered_target_token_probability(&row, 0, Some(0.1), 1.0, 0) - 1.0).abs() < 1e-5);
+        assert_eq!(
+            filtered_target_token_probability(&row, 1, Some(0.1), 1.0, 0),
+            0.0
+        );
+        // Without min_p, raw renormalized mass is unchanged (already sums to 1).
+        assert!((filtered_target_token_probability(&row, 0, None, 1.0, 0) - 0.9).abs() < 1e-5);
     }
 
     #[test]

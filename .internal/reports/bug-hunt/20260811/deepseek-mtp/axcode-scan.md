@@ -1,23 +1,26 @@
-# ax-code scan — deepseek-mtp
+# ax-code scan — deepseek-mtp (post-fix)
 
-**Model:** `zai-coding-plan/glm-5.2[1m]` (session present; findings merged with Codex)
+**Agent:** ax-code CLI · model `zai-coding-plan/glm-5.2[1m]`  
+**Mode:** read-only post-fix verification + follow-up min_p fix  
+**Date:** 2026-08-11
 
 ## Coverage
 
-- `mtp.rs` DeepSeek V4 nextn draft/verify/warmup
-- `runner/mod.rs` draft/accept temperature plumbing, hybrid forced-prefix
-- `mtp_model_policy.rs` fail-closed V4 certification candidate
-- `chat.rs` DeepSeekChat fullwidth-bar template + thinking detection
+| Surface | Status |
+|---|---|
+| `think_token_ids_from_manifest` deepseek defaults | ✅ |
+| `parse_think_token_ids` content match | ✅ |
+| Runner think-boundary draft T + pending lock | ✅ |
+| MTP sample/log T lock | ✅ |
+| DeepSeekChat template | ✅ |
+| Fail-closed cert policy | ✅ IMPL |
+| min_p target-prob / residual parity | ✅ fixed this pass |
 
-## Findings
+## Open unparked P0/P1
 
-| ID | Sev | Note |
-| --- | --- | --- |
-| DI-DS-MTP-001 | P1 | Fixed — sample/log T lock |
-| DI-DS-MTP-002 | P1 | Fixed — hybrid draft T parameter |
-| DI-DS-MTP-003 | P1 | Fixed — pending draft T carry on state |
-| DI-DS-TPL-001 | P2 | Fixed — V4 Flash template tests |
+**Zero.** All requested fix areas verified; min_p rejection-sampling gap closed after Codex triage.
 
-## Completeness
+## Parked
 
-Static exactness path closed for temperature contract. Formal weight A/B still LIMIT.
+- **IMPL:** V4 nextn fail-closed without cert env.
+- **LIMIT:** weight-backed Tier-2 A/B; sampled multi-token residual; HF jinja framing deltas vs native renderer (tests lock R1-style fullwidth bars).

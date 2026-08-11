@@ -20,9 +20,12 @@ use std::sync::OnceLock;
 /// Draft sampling mode for MTP speculative decoding.
 ///
 /// `Greedy` uses argmax selection (current default, single GPU eval).
-/// `Stochastic` applies top-p/top-k filtering + temperature sampling per depth
-/// (requires per-depth GPU sync, but recovers acceptance when MTP head argmax
-/// disagrees with the target model).
+/// `Stochastic` applies temperature sampling per depth via
+/// `random_categorical(logits / T)` (no top-p/top-k truncation). Requires
+/// per-depth GPU sync, but recovers acceptance when MTP head argmax disagrees
+/// with the target model. Rejection-sampling exactness holds for any covering
+/// proposal distribution; the temperature lock between sample and log-prob is
+/// what matters for accept/reject.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MtpDraftMode {
     #[default]
@@ -2544,7 +2547,10 @@ fn deepseek_v4_mtp_draft_tokens_greedy(
 
 #[cfg(test)]
 mod deepseek_v4_think_gate_tests {
-    use super::{DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE, deepseek_v4_mtp_effective_draft_temperature};
+    use super::{
+        DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE, MtpDraftMode, deepseek_v4_mtp_effective_draft_temperature,
+        deepseek_v4_mtp_sample_and_log_temperature,
+    };
 
     #[test]
     fn inside_think_matches_target_temperature() {
@@ -2564,6 +2570,40 @@ mod deepseek_v4_think_gate_tests {
         assert_eq!(
             deepseek_v4_mtp_effective_draft_temperature(true, 0.6),
             DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
+        );
+    }
+
+    /// Simulate a think-boundary step: pre-result was inside think, result
+    /// closed the block. Next-draft sample+log T must drop to the tuned
+    /// default; accept for the *current* pending batch keeps the stored T.
+    #[test]
+    fn sample_and_log_temperature_tracks_think_boundary() {
+        let target = 1.0;
+        let pre_result_in_think = true;
+        let post_result_in_think = false; // result contained </think>
+        let draft_t_before = deepseek_v4_mtp_sample_and_log_temperature(
+            MtpDraftMode::Stochastic,
+            pre_result_in_think,
+            target,
+        );
+        let draft_t_after = deepseek_v4_mtp_sample_and_log_temperature(
+            MtpDraftMode::Stochastic,
+            post_result_in_think,
+            target,
+        );
+        assert_eq!(draft_t_before, 1.0, "inside think: match target");
+        assert_eq!(
+            draft_t_after, DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+            "after </think>: next draft must leave think temperature"
+        );
+        // Greedy is always 1.0 on either side of the boundary.
+        assert_eq!(
+            deepseek_v4_mtp_sample_and_log_temperature(
+                MtpDraftMode::Greedy,
+                post_result_in_think,
+                target
+            ),
+            1.0
         );
     }
 }
