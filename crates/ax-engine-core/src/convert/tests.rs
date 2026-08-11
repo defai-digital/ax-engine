@@ -422,6 +422,31 @@ fn gpt_oss_moe_config_reads_expert_geometry() {
 }
 
 #[test]
+fn gpt_oss_rope_scaling_parses_yarn_beta_bounds() {
+    // openai/gpt-oss-20b config.json rope_scaling block (factor 32, YaRN).
+    // Convert must lift beta_fast/slow onto the manifest so the MLX runtime
+    // can honor non-default bounds (see yarn_rope_honors_manifest_beta_fast_slow).
+    let config = serde_json::json!({
+        "model_type": "gpt_oss",
+        "rope_theta": 150000,
+        "rope_scaling": {
+            "rope_type": "yarn",
+            "factor": 32.0,
+            "original_max_position_embeddings": 4096,
+            "beta_fast": 32.0,
+            "beta_slow": 1.0,
+            "truncate": false
+        }
+    });
+    let (ty, factor, _, _, orig, beta_fast, beta_slow) = parse_rope_scaling(&config, "gpt_oss");
+    assert_eq!(ty.as_deref(), Some("yarn"));
+    assert_eq!(factor, Some(32.0));
+    assert_eq!(orig, Some(4096));
+    assert_eq!(beta_fast, Some(32.0));
+    assert_eq!(beta_slow, Some(1.0));
+}
+
+#[test]
 fn llama4_moe_config_reads_nested_expert_geometry() {
     let config = serde_json::json!({
         "model_type": "llama4",

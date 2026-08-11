@@ -698,10 +698,14 @@ impl ModelConfig {
             Some("yarn") | Some("deepseek_yarn") | Some("telechat3-yarn") => {
                 let factor = m.rope_scaling_factor.unwrap_or(1.0);
                 let orig_ctx = m.rope_original_context_len.unwrap_or(4096);
-                // beta_fast/slow are not separate manifest fields yet;
-                // openai/gpt-oss and mlx-lm YarnRoPE defaults are 32 / 1.
+                // Manifest fields from convert (`rope_scaling.beta_fast/slow`);
+                // mlx-lm YarnRoPE / openai gpt-oss defaults are 32 / 1 when omitted.
+                // DeepSeek V4 compress rope already honors the same fields — keep
+                // the primary YaRN path consistent so non-default bounds land.
+                let beta_fast = m.rope_beta_fast.unwrap_or(32.0);
+                let beta_slow = m.rope_beta_slow.unwrap_or(1.0);
                 let (freqs, mscale) = super::shared::build_yarn_rope_freqs(
-                    rope_dims, rope_theta, factor, orig_ctx, 32.0, 1.0, 1.0, 0.0,
+                    rope_dims, rope_theta, factor, orig_ctx, beta_fast, beta_slow, 1.0, 0.0,
                 );
                 (Some(freqs), mscale)
             }
@@ -1086,6 +1090,71 @@ mod tests {
         let config = ModelConfig::from_manifest(&manifest);
 
         assert_eq!(config.kv_cache_quant, vec![None, None]);
+    }
+
+    #[test]
+    fn yarn_rope_honors_manifest_beta_fast_slow() {
+        // Convert stores rope_beta_fast/slow from config.json rope_scaling.
+        // Runtime must pass them into build_yarn_rope_freqs (not hardcode 32/1).
+        // openai/gpt-oss uses 32/1; a non-default pair must change the divisors.
+        let mut base = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "gpt_oss",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 64,
+            "attention_head_count": 4,
+            "attention_head_dim": 16,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "rope_theta": 150000,
+            "rope_scaling_type": "yarn",
+            "rope_scaling_factor": 32.0,
+            "rope_original_context_len": 4096,
+            "rope_beta_fast": 32.0,
+            "rope_beta_slow": 1.0,
+            "tensors": [],
+        });
+        let default_manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(base.clone()).expect("default yarn manifest");
+        let default_cfg = ModelConfig::from_manifest(&default_manifest);
+        let default_freqs = default_cfg
+            .rope_freqs
+            .as_ref()
+            .expect("yarn must precompute rope_freqs")
+            .data_f32();
+
+        base["rope_beta_fast"] = serde_json::json!(8.0);
+        base["rope_beta_slow"] = serde_json::json!(2.0);
+        let custom_manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(base).expect("custom yarn manifest");
+        assert_eq!(custom_manifest.rope_beta_fast, Some(8.0));
+        assert_eq!(custom_manifest.rope_beta_slow, Some(2.0));
+        let custom_cfg = ModelConfig::from_manifest(&custom_manifest);
+        let custom_freqs = custom_cfg
+            .rope_freqs
+            .as_ref()
+            .expect("yarn must precompute rope_freqs")
+            .data_f32();
+
+        assert_eq!(default_freqs.len(), custom_freqs.len());
+        let max_abs = default_freqs
+            .iter()
+            .zip(custom_freqs.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_abs > 1e-4,
+            "non-default rope_beta_fast/slow must change YaRN freqs (max_abs={max_abs}); \
+             runtime was likely hardcoding 32/1 and ignoring the manifest"
+        );
+        // mscale depends only on factor/mscale, not betas — still ~1.346 for factor=32.
+        let expected_mscale = 0.1 * 32.0_f32.ln() + 1.0;
+        assert!(
+            (custom_cfg.rope_mscale - expected_mscale).abs() < 1e-4,
+            "rope_mscale should follow yarn factor, got {}",
+            custom_cfg.rope_mscale
+        );
     }
 
     #[test]
