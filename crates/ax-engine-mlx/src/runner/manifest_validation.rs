@@ -70,6 +70,8 @@ pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
     matches!(
         model_family,
         "gemma4"
+            // Encoder-based VL packaging of the Gemma 4 text tower (+ ViT).
+            | "gemma4_vl"
             | "gemma3"
             | "embeddinggemma"
             | "nemotron_embed"
@@ -762,7 +764,13 @@ pub(super) fn validate_gemma4_interleaved_attention(
     // Gemma4-class families use SWA interleaving (and optional KV sharing).
     if !matches!(
         manifest.model_family.as_str(),
-        "gemma4" | "gemma3" | "gemma4_unified" | "diffusion_gemma" | "embeddinggemma" | "gpt_oss"
+        "gemma4"
+            | "gemma4_vl"
+            | "gemma3"
+            | "gemma4_unified"
+            | "diffusion_gemma"
+            | "embeddinggemma"
+            | "gpt_oss"
     ) {
         return Err(MlxRunnerError::UnsupportedFeature(format!(
             "interleaved sliding/full attention is not implemented for {} manifests",

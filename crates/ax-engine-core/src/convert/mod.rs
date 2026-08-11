@@ -933,7 +933,11 @@ fn tensor_quantization(
     }
     // mlx-lm's Gemma4 quantization predicate keeps router.proj at 8-bit while
     // the rest of the affine-quantized model uses the global 4-bit setting.
-    if family.family_name == "gemma4" && tensor_name.ends_with(".router.proj.weight") {
+    // gemma4_vl shares the same MoE text backbone family label is separate for
+    // vision capability gating only.
+    if matches!(family.family_name, "gemma4" | "gemma4_vl")
+        && tensor_name.ends_with(".router.proj.weight")
+    {
         quantization.bits = 8;
     }
     Some(quantization)

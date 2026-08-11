@@ -885,7 +885,7 @@ fn layer_forward_internal(
             Some("ring_layout")
         } else if protected_prefix_window.is_some() {
             Some("protected_prefix")
-        } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma3") {
+        } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma4_vl" | "gemma3") {
             Some("family")
         } else if !matches!(head_dim, 64 | 80 | 128 | 256) {
             // Mirrors mlxcel's NAX gate: fast SDPA only has steel kernels

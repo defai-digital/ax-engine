@@ -17445,6 +17445,7 @@ mod tests {
             "mixtral",
             "gpt_oss",
             "gemma4_unified",
+            "gemma4_vl",
             "nemotron_h",
             "qwen3_vl",
             "qwen3_vl_moe",

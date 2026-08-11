@@ -830,6 +830,57 @@ fn parses_gemma4_assistant_nested_rope_like_gemma4() {
 }
 
 #[test]
+fn gemma4_vl_shares_gemma4_text_rope_and_layer_types() {
+    // gemma4_vl is a separate family for vision capability gating, but the
+    // language tower is standard Gemma 4. Convert must not treat it as a
+    // non-Gemma type (empty layer_types + single rope_theta).
+    let config = serde_json::json!({
+        "model_type": "gemma4_vl",
+        "text_config": {
+            "num_hidden_layers": 4,
+            "layer_types": [
+                "sliding_attention",
+                "sliding_attention",
+                "sliding_attention",
+                "full_attention"
+            ],
+            "rope_parameters": {
+                "full_attention": {
+                    "rope_theta": 1_000_000.0,
+                    "partial_rotary_factor": 0.25
+                },
+                "sliding_attention": {
+                    "rope_theta": 10_000.0
+                }
+            }
+        }
+    });
+
+    assert!(
+        super::is_gemma4_target_model_type("gemma4_vl"),
+        "gemma4_vl must be a Gemma 4 text target for dual-RoPE / SWA / scale"
+    );
+    assert!(super::is_gemma4_target_model_type("gemma4-vl"));
+
+    let layer_types = parse_layer_types(&config, "gemma4_vl", 4);
+    assert_eq!(
+        layer_types,
+        vec![
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ],
+        "gemma4_vl must parse text_config.layer_types (was empty when excluded from is_gemma4_text_model_type)"
+    );
+
+    let (full_theta, sliding_theta, partial_rotary) = parse_rope_params(&config, "gemma4_vl");
+    assert_eq!(full_theta, Some(1_000_000));
+    assert_eq!(sliding_theta, Some(10_000));
+    assert_eq!(partial_rotary, Some(0.25));
+}
+
+#[test]
 fn rejects_gemma4_layer_types_length_mismatch_at_conversion() {
     let dir = unique_test_dir("gemma4_bad_layer_types");
     write_config(

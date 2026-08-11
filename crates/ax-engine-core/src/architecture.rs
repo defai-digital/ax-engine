@@ -317,7 +317,12 @@ impl ArchitectureSpec {
 fn uses_geglu(family: &str) -> bool {
     matches!(
         family,
-        "gemma4" | "gemma4_assistant" | "diffusion_gemma" | "gemma3" | "embeddinggemma"
+        "gemma4"
+            | "gemma4_vl"
+            | "gemma4_assistant"
+            | "diffusion_gemma"
+            | "gemma3"
+            | "embeddinggemma"
     )
 }
 
@@ -611,6 +616,30 @@ mod tests {
         assert!(spec.capabilities.has_sliding_window);
         assert!(spec.capabilities.has_full_attention);
         assert!(matches!(spec.layers[0].ffn, FfnKind::DenseGeglu));
+    }
+
+    #[test]
+    fn gemma4_vl_uses_geglu_and_interleaved_swa_like_gemma4() {
+        // gemma4_vl is a separate family for vision gating but shares the Gemma 4
+        // text tower (GeGLU dense FFN + SWA layer_types).
+        let mut m = base_manifest("gemma4_vl", 4);
+        m.sliding_window_size = Some(512);
+        m.layer_types = vec![
+            "sliding_attention".into(),
+            "sliding_attention".into(),
+            "sliding_attention".into(),
+            "full_attention".into(),
+        ];
+        let spec = ArchitectureSpec::from_manifest(&m);
+        assert!(
+            matches!(spec.layers[0].ffn, FfnKind::DenseGeglu),
+            "gemma4_vl must use GeGLU, not SwiGLU"
+        );
+        assert_eq!(
+            spec.layers[0].attention,
+            AttentionKind::Sliding { window: 512 }
+        );
+        assert_eq!(spec.layers[3].attention, AttentionKind::Full);
     }
 
     #[test]

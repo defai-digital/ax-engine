@@ -144,9 +144,18 @@ pub(crate) fn is_qwen_gated_delta_family(model_type: &str) -> bool {
 }
 
 pub(crate) fn is_gemma4_target_model_type(model_type: &str) -> bool {
+    // gemma4_vl / gemma4-vl share the standard Gemma 4 text backbone (dual
+    // RoPE, layer_types SWA, hidden_states_scale, optional KV-shared layers).
+    // Excluding them here left parse_layer_types empty and skipped dual rope
+    // + sqrt(H) embedding scale on convert — broken SWA and wrong magnitude.
     matches!(
         model_type,
-        "gemma4" | "gemma4_unified" | "gemma4_unified_text" | "diffusion_gemma"
+        "gemma4"
+            | "gemma4_unified"
+            | "gemma4_unified_text"
+            | "gemma4_vl"
+            | "gemma4-vl"
+            | "diffusion_gemma"
     )
 }
 

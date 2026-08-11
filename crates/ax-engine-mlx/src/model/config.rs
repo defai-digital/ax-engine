@@ -648,13 +648,20 @@ impl ModelConfig {
         };
         let rope_theta = m.rope_theta.map(|t| t as f32).unwrap_or(10000.0);
         let layer_configs = build_layer_configs(m, head_dim, rope_theta, rope_dims);
+        // gemma4_vl is a separate family label for vision capability gating;
+        // the language tower is standard Gemma 4 (GeGLU, query_scale=1.0).
         let is_gemma4 = matches!(
             m.model_family.as_str(),
-            "gemma4" | "gemma4_assistant" | "diffusion_gemma"
+            "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma"
         );
         let uses_geglu = matches!(
             m.model_family.as_str(),
-            "gemma4" | "gemma4_assistant" | "diffusion_gemma" | "gemma3" | "embeddinggemma"
+            "gemma4"
+                | "gemma4_vl"
+                | "gemma4_assistant"
+                | "diffusion_gemma"
+                | "gemma3"
+                | "embeddinggemma"
         );
         let query_scale = if is_gemma4 {
             1.0
@@ -914,7 +921,7 @@ pub(super) fn build_layer_configs(
     // gemma4-specific RoPE on the whole family, not just the dense target.
     let is_gemma4_family = matches!(
         m.model_family.as_str(),
-        "gemma4" | "gemma4_assistant" | "diffusion_gemma"
+        "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma"
     );
     let full_head_dim = m.global_head_dim.unwrap_or(m.attention_head_dim) as usize;
     let full_rope_dims = m
@@ -1090,6 +1097,37 @@ mod tests {
         let config = ModelConfig::from_manifest(&manifest);
 
         assert_eq!(config.kv_cache_quant, vec![None, None]);
+    }
+
+    #[test]
+    fn gemma4_vl_uses_geglu_and_unit_query_scale() {
+        // gemma4_vl packaging must not fall through to non-Gemma defaults
+        // (SwiGLU + 1/sqrt(d) query scale), which desyncs the text tower.
+        let value = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "gemma4_vl",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 64,
+            "attention_head_count": 4,
+            "attention_head_dim": 16,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "layer_types": ["sliding_attention", "full_attention"],
+            "sliding_window_size": 128,
+            "tensors": [],
+        });
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(value).expect("gemma4_vl manifest");
+        let cfg = ModelConfig::from_manifest(&manifest);
+        assert!(cfg.uses_geglu, "gemma4_vl text tower is GeGLU");
+        assert_eq!(
+            cfg.query_scale, 1.0,
+            "Gemma 4 Softcapping attention uses query_scale=1.0, not 1/sqrt(head_dim)"
+        );
+        assert_eq!(cfg.layer_configs.len(), 2);
+        assert_eq!(cfg.layer_configs[0].sliding_window, Some(128));
+        assert_eq!(cfg.layer_configs[1].sliding_window, None);
     }
 
     #[test]
