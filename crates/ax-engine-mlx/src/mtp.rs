@@ -976,6 +976,65 @@ fn greedy_draft_needs_temperature_log_probs(
     draft_temperature > 0.0 && !(qwen_exact_profile && min_confidence == 0.0)
 }
 
+/// Temperature at which Qwen MTP draft log-probs are recorded by
+/// [`mtp_draft_tokens_gated`] / hybrid forced-prefix tails.
+///
+/// Accept-path rejection sampling must use this same T for `q(token)` (see
+/// runner `mtp_pending_draft_log_prob_temperature`). Using the head's
+/// `draft_sampling.temperature` (often 0.7) while the greedy draft path wrote
+/// log-probs at T=1.0 breaks exactness — the common Qwen3.6 linear exact /
+/// confidence-gated path.
+///
+/// Mirrors the branch structure of [`mtp_draft_tokens_gated`]:
+/// - confidence gate force-greedy → log-probs at **1.0**
+/// - stochastic mode → head draft temperature (or 1.0 if unset)
+/// - greedy mode with temperature log-probs → head draft temperature
+/// - pure greedy (exact profile, gate 0) → **1.0** when log-probs exist
+pub fn qwen_mtp_draft_log_prob_temperature(
+    mode: MtpDraftMode,
+    draft_head_temperature: f32,
+    min_confidence: f32,
+    qwen_exact_profile: bool,
+) -> f32 {
+    let head_t = if draft_head_temperature > 0.0 {
+        draft_head_temperature
+    } else {
+        1.0
+    };
+    let gate_forces_greedy = min_confidence > 0.0 && mode != MtpDraftMode::Stochastic;
+    if gate_forces_greedy {
+        return 1.0;
+    }
+    match mode {
+        MtpDraftMode::Stochastic => head_t,
+        MtpDraftMode::Greedy => {
+            if greedy_draft_needs_temperature_log_probs(
+                draft_head_temperature,
+                min_confidence,
+                qwen_exact_profile,
+            ) {
+                head_t
+            } else {
+                1.0
+            }
+        }
+    }
+}
+
+/// Process-env draft mode + head T / gate / exact profile → recorded log-prob T.
+pub fn qwen_mtp_draft_log_prob_temperature_from_env(
+    draft_head_temperature: f32,
+    min_confidence: f32,
+    qwen_exact_profile: bool,
+) -> f32 {
+    qwen_mtp_draft_log_prob_temperature(
+        mtp_draft_mode_from_env(),
+        draft_head_temperature,
+        min_confidence,
+        qwen_exact_profile,
+    )
+}
+
 /// Like [`mtp_draft_tokens`] but with an explicit draft-confidence gate instead
 /// of the process-global `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` env value.
 ///
@@ -2543,6 +2602,49 @@ fn deepseek_v4_mtp_draft_tokens_greedy(
     let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
     let added = draft_tokens.len();
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+#[cfg(test)]
+mod qwen_mtp_log_prob_temperature_tests {
+    use super::{
+        MtpDraftMode, greedy_draft_needs_temperature_log_probs, qwen_mtp_draft_log_prob_temperature,
+    };
+
+    #[test]
+    fn exact_profile_zero_gate_records_t1_not_head_0_7() {
+        // Qwen3.6 linear exact production path: greedy drafts, no confidence
+        // gate → pure greedy log-probs at T=1.0. Accept must not use head 0.7.
+        assert!(!greedy_draft_needs_temperature_log_probs(0.7, 0.0, true));
+        assert_eq!(
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0, true),
+            1.0
+        );
+    }
+
+    #[test]
+    fn confidence_gate_force_greedy_records_t1() {
+        assert_eq!(
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.5, false),
+            1.0
+        );
+    }
+
+    #[test]
+    fn stochastic_records_head_temperature() {
+        assert_eq!(
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Stochastic, 0.7, 0.0, true),
+            0.7
+        );
+    }
+
+    #[test]
+    fn non_exact_greedy_with_head_t_uses_temperature_log_probs() {
+        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.0, false));
+        assert_eq!(
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0, false),
+            0.7
+        );
+    }
 }
 
 #[cfg(test)]

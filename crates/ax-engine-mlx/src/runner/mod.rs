@@ -8321,8 +8321,20 @@ impl MlxRunner {
                 .saturating_add(elapsed_us(mtp_draft_started));
             state.mtp_decode_count += added;
             state.mtp_pending_draft_log_probs = log_probs;
-            state.mtp_pending_draft_log_prob_temperature =
-                Some(draft_log_prob_temperature_for_new_drafts);
+            // DI-QW-MTP: skip-state drafts use the same gated path as pure MTP.
+            let skip_log_prob_t = self
+                .weights
+                .mtp
+                .as_ref()
+                .map(|head| {
+                    crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
+                        head.draft_sampling.temperature,
+                        gate,
+                        crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                    )
+                })
+                .unwrap_or(draft_log_prob_temperature_for_new_drafts);
+            state.mtp_pending_draft_log_prob_temperature = Some(skip_log_prob_t);
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp; draft.len()];
             // Override pending so the verify/accept pipeline sees the new drafts.
@@ -9756,7 +9768,9 @@ impl MlxRunner {
             } else {
                 None
             };
-            let next_draft_log_prob_temperature = deepseek_next_draft_temperature
+            // Qwen draft branches below may overwrite this with the T actually
+            // used for log-probs (often 1.0 on exact/gated greedy — not head 0.7).
+            let mut next_draft_log_prob_temperature = deepseek_next_draft_temperature
                 .unwrap_or(draft_log_prob_temperature_for_new_drafts);
             let mtp_post_think_guarded =
                 self.cfg.think_start_token_id.is_some() && !think_state_after_result;
@@ -10013,6 +10027,16 @@ impl MlxRunner {
                                 hybrid_draft_t,
                             )
                         } else {
+                            // DI-QW-MTP: lock accept T to the T used for Qwen
+                            // hybrid-tail log-probs (exact/gated greedy → 1.0).
+                            if let Some(head) = self.weights.mtp.as_ref() {
+                                next_draft_log_prob_temperature =
+                                    crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
+                                        head.draft_sampling.temperature,
+                                        hybrid_gate,
+                                        crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                                    );
+                            }
                             mtp_draft_tokens_after_forced_prefix(
                                 &self.weights,
                                 &self.cfg,
@@ -10111,6 +10135,16 @@ impl MlxRunner {
                         state.mtp_pending_draft_lazy = Some(lazy);
                         (Vec::new(), Vec::new(), Vec::new())
                     } else {
+                        // DI-QW-MTP: accept must use the T at which gated drafts
+                        // recorded log-probs (exact/gated greedy → 1.0, not head 0.7).
+                        if let Some(head) = self.weights.mtp.as_ref() {
+                            next_draft_log_prob_temperature =
+                                crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
+                                    head.draft_sampling.temperature,
+                                    gate,
+                                    crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                                );
+                        }
                         let (draft, log_probs, distributions, added, _top2_margins) =
                             mtp_draft_tokens_gated(
                                 &self.weights,
@@ -10217,7 +10251,8 @@ impl MlxRunner {
                 state.mtp_pending_draft_log_prob_temperature = None;
             } else {
                 // Lock accept rescale to the T used when these log-probs were
-                // written (post-result think state for DeepSeek nextn).
+                // written (DeepSeek post-result think T, or Qwen exact/gated
+                // draft log-prob T — see next_draft_log_prob_temperature).
                 state.mtp_pending_draft_log_prob_temperature =
                     Some(next_draft_log_prob_temperature);
             }
