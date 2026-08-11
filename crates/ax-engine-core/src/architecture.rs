@@ -319,6 +319,7 @@ fn uses_geglu(family: &str) -> bool {
         family,
         "gemma4"
             | "gemma4_vl"
+            | "gemma4_unified"
             | "gemma4_assistant"
             | "diffusion_gemma"
             | "gemma3"
@@ -640,6 +641,25 @@ mod tests {
             AttentionKind::Sliding { window: 512 }
         );
         assert_eq!(spec.layers[3].attention, AttentionKind::Full);
+    }
+
+    #[test]
+    fn gemma4_unified_uses_geglu_like_gemma4() {
+        // DI-W1-001: convert emits gemma4_unified; GeGLU must not fall through
+        // to SwiGLU when the family label is the unified Compatible tier.
+        let mut m = base_manifest("gemma4_unified", 4);
+        m.sliding_window_size = Some(512);
+        m.layer_types = vec![
+            "sliding_attention".into(),
+            "sliding_attention".into(),
+            "sliding_attention".into(),
+            "full_attention".into(),
+        ];
+        let spec = ArchitectureSpec::from_manifest(&m);
+        assert!(
+            matches!(spec.layers[0].ffn, FfnKind::DenseGeglu),
+            "gemma4_unified must use GeGLU, not SwiGLU"
+        );
     }
 
     #[test]

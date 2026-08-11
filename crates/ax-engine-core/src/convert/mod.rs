@@ -935,7 +935,10 @@ fn tensor_quantization(
     // the rest of the affine-quantized model uses the global 4-bit setting.
     // gemma4_vl shares the same MoE text backbone family label is separate for
     // vision capability gating only.
-    if matches!(family.family_name, "gemma4" | "gemma4_vl")
+    if matches!(
+        family.family_name,
+        "gemma4" | "gemma4_vl" | "gemma4_unified"
+    )
         && tensor_name.ends_with(".router.proj.weight")
     {
         quantization.bits = 8;
@@ -1108,6 +1111,7 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
     // ViT and projection, distinct from gemma4_unified's encoder-free roles.
     // Preserve the exact names so the config-driven native vision loader can
     // consume both MLX and raw-HF prefix layouts.
+    // Do not include gemma4_unified: it uses GEMMA4_UNIFIED_EXTRA_TENSOR_MAP roles.
     if matches!(family.family_name, "gemma4" | "gemma4_vl")
         && (name.starts_with("vision_tower.")
             || name.starts_with("model.vision_tower.")

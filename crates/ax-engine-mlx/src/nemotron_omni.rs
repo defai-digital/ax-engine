@@ -488,6 +488,12 @@ pub(crate) fn build_omni_prefill_embeddings(
     for image in &inputs.images {
         let grid_h = image.height as usize / image.patch_size as usize;
         let grid_w = image.width as usize / image.patch_size as usize;
+        // DI-W2-F1a: guard buffer length vs claimed NCHW geometry before MLX view.
+        validate_omni_pixel_buffer_len(
+            image.pixel_values.len(),
+            image.height,
+            image.width,
+        )?;
         let pixels = MlxArray::from_raw_data(
             image.pixel_values.as_ptr().cast(),
             std::mem::size_of_val(image.pixel_values.as_slice()),
@@ -764,9 +770,37 @@ fn f32_array(values: &[f32], shape: &[i32]) -> MlxArray {
     )
 }
 
+/// Reject NCHW pixel buffers whose length does not match 3*H*W (DI-W2-F1a).
+fn validate_omni_pixel_buffer_len(
+    buffer_len: usize,
+    height: u32,
+    width: u32,
+) -> Result<(), NemotronOmniError> {
+    let expected_elems = (height as usize)
+        .checked_mul(width as usize)
+        .and_then(|n| n.checked_mul(3))
+        .ok_or_else(|| NemotronOmniError::InvalidGeometry("pixel tensor size overflow".into()))?;
+    if buffer_len != expected_elems {
+        return Err(NemotronOmniError::InvalidGeometry(format!(
+            "pixel buffer length {buffer_len} != 3*H*W (3x{height}x{width})"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pixel_buffer_length_mismatch_is_rejected() {
+        assert!(validate_omni_pixel_buffer_len(12, 2, 2).is_ok());
+        let err = validate_omni_pixel_buffer_len(4, 2, 2).unwrap_err();
+        assert!(
+            matches!(err, NemotronOmniError::InvalidGeometry(msg) if msg.contains("pixel buffer length")),
+            "short NCHW buffer must fail closed before from_raw_data"
+        );
+    }
 
     #[test]
     fn square_side_requires_exact_square() {

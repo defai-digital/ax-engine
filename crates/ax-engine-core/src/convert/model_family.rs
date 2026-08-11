@@ -55,14 +55,20 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),
-        "gemma4" | "gemma4_unified" | "gemma4_unified_text" => Ok(ModelFamily {
+        // Keep family_name distinct: standard Gemma 4 is Certified; unified
+        // multimodal packages are Compatible until they earn their own cert
+        // evidence (DI-W0-002: never inherit gemma4 Certified via rename).
+        "gemma4" => Ok(ModelFamily {
             family_name: "gemma4",
             tensor_map: HF_STANDARD_TENSOR_MAP,
-            extra_tensor_map: if matches!(model_type, "gemma4_unified" | "gemma4_unified_text") {
-                Some(GEMMA4_UNIFIED_EXTRA_TENSOR_MAP)
-            } else {
-                None
-            },
+            extra_tensor_map: None,
+            uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
+        }),
+        "gemma4_unified" | "gemma4_unified_text" => Ok(ModelFamily {
+            family_name: "gemma4_unified",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(GEMMA4_UNIFIED_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,
             uses_decoder_prefix: false,
         }),

@@ -1225,7 +1225,8 @@ fn converts_gemma4_unified_text_without_tower_tensors() {
 
     let manifest = convert_hf_model_dir(&dir).expect("unified text conversion should succeed");
 
-    assert_eq!(manifest.model_family, "gemma4");
+    // DI-W0-002: unified packages must not inherit Certified `gemma4` tier.
+    assert_eq!(manifest.model_family, "gemma4_unified");
     assert_eq!(manifest.hidden_size, 3072);
     assert_eq!(manifest.rope_theta, Some(1000000));
     assert_eq!(manifest.rope_theta_swa, Some(10000));
@@ -2341,6 +2342,27 @@ fn converts_qwen3_next_linear_moe_shared_expert_model_directory() {
         .expect("qwen3_next manifest should validate");
 
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn qwen3_vl_moe_model_type_produces_moe_config() {
+    // DI-W2-001: tensor map treats qwen3_vl_moe as MoE; moe_config must too.
+    let config = serde_json::json!({
+        "model_type": "qwen3_vl_moe",
+        "num_experts": 64,
+        "num_experts_per_tok": 4,
+        "moe_intermediate_size": 128,
+        "hidden_size": 256,
+    });
+    let moe = moe_config(&config, "qwen3_vl_moe");
+    assert!(
+        moe.is_enabled(),
+        "qwen3_vl_moe must populate NativeMoeConfig"
+    );
+    assert_eq!(moe.expert_count, Some(64));
+    assert_eq!(moe.experts_per_token, Some(4));
+    let moe_hyphen = moe_config(&config, "qwen3-vl-moe");
+    assert!(moe_hyphen.is_enabled(), "qwen3-vl-moe alias must also MoE");
 }
 
 #[test]

@@ -2741,6 +2741,13 @@ pub fn forward_for_embedding(
     token_ids: &[u32],
     target_position: Option<usize>,
 ) -> MlxArray {
+    // DI-W2-002: EmbeddingGemma must use the bidirectional Gemma3 sandwich
+    // path (same as batch-of-one), not the causal dense embed body.
+    if cfg.model_family == "embeddinggemma" {
+        let (out, _lens) =
+            forward_for_embedding_gemma3_batch(cfg, weights, &[token_ids.to_vec()]);
+        return out;
+    }
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);

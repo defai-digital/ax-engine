@@ -379,7 +379,7 @@ fn prefer_split_qkv_projection(
         && projection_policy == ProjectionBatchPolicy::Shared
         && has_split_qk
         && (batch > 1
-            || (model_family == "gemma4"
+            || ((model_family == "gemma4" || model_family == "gemma4_unified")
                 && batch == 1
                 && (GEMMA4_SPLIT_PREFILL_MIN_SEQ..=GEMMA4_SPLIT_QKV_PREFILL_MAX_SEQ)
                     .contains(&seq)))
@@ -3084,7 +3084,9 @@ fn prefer_split_dense_ffn_gate_up(
     // Gemma4 long-prefill historically preferred split gate/up (two qmatmuls)
     // over packed fixed-shape. Kill-switch `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN=0`
     // forces packed + prefill-compile for pure thr A/B on M5 (S1 residual).
-    let gemma4_split_prefill = model_family == "gemma4"
+    // Unified shares the Gemma 4 text backbone; keep split-prefill optim when
+    // convert emits `gemma4_unified` (DI-W0-002 family label honesty).
+    let gemma4_split_prefill = (model_family == "gemma4" || model_family == "gemma4_unified")
         && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
         && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)
         && gemma4_split_prefill_ffn_enabled();

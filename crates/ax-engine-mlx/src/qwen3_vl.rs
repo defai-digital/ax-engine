@@ -232,6 +232,13 @@ pub(crate) fn build_vl_prefill_embeddings(
     let mut visual_positions = Vec::new();
 
     for media in &inputs.images {
+        // DI-W2-F1c: MLX indexes by claimed shape; reject buffer/shape drift
+        // (mirror gemma4_vl pixel_values.len() == expected).
+        validate_qwen3_vl_patch_buffer_len(
+            media.patches.len(),
+            media.num_patches,
+            media.patch_dim,
+        )?;
         let patches = MlxArray::from_raw_data(
             media.patches.as_ptr().cast(),
             std::mem::size_of_val(media.patches.as_slice()),
@@ -1282,12 +1289,41 @@ fn u32_array(values: &[u32], shape: &[i32]) -> MlxArray {
     )
 }
 
+/// Reject patch buffers whose length does not match the claimed geometry
+/// (DI-W2-F1c / gemma4_vl defensive pattern).
+fn validate_qwen3_vl_patch_buffer_len(
+    buffer_len: usize,
+    num_patches: u32,
+    patch_dim: u32,
+) -> Result<(), Qwen3VlError> {
+    let expected_elems = (num_patches as usize)
+        .checked_mul(patch_dim as usize)
+        .ok_or_else(|| Qwen3VlError::InvalidGeometry("patch tensor size overflow".into()))?;
+    if buffer_len != expected_elems {
+        return Err(Qwen3VlError::InvalidGeometry(format!(
+            "patch buffer length {buffer_len} != num_patches {num_patches} * patch_dim {patch_dim}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ax_engine_core::qwen3_vl::Qwen3VlImageRuntimeInput;
     use mlx_sys::{eval, zeros};
     use serde_json::json;
+
+    #[test]
+    fn patch_buffer_length_mismatch_is_rejected() {
+        // 2 patches * 4 dims = 8 buffer elements
+        assert!(validate_qwen3_vl_patch_buffer_len(8, 2, 4).is_ok());
+        let err = validate_qwen3_vl_patch_buffer_len(3, 2, 4).unwrap_err();
+        assert!(
+            matches!(err, Qwen3VlError::InvalidGeometry(msg) if msg.contains("patch buffer length")),
+            "short patch buffer must fail closed before from_raw_data"
+        );
+    }
 
     #[test]
     fn qwen36_moe_model_type_enters_visual_loader() {

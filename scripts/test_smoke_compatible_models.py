@@ -141,6 +141,19 @@ class SnapshotResolutionTests(unittest.TestCase):
             (snapshot / "config.json").write_text("{}", encoding="utf-8")
             self.assertEqual(smoke.resolve_snapshot(model, snapshot), snapshot)
 
+    def test_models_dir_without_match_does_not_use_hf_cache_when_disabled(self) -> None:
+        # DI-W0-005: explicit mount must not silently fall through to ambient cache.
+        model = self.fake_model()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty = root / "empty-mount"
+            empty.mkdir()
+            self.assertIsNone(
+                smoke.resolve_snapshot(
+                    model, empty, allow_hf_cache_fallback=False
+                )
+            )
+
 
 class RenderTableTests(unittest.TestCase):
     def test_empty_rows_render_header_without_crash(self) -> None:

@@ -648,16 +648,24 @@ impl ModelConfig {
         };
         let rope_theta = m.rope_theta.map(|t| t as f32).unwrap_or(10000.0);
         let layer_configs = build_layer_configs(m, head_dim, rope_theta, rope_dims);
-        // gemma4_vl is a separate family label for vision capability gating;
-        // the language tower is standard Gemma 4 (GeGLU, query_scale=1.0).
+        // gemma4_vl / gemma4_unified are separate family labels for vision
+        // capability gating; the language tower is still standard Gemma 4
+        // (GeGLU, query_scale=1.0). DI-W1-001: include gemma4_unified so
+        // convert-emitted unified packages do not fall through to generic
+        // SwiGLU / non-Gemma RoPE geometry.
         let is_gemma4 = matches!(
             m.model_family.as_str(),
-            "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma"
+            "gemma4"
+                | "gemma4_vl"
+                | "gemma4_unified"
+                | "gemma4_assistant"
+                | "diffusion_gemma"
         );
         let uses_geglu = matches!(
             m.model_family.as_str(),
             "gemma4"
                 | "gemma4_vl"
+                | "gemma4_unified"
                 | "gemma4_assistant"
                 | "diffusion_gemma"
                 | "gemma3"
@@ -921,7 +929,11 @@ pub(super) fn build_layer_configs(
     // gemma4-specific RoPE on the whole family, not just the dense target.
     let is_gemma4_family = matches!(
         m.model_family.as_str(),
-        "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma"
+        "gemma4"
+            | "gemma4_vl"
+            | "gemma4_unified"
+            | "gemma4_assistant"
+            | "diffusion_gemma"
     );
     let full_head_dim = m.global_head_dim.unwrap_or(m.attention_head_dim) as usize;
     let full_rope_dims = m
