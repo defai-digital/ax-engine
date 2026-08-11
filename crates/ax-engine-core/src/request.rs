@@ -167,11 +167,12 @@ pub struct RequestWorkloadHints {
     pub tool_call: bool,
     pub structured_output: bool,
     /// Thinking-budget controller: maximum tokens allowed inside the open
-    /// think block before the close token is forced (ds4-style hard limit).
+    /// think block before the close token is forced (ds4-style hard limit);
+    /// generation then continues so the remaining budget funds the answer.
     pub max_think_tokens: Option<u32>,
     /// Thinking-budget controller: answer reserve at the end of the output
     /// budget; the think block is force-closed once remaining tokens drop to
-    /// this level.
+    /// this level, and the reserved tokens fund the answer.
     pub answer_reserve_tokens: Option<u32>,
 }
 

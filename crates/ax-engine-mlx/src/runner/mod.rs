@@ -5526,42 +5526,26 @@ impl MlxRunner {
         );
         // Thinking-budget controller: force the think-close token when the
         // answer reserve / think cap is exhausted or the loop detector fired
-        // inside an open think block (ds4-style soft+hard close).
+        // inside an open think block (ds4-style soft+hard close). A budget
+        // edge carries no stop reason: generation continues so the remaining
+        // output budget funds the answer (ds4 hard-limit semantics).
         let (sampled_tokens, stop_reason) = if let Some(ctx) = ctx
-            && !sampled_tokens.is_empty()
-            && stop_reason.is_none()
-            && think_budget_close_decision(
+            && let Some((forced_tokens, forced_stop)) = think_budget_close_override(
+                stop_reason,
+                !sampled_tokens.is_empty(),
                 state.ngram_in_think,
                 self.cfg.think_end_token_id,
                 ctx.max_output_tokens.saturating_sub(ctx.generated_len),
                 state.think_emitted_tokens,
                 ctx.max_think_tokens,
                 ctx.answer_reserve_tokens,
-                false,
             ) {
             state.pending_direct = None;
-            (
-                vec![self.cfg.think_end_token_id.expect("checked in decision")],
-                Some(StopReason::MaxOutputTokens),
-            )
-        } else if let Some(ctx) = ctx
-            && !sampled_tokens.is_empty()
-            && matches!(stop_reason, Some(StopReason::LoopDetected))
-            && think_budget_close_decision(
-                state.ngram_in_think,
-                self.cfg.think_end_token_id,
-                ctx.max_output_tokens.saturating_sub(ctx.generated_len),
-                state.think_emitted_tokens,
-                ctx.max_think_tokens,
-                ctx.answer_reserve_tokens,
-                true,
-            )
-        {
-            state.pending_direct = None;
-            (
-                vec![self.cfg.think_end_token_id.expect("checked in decision")],
-                stop_reason,
-            )
+            // Queued n-gram bonus tokens were verified against a think
+            // trace the forced close token just interrupted; they point at
+            // the wrong continuation and must not be served.
+            state.bonus_queue.clear();
+            (forced_tokens, forced_stop)
         } else {
             (sampled_tokens, stop_reason)
         };
@@ -10024,6 +10008,50 @@ pub(crate) fn think_budget_close_decision(
     loop_detected
 }
 
+/// Apply the thinking-budget controller override to a decoded step (ds4-style
+/// soft+hard close). When [`think_budget_close_decision`] is due on a step
+/// that would otherwise continue — or on a loop-detected step — the step
+/// emits only the think-close token. Budget-edge closes carry `None` as the
+/// stop reason: generation continues so the remaining output budget funds the
+/// answer (ds4 hard-limit semantics), and the regular max-output path
+/// terminates the request. A loop-detected close keeps its stop reason so a
+/// stuck reasoning trace still ends the request after the forced close.
+/// Returns `None` when no override applies.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn think_budget_close_override(
+    stop_reason: Option<StopReason>,
+    sampled_nonempty: bool,
+    in_think: bool,
+    think_end_token_id: Option<u32>,
+    remaining_budget: u32,
+    think_emitted_tokens: u32,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+) -> Option<(Vec<u32>, Option<StopReason>)> {
+    if !sampled_nonempty {
+        return None;
+    }
+    let loop_detected = matches!(stop_reason, Some(StopReason::LoopDetected));
+    if !(stop_reason.is_none() || loop_detected) {
+        return None;
+    }
+    if !think_budget_close_decision(
+        in_think,
+        think_end_token_id,
+        remaining_budget,
+        think_emitted_tokens,
+        max_think_tokens,
+        answer_reserve_tokens,
+        loop_detected,
+    ) {
+        return None;
+    }
+    Some((
+        vec![think_end_token_id.expect("checked in decision")],
+        stop_reason,
+    ))
+}
+
 /// Think soft-close probe window ahead of the hard budget edge (ds4:
 /// `soft_limit_reply_budget = 1024` ahead of `hard_limit_reply_budget`).
 pub(crate) const THINK_SOFT_CLOSE_WINDOW_TOKENS: u32 = 1024;
@@ -10275,6 +10303,90 @@ mod think_budget_close_decision_tests {
             None,
             false
         ));
+    }
+}
+
+#[cfg(test)]
+mod think_budget_close_override_tests {
+    use super::{StopReason, think_budget_close_override};
+
+    #[test]
+    fn budget_edge_forces_close_but_keeps_generating() {
+        // ds4 hard-limit semantics: the forced close token carries no stop
+        // reason, so the remaining output budget funds the answer instead of
+        // truncating the request at the reserve edge.
+        let override_result =
+            think_budget_close_override(None, true, true, Some(5), 512, 100, None, Some(512));
+        assert_eq!(override_result, Some((vec![5], None)));
+    }
+
+    #[test]
+    fn think_cap_edge_forces_close_but_keeps_generating() {
+        let override_result =
+            think_budget_close_override(None, true, true, Some(5), 9999, 4096, Some(4096), None);
+        assert_eq!(override_result, Some((vec![5], None)));
+    }
+
+    #[test]
+    fn loop_detected_close_keeps_stop_reason() {
+        let override_result = think_budget_close_override(
+            Some(StopReason::LoopDetected),
+            true,
+            true,
+            Some(5),
+            9999,
+            10,
+            None,
+            None,
+        );
+        assert_eq!(
+            override_result,
+            Some((vec![5], Some(StopReason::LoopDetected)))
+        );
+    }
+
+    #[test]
+    fn no_override_outside_eligible_steps() {
+        // Terminal stops (EOS / max output) are never overridden.
+        assert_eq!(
+            think_budget_close_override(
+                Some(StopReason::EosToken),
+                true,
+                true,
+                Some(5),
+                512,
+                100,
+                None,
+                Some(512)
+            ),
+            None
+        );
+        assert_eq!(
+            think_budget_close_override(
+                Some(StopReason::MaxOutputTokens),
+                true,
+                true,
+                Some(5),
+                512,
+                100,
+                None,
+                Some(512)
+            ),
+            None
+        );
+        // Empty step, outside think, or no controller due: untouched.
+        assert_eq!(
+            think_budget_close_override(None, false, true, Some(5), 512, 100, None, Some(512)),
+            None
+        );
+        assert_eq!(
+            think_budget_close_override(None, true, false, Some(5), 512, 100, None, Some(512)),
+            None
+        );
+        assert_eq!(
+            think_budget_close_override(None, true, true, Some(5), 513, 100, None, Some(512)),
+            None
+        );
     }
 }
 

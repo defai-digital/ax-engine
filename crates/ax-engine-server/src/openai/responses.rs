@@ -241,8 +241,10 @@ fn extract_tool_calls(
 ) -> Option<(Vec<OpenAiToolCall>, bool)> {
     // DeepSeek DSML stanzas are self-delimiting and unambiguous; parse them
     // whole and preserve the assistant text outside the stanzas (ds4 keeps
-    // pre/post stanza content alongside the calls).
-    if content.contains(super::dsml::DSML_TOOL_CALLS_OPEN) {
+    // pre/post stanza content alongside the calls). The gate is lenient like
+    // the parser: stray whitespace / duplicated bars in the open marker
+    // still engage DSML extraction.
+    if super::dsml::contains_dsml_tool_calls(content) {
         let (functions, leftover) = super::dsml::parse_dsml_tool_calls(content)?;
         let calls = functions
             .into_iter()
