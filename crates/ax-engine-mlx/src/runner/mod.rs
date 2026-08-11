@@ -450,6 +450,11 @@ struct RequestState {
     /// greedy-mode drafts after Phase 1).  N-gram hybrid positions: 0.0 (delta
     /// distribution, p_draft=1.0).  Empty for pure n-gram drafts (no MTP tail).
     mtp_pending_draft_log_probs: Vec<f32>,
+    /// Temperature used when recording `mtp_pending_draft_log_probs` (DeepSeek V4
+    /// think-aware draft T, Qwen/GLM draft_sampling T, or 1.0 for greedy). Accept
+    /// on the *next* step must reuse this value for rejection rescale — do not
+    /// recompute from a possibly-changed think state (DI-DS-MTP).
+    mtp_pending_draft_log_prob_temperature: Option<f32>,
     /// Sparse draft distributions aligned with `mtp_pending_draft`.
     /// Used to sample the exact residual correction after sampled-MTP rejection.
     mtp_pending_draft_distributions: Vec<TokenDistribution>,
@@ -607,6 +612,7 @@ impl RequestState {
             mtp_pending_draft: Vec::new(),
             mtp_pending_draft_lazy: None,
             mtp_pending_draft_log_probs: Vec::new(),
+            mtp_pending_draft_log_prob_temperature: None,
             mtp_pending_draft_distributions: Vec::new(),
             mtp_pending_draft_sources: Vec::new(),
             ngram_draft_policy: None,
@@ -2700,6 +2706,7 @@ impl MlxRunner {
             if row.state.mtp_bypassed {
                 row.state.mtp_pending_draft.clear();
                 row.state.mtp_pending_draft_log_probs.clear();
+                row.state.mtp_pending_draft_log_prob_temperature = None;
                 row.state.mtp_pending_draft_distributions.clear();
                 row.state.mtp_pending_draft_sources.clear();
             } else {
@@ -2711,6 +2718,7 @@ impl MlxRunner {
                 );
                 row.state.mtp_pending_draft = draft;
                 row.state.mtp_pending_draft_log_probs = log_probs;
+                row.state.mtp_pending_draft_log_prob_temperature = Some(1.0);
                 row.state.mtp_pending_draft_distributions = distributions;
                 row.state.mtp_pending_draft_sources =
                     vec![MtpDraftSource::Gemma4Assistant; row.state.mtp_pending_draft.len()];
@@ -8146,6 +8154,7 @@ impl MlxRunner {
             let drafted = draft.len();
             state.mtp_pending_draft = draft;
             state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_log_prob_temperature = Some(1.0);
             state.mtp_pending_draft_distributions = distributions;
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; drafted];
             state
@@ -8187,6 +8196,7 @@ impl MlxRunner {
             let count = lazy.tokens.len();
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp; count];
             state.mtp_pending_draft_log_probs = Vec::new();
+            state.mtp_pending_draft_log_prob_temperature = None;
             state.mtp_pending_draft_distributions = Vec::new();
             if defer_qualified {
                 state.mtp_pending_draft = vec![0; count];
@@ -8202,9 +8212,18 @@ impl MlxRunner {
         let mut mtp_timings = MtpStepTimings::default();
         // Draft log-probs are computed at T=1.0 (greedy path) or the draft
         // head's sampling temperature (stochastic path). Resolve Qwen, GLM,
-        // then DeepSeek V4 nextn — nextn has no draft_sampling struct; use
-        // deepseek_v4_mtp_draft_log_prob_temperature() so greedy stays 1.0
-        // and only stochastic uses DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE (0.7).
+        // then DeepSeek V4 nextn — nextn has no draft_sampling struct.
+        // DI-DS-MTP: DeepSeek accept rescale must use the *same* temperature
+        // as draft sampling (think-aware stochastic T, greedy always 1.0),
+        // not mode-only 0.7 while think drafts sampled at 1.0.
+        let deepseek_draft_temperature = if self.weights.deepseek_v4_nextn.is_some() {
+            Some(crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
+                state.ngram_in_think,
+                sampling.temperature,
+            ))
+        } else {
+            None
+        };
         let draft_sampling_temperature = self
             .weights
             .mtp
@@ -8216,13 +8235,8 @@ impl MlxRunner {
                     .as_ref()
                     .map(|h| h.draft_sampling.temperature)
             })
-            .or_else(|| {
-                self.weights
-                    .deepseek_v4_nextn
-                    .as_ref()
-                    .map(|_| crate::mtp::deepseek_v4_mtp_draft_log_prob_temperature())
-            });
-        let draft_log_prob_temperature = draft_sampling_temperature
+            .or(deepseek_draft_temperature);
+        let draft_log_prob_temperature_for_new_drafts = draft_sampling_temperature
             .map(|t| if t > 0.0 { t } else { 1.0 })
             .unwrap_or_else(|| {
                 if sampling.temperature > 0.0 {
@@ -8231,6 +8245,10 @@ impl MlxRunner {
                     1.0
                 }
             });
+        // Accept pending drafts with the T they were *drafted* at (carried on state).
+        let draft_log_prob_temperature = state
+            .mtp_pending_draft_log_prob_temperature
+            .unwrap_or(draft_log_prob_temperature_for_new_drafts);
         let model_acceptance_mode = if sampling.temperature > 0.0 {
             MtpModelAcceptanceMode::RejectionSampling
         } else {
@@ -8303,6 +8321,8 @@ impl MlxRunner {
                 .saturating_add(elapsed_us(mtp_draft_started));
             state.mtp_decode_count += added;
             state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_log_prob_temperature =
+                Some(draft_log_prob_temperature_for_new_drafts);
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp; draft.len()];
             // Override pending so the verify/accept pipeline sees the new drafts.
@@ -8328,6 +8348,8 @@ impl MlxRunner {
                 .assistant_draft_wall_us
                 .saturating_add(elapsed_us(assistant_draft_started));
             state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_log_prob_temperature =
+                Some(draft_log_prob_temperature_for_new_drafts);
             state.mtp_pending_draft_distributions = distributions;
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; draft.len()];
             pending = draft;
@@ -9662,6 +9684,7 @@ impl MlxRunner {
                     state.mtp_pending_draft.clear();
                     state.mtp_pending_draft_lazy = None;
                     state.mtp_pending_draft_log_probs.clear();
+                    state.mtp_pending_draft_log_prob_temperature = None;
                     state.mtp_pending_draft_distributions.clear();
                     state.mtp_pending_draft_sources.clear();
                     state.mtp_skip_logits = None;
@@ -9691,6 +9714,7 @@ impl MlxRunner {
             state.mtp_pending_draft.clear();
             state.mtp_pending_draft_lazy = None;
             state.mtp_pending_draft_log_probs.clear();
+            state.mtp_pending_draft_log_prob_temperature = None;
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources.clear();
             state.mtp_skip_logits = None;
@@ -9956,6 +9980,12 @@ impl MlxRunner {
                                 Some(hybrid_gate),
                             )
                         } else if self.weights.deepseek_v4_nextn.is_some() {
+                            // Same think-aware draft T as pure-MTP / accept rescale.
+                            let hybrid_draft_t =
+                                crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
+                                    state.ngram_in_think,
+                                    sampling.temperature,
+                                );
                             deepseek_v4_mtp_draft_tokens_after_forced_prefix(
                                 &self.weights,
                                 &self.cfg,
@@ -9966,6 +9996,7 @@ impl MlxRunner {
                                 mtp_tail_cap,
                                 &mut state.rng,
                                 Some(hybrid_gate),
+                                hybrid_draft_t,
                             )
                         } else {
                             mtp_draft_tokens_after_forced_prefix(
@@ -10129,10 +10160,12 @@ impl MlxRunner {
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
-                    let draft_temperature = crate::mtp::deepseek_v4_mtp_effective_draft_temperature(
-                        state.ngram_in_think,
-                        sampling.temperature,
-                    );
+                    // Must match draft_log_prob_temperature / accept rescale.
+                    let draft_temperature =
+                        crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
+                            state.ngram_in_think,
+                            sampling.temperature,
+                        );
                     let (draft, log_probs, distributions, added, _top2_margins) =
                         deepseek_v4_mtp_draft_tokens_gated(
                             &self.weights,
@@ -10169,6 +10202,11 @@ impl MlxRunner {
             state.mtp_pending_draft_sources = new_sources;
             if state.mtp_pending_draft_log_probs.is_empty() {
                 state.mtp_pending_draft_distributions.clear();
+                state.mtp_pending_draft_log_prob_temperature = None;
+            } else {
+                // Lock accept rescale to the T used when these log-probs were written.
+                state.mtp_pending_draft_log_prob_temperature =
+                    Some(draft_log_prob_temperature_for_new_drafts);
             }
             if state.mtp_pending_draft.is_empty() {
                 state.mtp_pending_draft_sources.clear();
@@ -10278,6 +10316,7 @@ impl MlxRunner {
         state.mtp_pending_draft.clear();
         state.mtp_pending_draft_lazy = None;
         state.mtp_pending_draft_log_probs.clear();
+        state.mtp_pending_draft_log_prob_temperature = None;
         state.mtp_pending_draft_distributions.clear();
         state.mtp_pending_draft_sources.clear();
         state.mtp_adaptive_max_depth =
@@ -10602,6 +10641,7 @@ impl MlxRunner {
             state.mtp_pending_draft.clear();
             state.mtp_pending_draft_lazy = None;
             state.mtp_pending_draft_log_probs.clear();
+            state.mtp_pending_draft_log_prob_temperature = None;
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources.clear();
             state.mtp_decode_count = 0;
@@ -10645,6 +10685,7 @@ impl MlxRunner {
                 state.mtp_pending_draft.clear();
                 state.mtp_pending_draft_lazy = None;
                 state.mtp_pending_draft_log_probs.clear();
+                state.mtp_pending_draft_log_prob_temperature = None;
                 state.mtp_pending_draft_distributions.clear();
                 state.mtp_pending_draft_sources.clear();
                 state.mtp_decode_count = 0;

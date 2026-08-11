@@ -1273,6 +1273,9 @@ mod tests {
             "deepseek-ai/DeepSeek-V3",
             "deepseek-ai/DeepSeek-R1",
             "mlx-community/DeepSeek-R1-4bit",
+            // V4 Flash packages must use DeepSeek fullwidth-bar template, not plain roles.
+            "deepseek-ai/DeepSeek-V4-Flash",
+            "AutomatosX/AX-DeepSeek-V4-Flash-MLX-AXQ-2bit",
         ] {
             assert_eq!(
                 ChatPromptTemplate::for_model_id(model_id),
@@ -1282,6 +1285,11 @@ mod tests {
         assert!(is_deepseek_thinking_model("deepseek-ai/DeepSeek-R1"));
         assert!(is_deepseek_thinking_model("deepseek-r1-distill-qwen-7b"));
         assert!(!is_deepseek_thinking_model("deepseek-ai/DeepSeek-V3"));
+        // V4 Flash is chat, not R1-style default-thinking (unless name has reason/think).
+        assert!(!is_deepseek_thinking_model("deepseek-ai/DeepSeek-V4-Flash"));
+        assert!(!is_deepseek_thinking_model(
+            "AutomatosX/AX-DeepSeek-V4-Flash-MLX-AXQ-2bit"
+        ));
     }
 
     #[test]
