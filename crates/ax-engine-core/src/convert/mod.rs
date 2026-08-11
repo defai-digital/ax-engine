@@ -498,7 +498,14 @@ fn parse_think_token_ids(model_dir: &Path) -> (Option<u32>, Option<u32>) {
             _ => {}
         }
     }
-    (start, end)
+    // Think-block gating needs both markers. A one-sided pair (corrupt or
+    // partial tokenizer.json) must not pin the manifest to an unclosable
+    // think state — leave both unset so the runtime can fall back to
+    // family/vocab defaults (Qwen3.6 27B 248k uses 248068/248069).
+    match (start, end) {
+        (Some(s), Some(e)) => (Some(s), Some(e)),
+        _ => (None, None),
+    }
 }
 
 /// Best-effort lift of the per-layer KV-cache quantization table from a

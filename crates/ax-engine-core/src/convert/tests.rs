@@ -4696,8 +4696,30 @@ fn parse_think_token_ids_reads_added_tokens() {
     // defaults stay in charge for such models.
     let empty = unique_test_dir("think-token-ids-none");
     assert_eq!(super::parse_think_token_ids(&empty), (None, None));
+
+    // One-sided added_tokens must not emit a partial pair that freezes think
+    // state open for Qwen3.6 27B (248k) reasoning turns.
+    let partial = unique_test_dir("think-token-ids-partial");
+    fs::write(
+        partial.join("tokenizer.json"),
+        serde_json::json!({
+            "added_tokens": [
+                {"id": 248068, "content": "<think>"},
+                {"id": 5, "content": "<pad>"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        super::parse_think_token_ids(&partial),
+        (None, None),
+        "partial think markers must leave both unset for family defaults"
+    );
+
     let _ = fs::remove_dir_all(dir);
     let _ = fs::remove_dir_all(empty);
+    let _ = fs::remove_dir_all(partial);
 }
 
 /// OptiQ / mlx-lm mixed-precision fixture: global 4-bit + named 8-bit overrides

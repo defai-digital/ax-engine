@@ -824,7 +824,8 @@ impl ModelConfig {
 /// Explicit manifest fields take precedence over family-derived defaults.
 /// Returns `(None, None)` for families without think-block tokens.
 fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Option<u32>) {
-    if m.think_start_token_id.is_some() || m.think_end_token_id.is_some() {
+    // Fully explicit pair always wins.
+    if m.think_start_token_id.is_some() && m.think_end_token_id.is_some() {
         return (m.think_start_token_id, m.think_end_token_id);
     }
     // Qwen ships two tokenizer generations with different <think> special
@@ -836,7 +837,7 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
     // generation by vocab width. qwen3_next is reserved for future variants.
     // qwen3_5 linear-attention models also emit <think> when reasoning mode
     // is enabled.
-    match m.model_family.as_str() {
+    let family_defaults = match m.model_family.as_str() {
         "qwen3" | "qwen3_5" | "qwen3_next" | "minicpmv4_6" => {
             if m.vocab_size >= 200_000 {
                 (Some(248_068), Some(248_069))
@@ -845,7 +846,13 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
             }
         }
         _ => (None, None),
-    }
+    };
+    // Partial explicit fields (legacy / hand-edited manifests) must not leave
+    // an unclosable think block: fill the missing side from family defaults.
+    (
+        m.think_start_token_id.or(family_defaults.0),
+        m.think_end_token_id.or(family_defaults.1),
+    )
 }
 
 /// Map the manifest's `kv_cache_quantization` table to per-layer specs.

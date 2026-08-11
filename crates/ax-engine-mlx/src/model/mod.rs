@@ -4400,6 +4400,18 @@ mod tests {
             (cfg.think_start_token_id, cfg.think_end_token_id),
             (Some(248_068), Some(248_069))
         );
+        // Partial explicit pair must not pin an unclosable think state: fill the
+        // missing end id from the 248k family default used by Qwen3.6 27B.
+        let mut m = qwen35_linear_manifest();
+        m.vocab_size = 248_320;
+        m.think_start_token_id = Some(248_068);
+        m.think_end_token_id = None;
+        let cfg = ModelConfig::from_manifest(&m);
+        assert_eq!(
+            (cfg.think_start_token_id, cfg.think_end_token_id),
+            (Some(248_068), Some(248_069)),
+            "partial think ids must complete from family defaults"
+        );
     }
 
     fn glm4_moe_lite_manifest() -> NativeModelManifest {
