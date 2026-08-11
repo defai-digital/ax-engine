@@ -219,10 +219,13 @@ pub fn load_gemma4_vl_vision_weights(
             "standard Gemma 4 vision checkpoint is missing config.json".into(),
         )
     })?;
-    if config_json.get("model_type").and_then(Value::as_str) != Some("gemma4") {
-        return Err(WeightLoadError::InvalidLayer(
-            "vision_tower.* weights require model_type=gemma4".into(),
-        ));
+    // convert packages may label model_type as gemma4_vl / gemma4-vl while
+    // keeping the same encoder-ViT layout as model_type=gemma4.
+    let model_type = config_json.get("model_type").and_then(Value::as_str);
+    if !matches!(model_type, Some("gemma4" | "gemma4_vl" | "gemma4-vl")) {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "vision_tower.* weights require model_type gemma4, gemma4_vl, or gemma4-vl (got {model_type:?})"
+        )));
     }
     let config = parse_gemma4_vision_config(config_json)?;
     let projection_prefix = if name_map.contains_key("embed_vision.embedding_projection.weight") {
@@ -1138,6 +1141,96 @@ mod tests {
             name_map.contains_key("vision_tower.patch_embedder.input_proj.weight"),
             "skipped tower data must remain untouched"
         );
+    }
+
+    #[test]
+    fn load_accepts_gemma4_vl_model_type_for_vision_tower() {
+        // convert leaves config.json model_type as gemma4_vl while mapping
+        // family gemma4_vl. Vision load must not hard-require model_type=gemma4.
+        use ax_engine_core::{NativeTensorDataType, NativeTensorRole, NativeTensorSpec};
+        use std::path::PathBuf;
+
+        let tower_name = "vision_tower.patch_embedder.input_proj.weight";
+        let specs = [NativeTensorSpec {
+            name: tower_name.to_string(),
+            role: NativeTensorRole::Other,
+            layer_index: None,
+            dtype: NativeTensorDataType::F32,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantization: None,
+            quantized_source: None,
+            shape: vec![1],
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: 4,
+        }];
+        let mut name_map =
+            HashMap::from([(tower_name.to_string(), MlxArray::from_f32_slice(&[1.0]))]);
+        let config = json!({
+            "model_type": "gemma4_vl",
+            "text_config": {"hidden_size": 1536},
+            "vision_config": {
+                "hidden_size": 768,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 12,
+                "num_key_value_heads": 12,
+                "head_dim": 64,
+                "patch_size": 16,
+                "pooling_kernel_size": 3,
+                "position_embedding_size": 10240,
+                "rms_norm_eps": 1e-6,
+                "rope_parameters": {"rope_theta": 100.0},
+                "use_clipped_linears": true,
+                "standardize": false
+            }
+        });
+        match load_gemma4_vl_vision_weights(&specs, &mut name_map, Some(&config)) {
+            Ok(Some(_)) => panic!("incomplete tower must not fully load"),
+            Ok(None) => panic!("vision prefix present must attempt load"),
+            Err(err) => {
+                let message = err.to_string();
+                assert!(
+                    !message.contains("require model_type")
+                        && !message.contains("got Some(\"qwen3\")"),
+                    "gemma4_vl must pass model_type gate, got: {message}"
+                );
+                // Next failure is missing embed_vision projection (real load path).
+                assert!(
+                    message.contains("embed_vision"),
+                    "expected to progress past model_type to embed_vision lookup, got: {message}"
+                );
+            }
+        }
+
+        // Non-Gemma model_type still rejected.
+        let mut name_map =
+            HashMap::from([(tower_name.to_string(), MlxArray::from_f32_slice(&[1.0]))]);
+        let bad = json!({
+            "model_type": "qwen3",
+            "text_config": {"hidden_size": 1536},
+            "vision_config": {
+                "hidden_size": 768,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 12,
+                "num_key_value_heads": 12,
+                "head_dim": 64,
+                "patch_size": 16,
+                "pooling_kernel_size": 3,
+                "position_embedding_size": 10240
+            }
+        });
+        match load_gemma4_vl_vision_weights(&specs, &mut name_map, Some(&bad)) {
+            Ok(_) => panic!("qwen3 must not load via Gemma VL vision path"),
+            Err(err) => {
+                assert!(
+                    err.to_string().contains("model_type"),
+                    "expected model_type rejection, got: {err}"
+                );
+            }
+        }
     }
 
     #[test]

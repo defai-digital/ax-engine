@@ -10,7 +10,7 @@ use super::deepseek_v4_quantized::{
 use super::{
     AUTO_GENERATED_MANIFEST_NOTE, ConvertError, DroppedTensorLedger, MANIFEST_TEMP_FILE_PREFIX,
     NativeTensorDataType, NativeTensorRole, compute_attention_value_from_key_layers,
-    config_quantization, convert_hf_model_dir, deepseek_v4_config,
+    compute_kv_shared_sources, config_quantization, convert_hf_model_dir, deepseek_v4_config,
     ensure_manifest_for_hf_model_dir, llama4_no_rope_layer_interval, match_tensor,
     model_family_for_type, moe_config, parse_layer_types, parse_rope_params, parse_rope_scaling,
     tensor_name_looks_like_media_role, tensor_quantization_override,
@@ -422,6 +422,31 @@ fn gpt_oss_moe_config_reads_expert_geometry() {
 }
 
 #[test]
+fn gpt_oss_rope_scaling_parses_yarn_beta_bounds() {
+    // openai/gpt-oss-20b config.json rope_scaling block (factor 32, YaRN).
+    // Convert must lift beta_fast/slow onto the manifest so the MLX runtime
+    // can honor non-default bounds (see yarn_rope_honors_manifest_beta_fast_slow).
+    let config = serde_json::json!({
+        "model_type": "gpt_oss",
+        "rope_theta": 150000,
+        "rope_scaling": {
+            "rope_type": "yarn",
+            "factor": 32.0,
+            "original_max_position_embeddings": 4096,
+            "beta_fast": 32.0,
+            "beta_slow": 1.0,
+            "truncate": false
+        }
+    });
+    let (ty, factor, _, _, orig, beta_fast, beta_slow) = parse_rope_scaling(&config, "gpt_oss");
+    assert_eq!(ty.as_deref(), Some("yarn"));
+    assert_eq!(factor, Some(32.0));
+    assert_eq!(orig, Some(4096));
+    assert_eq!(beta_fast, Some(32.0));
+    assert_eq!(beta_slow, Some(1.0));
+}
+
+#[test]
 fn llama4_moe_config_reads_nested_expert_geometry() {
     let config = serde_json::json!({
         "model_type": "llama4",
@@ -801,6 +826,84 @@ fn parses_gemma4_assistant_nested_rope_like_gemma4() {
 
     assert_eq!(full_theta, Some(1000000));
     assert_eq!(sliding_theta, Some(10000));
+    assert_eq!(partial_rotary, Some(0.25));
+}
+
+#[test]
+fn gemma4_vl_defaults_kv_shared_layers_like_gemma4() {
+    // When num_kv_shared_layers is omitted, standard Gemma 4 text towers
+    // (including gemma4_vl) default to 20 trailing shared layers — not 0.
+    let layer_count = 30u32;
+    let layer_types: Vec<String> = (0..layer_count)
+        .map(|i| {
+            if (i + 1) % 5 == 0 {
+                "full_attention".to_string()
+            } else {
+                "sliding_attention".to_string()
+            }
+        })
+        .collect();
+    let config = serde_json::json!({ "model_type": "gemma4_vl" });
+    let shared = compute_kv_shared_sources(&config, "gemma4_vl", &layer_types, layer_count);
+    assert_eq!(
+        shared.len(),
+        20,
+        "gemma4_vl must default to 20 KV-shared layers when the field is omitted"
+    );
+    // Shared layers start after non-shared prefix (layer_count - 20 = 10).
+    assert!(shared.contains_key(&10));
+    assert!(shared.contains_key(&29));
+    assert!(!shared.contains_key(&9));
+}
+
+#[test]
+fn gemma4_vl_shares_gemma4_text_rope_and_layer_types() {
+    // gemma4_vl is a separate family for vision capability gating, but the
+    // language tower is standard Gemma 4. Convert must not treat it as a
+    // non-Gemma type (empty layer_types + single rope_theta).
+    let config = serde_json::json!({
+        "model_type": "gemma4_vl",
+        "text_config": {
+            "num_hidden_layers": 4,
+            "layer_types": [
+                "sliding_attention",
+                "sliding_attention",
+                "sliding_attention",
+                "full_attention"
+            ],
+            "rope_parameters": {
+                "full_attention": {
+                    "rope_theta": 1_000_000.0,
+                    "partial_rotary_factor": 0.25
+                },
+                "sliding_attention": {
+                    "rope_theta": 10_000.0
+                }
+            }
+        }
+    });
+
+    assert!(
+        super::is_gemma4_target_model_type("gemma4_vl"),
+        "gemma4_vl must be a Gemma 4 text target for dual-RoPE / SWA / scale"
+    );
+    assert!(super::is_gemma4_target_model_type("gemma4-vl"));
+
+    let layer_types = parse_layer_types(&config, "gemma4_vl", 4);
+    assert_eq!(
+        layer_types,
+        vec![
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ],
+        "gemma4_vl must parse text_config.layer_types (was empty when excluded from is_gemma4_text_model_type)"
+    );
+
+    let (full_theta, sliding_theta, partial_rotary) = parse_rope_params(&config, "gemma4_vl");
+    assert_eq!(full_theta, Some(1_000_000));
+    assert_eq!(sliding_theta, Some(10_000));
     assert_eq!(partial_rotary, Some(0.25));
 }
 
@@ -2330,6 +2433,12 @@ fn qwen3_6_alias_produces_moe_config() {
             "alias '{alias}' must produce MoE config with expert_count=8"
         );
         assert_eq!(manifest.model_family, "qwen3_next");
+        // config omits norm_topk_prob — Qwen3.6-35B-A3B / qwen3_next defaults
+        // to true (Transformers & mlx_lm). A false default desyncs expert mix.
+        assert!(
+            manifest.moe_norm_topk_prob,
+            "alias '{alias}' must default moe_norm_topk_prob=true when omitted"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }
@@ -3618,7 +3727,25 @@ fn deepseek_v4_tensor_matching_covers_hf_layout() {
             "layers.61.nextn.enorm.weight",
             (NativeTensorRole::NextnEnorm, None),
         ),
-        ("mtp.0.hc_head_fn", (NativeTensorRole::HcHeadFn, None)),
+        ("mtp.0.hc_head_fn", (NativeTensorRole::NextnHcHeadFn, None)),
+        (
+            "mtp.0.hc_head_base",
+            (NativeTensorRole::NextnHcHeadBase, None),
+        ),
+        (
+            "mtp.0.hc_head_scale",
+            (NativeTensorRole::NextnHcHeadScale, None),
+        ),
+        // GGUF-style nextn block at layers.N.nextn.* must use dedicated NextnHc*
+        // roles, not root HcHead* (collision was a real load-order bug).
+        (
+            "layers.61.nextn.hc_head_fn",
+            (NativeTensorRole::NextnHcHeadFn, None),
+        ),
+        (
+            "layers.61.nextn.hc_head.base",
+            (NativeTensorRole::NextnHcHeadBase, None),
+        ),
         ("mtp.1.enorm.weight", (NativeTensorRole::NextnEnorm, None)),
         (
             "mtp.1.norm.weight",
@@ -3627,6 +3754,11 @@ fn deepseek_v4_tensor_matching_covers_hf_layout() {
     ] {
         assert_eq!(match_tensor(name, &family), Some(expected), "tensor {name}");
     }
+    // Target root head stays distinct from MTP nextn head.
+    assert_eq!(
+        match_tensor("hc_head_fn", &family),
+        Some((NativeTensorRole::HcHeadFn, None))
+    );
     // Sanitized `model.`-prefixed layouts ride the generic extra-map path.
     assert_eq!(
         match_tensor("model.layers.3.attn.wq_b.weight", &family),
@@ -4221,6 +4353,35 @@ fn rejects_qwen_rope_scaling_until_runtime_contract_is_manifested() {
     )
     .expect("default Qwen3-VL MRoPE describes axis assignment, not frequency scaling");
 
+    // HF ships Qwen3.5 / VL variants under distinct model_type strings that still
+    // use the same default-MRoPE object; convert must not reject any alias that
+    // `model_family_for_type` accepts for those families.
+    for model_type in [
+        "qwen3_vl",
+        "qwen3-vl",
+        "qwen3_vl_text",
+        "qwen3_vl_moe",
+        "qwen3-vl-moe",
+        "qwen3_5",
+        "qwen3.5",
+        "qwen3_5_moe",
+        "qwen3_5_text",
+    ] {
+        validate_qwen_rope_scaling(
+            &serde_json::json!({
+                "text_config": {
+                    "rope_scaling": {
+                        "mrope_interleaved": true,
+                        "mrope_section": [24, 20, 20],
+                        "rope_type": "default"
+                    }
+                }
+            }),
+            model_type,
+        )
+        .unwrap_or_else(|err| panic!("{model_type} default MRoPE must be accepted, got {err:?}"));
+    }
+
     let error = validate_qwen_rope_scaling(
         &serde_json::json!({
             "text_config": {
@@ -4667,8 +4828,30 @@ fn parse_think_token_ids_reads_added_tokens() {
     // defaults stay in charge for such models.
     let empty = unique_test_dir("think-token-ids-none");
     assert_eq!(super::parse_think_token_ids(&empty), (None, None));
+
+    // One-sided added_tokens must not emit a partial pair that freezes think
+    // state open for Qwen3.6 27B (248k) reasoning turns.
+    let partial = unique_test_dir("think-token-ids-partial");
+    fs::write(
+        partial.join("tokenizer.json"),
+        serde_json::json!({
+            "added_tokens": [
+                {"id": 248068, "content": "<think>"},
+                {"id": 5, "content": "<pad>"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        super::parse_think_token_ids(&partial),
+        (None, None),
+        "partial think markers must leave both unset for family defaults"
+    );
+
     let _ = fs::remove_dir_all(dir);
     let _ = fs::remove_dir_all(empty);
+    let _ = fs::remove_dir_all(partial);
 }
 
 /// OptiQ / mlx-lm mixed-precision fixture: global 4-bit + named 8-bit overrides

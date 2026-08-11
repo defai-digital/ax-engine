@@ -9,6 +9,10 @@ pub struct SamplingParams {
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: u32,
+    /// Minimum-probability filter relative to the most likely token
+    /// (`prob >= min_p * max_prob`). `None` disables it. Inert for greedy
+    /// argmax sampling, so the deterministic fast path ignores it.
+    pub min_p: Option<f32>,
     pub repetition_penalty: f32,
     pub repetition_context_size: Option<u32>,
     pub no_repeat_ngram_size: u32,
@@ -24,6 +28,7 @@ impl Default for SamplingParams {
             temperature: 0.0,
             top_p: 1.0,
             top_k: 0,
+            min_p: None,
             repetition_penalty: 1.0,
             repetition_context_size: None,
             no_repeat_ngram_size: 0,

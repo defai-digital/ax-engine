@@ -14,6 +14,8 @@ use super::pipeline::RouteDecisionSink;
 const CERTIFICATION_DEPTH_ONE_GATE: f32 = 0.0;
 const QWEN_LINEAR_CERTIFICATION_CANDIDATE_ENV: &str =
     "AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE";
+const DEEPSEEK_V4_MTP_CERTIFICATION_CANDIDATE_ENV: &str =
+    "AX_MLX_DEEPSEEK_V4_MTP_CERTIFICATION_CANDIDATE";
 
 fn truthy_opt_in(raw: &str) -> bool {
     let value = raw.trim();
@@ -31,6 +33,15 @@ pub(super) fn qwen_linear_mtp_certification_candidate_from_env() -> bool {
         .is_some_and(|raw| truthy_opt_in(&raw))
 }
 
+/// Explicitly expose the experimental DeepSeek V4 nextn MTP route to a formal
+/// harness. Product default stays direct-fallback until Tier 2 evidence exists
+/// (docs: no MTP acceptance-rate claim).
+pub(super) fn deepseek_v4_mtp_certification_candidate_from_env() -> bool {
+    std::env::var(DEEPSEEK_V4_MTP_CERTIFICATION_CANDIDATE_ENV)
+        .ok()
+        .is_some_and(|raw| truthy_opt_in(&raw))
+}
+
 /// Stable route code describing the loaded model's MTP policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MtpModelPolicyKind {
@@ -44,7 +55,10 @@ pub(super) enum MtpModelPolicyKind {
     QwenLinearUncertifiedDirectFallback,
     GlmCalibrated,
     Gemma4AssistantCalibrated,
-    DeepseekV4Calibrated,
+    /// Formal-harness-only DeepSeek V4 nextn route (opt-in).
+    DeepseekV4CertificationCandidate,
+    /// Product default until Tier 2 evidence: MTP attached but not requested.
+    DeepseekV4UncertifiedDirectFallback,
     ConflictingDrafters,
 }
 
@@ -59,7 +73,10 @@ impl MtpModelPolicyKind {
             Self::GlmCalibrated => 5,
             Self::Gemma4AssistantCalibrated => 6,
             Self::ConflictingDrafters => 7,
-            Self::DeepseekV4Calibrated => 8,
+            // Stable code 8: previously "DeepseekV4Calibrated"; now the
+            // certification-candidate path only (fail-closed by default).
+            Self::DeepseekV4CertificationCandidate => 8,
+            Self::DeepseekV4UncertifiedDirectFallback => 9,
         }
     }
 }
@@ -77,6 +94,7 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) glm_depth: Option<usize>,
     pub(super) gemma4_assistant_depth: Option<usize>,
     pub(super) deepseek_v4_depth: Option<usize>,
+    pub(super) deepseek_v4_certification_candidate: bool,
     pub(super) qwen_linear_attention: bool,
     pub(super) qwen_linear_exact_enabled: bool,
     pub(super) qwen_linear_certification_candidate: bool,
@@ -152,10 +170,13 @@ impl MtpModelPolicy {
         }
 
         if let Some(max_depth) = inputs.deepseek_v4_depth {
-            return Self {
-                kind: MtpModelPolicyKind::DeepseekV4Calibrated,
-                max_depth,
+            let kind = if inputs.deepseek_v4_certification_candidate {
+                MtpModelPolicyKind::DeepseekV4CertificationCandidate
+            } else {
+                // Tensor eligibility is not end-to-end acceleration evidence.
+                MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
             };
+            return Self { kind, max_depth };
         }
 
         Self {
@@ -169,6 +190,7 @@ impl MtpModelPolicy {
         !matches!(
             self.kind,
             MtpModelPolicyKind::QwenLinearUncertifiedDirectFallback
+                | MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
                 | MtpModelPolicyKind::ConflictingDrafters
         )
     }
@@ -185,6 +207,20 @@ impl MtpModelPolicy {
         matches!(
             self.kind,
             MtpModelPolicyKind::QwenLinearUncertifiedDirectFallback
+        )
+    }
+
+    pub(super) const fn is_deepseek_v4_direct_fallback(self) -> bool {
+        matches!(
+            self.kind,
+            MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
+        )
+    }
+
+    pub(super) const fn is_deepseek_v4_certification_candidate(self) -> bool {
+        matches!(
+            self.kind,
+            MtpModelPolicyKind::DeepseekV4CertificationCandidate
         )
     }
 
@@ -233,7 +269,8 @@ impl MtpModelPolicy {
             MtpModelPolicyKind::GlmCalibrated => self.glm_gate_default(),
             MtpModelPolicyKind::None
             | MtpModelPolicyKind::Gemma4AssistantCalibrated
-            | MtpModelPolicyKind::DeepseekV4Calibrated
+            | MtpModelPolicyKind::DeepseekV4CertificationCandidate
+            | MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
             | MtpModelPolicyKind::ConflictingDrafters => None,
         }
     }
@@ -264,6 +301,14 @@ impl MtpModelPolicy {
         decisions.upsert_route_decision(
             "ax_mlx_qwen_linear_mtp_certification_candidate",
             u32::from(self.is_qwen_linear_certification_candidate()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_deepseek_v4_mtp_certification_candidate",
+            u32::from(self.is_deepseek_v4_certification_candidate()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_deepseek_v4_mtp_direct_fallback",
+            u32::from(self.is_deepseek_v4_direct_fallback()),
         );
         decisions.upsert_route_decision(
             "ax_mlx_mtp_model_gate_default_present",
@@ -305,6 +350,7 @@ mod tests {
             glm_depth,
             gemma4_assistant_depth: gemma_depth,
             deepseek_v4_depth: None,
+            deepseek_v4_certification_candidate: false,
             qwen_linear_attention: qwen_linear,
             qwen_linear_exact_enabled: qwen_exact,
             qwen_linear_certification_candidate: certification_candidate,
@@ -368,17 +414,32 @@ mod tests {
             policy(None, None, Some(2), false, false, false).kind,
             MtpModelPolicyKind::Gemma4AssistantCalibrated
         );
+        // Product default: attached but fail-closed (not route-safe).
         assert_eq!(
             policy_v4(Some(1)).kind,
-            MtpModelPolicyKind::DeepseekV4Calibrated
+            MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
         );
         let v4 = policy_v4(Some(1));
-        assert!(v4.route_safe());
+        assert!(!v4.route_safe());
+        assert!(v4.is_deepseek_v4_direct_fallback());
+        assert!(!v4.is_deepseek_v4_certification_candidate());
         assert!(v4.has_attached_drafter());
         assert_eq!(v4.max_depth(), 1);
         assert_eq!(v4.qwen_gate_default(), None);
         assert_eq!(v4.glm_gate_default(), None);
         assert!(!policy_v4(None).has_attached_drafter());
+
+        let candidate = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            deepseek_v4_depth: Some(1),
+            deepseek_v4_certification_candidate: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            candidate.kind,
+            MtpModelPolicyKind::DeepseekV4CertificationCandidate
+        );
+        assert!(candidate.route_safe());
+        assert!(candidate.is_deepseek_v4_certification_candidate());
     }
 
     #[test]
@@ -419,12 +480,61 @@ mod tests {
             Some(&1)
         );
         assert_eq!(
+            decisions.get("ax_mlx_deepseek_v4_mtp_certification_candidate"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_deepseek_v4_mtp_direct_fallback"),
+            Some(&0)
+        );
+        assert_eq!(
             decisions.get("ax_mlx_mtp_model_gate_default_present"),
             Some(&1)
         );
         assert_eq!(
             decisions.get("ax_mlx_mtp_model_gate_default_x1000"),
             Some(&0)
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_route_telemetry_exposes_fallback_and_candidate() {
+        let mut fallback_decisions = Vec::new();
+        policy_v4(Some(1)).append_route_decisions(true, &mut fallback_decisions);
+        let fallback = fallback_decisions.into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(fallback.get("ax_mlx_mtp_model_policy"), Some(&9));
+        assert_eq!(fallback.get("ax_mlx_mtp_model_policy_route_safe"), Some(&0));
+        assert_eq!(fallback.get("ax_mlx_mtp_model_policy_active"), Some(&0));
+        assert_eq!(
+            fallback.get("ax_mlx_deepseek_v4_mtp_direct_fallback"),
+            Some(&1)
+        );
+        assert_eq!(
+            fallback.get("ax_mlx_deepseek_v4_mtp_certification_candidate"),
+            Some(&0)
+        );
+
+        let mut candidate_decisions = Vec::new();
+        MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            deepseek_v4_depth: Some(1),
+            deepseek_v4_certification_candidate: true,
+            ..Default::default()
+        })
+        .append_route_decisions(true, &mut candidate_decisions);
+        let candidate = candidate_decisions.into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(candidate.get("ax_mlx_mtp_model_policy"), Some(&8));
+        assert_eq!(
+            candidate.get("ax_mlx_mtp_model_policy_route_safe"),
+            Some(&1)
+        );
+        assert_eq!(candidate.get("ax_mlx_mtp_model_policy_active"), Some(&1));
+        assert_eq!(
+            candidate.get("ax_mlx_deepseek_v4_mtp_direct_fallback"),
+            Some(&0)
+        );
+        assert_eq!(
+            candidate.get("ax_mlx_deepseek_v4_mtp_certification_candidate"),
+            Some(&1)
         );
     }
 

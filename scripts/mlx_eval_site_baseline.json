@@ -13,7 +13,7 @@
   },
   "crates/ax-engine-mlx/src/generate.rs": {
     "async_eval": 3,
-    "eval": 12
+    "eval": 17
   },
   "crates/ax-engine-mlx/src/kv_cache.rs": {
     "eval": 1
@@ -25,7 +25,7 @@
     "eval": 2
   },
   "crates/ax-engine-mlx/src/model/mod.rs": {
-    "async_eval": 3,
+    "async_eval": 5,
     "eval": 8
   },
   "crates/ax-engine-mlx/src/model/profile.rs": {
@@ -44,10 +44,10 @@
   },
   "crates/ax-engine-mlx/src/mtp.rs": {
     "async_eval": 1,
-    "eval": 12
+    "eval": 14
   },
   "crates/ax-engine-mlx/src/ngram_accel.rs": {
-    "eval": 7
+    "eval": 10
   },
   "crates/ax-engine-mlx/src/paged_attention.rs": {
     "try_eval": 1
@@ -57,7 +57,7 @@
   },
   "crates/ax-engine-mlx/src/runner/mod.rs": {
     "async_eval": 2,
-    "eval": 17
+    "eval": 23
   },
   "crates/ax-engine-mlx/src/runner/pipeline.rs": {
     "eval": 1

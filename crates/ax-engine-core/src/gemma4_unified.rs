@@ -11,6 +11,16 @@ const DEFAULT_AUDIO_SEQ_LENGTH: u32 = 750;
 pub const SOFT_TOKEN_BUDGET_LADDER: &[u32] = &[70, 140, 280, 560, 1120];
 pub const SOFT_TOKEN_BUDGET_CEILING: u32 = 1120;
 
+/// Standard encoder-ViT Gemma 4 packages (not encoder-free `gemma4_unified`).
+///
+/// Includes `gemma4_vl` / `gemma4-vl` — convert family labels for the same
+/// Conformer+ViT text/vision layout. These ship a generic `feature_extractor`
+/// block even when `audio_config` is null; treat them like `gemma4` so that
+/// block does not spuriously enable unified audio.
+pub fn is_standard_gemma4_encoder_model_type(model_type: Option<&str>) -> bool {
+    matches!(model_type, Some("gemma4" | "gemma4_vl" | "gemma4-vl"))
+}
+
 /// OpenAI-compatible image detail levels accepted on chat routes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImageDetail {
@@ -667,12 +677,14 @@ impl Gemma4UnifiedProcessorConfig {
         let audio_config = model_config
             .get("audio_config")
             .filter(|config| !config.is_null());
-        // Standard 26B/31B Gemma 4 processor files still include a generic
-        // feature-extractor block even though `audio_config` is explicitly
-        // null. Unified/legacy configs without a model_type historically use
-        // that block as the audio-capability signal, so preserve that contract.
-        let is_standard_gemma4 =
-            model_config.get("model_type").and_then(Value::as_str) == Some("gemma4");
+        // Standard 26B/31B Gemma 4 (and gemma4_vl encoder packaging) processor
+        // files still include a generic feature-extractor block even though
+        // `audio_config` is explicitly null. Unified/legacy configs without a
+        // model_type historically use that block as the audio-capability
+        // signal, so preserve that contract.
+        let is_standard_gemma4 = is_standard_gemma4_encoder_model_type(
+            model_config.get("model_type").and_then(Value::as_str),
+        );
         let has_audio =
             audio_config.is_some() || (!is_standard_gemma4 && feature_extractor.is_some());
         let patch_size = optional_nested_u32(image_processor, "patch_size")
@@ -1208,6 +1220,49 @@ mod tests {
         assert_eq!(parsed.vision.model_patch_size, 48);
         assert!(parsed.audio.is_none());
         assert_eq!(parsed.tokens.audio_token_id, 0);
+    }
+
+    #[test]
+    fn gemma4_vl_encoder_ignores_generic_audio_processor_like_gemma4() {
+        // convert family gemma4_vl leaves config model_type as gemma4_vl/gemma4-vl.
+        // Generic feature_extractor must not enable has_audio (Conformer-only tower).
+        for model_type in ["gemma4_vl", "gemma4-vl"] {
+            assert!(
+                is_standard_gemma4_encoder_model_type(Some(model_type)),
+                "{model_type} is standard encoder packaging"
+            );
+            let model = json!({
+                "model_type": model_type,
+                "image_token_id": 258880,
+                "video_token_id": 258884,
+                "boi_token_id": 255999,
+                "eoi_token_id": 258882,
+                "audio_config": null,
+                "vision_config": {
+                    "patch_size": 16,
+                    "pooling_kernel_size": 3,
+                    "default_output_length": 280
+                }
+            });
+            let processor = json!({
+                "image_processor": {
+                    "patch_size": 16,
+                    "pooling_kernel_size": 3,
+                    "max_soft_tokens": 280
+                },
+                "feature_extractor": {
+                    "sampling_rate": 16000
+                }
+            });
+            let parsed =
+                Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model, &processor)
+                    .unwrap_or_else(|e| panic!("{model_type} processor should parse: {e}"));
+            assert!(
+                parsed.audio.is_none(),
+                "{model_type} must ignore generic feature_extractor when audio_config is null"
+            );
+            assert_eq!(parsed.tokens.audio_token_id, 0);
+        }
     }
 
     #[test]

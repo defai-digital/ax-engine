@@ -1087,6 +1087,7 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
             sampling_probs_buf,
             sampling_logits_buf,
             sampling_candidates_buf,
+            None,
         );
     }
 
@@ -1422,6 +1423,115 @@ pub(crate) fn recompute_committed_prefix_with_argmax(
     direct_argmax.data_u32().first().copied().unwrap_or(0)
 }
 
+/// Greedy prefix accept count: how many leading draft tokens match the
+/// corresponding target predictions.
+///
+/// This is the pure decision rule used by speculative verify. Unit tests pin
+/// the fail-closed contract: a multi-token verifier that would accept a wrong
+/// draft must be rejected when the sequential (or oracle) target prediction
+/// disagrees at that index.
+pub fn greedy_draft_target_accept_count(drafts: &[u32], target_preds: &[u32]) -> usize {
+    drafts
+        .iter()
+        .zip(target_preds.iter())
+        .take_while(|(draft, target)| draft == target)
+        .count()
+}
+
+/// Result of sequential-oracle greedy verification of a speculative draft.
+#[derive(Clone, Debug)]
+pub struct SequentialGreedyMtpVerify {
+    /// Number of leading draft tokens equal to sequential greedy production.
+    pub accept_count: usize,
+    /// Next token sequential greedy would emit after the accepted prefix
+    /// (correction on partial reject, bonus on full accept).
+    pub correction_token: u32,
+    /// Post-final-norm hidden at the last committed position, shape
+    /// `[1, 1, hidden]`, for seeding the next assistant draft step.
+    pub draft_hidden: MlxArray,
+    /// Sequential greedy predictions for each draft index that was evaluated
+    /// (length `accept_count` on full accept of all drafts, else
+    /// `accept_count + 1` including the rejecting prediction). Used for EWMA
+    /// / diagnostics; not required for correctness of the commit.
+    pub predicted: Vec<u32>,
+}
+
+/// Verify drafts with the **same singleton production route** as direct decode.
+///
+/// On entry `cache.seq_len()` must equal `token_offset` (the multi-token
+/// teacher-forced verify advance, if any, must already be rolled back).
+/// On exit the cache has advanced by `1 + accept_count` and matches sequential
+/// greedy for the committed prefix `[last_token] ++ drafts[..accept_count]`.
+///
+/// Why this exists: Gemma4 assistant-MTP multi-token teacher-forced argmax can
+/// disagree with MTP-off direct decode. Direct greedy uses the
+/// `forward_argmax` / direct-pipeline route (argmax-only logits, singleton
+/// graph). An earlier oracle that re-ran `forward_all_positions_with_post_norm`
+/// still diverged from that production route. This implementation uses
+/// `forward_argmax` for every accept decision and correction token so MTP-on
+/// greedy commits match MTP-off under temperature 0.
+///
+/// `draft_hidden` is a zero placeholder: assistant draft seeding only affects
+/// subsequent draft quality (accept rate / speed), not the production tokens
+/// committed here. Prefer a dual-return production forward when one exists.
+pub(crate) fn sequential_greedy_mtp_verify(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    last_token: u32,
+    drafts: &[u32],
+    token_offset: usize,
+) -> SequentialGreedyMtpVerify {
+    let hidden_size = cfg.hidden_size;
+    let mut predicted: Vec<u32> = Vec::with_capacity(drafts.len().saturating_add(1));
+    let mut accept_count = 0usize;
+
+    // Match direct production (`recompute_committed_prefix_with_argmax` /
+    // `run_direct_pipeline_decode`), not multi-token teacher-forced.
+    let mut last_logits = forward_argmax(cfg, weights, &[last_token], cache, token_offset);
+    cache.advance(1);
+    let pred_arr = argmax(&last_logits, None);
+    {
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&pred_arr);
+        targets.extend(kv_refs);
+        eval(&targets);
+    }
+    let mut next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+    predicted.push(next_tok);
+
+    for (index, &draft) in drafts.iter().enumerate() {
+        if next_tok != draft {
+            break;
+        }
+        accept_count += 1;
+        last_logits = forward_argmax(cfg, weights, &[draft], cache, token_offset + 1 + index);
+        cache.advance(1);
+        let pred_arr = argmax(&last_logits, None);
+        {
+            let kv_refs = cache.collect_eval_refs();
+            let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+            targets.push(&pred_arr);
+            targets.extend(kv_refs);
+            eval(&targets);
+        }
+        next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+        predicted.push(next_tok);
+    }
+
+    // Exactness depends only on accept_count + correction_token. Zero hidden
+    // keeps the production cache on the forward_argmax path exclusively.
+    let draft_hidden = mlx_sys::zeros(&[1_i32, 1, hidden_size as i32], MlxDtype::Bfloat16, None);
+
+    SequentialGreedyMtpVerify {
+        accept_count,
+        correction_token: next_tok,
+        draft_hidden,
+        predicted,
+    }
+}
+
 /// Sample token at `pos` in the flattened `[verify_len, vocab]` logit buffer.
 /// Falls back to `argmax_tok` when temperature is 0 or the buffer is empty.
 /// Sample one token from `logits_all` at sequence position `pos`.
@@ -1480,6 +1590,54 @@ pub(crate) fn sample_logit_row(
     )
 }
 
+/// ds4 soft-close rank threshold (`soft_limit_think_close_rank = 3`).
+pub const THINK_SOFT_CLOSE_PROBE_RANK: usize = 3;
+
+/// Rank probe for the think soft-close: while inside the soft window of an
+/// open think block, single decode materializes logits and emits the
+/// think-close token early when the model itself ranks it within `rank`.
+/// On a miss, normal sampling runs against the same materialized row.
+#[derive(Clone, Copy, Debug)]
+pub struct ThinkSoftCloseProbe {
+    pub think_end_token_id: u32,
+    pub rank: usize,
+}
+
+/// Whether `think_end_token_id` sits within the top `rank` logits. Single
+/// pass keeping the running top-rank set descending; membership is
+/// unaffected by tie-breaking.
+pub(crate) fn think_soft_close_in_top_k(
+    logits: &[f32],
+    think_end_token_id: u32,
+    rank: usize,
+) -> bool {
+    if rank == 0 || logits.is_empty() {
+        return false;
+    }
+    let target = think_end_token_id as usize;
+    if target >= logits.len() {
+        return false;
+    }
+    let mut top: Vec<(usize, f32)> = Vec::with_capacity(rank);
+    for (idx, &value) in logits.iter().enumerate() {
+        if top.len() < rank {
+            top.push((idx, value));
+            if top.len() == rank {
+                top.sort_by(|a, b| b.1.total_cmp(&a.1));
+            }
+            continue;
+        }
+        if value > top[rank - 1].1 {
+            top[rank - 1] = (idx, value);
+            top.sort_by(|a, b| b.1.total_cmp(&a.1));
+        }
+    }
+    if top.len() < rank {
+        top.sort_by(|a, b| b.1.total_cmp(&a.1));
+    }
+    top.iter().any(|(idx, _)| *idx == target)
+}
+
 /// Single-token decode fallback (used when n-gram table has no prediction).
 ///
 /// Respects `temperature`: 0.0 → argmax, > 0.0 → categorical sampling.
@@ -1507,6 +1665,7 @@ pub fn single_decode(
         &mut probs_buf,
         &mut logits_buf,
         &mut candidates_buf,
+        None,
     )
 }
 
@@ -1523,12 +1682,37 @@ pub fn single_decode_with_sampling_buffers(
     sampling_probs_buf: &mut Vec<f32>,
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
+    soft_close: Option<ThinkSoftCloseProbe>,
 ) -> Vec<u32> {
     let token_offset = cache.seq_len();
     let logits = forward(cfg, weights, &[last_token], cache, token_offset);
     cache.advance(1);
 
-    let tok = if sampling.temperature > 0.0
+    let tok = if let Some(probe) = soft_close {
+        // Think soft-close window: materialize full logits so the rank probe
+        // can run before sampling; GPU sampling shortcuts are skipped. On a
+        // miss, CPU-sample the same materialized row (temperature <= 0 stays
+        // deterministic argmax inside sample_categorical_into).
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&logits);
+        targets.extend(kv_refs);
+        eval(&targets);
+        let logits_f32 = logits.data_f32();
+        if think_soft_close_in_top_k(logits_f32, probe.think_end_token_id, probe.rank) {
+            probe.think_end_token_id
+        } else {
+            sample_categorical_into(
+                logits_f32,
+                sampling,
+                repetition_tokens,
+                rng,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
+            )
+        }
+    } else if sampling.temperature > 0.0
         && !sampling.uses_logits_processors()
         && sampling.top_k == 0
         && sampling.top_p >= 1.0
@@ -1576,6 +1760,30 @@ pub fn single_decode_with_sampling_buffers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soft_close_probe_membership_by_rank() {
+        let logits = [0.1_f32, 5.0, 3.0, 4.0, 0.5];
+        // Top-3 are indices 1, 3, 2.
+        assert!(think_soft_close_in_top_k(&logits, 1, 3));
+        assert!(think_soft_close_in_top_k(&logits, 2, 3));
+        assert!(think_soft_close_in_top_k(&logits, 3, 3));
+        assert!(!think_soft_close_in_top_k(&logits, 0, 3));
+        assert!(!think_soft_close_in_top_k(&logits, 4, 3));
+        // Rank 1 only the argmax.
+        assert!(think_soft_close_in_top_k(&logits, 1, 1));
+        assert!(!think_soft_close_in_top_k(&logits, 3, 1));
+    }
+
+    #[test]
+    fn soft_close_probe_edge_cases() {
+        assert!(!think_soft_close_in_top_k(&[], 0, 3));
+        assert!(!think_soft_close_in_top_k(&[1.0, 2.0], 0, 0));
+        // Token id beyond the vocab slice.
+        assert!(!think_soft_close_in_top_k(&[1.0, 2.0], 9, 3));
+        // Fewer logits than rank: full set is the top set.
+        assert!(think_soft_close_in_top_k(&[1.0, 2.0], 0, 3));
+    }
 
     fn table_from_sequence(tokens: &[u32]) -> NgramTable {
         let mut t = NgramTable::new();
@@ -2384,6 +2592,47 @@ mod tests {
         assert_eq!(
             parse_speculative_accept_threshold(Some("not_a_float")),
             NGRAM_SPECULATIVE_ACCEPT_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn greedy_draft_target_accept_count_accepts_matching_prefix() {
+        let drafts = [10, 20, 30, 40];
+        let target = [10, 20, 30, 40];
+        assert_eq!(greedy_draft_target_accept_count(&drafts, &target), 4);
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &[10, 20, 30, 99]),
+            3
+        );
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &[10, 99, 30, 40]),
+            1
+        );
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &[99, 20, 30, 40]),
+            0
+        );
+        assert_eq!(greedy_draft_target_accept_count(&[], &target), 0);
+    }
+
+    #[test]
+    fn greedy_draft_target_accept_count_rejects_multi_token_false_accept() {
+        // Repro shape from Gemma assistant-MTP formal pilot: multi-token
+        // teacher-forced argmax matched a continuing cycle draft (2633) while
+        // sequential greedy would have emitted 236761 at the first-diff index.
+        // The pure accept rule must fail closed on that disagreement.
+        let drafts = [3574, 711, 1161, 496, 2633];
+        let multi_token_preds = [3574, 711, 1161, 496, 2633]; // would accept all 5
+        let sequential_preds = [3574, 711, 1161, 496, 236761]; // reject at index 4
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &multi_token_preds),
+            5,
+            "multi-token path would have accepted the wrong draft"
+        );
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &sequential_preds),
+            4,
+            "sequential oracle must reject the diverging draft token"
         );
     }
 }

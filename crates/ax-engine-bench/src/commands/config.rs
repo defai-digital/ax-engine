@@ -155,6 +155,7 @@ pub(crate) fn sampling_from_manifest(
         temperature: manifest.sampling.temperature,
         top_p: manifest.sampling.top_p,
         top_k: manifest.sampling.top_k,
+        min_p: None,
         repetition_penalty: 1.0,
         repetition_context_size: None,
         no_repeat_ngram_size: 0,

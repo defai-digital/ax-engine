@@ -158,6 +158,7 @@ pub(crate) async fn run_openai_text_generation(
         {
             match ChatPromptTemplate::for_model_id(live.model_id.as_ref()) {
                 ChatPromptTemplate::QwenChatMl => Some(StreamReasoningFamily::QwenThink),
+                ChatPromptTemplate::DeepSeekChat => Some(StreamReasoningFamily::DeepSeekThink),
                 ChatPromptTemplate::Gemma4 => Some(StreamReasoningFamily::Gemma4Channel),
                 _ => None,
             }
@@ -403,6 +404,15 @@ pub(crate) fn populate_native_mlx_output_text(
             .map(|content| (content, None))
     } else {
         match kind {
+            OpenAiStreamKind::ChatCompletion
+                if include_reasoning
+                    && matches!(chat_template, ChatPromptTemplate::DeepSeekChat) =>
+            {
+                crate::chat::decode_deepseek_chat_output_with_reasoning(
+                    &tokenizer,
+                    &response.output_tokens,
+                )
+            }
             OpenAiStreamKind::ChatCompletion if include_reasoning => {
                 decode_gemma4_chat_output_with_reasoning(&tokenizer, &response.output_tokens)
             }

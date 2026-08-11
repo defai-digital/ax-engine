@@ -128,6 +128,18 @@ env_flag_default_on!(
     "AX_MLX_DECODE_SAMPLING_GPU_TOPK"
 );
 
+env_flag_default_on!(
+    /// `AX_THINK_SOFT_CLOSE` — rank-based think soft-close: while inside an
+    /// open think block and within the soft window ahead of the answer
+    /// reserve / think cap, materialize logits and emit the think-close
+    /// token early when it ranks in the model's own top-3 (ds4-style soft
+    /// close, ds4_eval.c soft_limit_think_close_rank).
+    ///
+    /// **Default: ON** (kill-switch via `AX_THINK_SOFT_CLOSE=0`).
+    think_soft_close_enabled,
+    "AX_THINK_SOFT_CLOSE"
+);
+
 env_flag!(
     /// `AX_MLX_BATCHED_PREFILL` — route eligible cold text prefill items
     /// through one padded batched forward per planned cohort
@@ -250,6 +262,21 @@ env_flag_default_on!(
     /// is fail-closed and only admits exact-greedy assistant-only drafts.
     gemma4_assistant_mtp_coalesced_verify_enabled,
     "AX_MLX_GEMMA4_ASSISTANT_MTP_COALESCED_VERIFY"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE` — under temperature 0,
+    /// re-verify Gemma assistant drafts with singleton production forwards so
+    /// accepted tokens match MTP-off greedy (multi-token teacher-forced argmax
+    /// can disagree on shared-KV / sliding-window / softcap paths).
+    ///
+    /// **Default: ON** for exactness. Kill-switch via
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0` restores multi-token
+    /// verify (faster; formal pilots must re-check exactness before claiming
+    /// Tier 2). Coalesced greedy verify still uses the sequential oracle when
+    /// this flag is on.
+    gemma4_assistant_mtp_sequential_oracle_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE"
 );
 
 env_flag_default_on!(
@@ -725,8 +752,84 @@ env_flag_default_on!(
     /// media-overlay masks span the full context (media blocks may attend
     /// beyond the window), and the view width follows the hoisted mask, so
     /// those forwards keep full views.
-    multi_token_window_views_enabled,
+    multi_token_window_views_enabled_env,
     "AX_MLX_MULTI_TOKEN_WINDOW_VIEWS"
+);
+
+/// Whether multi-token sliding layers use the retained window view.
+///
+/// Controlled by `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS` (default ON). Pure-direct
+/// rings and multi-token `window + seq - 1` views share geometry, so no
+/// request-local override is required for Gemma assistant-MTP exactness.
+pub fn multi_token_window_views_enabled() -> bool {
+    multi_token_window_views_enabled_env()
+}
+
+thread_local! {
+    static MOE_MT_BF16_IDENTITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// MoE multi-token identity: keep SDPA/projections on bf16 singleton-compatible
+/// path (no f32 multi-token upcast) so teacher-forced matches pure-direct.
+#[must_use]
+pub(crate) struct MoeMtBf16IdentityScope {
+    prev: bool,
+}
+
+impl MoeMtBf16IdentityScope {
+    pub(crate) fn new(enabled: bool) -> Self {
+        let prev = MOE_MT_BF16_IDENTITY.with(|c| c.replace(enabled));
+        Self { prev }
+    }
+}
+
+impl Drop for MoeMtBf16IdentityScope {
+    fn drop(&mut self) {
+        MOE_MT_BF16_IDENTITY.with(|c| c.set(self.prev));
+    }
+}
+
+pub(crate) fn scoped_moe_mt_bf16_identity(enabled: bool) -> MoeMtBf16IdentityScope {
+    MoeMtBf16IdentityScope::new(enabled)
+}
+
+pub(crate) fn moe_mt_bf16_identity_enabled() -> bool {
+    MOE_MT_BF16_IDENTITY.with(|c| c.get())
+}
+
+env_flag!(
+    /// `AX_MLX_GEMMA_MT_PERPOS_FFN` — per-position dense FFN on short multi-token
+    /// verify (seq 2..8). Improves 4-bit greedy exactness vs pure-direct but
+    /// collapses multi-token speed (smokef12/17). Opt-in for 4-bit identity
+    /// experiments; keep OFF for 6-bit / 31B formal Tier 2 speed.
+    gemma_mt_perpos_ffn_enabled,
+    "AX_MLX_GEMMA_MT_PERPOS_FFN"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_MULTI_TOKEN_F32_ATTENTION` — upcast Q/K/V to f32 for SDPA on
+    /// multi-token forwards (`seq > 1`) so teacher-forced verify stays closer
+    /// to sequential singleton decode under bf16 accumulation drift.
+    ///
+    /// **Default: ON** for Gemma assistant-MTP Tier 2 greedy exactness
+    /// (period-6 cycle-break near-ties). Kill-switch via
+    /// `AX_MLX_MULTI_TOKEN_F32_ATTENTION=0`. Singleton decode (`seq == 1`) stays
+    /// bf16 (enabling f32 on pure-direct regressed 12B6 general exactness).
+    multi_token_f32_attention_enabled,
+    "AX_MLX_MULTI_TOKEN_F32_ATTENTION"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DENSE_LONG_MT_BF16_FOLD` — dense multi-token long history
+    /// (`key_len >= 512`) uses the same bf16 singleton-query fold as MoE
+    /// multi-token, avoiding full-history f32 K/V upcast.
+    ///
+    /// **Default: ON** for Gemma 12B/31B agent long Tier 2 speed (dense-sing-v4
+    /// was exact under f32 fold at ~0.91× weighted). Kill-switch via
+    /// `AX_MLX_DENSE_LONG_MT_BF16_FOLD=0` restores the prior f32 long fold.
+    /// Short multi-token still uses f32 batched SDPA for general exactness.
+    dense_long_mt_bf16_fold_enabled,
+    "AX_MLX_DENSE_LONG_MT_BF16_FOLD"
 );
 
 env_flag!(

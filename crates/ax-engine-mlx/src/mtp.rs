@@ -822,8 +822,8 @@ type DraftTokens = (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3])
 ///
 /// `logprob_temperature` is the temperature applied to the draft log-prob (the
 /// in-closure token-sampling temperature is baked in at build time): `1.0` for
-/// greedy, the sampling temperature for sampled, and `temperature.max(1.0)` for
-/// stochastic.
+/// greedy, and the same sampling temperature used for the token draw for
+/// sampled/stochastic (must match so rejection sampling sees true `q(token)`).
 #[allow(clippy::too_many_arguments)]
 fn run_compiled_mtp_draft(
     head: &MtpWeights,
@@ -1121,12 +1121,20 @@ pub fn mtp_draft_tokens_after_forced_prefix(
     cache: &mut MlxKVCache,
     max_tail_depth: usize,
     rng: &mut Xorshift64,
+    // Same gate as pure MTP for this request; `None` → global profile default.
+    min_confidence: Option<f32>,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(head) = weights.mtp.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
     if forced_prefix.is_empty() {
-        return mtp_draft_tokens(
+        return mtp_draft_tokens_gated(
             weights,
             cfg,
             first_hidden,
@@ -1134,6 +1142,7 @@ pub fn mtp_draft_tokens_after_forced_prefix(
             cache,
             Some(max_tail_depth),
             rng,
+            min_confidence,
         );
     }
 
@@ -1176,12 +1185,6 @@ pub fn mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    // Use the same process-resolved gate as pure MTP; runner may prefer
-    // mtp_draft_tokens_gated after a custom forced-prefix path in future.
-    let min_confidence = resolve_mtp_draft_min_confidence(
-        crate::speculation_profile::speculation_profile_from_env(),
-        None,
-    );
     let (draft, log_probs, distributions, tail_added, top2_margins) = mtp_draft_tokens_gated(
         weights,
         cfg,
@@ -1513,7 +1516,8 @@ fn mtp_draft_tokens_stochastic(
         max_depth,
         vocab,
         temperature,
-        temperature.max(1.0),
+        // Log-prob T must match sample T so rejection sampling sees true q(token).
+        if temperature > 0.0 { temperature } else { 1.0 },
         true,
     ) {
         return result;
@@ -1553,7 +1557,8 @@ fn mtp_draft_tokens_stochastic(
         };
         lazy_tokens.push(lazy_tok.clone());
 
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
         lazy_log_probs.push(lazy_lp);
 
         prev_hidden = post_norm_hidden;
@@ -1714,12 +1719,20 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
     cache: &mut MlxKVCache,
     max_tail_depth: usize,
     rng: &mut Xorshift64,
+    // Same gate as pure MTP for this request; `None` → global profile default.
+    min_confidence: Option<f32>,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(head) = weights.glm_mtp.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
     if forced_prefix.is_empty() {
-        return glm_mtp_draft_tokens(
+        return glm_mtp_draft_tokens_gated(
             weights,
             cfg,
             first_hidden,
@@ -1727,6 +1740,7 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
             cache,
             Some(max_tail_depth),
             rng,
+            min_confidence,
         );
     }
 
@@ -1768,10 +1782,6 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    let min_confidence = resolve_mtp_draft_min_confidence(
-        crate::speculation_profile::speculation_profile_from_env(),
-        None,
-    );
     let (draft, log_probs, distributions, tail_added, top2_margins) = glm_mtp_draft_tokens_gated(
         weights,
         cfg,
@@ -1981,7 +1991,9 @@ fn glm_mtp_draft_tokens_stochastic(
             lazy_argmax_logits(&logits)
         };
         lazy_tokens.push(lazy_tok.clone());
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        // Match sample temperature (not max(T,1.0)) so q(token) is exact.
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
         lazy_log_probs.push(lazy_lp);
         prev_hidden = new_hidden;
         prev_token_arr = lazy_tok;
@@ -2009,7 +2021,43 @@ fn glm_mtp_draft_tokens_stochastic(
 /// Default draft temperature for the V4 nextn head's stochastic path — the
 /// AXQ artifact carries no runtime sampler config, so this matches the GLM
 /// sidecar default.
-const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
+pub const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
+
+/// Temperature used when writing DeepSeek V4 draft log-probs for `mode`
+/// (and thus the T the runner must use for rejection-sampling rescale).
+///
+/// Must match [`deepseek_v4_mtp_draft_tokens_gated`]:
+/// - **Greedy** (default): log-probs at T=1.0
+/// - **Stochastic** (`AX_MLX_MTP_DRAFT_MODE=stochastic`): sample + log-prob at
+///   [`DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE`] (0.7)
+///
+/// Hard-coding 0.7 for every nextn attach made greedy accepts rescale as if
+/// drafts were sampled at 0.7 while log_p was recorded at 1.0.
+pub fn deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mode: MtpDraftMode) -> f32 {
+    match mode {
+        MtpDraftMode::Stochastic => DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+        MtpDraftMode::Greedy => 1.0,
+    }
+}
+
+/// Process-env mode → draft log-prob temperature (see
+/// [`deepseek_v4_mtp_draft_log_prob_temperature_for_mode`]).
+pub fn deepseek_v4_mtp_draft_log_prob_temperature() -> f32 {
+    deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mtp_draft_mode_from_env())
+}
+
+/// Think-aware V4 draft temperature. Inside an open think block the target
+/// model usually samples at temperature 1.0 (DeepSeek thinking defaults), so
+/// a 0.7 draft is systematically sharper than the target and loses
+/// acceptance; match the target there. Outside think (or for sharper target
+/// sampling) keep the tuned default.
+pub fn deepseek_v4_mtp_effective_draft_temperature(in_think: bool, target_temperature: f32) -> f32 {
+    if in_think && target_temperature >= 1.0 {
+        target_temperature.min(1.0)
+    } else {
+        DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
+    }
+}
 
 /// KV-cache slot count for the dedicated nextn cache: llama.cpp places the
 /// MTP block at `il = n_layer + nextn_layer_offset`, so the block appends its
@@ -2153,6 +2201,10 @@ pub fn deepseek_v4_mtp_head_forward(
 /// `hc_head` → shared-head RMSNorm (nextn-specific or the root final norm) →
 /// shared LM head (nextn-specific or root) — llama.cpp deepseek4.cpp:1528-1544.
 ///
+/// Prefer the **MTP-layer** `hc_head_*` when present (vLLM
+/// `DeepSeekV4MultiTokenPredictorLayer`); fall back to the target root head
+/// only for legacy packs that omit it.
+///
 /// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
 pub fn deepseek_v4_mtp_hidden_to_logits(
     packed_hidden: &MlxArray,
@@ -2160,10 +2212,18 @@ pub fn deepseek_v4_mtp_hidden_to_logits(
     weights: &ModelWeights,
     cfg: &ModelConfig,
 ) -> MlxArray {
-    let head_w = weights
-        .deepseek_v4_head
-        .as_ref()
-        .expect("DeepSeek V4 head weights (hc_head_*)");
+    let head_w = nextn.hc_head.as_ref().unwrap_or_else(|| {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        WARNED.get_or_init(|| {
+            tracing::warn!(
+                "DeepSeek V4 MTP draft using target root hc_head_* — mtp.N.hc_head_* missing; acceptance may be degraded"
+            );
+        });
+        weights
+            .deepseek_v4_head
+            .as_ref()
+            .expect("DeepSeek V4 head weights (hc_head_*)")
+    });
     let hidden = deepseek_v4_family::collapse_for_head(cfg, head_w, packed_hidden);
     let norm_w = nextn
         .shared_head_norm
@@ -2204,6 +2264,7 @@ pub fn deepseek_v4_mtp_draft_tokens(
             crate::speculation_profile::speculation_profile_from_env(),
             None,
         ),
+        DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
     )
 }
 
@@ -2221,12 +2282,21 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
     cache: &mut MlxKVCache,
     max_tail_depth: usize,
     rng: &mut Xorshift64,
+    // Same gate the pure-MTP path resolved for this request. `None` falls
+    // back to the process-global profile resolver (tests / legacy callers).
+    min_confidence: Option<f32>,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(nextn) = weights.deepseek_v4_nextn.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
     if forced_prefix.is_empty() {
-        return deepseek_v4_mtp_draft_tokens(
+        return deepseek_v4_mtp_draft_tokens_gated(
             weights,
             cfg,
             first_hidden,
@@ -2234,6 +2304,8 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
             cache,
             Some(max_tail_depth),
             rng,
+            min_confidence,
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
         );
     }
 
@@ -2275,10 +2347,6 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    let min_confidence = resolve_mtp_draft_min_confidence(
-        crate::speculation_profile::speculation_profile_from_env(),
-        None,
-    );
     let (draft, log_probs, distributions, tail_added, top2_margins) =
         deepseek_v4_mtp_draft_tokens_gated(
             weights,
@@ -2289,6 +2357,7 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
             Some(max_tail_depth),
             rng,
             min_confidence,
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
         );
 
     (
@@ -2311,6 +2380,7 @@ pub fn deepseek_v4_mtp_draft_tokens_gated(
     max_depth_cap: Option<usize>,
     _rng: &mut Xorshift64,
     min_confidence: f32,
+    draft_temperature: f32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(nextn) = weights.deepseek_v4_nextn.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
@@ -2351,6 +2421,7 @@ pub fn deepseek_v4_mtp_draft_tokens_gated(
             cache,
             max_depth,
             vocab,
+            draft_temperature,
         )
     };
 
@@ -2428,6 +2499,32 @@ fn deepseek_v4_mtp_draft_tokens_greedy(
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
 }
 
+#[cfg(test)]
+mod deepseek_v4_think_gate_tests {
+    use super::{DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE, deepseek_v4_mtp_effective_draft_temperature};
+
+    #[test]
+    fn inside_think_matches_target_temperature() {
+        assert_eq!(deepseek_v4_mtp_effective_draft_temperature(true, 1.0), 1.0);
+    }
+
+    #[test]
+    fn outside_think_keeps_tuned_default() {
+        assert_eq!(
+            deepseek_v4_mtp_effective_draft_temperature(false, 1.0),
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
+        );
+    }
+
+    #[test]
+    fn sharp_target_sampling_keeps_default_inside_think() {
+        assert_eq!(
+            deepseek_v4_mtp_effective_draft_temperature(true, 0.6),
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
+        );
+    }
+}
+
 /// Stochastic V4 nextn draft: GPU-side `random_categorical` sampling.
 #[allow(clippy::too_many_arguments)]
 fn deepseek_v4_mtp_draft_tokens_stochastic(
@@ -2439,8 +2536,8 @@ fn deepseek_v4_mtp_draft_tokens_stochastic(
     cache: &mut MlxKVCache,
     max_depth: usize,
     vocab: i32,
+    temperature: f32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
-    let temperature = DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE;
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
@@ -2469,7 +2566,10 @@ fn deepseek_v4_mtp_draft_tokens_stochastic(
             lazy_argmax_logits(&logits)
         };
         lazy_tokens.push(lazy_tok.clone());
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        // Log-prob must use the same temperature as sampling so q(token) matches
+        // the proposal distribution used for rejection sampling (was max(T,1.0)).
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
         lazy_log_probs.push(lazy_lp);
         prev_hidden = new_hidden;
         prev_token_arr = lazy_tok;
@@ -2488,6 +2588,195 @@ fn deepseek_v4_mtp_draft_tokens_stochastic(
     let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
     let added = draft_tokens.len();
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+/// Result of sequential greedy DeepSeek V4 MTP verification.
+///
+/// Production KV advances by `1 + accept_count` (primary always commits; same
+/// plan as the runner's `deepseek_v4_mtp_committed_verify_len`) and matches
+/// pure single-token greedy decode for the committed prefix.
+#[derive(Clone, Debug)]
+pub struct SequentialGreedyDeepseekV4MtpVerify {
+    /// Leading draft tokens equal to sequential greedy production.
+    pub accept_count: usize,
+    /// Correction (partial reject) or bonus (full accept) token.
+    pub correction_token: u32,
+    /// Packed residual `[1, 1, hc*hidden]` at the last committed position —
+    /// seeds the next nextn draft step.
+    pub draft_hidden: MlxArray,
+    /// Per-position greedy predictions (length `accept_count + 1`).
+    pub predicted: Vec<u32>,
+    /// Last committed position logits `[vocab]` (greedy tail uses
+    /// `correction_token` directly; shape matches `forward_argmax`).
+    pub last_logits: MlxArray,
+}
+
+/// Verify DeepSeek V4 MTP drafts with **singleton** target forwards.
+///
+/// Multi-token teacher-forced verify (`deepseek_v4_forward_all_positions_with_packed`
+/// over `[last] ++ drafts`) can disagree with pure single-token greedy on
+/// compressor / latent-K sliding state — enough to flip an argmax and break
+/// Tier-2 exactness after a full draft accept. This path mirrors direct decode:
+/// one token at a time, same production cache, packed residual captured for
+/// the next nextn draft.
+///
+/// Token decisions come from singleton
+/// [`deepseek_v4_forward_all_positions_with_packed`](crate::model::deepseek_v4_forward_all_positions_with_packed)
+/// (same trunk as production [`forward_argmax`](crate::model::forward_argmax);
+/// bf16→f32 cast is exact and softcap is monotonic, so argmax matches). The
+/// packed residual is the nextn `h` input that `forward_argmax` alone cannot
+/// provide.
+///
+/// On entry `cache.seq_len()` must equal `token_offset`. On exit the cache has
+/// advanced by `1 + accept_count`.
+pub fn sequential_greedy_deepseek_v4_mtp_verify(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    last_token: u32,
+    drafts: &[u32],
+    token_offset: usize,
+    draft_hidden_width: usize,
+) -> SequentialGreedyDeepseekV4MtpVerify {
+    use crate::model::deepseek_v4_forward_all_positions_with_packed;
+
+    let mut predicted: Vec<u32> = Vec::with_capacity(drafts.len().saturating_add(1));
+    let mut accept_count = 0usize;
+
+    let (logits, packed) = deepseek_v4_forward_all_positions_with_packed(
+        cfg,
+        weights,
+        &[last_token],
+        cache,
+        token_offset,
+    );
+    cache.advance(1);
+    let pred_arr = argmax(&logits, None);
+    {
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+        targets.push(&pred_arr);
+        targets.push(&packed);
+        targets.extend(kv_refs);
+        eval(&targets);
+    }
+    let mut next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+    predicted.push(next_tok);
+    let mut draft_hidden = slice_packed_hidden_row(&packed, 0, draft_hidden_width);
+    let mut last_logits = reshape_singleton_vocab_logits(&logits, cfg.vocab_size);
+
+    for (index, &draft) in drafts.iter().enumerate() {
+        if next_tok != draft {
+            break;
+        }
+        accept_count += 1;
+        let (logits, packed) = deepseek_v4_forward_all_positions_with_packed(
+            cfg,
+            weights,
+            &[draft],
+            cache,
+            token_offset + 1 + index,
+        );
+        cache.advance(1);
+        let pred_arr = argmax(&logits, None);
+        {
+            let kv_refs = cache.collect_eval_refs();
+            let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+            targets.push(&pred_arr);
+            targets.push(&packed);
+            targets.extend(kv_refs);
+            eval(&targets);
+        }
+        next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+        predicted.push(next_tok);
+        draft_hidden = slice_packed_hidden_row(&packed, 0, draft_hidden_width);
+        last_logits = reshape_singleton_vocab_logits(&logits, cfg.vocab_size);
+    }
+
+    SequentialGreedyDeepseekV4MtpVerify {
+        accept_count,
+        correction_token: next_tok,
+        draft_hidden,
+        predicted,
+        last_logits,
+    }
+}
+
+/// Slice one packed residual row to `[1, 1, width]` (DeepSeek nextn draft input).
+fn slice_packed_hidden_row(packed: &MlxArray, pos: usize, width: usize) -> MlxArray {
+    let p = pos as i32;
+    let w = width as i32;
+    let shape = packed.shape();
+    // Single-token forward returns `[1, 1, hc*hidden]`; multi-row history is
+    // `[1, seq, hc*hidden]`. Both share the last axis width.
+    if shape.len() == 3 && shape[1] == 1 {
+        if shape[2] == w {
+            return packed.clone();
+        }
+        return reshape(packed, &[1, 1, w], None);
+    }
+    let row = slice(packed, &[0, p, 0], &[1, p + 1, w], &[1, 1, 1], None);
+    reshape(&row, &[1, 1, w], None)
+}
+
+/// Normalize packed-path logits `[1, vocab]` (or already `[vocab]`) to
+/// production `[vocab]` shape expected by the shared MTP tail sampler.
+fn reshape_singleton_vocab_logits(logits: &MlxArray, vocab_size: usize) -> MlxArray {
+    let shape = logits.shape();
+    if shape == [vocab_size as i32] {
+        return logits.clone();
+    }
+    reshape(logits, &[vocab_size as i32], None)
+}
+
+/// Warm the DeepSeek V4 nextn KV cache from prompt-side packed residuals.
+///
+/// Mirrors [`mtp_warmup_cache_kv_batched`] for the Qwen head: without this the
+/// nextn attention starts decode with almost no prompt history and acceptance
+/// collapses. `packed_hidden_seq` is `[1, seq, hc*hidden]` aligned with
+/// `prev_tokens` (token that *follows* each packed row, same contract as Qwen).
+pub fn deepseek_v4_mtp_warmup_cache(
+    nextn: &DeepseekV4NextnWeights,
+    packed_hidden_seq: &MlxArray,
+    prev_tokens: &[u32],
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    rope_offset: usize,
+) {
+    if prev_tokens.is_empty() || nextn.layer.is_none() {
+        return;
+    }
+    let seq = prev_tokens.len();
+    let shape = packed_hidden_seq.shape();
+    let avail = shape.get(1).copied().unwrap_or(0).max(0) as usize;
+    let n = seq.min(avail);
+    if n == 0 {
+        return;
+    }
+    let width = shape.get(2).copied().unwrap_or(0);
+    for (i, &token) in prev_tokens.iter().enumerate().take(n) {
+        let packed_row = slice(
+            packed_hidden_seq,
+            &[0, i as i32, 0],
+            &[1, (i + 1) as i32, width],
+            &[1, 1, 1],
+            None,
+        );
+        let packed_row = reshape(&packed_row, &[1, 1, width], None);
+        let tok = [token];
+        let prev_token_arr =
+            MlxArray::from_raw_data(tok.as_ptr() as *const u8, 4, &[1_i32], MlxDtype::Uint32);
+        let _ = deepseek_v4_mtp_head_forward(
+            nextn,
+            &packed_row,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            Some(rope_offset + i),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2570,6 +2859,31 @@ mod deepseek_v4_mtp_tests {
         DeepseekV4HeadWeights, DeepseekV4LayerWeights, LayerWeights, QuantizedWeight,
     };
     use mlx_sys::eval;
+
+    #[test]
+    fn draft_log_prob_temperature_is_mode_aware_not_always_0_7() {
+        // Regression (skeptic): accept-path must not hard-code 0.7 for greedy.
+        // Greedy drafts record log-probs at T=1.0 (deepseek_v4_mtp_draft_tokens_greedy).
+        assert_eq!(
+            deepseek_v4_mtp_draft_log_prob_temperature_for_mode(MtpDraftMode::Greedy),
+            1.0,
+            "greedy nextn log-probs are at T=1.0; accept rescale must match"
+        );
+        assert_eq!(
+            deepseek_v4_mtp_draft_log_prob_temperature_for_mode(MtpDraftMode::Stochastic),
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+            "stochastic nextn samples and logs at DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE"
+        );
+        assert!(
+            (DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE - 0.7).abs() < 1e-6,
+            "stochastic constant must stay 0.7"
+        );
+        // Process env default is greedy → helper must return 1.0 under default mode.
+        assert_eq!(
+            deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mtp_draft_mode_from_env()),
+            deepseek_v4_mtp_draft_log_prob_temperature()
+        );
+    }
 
     // Tiny synthetic dims: E=8, D=4, H=1, G=1, R_o=2, rot=2, R_q=4, HC=4.
     const E: usize = 8;
@@ -2814,6 +3128,12 @@ mod deepseek_v4_mtp_tests {
             shared_head_norm: None,
             embed_tokens: None,
             shared_head_head: None,
+            // Dedicated MTP HC head (distinct from target root head).
+            hc_head: Some(crate::weights::DeepseekV4HeadWeights {
+                hc_head_fn: array_f32(&fill(HC * HC * E, 0.31), &[HC as i32, (HC * E) as i32]),
+                hc_head_base: array_f32(&fill(HC, 0.32), &[HC as i32]),
+                hc_head_scale: array_f32(&[1.0], &[1]),
+            }),
             layer: Some(Box::new(test_nextn_layer_weights())),
         }
     }
@@ -2894,6 +3214,190 @@ mod deepseek_v4_mtp_tests {
         assert_eq!(cache.seq_len(), 2);
     }
 
+    fn test_target_weights() -> ModelWeights {
+        let mut weights = test_model_weights(Some(test_nextn_weights()));
+        // Main stack: one raw-path V4 layer (compress_ratios[0] == 0).
+        // Nextn-only fixtures leave layers empty and cannot exercise the
+        // singleton target trunk used by production greedy decode.
+        weights.layers = vec![test_nextn_layer_weights()];
+        weights
+    }
+
+    fn prefill_prompt(cfg: &ModelConfig, weights: &ModelWeights, prompt: &[u32]) -> MlxKVCache {
+        use crate::model::forward_argmax;
+        let mut cache = MlxKVCache::new(cfg.layer_count);
+        for (i, &tok) in prompt.iter().enumerate() {
+            let logits = forward_argmax(cfg, weights, &[tok], &mut cache, i);
+            cache.advance(1);
+            eval(&[&logits]);
+        }
+        cache
+    }
+
+    /// Singleton packed verify path must match production `forward_argmax`
+    /// token decisions while also returning the packed residual nextn needs.
+    ///
+    /// Sequential greedy MTP verify then matches pure single-token greedy at
+    /// the verify boundary (accept + bonus / reject + correction). This is
+    /// the correctness contract that multi-token teacher-forced clone-adopt
+    /// violated on real compressor/indexer stacks.
+    #[test]
+    fn sequential_greedy_verify_matches_singleton_direct_decode() {
+        use crate::model::{deepseek_v4_forward_all_positions_with_packed, forward_argmax};
+
+        let cfg = test_model_config();
+        let weights = test_target_weights();
+        assert_eq!(
+            weights.layers.len(),
+            cfg.layer_count,
+            "regression must exercise the real target layer stack"
+        );
+        let prompt: Vec<u32> = vec![1, 2, 3, 4];
+        let width = HC * E;
+        // Runner commit plan: primary always lands in KV (same as
+        // deepseek_v4_mtp_committed_verify_len in runner/mod.rs).
+        let commit_len = |accept_count: usize, draft_len: usize| 1 + accept_count.min(draft_len);
+
+        // --- (1) Singleton packed argmax == forward_argmax token decision ---
+        let mut pack_cache = prefill_prompt(&cfg, &weights, &prompt);
+        let mut argmax_cache = prefill_prompt(&cfg, &weights, &prompt);
+        let probe = 5u32 % VOCAB as u32;
+        let offset = pack_cache.seq_len();
+        let (packed_logits, packed_h) = deepseek_v4_forward_all_positions_with_packed(
+            &cfg,
+            &weights,
+            &[probe],
+            &mut pack_cache,
+            offset,
+        );
+        let direct_logits = forward_argmax(&cfg, &weights, &[probe], &mut argmax_cache, offset);
+        let pack_pred = argmax(&packed_logits, None);
+        let direct_pred = argmax(&direct_logits, None);
+        eval(&[&pack_pred, &direct_pred, &packed_h]);
+        assert_eq!(
+            pack_pred.data_u32()[0],
+            direct_pred.data_u32()[0],
+            "singleton packed verify logits must match production forward_argmax"
+        );
+        assert_eq!(
+            packed_h.shape(),
+            vec![1, 1, width as i32],
+            "packed residual must keep nextn width hc*hidden"
+        );
+
+        // --- (2) Pure direct stream after feeding first_gen ---
+        let mut pure = prefill_prompt(&cfg, &weights, &prompt);
+        let first_gen = probe;
+        let mut pure_stream = Vec::new();
+        let mut last = first_gen;
+        for _ in 0..3 {
+            let off = pure.seq_len();
+            let logits = forward_argmax(&cfg, &weights, &[last], &mut pure, off);
+            pure.advance(1);
+            let pred = argmax(&logits, None);
+            eval(&[&pred]);
+            let tok = pred.data_u32()[0];
+            pure_stream.push(tok);
+            last = tok;
+        }
+        // pure_stream = [t1, t2, t3] after feeding first_gen, t1, t2.
+
+        // --- (3) Sequential MTP accept path: draft = [t1] → accept, bonus = t2 ---
+        let mut mtp = prefill_prompt(&cfg, &weights, &prompt);
+        let token_offset = mtp.seq_len();
+        let draft = vec![pure_stream[0]];
+        let seq = sequential_greedy_deepseek_v4_mtp_verify(
+            &cfg,
+            &weights,
+            &mut mtp,
+            first_gen,
+            &draft,
+            token_offset,
+            width,
+        );
+        assert_eq!(seq.accept_count, 1, "oracle draft must fully accept");
+        assert_eq!(
+            mtp.seq_len(),
+            token_offset + commit_len(1, 1),
+            "full accept commits primary + accepted draft"
+        );
+        let mut emitted = draft[..seq.accept_count].to_vec();
+        emitted.push(seq.correction_token);
+        assert_eq!(
+            emitted,
+            pure_stream[..2],
+            "accepted draft + bonus must equal pure singleton greedy"
+        );
+        assert_eq!(seq.draft_hidden.shape(), vec![1, 1, width as i32]);
+        assert_eq!(
+            seq.last_logits.shape(),
+            vec![VOCAB as i32],
+            "last_logits must be production [vocab] shape"
+        );
+        assert_eq!(seq.predicted, pure_stream[..2]);
+
+        // --- (4) Old multi-token teacher-forced oracle at the same boundary ---
+        // Accept decisions from multi-token predicted rows. On this raw-path
+        // synthetic stack they typically match sequential; the sequential
+        // path is still required on real CSA/HCA layers where multi-token
+        // adopt diverges. Pin that sequential remains ground truth vs pure.
+        let mut mt_cache = prefill_prompt(&cfg, &weights, &prompt);
+        let verify_input = vec![first_gen, pure_stream[0]];
+        let (mt_logits, _mt_packed) = deepseek_v4_forward_all_positions_with_packed(
+            &cfg,
+            &weights,
+            &verify_input,
+            &mut mt_cache,
+            token_offset,
+        );
+        let mt_pred = argmax(&mt_logits, None);
+        eval(&[&mt_pred]);
+        let mt_predicted = mt_pred.data_u32().to_vec();
+        let mt_accept = crate::ngram_accel::greedy_draft_target_accept_count(&draft, &mt_predicted);
+        // Sequential always matches pure; multi-token may or may not.
+        assert_eq!(
+            seq.accept_count,
+            crate::ngram_accel::greedy_draft_target_accept_count(&draft, &seq.predicted),
+            "sequential accept must follow its own singleton predictions"
+        );
+        if mt_accept != seq.accept_count || mt_predicted.first() != Some(&pure_stream[0]) {
+            // When multi-token disagrees, sequential is the correct oracle.
+            assert_eq!(
+                seq.accept_count, 1,
+                "when multi-token diverges, sequential still accepts oracle draft"
+            );
+            assert_eq!(seq.correction_token, pure_stream[1]);
+        }
+
+        // --- (5) Reject boundary: wrong draft commits primary only ---
+        let mut reject = prefill_prompt(&cfg, &weights, &prompt);
+        let offset = reject.seq_len();
+        let mut wrong = (pure_stream[0] + 1) % VOCAB as u32;
+        if wrong == pure_stream[0] {
+            wrong = (wrong + 1) % VOCAB as u32;
+        }
+        let seq_rej = sequential_greedy_deepseek_v4_mtp_verify(
+            &cfg,
+            &weights,
+            &mut reject,
+            first_gen,
+            &[wrong],
+            offset,
+            width,
+        );
+        assert_eq!(seq_rej.accept_count, 0, "wrong draft must fully reject");
+        assert_eq!(
+            reject.seq_len(),
+            offset + commit_len(0, 1),
+            "full reject still commits primary last_token"
+        );
+        assert_eq!(
+            seq_rej.correction_token, pure_stream[0],
+            "correction must equal singleton greedy at the reject position"
+        );
+        assert_eq!(seq_rej.predicted, vec![pure_stream[0]]);
+    }
+
     #[test]
     fn head_forward_is_deterministic() {
         let cfg = test_model_config();
@@ -2965,6 +3469,7 @@ mod deepseek_v4_mtp_tests {
             None,
             &mut rng,
             0.0,
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
         );
         assert_eq!(draft.len(), 1);
         assert_eq!(log_probs.len(), 1);
@@ -2985,6 +3490,7 @@ mod deepseek_v4_mtp_tests {
             None,
             &mut rng,
             0.0,
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
         );
         assert_eq!(draft2.len(), 1);
         assert_eq!(added2, 1);

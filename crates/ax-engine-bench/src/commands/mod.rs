@@ -424,6 +424,10 @@ pub(crate) fn handle_generate(args: &[String]) -> Result<(), CliError> {
         "{}",
         render_generate_response(&response, inference_args.json)?
     );
+    // Flush before process teardown: MLX CompilerCache static destructors can
+    // SIGSEGV after longer Gemma prefills. Formal A/B recovers complete JSON
+    // from stdout when the exit code is nonzero, so the report must hit the pipe.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     Ok(())
 }
 

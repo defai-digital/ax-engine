@@ -55,15 +55,17 @@ use super::super::profile::{
 use super::super::shared::{
     KVConcatBuffer, add_then_multiply_scalar, attention_mask_array,
     attention_output_projection_batched, attention_output_projection_with_post_norm,
-    bidirectional_attention, direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu,
-    ffn_swiglu_batched, flatten_attention_output_bhsd, flatten_compiled_moe_inputs,
-    flatten_gemma4_dual_path_inputs, full_precision_attention, linear_attention_forward_batched,
-    moe_experts_forward, moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
+    attention_output_projection_with_post_norm_policy, bidirectional_attention,
+    direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, ffn_swiglu_batched,
+    ffn_swiglu_row_exact, flatten_attention_output_bhsd, flatten_compiled_moe_inputs,
+    flatten_gemma4_dual_path_inputs, full_precision_attention,
+    full_precision_attention_with_window, linear_attention_forward_batched, moe_experts_forward,
+    moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
     moe_router_qwen3, packed_qkv_kv_head_count, per_layer_input_gate_project,
     prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route,
-    qkv_project, qkv_project_batched, qkv_project_with_input_norm, qw, rms_norm_opt,
-    shape_element_count, shared_expert_forward,
+    qkv_project, qkv_project_batched, qkv_project_pos0_exact_rest_shared, qkv_project_row_exact,
+    qkv_project_with_input_norm, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
 };
 use crate::attention_mask::{batched_decode_validity_mask_with_window, create_ring_sliding_mask};
 use crate::batched_kv_cache::BatchedKvCache;
@@ -291,66 +293,156 @@ fn layer_shell_post_attention(
                 result
             } else {
                 // Gemma4 dual-path: dense sub-block + expert sub-block.
-                let dense_started = profile_gemma4_moe_decode.then(Instant::now);
-                let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
-                if let Some(started) = dense_started {
-                    profile_eval_elapsed(
-                        profile_gemma4_moe_decode,
-                        Gemma4MoeProfileStage::Dense,
-                        started,
-                        &[&h1],
+                // Multi-token teacher-forced verify (seq > 1) must match
+                // sequential singleton decode for Tier 2 greedy exactness.
+                // Batched gather_qmm / router over the seq axis drifts vs
+                // pure-direct; process each position as a singleton (depth-2
+                // MTP is only seq=3). Prefill-sized chunks still use the
+                // batched path below when compile is off and seq is large.
+                // Multi-token MoE exact+amort (smokef79):
+                // - Dense residual + router: per-pos RowExact
+                // - Experts: one gather over S (unique-expert sort for locality)
+                // smokef80 Shared dense broke exactness; keep dense per-pos.
+                let gemma4_mtp_seq_exact = seq > 1 && seq <= 8;
+                if gemma4_mtp_seq_exact {
+                    // Dense residual + router per-pos; experts batched over S for amort.
+                    // (Full per-pos experts smokef112 still drifted at successive step=18.)
+                    use mlx_sys::{concatenate, slice};
+                    let hs = cfg.hidden_size as i32;
+                    let mut h1_rows = Vec::with_capacity(seq);
+                    let mut h2_normed_rows = Vec::with_capacity(seq);
+                    let mut idx_rows = Vec::with_capacity(seq);
+                    let mut wts_rows = Vec::with_capacity(seq);
+                    for t in 0..seq {
+                        let n2 = slice(
+                            &normed2,
+                            &[0, t as i32, 0],
+                            &[1, (t + 1) as i32, hs],
+                            &[1, 1, 1],
+                            None,
+                        );
+                        let h_res = slice(
+                            &hidden,
+                            &[0, t as i32, 0],
+                            &[1, (t + 1) as i32, hs],
+                            &[1, 1, 1],
+                            None,
+                        );
+                        h1_rows.push(ffn_swiglu_row_exact(
+                            cfg,
+                            w,
+                            &n2,
+                            w.ffn_post_norm1.as_ref(),
+                            layer_idx,
+                        ));
+                        let h2_norm = w
+                            .ffn_norm2
+                            .as_ref()
+                            .expect("validated Gemma4 MoE layer must include ffn_norm_2");
+                        h2_normed_rows.push(rms_norm(
+                            &h_res,
+                            Some(h2_norm),
+                            cfg.rms_norm_eps,
+                            None,
+                        ));
+                        let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &h_res);
+                        idx_rows.push(top_k_indices);
+                        wts_rows.push(top_k_weights);
+                    }
+                    let h2_refs: Vec<&MlxArray> = h2_normed_rows.iter().collect();
+                    let h2_normed_all = concatenate(&h2_refs, 1, None);
+                    let idx_refs: Vec<&MlxArray> = idx_rows.iter().collect();
+                    let idx_all = concatenate(&idx_refs, 1, None);
+                    let wts_refs: Vec<&MlxArray> = wts_rows.iter().collect();
+                    let wts_all = concatenate(&wts_refs, 1, None);
+                    let h2_all =
+                        moe_experts_forward_gemma4(cfg, w, &h2_normed_all, &idx_all, &wts_all);
+                    let mut rows = Vec::with_capacity(seq);
+                    for (t, h1) in h1_rows.iter().enumerate() {
+                        let h2 = slice(
+                            &h2_all,
+                            &[0, t as i32, 0],
+                            &[1, (t + 1) as i32, hs],
+                            &[1, 1, 1],
+                            None,
+                        );
+                        rows.push(crate::model::shared::combine_gemma4_dual_path_outputs(
+                            h1,
+                            &h2,
+                            w.ffn_post_norm2.as_ref(),
+                            w.ffn_post_norm.as_ref(),
+                            cfg.rms_norm_eps,
+                        ));
+                    }
+                    let refs: Vec<&MlxArray> = rows.iter().collect();
+                    concatenate(&refs, 1, None)
+                } else {
+                    let dense_started = profile_gemma4_moe_decode.then(Instant::now);
+                    let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
+                    if let Some(started) = dense_started {
+                        profile_eval_elapsed(
+                            profile_gemma4_moe_decode,
+                            Gemma4MoeProfileStage::Dense,
+                            started,
+                            &[&h1],
+                        );
+                    }
+                    let h2_norm = w
+                        .ffn_norm2
+                        .as_ref()
+                        .expect("validated Gemma4 MoE layer must include ffn_norm_2");
+                    let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
+                    let router_started = profile_gemma4_moe_decode.then(Instant::now);
+                    let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
+                    if let Some(started) = router_started {
+                        profile_eval_elapsed(
+                            profile_gemma4_moe_decode,
+                            Gemma4MoeProfileStage::Router,
+                            started,
+                            &[&top_k_indices, &top_k_weights],
+                        );
+                    }
+                    if profile_gemma4_moe_decode {
+                        let topk_selections = shape_element_count(&top_k_indices.shape());
+                        record_gemma4_moe_decode_layer(
+                            topk_selections,
+                            topk_selections >= SWITCH_GLU_SORT_THRESHOLD,
+                        );
+                    }
+                    let expert_started = profile_gemma4_moe_decode.then(Instant::now);
+                    let h2 = moe_experts_forward_gemma4(
+                        cfg,
+                        w,
+                        &h2_normed,
+                        &top_k_indices,
+                        &top_k_weights,
                     );
-                }
-                let h2_norm = w
-                    .ffn_norm2
-                    .as_ref()
-                    .expect("validated Gemma4 MoE layer must include ffn_norm_2");
-                let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
-                let router_started = profile_gemma4_moe_decode.then(Instant::now);
-                let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
-                if let Some(started) = router_started {
-                    profile_eval_elapsed(
-                        profile_gemma4_moe_decode,
-                        Gemma4MoeProfileStage::Router,
-                        started,
-                        &[&top_k_indices, &top_k_weights],
+                    if let Some(started) = expert_started {
+                        profile_eval_elapsed(
+                            profile_gemma4_moe_decode,
+                            Gemma4MoeProfileStage::Expert,
+                            started,
+                            &[&h2],
+                        );
+                    }
+                    let post_started = profile_gemma4_moe_decode.then(Instant::now);
+                    let out = crate::model::shared::combine_gemma4_dual_path_outputs(
+                        &h1,
+                        &h2,
+                        w.ffn_post_norm2.as_ref(),
+                        w.ffn_post_norm.as_ref(),
+                        cfg.rms_norm_eps,
                     );
+                    if let Some(started) = post_started {
+                        profile_eval_elapsed(
+                            profile_gemma4_moe_decode,
+                            Gemma4MoeProfileStage::Post,
+                            started,
+                            &[&out],
+                        );
+                    }
+                    out
                 }
-                if profile_gemma4_moe_decode {
-                    let topk_selections = shape_element_count(&top_k_indices.shape());
-                    record_gemma4_moe_decode_layer(
-                        topk_selections,
-                        topk_selections >= SWITCH_GLU_SORT_THRESHOLD,
-                    );
-                }
-                let expert_started = profile_gemma4_moe_decode.then(Instant::now);
-                let h2 =
-                    moe_experts_forward_gemma4(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
-                if let Some(started) = expert_started {
-                    profile_eval_elapsed(
-                        profile_gemma4_moe_decode,
-                        Gemma4MoeProfileStage::Expert,
-                        started,
-                        &[&h2],
-                    );
-                }
-                let post_started = profile_gemma4_moe_decode.then(Instant::now);
-                let out = crate::model::shared::combine_gemma4_dual_path_outputs(
-                    &h1,
-                    &h2,
-                    w.ffn_post_norm2.as_ref(),
-                    w.ffn_post_norm.as_ref(),
-                    cfg.rms_norm_eps,
-                );
-                if let Some(started) = post_started {
-                    profile_eval_elapsed(
-                        profile_gemma4_moe_decode,
-                        Gemma4MoeProfileStage::Post,
-                        started,
-                        &[&out],
-                    );
-                }
-                out
             }
         } else {
             let router_started = profile_forward_layer.then(Instant::now);
@@ -445,7 +537,38 @@ fn layer_shell_post_attention(
         }
     } else {
         // Dense path (Qwen3, Gemma4 non-MoE layers).
-        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
+        // 4-bit multi-token short verify: per-position FFN (smokef12 cut 12b4
+        // div 3→1; 6-bit keeps batched FFN for formal4 ≥1.20× speed).
+        let dense_seq = normed2.shape().get(1).copied().unwrap_or(1) as usize;
+        if crate::fastpath::gemma_mt_perpos_ffn_enabled()
+            && dense_seq > 1
+            && dense_seq <= 8
+            && crate::fastpath::multi_token_f32_attention_enabled()
+        {
+            use mlx_sys::{concatenate, slice};
+            let hs = cfg.hidden_size as i32;
+            let mut rows = Vec::with_capacity(dense_seq);
+            for t in 0..dense_seq {
+                let row = slice(
+                    &normed2,
+                    &[0, t as i32, 0],
+                    &[1, (t + 1) as i32, hs],
+                    &[1, 1, 1],
+                    None,
+                );
+                rows.push(ffn_swiglu(
+                    cfg,
+                    w,
+                    &row,
+                    w.ffn_post_norm.as_ref(),
+                    layer_idx,
+                ));
+            }
+            let refs: Vec<&MlxArray> = rows.iter().collect();
+            concatenate(&refs, 1, None)
+        } else {
+            ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
+        }
     };
     if let Some(started) = ffn_started {
         forward_profile_eval_elapsed(
@@ -762,7 +885,7 @@ fn layer_forward_internal(
             Some("ring_layout")
         } else if protected_prefix_window.is_some() {
             Some("protected_prefix")
-        } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma3") {
+        } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma4_vl" | "gemma3") {
             Some("family")
         } else if !matches!(head_dim, 64 | 80 | 128 | 256) {
             // Mirrors mlxcel's NAX gate: fast SDPA only has steel kernels
@@ -931,13 +1054,15 @@ fn layer_forward_internal(
                     // must not run; finish with the portable SDPA + o-proj
                     // helpers over the same appended views and mask.
                     let fallback_mask: Option<MlxArray> = sdpa_mask.cloned();
-                    let attn = full_precision_attention(
+                    let attn = full_precision_attention_with_window(
                         &q_rope,
                         &k_full,
                         &v_full,
                         cfg.query_scale,
                         seq,
                         &fallback_mask,
+                        sliding_window.filter(|_| ring_layout.is_none()),
+                        ring_layout,
                     );
                     let attn_flat =
                         flatten_attention_output_bhsd(&attn, seq, n_heads_layer, head_dim);
@@ -1175,7 +1300,11 @@ fn layer_forward_internal(
         } else {
             // Normal layer: compute Q, K, V from own projections.
             let qkv_proj_started = profile_forward_layer.then(Instant::now);
-            let (q_raw, k_raw, v_raw, attn_gate_raw) = if fuse_attn_norm_qkv {
+            // MoE multi-token (smokef99/104): pos0 RowExact + rest Shared QKV.
+            // Formal exact at w≈1.016 (smokef99); full Shared breaks exactness.
+            let moe_mt_exact = crate::fastpath::moe_mt_bf16_identity_enabled();
+            let skip_qkv_fuse = crate::fastpath::qwen_linear_mtp_exact_enabled() || moe_mt_exact;
+            let (q_raw, k_raw, v_raw, attn_gate_raw) = if fuse_attn_norm_qkv && !skip_qkv_fuse {
                 qkv_project_with_input_norm(
                     cfg,
                     w,
@@ -1184,6 +1313,31 @@ fn layer_forward_internal(
                     Some(&w.attn_norm),
                     cfg.rms_norm_eps,
                 )
+            } else if moe_mt_exact {
+                // pos0-RowExact + rest-Shared QKV (smokef99/104 best exact @~1.02).
+                // Full Shared gains speed but breaks formal A/B (smokef81/108).
+                // Long-context agent: full RowExact — hybrid Shared rest drifts
+                // after long prefill (smokef104 agent first_diff@14 @prompt~4k).
+                let long_ctx = token_offset >= 512;
+                if long_ctx {
+                    qkv_project_row_exact(
+                        cfg,
+                        w,
+                        normed
+                            .as_ref()
+                            .expect("portable path materializes attn_norm"),
+                        head_dim,
+                    )
+                } else {
+                    qkv_project_pos0_exact_rest_shared(
+                        cfg,
+                        w,
+                        normed
+                            .as_ref()
+                            .expect("portable path materializes attn_norm"),
+                        head_dim,
+                    )
+                }
             } else {
                 qkv_project(
                     cfg,
@@ -1435,9 +1589,16 @@ fn layer_forward_internal(
         };
         let sdpa_started = profile_forward_layer.then(Instant::now);
         let attn_sdpa = match attention_kv {
-            MlxAttentionKv::Dense { k, v } => {
-                full_precision_attention(&q_rope, &k, &v, cfg.query_scale, seq, mask_opt)
-            }
+            MlxAttentionKv::Dense { k, v } => full_precision_attention_with_window(
+                &q_rope,
+                &k,
+                &v,
+                cfg.query_scale,
+                seq,
+                mask_opt,
+                sliding_window.filter(|_| ring_layout.is_none()),
+                ring_layout,
+            ),
             MlxAttentionKv::Paged(view) => {
                 if seq == 1
                     && mask_opt.is_none()
@@ -1448,7 +1609,16 @@ fn layer_forward_internal(
                 } else {
                     cache.record_paged_attention_result(false);
                     let (k, v) = view.materialize();
-                    full_precision_attention(&q_rope, &k, &v, cfg.query_scale, seq, mask_opt)
+                    full_precision_attention_with_window(
+                        &q_rope,
+                        &k,
+                        &v,
+                        cfg.query_scale,
+                        seq,
+                        mask_opt,
+                        sliding_window.filter(|_| ring_layout.is_none()),
+                        ring_layout,
+                    )
                 }
             }
         };
@@ -1466,7 +1636,14 @@ fn layer_forward_internal(
 
         // 10-11. Flatten + output projection (+ optional post-attn RMSNorm).
         let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
-        let attn_proj = attention_output_projection_with_post_norm(
+        // RowExact o_proj under moe_mt (smokef99 exact). Shared o_proj broke
+        // formal identity (smokef100).
+        let o_policy = if crate::fastpath::moe_mt_bf16_identity_enabled() {
+            crate::model::shared::utils::ProjectionBatchPolicy::RowExact
+        } else {
+            crate::model::shared::utils::ProjectionBatchPolicy::Shared
+        };
+        let attn_proj = attention_output_projection_with_post_norm_policy(
             &attn_flat,
             attn_gate.as_ref(),
             w.o_proj
@@ -1474,6 +1651,7 @@ fn layer_forward_internal(
                 .expect("full-attention layer must have o_proj"),
             w.attn_post_norm.as_ref(),
             cfg.rms_norm_eps,
+            o_policy,
         );
         if let Some(started) = output_proj_started {
             forward_profile_eval_elapsed(

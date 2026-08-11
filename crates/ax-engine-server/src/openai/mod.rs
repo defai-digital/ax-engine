@@ -3,6 +3,7 @@ pub(crate) mod chat_requests;
 pub(crate) mod chunks;
 pub(crate) mod compat;
 pub(crate) mod completions;
+pub(crate) mod dsml;
 pub(crate) mod embeddings;
 pub(crate) mod generation;
 pub(crate) mod json_schema;

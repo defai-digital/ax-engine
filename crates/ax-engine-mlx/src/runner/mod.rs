@@ -59,6 +59,7 @@ use crate::generate::{
     chunked_prefill_nemotron_omni_with_sampling_buffers,
     chunked_prefill_qwen3_vl_with_sampling_buffers,
     chunked_prefill_unlimited_ocr_with_sampling_buffers,
+    chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
     decode_step, direct_pipeline_barrier_enabled, prepare_direct_pipeline_advance,
     sample_token_from_prefill_logits, start_direct_pipeline,
@@ -73,16 +74,17 @@ use crate::model::{
     DecodeProfileSnapshot, DenseFfnFastpathSnapshot, Gemma4MoeProfileSnapshot,
     LinearAttentionProfileSnapshot, ModelConfig, MoeProfileSnapshot, PrefillProfileSnapshot,
     forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_post_norm,
-    forward_all_positions_with_post_norm_ids, take_decode_profile_snapshot,
-    take_dense_ffn_fastpath_snapshot, take_gemma4_moe_profile_snapshot,
-    take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
-    take_prefill_profile_snapshot,
+    forward_all_positions_with_post_norm_greedy, forward_all_positions_with_post_norm_ids,
+    take_decode_profile_snapshot, take_dense_ffn_fastpath_snapshot,
+    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
+    take_moe_profile_snapshot, take_prefill_profile_snapshot,
 };
 use crate::model::{prefill_batched_forward, supports_batched_prefill};
 use crate::mtp::{
     deepseek_v4_mtp_draft_tokens_after_forced_prefix, deepseek_v4_mtp_draft_tokens_gated,
-    glm_mtp_draft_tokens_after_forced_prefix, glm_mtp_draft_tokens_gated,
-    mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
+    deepseek_v4_mtp_warmup_cache, glm_mtp_draft_tokens_after_forced_prefix,
+    glm_mtp_draft_tokens_gated, mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
+    sequential_greedy_deepseek_v4_mtp_verify,
 };
 use crate::mtp_adaptive_gate::{
     AdaptiveStepSignals, MtpAdaptiveGateState, adaptive_gate_enabled_from_env,
@@ -91,8 +93,10 @@ use crate::mtp_adaptive_gate::{
 };
 use crate::ngram_accel::{
     NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
-    classify_prompt_class, ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
-    recompute_committed_prefix_with_argmax, single_decode_with_sampling_buffers,
+    THINK_SOFT_CLOSE_PROBE_RANK, ThinkSoftCloseProbe, classify_prompt_class,
+    ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
+    recompute_committed_prefix_with_argmax, sequential_greedy_mtp_verify,
+    single_decode_with_sampling_buffers,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64, sample_categorical_into,
@@ -512,6 +516,13 @@ struct RequestState {
     /// Initialized from prompt tokens. Used to gate n-gram acceleration to think
     /// regions only, where repetition density is high for reasoning models.
     ngram_in_think: bool,
+    /// Tokens emitted while inside an open think block (budget controller).
+    think_emitted_tokens: u32,
+    /// Recomputed each decode step: inside an open think block within the
+    /// soft-close window ahead of the answer reserve / think cap. While
+    /// armed, decode routes through logits-materializing single decode and
+    /// rank-probes the think-close token before sampling.
+    think_soft_close_armed: bool,
     /// Per-request n-gram self-tune: tracks draft tokens and accepted tokens
     /// for this request.  After warmup, if acceptance rate falls below the
     /// threshold, n-gram is disabled for the rest of the request (mirrors
@@ -615,6 +626,8 @@ impl RequestState {
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
+            think_emitted_tokens: 0,
+            think_soft_close_armed: false,
             ngram_self_tune: NgramSelfTuneState::default(),
             mtp_ngram_utility_hysteresis_remaining: 0,
         }
@@ -1559,6 +1572,8 @@ impl MlxRunner {
             // ADR-020: product default stays direct-fallback for Qwen linear
             // until Tier 2 promotion; formal harness opts in explicitly.
             qwen_linear_certification_candidate: qwen_linear_mtp_certification_candidate_from_env(),
+            // DeepSeek V4 nextn: same fail-closed product default until Tier 2.
+            deepseek_v4_certification_candidate: deepseek_v4_mtp_certification_candidate_from_env(),
         });
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
@@ -1755,6 +1770,14 @@ impl MlxRunner {
                 certification_candidate = mtp_model_policy.is_qwen_linear_certification_candidate(),
                 "Qwen linear-attention MTP uncertified or ineligible; using direct decode (ADR-020)",
             );
+        } else if mtp_model_policy.is_deepseek_v4_direct_fallback() {
+            tracing::warn!(
+                target: "ax_engine_mlx::runner",
+                model_family = %cfg.model_family,
+                mtp_depth = mtp_model_policy.max_depth(),
+                certification_candidate = mtp_model_policy.is_deepseek_v4_certification_candidate(),
+                "DeepSeek V4 nextn MTP uncertified; using direct decode until Tier 2 evidence",
+            );
         } else if mtp_model_policy.has_conflicting_drafters() {
             tracing::error!(
                 target: "ax_engine_mlx::runner",
@@ -1934,6 +1957,7 @@ fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) ->
 /// request identically to its single-sequence decode.
 fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams {
     MlxSamplingParams::new(ctx.temperature, ctx.top_p, ctx.top_k)
+        .with_min_p(ctx.min_p)
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
         .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
 }
@@ -2391,6 +2415,7 @@ impl MlxRunner {
             ignore_eos: bool,
             sampling: MlxSamplingParams,
             state: RequestState,
+            last_token: u32,
             pending: Vec<u32>,
             pending_sources: Vec<MtpDraftSource>,
             token_offset: usize,
@@ -2472,6 +2497,7 @@ impl MlxRunner {
                     ignore_eos: ctx.ignore_eos,
                     sampling,
                     state,
+                    last_token,
                     pending,
                     pending_sources,
                     token_offset,
@@ -2508,44 +2534,103 @@ impl MlxRunner {
         let mut continuing = Vec::with_capacity(row_count);
         let mut runs = Vec::with_capacity(row_count);
         for (row_ordinal, mut row) in rows.into_iter().enumerate() {
-            let predicted = row.predicted.data_u32().to_vec();
-            let accept_started = Instant::now();
-            let accept_count = row
-                .pending
-                .iter()
-                .zip(predicted.iter())
-                .take_while(|(draft, target)| draft == target)
-                .count();
-            let accept_wall_us = elapsed_us(accept_started);
+            // Greedy coalesced path: optionally roll back multi-token
+            // teacher-forced KV and re-verify with the sequential production
+            // oracle so accepted drafts match MTP-off greedy (same contract as
+            // single-item run_mtp_decode). Kill-switch
+            // AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0 keeps multi-token
+            // accept decisions (faster; re-check exactness before Tier 2).
+            let use_sequential_oracle = row.sampling.temperature <= 0.0
+                && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+            let (accept_count, draft_hidden, tail_token, accept_wall_us, rollback_wall_us) =
+                if use_sequential_oracle {
+                    let accept_started = Instant::now();
+                    let trimmed_back = row.state.cache.trim_to(row.token_offset);
+                    if !trimmed_back {
+                        should_clear_cache = true;
+                        runs.push((
+                            row.item_index,
+                            errored_item_run(
+                                row.request_id,
+                                "coalesced Gemma assistant-MTP sequential rollback was refused",
+                            ),
+                        ));
+                        continue;
+                    }
+                    let seq = sequential_greedy_mtp_verify(
+                        &self.cfg,
+                        &self.weights,
+                        &mut row.state.cache,
+                        row.last_token,
+                        &row.pending,
+                        row.token_offset,
+                    );
+                    let accept_wall_us = elapsed_us(accept_started);
+                    let rejected_count = row.pending.len().saturating_sub(seq.accept_count);
+                    if rejected_count > 0 {
+                        let new_mtp_len = row.state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(cache) = row.state.mtp_cache.as_mut() {
+                            let _ = cache.trim_to(new_mtp_len);
+                        }
+                        row.state.mtp_decode_count = new_mtp_len;
+                    }
+                    (
+                        seq.accept_count,
+                        seq.draft_hidden,
+                        seq.correction_token,
+                        accept_wall_us,
+                        0,
+                    )
+                } else {
+                    let predicted = row.predicted.data_u32().to_vec();
+                    let accept_started = Instant::now();
+                    let accept_count = row
+                        .pending
+                        .iter()
+                        .zip(predicted.iter())
+                        .take_while(|(draft, target)| draft == target)
+                        .count();
+                    let accept_wall_us = elapsed_us(accept_started);
 
-            let rollback_started = Instant::now();
-            let committed_len = row.token_offset + 1 + accept_count;
-            let trimmed = row.state.cache.trim_to(committed_len);
-            let rejected_count = row.pending.len().saturating_sub(accept_count);
-            if rejected_count > 0 {
-                let new_mtp_len = row.state.mtp_decode_count.saturating_sub(rejected_count);
-                if let Some(cache) = row.state.mtp_cache.as_mut() {
-                    let _ = cache.trim_to(new_mtp_len);
-                }
-                row.state.mtp_decode_count = new_mtp_len;
-            }
-            let rollback_wall_us = elapsed_us(rollback_started);
-            if !trimmed {
-                should_clear_cache = true;
-                runs.push((
-                    row.item_index,
-                    errored_item_run(
-                        row.request_id,
-                        "coalesced Gemma assistant-MTP rollback trim was refused",
-                    ),
-                ));
-                continue;
-            }
+                    let rollback_started = Instant::now();
+                    let committed_len = row.token_offset + 1 + accept_count;
+                    let trimmed = row.state.cache.trim_to(committed_len);
+                    let rejected_count = row.pending.len().saturating_sub(accept_count);
+                    if rejected_count > 0 {
+                        let new_mtp_len = row.state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(cache) = row.state.mtp_cache.as_mut() {
+                            let _ = cache.trim_to(new_mtp_len);
+                        }
+                        row.state.mtp_decode_count = new_mtp_len;
+                    }
+                    let rollback_wall_us = elapsed_us(rollback_started);
+                    if !trimmed {
+                        should_clear_cache = true;
+                        runs.push((
+                            row.item_index,
+                            errored_item_run(
+                                row.request_id,
+                                "coalesced Gemma assistant-MTP rollback trim was refused",
+                            ),
+                        ));
+                        continue;
+                    }
 
-            let draft_hidden =
-                slice_post_norm_hidden(&row.post_norm_all, accept_count, self.cfg.hidden_size);
+                    let draft_hidden = slice_post_norm_hidden(
+                        &row.post_norm_all,
+                        accept_count,
+                        self.cfg.hidden_size,
+                    );
+                    let tail_token = predicted.get(accept_count).copied().unwrap_or(0);
+                    (
+                        accept_count,
+                        draft_hidden,
+                        tail_token,
+                        accept_wall_us,
+                        rollback_wall_us,
+                    )
+                };
             let tail_sample_started = Instant::now();
-            let tail_token = predicted.get(accept_count).copied().unwrap_or(0);
             let tail_sample_wall_us = elapsed_us(tail_sample_started);
             let mut result = row.pending[..accept_count].to_vec();
             result.push(tail_token);
@@ -2583,6 +2668,14 @@ impl MlxRunner {
                 row.pending.len(),
                 accept_count,
                 row.state.mtp_consecutive_misses,
+                // Early short-context only: stop-loss reject storms on tiny
+                // gens (gen med killers) without aborting multi-token mid
+                // long-ish short-ctx gens (smokef139 trial3 1.20→1.04).
+                // Window 24 covers formal general short tails that still
+                // stack low-accept cost after the first dozen tokens.
+                self.gemma4_assistant_mtp.is_some()
+                    && row.state.cache.seq_len() < 512
+                    && row.state.generated_tokens.len() < 24,
             );
             if accept_count == 0 {
                 row.state.mtp_consecutive_misses =
@@ -4584,6 +4677,7 @@ impl MlxRunner {
         let sampling = ctx
             .map(|c| {
                 MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
+                    .with_min_p(c.min_p)
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
             })
@@ -5256,6 +5350,23 @@ impl MlxRunner {
                                 state.mtp_prefill_hidden = Some(hidden);
                                 state.mtp_prefill_history_tokens = history_tokens;
                                 tok
+                            } else if self.weights.deepseek_v4_nextn.is_some() {
+                                let (tok, packed, history_tokens) =
+                                    chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
+                                        &self.cfg,
+                                        &self.weights,
+                                        token_ids,
+                                        &mut state.cache,
+                                        recompute_chunk,
+                                        MlxSamplingRequest::new(sampling, &recompute_history),
+                                        &mut state.rng,
+                                        &mut state.sampling_probs_buf,
+                                        &mut state.sampling_logits_buf,
+                                        &mut state.sampling_candidates_buf,
+                                    );
+                                state.mtp_prefill_hidden = Some(packed);
+                                state.mtp_prefill_history_tokens = history_tokens;
+                                tok
                             } else {
                                 chunked_prefill_with_sampling_buffers(
                                     &self.cfg,
@@ -5308,6 +5419,23 @@ impl MlxRunner {
                                 &mut state.sampling_candidates_buf,
                             );
                         state.mtp_prefill_hidden = Some(hidden);
+                        state.mtp_prefill_history_tokens = history_tokens;
+                        Some(tok)
+                    } else if self.weights.deepseek_v4_nextn.is_some() {
+                        let (tok, packed, history_tokens) =
+                            chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
+                                &self.cfg,
+                                &self.weights,
+                                prefill_tokens,
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                MlxSamplingRequest::new(sampling, &repetition_history),
+                                &mut state.rng,
+                                &mut state.sampling_probs_buf,
+                                &mut state.sampling_logits_buf,
+                                &mut state.sampling_candidates_buf,
+                            );
+                        state.mtp_prefill_hidden = Some(packed);
                         state.mtp_prefill_history_tokens = history_tokens;
                         Some(tok)
                     } else if let Some(staged) = staged_batched_prefill.take().filter(|staged| {
@@ -5512,11 +5640,42 @@ impl MlxRunner {
                 &self.cfg.model_family,
             ),
         );
+        // Thinking-budget controller: force the think-close token when the
+        // answer reserve / think cap is exhausted or the loop detector fired
+        // inside an open think block (ds4-style soft+hard close). A budget
+        // edge carries no stop reason: generation continues so the remaining
+        // output budget funds the answer (ds4 hard-limit semantics).
+        let (sampled_tokens, stop_reason) = if let Some(ctx) = ctx
+            && let Some((forced_tokens, forced_stop)) = think_budget_close_override(
+                stop_reason,
+                !sampled_tokens.is_empty(),
+                state.ngram_in_think,
+                self.cfg.think_end_token_id,
+                ctx.max_output_tokens.saturating_sub(ctx.generated_len),
+                state.think_emitted_tokens,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+            ) {
+            state.pending_direct = None;
+            // Queued n-gram bonus tokens were verified against a think
+            // trace the forced close token just interrupted; they point at
+            // the wrong continuation and must not be served.
+            state.bonus_queue.clear();
+            (forced_tokens, forced_stop)
+        } else {
+            (sampled_tokens, stop_reason)
+        };
         // Keep tokens for LoopDetected (and continuing decode).
         if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
+            let was_in_think = state.ngram_in_think;
             for &sampled_token in &sampled_tokens {
                 state.generated_tokens.push(sampled_token);
                 update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
+            }
+            if was_in_think {
+                state.think_emitted_tokens = state
+                    .think_emitted_tokens
+                    .saturating_add(sampled_tokens.len() as u32);
             }
         }
 
@@ -7050,6 +7209,21 @@ impl MlxRunner {
         is_greedy: bool,
         options: DecodeOneOptions<'_>,
     ) -> Vec<u32> {
+        // Think soft-close arming (ds4-style rank probe): refreshed every
+        // step from the budget controller inputs. While armed, this step
+        // bypasses speculative/direct routing and rank-probes the think
+        // close token against materialized logits before sampling.
+        state.think_soft_close_armed = options.request_context.is_some_and(|ctx| {
+            think_soft_close_armed(
+                state.ngram_in_think,
+                self.cfg.think_end_token_id,
+                ctx.max_output_tokens.saturating_sub(ctx.generated_len),
+                state.think_emitted_tokens,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+            )
+        });
+
         // Serve pre-verified bonus tokens without re-running the model.
         // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
         // never populates the bonus queue.)
@@ -7206,21 +7380,38 @@ impl MlxRunner {
         // regress long-context Gemma to single-step decode (the 2026-07-26
         // decode@2048 failure mode). Speculative sessions still use the
         // stricter `should_use_session_direct_pipeline` predicate.
-        let pure_direct_pipeline = self.disable_ngram_acceleration
+        let pure_direct_pipeline = !state.think_soft_close_armed
+            && self.disable_ngram_acceleration
             && !sampling.uses_logits_processors()
             && (is_greedy || sampling.temperature <= 0.0);
         let direct_pipeline = pure_direct_pipeline
-            || should_use_session_direct_pipeline(
-                self.disable_ngram_acceleration,
-                is_greedy || sampling.temperature <= 0.0,
-                self.has_mtp(),
-                self.mtp_requested,
-            );
+            || (!state.think_soft_close_armed
+                && should_use_session_direct_pipeline(
+                    self.disable_ngram_acceleration,
+                    is_greedy || sampling.temperature <= 0.0,
+                    self.has_mtp(),
+                    self.mtp_requested,
+                ));
         if direct_pipeline {
             let last_token = state
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
                 .unwrap_or(0);
+            // LONG_MT uses the materialized singleton arithmetic that the
+            // batched-singleton verifier matches. Keep this request-stable:
+            // short requests that started on the double buffer must not switch
+            // merely because generation later crosses position 512.
+            let gemma_moe_long_mt_singleton = self.gemma_moe_aligned_greedy_decode()
+                && gemma4_moe_long_mt_enabled()
+                && state.cache.seq_len() >= 512
+                && state.pending_direct.is_none()
+                && state.direct_pipeline_emitted_tokens == 0;
+            if gemma_moe_long_mt_singleton {
+                return vec![self.run_gemma_sequential_pure_direct(state, last_token)];
+            }
+            // Default MoE baseline stays on the double buffer. Earlier short
+            // S=1 alignment drifted at token 1; an S=1 long path that retained
+            // the direct bootstrap double-wrote 74418 and self-looped.
             return vec![self.run_direct_pipeline_decode(
                 state,
                 last_token,
@@ -7234,13 +7425,15 @@ impl MlxRunner {
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
 
-        if ngram_request_disabled_direct_fast_path(
-            is_greedy,
-            sampling.uses_logits_processors(),
-            self.has_mtp(),
-            state.ngram_acceleration_disabled_for_request,
-            state.ngram_request_disable_reason,
-        ) {
+        if !state.think_soft_close_armed
+            && ngram_request_disabled_direct_fast_path(
+                is_greedy,
+                sampling.uses_logits_processors(),
+                self.has_mtp(),
+                state.ngram_acceleration_disabled_for_request,
+                state.ngram_request_disable_reason,
+            )
+        {
             state.ngram_acceleration.record_request_disabled_step();
             state
                 .ngram_acceleration
@@ -7270,6 +7463,44 @@ impl MlxRunner {
     /// a linear-attention request proves it has no useful draft support.  The
     /// pipeline may keep the cache one lazy token ahead, so callers must continue
     /// using this path until the request finishes.
+    /// MoE Gemma assistant greedy: pure-direct must be sequential (not
+    /// double-buffer) under invariant projections. Dense Gemma keeps
+    /// double-buffer.
+    fn gemma_moe_aligned_greedy_decode(&self) -> bool {
+        self.gemma4_assistant_mtp.is_some()
+            && self.cfg.moe_expert_count > 0
+            && self.weights.deepseek_v4_nextn.is_none()
+    }
+
+    /// MoE pure-direct (smokef95): multi-token greedy S=1 — same function as
+    /// MTP-on multi-token under Shared+invariant (formal A/B alignment).
+    fn run_gemma_sequential_pure_direct(&self, state: &mut RequestState, last_token: u32) -> u32 {
+        use crate::model::forward_all_positions_with_post_norm_greedy;
+        use mlx_sys::{argmax, eval};
+        state.pending_direct = None;
+        let token_offset = state.cache.seq_len();
+        let (logits, _post_norm) = forward_all_positions_with_post_norm_greedy(
+            &self.cfg,
+            &self.weights,
+            &[last_token],
+            &mut state.cache,
+            token_offset,
+        );
+        state.cache.advance(1);
+        let predicted = argmax(&logits, None);
+        {
+            let kv_refs = state.cache.collect_eval_refs();
+            let mut targets: Vec<&mlx_sys::MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+            targets.push(&predicted);
+            targets.extend(kv_refs);
+            eval(&targets);
+        }
+        let tok = predicted.data_u32()[0];
+        state.next_model_last_token = Some(tok);
+        state.decode_telemetry.record_production_decode_eval();
+        tok
+    }
+
     fn run_direct_pipeline_decode(
         &self,
         state: &mut RequestState,
@@ -7600,6 +7831,16 @@ impl MlxRunner {
     ) -> Vec<u32> {
         let branch_started = Instant::now();
         let repetition_history = state.repetition_history(&[], sampling);
+        let soft_close = if state.think_soft_close_armed {
+            self.cfg
+                .think_end_token_id
+                .map(|think_end_token_id| ThinkSoftCloseProbe {
+                    think_end_token_id,
+                    rank: THINK_SOFT_CLOSE_PROBE_RANK,
+                })
+        } else {
+            None
+        };
         let result = single_decode_with_sampling_buffers(
             &self.cfg,
             &self.weights,
@@ -7612,6 +7853,7 @@ impl MlxRunner {
             &mut state.sampling_probs_buf,
             &mut state.sampling_logits_buf,
             &mut state.sampling_candidates_buf,
+            soft_close,
         );
         state
             .decode_telemetry
@@ -7633,12 +7875,19 @@ impl MlxRunner {
         // Draft depth: the adaptive controller capped by the runtime ceiling
         // (default 2). The assistant is stateless per step, so it can be applied
         // recurrently to draft >1 token.
-        let max_depth = state.mtp_adaptive_max_depth.min(runtime.status.max_depth);
+        let mut max_depth = state.mtp_adaptive_max_depth.min(runtime.status.max_depth);
+        let base_position = state.cache.seq_len();
+        // Dual-edge window fix: successive teacher-forced S=2/S=3 exact in probe;
+        // formal LONG_MT reaches first_diff@89 (EOS near-tie) at ~1.16× long.
+        // Residual recheck / path alignment attempts desynced earlier. Fail-closed
+        // long pure-direct for release exact (smokef132). Opt-in LONG_MT=1.
+        let allow_long_mt = gemma4_moe_long_mt_enabled();
+        if self.cfg.moe_expert_count > 0 && base_position >= 512 && !allow_long_mt {
+            max_depth = 0;
+        }
         if max_depth == 0 {
             return (vec![], vec![], vec![]);
         }
-
-        let base_position = state.cache.seq_len();
         // Speculation-profile resolution (ADR-022): explicit env > profile preset
         // > built-in default. `auto` is temperature-driven and never lowers the
         // shipped Gemma default at low temperature.
@@ -7788,6 +8037,103 @@ impl MlxRunner {
         use crate::ngram_accel::sample_logit_row;
         use mlx_sys::{argmax, eval};
 
+        // Gemma assistant-MTP greedy exact path with no pending draft: pure
+        // direct (matches MTP-off / AX_NO_SPEC). Empty-draft pure-direct only
+        // under SEQUENTIAL_ORACLE=1. With ORACLE=0, MoE empty draft uses
+        // greedy multi-token S=1 (smokef89) so ArgmaxOnly matches pure-direct
+        // and post_norm is real for drafting (zeros-hidden drafts contaminate
+        // Shared QKV pos0 — smokef88 first_diff@1 after token-0 match).
+        // MoE (smokef95): empty-draft always pure-direct S=1 multi-token-greedy.
+        let gemma_greedy_exact = sampling.temperature <= 0.0
+            && self.gemma4_assistant_mtp.is_some()
+            && self.weights.deepseek_v4_nextn.is_none()
+            && !sampling.uses_logits_processors()
+            && (crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
+                || self.cfg.moe_expert_count > 0);
+        if gemma_greedy_exact
+            && state.mtp_pending_draft.is_empty()
+            && state.mtp_pending_draft_lazy.is_none()
+        {
+            let final_by_max_output = ctx
+                .map(|c| c.generated_len.saturating_add(1) >= c.max_output_tokens)
+                .unwrap_or(false);
+            // MoE empty-draft:
+            // - short: S=1 multi-token for real post_norm (seed drafts) and a
+            //   single KV geometry even after adaptive depth drops to 0
+            //   (do not mix double-buffer mid-stream — smokef137 agent div).
+            // - long fail-closed: double-buffer pure-direct = MTP-off twin.
+            let token_offset = state.cache.seq_len();
+            let moe_long_fail_closed = self.cfg.moe_expert_count > 0
+                && token_offset >= 512
+                && !gemma4_moe_long_mt_enabled();
+            let moe_force_direct = self.cfg.moe_expert_count > 0
+                && crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+            let (tok, draft_hidden) = if self.cfg.moe_expert_count > 0
+                && !moe_force_direct
+                && !moe_long_fail_closed
+            {
+                use crate::model::forward_all_positions_with_post_norm_greedy;
+                use mlx_sys::{argmax, eval};
+                state.pending_direct = None;
+                let (logits, post_norm) = forward_all_positions_with_post_norm_greedy(
+                    &self.cfg,
+                    &self.weights,
+                    &[last_token],
+                    &mut state.cache,
+                    token_offset,
+                );
+                state.cache.advance(1);
+                let predicted = argmax(&logits, None);
+                {
+                    let kv_refs = state.cache.collect_eval_refs();
+                    let mut targets: Vec<&mlx_sys::MlxArray> =
+                        Vec::with_capacity(2 + kv_refs.len());
+                    targets.push(&predicted);
+                    targets.push(&post_norm);
+                    targets.extend(kv_refs);
+                    eval(&targets);
+                }
+                let tok = predicted.data_u32()[0];
+                state.next_model_last_token = Some(tok);
+                let hidden = slice_post_norm_hidden(&post_norm, 0, self.cfg.hidden_size);
+                (tok, hidden)
+            } else {
+                // Dense empty, sequential-oracle, or MoE long pure-direct.
+                let tok =
+                    self.run_direct_pipeline_decode(state, last_token, final_by_max_output, false);
+                let hidden_size = self.cfg.hidden_size;
+                let draft_hidden = mlx_sys::zeros(
+                    &[1_i32, 1, hidden_size as i32],
+                    mlx_sys::MlxDtype::Bfloat16,
+                    None,
+                );
+                (tok, draft_hidden)
+            };
+            let draft_started = Instant::now();
+            let (draft, log_probs, distributions) =
+                self.gemma4_assistant_draft_token(state, tok, &draft_hidden, sampling);
+            let mtp_timings = MtpStepTimings {
+                draft_wall_us: elapsed_us(draft_started),
+                emitted_tokens: 1,
+                ..MtpStepTimings::default()
+            };
+            let drafted = draft.len();
+            state.mtp_pending_draft = draft;
+            state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_distributions = distributions;
+            state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; drafted];
+            state
+                .mtp_telemetry
+                .record_step(drafted, 0, &state.mtp_pending_draft_sources, None, 0);
+            if drafted > 0 {
+                state
+                    .gemma4_assistant_mtp_telemetry
+                    .record_submitted(drafted, mtp_timings.draft_wall_us);
+            }
+            state.mtp_telemetry.record_timings(mtp_timings);
+            return vec![tok];
+        }
+
         // Async-scheduled draft (`AX_MLX_MTP_ASYNC_DRAFT`): in the greedy
         // exact-profile regime the verify graph chains directly on the lazy
         // token arrays, so extraction defers past the verify graph build
@@ -7800,9 +8146,15 @@ impl MlxRunner {
         // temperature zero, and acceptance runs after the verify eval).
         let mut deferred_lazy_draft: Option<crate::mtp::MtpLazyDraft> = None;
         if let Some(lazy) = state.mtp_pending_draft_lazy.take() {
+            // Exactness-preserving async draft: Qwen linear-MTP (historical)
+            // plus Gemma4 assistant-MTP (same lazy-draft contract; no
+            // value-based consumer before verify eval).
+            let gemma_assistant_async =
+                self.gemma4_assistant_mtp_status.enabled || self.gemma4_assistant_mtp.is_some();
             let defer_qualified = crate::fastpath::mtp_async_draft_enabled()
-                && crate::fastpath::qwen_linear_mtp_exact_enabled()
-                && self.cfg.linear_attention.is_some()
+                && ((crate::fastpath::qwen_linear_mtp_exact_enabled()
+                    && self.cfg.linear_attention.is_some())
+                    || gemma_assistant_async)
                 && sampling.temperature <= 0.0
                 && !self.mtp_optimistic
                 && !state.mtp_bypassed;
@@ -7822,13 +8174,11 @@ impl MlxRunner {
         let has_linear_attention = self.cfg.linear_attention.is_some();
         let vocab = self.cfg.vocab_size as i32;
         let mut mtp_timings = MtpStepTimings::default();
-        // Draft log-probs are computed at T=1.0 (greedy path) or
-        // head.draft_sampling.temperature (sampled path). Check both the
-        // Qwen MTP head and the GLM MTP head — a model can only have one of
-        // the two, but reading only `self.weights.mtp` for a GLM-only model
-        // silently fell back to `sampling.temperature`, which trivially
-        // equals the target temperature and defeats the mismatch-rescale
-        // check in `mtp_accept_count` below.
+        // Draft log-probs are computed at T=1.0 (greedy path) or the draft
+        // head's sampling temperature (stochastic path). Resolve Qwen, GLM,
+        // then DeepSeek V4 nextn — nextn has no draft_sampling struct; use
+        // deepseek_v4_mtp_draft_log_prob_temperature() so greedy stays 1.0
+        // and only stochastic uses DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE (0.7).
         let draft_sampling_temperature = self
             .weights
             .mtp
@@ -7839,6 +8189,12 @@ impl MlxRunner {
                     .glm_mtp
                     .as_ref()
                     .map(|h| h.draft_sampling.temperature)
+            })
+            .or_else(|| {
+                self.weights
+                    .deepseek_v4_nextn
+                    .as_ref()
+                    .map(|_| crate::mtp::deepseek_v4_mtp_draft_log_prob_temperature())
             });
         let draft_log_prob_temperature = draft_sampling_temperature
             .map(|t| if t > 0.0 { t } else { 1.0 })
@@ -8470,153 +8826,550 @@ impl MlxRunner {
                     predicted,
                 )
             } else {
-                let verify_forward_started = Instant::now();
-                let (logits_all, post_norm_all) = if self.weights.deepseek_v4_nextn.is_some() {
-                    // V4 nextn consumes the packed pre-collapse residual; the
-                    // second return is `[1, seq, hc*hidden]`, not post-norm.
-                    crate::model::deepseek_v4_forward_all_positions_with_packed(
+                // Greedy Gemma4 assistant-MTP: multi-token teacher-forced
+                // argmax can disagree with singleton production decode (shared
+                // KV / sliding window / softcap path). Formal pilots accepted
+                // drafts that sequential greedy would not emit, breaking
+                // MTP-off/on exactness. Fail closed via sequential oracle
+                // (kill-switch: AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE=0
+                // restores multi-token for experiments only).
+                // Empty pending is handled at run_mtp_decode entry (direct
+                // pipeline) so this branch always has drafts when the oracle
+                // is engaged.
+                // Sequential pure-direct oracle intentionally disabled for the
+                // aligned multi-token path: pure-direct re-verify is exact but
+                // never multi-token-fast. Kill-switch still exists for experiments
+                // that restore pure-direct MTP-off + oracle, but formal Tier 2
+                // uses multi-token on both arms via gemma_assistant_exact_align_path.
+                // Greedy Gemma4 assistant-MTP hybrid:
+                // - Default / SEQUENTIAL_ORACLE=1 on looping history: pure-direct
+                //   sequential (exact vs MTP-off; formal pilot divergences were
+                //   almost always cycle-continuation false accepts).
+                // - SEQUENTIAL_ORACLE=0 and non-looping: multi-token on a clone,
+                //   full-accept adopt for Tier 2 speed.
+                let gemma_assistant_draft = sampling.temperature <= 0.0
+                    && !pending.is_empty()
+                    && state
+                        .mtp_pending_draft_sources
+                        .contains(&MtpDraftSource::Gemma4Assistant)
+                    && self.weights.deepseek_v4_nextn.is_none();
+                // SEQUENTIAL_ORACLE=1 → always pure-direct.
+                // SEQUENTIAL_ORACLE=0 → multi-token full-accept only; pure-direct
+                // on reject (avoids multi-token pos0 contamination, smoke18 t0)
+                // and when history is looping (smoke18 t4 cycle false-accept).
+                // SEQUENTIAL_ORACLE=1 → always pure-direct (exact, ~0.91×).
+                // SEQUENTIAL_ORACLE=0 → pure multi-token always-adopt + f32 SDPA
+                // + full-context sliding views (identity for dense 12B6/31B;
+                // MoE/4-bit rechecked under formal A/B).
+                // SEQUENTIAL_ORACLE=1 → pure-direct. ORACLE=0 → multi-token
+                // always-adopt + f32 SDPA (formal4: 12B6 general + all 31B).
+                // MoE multi-token still diverges; pure-direct keeps exactness
+                // (speed deferred until MoE multi-token identity lands).
+                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token always-adopt
+                // for dense. MoE multi-token still diverges early; pure-direct
+                // keeps exactness (speed deferred).
+                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token for dense.
+                // MoE multi-token still diverges (f32 router reduced div 3→2 only
+                // with per-pos FFN that killed speed); pure-direct keeps exact.
+                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token (dense + MoE).
+                // MoE uses tail per-pos dual-path FFN for short multi-token verify.
+                // Pending-draft verify: multi-token when ORACLE=0 (dense + MoE).
+                // Empty-draft pure-direct for MoE is separate (gemma_greedy_exact).
+                // ORACLE=1 → pure-direct. ORACLE=0 → multi-token (dense + MoE).
+                // MoE multi-token identity: RowExact QKV + per-pos SDPA/FFN.
+                let force_pure_direct =
+                    crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
+                let gemma_sequential_oracle = gemma_assistant_draft && force_pure_direct;
+                let gemma_multitoken_adopt = gemma_assistant_draft && !force_pure_direct;
+                if gemma_sequential_oracle {
+                    let verify_forward_started = Instant::now();
+                    let final_by_max = false;
+                    let mut ac = 0usize;
+                    let mut predicted: Vec<u32> = Vec::with_capacity(pending.len() + 1);
+                    let mut correction = 0u32;
+                    for &draft in &pending {
+                        let tok = self.run_direct_pipeline_decode(
+                            state,
+                            verify_input[0],
+                            final_by_max,
+                            false,
+                        );
+                        predicted.push(tok);
+                        if tok != draft {
+                            correction = tok;
+                            break;
+                        }
+                        ac += 1;
+                        correction = tok;
+                    }
+                    let all_accepted = ac == pending.len();
+                    if all_accepted {
+                        correction = self.run_direct_pipeline_decode(
+                            state,
+                            verify_input[0],
+                            final_by_max,
+                            false,
+                        );
+                        predicted.push(correction);
+                    }
+                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                    mtp_timings.verify_eval_wall_us = 0;
+                    let accept_started = Instant::now();
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
+                    let rejected_count = pending.len() - ac;
+                    if rejected_count > 0 {
+                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(ref mut c) = state.mtp_cache
+                            && !c.trim_to(new_mtp_len)
+                        {
+                            tracing::warn!(
+                                new_mtp_len,
+                                "MTP head cache trim refused; draft quality may degrade"
+                            );
+                        }
+                        state.mtp_decode_count = new_mtp_len;
+                    }
+                    mtp_timings.rollback_wall_us = 0;
+                    let hidden_size = self.cfg.hidden_size;
+                    let draft_hidden = mlx_sys::zeros(
+                        &[1_i32, 1, hidden_size as i32],
+                        mlx_sys::MlxDtype::Bfloat16,
+                        None,
+                    );
+                    let logits_all =
+                        mlx_sys::zeros(&[1_i32, vocab], mlx_sys::MlxDtype::Float32, None);
+                    (
+                        logits_all,
+                        draft_hidden,
+                        ac,
+                        all_accepted,
+                        correction,
+                        false,
+                        predicted,
+                    )
+                } else if gemma_multitoken_adopt {
+                    // In-place multi-token always-adopt + dual-edge window.
+                    // LONG_MT aligns attention reductions and quantized
+                    // projections with its materialized S=1 baseline; no
+                    // accepted KV is replayed or rewritten mid-stream.
+                    let verify_forward_started = Instant::now();
+                    state.pending_direct = None;
+                    let (logits_mt, post_norm_all) = forward_all_positions_with_post_norm_greedy(
                         &self.cfg,
                         &self.weights,
                         &verify_input,
                         &mut state.cache,
                         token_offset,
+                    );
+                    state.cache.advance(verify_len);
+                    let predicted_arr = argmax(&logits_mt, None);
+                    {
+                        let kv_refs = state.cache.collect_eval_refs();
+                        let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+                        targets.push(&predicted_arr);
+                        targets.push(&post_norm_all);
+                        targets.extend(kv_refs);
+                        eval(&targets);
+                    }
+                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                    let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                    let accept_started = Instant::now();
+                    let ac =
+                        crate::ngram_accel::greedy_draft_target_accept_count(&pending, &predicted);
+                    let all_accepted = ac == pending.len();
+                    let correction = predicted.get(ac).copied().unwrap_or(0);
+                    let committed_len = token_offset + 1 + ac;
+                    if !state.cache.trim_to(committed_len) {
+                        tracing::warn!(committed_len, "Gemma multi-token production trim refused");
+                    }
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
+                    mtp_timings.verify_eval_wall_us = 0;
+                    let rejected_count = pending.len() - ac;
+                    if rejected_count > 0 {
+                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(ref mut c) = state.mtp_cache
+                            && !c.trim_to(new_mtp_len)
+                        {
+                            tracing::warn!(
+                                new_mtp_len,
+                                "MTP head cache trim refused; draft quality may degrade"
+                            );
+                        }
+                        state.mtp_decode_count = new_mtp_len;
+                    }
+                    mtp_timings.rollback_wall_us = 0;
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                    (
+                        logits_mt,
+                        draft_hidden,
+                        ac,
+                        all_accepted,
+                        correction,
+                        false,
+                        predicted,
                     )
-                } else {
-                    forward_all_positions_with_post_norm(
-                        &self.cfg,
-                        &self.weights,
-                        &verify_input,
-                        &mut state.cache,
-                        token_offset,
-                    )
-                };
-                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                state.cache.advance(verify_len);
-                // Target probabilities for rejection-sampling acceptance.
-                let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
-                let target_prob_workspace =
-                    if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
-                        &mut state.mtp_target_prob_workspace
-                    } else {
-                        &mut local_target_prob_workspace
-                    };
-                let target_softmax_started = Instant::now();
-                let lazy_target_probs = compute_mtp_target_probs(
-                    &logits_all,
-                    &pending,
-                    acceptance_log_probs,
-                    vocab,
-                    sampling,
-                    self.mtp_target_softmax_topk,
-                    target_filter,
-                    target_prob_workspace,
-                );
-                mtp_timings.target_softmax_wall_us = mtp_timings
-                    .target_softmax_wall_us
-                    .saturating_add(elapsed_us(target_softmax_started));
-                // Always compute argmax for the correction/bonus fallback.
-                let predicted_arr = Some(argmax(&logits_all, None));
-                let kv_refs2 = state.cache.collect_eval_refs();
-                let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
-                targets.push(predicted_arr.as_ref().unwrap());
-                targets.push(&post_norm_all);
-                if let Some(ref ltp) = lazy_target_probs {
-                    ltp.push_eval_targets(&mut targets);
-                }
-                targets.extend(kv_refs2);
-                let verify_eval_started = Instant::now();
-                eval(&targets);
-                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
-                let accept_started = Instant::now();
-                let predicted: Vec<u32> = predicted_arr
-                    .as_ref()
-                    .map(|arr| arr.data_u32().to_vec())
-                    .unwrap_or_default();
-                let target_softmax_extract_started = Instant::now();
-                let target_probs_cpu = lazy_target_probs
-                    .as_ref()
-                    .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
-                mtp_timings.target_softmax_wall_us = mtp_timings
-                    .target_softmax_wall_us
-                    .saturating_add(elapsed_us(target_softmax_extract_started));
-                let target_distributions_cpu: Option<&[TokenDistribution]> = None;
+                } else if self.weights.deepseek_v4_nextn.is_some() {
+                    // DeepSeek V4 greedy exact path: singleton sequential verify
+                    // on production (same route as direct decode). Multi-token
+                    // teacher-forced verify + clone adopt can disagree with
+                    // sequential greedy on compressor / latent-K state after a
+                    // full draft accept — that was the observed Tier-2 greedy
+                    // mismatch. Sampled targets keep the clone + multi-token
+                    // path below for rejection sampling.
+                    let greedy_exact = sampling.temperature <= 0.0
+                        && !sampling.uses_logits_processors()
+                        && model_acceptance_mode == MtpModelAcceptanceMode::Greedy;
+                    if greedy_exact {
+                        let verify_forward_started = Instant::now();
+                        let seq = sequential_greedy_deepseek_v4_mtp_verify(
+                            &self.cfg,
+                            &self.weights,
+                            &mut state.cache,
+                            verify_input[0],
+                            &pending,
+                            token_offset,
+                            self.mtp_draft_hidden_width(),
+                        );
+                        mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                        mtp_timings.verify_eval_wall_us = 0;
+                        let accept_started = Instant::now();
+                        let ac = seq.accept_count;
+                        let all_accepted = ac == pending.len();
+                        mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
-                let accept = mtp_accept_count(
-                    &pending,
-                    acceptance_log_probs,
-                    &state.mtp_pending_draft_distributions,
-                    &state.mtp_pending_draft_sources,
-                    target_probs_cpu,
-                    target_distributions_cpu,
-                    &predicted,
-                    &mut state.rng,
-                    draft_log_prob_temperature,
-                    sampling.temperature,
-                    model_acceptance_mode,
-                    mtp_ngram_acceptance_mode_from_env(),
-                );
-                let ac = accept.accept_count;
-                let all_accepted = accept.all_accepted;
-                let exact_rejection_correction = (!all_accepted
-                    && proposal_law == MtpProposalLaw::DeterministicDelta)
-                    .then(|| {
-                        sample_exact_mtp_delta_rejection_correction(
-                            &logits_all,
+                        let rollback_started = Instant::now();
+                        let committed_len =
+                            token_offset + deepseek_v4_mtp_committed_verify_len(ac, pending.len());
+                        debug_assert_eq!(
+                            state.cache.seq_len(),
+                            committed_len,
+                            "DeepSeek V4 sequential MTP commit length must match accept count"
+                        );
+                        let rejected_count = pending.len().saturating_sub(ac);
+                        if rejected_count > 0 {
+                            let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                            if let Some(ref mut c) = state.mtp_cache
+                                && !c.trim_to(new_mtp_len)
+                            {
+                                tracing::warn!(
+                                    new_mtp_len,
+                                    "MTP head cache trim refused; draft quality may degrade"
+                                );
+                            }
+                            state.mtp_decode_count = new_mtp_len;
+                        }
+                        mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                        state.pending_direct = None;
+                        (
+                            seq.last_logits,
+                            seq.draft_hidden,
                             ac,
+                            all_accepted,
+                            seq.correction_token,
+                            false,
+                            seq.predicted,
+                        )
+                    } else {
+                        // Sampled / non-greedy: verify on a clone so rejected
+                        // drafts never corrupt production compressor state.
+                        // Live-cache trim_to only best-effort rewinds the
+                        // compressor buffer and can zero-fill missing history.
+                        let mut verify_cache = state.cache.clone();
+                        let verify_forward_started = Instant::now();
+                        let (logits_all, post_norm_all) =
+                            crate::model::deepseek_v4_forward_all_positions_with_packed(
+                                &self.cfg,
+                                &self.weights,
+                                &verify_input,
+                                &mut verify_cache,
+                                token_offset,
+                            );
+                        mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                        verify_cache.advance(verify_len);
+                        let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
+                        let target_prob_workspace =
+                            if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
+                                &mut state.mtp_target_prob_workspace
+                            } else {
+                                &mut local_target_prob_workspace
+                            };
+                        let target_softmax_started = Instant::now();
+                        let lazy_target_probs = compute_mtp_target_probs(
+                            &logits_all,
+                            &pending,
+                            acceptance_log_probs,
                             vocab,
                             sampling,
-                            pending[ac],
+                            self.mtp_target_softmax_topk,
+                            target_filter,
+                            target_prob_workspace,
+                        );
+                        mtp_timings.target_softmax_wall_us = mtp_timings
+                            .target_softmax_wall_us
+                            .saturating_add(elapsed_us(target_softmax_started));
+                        let predicted_arr = Some(argmax(&logits_all, None));
+                        let kv_refs2 = verify_cache.collect_eval_refs();
+                        let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
+                        targets.push(predicted_arr.as_ref().unwrap());
+                        targets.push(&post_norm_all);
+                        if let Some(ref ltp) = lazy_target_probs {
+                            ltp.push_eval_targets(&mut targets);
+                        }
+                        targets.extend(kv_refs2);
+                        let verify_eval_started = Instant::now();
+                        eval(&targets);
+                        mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                        let accept_started = Instant::now();
+                        let predicted: Vec<u32> = predicted_arr
+                            .as_ref()
+                            .map(|arr| arr.data_u32().to_vec())
+                            .unwrap_or_default();
+                        let target_softmax_extract_started = Instant::now();
+                        let target_probs_cpu = lazy_target_probs
+                            .as_ref()
+                            .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                        mtp_timings.target_softmax_wall_us = mtp_timings
+                            .target_softmax_wall_us
+                            .saturating_add(elapsed_us(target_softmax_extract_started));
+                        let target_distributions_cpu: Option<&[TokenDistribution]> = None;
+
+                        let accept = mtp_accept_count(
+                            &pending,
+                            acceptance_log_probs,
+                            &state.mtp_pending_draft_distributions,
+                            &state.mtp_pending_draft_sources,
+                            target_probs_cpu,
+                            target_distributions_cpu,
+                            &predicted,
                             &mut state.rng,
+                            draft_log_prob_temperature,
+                            sampling.temperature,
+                            model_acceptance_mode,
+                            mtp_ngram_acceptance_mode_from_env(),
+                        );
+                        let ac = accept.accept_count;
+                        let all_accepted = accept.all_accepted;
+                        let exact_rejection_correction = (!all_accepted
+                            && proposal_law == MtpProposalLaw::DeterministicDelta)
+                            .then(|| {
+                                sample_exact_mtp_delta_rejection_correction(
+                                    &logits_all,
+                                    ac,
+                                    vocab,
+                                    sampling,
+                                    pending[ac],
+                                    &mut state.rng,
+                                )
+                            })
+                            .flatten();
+                        let exact_residual_correction_applied =
+                            exact_rejection_correction.is_some();
+                        mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                        let rollback_started = Instant::now();
+                        // Primary (verify_input[0] == last_token) is not yet in
+                        // production at token_offset; even ac==0 commits length 1.
+                        let committed_len =
+                            token_offset + deepseek_v4_mtp_committed_verify_len(ac, pending.len());
+                        if all_accepted {
+                            state.cache = verify_cache;
+                        } else {
+                            // Reject: never adopt the clone (compressor trim is
+                            // incomplete). Replay committed prefix on production.
+                            drop(verify_cache);
+                            let accepted_input = &verify_input[..=ac];
+                            let _ = crate::model::deepseek_v4_forward_all_positions_with_packed(
+                                &self.cfg,
+                                &self.weights,
+                                accepted_input,
+                                &mut state.cache,
+                                token_offset,
+                            );
+                            state.cache.advance(accepted_input.len());
+                            let kv_refs = state.cache.collect_eval_refs();
+                            eval(&kv_refs);
+                        }
+                        debug_assert_eq!(
+                            state.cache.seq_len(),
+                            committed_len,
+                            "DeepSeek V4 MTP commit length must match accept count"
+                        );
+
+                        let rejected_count = pending.len() - ac;
+                        if rejected_count > 0 {
+                            let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                            if let Some(ref mut c) = state.mtp_cache
+                                && !c.trim_to(new_mtp_len)
+                            {
+                                tracing::warn!(
+                                    new_mtp_len,
+                                    "MTP head cache trim refused; draft quality may degrade"
+                                );
+                            }
+                            state.mtp_decode_count = new_mtp_len;
+                        }
+                        mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                        state.pending_direct = None;
+                        let draft_hidden = slice_post_norm_hidden(
+                            &post_norm_all,
+                            ac,
+                            self.mtp_draft_hidden_width(),
+                        );
+                        let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                        (
+                            logits_all,
+                            draft_hidden,
+                            ac,
+                            all_accepted,
+                            exact_rejection_correction
+                                .or(accept.rejection_correction)
+                                .unwrap_or(correction_argmax_tok),
+                            exact_residual_correction_applied,
+                            predicted,
                         )
-                    })
-                    .flatten();
-                let exact_residual_correction_applied = exact_rejection_correction.is_some();
-                mtp_timings.accept_wall_us = elapsed_us(accept_started);
-
-                let rollback_started = Instant::now();
-                let committed_len = token_offset + 1 + ac;
-                let trimmed = state.cache.trim_to(committed_len);
-                debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
-                if !trimmed {
-                    // Ring slack is sized to absorb a full draft-depth
-                    // rollback; a refusal means rejected-draft KV stays
-                    // attendable. There is no cheap recovery at this point —
-                    // surface it instead of silently degrading output.
-                    tracing::error!(
-                        committed_len,
-                        "speculative rollback trim refused by rotated KV ring"
+                    }
+                } else {
+                    let verify_forward_started = Instant::now();
+                    let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut state.cache,
+                        token_offset,
                     );
-                }
+                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                    state.cache.advance(verify_len);
+                    // Target probabilities for rejection-sampling acceptance.
+                    let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
+                    let target_prob_workspace =
+                        if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
+                            &mut state.mtp_target_prob_workspace
+                        } else {
+                            &mut local_target_prob_workspace
+                        };
+                    let target_softmax_started = Instant::now();
+                    let lazy_target_probs = compute_mtp_target_probs(
+                        &logits_all,
+                        &pending,
+                        acceptance_log_probs,
+                        vocab,
+                        sampling,
+                        self.mtp_target_softmax_topk,
+                        target_filter,
+                        target_prob_workspace,
+                    );
+                    mtp_timings.target_softmax_wall_us = mtp_timings
+                        .target_softmax_wall_us
+                        .saturating_add(elapsed_us(target_softmax_started));
+                    // Always compute argmax for the correction/bonus fallback.
+                    let predicted_arr = Some(argmax(&logits_all, None));
+                    let kv_refs2 = state.cache.collect_eval_refs();
+                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
+                    targets.push(predicted_arr.as_ref().unwrap());
+                    targets.push(&post_norm_all);
+                    if let Some(ref ltp) = lazy_target_probs {
+                        ltp.push_eval_targets(&mut targets);
+                    }
+                    targets.extend(kv_refs2);
+                    let verify_eval_started = Instant::now();
+                    eval(&targets);
+                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                    let accept_started = Instant::now();
+                    let predicted: Vec<u32> = predicted_arr
+                        .as_ref()
+                        .map(|arr| arr.data_u32().to_vec())
+                        .unwrap_or_default();
+                    let target_softmax_extract_started = Instant::now();
+                    let target_probs_cpu = lazy_target_probs
+                        .as_ref()
+                        .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                    mtp_timings.target_softmax_wall_us = mtp_timings
+                        .target_softmax_wall_us
+                        .saturating_add(elapsed_us(target_softmax_extract_started));
+                    let target_distributions_cpu: Option<&[TokenDistribution]> = None;
 
-                // Trim MTP KV cache: remove rejected draft entries.
-                let rejected_count = pending.len() - ac;
-                if rejected_count > 0 {
-                    let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
-                    if let Some(ref mut c) = state.mtp_cache
-                        && !c.trim_to(new_mtp_len)
-                    {
-                        tracing::warn!(
-                            new_mtp_len,
-                            "MTP head cache trim refused; draft quality may degrade"
+                    let accept = mtp_accept_count(
+                        &pending,
+                        acceptance_log_probs,
+                        &state.mtp_pending_draft_distributions,
+                        &state.mtp_pending_draft_sources,
+                        target_probs_cpu,
+                        target_distributions_cpu,
+                        &predicted,
+                        &mut state.rng,
+                        draft_log_prob_temperature,
+                        sampling.temperature,
+                        model_acceptance_mode,
+                        mtp_ngram_acceptance_mode_from_env(),
+                    );
+                    let ac = accept.accept_count;
+                    let all_accepted = accept.all_accepted;
+                    let exact_rejection_correction = (!all_accepted
+                        && proposal_law == MtpProposalLaw::DeterministicDelta)
+                        .then(|| {
+                            sample_exact_mtp_delta_rejection_correction(
+                                &logits_all,
+                                ac,
+                                vocab,
+                                sampling,
+                                pending[ac],
+                                &mut state.rng,
+                            )
+                        })
+                        .flatten();
+                    let exact_residual_correction_applied = exact_rejection_correction.is_some();
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                    let rollback_started = Instant::now();
+                    let committed_len = token_offset + 1 + ac;
+                    let trimmed = state.cache.trim_to(committed_len);
+                    debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
+                    if !trimmed {
+                        // Ring slack is sized to absorb a full draft-depth
+                        // rollback; a refusal means rejected-draft KV stays
+                        // attendable. There is no cheap recovery at this point —
+                        // surface it instead of silently degrading output.
+                        tracing::error!(
+                            committed_len,
+                            "speculative rollback trim refused by rotated KV ring"
                         );
                     }
-                    state.mtp_decode_count = new_mtp_len;
+
+                    // Trim MTP KV cache: remove rejected draft entries.
+                    let rejected_count = pending.len() - ac;
+                    if rejected_count > 0 {
+                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(ref mut c) = state.mtp_cache
+                            && !c.trim_to(new_mtp_len)
+                        {
+                            tracing::warn!(
+                                new_mtp_len,
+                                "MTP head cache trim refused; draft quality may degrade"
+                            );
+                        }
+                        state.mtp_decode_count = new_mtp_len;
+                    }
+                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    // Multi-token verify advanced production KV outside the
+                    // double-buffer direct pipeline; drop any pending direct
+                    // token so empty-draft fallthrough cannot desync.
+                    state.pending_direct = None;
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, ac, self.mtp_draft_hidden_width());
+                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                    (
+                        logits_all,
+                        draft_hidden,
+                        ac,
+                        all_accepted,
+                        exact_rejection_correction
+                            .or(accept.rejection_correction)
+                            .unwrap_or(correction_argmax_tok),
+                        exact_residual_correction_applied,
+                        predicted,
+                    )
                 }
-                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                let draft_hidden =
-                    slice_post_norm_hidden(&post_norm_all, ac, self.mtp_draft_hidden_width());
-                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                (
-                    logits_all,
-                    draft_hidden,
-                    ac,
-                    all_accepted,
-                    exact_rejection_correction
-                        .or(accept.rejection_correction)
-                        .unwrap_or(correction_argmax_tok),
-                    exact_residual_correction_applied,
-                    predicted,
-                )
             }
         };
 
@@ -8812,6 +9565,14 @@ impl MlxRunner {
             pending.len(),
             adaptive_depth_accept,
             state.mtp_consecutive_misses,
+            // Early short-context only: stop-loss reject storms on tiny
+            // gens (gen med killers) without aborting multi-token mid
+            // long-ish short-ctx gens (smokef139 trial3 1.20→1.04).
+            // Window 24 covers formal general short tails that still
+            // stack low-accept cost after the first dozen tokens.
+            self.gemma4_assistant_mtp.is_some()
+                && state.cache.seq_len() < 512
+                && state.generated_tokens.len() < 24,
         );
         if adaptive_depth_accept == 0 && !pending.is_empty() {
             state.mtp_consecutive_misses = state.mtp_consecutive_misses.saturating_add(1);
@@ -9141,6 +9902,20 @@ impl MlxRunner {
                         .mtp_cache
                         .get_or_insert_with(|| self.new_mtp_draft_cache());
                     let mtp_draft_started = Instant::now();
+                    // Share the pure-MTP gate (adaptive/optimistic/model default)
+                    // so hybrid tails do not re-resolve a different confidence.
+                    let (hybrid_gate, _src) = resolve_mtp_gate_from_env(
+                        Some(sampling.temperature),
+                        state.mtp_adaptive_gate.as_ref(),
+                        mtp_optimistic_draft_min_confidence_override(),
+                        if self.weights.mtp.is_some() {
+                            self.mtp_model_policy.qwen_gate_default()
+                        } else if self.weights.glm_mtp.is_some() {
+                            self.mtp_model_policy.glm_gate_default()
+                        } else {
+                            None
+                        },
+                    );
                     let (tail, log_probs, distributions, added, _top2_margins) =
                         if self.weights.glm_mtp.is_some() {
                             glm_mtp_draft_tokens_after_forced_prefix(
@@ -9152,6 +9927,7 @@ impl MlxRunner {
                                 cache,
                                 mtp_tail_cap,
                                 &mut state.rng,
+                                Some(hybrid_gate),
                             )
                         } else if self.weights.deepseek_v4_nextn.is_some() {
                             deepseek_v4_mtp_draft_tokens_after_forced_prefix(
@@ -9163,6 +9939,7 @@ impl MlxRunner {
                                 cache,
                                 mtp_tail_cap,
                                 &mut state.rng,
+                                Some(hybrid_gate),
                             )
                         } else {
                             mtp_draft_tokens_after_forced_prefix(
@@ -9174,6 +9951,7 @@ impl MlxRunner {
                                 cache,
                                 mtp_tail_cap,
                                 &mut state.rng,
+                                Some(hybrid_gate),
                             )
                         };
                     mtp_timings.mtp_draft_wall_us = mtp_timings
@@ -9325,6 +10103,10 @@ impl MlxRunner {
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
+                    let draft_temperature = crate::mtp::deepseek_v4_mtp_effective_draft_temperature(
+                        state.ngram_in_think,
+                        sampling.temperature,
+                    );
                     let (draft, log_probs, distributions, added, _top2_margins) =
                         deepseek_v4_mtp_draft_tokens_gated(
                             &self.weights,
@@ -9335,6 +10117,7 @@ impl MlxRunner {
                             Some(state.mtp_adaptive_max_depth),
                             &mut state.rng,
                             gate,
+                            draft_temperature,
                         );
                     mtp_timings.mtp_draft_wall_us = mtp_timings
                         .mtp_draft_wall_us
@@ -9505,9 +10288,17 @@ impl MlxRunner {
         // computation graph depth, increasing TTFT. For a 2048-token cold
         // prefill chunk, the cap reduces warmup ops from ~57 to ~7
         // full-model-equivalent forwards.
-        if let (Some(prefill_hidden), Some(head)) =
-            (state.mtp_prefill_hidden.take(), self.weights.mtp.as_ref())
+        // Do not `take()` the prefill hidden until the matching drafter is
+        // confirmed present: a naive `(take(), mtp.as_ref())` pair would
+        // discard DeepSeek packed history when only `deepseek_v4_nextn` is set.
+        if self.weights.mtp.is_some()
+            && let Some(prefill_hidden) = state.mtp_prefill_hidden.take()
         {
+            let head = self
+                .weights
+                .mtp
+                .as_ref()
+                .expect("mtp head present after is_some guard");
             let history_tokens = std::mem::take(&mut state.mtp_prefill_history_tokens);
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
             let available_rows = prefill_hidden
@@ -9520,6 +10311,11 @@ impl MlxRunner {
             let cap = mtp_warmup_cap();
             let warmup_len = if cap > 0 { total.min(cap) } else { total };
             let start_offset = total.saturating_sub(warmup_len);
+            // Absolute RoPE base: final-chunk history is only the last
+            // `available_rows` of the main prompt. Multi-chunk prefill must
+            // not warm at relative indices 0..C or long-prompt MTP RoPE is wrong.
+            let rope_start =
+                mtp_warmup_absolute_rope_start(state.cache.seq_len(), available_rows, start_offset);
             if warmup_len > 0 {
                 let warmup_hidden = slice(
                     &prefill_hidden,
@@ -9535,20 +10331,74 @@ impl MlxRunner {
                     &self.weights,
                     cache,
                     &self.cfg,
-                    start_offset,
+                    rope_start,
                 );
                 let kv_refs = cache.collect_eval_refs();
                 mlx_sys::eval(&kv_refs);
                 clear_cache();
                 state.mtp_decode_count = warmup_len;
-                // After warmup, cache.seq_len() == warmup_len (physical entries).
-                // Set rope_offset so subsequent decode steps compute RoPE at
-                // the correct absolute position: seq_len + rope_offset gives
-                // the true logical position (e.g. warmup_len + start_offset = total).
+                // Physical entries = warmup_len; next absolute pos = abs_base + total.
                 if let Some(ref mut c) = state.mtp_cache {
-                    c.rope_offset = start_offset;
+                    c.rope_offset = rope_start;
                 }
             }
+        } else if self.weights.deepseek_v4_nextn.is_some()
+            && let Some(prefill_packed) = state.mtp_prefill_hidden.take()
+        {
+            // DeepSeek V4 nextn: packed residual rows + nextn-layer warmup.
+            // Without this the predictor starts with a cold KV and acceptance
+            // collapses (Qwen path above already warms its head).
+            let nextn = self
+                .weights
+                .deepseek_v4_nextn
+                .as_ref()
+                .expect("deepseek nextn present after is_some guard");
+            let history_tokens = std::mem::take(&mut state.mtp_prefill_history_tokens);
+            let cache = state
+                .mtp_cache
+                .get_or_insert_with(|| self.new_mtp_draft_cache());
+            let available_rows = prefill_packed
+                .shape()
+                .get(1)
+                .copied()
+                .unwrap_or_default()
+                .max(0) as usize;
+            let total = available_rows.min(history_tokens.len());
+            let cap = mtp_warmup_cap();
+            let warmup_len = if cap > 0 { total.min(cap) } else { total };
+            let start_offset = total.saturating_sub(warmup_len);
+            let rope_start =
+                mtp_warmup_absolute_rope_start(state.cache.seq_len(), available_rows, start_offset);
+            if warmup_len > 0 {
+                let width = prefill_packed.shape().get(2).copied().unwrap_or(0);
+                let warmup_packed = slice(
+                    &prefill_packed,
+                    &[0, start_offset as i32, 0],
+                    &[1, total as i32, width],
+                    &[1, 1, 1],
+                    None,
+                );
+                deepseek_v4_mtp_warmup_cache(
+                    nextn,
+                    &warmup_packed,
+                    &history_tokens[start_offset..total],
+                    &self.weights,
+                    cache,
+                    &self.cfg,
+                    rope_start,
+                );
+                let kv_refs = cache.collect_eval_refs();
+                mlx_sys::eval(&kv_refs);
+                clear_cache();
+                state.mtp_decode_count = warmup_len;
+                if let Some(ref mut c) = state.mtp_cache {
+                    c.rope_offset = rope_start;
+                }
+            }
+        } else {
+            // Unconsumed history for non-MTP families.
+            state.mtp_prefill_hidden = None;
+            state.mtp_prefill_history_tokens.clear();
         }
 
         // Skip n-gram entirely for short output budgets: failed speculation
@@ -9596,13 +10446,15 @@ impl MlxRunner {
         // post-latch appends are decode-sized (1 for direct steps, ≤ slack
         // for speculative verifies) and the predicate is deterministic per
         // request, making re-runs idempotent.
+        // Gemma assistant: always use bounded ring slack so MTP-off (AX_NO_SPEC)
+        // and MTP-on share KV geometry. Pure rings panic on multi-token ordered
+        // append; mismatched pure-vs-bounded rings also drift greedy A/B.
         let mtp_ring_slack = if !has_mtp {
             Some(0)
         } else if self.gemma4_assistant_mtp.is_some()
             && self.weights.mtp.is_none()
             && self.weights.glm_mtp.is_none()
             && self.weights.deepseek_v4_nextn.is_none()
-            && crate::fastpath::rotating_bounded_mtp_enabled()
         {
             // Verify width = 1 (primary) + pending; pending is capped by the
             // assistant depth plus any stacked n-gram draft tokens.
@@ -9657,12 +10509,37 @@ impl MlxRunner {
         // if the engine's deterministic-argmax bit was not latched (bench
         // requests often omit `deterministic: true` and inherit a non-det
         // session default while still sending temperature=0).
-        if should_bootstrap_direct_pipeline(
+        //
+        // Sequential-oracle mode retains the direct-pipeline prime. Normal
+        // assistant-MTP starts with an S=1 target step so it can retain the
+        // post-norm hidden that seeds the first real draft.
+        // MoE long-prompt: prime double-buffer so MTP-off matches empty pure-
+        // direct. Never prime short MTP-on (smokef121 first_diff@1).
+        let gemma_exact_direct_bootstrap = self.gemma4_assistant_mtp.is_some()
+            && self.weights.deepseek_v4_nextn.is_none()
+            && is_greedy
+            && (crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled()
+                || (self.cfg.moe_expert_count > 0
+                    && state.cache.seq_len() >= 512
+                    && !gemma4_moe_long_mt_enabled()));
+        // The LONG_MT identity route deliberately uses materialized S=1 for
+        // MTP-off and an S=1 target step to seed MTP-on. Priming the lazy
+        // double buffer here writes that bootstrap token a second time and
+        // produces the proven 74418 self-loop.
+        let gemma_moe_long_mt_singleton = self.gemma4_assistant_mtp.is_some()
+            && self.cfg.moe_expert_count > 0
+            && self.weights.deepseek_v4_nextn.is_none()
+            && is_greedy
+            && state.cache.seq_len() >= 512
+            && gemma4_moe_long_mt_enabled();
+        if (should_bootstrap_direct_pipeline(
             self.disable_ngram_acceleration,
             state.ngram_acceleration_disabled_for_request,
             self.has_mtp(),
             mtp_uses_direct_pipeline,
-        ) && (is_greedy || (self.disable_ngram_acceleration && temperature <= 0.0))
+        ) || gemma_exact_direct_bootstrap)
+            && !gemma_moe_long_mt_singleton
+            && (is_greedy || (self.disable_ngram_acceleration && temperature <= 0.0))
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token
         {
@@ -9690,6 +10567,27 @@ impl MlxRunner {
         final_by_max_output: bool,
         ctx: Option<&RunnerRequestContext>,
     ) -> Vec<u32> {
+        // Think soft-close window: bypass MTP / n-gram speculation so every
+        // step decides one token against materialized logits where the rank
+        // probe can fire. MTP session state resets exactly like the
+        // DirectFallback arm; a pending direct-pipeline token drains first
+        // (already committed — the probe applies from the next step).
+        if state.think_soft_close_armed {
+            state.mtp_pending_draft.clear();
+            state.mtp_pending_draft_lazy = None;
+            state.mtp_pending_draft_log_probs.clear();
+            state.mtp_pending_draft_distributions.clear();
+            state.mtp_pending_draft_sources.clear();
+            state.mtp_decode_count = 0;
+            if let Some(cache) = state.mtp_cache.as_mut() {
+                cache.reset();
+            }
+            if state.pending_direct.is_some() {
+                return self.finish_pending_direct_for_ngram_transition(state);
+            }
+            return self.run_single_decode(state, last_token, sampling);
+        }
+
         let has_linear_attention = self.cfg.linear_attention.is_some();
 
         // MTP model-based speculative decode: checked first so that MTP can
@@ -9861,11 +10759,47 @@ fn ngram_draft_is_cycle(draft: &[u32], recent: &[u32]) -> bool {
     false
 }
 
+fn gemma4_moe_long_mt_enabled() -> bool {
+    std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Compute the think-block state after observing a sequence of tokens, without
 /// mutating any state.  Returns the updated `in_think` flag.
 ///
 /// Used in `run_mtp_decode` to peek ahead at result tokens before deciding
 /// whether the NEXT draft step should be gated by think-block state.
+/// Number of verify tokens (primary + accepted drafts) DeepSeek V4 MTP must
+/// commit into production KV after acceptance.
+///
+/// `verify_input = [last_token] ++ pending_drafts`. The primary is not yet in
+/// the production cache at `token_offset`, so even a full draft reject
+/// (`accept_count == 0`) still commits length 1. Returning 0 here was a real
+/// bug: leaving production unadvanced dropped the primary token's KV write and
+/// desynced the next decode step.
+pub(super) fn deepseek_v4_mtp_committed_verify_len(
+    accept_count: usize,
+    pending_len: usize,
+) -> usize {
+    1 + accept_count.min(pending_len)
+}
+
+/// Absolute RoPE start for MTP prefill warmup when history is only the last
+/// `available_rows` of a multi-chunk prompt of length `main_seq_len`.
+///
+/// First warmed row sits at absolute position
+/// `main_seq_len - available_rows + start_offset` (not the relative
+/// `start_offset` alone — that mis-positions long multi-chunk prompts).
+pub(super) fn mtp_warmup_absolute_rope_start(
+    main_seq_len: usize,
+    available_rows: usize,
+    start_offset: usize,
+) -> usize {
+    let abs_base = main_seq_len.saturating_sub(available_rows);
+    abs_base.saturating_add(start_offset)
+}
+
 fn compute_think_state(cfg: &ModelConfig, current: bool, tokens: &[u32]) -> bool {
     let Some(start_id) = cfg.think_start_token_id else {
         return current;
@@ -9880,6 +10814,415 @@ fn compute_think_state(cfg: &ModelConfig, current: bool, tokens: &[u32]) -> bool
         }
     }
     state
+}
+
+/// Decide whether the thinking-budget controller must force the think-close
+/// token at this step. Hard close: the answer reserve (or the per-request
+/// think budget) is exhausted. Soft close: the loop detector fired while
+/// still inside the think block (a stuck reasoning trace). The override is
+/// KV-exact — this step's forward already consumed the sampled token, and
+/// the close token rides its own forward as the step's emitted token.
+pub(crate) fn think_budget_close_decision(
+    in_think: bool,
+    think_end_token_id: Option<u32>,
+    remaining_budget: u32,
+    think_emitted_tokens: u32,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+    loop_detected: bool,
+) -> bool {
+    if !in_think || think_end_token_id.is_none() {
+        return false;
+    }
+    if max_think_tokens.is_some_and(|cap| think_emitted_tokens >= cap) {
+        return true;
+    }
+    if answer_reserve_tokens.is_some_and(|reserve| remaining_budget <= reserve) {
+        return true;
+    }
+    loop_detected
+}
+
+/// Apply the thinking-budget controller override to a decoded step (ds4-style
+/// soft+hard close). When [`think_budget_close_decision`] is due on a step
+/// that would otherwise continue — or on a loop-detected step — the step
+/// emits only the think-close token. Budget-edge closes carry `None` as the
+/// stop reason: generation continues so the remaining output budget funds the
+/// answer (ds4 hard-limit semantics), and the regular max-output path
+/// terminates the request. A loop-detected close keeps its stop reason so a
+/// stuck reasoning trace still ends the request after the forced close.
+/// Returns `None` when no override applies.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn think_budget_close_override(
+    stop_reason: Option<StopReason>,
+    sampled_nonempty: bool,
+    in_think: bool,
+    think_end_token_id: Option<u32>,
+    remaining_budget: u32,
+    think_emitted_tokens: u32,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+) -> Option<(Vec<u32>, Option<StopReason>)> {
+    if !sampled_nonempty {
+        return None;
+    }
+    let loop_detected = matches!(stop_reason, Some(StopReason::LoopDetected));
+    if !(stop_reason.is_none() || loop_detected) {
+        return None;
+    }
+    if !think_budget_close_decision(
+        in_think,
+        think_end_token_id,
+        remaining_budget,
+        think_emitted_tokens,
+        max_think_tokens,
+        answer_reserve_tokens,
+        loop_detected,
+    ) {
+        return None;
+    }
+    Some((
+        vec![think_end_token_id.expect("checked in decision")],
+        stop_reason,
+    ))
+}
+
+/// Think soft-close probe window ahead of the hard budget edge (ds4:
+/// `soft_limit_reply_budget = 1024` ahead of `hard_limit_reply_budget`).
+pub(crate) const THINK_SOFT_CLOSE_WINDOW_TOKENS: u32 = 1024;
+
+/// Decide whether the think soft-close rank probe is armed for this step.
+/// Armed only inside an open think block with a budget controller active,
+/// before the hard close is due, once generation nears the hard edge:
+/// within `THINK_SOFT_CLOSE_WINDOW_TOKENS` of the answer reserve, or of the
+/// per-request think cap. While armed, decode routes through a
+/// logits-materializing single decode that emits the think-close token
+/// early when the model itself ranks it in its top-3.
+pub(crate) fn think_soft_close_armed(
+    in_think: bool,
+    think_end_token_id: Option<u32>,
+    remaining_budget: u32,
+    think_emitted_tokens: u32,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+) -> bool {
+    if !crate::fastpath::think_soft_close_enabled() || !in_think || think_end_token_id.is_none() {
+        return false;
+    }
+    if max_think_tokens.is_none() && answer_reserve_tokens.is_none() {
+        return false;
+    }
+    // Hard close already due: the post-decode budget hook force-closes this
+    // step; probing would be wasted work.
+    if think_budget_close_decision(
+        in_think,
+        think_end_token_id,
+        remaining_budget,
+        think_emitted_tokens,
+        max_think_tokens,
+        answer_reserve_tokens,
+        false,
+    ) {
+        return false;
+    }
+    if answer_reserve_tokens.is_some_and(|reserve| {
+        remaining_budget <= reserve.saturating_add(THINK_SOFT_CLOSE_WINDOW_TOKENS)
+    }) {
+        return true;
+    }
+    max_think_tokens.is_some_and(|cap| {
+        think_emitted_tokens.saturating_add(THINK_SOFT_CLOSE_WINDOW_TOKENS) >= cap
+    })
+}
+
+#[cfg(test)]
+mod think_soft_close_armed_tests {
+    use super::{THINK_SOFT_CLOSE_WINDOW_TOKENS, think_soft_close_armed};
+
+    #[test]
+    fn inactive_without_controller_or_think_state() {
+        // No controller knobs set.
+        assert!(!think_soft_close_armed(true, Some(5), 100, 10, None, None));
+        // Outside think.
+        assert!(!think_soft_close_armed(
+            false,
+            Some(5),
+            100,
+            10,
+            None,
+            Some(512)
+        ));
+        // No close token.
+        assert!(!think_soft_close_armed(
+            true,
+            None,
+            100,
+            10,
+            None,
+            Some(512)
+        ));
+    }
+
+    #[test]
+    fn arms_within_window_of_answer_reserve() {
+        let reserve = 512;
+        // Just outside the window.
+        assert!(!think_soft_close_armed(
+            true,
+            Some(5),
+            reserve + THINK_SOFT_CLOSE_WINDOW_TOKENS + 1,
+            10,
+            None,
+            Some(reserve),
+        ));
+        // Window edge and inside.
+        assert!(think_soft_close_armed(
+            true,
+            Some(5),
+            reserve + THINK_SOFT_CLOSE_WINDOW_TOKENS,
+            10,
+            None,
+            Some(reserve),
+        ));
+        assert!(think_soft_close_armed(
+            true,
+            Some(5),
+            reserve + 1,
+            10,
+            None,
+            Some(reserve)
+        ));
+    }
+
+    #[test]
+    fn hard_close_due_disarms_probe() {
+        // remaining == reserve: hard close takes this step.
+        assert!(!think_soft_close_armed(
+            true,
+            Some(5),
+            512,
+            10,
+            None,
+            Some(512)
+        ));
+        // Think cap exhausted: hard close takes this step.
+        assert!(!think_soft_close_armed(
+            true,
+            Some(5),
+            8192,
+            1000,
+            Some(1000),
+            None
+        ));
+    }
+
+    #[test]
+    fn arms_within_window_of_think_cap() {
+        // Far from the cap.
+        assert!(!think_soft_close_armed(
+            true,
+            Some(5),
+            8192,
+            10,
+            Some(5000),
+            None
+        ));
+        // Within 1024 of the cap.
+        assert!(think_soft_close_armed(
+            true,
+            Some(5),
+            8192,
+            4000,
+            Some(5000),
+            None,
+        ));
+        // Cap larger than remaining+window is irrelevant: cap window only.
+        assert!(think_soft_close_armed(
+            true,
+            Some(5),
+            8192,
+            4999,
+            Some(5000),
+            None,
+        ));
+    }
+}
+
+#[cfg(test)]
+mod think_budget_close_decision_tests {
+    use super::think_budget_close_decision;
+
+    #[test]
+    fn inactive_without_think_state_or_close_token() {
+        assert!(!think_budget_close_decision(
+            false,
+            Some(5),
+            0,
+            0,
+            Some(1),
+            Some(1),
+            true
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            None,
+            0,
+            0,
+            Some(1),
+            Some(1),
+            true
+        ));
+    }
+
+    #[test]
+    fn hard_close_on_answer_reserve() {
+        assert!(think_budget_close_decision(
+            true,
+            Some(5),
+            512,
+            100,
+            None,
+            Some(512),
+            false
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            Some(5),
+            513,
+            100,
+            None,
+            Some(512),
+            false
+        ));
+    }
+
+    #[test]
+    fn hard_close_on_think_cap() {
+        assert!(think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            4096,
+            Some(4096),
+            None,
+            false
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            4095,
+            Some(4096),
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn soft_close_only_on_loop_inside_think() {
+        assert!(think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            10,
+            None,
+            None,
+            true
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            10,
+            None,
+            None,
+            false
+        ));
+    }
+}
+
+#[cfg(test)]
+mod think_budget_close_override_tests {
+    use super::{StopReason, think_budget_close_override};
+
+    #[test]
+    fn budget_edge_forces_close_but_keeps_generating() {
+        // ds4 hard-limit semantics: the forced close token carries no stop
+        // reason, so the remaining output budget funds the answer instead of
+        // truncating the request at the reserve edge.
+        let override_result =
+            think_budget_close_override(None, true, true, Some(5), 512, 100, None, Some(512));
+        assert_eq!(override_result, Some((vec![5], None)));
+    }
+
+    #[test]
+    fn think_cap_edge_forces_close_but_keeps_generating() {
+        let override_result =
+            think_budget_close_override(None, true, true, Some(5), 9999, 4096, Some(4096), None);
+        assert_eq!(override_result, Some((vec![5], None)));
+    }
+
+    #[test]
+    fn loop_detected_close_keeps_stop_reason() {
+        let override_result = think_budget_close_override(
+            Some(StopReason::LoopDetected),
+            true,
+            true,
+            Some(5),
+            9999,
+            10,
+            None,
+            None,
+        );
+        assert_eq!(
+            override_result,
+            Some((vec![5], Some(StopReason::LoopDetected)))
+        );
+    }
+
+    #[test]
+    fn no_override_outside_eligible_steps() {
+        // Terminal stops (EOS / max output) are never overridden.
+        assert_eq!(
+            think_budget_close_override(
+                Some(StopReason::EosToken),
+                true,
+                true,
+                Some(5),
+                512,
+                100,
+                None,
+                Some(512)
+            ),
+            None
+        );
+        assert_eq!(
+            think_budget_close_override(
+                Some(StopReason::MaxOutputTokens),
+                true,
+                true,
+                Some(5),
+                512,
+                100,
+                None,
+                Some(512)
+            ),
+            None
+        );
+        // Empty step, outside think, or no controller due: untouched.
+        assert_eq!(
+            think_budget_close_override(None, false, true, Some(5), 512, 100, None, Some(512)),
+            None
+        );
+        assert_eq!(
+            think_budget_close_override(None, true, false, Some(5), 512, 100, None, Some(512)),
+            None
+        );
+        assert_eq!(
+            think_budget_close_override(None, true, true, Some(5), 513, 100, None, Some(512)),
+            None
+        );
+    }
 }
 
 /// Update `ngram_in_think` in-place after emitting a single token.
@@ -9901,6 +11244,12 @@ fn mtp_next_adaptive_depth(
     pending_len: usize,
     accept_count: usize,
     consecutive_misses: u32,
+    // Gemma assistant formal gen: short low-accept trials stack reject-cost
+    // steps (median 0.63–0.79×). One complete miss (or half-or-worse accept
+    // under the short-ctx early-gen gate) stops further drafting so remaining
+    // tokens use empty pure path (~1.0×). Agent coding keeps high accept so
+    // this rarely trips on long winning trials.
+    aggressive_miss_to_zero: bool,
 ) -> usize {
     if max_depth == 0 {
         return 0;
@@ -9918,6 +11267,16 @@ fn mtp_next_adaptive_depth(
 
     if accept_count >= pending_len {
         return current_depth.saturating_add(1).min(max_depth);
+    }
+
+    // Short-gen stop-loss: complete miss, or half-or-worse accept rate on the
+    // aggressive short-ctx early-gen path. Gemma assistant max depth is 2, so
+    // "majority reject" as strict <50% only ever matched complete miss; half
+    // accepts (1/2) still stack draft+verify cost that kills formal median.
+    if aggressive_miss_to_zero
+        && (accept_count == 0 || accept_count.saturating_mul(2) <= pending_len)
+    {
+        return 0;
     }
 
     if accept_count == 0 {
@@ -10707,7 +12066,7 @@ fn truncate_sampled_tokens_for_stop(
 /// `finish_reason=stop`). Does not invent an EOS token id. Distinct from
 /// `no_repeat_ngram_size` logit bans.
 fn apply_loop_detection_stop(
-    sampled_tokens: Vec<u32>,
+    mut sampled_tokens: Vec<u32>,
     stop_reason: Option<StopReason>,
     generated_history: &[u32],
     loop_cfg: Option<ax_engine_core::LoopDetectionConfig>,
@@ -10718,12 +12077,17 @@ fn apply_loop_detection_stop(
     let Some(cfg) = loop_cfg.filter(|c| c.is_enabled()) else {
         return (sampled_tokens, stop_reason);
     };
-    let mut probe =
-        Vec::with_capacity(generated_history.len().saturating_add(sampled_tokens.len()));
+    // Multi-token MTP can cross the loop threshold mid-batch. Truncate to the
+    // shortest prefix that triggers detection so MTP-on matches single-token
+    // direct decode (which stops on the token that first completes the loop).
+    let mut probe = Vec::with_capacity(generated_history.len().saturating_add(1));
     probe.extend_from_slice(generated_history);
-    probe.extend_from_slice(&sampled_tokens);
-    if ax_engine_core::detects_loop(&probe, cfg) {
-        return (sampled_tokens, Some(StopReason::LoopDetected));
+    for index in 0..sampled_tokens.len() {
+        probe.push(sampled_tokens[index]);
+        if ax_engine_core::detects_loop(&probe, cfg) {
+            sampled_tokens.truncate(index + 1);
+            return (sampled_tokens, Some(StopReason::LoopDetected));
+        }
     }
     (sampled_tokens, stop_reason)
 }
@@ -10842,7 +12206,19 @@ fn cache_rotation_for_execution_with_prefill_flag(
         }
         return (false, 0);
     }
-    request_latch.unwrap_or((session_rotating_decode && is_greedy, 0))
+    // Decode: pure-direct (seq=1) can rotate with slack 0. Multi-token verify
+    // (Gemma assistant-MTP depth-2 → seq=3) only enters the ring when
+    // seq <= rotating_slack; otherwise pure-direct uses the ring while
+    // multi-token uses ordered storage + window views — long-context agent
+    // identity break. Size slack for formal draft depth + a little headroom.
+    request_latch.unwrap_or((
+        session_rotating_decode && is_greedy,
+        if session_rotating_decode && is_greedy {
+            8
+        } else {
+            0
+        },
+    ))
 }
 
 fn prefill_drain_async_eval_count(token_count: usize, prefill_chunk: usize) -> u32 {
@@ -11122,7 +12498,8 @@ fn rotating_bounded_family_eligible(cfg: &crate::model::ModelConfig) -> bool {
     cfg.diffusion.is_none()
         && matches!(
             cfg.model_family.as_str(),
-            "gemma4" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next"
+            // gemma4_vl text SWA uses families::standard::layer_forward (same as gemma4).
+            "gemma4" | "gemma4_vl" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next"
         )
 }
 
@@ -11169,10 +12546,13 @@ fn request_rotating_sliding_slack(
     //    MTP heads — moot in practice, those models have no sliding
     //    windows, but fail closed).
     let has_mtp = mtp_ring_slack != Some(0);
-    // Direct sessions keep pure rings even on MTP models: MTP engagement
-    // requires `!self.disable_ngram_acceleration`, so it never drafts (and
-    // never trims) inside a direct session.
+    // Direct sessions keep pure rings on non-MTP models. Gemma assistant packs
+    // set mtp_ring_slack > 0 even under AX_NO_SPEC so MTP-off/on share bounded
+    // geometry (required for multi-token append/trim and greedy A/B identity).
     if session_rotating && is_greedy {
+        if let Some(slack) = mtp_ring_slack.filter(|s| *s > 0) {
+            return Some(ROTATING_BOUNDED_ROLLBACK_SLACK.max(slack));
+        }
         return Some(0);
     }
     if !rotating_flag_enabled {
@@ -11788,6 +13168,9 @@ mod tests {
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
+            max_think_tokens: None,
+            answer_reserve_tokens: None,
         }
     }
 
@@ -12252,6 +13635,28 @@ mod tests {
         // When mtp_requested is wrongly left true, the *predicate* fails, which
         // is why decode_one also forces pipeline from disable_ngram alone.
         assert!(!should_use_session_direct_pipeline(true, true, true, true));
+    }
+
+    #[test]
+    fn loop_detection_truncates_multi_token_batch_at_first_trigger() {
+        // Pattern of period 2, min_count 4 → needs 8 tokens. History has 6;
+        // a multi-token MTP batch of 4 would overshoot if kept whole.
+        let cfg = ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT;
+        let history = vec![10u32, 20, 10, 20, 10, 20];
+        let batch = vec![10u32, 20, 10, 20]; // 1st+2nd complete 4×(10,20)
+        let (kept, reason) = apply_loop_detection_stop(batch, None, &history, Some(cfg));
+        assert_eq!(
+            kept,
+            vec![10u32, 20],
+            "stop at the token that first completes the loop"
+        );
+        assert!(matches!(reason, Some(StopReason::LoopDetected)));
+        // History of 7 already has 3 full pairs + one half; the next 20 completes
+        // the 4th pair. Single-token path keeps that completing token.
+        let history7 = vec![10u32, 20, 10, 20, 10, 20, 10];
+        let (kept1, reason1) = apply_loop_detection_stop(vec![20u32], None, &history7, Some(cfg));
+        assert_eq!(kept1, vec![20u32]);
+        assert!(matches!(reason1, Some(StopReason::LoopDetected)));
     }
 
     #[test]
@@ -13148,25 +14553,34 @@ mod tests {
     #[test]
     fn mtp_adaptive_depth_shrinks_on_partial_reject_and_recovers_on_full_accept() {
         // consecutive_misses=0 for all non-complete-miss cases.
-        assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0, 0), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2, 0), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1, 0), 2);
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1, 0), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2, 0), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3, 0), 0);
+        assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0, 0, false), 3);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2, 0, false), 2);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1, 0, false), 2);
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1, 0, false), 2);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2, 0, false), 3);
+        assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3, 0, false), 0);
     }
 
     #[test]
     fn mtp_adaptive_depth_progressive_floor_on_consecutive_misses() {
         // First complete miss (consecutive_misses=0): floor = 2.
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0, 0), 2);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0, 0, false), 2);
         // Second consecutive miss (consecutive_misses=1): floor = 1.
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 0, 1), 1);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 0, 1, false), 1);
         // Third+ consecutive miss (consecutive_misses=2): floor = 0.
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 2), 0);
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 5), 0);
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 2, false), 0);
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 5, false), 0);
         // Partial accept resets to normal floor logic (not complete miss path).
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 1, 3), 2);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 1, 3, false), 2);
+        // Gemma assistant: first complete miss ends drafting (gen median stop-loss).
+        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 0, 0, true), 0);
+        assert_eq!(mtp_next_adaptive_depth(1, 2, 1, 0, 3, true), 0);
+        // Half-or-worse accept on the aggressive short-gen path also stops
+        // (1/3 and the common Gemma depth-2 case 1/2).
+        assert_eq!(mtp_next_adaptive_depth(2, 2, 3, 1, 0, true), 0);
+        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 1, 0, true), 0);
+        // Better than half (2/3) keeps progressive floor / clamp logic.
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 3, 2, 0, true), 2);
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {
@@ -14035,6 +15449,9 @@ mod tests {
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
+            max_think_tokens: None,
+            answer_reserve_tokens: None,
         };
         assert!(!prefill_item_completes_prompt(&item, Some(&first_context)));
 
@@ -14129,7 +15546,7 @@ mod tests {
         );
         assert_eq!(
             cache_rotation_for_execution(ExecutionMode::Decode, None, true, true, 1536),
-            (true, 0)
+            (true, 8) // multi-token verify ring eligibility (Gemma MTP depth-2)
         );
     }
 
@@ -16328,6 +17745,42 @@ mod tests {
     }
 
     #[test]
+    fn rotating_bounded_family_eligible_includes_gemma4_vl() {
+        // gemma4_vl SWA uses families::standard::layer_forward (ring-aware).
+        let make = |family: &str| {
+            let value = serde_json::json!({
+                "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+                "model_family": family,
+                "tensor_format": "safetensors",
+                "layer_count": 2,
+                "hidden_size": 64,
+                "attention_head_count": 4,
+                "attention_head_dim": 16,
+                "kv_head_count": 1,
+                "vocab_size": 32,
+                "layer_types": ["sliding_attention", "full_attention"],
+                "sliding_window_size": 128,
+                "tensors": [],
+            });
+            let manifest: ax_engine_core::NativeModelManifest =
+                serde_json::from_value(value).expect("manifest");
+            crate::model::ModelConfig::from_manifest(&manifest)
+        };
+        assert!(
+            rotating_bounded_family_eligible(&make("gemma4")),
+            "gemma4 must be ring-eligible"
+        );
+        assert!(
+            rotating_bounded_family_eligible(&make("gemma4_vl")),
+            "gemma4_vl standard SWA path must be ring-eligible like gemma4"
+        );
+        assert!(
+            !rotating_bounded_family_eligible(&make("gpt_oss")),
+            "gpt_oss builds family-local masks without ring awareness"
+        );
+    }
+
+    #[test]
     fn request_rotating_sliding_slack_covers_rollback_sources() {
         use NgramRequestDisableReason as R;
         const SLACK: usize = ROTATING_BOUNDED_ROLLBACK_SLACK;
@@ -16613,6 +18066,7 @@ mod tests {
             "mixtral",
             "gpt_oss",
             "gemma4_unified",
+            "gemma4_vl",
             "nemotron_h",
             "qwen3_vl",
             "qwen3_vl_moe",
@@ -18145,5 +19599,25 @@ mod tests {
             !state.mtp_bypassed,
             "MTP bypass must start disabled so MTP is attempted on every request"
         );
+    }
+
+    #[test]
+    fn deepseek_v4_mtp_always_commits_primary_token_even_on_full_reject() {
+        // Regression: ac==0 must still commit verify_input[0] (last_token).
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(0, 1), 1);
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(0, 3), 1);
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(1, 1), 2);
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(2, 3), 3);
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(5, 2), 3); // clamp to pending
+    }
+
+    #[test]
+    fn mtp_warmup_rope_uses_absolute_base_after_multi_chunk_prefill() {
+        // Prompt length 300, final-chunk history 100, warmup last 50 rows.
+        // First warmed absolute position must be 250, not relative 50.
+        assert_eq!(mtp_warmup_absolute_rope_start(300, 100, 50), 250);
+        // Single full-prompt chunk: relative start_offset is already absolute.
+        assert_eq!(mtp_warmup_absolute_rope_start(100, 100, 50), 50);
+        assert_eq!(mtp_warmup_absolute_rope_start(50, 100, 0), 0); // clamp
     }
 }

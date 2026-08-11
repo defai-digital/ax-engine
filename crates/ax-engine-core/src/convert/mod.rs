@@ -498,7 +498,14 @@ fn parse_think_token_ids(model_dir: &Path) -> (Option<u32>, Option<u32>) {
             _ => {}
         }
     }
-    (start, end)
+    // Think-block gating needs both markers. A one-sided pair (corrupt or
+    // partial tokenizer.json) must not pin the manifest to an unclosable
+    // think state — leave both unset so the runtime can fall back to
+    // family/vocab defaults (Qwen3.6 27B 248k uses 248068/248069).
+    match (start, end) {
+        (Some(s), Some(e)) => (Some(s), Some(e)),
+        _ => (None, None),
+    }
 }
 
 /// Best-effort lift of the per-layer KV-cache quantization table from a
@@ -926,7 +933,11 @@ fn tensor_quantization(
     }
     // mlx-lm's Gemma4 quantization predicate keeps router.proj at 8-bit while
     // the rest of the affine-quantized model uses the global 4-bit setting.
-    if family.family_name == "gemma4" && tensor_name.ends_with(".router.proj.weight") {
+    // gemma4_vl shares the same MoE text backbone family label is separate for
+    // vision capability gating only.
+    if matches!(family.family_name, "gemma4" | "gemma4_vl")
+        && tensor_name.ends_with(".router.proj.weight")
+    {
         quantization.bits = 8;
     }
     Some(quantization)
@@ -1387,17 +1398,22 @@ fn deepseek_v4_nextn_role(suffix: &str) -> Option<NativeTensorRole> {
         "shared_head_norm.weight" | "norm.weight" => Some(NativeTensorRole::NextnSharedHeadNorm),
         "embed_tokens.weight" => Some(NativeTensorRole::NextnEmbedTokens),
         "shared_head_head.weight" => Some(NativeTensorRole::NextnSharedHeadHead),
+        "hc_head_fn" | "hc_head.fn" => Some(NativeTensorRole::NextnHcHeadFn),
+        "hc_head_base" | "hc_head.base" => Some(NativeTensorRole::NextnHcHeadBase),
+        "hc_head_scale" | "hc_head.scale" => Some(NativeTensorRole::NextnHcHeadScale),
         _ => None,
     }
 }
 
-/// Raw HF `mtp.N.<suffix>` roles: the hc_head trio maps to the same
-/// root-level roles as the main checkpoint's `hc_head_*` tensors.
+/// Raw HF `mtp.N.<suffix>` roles. The MTP HC-head trio is **not** collapsed onto
+/// the target root `HcHead*` roles — that collision made load order select the
+/// MTP head as the target head (or drop one of them). Use dedicated `NextnHc*`
+/// roles so both heads remain distinct through convert → load → draft logits.
 fn deepseek_v4_mtp_role(suffix: &str) -> Option<NativeTensorRole> {
     match suffix {
-        "hc_head_fn" => Some(NativeTensorRole::HcHeadFn),
-        "hc_head_base" => Some(NativeTensorRole::HcHeadBase),
-        "hc_head_scale" => Some(NativeTensorRole::HcHeadScale),
+        "hc_head_fn" | "hc_head.fn" => Some(NativeTensorRole::NextnHcHeadFn),
+        "hc_head_base" | "hc_head.base" => Some(NativeTensorRole::NextnHcHeadBase),
+        "hc_head_scale" | "hc_head.scale" => Some(NativeTensorRole::NextnHcHeadScale),
         other => deepseek_v4_nextn_role(other),
     }
 }
@@ -2316,7 +2332,23 @@ fn validate_qwen_rope_scaling(
     // Unified Qwen VL checkpoints describe their ordinary, unscaled RoPE plus
     // multimodal axis split in this object. `rope_type=default` does not scale
     // frequencies; the MRoPE fields are consumed by the native VL prefill path.
-    let is_default_mrope = matches!(model_type, "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5")
+    // Accept all HF model_type aliases that map to Qwen VL / qwen3_5 families
+    // (must stay in sync with `model_family_for_type`). Omitting aliases such as
+    // `qwen3_5_moe` or hyphenated VL types used to reject valid default-MRoPE
+    // configs as unsupported rope_scaling.
+    let is_qwen_mrope_family = matches!(
+        model_type,
+        "qwen3_vl"
+            | "qwen3-vl"
+            | "qwen3_vl_text"
+            | "qwen3_vl_moe"
+            | "qwen3-vl-moe"
+            | "qwen3_5"
+            | "qwen3.5"
+            | "qwen3_5_moe"
+            | "qwen3_5_text"
+    );
+    let is_default_mrope = is_qwen_mrope_family
         && rope_scaling.is_some_and(|value| {
             value
                 .get("rope_type")

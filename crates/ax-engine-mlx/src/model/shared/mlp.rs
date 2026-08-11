@@ -1,10 +1,10 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, async_eval,
-    compiled_dual_gate_up_qmm, compiled_gelu_approx_split_mlp, divide, dual_affine_qmm,
-    dual_qmm_geglu, exp, expand_dims, expand_dims_axes, gelu_approx_mul,
+    compiled_dual_gate_up_qmm, compiled_gelu_approx_split_mlp, concatenate, contiguous, divide,
+    dual_affine_qmm, dual_qmm_geglu, exp, expand_dims, expand_dims_axes, gelu_approx_mul,
     gelu_approx_mul_quantized_matmul, log1p, maximum, minimum, multiply, negative, power,
-    quantized_matmul_rms_norm, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul,
+    quantized_matmul_rms_norm, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul, slice,
     slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
 };
 use std::sync::{Mutex, OnceLock};
@@ -96,6 +96,63 @@ pub(crate) fn qkv_project(
         ProjectionBatchPolicy::Shared,
         None,
     )
+}
+
+/// Like [`qkv_project`] but per-sequence-position (and per-batch-row) exact —
+/// used for Gemma MoE multi-token teacher-forced verify so each position matches
+/// singleton pure-direct QKV (Shared batched matmul drifts near-ties).
+pub(crate) fn qkv_project_row_exact(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    head_dim: usize,
+) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
+    qkv_project_inner(
+        cfg,
+        w,
+        x,
+        head_dim,
+        false,
+        ProjectionBatchPolicy::RowExact,
+        None,
+    )
+}
+
+/// Multi-token hybrid: position 0 uses RowExact (matches pure-direct MLX S=1);
+/// remaining positions use Shared (amortized). Reduces formal first_diff while
+/// keeping Shared speed on draft positions (smokef99).
+pub(crate) fn qkv_project_pos0_exact_rest_shared(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    head_dim: usize,
+) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
+    let shape = x.shape();
+    // Expect [1, S, H] multi-token.
+    if shape.len() != 3 || shape[0] != 1 || shape[1] <= 1 {
+        return qkv_project_row_exact(cfg, w, x, head_dim);
+    }
+    let s = shape[1] as usize;
+    let h = shape[2];
+    // pos0 singleton
+    let x0 = contiguous(&slice(x, &[0, 0, 0], &[1, 1, h], &[1, 1, 1], None), None);
+    let (q0, k0, v0, g0) = qkv_project(cfg, w, &x0, head_dim);
+    // rest Shared
+    let x_rest = contiguous(
+        &slice(x, &[0, 1, 0], &[1, s as i32, h], &[1, 1, 1], None),
+        None,
+    );
+    let (qr, kr, vr, gr) = qkv_project(cfg, w, &x_rest, head_dim);
+    let q = concatenate(&[&q0, &qr], 1, None);
+    let k = concatenate(&[&k0, &kr], 1, None);
+    let v = concatenate(&[&v0, &vr], 1, None);
+    let g = match (g0, gr) {
+        (Some(a), Some(b)) => Some(concatenate(&[&a, &b], 1, None)),
+        (None, None) => None,
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+    };
+    (q, k, v, g)
 }
 
 /// Like [`qkv_project`], but when `input_norm` is provided and
@@ -203,6 +260,8 @@ fn qkv_project_inner(
         let slices = qkv_slices(cfg, head_dim, kv_head_count);
         let out = if let Some((norm_w, eps)) = input_norm
             && projection_policy == ProjectionBatchPolicy::Shared
+            && !fastpath::qwen_linear_mtp_exact_enabled()
+            && !fastpath::moe_mt_bf16_identity_enabled()
             && fastpath::attn_norm_qkv_fuse_enabled()
             && let Some(scales) = packed.scales.as_ref()
         {
@@ -352,7 +411,31 @@ pub(crate) fn attention_output_projection_with_post_norm(
     post_norm: Option<&MlxArray>,
     eps: f32,
 ) -> MlxArray {
-    if attn_gate.is_none()
+    attention_output_projection_with_post_norm_policy(
+        attn_flat,
+        attn_gate,
+        o_proj,
+        post_norm,
+        eps,
+        ProjectionBatchPolicy::Shared,
+    )
+}
+
+pub(crate) fn attention_output_projection_with_post_norm_policy(
+    attn_flat: &MlxArray,
+    attn_gate: Option<&MlxArray>,
+    o_proj: &QuantizedWeight,
+    post_norm: Option<&MlxArray>,
+    eps: f32,
+    projection_policy: ProjectionBatchPolicy,
+) -> MlxArray {
+    // Fused o_proj+rmsnorm is Shared-only; fall back when RowExact is required.
+    // Skip when invariant projections are active (MoE exact): fused kernel
+    // bypasses invariant and pure-direct would then diverge from multi-token.
+    if projection_policy == ProjectionBatchPolicy::Shared
+        && !fastpath::qwen_linear_mtp_exact_enabled()
+        && !fastpath::moe_mt_bf16_identity_enabled()
+        && attn_gate.is_none()
         && let Some(norm_w) = post_norm
         && fastpath::o_proj_qmatmul_rms_norm_enabled()
         && let Some(scales) = o_proj.scales.as_ref()
@@ -369,7 +452,8 @@ pub(crate) fn attention_output_projection_with_post_norm(
             None,
         );
     }
-    let projected = attention_output_projection(attn_flat, attn_gate, o_proj);
+    let projected =
+        attention_output_projection_with_policy(attn_flat, attn_gate, o_proj, projection_policy);
     if let Some(norm_w) = post_norm {
         rms_norm(&projected, Some(norm_w), eps, None)
     } else {
@@ -2108,6 +2192,23 @@ fn gemma4_moe_weighted_scaled_sum_metal(
     outputs.pop()
 }
 
+pub(crate) fn ffn_swiglu_row_exact(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    post_norm: Option<&MlxArray>,
+    layer_idx: usize,
+) -> MlxArray {
+    ffn_swiglu_with_policy(
+        cfg,
+        w,
+        x,
+        post_norm,
+        layer_idx,
+        ProjectionBatchPolicy::RowExact,
+    )
+}
+
 pub(crate) fn ffn_swiglu(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -3075,9 +3176,22 @@ pub(crate) fn moe_router_gemma4(
         .router_combined_scale
         .as_ref()
         .expect("Gemma4 MoE layer must have precomputed router_combined_scale");
-    let normed = rms_norm(hidden, Some(combined_scale), cfg.rms_norm_eps, None);
+    let seq = hidden.shape().get(1).copied().unwrap_or(1) as usize;
+    // Multi-token: upcast residual for router so expert selection matches
+    // singleton pure-direct near-ties (4/6-bit MoE).
+    let hidden_r = if seq > 1 && crate::fastpath::multi_token_f32_attention_enabled() {
+        astype(hidden, MlxDtype::Float32, None)
+    } else {
+        hidden.clone()
+    };
+    let normed = rms_norm(&hidden_r, Some(combined_scale), cfg.rms_norm_eps, None);
 
     let expert_scores = qw(&normed, router_proj);
+    let expert_scores = if seq > 1 && crate::fastpath::multi_token_f32_attention_enabled() {
+        astype(&expert_scores, MlxDtype::Float32, None)
+    } else {
+        expert_scores
+    };
     let (top_k_indices, top_k_weights) = top_k_by_argpartition(
         &expert_scores,
         cfg.moe_expert_count,
@@ -5143,6 +5257,12 @@ impl SwitchGatherInputs {
 }
 
 const SWITCH_GLU_SORT_THRESHOLD: usize = 64;
+/// Multi-token teacher-forced windows are short (depth-2 → S≤3, K=8 → 24
+/// selections) but still benefit from expert-id sort so gather_qmm streams
+/// the same expert weights contiguously (unique-expert amortization). The
+/// final output is unsorted back to original order — bit-identical layout
+/// restore after a permutation of independent rows.
+const SWITCH_GLU_SORT_THRESHOLD_MT: usize = 8;
 
 pub(crate) fn switch_gather_inputs(
     x_expanded: &MlxArray,
@@ -5151,7 +5271,21 @@ pub(crate) fn switch_gather_inputs(
     let indices_shape = indices.shape();
     let selection_count = shape_element_count(&indices_shape);
     let top_k = indices_shape.last().copied().unwrap_or(1).max(1) as usize;
-    if selection_count < SWITCH_GLU_SORT_THRESHOLD {
+    // Prefer expert-id sort whenever multi-token (seq>1 in the expanded
+    // layout) or selection count is large. Multi-token exact path stacks
+    // S positions into one gather; sorting amortizes unique-expert weight
+    // traffic without changing per-row gather arithmetic after unsort.
+    let seq_axis = indices_shape
+        .get(indices_shape.len().saturating_sub(2))
+        .copied()
+        .unwrap_or(1);
+    let multi_token = seq_axis > 1;
+    let sort_threshold = if multi_token {
+        SWITCH_GLU_SORT_THRESHOLD_MT
+    } else {
+        SWITCH_GLU_SORT_THRESHOLD
+    };
+    if selection_count < sort_threshold {
         return SwitchGatherInputs {
             x: x_expanded.clone(),
             indices: indices.clone(),

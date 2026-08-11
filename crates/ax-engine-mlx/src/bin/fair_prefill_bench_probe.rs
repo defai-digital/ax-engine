@@ -121,6 +121,9 @@ fn request_context(
         ignore_eos: true,
         tool_call_mode: false,
         structured_output_mode: false,
+        min_p: None,
+        max_think_tokens: None,
+        answer_reserve_tokens: None,
     }
 }
 

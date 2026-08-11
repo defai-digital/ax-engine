@@ -3,7 +3,13 @@
 //! These helpers are unit-tested without Apple Silicon models so convert,
 //! server budget checks, and golden fixture generators share one contract.
 
-/// Soft-token count for a ViT-style tower: `(h/p)*(w/p) / merge²` capped.
+/// Soft-token count for pooling-style ViT towers: `floor((h/p)×(w/p) / merge²)`,
+/// capped by `max_soft_tokens`.
+///
+/// This is the Gemma4 VL pooling contract (e.g. 14×14 patches, merge 3 → 21).
+/// Qwen3-VL spatial-merge soft tokens are `grid_h × grid_w` from
+/// `(h/p/merge)×(w/p/merge)` and are computed from the merged grid in the
+/// Qwen VL geometry type (do not use this product helper for that path).
 pub fn vit_soft_token_count(
     height: u32,
     width: u32,
@@ -24,7 +30,13 @@ pub fn vit_soft_token_count(
         return None;
     }
     let patches = ph.saturating_mul(pw);
-    Some((patches / merge_area).clamp(1, max_soft_tokens))
+    let count = patches / merge_area;
+    if count == 0 {
+        // Do not invent a phantom soft token when the patch grid cannot form a
+        // full merge cell (previously clamp(1, …) hid this collapse).
+        return None;
+    }
+    Some(count.min(max_soft_tokens))
 }
 
 /// Qwen3-VL MRoPE section lengths for a single image: `[T, H, W]` with T=1 for
@@ -120,6 +132,17 @@ mod tests {
         assert_eq!(vit_soft_token_count(224, 224, 14, 2, 256), Some(64));
         assert_eq!(vit_soft_token_count(0, 224, 14, 2, 256), None);
         assert_eq!(vit_soft_token_count(224, 224, 14, 2, 32), Some(32)); // clamp
+        // Gemma4 pooling: 14×14 patches, merge 3 → floor(196/9)=21
+        assert_eq!(vit_soft_token_count(224, 224, 16, 3, 280), Some(21));
+    }
+
+    #[test]
+    fn vit_soft_tokens_fail_closed_when_no_full_merge_cell() {
+        // Fewer patches than merge² must not invent a soft token (old clamp(1)).
+        assert_eq!(vit_soft_token_count(16, 16, 16, 2, 256), None); // 1 patch
+        assert_eq!(vit_soft_token_count(16, 32, 16, 2, 256), None); // 2 patches
+        // Exactly one merge cell of patches is valid under the product contract.
+        assert_eq!(vit_soft_token_count(16, 64, 16, 2, 256), Some(1)); // 4 patches
     }
 
     #[test]
