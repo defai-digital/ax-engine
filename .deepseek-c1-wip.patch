@@ -1,0 +1,203 @@
+diff --git a/crates/ax-engine-server/src/chat.rs b/crates/ax-engine-server/src/chat.rs
+index c0fef479..2c92d35e 100644
+--- a/crates/ax-engine-server/src/chat.rs
++++ b/crates/ax-engine-server/src/chat.rs
+@@ -30,6 +30,17 @@ const GPT_OSS_RETURN: &str = "<|return|>";
+ const GPT_OSS_START: &str = "<|start|>";
+ const GPT_OSS_CALL: &str = "<|call|>";
+ 
++// DeepSeek control tokens use fullwidth bars (U+FF5C `｜`), not ASCII `|`.
++// These literals must stay byte-identical to the tokenizer's added-token
++// entries or prompts silently degrade to plain-BPE subwords.
++pub(crate) const DEEPSEEK_BOS: &str = "<｜begin▁of▁sentence｜>";
++pub(crate) const DEEPSEEK_EOS: &str = "<｜end▁of▁sentence｜>";
++pub(crate) const DEEPSEEK_SYSTEM: &str = "<｜System｜>";
++pub(crate) const DEEPSEEK_USER: &str = "<｜User｜>";
++pub(crate) const DEEPSEEK_ASSISTANT: &str = "<｜Assistant｜>";
++pub(crate) const DEEPSEEK_THINK_OPEN: &str = "<think>";
++pub(crate) const DEEPSEEK_THINK_CLOSE: &str = "</think>";
++
+ // Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning.
+ // This matches Qwen chat templates rendered with `enable_thinking=false` and
+ // keeps OpenAI-compatible short responses from spending the output budget on
+@@ -56,6 +67,11 @@ pub(crate) enum ChatPromptTemplate {
+     MinistralInstruct,
+     /// OpenAI Harmony format used by GPT-OSS (`<|start|>…<|message|>…<|end|>`).
+     GptOssHarmony,
++    /// DeepSeek V3/R1/V4: `<｜User｜>` / `<｜Assistant｜>` with `
++</think>
++
++` thinking blocks.
++    DeepSeekChat,
+     Unsupported(ChatUnsupportedFamily),
+     PlainRolePrefix,
+ }
+@@ -73,7 +89,6 @@ Reasoning: low
+ pub(crate) enum ChatUnsupportedFamily {
+     Gemma3,
+     Mixtral,
+-    DeepSeek,
+ }
+ 
+ impl ChatUnsupportedFamily {
+@@ -81,7 +96,6 @@ impl ChatUnsupportedFamily {
+         match self {
+             Self::Gemma3 => "gemma3",
+             Self::Mixtral => "mixtral",
+-            Self::DeepSeek => "deepseek",
+         }
+     }
+ }
+@@ -125,7 +139,7 @@ impl ChatPromptTemplate {
+         {
+             Self::MistralInstruct
+         } else if normalized.contains("deepseek") {
+-            Self::Unsupported(ChatUnsupportedFamily::DeepSeek)
++            Self::DeepSeekChat
+         } else if normalized.contains("gpt-oss")
+             || normalized.contains("gpt_oss")
+             || normalized.contains("gptoss")
+@@ -150,6 +164,29 @@ pub(crate) fn is_diffusion_gemma(model_id: &str) -> bool {
+         || normalized.contains("diffusion_gemma")
+ }
+ 
++pub(crate) fn is_deepseek_model(model_id: &str) -> bool {
++    model_id.to_ascii_lowercase().contains("deepseek")
++}
++
++/// DeepSeek reasoning checkpoints (R1 and its distills/derivatives) enter
++/// think mode by default; base DeepSeek-V3/V4 chat stays non-thinking unless
++/// the client opts in. Mirrors the official R1 usage guidance.
++pub(crate) fn is_deepseek_thinking_model(model_id: &str) -> bool {
++    let normalized = model_id.to_ascii_lowercase();
++    is_deepseek_model(model_id)
++        && (normalized.contains("r1")
++            || normalized.contains("reason")
++            || normalized.contains("think"))
++}
++
++
++/// Escape only the exact `</tool_result>` sentinel inside DeepSeek tool results
++/// (ds4 reference render rule): a payload containing the closing marker must
++/// not terminate the tool-result block early.
++fn escape_deepseek_tool_result(content: &str) -> String {
++    content.replace("</tool_result>", "&lt;/tool_result>")
++}
++
+ pub(crate) fn normalize_role(role: &str) -> Result<&'static str, String> {
+     match role.trim() {
+         "system" => Ok("system"),
+@@ -352,6 +389,9 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
+         ChatPromptTemplate::GptOssHarmony => {
+             vec!["<|return|>".to_string(), "<|end|><|start|>".to_string()]
+         }
++        ChatPromptTemplate::DeepSeekChat => {
++            vec![DEEPSEEK_EOS.to_string(), DEEPSEEK_USER.to_string()]
++        }
+         ChatPromptTemplate::Unsupported(_) => Vec::new(),
+         ChatPromptTemplate::PlainRolePrefix => Vec::new(),
+     }
+@@ -400,6 +440,7 @@ fn render_prompt_with_template_for_model(
+         template,
+         messages,
+         qwen_assistant_generation_prompt(model_id, qwen_thinking_enabled),
++        qwen_thinking_enabled,
+     )
+ }
+ 
+@@ -418,6 +459,7 @@ pub(crate) fn render_prompt_with_template(
+         } else {
+             QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+         },
++        qwen_thinking_enabled,
+     )
+ }
+ 
+@@ -426,9 +468,11 @@ fn render_prompt_internal(
+     template: ChatPromptTemplate,
+     messages: &[(String, String)],
+     qwen_generation_prompt: &str,
++    thinking_enabled: bool,
+ ) -> Result<String, String> {
+     let mut prompt = String::new();
+     let mut qwen_tool_response_open = false;
++    let mut deepseek_tool_response_open = false;
+     match template {
+         ChatPromptTemplate::Llama3 | ChatPromptTemplate::Llama4 => {
+             prompt.push_str("<|begin_of_text|>")
+@@ -446,6 +490,7 @@ fn render_prompt_internal(
+             prompt.push_str(GPT_OSS_DEFAULT_SYSTEM);
+             prompt.push_str("<|end|>");
+         }
++        ChatPromptTemplate::DeepSeekChat => prompt.push_str(DEEPSEEK_BOS),
+         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
+         ChatPromptTemplate::Unsupported(family) => {
+             return Err(format!(
+@@ -659,6 +704,42 @@ fn render_prompt_internal(
+                     _ => {}
+                 }
+             }
++            ChatPromptTemplate::DeepSeekChat => {
++                if matches!(role, "tool" | "function") {
++                    if !deepseek_tool_response_open {
++                        prompt.push_str(DEEPSEEK_USER);
++                        deepseek_tool_response_open = true;
++                    }
++                    prompt.push_str("<tool_result>");
++                    prompt.push_str(&escape_deepseek_tool_result(content));
++                    prompt.push_str("</tool_result>");
++                } else {
++                    if deepseek_tool_response_open {
++                        prompt.push_str(DEEPSEEK_EOS);
++                        deepseek_tool_response_open = false;
++                    }
++                    match role {
++                        "system" => {
++                            prompt.push_str(DEEPSEEK_SYSTEM);
++                            prompt.push_str(content);
++                        }
++                        "user" | "principle" => {
++                            prompt.push_str(DEEPSEEK_USER);
++                            prompt.push_str(content);
++                        }
++                        "assistant" => {
++                            prompt.push_str(DEEPSEEK_ASSISTANT);
++                            // Pair-path history has no reasoning_content; the
++                            // bare close marker matches the official renderer's
++                            // reasoning-drop rule for turns before the last user.
++                            prompt.push_str("</think>");
++                            prompt.push_str(content);
++                            prompt.push_str(DEEPSEEK_EOS);
++                        }
++                        _ => {}
++                    }
++                }
++            }
+             ChatPromptTemplate::PlainRolePrefix => {
+                 prompt.push_str(role);
+                 prompt.push_str(": ");
+@@ -673,6 +754,9 @@ fn render_prompt_internal(
+     if qwen_tool_response_open {
+         prompt.push_str("<|im_end|>\n");
+     }
++    if deepseek_tool_response_open {
++        prompt.push_str(DEEPSEEK_EOS);
++    }
+     // System-only chats still need the system block emitted before generation.
+     if matches!(template, ChatPromptTemplate::MistralInstruct) {
+         if let Some(system) = mistral_system {
+@@ -715,6 +799,14 @@ fn render_prompt_internal(
+         ChatPromptTemplate::GptOssHarmony => {
+             prompt.push_str("<|start|>assistant<|channel|>final<|message|>")
+         }
++        ChatPromptTemplate::DeepSeekChat => {
++            prompt.push_str(DEEPSEEK_ASSISTANT);
++            prompt.push_str(if thinking_enabled {
++                DEEPSEEK_THINK_OPEN
++            } else {
++                DEEPSEEK_THINK_CLOSE
++            });
++        }
+         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
+         ChatPromptTemplate::Unsupported(_) => {
+             unreachable!("unsupported templates are rejected before rendering")
