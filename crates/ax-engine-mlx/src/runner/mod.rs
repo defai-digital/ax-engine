@@ -84,6 +84,7 @@ use crate::mtp::{
     deepseek_v4_mtp_draft_tokens_after_forced_prefix, deepseek_v4_mtp_draft_tokens_gated,
     deepseek_v4_mtp_warmup_cache, glm_mtp_draft_tokens_after_forced_prefix,
     glm_mtp_draft_tokens_gated, mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
+    sequential_greedy_deepseek_v4_mtp_verify,
 };
 use crate::mtp_adaptive_gate::{
     AdaptiveStepSignals, MtpAdaptiveGateState, adaptive_gate_enabled_from_env,
@@ -9009,164 +9010,225 @@ impl MlxRunner {
                         predicted,
                     )
                 } else if self.weights.deepseek_v4_nextn.is_some() {
-                    // DeepSeek V4: verify on a clone so rejected drafts never
-                    // corrupt production compressor/indexer state. Live-cache
-                    // trim_to only best-effort rewinds the compressor buffer
-                    // and can zero-fill missing history after a reject.
-                    let mut verify_cache = state.cache.clone();
-                    let verify_forward_started = Instant::now();
-                    let (logits_all, post_norm_all) =
-                        crate::model::deepseek_v4_forward_all_positions_with_packed(
+                    // DeepSeek V4 greedy exact path: singleton sequential verify
+                    // on production (same route as direct decode). Multi-token
+                    // teacher-forced verify + clone adopt can disagree with
+                    // sequential greedy on compressor / latent-K state after a
+                    // full draft accept — that was the observed Tier-2 greedy
+                    // mismatch. Sampled targets keep the clone + multi-token
+                    // path below for rejection sampling.
+                    let greedy_exact = sampling.temperature <= 0.0
+                        && !sampling.uses_logits_processors()
+                        && model_acceptance_mode == MtpModelAcceptanceMode::Greedy;
+                    if greedy_exact {
+                        let verify_forward_started = Instant::now();
+                        let seq = sequential_greedy_deepseek_v4_mtp_verify(
                             &self.cfg,
                             &self.weights,
-                            &verify_input,
-                            &mut verify_cache,
-                            token_offset,
-                        );
-                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                    verify_cache.advance(verify_len);
-                    let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
-                    let target_prob_workspace =
-                        if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
-                            &mut state.mtp_target_prob_workspace
-                        } else {
-                            &mut local_target_prob_workspace
-                        };
-                    let target_softmax_started = Instant::now();
-                    let lazy_target_probs = compute_mtp_target_probs(
-                        &logits_all,
-                        &pending,
-                        acceptance_log_probs,
-                        vocab,
-                        sampling,
-                        self.mtp_target_softmax_topk,
-                        target_filter,
-                        target_prob_workspace,
-                    );
-                    mtp_timings.target_softmax_wall_us = mtp_timings
-                        .target_softmax_wall_us
-                        .saturating_add(elapsed_us(target_softmax_started));
-                    let predicted_arr = Some(argmax(&logits_all, None));
-                    let kv_refs2 = verify_cache.collect_eval_refs();
-                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
-                    targets.push(predicted_arr.as_ref().unwrap());
-                    targets.push(&post_norm_all);
-                    if let Some(ref ltp) = lazy_target_probs {
-                        ltp.push_eval_targets(&mut targets);
-                    }
-                    targets.extend(kv_refs2);
-                    let verify_eval_started = Instant::now();
-                    eval(&targets);
-                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
-                    let accept_started = Instant::now();
-                    let predicted: Vec<u32> = predicted_arr
-                        .as_ref()
-                        .map(|arr| arr.data_u32().to_vec())
-                        .unwrap_or_default();
-                    let target_softmax_extract_started = Instant::now();
-                    let target_probs_cpu = lazy_target_probs
-                        .as_ref()
-                        .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
-                    mtp_timings.target_softmax_wall_us = mtp_timings
-                        .target_softmax_wall_us
-                        .saturating_add(elapsed_us(target_softmax_extract_started));
-                    let target_distributions_cpu: Option<&[TokenDistribution]> = None;
-
-                    let accept = mtp_accept_count(
-                        &pending,
-                        acceptance_log_probs,
-                        &state.mtp_pending_draft_distributions,
-                        &state.mtp_pending_draft_sources,
-                        target_probs_cpu,
-                        target_distributions_cpu,
-                        &predicted,
-                        &mut state.rng,
-                        draft_log_prob_temperature,
-                        sampling.temperature,
-                        model_acceptance_mode,
-                        mtp_ngram_acceptance_mode_from_env(),
-                    );
-                    let ac = accept.accept_count;
-                    let all_accepted = accept.all_accepted;
-                    let exact_rejection_correction = (!all_accepted
-                        && proposal_law == MtpProposalLaw::DeterministicDelta)
-                        .then(|| {
-                            sample_exact_mtp_delta_rejection_correction(
-                                &logits_all,
-                                ac,
-                                vocab,
-                                sampling,
-                                pending[ac],
-                                &mut state.rng,
-                            )
-                        })
-                        .flatten();
-                    let exact_residual_correction_applied = exact_rejection_correction.is_some();
-                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
-
-                    let rollback_started = Instant::now();
-                    // Primary (verify_input[0] == last_token) is not yet in the
-                    // production cache at token_offset; verify always consumes it.
-                    // committed_len keeps primary + accepted drafts only.
-                    let committed_len =
-                        token_offset + deepseek_v4_mtp_committed_verify_len(ac, pending.len());
-                    if all_accepted {
-                        // verify_len == 1 + pending; full accept keeps all rows.
-                        state.cache = verify_cache;
-                    } else {
-                        // Reject path: never adopt the clone after a rejected
-                        // suffix (compressor trim is incomplete). Replay only
-                        // the committed prefix on production:
-                        // - ac==0 → primary alone (must still write last_token KV)
-                        // - 0<ac<pending → primary + accepted drafts
-                        drop(verify_cache);
-                        let accepted_input = &verify_input[..=ac];
-                        let _ = crate::model::deepseek_v4_forward_all_positions_with_packed(
-                            &self.cfg,
-                            &self.weights,
-                            accepted_input,
                             &mut state.cache,
+                            verify_input[0],
+                            &pending,
                             token_offset,
+                            self.mtp_draft_hidden_width(),
                         );
-                        state.cache.advance(accepted_input.len());
-                        let kv_refs = state.cache.collect_eval_refs();
-                        eval(&kv_refs);
-                    }
-                    debug_assert_eq!(
-                        state.cache.seq_len(),
-                        committed_len,
-                        "DeepSeek V4 MTP commit length must match accept count"
-                    );
+                        mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                        mtp_timings.verify_eval_wall_us = 0;
+                        let accept_started = Instant::now();
+                        let ac = seq.accept_count;
+                        let all_accepted = ac == pending.len();
+                        mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
-                    let rejected_count = pending.len() - ac;
-                    if rejected_count > 0 {
-                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
-                        if let Some(ref mut c) = state.mtp_cache
-                            && !c.trim_to(new_mtp_len)
-                        {
-                            tracing::warn!(
-                                new_mtp_len,
-                                "MTP head cache trim refused; draft quality may degrade"
-                            );
+                        let rollback_started = Instant::now();
+                        let committed_len =
+                            token_offset + deepseek_v4_mtp_committed_verify_len(ac, pending.len());
+                        debug_assert_eq!(
+                            state.cache.seq_len(),
+                            committed_len,
+                            "DeepSeek V4 sequential MTP commit length must match accept count"
+                        );
+                        let rejected_count = pending.len().saturating_sub(ac);
+                        if rejected_count > 0 {
+                            let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                            if let Some(ref mut c) = state.mtp_cache
+                                && !c.trim_to(new_mtp_len)
+                            {
+                                tracing::warn!(
+                                    new_mtp_len,
+                                    "MTP head cache trim refused; draft quality may degrade"
+                                );
+                            }
+                            state.mtp_decode_count = new_mtp_len;
                         }
-                        state.mtp_decode_count = new_mtp_len;
+                        mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                        state.pending_direct = None;
+                        (
+                            seq.last_logits,
+                            seq.draft_hidden,
+                            ac,
+                            all_accepted,
+                            seq.correction_token,
+                            false,
+                            seq.predicted,
+                        )
+                    } else {
+                        // Sampled / non-greedy: verify on a clone so rejected
+                        // drafts never corrupt production compressor state.
+                        // Live-cache trim_to only best-effort rewinds the
+                        // compressor buffer and can zero-fill missing history.
+                        let mut verify_cache = state.cache.clone();
+                        let verify_forward_started = Instant::now();
+                        let (logits_all, post_norm_all) =
+                            crate::model::deepseek_v4_forward_all_positions_with_packed(
+                                &self.cfg,
+                                &self.weights,
+                                &verify_input,
+                                &mut verify_cache,
+                                token_offset,
+                            );
+                        mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                        verify_cache.advance(verify_len);
+                        let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
+                        let target_prob_workspace =
+                            if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
+                                &mut state.mtp_target_prob_workspace
+                            } else {
+                                &mut local_target_prob_workspace
+                            };
+                        let target_softmax_started = Instant::now();
+                        let lazy_target_probs = compute_mtp_target_probs(
+                            &logits_all,
+                            &pending,
+                            acceptance_log_probs,
+                            vocab,
+                            sampling,
+                            self.mtp_target_softmax_topk,
+                            target_filter,
+                            target_prob_workspace,
+                        );
+                        mtp_timings.target_softmax_wall_us = mtp_timings
+                            .target_softmax_wall_us
+                            .saturating_add(elapsed_us(target_softmax_started));
+                        let predicted_arr = Some(argmax(&logits_all, None));
+                        let kv_refs2 = verify_cache.collect_eval_refs();
+                        let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
+                        targets.push(predicted_arr.as_ref().unwrap());
+                        targets.push(&post_norm_all);
+                        if let Some(ref ltp) = lazy_target_probs {
+                            ltp.push_eval_targets(&mut targets);
+                        }
+                        targets.extend(kv_refs2);
+                        let verify_eval_started = Instant::now();
+                        eval(&targets);
+                        mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                        let accept_started = Instant::now();
+                        let predicted: Vec<u32> = predicted_arr
+                            .as_ref()
+                            .map(|arr| arr.data_u32().to_vec())
+                            .unwrap_or_default();
+                        let target_softmax_extract_started = Instant::now();
+                        let target_probs_cpu = lazy_target_probs
+                            .as_ref()
+                            .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                        mtp_timings.target_softmax_wall_us = mtp_timings
+                            .target_softmax_wall_us
+                            .saturating_add(elapsed_us(target_softmax_extract_started));
+                        let target_distributions_cpu: Option<&[TokenDistribution]> = None;
+
+                        let accept = mtp_accept_count(
+                            &pending,
+                            acceptance_log_probs,
+                            &state.mtp_pending_draft_distributions,
+                            &state.mtp_pending_draft_sources,
+                            target_probs_cpu,
+                            target_distributions_cpu,
+                            &predicted,
+                            &mut state.rng,
+                            draft_log_prob_temperature,
+                            sampling.temperature,
+                            model_acceptance_mode,
+                            mtp_ngram_acceptance_mode_from_env(),
+                        );
+                        let ac = accept.accept_count;
+                        let all_accepted = accept.all_accepted;
+                        let exact_rejection_correction = (!all_accepted
+                            && proposal_law == MtpProposalLaw::DeterministicDelta)
+                            .then(|| {
+                                sample_exact_mtp_delta_rejection_correction(
+                                    &logits_all,
+                                    ac,
+                                    vocab,
+                                    sampling,
+                                    pending[ac],
+                                    &mut state.rng,
+                                )
+                            })
+                            .flatten();
+                        let exact_residual_correction_applied =
+                            exact_rejection_correction.is_some();
+                        mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                        let rollback_started = Instant::now();
+                        // Primary (verify_input[0] == last_token) is not yet in
+                        // production at token_offset; even ac==0 commits length 1.
+                        let committed_len =
+                            token_offset + deepseek_v4_mtp_committed_verify_len(ac, pending.len());
+                        if all_accepted {
+                            state.cache = verify_cache;
+                        } else {
+                            // Reject: never adopt the clone (compressor trim is
+                            // incomplete). Replay committed prefix on production.
+                            drop(verify_cache);
+                            let accepted_input = &verify_input[..=ac];
+                            let _ = crate::model::deepseek_v4_forward_all_positions_with_packed(
+                                &self.cfg,
+                                &self.weights,
+                                accepted_input,
+                                &mut state.cache,
+                                token_offset,
+                            );
+                            state.cache.advance(accepted_input.len());
+                            let kv_refs = state.cache.collect_eval_refs();
+                            eval(&kv_refs);
+                        }
+                        debug_assert_eq!(
+                            state.cache.seq_len(),
+                            committed_len,
+                            "DeepSeek V4 MTP commit length must match accept count"
+                        );
+
+                        let rejected_count = pending.len() - ac;
+                        if rejected_count > 0 {
+                            let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                            if let Some(ref mut c) = state.mtp_cache
+                                && !c.trim_to(new_mtp_len)
+                            {
+                                tracing::warn!(
+                                    new_mtp_len,
+                                    "MTP head cache trim refused; draft quality may degrade"
+                                );
+                            }
+                            state.mtp_decode_count = new_mtp_len;
+                        }
+                        mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                        state.pending_direct = None;
+                        let draft_hidden = slice_post_norm_hidden(
+                            &post_norm_all,
+                            ac,
+                            self.mtp_draft_hidden_width(),
+                        );
+                        let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                        (
+                            logits_all,
+                            draft_hidden,
+                            ac,
+                            all_accepted,
+                            exact_rejection_correction
+                                .or(accept.rejection_correction)
+                                .unwrap_or(correction_argmax_tok),
+                            exact_residual_correction_applied,
+                            predicted,
+                        )
                     }
-                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                    state.pending_direct = None;
-                    let draft_hidden =
-                        slice_post_norm_hidden(&post_norm_all, ac, self.mtp_draft_hidden_width());
-                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    (
-                        logits_all,
-                        draft_hidden,
-                        ac,
-                        all_accepted,
-                        exact_rejection_correction
-                            .or(accept.rejection_correction)
-                            .unwrap_or(correction_argmax_tok),
-                        exact_residual_correction_applied,
-                        predicted,
-                    )
                 } else {
                     let verify_forward_started = Instant::now();
                     let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(

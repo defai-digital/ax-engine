@@ -2590,6 +2590,145 @@ fn deepseek_v4_mtp_draft_tokens_stochastic(
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
 }
 
+/// Result of sequential greedy DeepSeek V4 MTP verification.
+///
+/// Production KV advances by `1 + accept_count` (primary always commits; same
+/// plan as the runner's `deepseek_v4_mtp_committed_verify_len`) and matches
+/// pure single-token greedy decode for the committed prefix.
+#[derive(Clone, Debug)]
+pub struct SequentialGreedyDeepseekV4MtpVerify {
+    /// Leading draft tokens equal to sequential greedy production.
+    pub accept_count: usize,
+    /// Correction (partial reject) or bonus (full accept) token.
+    pub correction_token: u32,
+    /// Packed residual `[1, 1, hc*hidden]` at the last committed position —
+    /// seeds the next nextn draft step.
+    pub draft_hidden: MlxArray,
+    /// Per-position greedy predictions (length `accept_count + 1`).
+    pub predicted: Vec<u32>,
+    /// Last committed position logits `[vocab]` (greedy tail uses
+    /// `correction_token` directly; shape matches `forward_argmax`).
+    pub last_logits: MlxArray,
+}
+
+/// Verify DeepSeek V4 MTP drafts with **singleton** target forwards.
+///
+/// Multi-token teacher-forced verify (`deepseek_v4_forward_all_positions_with_packed`
+/// over `[last] ++ drafts`) can disagree with pure single-token greedy on
+/// compressor / latent-K sliding state — enough to flip an argmax and break
+/// Tier-2 exactness after a full draft accept. This path mirrors direct decode:
+/// one token at a time, same production cache, packed residual captured for
+/// the next nextn draft.
+///
+/// Token decisions come from singleton
+/// [`deepseek_v4_forward_all_positions_with_packed`](crate::model::deepseek_v4_forward_all_positions_with_packed)
+/// (same trunk as production [`forward_argmax`](crate::model::forward_argmax);
+/// bf16→f32 cast is exact and softcap is monotonic, so argmax matches). The
+/// packed residual is the nextn `h` input that `forward_argmax` alone cannot
+/// provide.
+///
+/// On entry `cache.seq_len()` must equal `token_offset`. On exit the cache has
+/// advanced by `1 + accept_count`.
+pub fn sequential_greedy_deepseek_v4_mtp_verify(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    last_token: u32,
+    drafts: &[u32],
+    token_offset: usize,
+    draft_hidden_width: usize,
+) -> SequentialGreedyDeepseekV4MtpVerify {
+    use crate::model::deepseek_v4_forward_all_positions_with_packed;
+
+    let mut predicted: Vec<u32> = Vec::with_capacity(drafts.len().saturating_add(1));
+    let mut accept_count = 0usize;
+
+    let (logits, packed) = deepseek_v4_forward_all_positions_with_packed(
+        cfg,
+        weights,
+        &[last_token],
+        cache,
+        token_offset,
+    );
+    cache.advance(1);
+    let pred_arr = argmax(&logits, None);
+    {
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+        targets.push(&pred_arr);
+        targets.push(&packed);
+        targets.extend(kv_refs);
+        eval(&targets);
+    }
+    let mut next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+    predicted.push(next_tok);
+    let mut draft_hidden = slice_packed_hidden_row(&packed, 0, draft_hidden_width);
+    let mut last_logits = reshape_singleton_vocab_logits(&logits, cfg.vocab_size);
+
+    for (index, &draft) in drafts.iter().enumerate() {
+        if next_tok != draft {
+            break;
+        }
+        accept_count += 1;
+        let (logits, packed) = deepseek_v4_forward_all_positions_with_packed(
+            cfg,
+            weights,
+            &[draft],
+            cache,
+            token_offset + 1 + index,
+        );
+        cache.advance(1);
+        let pred_arr = argmax(&logits, None);
+        {
+            let kv_refs = cache.collect_eval_refs();
+            let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+            targets.push(&pred_arr);
+            targets.push(&packed);
+            targets.extend(kv_refs);
+            eval(&targets);
+        }
+        next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+        predicted.push(next_tok);
+        draft_hidden = slice_packed_hidden_row(&packed, 0, draft_hidden_width);
+        last_logits = reshape_singleton_vocab_logits(&logits, cfg.vocab_size);
+    }
+
+    SequentialGreedyDeepseekV4MtpVerify {
+        accept_count,
+        correction_token: next_tok,
+        draft_hidden,
+        predicted,
+        last_logits,
+    }
+}
+
+/// Slice one packed residual row to `[1, 1, width]` (DeepSeek nextn draft input).
+fn slice_packed_hidden_row(packed: &MlxArray, pos: usize, width: usize) -> MlxArray {
+    let p = pos as i32;
+    let w = width as i32;
+    let shape = packed.shape();
+    // Single-token forward returns `[1, 1, hc*hidden]`; multi-row history is
+    // `[1, seq, hc*hidden]`. Both share the last axis width.
+    if shape.len() == 3 && shape[1] == 1 {
+        if shape[2] == w {
+            return packed.clone();
+        }
+        return reshape(packed, &[1, 1, w], None);
+    }
+    let row = slice(packed, &[0, p, 0], &[1, p + 1, w], &[1, 1, 1], None);
+    reshape(&row, &[1, 1, w], None)
+}
+
+/// Normalize packed-path logits `[1, vocab]` (or already `[vocab]`) to
+/// production `[vocab]` shape expected by the shared MTP tail sampler.
+fn reshape_singleton_vocab_logits(logits: &MlxArray, vocab_size: usize) -> MlxArray {
+    let shape = logits.shape();
+    if shape == [vocab_size as i32] {
+        return logits.clone();
+    }
+    reshape(logits, &[vocab_size as i32], None)
+}
+
 /// Warm the DeepSeek V4 nextn KV cache from prompt-side packed residuals.
 ///
 /// Mirrors [`mtp_warmup_cache_kv_batched`] for the Qwen head: without this the
@@ -3073,6 +3212,190 @@ mod deepseek_v4_mtp_tests {
         assert_eq!(out2.shape(), vec![1, 1, (HC * E) as i32]);
         assert!(out2.data_f32().iter().all(|v| v.is_finite()));
         assert_eq!(cache.seq_len(), 2);
+    }
+
+    fn test_target_weights() -> ModelWeights {
+        let mut weights = test_model_weights(Some(test_nextn_weights()));
+        // Main stack: one raw-path V4 layer (compress_ratios[0] == 0).
+        // Nextn-only fixtures leave layers empty and cannot exercise the
+        // singleton target trunk used by production greedy decode.
+        weights.layers = vec![test_nextn_layer_weights()];
+        weights
+    }
+
+    fn prefill_prompt(cfg: &ModelConfig, weights: &ModelWeights, prompt: &[u32]) -> MlxKVCache {
+        use crate::model::forward_argmax;
+        let mut cache = MlxKVCache::new(cfg.layer_count);
+        for (i, &tok) in prompt.iter().enumerate() {
+            let logits = forward_argmax(cfg, weights, &[tok], &mut cache, i);
+            cache.advance(1);
+            eval(&[&logits]);
+        }
+        cache
+    }
+
+    /// Singleton packed verify path must match production `forward_argmax`
+    /// token decisions while also returning the packed residual nextn needs.
+    ///
+    /// Sequential greedy MTP verify then matches pure single-token greedy at
+    /// the verify boundary (accept + bonus / reject + correction). This is
+    /// the correctness contract that multi-token teacher-forced clone-adopt
+    /// violated on real compressor/indexer stacks.
+    #[test]
+    fn sequential_greedy_verify_matches_singleton_direct_decode() {
+        use crate::model::{deepseek_v4_forward_all_positions_with_packed, forward_argmax};
+
+        let cfg = test_model_config();
+        let weights = test_target_weights();
+        assert_eq!(
+            weights.layers.len(),
+            cfg.layer_count,
+            "regression must exercise the real target layer stack"
+        );
+        let prompt: Vec<u32> = vec![1, 2, 3, 4];
+        let width = HC * E;
+        // Runner commit plan: primary always lands in KV (same as
+        // deepseek_v4_mtp_committed_verify_len in runner/mod.rs).
+        let commit_len = |accept_count: usize, draft_len: usize| 1 + accept_count.min(draft_len);
+
+        // --- (1) Singleton packed argmax == forward_argmax token decision ---
+        let mut pack_cache = prefill_prompt(&cfg, &weights, &prompt);
+        let mut argmax_cache = prefill_prompt(&cfg, &weights, &prompt);
+        let probe = 5u32 % VOCAB as u32;
+        let offset = pack_cache.seq_len();
+        let (packed_logits, packed_h) = deepseek_v4_forward_all_positions_with_packed(
+            &cfg,
+            &weights,
+            &[probe],
+            &mut pack_cache,
+            offset,
+        );
+        let direct_logits = forward_argmax(&cfg, &weights, &[probe], &mut argmax_cache, offset);
+        let pack_pred = argmax(&packed_logits, None);
+        let direct_pred = argmax(&direct_logits, None);
+        eval(&[&pack_pred, &direct_pred, &packed_h]);
+        assert_eq!(
+            pack_pred.data_u32()[0],
+            direct_pred.data_u32()[0],
+            "singleton packed verify logits must match production forward_argmax"
+        );
+        assert_eq!(
+            packed_h.shape(),
+            vec![1, 1, width as i32],
+            "packed residual must keep nextn width hc*hidden"
+        );
+
+        // --- (2) Pure direct stream after feeding first_gen ---
+        let mut pure = prefill_prompt(&cfg, &weights, &prompt);
+        let first_gen = probe;
+        let mut pure_stream = Vec::new();
+        let mut last = first_gen;
+        for _ in 0..3 {
+            let off = pure.seq_len();
+            let logits = forward_argmax(&cfg, &weights, &[last], &mut pure, off);
+            pure.advance(1);
+            let pred = argmax(&logits, None);
+            eval(&[&pred]);
+            let tok = pred.data_u32()[0];
+            pure_stream.push(tok);
+            last = tok;
+        }
+        // pure_stream = [t1, t2, t3] after feeding first_gen, t1, t2.
+
+        // --- (3) Sequential MTP accept path: draft = [t1] → accept, bonus = t2 ---
+        let mut mtp = prefill_prompt(&cfg, &weights, &prompt);
+        let token_offset = mtp.seq_len();
+        let draft = vec![pure_stream[0]];
+        let seq = sequential_greedy_deepseek_v4_mtp_verify(
+            &cfg,
+            &weights,
+            &mut mtp,
+            first_gen,
+            &draft,
+            token_offset,
+            width,
+        );
+        assert_eq!(seq.accept_count, 1, "oracle draft must fully accept");
+        assert_eq!(
+            mtp.seq_len(),
+            token_offset + commit_len(1, 1),
+            "full accept commits primary + accepted draft"
+        );
+        let mut emitted = draft[..seq.accept_count].to_vec();
+        emitted.push(seq.correction_token);
+        assert_eq!(
+            emitted,
+            pure_stream[..2],
+            "accepted draft + bonus must equal pure singleton greedy"
+        );
+        assert_eq!(seq.draft_hidden.shape(), vec![1, 1, width as i32]);
+        assert_eq!(
+            seq.last_logits.shape(),
+            vec![VOCAB as i32],
+            "last_logits must be production [vocab] shape"
+        );
+        assert_eq!(seq.predicted, pure_stream[..2]);
+
+        // --- (4) Old multi-token teacher-forced oracle at the same boundary ---
+        // Accept decisions from multi-token predicted rows. On this raw-path
+        // synthetic stack they typically match sequential; the sequential
+        // path is still required on real CSA/HCA layers where multi-token
+        // adopt diverges. Pin that sequential remains ground truth vs pure.
+        let mut mt_cache = prefill_prompt(&cfg, &weights, &prompt);
+        let verify_input = vec![first_gen, pure_stream[0]];
+        let (mt_logits, _mt_packed) = deepseek_v4_forward_all_positions_with_packed(
+            &cfg,
+            &weights,
+            &verify_input,
+            &mut mt_cache,
+            token_offset,
+        );
+        let mt_pred = argmax(&mt_logits, None);
+        eval(&[&mt_pred]);
+        let mt_predicted = mt_pred.data_u32().to_vec();
+        let mt_accept = crate::ngram_accel::greedy_draft_target_accept_count(&draft, &mt_predicted);
+        // Sequential always matches pure; multi-token may or may not.
+        assert_eq!(
+            seq.accept_count,
+            crate::ngram_accel::greedy_draft_target_accept_count(&draft, &seq.predicted),
+            "sequential accept must follow its own singleton predictions"
+        );
+        if mt_accept != seq.accept_count || mt_predicted.first() != Some(&pure_stream[0]) {
+            // When multi-token disagrees, sequential is the correct oracle.
+            assert_eq!(
+                seq.accept_count, 1,
+                "when multi-token diverges, sequential still accepts oracle draft"
+            );
+            assert_eq!(seq.correction_token, pure_stream[1]);
+        }
+
+        // --- (5) Reject boundary: wrong draft commits primary only ---
+        let mut reject = prefill_prompt(&cfg, &weights, &prompt);
+        let offset = reject.seq_len();
+        let mut wrong = (pure_stream[0] + 1) % VOCAB as u32;
+        if wrong == pure_stream[0] {
+            wrong = (wrong + 1) % VOCAB as u32;
+        }
+        let seq_rej = sequential_greedy_deepseek_v4_mtp_verify(
+            &cfg,
+            &weights,
+            &mut reject,
+            first_gen,
+            &[wrong],
+            offset,
+            width,
+        );
+        assert_eq!(seq_rej.accept_count, 0, "wrong draft must fully reject");
+        assert_eq!(
+            reject.seq_len(),
+            offset + commit_len(0, 1),
+            "full reject still commits primary last_token"
+        );
+        assert_eq!(
+            seq_rej.correction_token, pure_stream[0],
+            "correction must equal singleton greedy at the reject position"
+        );
+        assert_eq!(seq_rej.predicted, vec![pure_stream[0]]);
     }
 
     #[test]
