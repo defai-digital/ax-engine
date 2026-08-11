@@ -50,8 +50,8 @@ pub use execution_plan::{
 pub use gemma4_unified::{
     AudioWindow, DEFAULT_VIDEO_MAX_FRAMES, DEFAULT_VIDEO_SOFT_TOKENS_PER_FRAME,
     Gemma4UnifiedRuntimeInputError, ImageDetail, SOFT_TOKEN_BUDGET_CEILING,
-    SOFT_TOKEN_BUDGET_LADDER, max_frames_for_atomic_budget, plan_audio_windows,
-    resolve_soft_token_budget, validate_soft_token_budget,
+    SOFT_TOKEN_BUDGET_LADDER, is_standard_gemma4_encoder_model_type, max_frames_for_atomic_budget,
+    plan_audio_windows, resolve_soft_token_budget, validate_soft_token_budget,
 };
 pub use generation::{
     FirstVisibleEventKind, GenerationKind, GenerationProgress, GenerationStrategyDescriptor,
