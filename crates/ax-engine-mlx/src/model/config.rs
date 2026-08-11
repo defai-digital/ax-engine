@@ -648,13 +648,20 @@ impl ModelConfig {
         };
         let rope_theta = m.rope_theta.map(|t| t as f32).unwrap_or(10000.0);
         let layer_configs = build_layer_configs(m, head_dim, rope_theta, rope_dims);
+        // gemma4_vl is a separate family label for vision capability gating;
+        // the language tower is standard Gemma 4 (GeGLU, query_scale=1.0).
         let is_gemma4 = matches!(
             m.model_family.as_str(),
-            "gemma4" | "gemma4_assistant" | "diffusion_gemma"
+            "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma"
         );
         let uses_geglu = matches!(
             m.model_family.as_str(),
-            "gemma4" | "gemma4_assistant" | "diffusion_gemma" | "gemma3" | "embeddinggemma"
+            "gemma4"
+                | "gemma4_vl"
+                | "gemma4_assistant"
+                | "diffusion_gemma"
+                | "gemma3"
+                | "embeddinggemma"
         );
         let query_scale = if is_gemma4 {
             1.0
@@ -698,26 +705,32 @@ impl ModelConfig {
             Some("yarn") | Some("deepseek_yarn") | Some("telechat3-yarn") => {
                 let factor = m.rope_scaling_factor.unwrap_or(1.0);
                 let orig_ctx = m.rope_original_context_len.unwrap_or(4096);
-                // beta_fast/slow are not separate manifest fields yet;
-                // openai/gpt-oss and mlx-lm YarnRoPE defaults are 32 / 1.
+                // Manifest fields from convert (`rope_scaling.beta_fast/slow`);
+                // mlx-lm YarnRoPE / openai gpt-oss defaults are 32 / 1 when omitted.
+                // DeepSeek V4 compress rope already honors the same fields — keep
+                // the primary YaRN path consistent so non-default bounds land.
+                let beta_fast = m.rope_beta_fast.unwrap_or(32.0);
+                let beta_slow = m.rope_beta_slow.unwrap_or(1.0);
                 let (freqs, mscale) = super::shared::build_yarn_rope_freqs(
-                    rope_dims, rope_theta, factor, orig_ctx, 32.0, 1.0, 1.0, 0.0,
+                    rope_dims, rope_theta, factor, orig_ctx, beta_fast, beta_slow, 1.0, 0.0,
                 );
                 (Some(freqs), mscale)
             }
             _ => (None, 1.0),
         };
 
-        let moe_norm_topk_prob = if m.model_family == "qwen3_5" && m.moe.is_enabled() {
-            // mlx_lm.models.qwen3_5.TextModelArgs defaults norm_topk_prob to
-            // true. Older AX manifests emitted false when config.json omitted
-            // the field, which makes Qwen3.6 35B A3B route MoE experts with
-            // the wrong weights. Keep the loader compatible with those cached
-            // manifests while the converter now emits the correct default.
-            true
-        } else {
-            m.moe_norm_topk_prob
-        };
+        let moe_norm_topk_prob =
+            if matches!(m.model_family.as_str(), "qwen3_5" | "qwen3_next") && m.moe.is_enabled() {
+                // mlx_lm / Transformers default norm_topk_prob to true for Qwen MoE
+                // hybrids (qwen3_5 MoE and qwen3_next / Qwen3.6-35B-A3B). Older AX
+                // manifests emitted false when config.json omitted the field, which
+                // routes experts with the wrong weights. Keep the loader compatible
+                // with those cached manifests while the converter emits the correct
+                // default for both families.
+                true
+            } else {
+                m.moe_norm_topk_prob
+            };
 
         Self {
             compile_cache_identity: NEXT_COMPILE_CACHE_IDENTITY.fetch_add(1, Ordering::Relaxed),
@@ -824,7 +837,8 @@ impl ModelConfig {
 /// Explicit manifest fields take precedence over family-derived defaults.
 /// Returns `(None, None)` for families without think-block tokens.
 fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Option<u32>) {
-    if m.think_start_token_id.is_some() || m.think_end_token_id.is_some() {
+    // Fully explicit pair always wins.
+    if m.think_start_token_id.is_some() && m.think_end_token_id.is_some() {
         return (m.think_start_token_id, m.think_end_token_id);
     }
     // Qwen ships two tokenizer generations with different <think> special
@@ -836,7 +850,7 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
     // generation by vocab width. qwen3_next is reserved for future variants.
     // qwen3_5 linear-attention models also emit <think> when reasoning mode
     // is enabled.
-    match m.model_family.as_str() {
+    let family_defaults = match m.model_family.as_str() {
         "qwen3" | "qwen3_5" | "qwen3_next" | "minicpmv4_6" => {
             if m.vocab_size >= 200_000 {
                 (Some(248_068), Some(248_069))
@@ -845,7 +859,13 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
             }
         }
         _ => (None, None),
-    }
+    };
+    // Partial explicit fields (legacy / hand-edited manifests) must not leave
+    // an unclosable think block: fill the missing side from family defaults.
+    (
+        m.think_start_token_id.or(family_defaults.0),
+        m.think_end_token_id.or(family_defaults.1),
+    )
 }
 
 /// Map the manifest's `kv_cache_quantization` table to per-layer specs.
@@ -901,7 +921,7 @@ pub(super) fn build_layer_configs(
     // gemma4-specific RoPE on the whole family, not just the dense target.
     let is_gemma4_family = matches!(
         m.model_family.as_str(),
-        "gemma4" | "gemma4_assistant" | "diffusion_gemma"
+        "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma"
     );
     let full_head_dim = m.global_head_dim.unwrap_or(m.attention_head_dim) as usize;
     let full_rope_dims = m
@@ -1077,6 +1097,145 @@ mod tests {
         let config = ModelConfig::from_manifest(&manifest);
 
         assert_eq!(config.kv_cache_quant, vec![None, None]);
+    }
+
+    #[test]
+    fn gemma4_vl_uses_geglu_and_unit_query_scale() {
+        // gemma4_vl packaging must not fall through to non-Gemma defaults
+        // (SwiGLU + 1/sqrt(d) query scale), which desyncs the text tower.
+        let value = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "gemma4_vl",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 64,
+            "attention_head_count": 4,
+            "attention_head_dim": 16,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "layer_types": ["sliding_attention", "full_attention"],
+            "sliding_window_size": 128,
+            "tensors": [],
+        });
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(value).expect("gemma4_vl manifest");
+        let cfg = ModelConfig::from_manifest(&manifest);
+        assert!(cfg.uses_geglu, "gemma4_vl text tower is GeGLU");
+        assert_eq!(
+            cfg.query_scale, 1.0,
+            "Gemma 4 Softcapping attention uses query_scale=1.0, not 1/sqrt(head_dim)"
+        );
+        assert_eq!(cfg.layer_configs.len(), 2);
+        assert_eq!(cfg.layer_configs[0].sliding_window, Some(128));
+        assert_eq!(cfg.layer_configs[1].sliding_window, None);
+    }
+
+    #[test]
+    fn yarn_rope_honors_manifest_beta_fast_slow() {
+        // Convert stores rope_beta_fast/slow from config.json rope_scaling.
+        // Runtime must pass them into build_yarn_rope_freqs (not hardcode 32/1).
+        // openai/gpt-oss uses 32/1; a non-default pair must change the divisors.
+        let mut base = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "gpt_oss",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 64,
+            "attention_head_count": 4,
+            "attention_head_dim": 16,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "rope_theta": 150000,
+            "rope_scaling_type": "yarn",
+            "rope_scaling_factor": 32.0,
+            "rope_original_context_len": 4096,
+            "rope_beta_fast": 32.0,
+            "rope_beta_slow": 1.0,
+            "tensors": [],
+        });
+        let default_manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(base.clone()).expect("default yarn manifest");
+        let default_cfg = ModelConfig::from_manifest(&default_manifest);
+        let default_freqs = default_cfg
+            .rope_freqs
+            .as_ref()
+            .expect("yarn must precompute rope_freqs")
+            .data_f32();
+
+        base["rope_beta_fast"] = serde_json::json!(8.0);
+        base["rope_beta_slow"] = serde_json::json!(2.0);
+        let custom_manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(base).expect("custom yarn manifest");
+        assert_eq!(custom_manifest.rope_beta_fast, Some(8.0));
+        assert_eq!(custom_manifest.rope_beta_slow, Some(2.0));
+        let custom_cfg = ModelConfig::from_manifest(&custom_manifest);
+        let custom_freqs = custom_cfg
+            .rope_freqs
+            .as_ref()
+            .expect("yarn must precompute rope_freqs")
+            .data_f32();
+
+        assert_eq!(default_freqs.len(), custom_freqs.len());
+        let max_abs = default_freqs
+            .iter()
+            .zip(custom_freqs.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_abs > 1e-4,
+            "non-default rope_beta_fast/slow must change YaRN freqs (max_abs={max_abs}); \
+             runtime was likely hardcoding 32/1 and ignoring the manifest"
+        );
+        // mscale depends only on factor/mscale, not betas — still ~1.346 for factor=32.
+        let expected_mscale = 0.1 * 32.0_f32.ln() + 1.0;
+        assert!(
+            (custom_cfg.rope_mscale - expected_mscale).abs() < 1e-4,
+            "rope_mscale should follow yarn factor, got {}",
+            custom_cfg.rope_mscale
+        );
+    }
+
+    #[test]
+    fn qwen3_next_moe_forces_norm_topk_true_for_stale_manifests() {
+        // Qwen3.6-35B-A3B is family qwen3_next. Older converters wrote
+        // moe_norm_topk_prob=false when config.json omitted the field; runtime
+        // must still normalize top-k weights or expert mix desyncs from mlx_lm.
+        let mut value = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "qwen3_next",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 16,
+            "attention_head_count": 2,
+            "attention_head_dim": 8,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "moe_norm_topk_prob": false,
+            "moe": {
+                "expert_count": 8,
+                "experts_per_token": 2,
+                "expert_intermediate_size": 8
+            },
+            "tensors": [],
+        });
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(value.clone()).expect("manifest");
+        assert!(!manifest.moe_norm_topk_prob);
+        assert!(manifest.moe.is_enabled());
+        let cfg = ModelConfig::from_manifest(&manifest);
+        assert!(
+            cfg.moe_norm_topk_prob,
+            "qwen3_next MoE must force norm_topk_prob=true for stale manifests"
+        );
+
+        // Dense qwen3_next (no MoE) must keep the stored false — only MoE needs
+        // the override.
+        value["moe"] = serde_json::json!({});
+        let dense: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(value).expect("dense manifest");
+        assert!(!dense.moe.is_enabled());
+        let dense_cfg = ModelConfig::from_manifest(&dense);
+        assert!(!dense_cfg.moe_norm_topk_prob);
     }
 
     #[test]

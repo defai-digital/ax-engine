@@ -181,11 +181,15 @@ manifest with `ax-engine-bench generate-manifest --force` if vision was expected
     let mut config =
         Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model_cfg, &processor_cfg)
             .map_err(|error| MediaError::Config(error.to_string()))?;
-    // Standard Gemma 4 E-series uses a Conformer audio tower, not the
-    // encoder-free projection consumed by this processor. The native runtime
-    // currently retains only the standard ViT, so fail audio at request
-    // preparation instead of constructing incompatible connector features.
-    if model_cfg.get("model_type").and_then(Value::as_str) == Some("gemma4") {
+    // Standard Gemma 4 E-series / gemma4_vl encoder packages use a Conformer
+    // audio tower, not the encoder-free projection consumed by this processor.
+    // The native runtime currently retains only the standard ViT, so fail
+    // audio at request preparation instead of constructing incompatible
+    // connector features. (Gemma4UnifiedProcessorConfig already clears audio
+    // for these model_types; re-assert here as defense in depth.)
+    if ax_engine_core::gemma4_unified::is_standard_gemma4_encoder_model_type(
+        model_cfg.get("model_type").and_then(Value::as_str),
+    ) {
         config.audio = None;
     }
     let normalization = image_normalization_from(&processor_cfg)?;

@@ -144,9 +144,18 @@ pub(crate) fn is_qwen_gated_delta_family(model_type: &str) -> bool {
 }
 
 pub(crate) fn is_gemma4_target_model_type(model_type: &str) -> bool {
+    // gemma4_vl / gemma4-vl share the standard Gemma 4 text backbone (dual
+    // RoPE, layer_types SWA, hidden_states_scale, optional KV-shared layers).
+    // Excluding them here left parse_layer_types empty and skipped dual rope
+    // + sqrt(H) embedding scale on convert — broken SWA and wrong magnitude.
     matches!(
         model_type,
-        "gemma4" | "gemma4_unified" | "gemma4_unified_text" | "diffusion_gemma"
+        "gemma4"
+            | "gemma4_unified"
+            | "gemma4_unified_text"
+            | "gemma4_vl"
+            | "gemma4-vl"
+            | "diffusion_gemma"
     )
 }
 
@@ -326,8 +335,13 @@ pub(crate) fn defaults_attn_output_gate(model_type: &str) -> bool {
 }
 
 pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
-    // Nemotron-H defaults norm_topk_prob to true in config; keep true when omitted.
-    is_qwen3_5_family(model_type) || is_nemotron_h(model_type)
+    // mlx_lm / Transformers default norm_topk_prob to true for Qwen MoE hybrids
+    // (qwen3_5 MoE and qwen3_next / Qwen3.6-35B-A3B). Nemotron-H likewise.
+    // Omitting qwen3_next left converted 35B manifests with false and wrong
+    // expert routing weights when config.json had no explicit field.
+    is_qwen3_5_family(model_type)
+        || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+        || is_nemotron_h(model_type)
 }
 
 pub(crate) fn runtime_status_for_model_type(_model_type: &str) -> NativeRuntimeStatus {
@@ -946,7 +960,14 @@ pub(crate) fn compute_kv_shared_sources(
     if !is_gemma4_target_model_type(model_type) || layer_types.is_empty() {
         return BTreeMap::new();
     }
-    let default_shared_layers = if model_type == "gemma4" { 20 } else { 0 };
+    // Standard Gemma 4 text towers (including encoder-VL packages) default to
+    // 20 KV-shared trailing layers when config omits num_kv_shared_layers.
+    // gemma4_unified / diffusion_gemma keep 0 unless the field is present.
+    let default_shared_layers = if matches!(model_type, "gemma4" | "gemma4_vl" | "gemma4-vl") {
+        20
+    } else {
+        0
+    };
     let num_shared = arch_u64(config, model_type, "num_kv_shared_layers")
         .unwrap_or(default_shared_layers)
         .min(u64::from(layer_count)) as usize;

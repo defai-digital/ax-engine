@@ -822,8 +822,8 @@ type DraftTokens = (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3])
 ///
 /// `logprob_temperature` is the temperature applied to the draft log-prob (the
 /// in-closure token-sampling temperature is baked in at build time): `1.0` for
-/// greedy, the sampling temperature for sampled, and `temperature.max(1.0)` for
-/// stochastic.
+/// greedy, and the same sampling temperature used for the token draw for
+/// sampled/stochastic (must match so rejection sampling sees true `q(token)`).
 #[allow(clippy::too_many_arguments)]
 fn run_compiled_mtp_draft(
     head: &MtpWeights,
@@ -1121,12 +1121,20 @@ pub fn mtp_draft_tokens_after_forced_prefix(
     cache: &mut MlxKVCache,
     max_tail_depth: usize,
     rng: &mut Xorshift64,
+    // Same gate as pure MTP for this request; `None` → global profile default.
+    min_confidence: Option<f32>,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(head) = weights.mtp.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
     if forced_prefix.is_empty() {
-        return mtp_draft_tokens(
+        return mtp_draft_tokens_gated(
             weights,
             cfg,
             first_hidden,
@@ -1134,6 +1142,7 @@ pub fn mtp_draft_tokens_after_forced_prefix(
             cache,
             Some(max_tail_depth),
             rng,
+            min_confidence,
         );
     }
 
@@ -1176,12 +1185,6 @@ pub fn mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    // Use the same process-resolved gate as pure MTP; runner may prefer
-    // mtp_draft_tokens_gated after a custom forced-prefix path in future.
-    let min_confidence = resolve_mtp_draft_min_confidence(
-        crate::speculation_profile::speculation_profile_from_env(),
-        None,
-    );
     let (draft, log_probs, distributions, tail_added, top2_margins) = mtp_draft_tokens_gated(
         weights,
         cfg,
@@ -1513,7 +1516,8 @@ fn mtp_draft_tokens_stochastic(
         max_depth,
         vocab,
         temperature,
-        temperature.max(1.0),
+        // Log-prob T must match sample T so rejection sampling sees true q(token).
+        if temperature > 0.0 { temperature } else { 1.0 },
         true,
     ) {
         return result;
@@ -1553,7 +1557,8 @@ fn mtp_draft_tokens_stochastic(
         };
         lazy_tokens.push(lazy_tok.clone());
 
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
         lazy_log_probs.push(lazy_lp);
 
         prev_hidden = post_norm_hidden;
@@ -1714,12 +1719,20 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
     cache: &mut MlxKVCache,
     max_tail_depth: usize,
     rng: &mut Xorshift64,
+    // Same gate as pure MTP for this request; `None` → global profile default.
+    min_confidence: Option<f32>,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(head) = weights.glm_mtp.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
     if forced_prefix.is_empty() {
-        return glm_mtp_draft_tokens(
+        return glm_mtp_draft_tokens_gated(
             weights,
             cfg,
             first_hidden,
@@ -1727,6 +1740,7 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
             cache,
             Some(max_tail_depth),
             rng,
+            min_confidence,
         );
     }
 
@@ -1768,10 +1782,6 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    let min_confidence = resolve_mtp_draft_min_confidence(
-        crate::speculation_profile::speculation_profile_from_env(),
-        None,
-    );
     let (draft, log_probs, distributions, tail_added, top2_margins) = glm_mtp_draft_tokens_gated(
         weights,
         cfg,
@@ -1981,7 +1991,9 @@ fn glm_mtp_draft_tokens_stochastic(
             lazy_argmax_logits(&logits)
         };
         lazy_tokens.push(lazy_tok.clone());
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        // Match sample temperature (not max(T,1.0)) so q(token) is exact.
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
         lazy_log_probs.push(lazy_lp);
         prev_hidden = new_hidden;
         prev_token_arr = lazy_tok;
@@ -2009,7 +2021,30 @@ fn glm_mtp_draft_tokens_stochastic(
 /// Default draft temperature for the V4 nextn head's stochastic path — the
 /// AXQ artifact carries no runtime sampler config, so this matches the GLM
 /// sidecar default.
-const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
+pub const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
+
+/// Temperature used when writing DeepSeek V4 draft log-probs for `mode`
+/// (and thus the T the runner must use for rejection-sampling rescale).
+///
+/// Must match [`deepseek_v4_mtp_draft_tokens_gated`]:
+/// - **Greedy** (default): log-probs at T=1.0
+/// - **Stochastic** (`AX_MLX_MTP_DRAFT_MODE=stochastic`): sample + log-prob at
+///   [`DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE`] (0.7)
+///
+/// Hard-coding 0.7 for every nextn attach made greedy accepts rescale as if
+/// drafts were sampled at 0.7 while log_p was recorded at 1.0.
+pub fn deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mode: MtpDraftMode) -> f32 {
+    match mode {
+        MtpDraftMode::Stochastic => DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+        MtpDraftMode::Greedy => 1.0,
+    }
+}
+
+/// Process-env mode → draft log-prob temperature (see
+/// [`deepseek_v4_mtp_draft_log_prob_temperature_for_mode`]).
+pub fn deepseek_v4_mtp_draft_log_prob_temperature() -> f32 {
+    deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mtp_draft_mode_from_env())
+}
 
 /// KV-cache slot count for the dedicated nextn cache: llama.cpp places the
 /// MTP block at `il = n_layer + nextn_layer_offset`, so the block appends its
@@ -2153,6 +2188,10 @@ pub fn deepseek_v4_mtp_head_forward(
 /// `hc_head` → shared-head RMSNorm (nextn-specific or the root final norm) →
 /// shared LM head (nextn-specific or root) — llama.cpp deepseek4.cpp:1528-1544.
 ///
+/// Prefer the **MTP-layer** `hc_head_*` when present (vLLM
+/// `DeepSeekV4MultiTokenPredictorLayer`); fall back to the target root head
+/// only for legacy packs that omit it.
+///
 /// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
 pub fn deepseek_v4_mtp_hidden_to_logits(
     packed_hidden: &MlxArray,
@@ -2160,10 +2199,18 @@ pub fn deepseek_v4_mtp_hidden_to_logits(
     weights: &ModelWeights,
     cfg: &ModelConfig,
 ) -> MlxArray {
-    let head_w = weights
-        .deepseek_v4_head
-        .as_ref()
-        .expect("DeepSeek V4 head weights (hc_head_*)");
+    let head_w = nextn.hc_head.as_ref().unwrap_or_else(|| {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        WARNED.get_or_init(|| {
+            tracing::warn!(
+                "DeepSeek V4 MTP draft using target root hc_head_* — mtp.N.hc_head_* missing; acceptance may be degraded"
+            );
+        });
+        weights
+            .deepseek_v4_head
+            .as_ref()
+            .expect("DeepSeek V4 head weights (hc_head_*)")
+    });
     let hidden = deepseek_v4_family::collapse_for_head(cfg, head_w, packed_hidden);
     let norm_w = nextn
         .shared_head_norm
@@ -2221,12 +2268,21 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
     cache: &mut MlxKVCache,
     max_tail_depth: usize,
     rng: &mut Xorshift64,
+    // Same gate the pure-MTP path resolved for this request. `None` falls
+    // back to the process-global profile resolver (tests / legacy callers).
+    min_confidence: Option<f32>,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(nextn) = weights.deepseek_v4_nextn.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
     if forced_prefix.is_empty() {
-        return deepseek_v4_mtp_draft_tokens(
+        return deepseek_v4_mtp_draft_tokens_gated(
             weights,
             cfg,
             first_hidden,
@@ -2234,6 +2290,7 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
             cache,
             Some(max_tail_depth),
             rng,
+            min_confidence,
         );
     }
 
@@ -2275,10 +2332,6 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    let min_confidence = resolve_mtp_draft_min_confidence(
-        crate::speculation_profile::speculation_profile_from_env(),
-        None,
-    );
     let (draft, log_probs, distributions, tail_added, top2_margins) =
         deepseek_v4_mtp_draft_tokens_gated(
             weights,
@@ -2469,7 +2522,10 @@ fn deepseek_v4_mtp_draft_tokens_stochastic(
             lazy_argmax_logits(&logits)
         };
         lazy_tokens.push(lazy_tok.clone());
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        // Log-prob must use the same temperature as sampling so q(token) matches
+        // the proposal distribution used for rejection sampling (was max(T,1.0)).
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
         lazy_log_probs.push(lazy_lp);
         prev_hidden = new_hidden;
         prev_token_arr = lazy_tok;
@@ -2488,6 +2544,56 @@ fn deepseek_v4_mtp_draft_tokens_stochastic(
     let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
     let added = draft_tokens.len();
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+/// Warm the DeepSeek V4 nextn KV cache from prompt-side packed residuals.
+///
+/// Mirrors [`mtp_warmup_cache_kv_batched`] for the Qwen head: without this the
+/// nextn attention starts decode with almost no prompt history and acceptance
+/// collapses. `packed_hidden_seq` is `[1, seq, hc*hidden]` aligned with
+/// `prev_tokens` (token that *follows* each packed row, same contract as Qwen).
+pub fn deepseek_v4_mtp_warmup_cache(
+    nextn: &DeepseekV4NextnWeights,
+    packed_hidden_seq: &MlxArray,
+    prev_tokens: &[u32],
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    rope_offset: usize,
+) {
+    if prev_tokens.is_empty() || nextn.layer.is_none() {
+        return;
+    }
+    let seq = prev_tokens.len();
+    let shape = packed_hidden_seq.shape();
+    let avail = shape.get(1).copied().unwrap_or(0).max(0) as usize;
+    let n = seq.min(avail);
+    if n == 0 {
+        return;
+    }
+    let width = shape.get(2).copied().unwrap_or(0);
+    for (i, &token) in prev_tokens.iter().enumerate().take(n) {
+        let packed_row = slice(
+            packed_hidden_seq,
+            &[0, i as i32, 0],
+            &[1, (i + 1) as i32, width],
+            &[1, 1, 1],
+            None,
+        );
+        let packed_row = reshape(&packed_row, &[1, 1, width], None);
+        let tok = [token];
+        let prev_token_arr =
+            MlxArray::from_raw_data(tok.as_ptr() as *const u8, 4, &[1_i32], MlxDtype::Uint32);
+        let _ = deepseek_v4_mtp_head_forward(
+            nextn,
+            &packed_row,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            Some(rope_offset + i),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2570,6 +2676,31 @@ mod deepseek_v4_mtp_tests {
         DeepseekV4HeadWeights, DeepseekV4LayerWeights, LayerWeights, QuantizedWeight,
     };
     use mlx_sys::eval;
+
+    #[test]
+    fn draft_log_prob_temperature_is_mode_aware_not_always_0_7() {
+        // Regression (skeptic): accept-path must not hard-code 0.7 for greedy.
+        // Greedy drafts record log-probs at T=1.0 (deepseek_v4_mtp_draft_tokens_greedy).
+        assert_eq!(
+            deepseek_v4_mtp_draft_log_prob_temperature_for_mode(MtpDraftMode::Greedy),
+            1.0,
+            "greedy nextn log-probs are at T=1.0; accept rescale must match"
+        );
+        assert_eq!(
+            deepseek_v4_mtp_draft_log_prob_temperature_for_mode(MtpDraftMode::Stochastic),
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+            "stochastic nextn samples and logs at DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE"
+        );
+        assert!(
+            (DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE - 0.7).abs() < 1e-6,
+            "stochastic constant must stay 0.7"
+        );
+        // Process env default is greedy → helper must return 1.0 under default mode.
+        assert_eq!(
+            deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mtp_draft_mode_from_env()),
+            deepseek_v4_mtp_draft_log_prob_temperature()
+        );
+    }
 
     // Tiny synthetic dims: E=8, D=4, H=1, G=1, R_o=2, rot=2, R_q=4, HC=4.
     const E: usize = 8;
@@ -2814,6 +2945,12 @@ mod deepseek_v4_mtp_tests {
             shared_head_norm: None,
             embed_tokens: None,
             shared_head_head: None,
+            // Dedicated MTP HC head (distinct from target root head).
+            hc_head: Some(crate::weights::DeepseekV4HeadWeights {
+                hc_head_fn: array_f32(&fill(HC * HC * E, 0.31), &[HC as i32, (HC * E) as i32]),
+                hc_head_base: array_f32(&fill(HC, 0.32), &[HC as i32]),
+                hc_head_scale: array_f32(&[1.0], &[1]),
+            }),
             layer: Some(Box::new(test_nextn_layer_weights())),
         }
     }

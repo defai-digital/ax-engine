@@ -1338,6 +1338,34 @@ mod tests {
     }
 
     #[test]
+    fn strip_gpt_oss_harmony_prefers_last_final_channel() {
+        // Multiple final channels: surface the last body (rfind), matching the
+        // non-stream chat contract used by decode_gpt_oss_chat_output.
+        let raw = concat!(
+            "<|channel|>final<|message|>first draft<|end|>",
+            "<|start|>assistant<|channel|>final<|message|>final answer<|return|>"
+        );
+        assert_eq!(strip_gpt_oss_harmony_output(raw), "final answer");
+    }
+
+    #[test]
+    fn strip_gpt_oss_harmony_drops_analysis_only() {
+        // No final channel: analysis/commentary are removed; leftover control
+        // markers are stripped. Empty result is intentional for chat.
+        let raw = "<|channel|>analysis<|message|>internal monologue only<|end|>";
+        assert_eq!(strip_gpt_oss_harmony_output(raw), "");
+    }
+
+    #[test]
+    fn strip_gpt_oss_harmony_keeps_trailing_text_after_analysis() {
+        let raw = concat!(
+            "<|channel|>analysis<|message|>scratchpad<|end|>",
+            "visible tail"
+        );
+        assert_eq!(strip_gpt_oss_harmony_output(raw), "visible tail");
+    }
+
+    #[test]
     fn primary_productivity_families_select_chat_templates() {
         assert_eq!(
             ChatPromptTemplate::for_model_id("gemma4-31b"),

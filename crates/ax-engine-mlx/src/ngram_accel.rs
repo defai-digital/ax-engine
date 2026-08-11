@@ -1422,6 +1422,115 @@ pub(crate) fn recompute_committed_prefix_with_argmax(
     direct_argmax.data_u32().first().copied().unwrap_or(0)
 }
 
+/// Greedy prefix accept count: how many leading draft tokens match the
+/// corresponding target predictions.
+///
+/// This is the pure decision rule used by speculative verify. Unit tests pin
+/// the fail-closed contract: a multi-token verifier that would accept a wrong
+/// draft must be rejected when the sequential (or oracle) target prediction
+/// disagrees at that index.
+pub fn greedy_draft_target_accept_count(drafts: &[u32], target_preds: &[u32]) -> usize {
+    drafts
+        .iter()
+        .zip(target_preds.iter())
+        .take_while(|(draft, target)| draft == target)
+        .count()
+}
+
+/// Result of sequential-oracle greedy verification of a speculative draft.
+#[derive(Clone, Debug)]
+pub struct SequentialGreedyMtpVerify {
+    /// Number of leading draft tokens equal to sequential greedy production.
+    pub accept_count: usize,
+    /// Next token sequential greedy would emit after the accepted prefix
+    /// (correction on partial reject, bonus on full accept).
+    pub correction_token: u32,
+    /// Post-final-norm hidden at the last committed position, shape
+    /// `[1, 1, hidden]`, for seeding the next assistant draft step.
+    pub draft_hidden: MlxArray,
+    /// Sequential greedy predictions for each draft index that was evaluated
+    /// (length `accept_count` on full accept of all drafts, else
+    /// `accept_count + 1` including the rejecting prediction). Used for EWMA
+    /// / diagnostics; not required for correctness of the commit.
+    pub predicted: Vec<u32>,
+}
+
+/// Verify drafts with the **same singleton production route** as direct decode.
+///
+/// On entry `cache.seq_len()` must equal `token_offset` (the multi-token
+/// teacher-forced verify advance, if any, must already be rolled back).
+/// On exit the cache has advanced by `1 + accept_count` and matches sequential
+/// greedy for the committed prefix `[last_token] ++ drafts[..accept_count]`.
+///
+/// Why this exists: Gemma4 assistant-MTP multi-token teacher-forced argmax can
+/// disagree with MTP-off direct decode. Direct greedy uses the
+/// `forward_argmax` / direct-pipeline route (argmax-only logits, singleton
+/// graph). An earlier oracle that re-ran `forward_all_positions_with_post_norm`
+/// still diverged from that production route. This implementation uses
+/// `forward_argmax` for every accept decision and correction token so MTP-on
+/// greedy commits match MTP-off under temperature 0.
+///
+/// `draft_hidden` is a zero placeholder: assistant draft seeding only affects
+/// subsequent draft quality (accept rate / speed), not the production tokens
+/// committed here. Prefer a dual-return production forward when one exists.
+pub(crate) fn sequential_greedy_mtp_verify(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    last_token: u32,
+    drafts: &[u32],
+    token_offset: usize,
+) -> SequentialGreedyMtpVerify {
+    let hidden_size = cfg.hidden_size;
+    let mut predicted: Vec<u32> = Vec::with_capacity(drafts.len().saturating_add(1));
+    let mut accept_count = 0usize;
+
+    // Match direct production (`recompute_committed_prefix_with_argmax` /
+    // `run_direct_pipeline_decode`), not multi-token teacher-forced.
+    let mut last_logits = forward_argmax(cfg, weights, &[last_token], cache, token_offset);
+    cache.advance(1);
+    let pred_arr = argmax(&last_logits, None);
+    {
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&pred_arr);
+        targets.extend(kv_refs);
+        eval(&targets);
+    }
+    let mut next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+    predicted.push(next_tok);
+
+    for (index, &draft) in drafts.iter().enumerate() {
+        if next_tok != draft {
+            break;
+        }
+        accept_count += 1;
+        last_logits = forward_argmax(cfg, weights, &[draft], cache, token_offset + 1 + index);
+        cache.advance(1);
+        let pred_arr = argmax(&last_logits, None);
+        {
+            let kv_refs = cache.collect_eval_refs();
+            let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+            targets.push(&pred_arr);
+            targets.extend(kv_refs);
+            eval(&targets);
+        }
+        next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+        predicted.push(next_tok);
+    }
+
+    // Exactness depends only on accept_count + correction_token. Zero hidden
+    // keeps the production cache on the forward_argmax path exclusively.
+    let draft_hidden = mlx_sys::zeros(&[1_i32, 1, hidden_size as i32], MlxDtype::Bfloat16, None);
+
+    SequentialGreedyMtpVerify {
+        accept_count,
+        correction_token: next_tok,
+        draft_hidden,
+        predicted,
+    }
+}
+
 /// Sample token at `pos` in the flattened `[verify_len, vocab]` logit buffer.
 /// Falls back to `argmax_tok` when temperature is 0 or the buffer is empty.
 /// Sample one token from `logits_all` at sequence position `pos`.
@@ -2384,6 +2493,47 @@ mod tests {
         assert_eq!(
             parse_speculative_accept_threshold(Some("not_a_float")),
             NGRAM_SPECULATIVE_ACCEPT_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn greedy_draft_target_accept_count_accepts_matching_prefix() {
+        let drafts = [10, 20, 30, 40];
+        let target = [10, 20, 30, 40];
+        assert_eq!(greedy_draft_target_accept_count(&drafts, &target), 4);
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &[10, 20, 30, 99]),
+            3
+        );
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &[10, 99, 30, 40]),
+            1
+        );
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &[99, 20, 30, 40]),
+            0
+        );
+        assert_eq!(greedy_draft_target_accept_count(&[], &target), 0);
+    }
+
+    #[test]
+    fn greedy_draft_target_accept_count_rejects_multi_token_false_accept() {
+        // Repro shape from Gemma assistant-MTP formal pilot: multi-token
+        // teacher-forced argmax matched a continuing cycle draft (2633) while
+        // sequential greedy would have emitted 236761 at the first-diff index.
+        // The pure accept rule must fail closed on that disagreement.
+        let drafts = [3574, 711, 1161, 496, 2633];
+        let multi_token_preds = [3574, 711, 1161, 496, 2633]; // would accept all 5
+        let sequential_preds = [3574, 711, 1161, 496, 236761]; // reject at index 4
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &multi_token_preds),
+            5,
+            "multi-token path would have accepted the wrong draft"
+        );
+        assert_eq!(
+            greedy_draft_target_accept_count(&drafts, &sequential_preds),
+            4,
+            "sequential oracle must reject the diverging draft token"
         );
     }
 }
