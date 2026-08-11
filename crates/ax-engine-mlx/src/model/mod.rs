@@ -2848,12 +2848,30 @@ fn forward_for_embedding_body(
 /// Falling back to the imperative `forward_for_embedding_body` is always
 /// correct; this path exists purely to amortize the per-op MLX C-API
 /// dispatch cost across the ~28 ops/layer × N layers of the forward pass.
+/// DI-W2-002: families that must not use the causal dense embed compiled body.
+/// Returns a stable error string when the dense closure is forbidden.
+pub fn dense_embed_closure_forbidden_reason(model_family: &str) -> Option<&'static str> {
+    if model_family == "embeddinggemma" {
+        Some(
+            "embeddinggemma must use gemma3 bidirectional embed path, not dense embed closure",
+        )
+    } else {
+        None
+    }
+}
+
 pub fn build_embedding_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     target_position: Option<usize>,
     has_dense_head: bool,
 ) -> Result<MlxClosure, String> {
+    // DI-W2-002: dense causal body is wrong for EmbeddingGemma. Fail closed so
+    // the runner falls back to the gemma3 bidirectional path (or the early
+    // gemma3 dispatch in embedding_forward never calls us at all).
+    if let Some(reason) = dense_embed_closure_forbidden_reason(&cfg.model_family) {
+        return Err(reason.into());
+    }
     let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
         if inputs.is_empty() {
             return vec![];
@@ -4250,6 +4268,26 @@ mod tests {
             generation_kind: ax_engine_core::GenerationKind::Autoregressive,
             kv_cache_quant: vec![None; 1],
         }
+    }
+
+    /// DI-W2-002: pure family gate used by `build_embedding_forward_closure`
+    /// (and mirrored by runner single-item dispatch).
+    #[test]
+    fn dense_embed_closure_forbidden_for_embeddinggemma() {
+        let reason = dense_embed_closure_forbidden_reason("embeddinggemma")
+            .expect("embeddinggemma must forbid causal dense embed closure");
+        assert!(
+            reason.contains("gemma3 bidirectional") || reason.contains("embeddinggemma"),
+            "reason should name the wrong path: {reason}"
+        );
+        assert!(
+            dense_embed_closure_forbidden_reason("qwen3").is_none(),
+            "qwen3 stays on the dense embed closure path"
+        );
+        assert!(
+            dense_embed_closure_forbidden_reason("nemotron_embed").is_none(),
+            "nemotron_embed uses dense body with its own bidirectional branch"
+        );
     }
 
     fn gemma4_interleaved_manifest() -> NativeModelManifest {

@@ -1952,6 +1952,13 @@ fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) ->
     }
 }
 
+/// DI-W2-002: single-item EmbeddingGemma embed must use the bidirectional
+/// Gemma3 sandwich path (same as `embedding_batch_forward` batch-of-one), not
+/// the causal dense compiled body (`build_embedding_forward_closure`).
+pub(crate) fn embedding_single_item_uses_gemma3_path(model_family: &str) -> bool {
+    model_family == "embeddinggemma"
+}
+
 /// Build the sampling parameters for a request exactly as the per-item decode
 /// path does (see `run_item`), so the batched path classifies and samples each
 /// request identically to its single-sequence decode.
@@ -3867,6 +3874,25 @@ impl MlxRunner {
         // Fuse Dense head only for Last/Cls pooling (target_position.is_some());
         // mean pooling applies Dense head after pooling (outside the closure).
         let has_dense_head = self.weights.embedding_dense_0.is_some() && target_position.is_some();
+        // DI-W2-002: production single-item EmbeddingGemma must use the same
+        // bidirectional Gemma3 sandwich path as batch-of-one. The default
+        // compiled dense body (`build_embedding_forward_closure` →
+        // `forward_for_embedding_body`) is causal and wrong for this family.
+        if embedding_single_item_uses_gemma3_path(&self.cfg.model_family) {
+            if *EMBED_NO_COMPILE {
+                let target_positions = target_position.map(|p| vec![p]);
+                let (out, _lens) = crate::model::forward_for_embedding_batch(
+                    &self.cfg,
+                    &self.weights,
+                    &[token_ids.to_vec()],
+                    target_positions.as_deref(),
+                );
+                return (out, false);
+            }
+            let (out, _lens) =
+                self.embedding_gemma_batch_compiled_forward(&[token_ids.to_vec()]);
+            return (out, false);
+        }
         if *EMBED_NO_COMPILE {
             return (
                 crate::model::forward_for_embedding(
@@ -19126,6 +19152,26 @@ mod tests {
         assert_eq!(
             effective_embedding_pooling("qwen3", EmbeddingPooling::Last),
             EmbeddingPooling::Last
+        );
+    }
+
+    /// DI-W2-002: single-item EmbeddingGemma must share the batch-of-one Gemma3
+    /// bidirectional sandwich path (not the causal dense compiled body).
+    #[test]
+    fn embeddinggemma_single_item_dispatch_matches_batch_of_one() {
+        assert!(
+            embedding_single_item_uses_gemma3_path("embeddinggemma"),
+            "embedding_forward must divert EmbeddingGemma before build_embedding_forward_closure"
+        );
+        // Causal dense families stay on the default compiled body.
+        assert!(!embedding_single_item_uses_gemma3_path("qwen3"));
+        // Nemotron embed uses its own bidirectional branch inside the dense body.
+        assert!(!embedding_single_item_uses_gemma3_path("nemotron_embed"));
+        // Batch path uses the same family string gate for EmbeddingGemma.
+        assert_eq!(
+            embedding_single_item_uses_gemma3_path("embeddinggemma"),
+            true,
+            "single and batch both key off model_family == embeddinggemma"
         );
     }
 
