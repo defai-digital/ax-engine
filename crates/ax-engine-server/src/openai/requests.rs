@@ -543,9 +543,16 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                     false
                 }
             } else if is_qwen3_vl_model_id(model_id)
-                || artifact_family
-                    .as_deref()
-                    .is_some_and(|f| f == "qwen3_vl" || f == "qwen3_vl_moe" || f == "qwen3_5")
+                || artifact_family.as_deref().is_some_and(|f| {
+                    matches!(
+                        f,
+                        "qwen3_vl"
+                            | "qwen3_vl_moe"
+                            | "qwen3_5"
+                            | "qwen3_5_moe"
+                            | "qwen3_next"
+                    )
+                })
             {
                 if let Some(prompt) = render_qwen3_vl_chat_with_media(
                     model_id,

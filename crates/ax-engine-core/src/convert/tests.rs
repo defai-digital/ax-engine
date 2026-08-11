@@ -2363,6 +2363,26 @@ fn qwen3_vl_moe_model_type_produces_moe_config() {
     assert_eq!(moe.experts_per_token, Some(4));
     let moe_hyphen = moe_config(&config, "qwen3-vl-moe");
     assert!(moe_hyphen.is_enabled(), "qwen3-vl-moe alias must also MoE");
+
+    // Official VL-MoE packs nest expert knobs under text_config (uses_text_config).
+    let nested = serde_json::json!({
+        "model_type": "qwen3_vl_moe",
+        "text_config": {
+            "num_experts": 128,
+            "num_experts_per_tok": 8,
+            "moe_intermediate_size": 256,
+            "hidden_size": 512
+        },
+        "vision_config": { "depth": 2 }
+    });
+    let nested_moe = moe_config(&nested, "qwen3_vl_moe");
+    assert!(
+        nested_moe.is_enabled(),
+        "nested text_config experts must populate MoE for VL-MoE packs"
+    );
+    assert_eq!(nested_moe.expert_count, Some(128));
+    assert_eq!(nested_moe.experts_per_token, Some(8));
+    assert_eq!(nested_moe.expert_intermediate_size, Some(256));
 }
 
 #[test]

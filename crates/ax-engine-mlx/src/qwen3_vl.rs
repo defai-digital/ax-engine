@@ -128,16 +128,26 @@ pub fn deepstack_layers(num_feature_maps: usize, language_layers: u32) -> Vec<u3
 }
 
 pub fn is_qwen3_vl_family(model_family: &str) -> bool {
+    // Dense/MoE VL packs, plus hybrid text families that may carry a vision
+    // tower (Qwen3.5 / Qwen3.6 packs sharing the portable ViT path).
     matches!(
         model_family,
-        "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5" | "qwen3.5"
+        "qwen3_vl"
+            | "qwen3_vl_moe"
+            | "qwen3_5"
+            | "qwen3.5"
+            | "qwen3_5_moe"
+            | "qwen3_next"
+            | "qwen3.6"
+            | "qwen3_6"
     )
 }
 
 pub fn text_only_decode_family(model_family: &str) -> Option<&'static str> {
     match model_family {
         "qwen3_vl" | "qwen3_vl_moe" => Some("qwen3"),
-        "qwen3_5" | "qwen3.5" => Some("qwen3_5"),
+        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" => Some("qwen3_5"),
+        "qwen3_next" | "qwen3.6" | "qwen3_6" => Some("qwen3_next"),
         _ => None,
     }
 }
@@ -174,8 +184,15 @@ pub fn select_decode_route(
     if has_media {
         Ok(if model_family == "qwen3_vl_moe" {
             "qwen3_vl_moe"
-        } else if matches!(model_family, "qwen3_5" | "qwen3.5") {
+        } else if matches!(
+            model_family,
+            "qwen3_5" | "qwen3.5" | "qwen3_5_moe"
+        ) {
             "qwen3_5"
+        } else if matches!(model_family, "qwen3_next" | "qwen3.6" | "qwen3_6") {
+            // Hybrid Qwen3.6 packs that load a vision tower still route media
+            // through the VL prefill path; text-only decode stays qwen3_next.
+            "qwen3_vl"
         } else {
             "qwen3_vl"
         })
@@ -548,7 +565,13 @@ pub fn load_qwen3_vl_vision_weights(
                     | "qwen3_vl_moe"
                     | "qwen3-vl-moe"
                     | "qwen3_5"
+                    | "qwen3.5"
                     | "qwen3_5_moe"
+                    // Qwen3.6 HF aliases (convert → qwen3_next) may still ship a
+                    // vision tower; silent skip left packs without vision weights.
+                    | "qwen3_next"
+                    | "qwen3.6"
+                    | "qwen3_6"
             )
         });
     if !is_qwen_visual_config {
@@ -1355,6 +1378,60 @@ mod tests {
             matches!(result, Err(WeightLoadError::TensorMissing(_))),
             "a Qwen 3.6 config must enter, not bypass, the visual loader"
         );
+    }
+
+    #[test]
+    fn qwen36_and_next_aliases_enter_visual_loader() {
+        // DI-VL-A001: model_type qwen3.6 / qwen3_next / qwen3_6 must not silent-
+        // skip the vision tower when patch weights are present.
+        for model_type in ["qwen3.6", "qwen3_6", "qwen3_next"] {
+            let config = json!({
+                "model_type": model_type,
+                "text_config": {
+                    "rope_parameters": {"mrope_section": [1, 1, 1]}
+                },
+                "vision_config": {
+                    "depth": 1,
+                    "hidden_size": 2,
+                    "intermediate_size": 4,
+                    "out_hidden_size": 2,
+                    "num_heads": 1,
+                    "in_channels": 3,
+                    "patch_size": 2,
+                    "temporal_patch_size": 2,
+                    "spatial_merge_size": 1,
+                    "num_position_embeddings": 4,
+                    "deepstack_visual_indexes": []
+                }
+            });
+            let mut tensors = HashMap::from([(
+                "vision_tower.patch_embed.proj.weight".to_string(),
+                zeros(&[2, 3, 2, 2, 2], MlxDtype::Float32, None),
+            )]);
+            let result = load_qwen3_vl_vision_weights(&[], &mut tensors, Some(&config));
+            assert!(
+                matches!(result, Err(WeightLoadError::TensorMissing(_))),
+                "{model_type} must enter the visual loader, not return Ok(None)"
+            );
+        }
+    }
+
+    #[test]
+    fn select_decode_route_media_covers_qwen_next_aliases() {
+        assert_eq!(
+            select_decode_route("qwen3_next", true).expect("route"),
+            "qwen3_vl"
+        );
+        assert_eq!(
+            select_decode_route("qwen3_next", false).expect("route"),
+            "qwen3_next"
+        );
+        assert_eq!(
+            select_decode_route("qwen3_vl_moe", true).expect("route"),
+            "qwen3_vl_moe"
+        );
+        assert!(is_qwen3_vl_family("qwen3_next"));
+        assert!(is_qwen3_vl_family("qwen3.6"));
     }
 
     #[test]
