@@ -2305,6 +2305,7 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
             Some(max_tail_depth),
             rng,
             min_confidence,
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
         );
     }
 
