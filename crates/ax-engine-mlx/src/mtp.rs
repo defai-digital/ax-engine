@@ -2572,7 +2572,7 @@ pub fn deepseek_v4_mtp_warmup_cache(
         return;
     }
     let width = shape.get(2).copied().unwrap_or(0);
-    for i in 0..n {
+    for (i, &token) in prev_tokens.iter().enumerate().take(n) {
         let packed_row = slice(
             packed_hidden_seq,
             &[0, i as i32, 0],
@@ -2581,7 +2581,7 @@ pub fn deepseek_v4_mtp_warmup_cache(
             None,
         );
         let packed_row = reshape(&packed_row, &[1, 1, width], None);
-        let tok = [prev_tokens[i]];
+        let tok = [token];
         let prev_token_arr =
             MlxArray::from_raw_data(tok.as_ptr() as *const u8, 4, &[1_i32], MlxDtype::Uint32);
         let _ = deepseek_v4_mtp_head_forward(

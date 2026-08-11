@@ -303,6 +303,14 @@ impl MtpModelPolicy {
             u32::from(self.is_qwen_linear_certification_candidate()),
         );
         decisions.upsert_route_decision(
+            "ax_mlx_deepseek_v4_mtp_certification_candidate",
+            u32::from(self.is_deepseek_v4_certification_candidate()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_deepseek_v4_mtp_direct_fallback",
+            u32::from(self.is_deepseek_v4_direct_fallback()),
+        );
+        decisions.upsert_route_decision(
             "ax_mlx_mtp_model_gate_default_present",
             u32::from(model_default.is_some()),
         );
@@ -472,12 +480,58 @@ mod tests {
             Some(&1)
         );
         assert_eq!(
+            decisions.get("ax_mlx_deepseek_v4_mtp_certification_candidate"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_deepseek_v4_mtp_direct_fallback"),
+            Some(&0)
+        );
+        assert_eq!(
             decisions.get("ax_mlx_mtp_model_gate_default_present"),
             Some(&1)
         );
         assert_eq!(
             decisions.get("ax_mlx_mtp_model_gate_default_x1000"),
             Some(&0)
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_route_telemetry_exposes_fallback_and_candidate() {
+        let mut fallback_decisions = Vec::new();
+        policy_v4(Some(1)).append_route_decisions(true, &mut fallback_decisions);
+        let fallback = fallback_decisions.into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(fallback.get("ax_mlx_mtp_model_policy"), Some(&9));
+        assert_eq!(fallback.get("ax_mlx_mtp_model_policy_route_safe"), Some(&0));
+        assert_eq!(fallback.get("ax_mlx_mtp_model_policy_active"), Some(&0));
+        assert_eq!(
+            fallback.get("ax_mlx_deepseek_v4_mtp_direct_fallback"),
+            Some(&1)
+        );
+        assert_eq!(
+            fallback.get("ax_mlx_deepseek_v4_mtp_certification_candidate"),
+            Some(&0)
+        );
+
+        let mut candidate_decisions = Vec::new();
+        MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            deepseek_v4_depth: Some(1),
+            deepseek_v4_certification_candidate: true,
+            ..Default::default()
+        })
+        .append_route_decisions(true, &mut candidate_decisions);
+        let candidate = candidate_decisions.into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(candidate.get("ax_mlx_mtp_model_policy"), Some(&8));
+        assert_eq!(candidate.get("ax_mlx_mtp_model_policy_route_safe"), Some(&1));
+        assert_eq!(candidate.get("ax_mlx_mtp_model_policy_active"), Some(&1));
+        assert_eq!(
+            candidate.get("ax_mlx_deepseek_v4_mtp_direct_fallback"),
+            Some(&0)
+        );
+        assert_eq!(
+            candidate.get("ax_mlx_deepseek_v4_mtp_certification_candidate"),
+            Some(&1)
         );
     }
 

@@ -1759,6 +1759,14 @@ impl MlxRunner {
                 certification_candidate = mtp_model_policy.is_qwen_linear_certification_candidate(),
                 "Qwen linear-attention MTP uncertified or ineligible; using direct decode (ADR-020)",
             );
+        } else if mtp_model_policy.is_deepseek_v4_direct_fallback() {
+            tracing::warn!(
+                target: "ax_engine_mlx::runner",
+                model_family = %cfg.model_family,
+                mtp_depth = mtp_model_policy.max_depth(),
+                certification_candidate = mtp_model_policy.is_deepseek_v4_certification_candidate(),
+                "DeepSeek V4 nextn MTP uncertified; using direct decode until Tier 2 evidence",
+            );
         } else if mtp_model_policy.has_conflicting_drafters() {
             tracing::error!(
                 target: "ax_engine_mlx::runner",
