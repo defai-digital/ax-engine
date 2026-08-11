@@ -2153,6 +2153,10 @@ pub fn deepseek_v4_mtp_head_forward(
 /// `hc_head` → shared-head RMSNorm (nextn-specific or the root final norm) →
 /// shared LM head (nextn-specific or root) — llama.cpp deepseek4.cpp:1528-1544.
 ///
+/// Prefer the **MTP-layer** `hc_head_*` when present (vLLM
+/// `DeepSeekV4MultiTokenPredictorLayer`); fall back to the target root head
+/// only for legacy packs that omit it.
+///
 /// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
 pub fn deepseek_v4_mtp_hidden_to_logits(
     packed_hidden: &MlxArray,
@@ -2160,10 +2164,18 @@ pub fn deepseek_v4_mtp_hidden_to_logits(
     weights: &ModelWeights,
     cfg: &ModelConfig,
 ) -> MlxArray {
-    let head_w = weights
-        .deepseek_v4_head
-        .as_ref()
-        .expect("DeepSeek V4 head weights (hc_head_*)");
+    let head_w = nextn.hc_head.as_ref().unwrap_or_else(|| {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        WARNED.get_or_init(|| {
+            tracing::warn!(
+                "DeepSeek V4 MTP draft using target root hc_head_* — mtp.N.hc_head_* missing; acceptance may be degraded"
+            );
+        });
+        weights
+            .deepseek_v4_head
+            .as_ref()
+            .expect("DeepSeek V4 head weights (hc_head_*)")
+    });
     let hidden = deepseek_v4_family::collapse_for_head(cfg, head_w, packed_hidden);
     let norm_w = nextn
         .shared_head_norm
@@ -2469,7 +2481,10 @@ fn deepseek_v4_mtp_draft_tokens_stochastic(
             lazy_argmax_logits(&logits)
         };
         lazy_tokens.push(lazy_tok.clone());
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        // Log-prob must use the same temperature as sampling so q(token) matches
+        // the proposal distribution used for rejection sampling (was max(T,1.0)).
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
         lazy_log_probs.push(lazy_lp);
         prev_hidden = new_hidden;
         prev_token_arr = lazy_tok;
@@ -2488,6 +2503,56 @@ fn deepseek_v4_mtp_draft_tokens_stochastic(
     let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
     let added = draft_tokens.len();
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+/// Warm the DeepSeek V4 nextn KV cache from prompt-side packed residuals.
+///
+/// Mirrors [`mtp_warmup_cache_kv_batched`] for the Qwen head: without this the
+/// nextn attention starts decode with almost no prompt history and acceptance
+/// collapses. `packed_hidden_seq` is `[1, seq, hc*hidden]` aligned with
+/// `prev_tokens` (token that *follows* each packed row, same contract as Qwen).
+pub fn deepseek_v4_mtp_warmup_cache(
+    nextn: &DeepseekV4NextnWeights,
+    packed_hidden_seq: &MlxArray,
+    prev_tokens: &[u32],
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    rope_offset: usize,
+) {
+    if prev_tokens.is_empty() || nextn.layer.is_none() {
+        return;
+    }
+    let seq = prev_tokens.len();
+    let shape = packed_hidden_seq.shape();
+    let avail = shape.get(1).copied().unwrap_or(0).max(0) as usize;
+    let n = seq.min(avail);
+    if n == 0 {
+        return;
+    }
+    let width = shape.get(2).copied().unwrap_or(0);
+    for i in 0..n {
+        let packed_row = slice(
+            packed_hidden_seq,
+            &[0, i as i32, 0],
+            &[1, (i + 1) as i32, width],
+            &[1, 1, 1],
+            None,
+        );
+        let packed_row = reshape(&packed_row, &[1, 1, width], None);
+        let tok = [prev_tokens[i]];
+        let prev_token_arr =
+            MlxArray::from_raw_data(tok.as_ptr() as *const u8, 4, &[1_i32], MlxDtype::Uint32);
+        let _ = deepseek_v4_mtp_head_forward(
+            nextn,
+            &packed_row,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            Some(rope_offset + i),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2814,6 +2879,12 @@ mod deepseek_v4_mtp_tests {
             shared_head_norm: None,
             embed_tokens: None,
             shared_head_head: None,
+            // Dedicated MTP HC head (distinct from target root head).
+            hc_head: Some(crate::weights::DeepseekV4HeadWeights {
+                hc_head_fn: array_f32(&fill(HC * HC * E, 0.31), &[HC as i32, (HC * E) as i32]),
+                hc_head_base: array_f32(&fill(HC, 0.32), &[HC as i32]),
+                hc_head_scale: array_f32(&[1.0], &[1]),
+            }),
             layer: Some(Box::new(test_nextn_layer_weights())),
         }
     }

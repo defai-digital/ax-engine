@@ -237,6 +237,13 @@ pub enum NativeTensorRole {
     NextnEmbedTokens,
     /// DeepSeek V4 MTP shared LM head (`nextn.shared_head_head`).
     NextnSharedHeadHead,
+    /// DeepSeek V4 MTP hyper-connection head coefficients (`mtp.N.hc_head_fn`).
+    /// Distinct from the target root `HcHeadFn` so conversion cannot collide.
+    NextnHcHeadFn,
+    /// DeepSeek V4 MTP hyper-connection head base stream (`mtp.N.hc_head_base`).
+    NextnHcHeadBase,
+    /// DeepSeek V4 MTP hyper-connection head scale (`mtp.N.hc_head_scale`).
+    NextnHcHeadScale,
     /// Qwen3-VL vision patch embed projection (visual.patch_embed.proj).
     Qwen3VlVisionPatchEmbed,
     /// Qwen3-VL vision spatial-merge projector (visual.merger).

@@ -59,6 +59,7 @@ use crate::generate::{
     chunked_prefill_nemotron_omni_with_sampling_buffers,
     chunked_prefill_qwen3_vl_with_sampling_buffers,
     chunked_prefill_unlimited_ocr_with_sampling_buffers,
+    chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
     decode_step, direct_pipeline_barrier_enabled, prepare_direct_pipeline_advance,
     sample_token_from_prefill_logits, start_direct_pipeline,
@@ -81,8 +82,8 @@ use crate::model::{
 use crate::model::{prefill_batched_forward, supports_batched_prefill};
 use crate::mtp::{
     deepseek_v4_mtp_draft_tokens_after_forced_prefix, deepseek_v4_mtp_draft_tokens_gated,
-    glm_mtp_draft_tokens_after_forced_prefix, glm_mtp_draft_tokens_gated,
-    mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
+    deepseek_v4_mtp_warmup_cache, glm_mtp_draft_tokens_after_forced_prefix,
+    glm_mtp_draft_tokens_gated, mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
 };
 use crate::mtp_adaptive_gate::{
     AdaptiveStepSignals, MtpAdaptiveGateState, adaptive_gate_enabled_from_env,
@@ -1560,6 +1561,8 @@ impl MlxRunner {
             // ADR-020: product default stays direct-fallback for Qwen linear
             // until Tier 2 promotion; formal harness opts in explicitly.
             qwen_linear_certification_candidate: qwen_linear_mtp_certification_candidate_from_env(),
+            // DeepSeek V4 nextn: same fail-closed product default until Tier 2.
+            deepseek_v4_certification_candidate: deepseek_v4_mtp_certification_candidate_from_env(),
         });
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
@@ -5326,6 +5329,23 @@ impl MlxRunner {
                                 state.mtp_prefill_hidden = Some(hidden);
                                 state.mtp_prefill_history_tokens = history_tokens;
                                 tok
+                            } else if self.weights.deepseek_v4_nextn.is_some() {
+                                let (tok, packed, history_tokens) =
+                                    chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
+                                        &self.cfg,
+                                        &self.weights,
+                                        token_ids,
+                                        &mut state.cache,
+                                        recompute_chunk,
+                                        MlxSamplingRequest::new(sampling, &recompute_history),
+                                        &mut state.rng,
+                                        &mut state.sampling_probs_buf,
+                                        &mut state.sampling_logits_buf,
+                                        &mut state.sampling_candidates_buf,
+                                    );
+                                state.mtp_prefill_hidden = Some(packed);
+                                state.mtp_prefill_history_tokens = history_tokens;
+                                tok
                             } else {
                                 chunked_prefill_with_sampling_buffers(
                                     &self.cfg,
@@ -5378,6 +5398,23 @@ impl MlxRunner {
                                 &mut state.sampling_candidates_buf,
                             );
                         state.mtp_prefill_hidden = Some(hidden);
+                        state.mtp_prefill_history_tokens = history_tokens;
+                        Some(tok)
+                    } else if self.weights.deepseek_v4_nextn.is_some() {
+                        let (tok, packed, history_tokens) =
+                            chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
+                                &self.cfg,
+                                &self.weights,
+                                prefill_tokens,
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                MlxSamplingRequest::new(sampling, &repetition_history),
+                                &mut state.rng,
+                                &mut state.sampling_probs_buf,
+                                &mut state.sampling_logits_buf,
+                                &mut state.sampling_candidates_buf,
+                            );
+                        state.mtp_prefill_hidden = Some(packed);
                         state.mtp_prefill_history_tokens = history_tokens;
                         Some(tok)
                     } else if let Some(staged) = staged_batched_prefill.take().filter(|staged| {
@@ -8886,27 +8923,171 @@ impl MlxRunner {
                         false,
                         predicted,
                     )
-                } else {
+                } else if self.weights.deepseek_v4_nextn.is_some() {
+                    // DeepSeek V4: verify on a clone so rejected drafts never
+                    // corrupt production compressor/indexer state. Live-cache
+                    // trim_to only best-effort rewinds the compressor buffer
+                    // and can zero-fill missing history after a reject.
+                    let mut verify_cache = state.cache.clone();
                     let verify_forward_started = Instant::now();
-                    let (logits_all, post_norm_all) = if self.weights.deepseek_v4_nextn.is_some() {
-                        // V4 nextn consumes the packed pre-collapse residual; the
-                        // second return is `[1, seq, hc*hidden]`, not post-norm.
+                    let (logits_all, post_norm_all) =
                         crate::model::deepseek_v4_forward_all_positions_with_packed(
                             &self.cfg,
                             &self.weights,
                             &verify_input,
-                            &mut state.cache,
+                            &mut verify_cache,
                             token_offset,
-                        )
+                        );
+                    mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                    verify_cache.advance(verify_len);
+                    let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
+                    let target_prob_workspace =
+                        if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
+                            &mut state.mtp_target_prob_workspace
+                        } else {
+                            &mut local_target_prob_workspace
+                        };
+                    let target_softmax_started = Instant::now();
+                    let lazy_target_probs = compute_mtp_target_probs(
+                        &logits_all,
+                        &pending,
+                        acceptance_log_probs,
+                        vocab,
+                        sampling,
+                        self.mtp_target_softmax_topk,
+                        target_filter,
+                        target_prob_workspace,
+                    );
+                    mtp_timings.target_softmax_wall_us = mtp_timings
+                        .target_softmax_wall_us
+                        .saturating_add(elapsed_us(target_softmax_started));
+                    let predicted_arr = Some(argmax(&logits_all, None));
+                    let kv_refs2 = verify_cache.collect_eval_refs();
+                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
+                    targets.push(predicted_arr.as_ref().unwrap());
+                    targets.push(&post_norm_all);
+                    if let Some(ref ltp) = lazy_target_probs {
+                        ltp.push_eval_targets(&mut targets);
+                    }
+                    targets.extend(kv_refs2);
+                    let verify_eval_started = Instant::now();
+                    eval(&targets);
+                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                    let accept_started = Instant::now();
+                    let predicted: Vec<u32> = predicted_arr
+                        .as_ref()
+                        .map(|arr| arr.data_u32().to_vec())
+                        .unwrap_or_default();
+                    let target_softmax_extract_started = Instant::now();
+                    let target_probs_cpu = lazy_target_probs
+                        .as_ref()
+                        .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                    mtp_timings.target_softmax_wall_us = mtp_timings
+                        .target_softmax_wall_us
+                        .saturating_add(elapsed_us(target_softmax_extract_started));
+                    let target_distributions_cpu: Option<&[TokenDistribution]> = None;
+
+                    let accept = mtp_accept_count(
+                        &pending,
+                        acceptance_log_probs,
+                        &state.mtp_pending_draft_distributions,
+                        &state.mtp_pending_draft_sources,
+                        target_probs_cpu,
+                        target_distributions_cpu,
+                        &predicted,
+                        &mut state.rng,
+                        draft_log_prob_temperature,
+                        sampling.temperature,
+                        model_acceptance_mode,
+                        mtp_ngram_acceptance_mode_from_env(),
+                    );
+                    let ac = accept.accept_count;
+                    let all_accepted = accept.all_accepted;
+                    let exact_rejection_correction = (!all_accepted
+                        && proposal_law == MtpProposalLaw::DeterministicDelta)
+                        .then(|| {
+                            sample_exact_mtp_delta_rejection_correction(
+                                &logits_all,
+                                ac,
+                                vocab,
+                                sampling,
+                                pending[ac],
+                                &mut state.rng,
+                            )
+                        })
+                        .flatten();
+                    let exact_residual_correction_applied = exact_rejection_correction.is_some();
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                    let rollback_started = Instant::now();
+                    let committed_len = token_offset + 1 + ac;
+                    if all_accepted {
+                        // verify_len == 1 + pending; full accept keeps all rows.
+                        state.cache = verify_cache;
+                    } else if ac == 0 {
+                        // Production cache never saw the rejected draft.
+                        drop(verify_cache);
                     } else {
-                        forward_all_positions_with_post_norm(
+                        // Partial accept: replay primary + accepted drafts on
+                        // production so compressor state is exact (clone trim
+                        // still has the incomplete rewind problem).
+                        drop(verify_cache);
+                        let accepted_input = &verify_input[..=ac];
+                        let _ = crate::model::deepseek_v4_forward_all_positions_with_packed(
                             &self.cfg,
                             &self.weights,
-                            &verify_input,
+                            accepted_input,
                             &mut state.cache,
                             token_offset,
-                        )
-                    };
+                        );
+                        state.cache.advance(accepted_input.len());
+                        let kv_refs = state.cache.collect_eval_refs();
+                        eval(&kv_refs);
+                    }
+                    debug_assert_eq!(
+                        state.cache.seq_len(),
+                        committed_len,
+                        "DeepSeek V4 MTP commit length must match accept count"
+                    );
+
+                    let rejected_count = pending.len() - ac;
+                    if rejected_count > 0 {
+                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(ref mut c) = state.mtp_cache
+                            && !c.trim_to(new_mtp_len)
+                        {
+                            tracing::warn!(
+                                new_mtp_len,
+                                "MTP head cache trim refused; draft quality may degrade"
+                            );
+                        }
+                        state.mtp_decode_count = new_mtp_len;
+                    }
+                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    state.pending_direct = None;
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, ac, self.mtp_draft_hidden_width());
+                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                    (
+                        logits_all,
+                        draft_hidden,
+                        ac,
+                        all_accepted,
+                        exact_rejection_correction
+                            .or(accept.rejection_correction)
+                            .unwrap_or(correction_argmax_tok),
+                        exact_residual_correction_applied,
+                        predicted,
+                    )
+                } else {
+                    let verify_forward_started = Instant::now();
+                    let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut state.cache,
+                        token_offset,
+                    );
                     mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                     state.cache.advance(verify_len);
                     // Target probabilities for rejection-sampling acceptance.
@@ -9935,9 +10116,17 @@ impl MlxRunner {
         // computation graph depth, increasing TTFT. For a 2048-token cold
         // prefill chunk, the cap reduces warmup ops from ~57 to ~7
         // full-model-equivalent forwards.
-        if let (Some(prefill_hidden), Some(head)) =
-            (state.mtp_prefill_hidden.take(), self.weights.mtp.as_ref())
+        // Do not `take()` the prefill hidden until the matching drafter is
+        // confirmed present: a naive `(take(), mtp.as_ref())` pair would
+        // discard DeepSeek packed history when only `deepseek_v4_nextn` is set.
+        if self.weights.mtp.is_some()
+            && let Some(prefill_hidden) = state.mtp_prefill_hidden.take()
         {
+            let head = self
+                .weights
+                .mtp
+                .as_ref()
+                .expect("mtp head present after is_some guard");
             let history_tokens = std::mem::take(&mut state.mtp_prefill_history_tokens);
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
             let available_rows = prefill_hidden
@@ -9979,6 +10168,61 @@ impl MlxRunner {
                     c.rope_offset = start_offset;
                 }
             }
+        } else if self.weights.deepseek_v4_nextn.is_some()
+            && let Some(prefill_packed) = state.mtp_prefill_hidden.take()
+        {
+            // DeepSeek V4 nextn: packed residual rows + nextn-layer warmup.
+            // Without this the predictor starts with a cold KV and acceptance
+            // collapses (Qwen path above already warms its head).
+            let nextn = self
+                .weights
+                .deepseek_v4_nextn
+                .as_ref()
+                .expect("deepseek nextn present after is_some guard");
+            let history_tokens = std::mem::take(&mut state.mtp_prefill_history_tokens);
+            let cache = state
+                .mtp_cache
+                .get_or_insert_with(|| self.new_mtp_draft_cache());
+            let available_rows = prefill_packed
+                .shape()
+                .get(1)
+                .copied()
+                .unwrap_or_default()
+                .max(0) as usize;
+            let total = available_rows.min(history_tokens.len());
+            let cap = mtp_warmup_cap();
+            let warmup_len = if cap > 0 { total.min(cap) } else { total };
+            let start_offset = total.saturating_sub(warmup_len);
+            if warmup_len > 0 {
+                let width = prefill_packed.shape().get(2).copied().unwrap_or(0);
+                let warmup_packed = slice(
+                    &prefill_packed,
+                    &[0, start_offset as i32, 0],
+                    &[1, total as i32, width],
+                    &[1, 1, 1],
+                    None,
+                );
+                deepseek_v4_mtp_warmup_cache(
+                    nextn,
+                    &warmup_packed,
+                    &history_tokens[start_offset..total],
+                    &self.weights,
+                    cache,
+                    &self.cfg,
+                    start_offset,
+                );
+                let kv_refs = cache.collect_eval_refs();
+                mlx_sys::eval(&kv_refs);
+                clear_cache();
+                state.mtp_decode_count = warmup_len;
+                if let Some(ref mut c) = state.mtp_cache {
+                    c.rope_offset = start_offset;
+                }
+            }
+        } else {
+            // Unconsumed history for non-MTP families.
+            state.mtp_prefill_hidden = None;
+            state.mtp_prefill_history_tokens.clear();
         }
 
         // Skip n-gram entirely for short output budgets: failed speculation

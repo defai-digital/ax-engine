@@ -3649,7 +3649,7 @@ fn deepseek_v4_tensor_matching_covers_hf_layout() {
             "layers.61.nextn.enorm.weight",
             (NativeTensorRole::NextnEnorm, None),
         ),
-        ("mtp.0.hc_head_fn", (NativeTensorRole::HcHeadFn, None)),
+        ("mtp.0.hc_head_fn", (NativeTensorRole::NextnHcHeadFn, None)),
         ("mtp.1.enorm.weight", (NativeTensorRole::NextnEnorm, None)),
         (
             "mtp.1.norm.weight",

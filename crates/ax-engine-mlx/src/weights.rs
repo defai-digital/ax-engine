@@ -397,6 +397,9 @@ pub struct DeepseekV4NextnWeights {
     pub embed_tokens: Option<QuantizedWeight>,
     /// MTP shared LM head (`nextn.shared_head_head`).
     pub shared_head_head: Option<QuantizedWeight>,
+    /// MTP-specific hyper-connection head (`mtp.N.hc_head_*`). When absent the
+    /// draft path falls back to the target root head (legacy packs only).
+    pub hc_head: Option<DeepseekV4HeadWeights>,
     /// The nextn transformer block (raw-path attention + learned-router MoE,
     /// never hash-routed). `None` when the artifact ships only the
     /// manifest-side sidecar roles (deferred runtime-MTP phase).
@@ -413,6 +416,7 @@ impl DeepseekV4NextnWeights {
             && self.shared_head_norm.is_none()
             && self.embed_tokens.is_none()
             && self.shared_head_head.is_none()
+            && self.hc_head.is_none()
             && self.layer.is_none()
     }
 
@@ -426,6 +430,7 @@ impl DeepseekV4NextnWeights {
         self.shared_head_norm = self.shared_head_norm.or(sidecar.shared_head_norm);
         self.embed_tokens = self.embed_tokens.or(sidecar.embed_tokens);
         self.shared_head_head = self.shared_head_head.or(sidecar.shared_head_head);
+        self.hc_head = self.hc_head.or(sidecar.hc_head);
         self.layer = self.layer.or(sidecar.layer);
         self
     }
@@ -4317,9 +4322,58 @@ fn load_deepseek_v4_nextn_weights(
             None,
             "dsv4_nextn_shared_head",
         )?,
+        hc_head: load_deepseek_v4_nextn_hc_head(specs, name_map)?,
         layer: block_layer.map(Box::new),
     };
     Ok((!nextn.is_empty()).then_some(nextn))
+}
+
+/// Load the MTP-specific HC head from dedicated `NextnHcHead*` roles when all
+/// three tensors are present. Partial sets fail closed as `None` (draft falls
+/// back to the target root head with a one-shot warning at first use).
+fn load_deepseek_v4_nextn_hc_head(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+) -> Result<Option<DeepseekV4HeadWeights>, WeightLoadError> {
+    let has_fn = has_role(specs, NativeTensorRole::NextnHcHeadFn, None);
+    let has_base = has_role(specs, NativeTensorRole::NextnHcHeadBase, None);
+    let has_scale = has_role(specs, NativeTensorRole::NextnHcHeadScale, None);
+    if !(has_fn || has_base || has_scale) {
+        return Ok(None);
+    }
+    if !(has_fn && has_base && has_scale) {
+        tracing::warn!(
+            target: "ax_mlx::weights",
+            "DeepSeek V4 MTP hc_head_* is incomplete in the manifest — draft will fall back to the target head"
+        );
+        return Ok(None);
+    }
+    Ok(Some(DeepseekV4HeadWeights {
+        hc_head_fn: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::NextnHcHeadFn,
+            None,
+            "dsv4_nextn_hc_head_fn",
+        )?
+        .weight,
+        hc_head_base: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::NextnHcHeadBase,
+            None,
+            "dsv4_nextn_hc_head_base",
+        )?
+        .weight,
+        hc_head_scale: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::NextnHcHeadScale,
+            None,
+            "dsv4_nextn_hc_head_scale",
+        )?
+        .weight,
+    }))
 }
 
 /// Load the DeepSeek V4 MTP sidecar (`mtp.safetensors`) if present alongside
@@ -4419,6 +4473,31 @@ fn load_deepseek_v4_mtp_sidecar(
     let shared_head_head = mtp_take_weight(name_map, &format!("{np}.shared_head_head"), bits)
         .or_else(|| mtp_take_weight(name_map, &format!("{np}.shared_head.head"), bits))
         .or_else(|| mtp_take_weight(name_map, &format!("{np}.head"), bits));
+    // MTP HC head (vLLM DeepSeekV4MultiTokenPredictorLayer owns per-layer
+    // hc_head_*). Accept both underscore and dotted AXQ naming.
+    let hc_head_fn = mtp_take_plain(name_map, &format!("{np}.hc_head_fn"))
+        .or_else(|| mtp_take_plain(name_map, &format!("{np}.hc_head.fn")));
+    let hc_head_base = mtp_take_plain(name_map, &format!("{np}.hc_head_base"))
+        .or_else(|| mtp_take_plain(name_map, &format!("{np}.hc_head.base")));
+    let hc_head_scale = mtp_take_plain(name_map, &format!("{np}.hc_head_scale"))
+        .or_else(|| mtp_take_plain(name_map, &format!("{np}.hc_head.scale")));
+    let hc_head = match (hc_head_fn, hc_head_base, hc_head_scale) {
+        (Some(hc_head_fn), Some(hc_head_base), Some(hc_head_scale)) => {
+            Some(DeepseekV4HeadWeights {
+                hc_head_fn,
+                hc_head_base,
+                hc_head_scale,
+            })
+        }
+        (None, None, None) => None,
+        _ => {
+            tracing::warn!(
+                target: "ax_mlx::weights",
+                "DeepSeek V4 MTP sidecar hc_head_* is incomplete — draft will fall back to the target head"
+            );
+            None
+        }
+    };
 
     // Block: raw-path attention (q LoRA trio + fused KV + grouped output LoRA).
     let attn_norm = mtp_take_plain(name_map, &format!("{bp}.attn_norm.weight"));
@@ -4592,6 +4671,7 @@ fn load_deepseek_v4_mtp_sidecar(
         shared_head_norm,
         embed_tokens,
         shared_head_head,
+        hc_head,
         layer: Some(Box::new(layer)),
     })
 }

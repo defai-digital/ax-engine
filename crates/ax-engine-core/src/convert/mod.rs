@@ -1394,17 +1394,22 @@ fn deepseek_v4_nextn_role(suffix: &str) -> Option<NativeTensorRole> {
         "shared_head_norm.weight" | "norm.weight" => Some(NativeTensorRole::NextnSharedHeadNorm),
         "embed_tokens.weight" => Some(NativeTensorRole::NextnEmbedTokens),
         "shared_head_head.weight" => Some(NativeTensorRole::NextnSharedHeadHead),
+        "hc_head_fn" | "hc_head.fn" => Some(NativeTensorRole::NextnHcHeadFn),
+        "hc_head_base" | "hc_head.base" => Some(NativeTensorRole::NextnHcHeadBase),
+        "hc_head_scale" | "hc_head.scale" => Some(NativeTensorRole::NextnHcHeadScale),
         _ => None,
     }
 }
 
-/// Raw HF `mtp.N.<suffix>` roles: the hc_head trio maps to the same
-/// root-level roles as the main checkpoint's `hc_head_*` tensors.
+/// Raw HF `mtp.N.<suffix>` roles. The MTP HC-head trio is **not** collapsed onto
+/// the target root `HcHead*` roles — that collision made load order select the
+/// MTP head as the target head (or drop one of them). Use dedicated `NextnHc*`
+/// roles so both heads remain distinct through convert → load → draft logits.
 fn deepseek_v4_mtp_role(suffix: &str) -> Option<NativeTensorRole> {
     match suffix {
-        "hc_head_fn" => Some(NativeTensorRole::HcHeadFn),
-        "hc_head_base" => Some(NativeTensorRole::HcHeadBase),
-        "hc_head_scale" => Some(NativeTensorRole::HcHeadScale),
+        "hc_head_fn" | "hc_head.fn" => Some(NativeTensorRole::NextnHcHeadFn),
+        "hc_head_base" | "hc_head.base" => Some(NativeTensorRole::NextnHcHeadBase),
+        "hc_head_scale" | "hc_head.scale" => Some(NativeTensorRole::NextnHcHeadScale),
         other => deepseek_v4_nextn_role(other),
     }
 }
