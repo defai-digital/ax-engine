@@ -523,7 +523,10 @@ mod tests {
         .append_route_decisions(true, &mut candidate_decisions);
         let candidate = candidate_decisions.into_iter().collect::<BTreeMap<_, _>>();
         assert_eq!(candidate.get("ax_mlx_mtp_model_policy"), Some(&8));
-        assert_eq!(candidate.get("ax_mlx_mtp_model_policy_route_safe"), Some(&1));
+        assert_eq!(
+            candidate.get("ax_mlx_mtp_model_policy_route_safe"),
+            Some(&1)
+        );
         assert_eq!(candidate.get("ax_mlx_mtp_model_policy_active"), Some(&1));
         assert_eq!(
             candidate.get("ax_mlx_deepseek_v4_mtp_direct_fallback"),
