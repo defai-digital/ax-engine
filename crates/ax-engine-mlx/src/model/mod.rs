@@ -1548,6 +1548,8 @@ pub fn forward_all_positions_update_cache(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) {
+    // DI-VL-001: match singleton decode MRoPE origin after visual prefill.
+    let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     let ids_1d = MlxArray::from_raw_data(
         token_ids.as_ptr() as *const u8,
         std::mem::size_of_val(token_ids),
@@ -1595,6 +1597,9 @@ pub fn forward_all_positions(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> MlxArray {
+    // DI-VL-001: multi-token n-gram / MTP verify must use the same MRoPE origin
+    // as singleton decode after visual prefill (mrope_position_delta).
+    let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     let ids_1d = MlxArray::from_raw_data(
         token_ids.as_ptr() as *const u8,
         std::mem::size_of_val(token_ids),
@@ -1661,17 +1666,19 @@ pub fn forward_all_positions_with_post_norm_greedy(
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
     let seq = token_ids.len();
+    // LONG_MT uses physical cache length (heuristic), then map to MRoPE origin.
+    let moe_long_mt = cfg.moe_expert_count > 0
+        && token_offset >= 512
+        && std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+    let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     // LONG_MT aligns both the materialized S=1 baseline and the multi-token
     // verifier on the invariant affine projection kernel. RowExact MLX reads
     // every quantized weight once per verify row; the invariant kernel keeps
     // the singleton qmv reduction order while reusing each weight load across
     // the microbatch. Scope it here so empty-draft S=1 and verify S>1 cannot
     // acquire different arithmetic contracts.
-    let moe_long_mt = cfg.moe_expert_count > 0
-        && token_offset >= 512
-        && std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
-            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
     let _moe_invariant = moe_long_mt.then(|| crate::fastpath::scoped_qwen_linear_mtp_exact(true));
     // MoE multi-token: per-pos SDPA, pos0-exact/rest-Shared QKV, RowExact
     // dense/o_proj, batched experts. Empty-draft real post_norm.
@@ -1755,6 +1762,8 @@ pub fn forward_all_positions_with_post_norm_ids(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    // DI-VL-001: async-draft verify and MTP multi-token path share this entry.
+    let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     if cfg.deepseek_v4.is_some() {
         let hidden = deepseek_v4_forward_hidden(cfg, weights, ids_1d, seq, cache, token_offset);
         let seq_i = seq as i32;
@@ -1912,6 +1921,8 @@ pub fn forward_all_positions_post_norm_last_lm_head(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    // DI-VL-001: MTP warmup / optimistic multi-token path after visual prefill.
+    let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     let ids_1d = MlxArray::from_raw_data(
         token_ids.as_ptr() as *const u8,
         std::mem::size_of_val(token_ids),
@@ -4056,7 +4067,11 @@ fn forward_lazy_single_and_logits_mode(
     logits
 }
 
-fn qwen_visual_rope_offset(
+/// Absolute RoPE start for decode / multi-token verify after Qwen VL visual
+/// prefill. Visual soft tokens compress MRoPE so physical `token_offset`
+/// (cache `seq_len`) is not the rotary origin — singleton decode already used
+/// this helper; multi-token n-gram/MTP verify must too (DI-VL-001).
+pub(crate) fn qwen_visual_rope_offset(
     weights: &ModelWeights,
     cache: &MlxKVCache,
     token_offset: usize,
@@ -4706,6 +4721,104 @@ mod tests {
         eval(&[&causal]);
 
         assert_close(causal.data_f32(), &[1.0, 2.0], 1.0e-6);
+    }
+
+    fn empty_model_weights(vision: Option<crate::qwen3_vl::Qwen3VlVisionWeights>) -> ModelWeights {
+        ModelWeights {
+            token_embedding: dense_weight(&[3, 2]),
+            final_norm: zeros(&[2], MlxDtype::Float32, None),
+            lm_head: dense_weight(&[3, 2]),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
+            diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
+            qwen3_vl_vision: vision,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
+        }
+    }
+
+    fn stub_qwen3_vl_vision_weights() -> crate::qwen3_vl::Qwen3VlVisionWeights {
+        use crate::qwen3_vl::{Qwen3VlMergerWeights, Qwen3VlVisionConfig, Qwen3VlVisionWeights};
+        let z = zeros(&[1], MlxDtype::Float32, None);
+        let merger = Qwen3VlMergerWeights {
+            norm_weight: z.clone(),
+            norm_bias: None,
+            linear_fc1: z.clone(),
+            linear_fc1_bias: None,
+            linear_fc2: z.clone(),
+            linear_fc2_bias: None,
+            postshuffle_norm: false,
+        };
+        Qwen3VlVisionWeights {
+            config: Qwen3VlVisionConfig {
+                depth: 0,
+                hidden_size: 1,
+                intermediate_size: 1,
+                out_hidden_size: 1,
+                num_heads: 1,
+                in_channels: 3,
+                patch_size: 1,
+                temporal_patch_size: 1,
+                spatial_merge_size: 1,
+                num_position_embeddings: 1,
+                deepstack_visual_indexes: Vec::new(),
+            },
+            patch_embed: z.clone(),
+            patch_embed_bias: None,
+            pos_embed: z.clone(),
+            layers: Vec::new(),
+            merger,
+            deepstack_mergers: Vec::new(),
+            mrope_section: vec![1, 1, 1],
+        }
+    }
+
+    #[test]
+    fn qwen_visual_rope_offset_is_identity_without_vision_or_delta() {
+        // DI-VL-001: multi-token paths share this helper with singleton decode.
+        let cache = MlxKVCache::new(1);
+        let weights = empty_model_weights(None);
+        assert_eq!(qwen_visual_rope_offset(&weights, &cache, 17), 17);
+
+        let mut cache_delta = MlxKVCache::new(1);
+        cache_delta.set_mrope_position_delta(-9);
+        // Without vision weights the delta must not change RoPE origin (text-only).
+        assert_eq!(qwen_visual_rope_offset(&weights, &cache_delta, 17), 17);
+        // With a non-zero delta the decode position math itself is physical+delta.
+        assert_eq!(cache_delta.mrope_decode_position(17), 8);
+    }
+
+    #[test]
+    fn qwen_visual_rope_offset_applies_delta_when_vision_loaded() {
+        // After visual prefill soft-token compression, multi-token n-gram/MTP
+        // verify must start RoPE at mrope_decode_position(physical_offset).
+        let mut cache = MlxKVCache::new(1);
+        cache.set_mrope_position_delta(-9);
+        let weights = empty_model_weights(Some(stub_qwen3_vl_vision_weights()));
+        assert_eq!(
+            qwen_visual_rope_offset(&weights, &cache, 17),
+            8,
+            "physical 17 + delta -9 must match singleton decode origin"
+        );
+        assert_eq!(
+            qwen_visual_rope_offset(&weights, &cache, 17),
+            cache.mrope_decode_position(17)
+        );
     }
 
     #[test]
