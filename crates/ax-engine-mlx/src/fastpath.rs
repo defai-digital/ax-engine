@@ -167,8 +167,11 @@ pub fn batched_prefill_token_budget_override() -> Option<u32> {
 /// 10.4 ms eval, on every speculative step.
 ///
 /// Submitting each chunk with `async_eval` lets the GPU start the early layers
-/// while the host still builds the later ones — the same overlap
-/// `async_eval_kv_refs` already gives cache-only prefill chunks.
+/// while the host still builds the later ones — the same overlap idea as
+/// cache-only prefill chunks, but mid-loop submits only the residual
+/// `hidden` (not the full cache-ref set). Side-output K/V and linear-attn
+/// state are materialised by the caller's terminal eval; re-submitting them
+/// every chunk causes MoE gather_qmm backpressure.
 ///
 /// Exactness-preserving: `async_eval` schedules an already-built graph and
 /// changes no operand, shape, or reduction order. Only the synchronisation
