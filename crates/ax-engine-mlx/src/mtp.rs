@@ -2020,8 +2020,31 @@ fn glm_mtp_draft_tokens_stochastic(
 
 /// Default draft temperature for the V4 nextn head's stochastic path — the
 /// AXQ artifact carries no runtime sampler config, so this matches the GLM
-/// sidecar default. Public so the runner rescales acceptance with the same T.
+/// sidecar default.
 pub const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
+
+/// Temperature used when writing DeepSeek V4 draft log-probs for `mode`
+/// (and thus the T the runner must use for rejection-sampling rescale).
+///
+/// Must match [`deepseek_v4_mtp_draft_tokens_gated`]:
+/// - **Greedy** (default): log-probs at T=1.0
+/// - **Stochastic** (`AX_MLX_MTP_DRAFT_MODE=stochastic`): sample + log-prob at
+///   [`DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE`] (0.7)
+///
+/// Hard-coding 0.7 for every nextn attach made greedy accepts rescale as if
+/// drafts were sampled at 0.7 while log_p was recorded at 1.0.
+pub fn deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mode: MtpDraftMode) -> f32 {
+    match mode {
+        MtpDraftMode::Stochastic => DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+        MtpDraftMode::Greedy => 1.0,
+    }
+}
+
+/// Process-env mode → draft log-prob temperature (see
+/// [`deepseek_v4_mtp_draft_log_prob_temperature_for_mode`]).
+pub fn deepseek_v4_mtp_draft_log_prob_temperature() -> f32 {
+    deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mtp_draft_mode_from_env())
+}
 
 /// KV-cache slot count for the dedicated nextn cache: llama.cpp places the
 /// MTP block at `il = n_layer + nextn_layer_offset`, so the block appends its
@@ -2653,6 +2676,31 @@ mod deepseek_v4_mtp_tests {
         DeepseekV4HeadWeights, DeepseekV4LayerWeights, LayerWeights, QuantizedWeight,
     };
     use mlx_sys::eval;
+
+    #[test]
+    fn draft_log_prob_temperature_is_mode_aware_not_always_0_7() {
+        // Regression (skeptic): accept-path must not hard-code 0.7 for greedy.
+        // Greedy drafts record log-probs at T=1.0 (deepseek_v4_mtp_draft_tokens_greedy).
+        assert_eq!(
+            deepseek_v4_mtp_draft_log_prob_temperature_for_mode(MtpDraftMode::Greedy),
+            1.0,
+            "greedy nextn log-probs are at T=1.0; accept rescale must match"
+        );
+        assert_eq!(
+            deepseek_v4_mtp_draft_log_prob_temperature_for_mode(MtpDraftMode::Stochastic),
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+            "stochastic nextn samples and logs at DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE"
+        );
+        assert!(
+            (DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE - 0.7).abs() < 1e-6,
+            "stochastic constant must stay 0.7"
+        );
+        // Process env default is greedy → helper must return 1.0 under default mode.
+        assert_eq!(
+            deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mtp_draft_mode_from_env()),
+            deepseek_v4_mtp_draft_log_prob_temperature()
+        );
+    }
 
     // Tiny synthetic dims: E=8, D=4, H=1, G=1, R_o=2, rot=2, R_q=4, HC=4.
     const E: usize = 8;

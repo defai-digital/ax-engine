@@ -8094,9 +8094,9 @@ impl MlxRunner {
         let mut mtp_timings = MtpStepTimings::default();
         // Draft log-probs are computed at T=1.0 (greedy path) or the draft
         // head's sampling temperature (stochastic path). Resolve Qwen, GLM,
-        // then DeepSeek V4 nextn — reading only Qwen for a nextn-only model
-        // fell back to target T and defeated acceptance rescale when drafts
-        // were sampled at DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE (0.7).
+        // then DeepSeek V4 nextn — nextn has no draft_sampling struct; use
+        // deepseek_v4_mtp_draft_log_prob_temperature() so greedy stays 1.0
+        // and only stochastic uses DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE (0.7).
         let draft_sampling_temperature = self
             .weights
             .mtp
@@ -8112,7 +8112,7 @@ impl MlxRunner {
                 self.weights
                     .deepseek_v4_nextn
                     .as_ref()
-                    .map(|_| crate::mtp::DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE)
+                    .map(|_| crate::mtp::deepseek_v4_mtp_draft_log_prob_temperature())
             });
         let draft_log_prob_temperature = draft_sampling_temperature
             .map(|t| if t > 0.0 { t } else { 1.0 })
