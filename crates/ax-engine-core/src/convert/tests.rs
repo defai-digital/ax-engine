@@ -3650,6 +3650,24 @@ fn deepseek_v4_tensor_matching_covers_hf_layout() {
             (NativeTensorRole::NextnEnorm, None),
         ),
         ("mtp.0.hc_head_fn", (NativeTensorRole::NextnHcHeadFn, None)),
+        (
+            "mtp.0.hc_head_base",
+            (NativeTensorRole::NextnHcHeadBase, None),
+        ),
+        (
+            "mtp.0.hc_head_scale",
+            (NativeTensorRole::NextnHcHeadScale, None),
+        ),
+        // GGUF-style nextn block at layers.N.nextn.* must use dedicated NextnHc*
+        // roles, not root HcHead* (collision was a real load-order bug).
+        (
+            "layers.61.nextn.hc_head_fn",
+            (NativeTensorRole::NextnHcHeadFn, None),
+        ),
+        (
+            "layers.61.nextn.hc_head.base",
+            (NativeTensorRole::NextnHcHeadBase, None),
+        ),
         ("mtp.1.enorm.weight", (NativeTensorRole::NextnEnorm, None)),
         (
             "mtp.1.norm.weight",
@@ -3658,6 +3676,11 @@ fn deepseek_v4_tensor_matching_covers_hf_layout() {
     ] {
         assert_eq!(match_tensor(name, &family), Some(expected), "tensor {name}");
     }
+    // Target root head stays distinct from MTP nextn head.
+    assert_eq!(
+        match_tensor("hc_head_fn", &family),
+        Some((NativeTensorRole::HcHeadFn, None))
+    );
     // Sanitized `model.`-prefixed layouts ride the generic extra-map path.
     assert_eq!(
         match_tensor("model.layers.3.attn.wq_b.weight", &family),

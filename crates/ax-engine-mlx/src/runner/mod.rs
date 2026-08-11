@@ -8092,13 +8092,11 @@ impl MlxRunner {
         let has_linear_attention = self.cfg.linear_attention.is_some();
         let vocab = self.cfg.vocab_size as i32;
         let mut mtp_timings = MtpStepTimings::default();
-        // Draft log-probs are computed at T=1.0 (greedy path) or
-        // head.draft_sampling.temperature (sampled path). Check both the
-        // Qwen MTP head and the GLM MTP head — a model can only have one of
-        // the two, but reading only `self.weights.mtp` for a GLM-only model
-        // silently fell back to `sampling.temperature`, which trivially
-        // equals the target temperature and defeats the mismatch-rescale
-        // check in `mtp_accept_count` below.
+        // Draft log-probs are computed at T=1.0 (greedy path) or the draft
+        // head's sampling temperature (stochastic path). Resolve Qwen, GLM,
+        // then DeepSeek V4 nextn — reading only Qwen for a nextn-only model
+        // fell back to target T and defeated acceptance rescale when drafts
+        // were sampled at DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE (0.7).
         let draft_sampling_temperature = self
             .weights
             .mtp
@@ -8109,6 +8107,12 @@ impl MlxRunner {
                     .glm_mtp
                     .as_ref()
                     .map(|h| h.draft_sampling.temperature)
+            })
+            .or_else(|| {
+                self.weights
+                    .deepseek_v4_nextn
+                    .as_ref()
+                    .map(|_| crate::mtp::DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE)
             });
         let draft_log_prob_temperature = draft_sampling_temperature
             .map(|t| if t > 0.0 { t } else { 1.0 })
@@ -9020,17 +9024,20 @@ impl MlxRunner {
                     mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                     let rollback_started = Instant::now();
-                    let committed_len = token_offset + 1 + ac;
+                    // Primary (verify_input[0] == last_token) is not yet in the
+                    // production cache at token_offset; verify always consumes it.
+                    // committed_len keeps primary + accepted drafts only.
+                    let committed_len =
+                        token_offset + deepseek_v4_mtp_committed_verify_len(ac, pending.len());
                     if all_accepted {
                         // verify_len == 1 + pending; full accept keeps all rows.
                         state.cache = verify_cache;
-                    } else if ac == 0 {
-                        // Production cache never saw the rejected draft.
-                        drop(verify_cache);
                     } else {
-                        // Partial accept: replay primary + accepted drafts on
-                        // production so compressor state is exact (clone trim
-                        // still has the incomplete rewind problem).
+                        // Reject path: never adopt the clone after a rejected
+                        // suffix (compressor trim is incomplete). Replay only
+                        // the committed prefix on production:
+                        // - ac==0 → primary alone (must still write last_token KV)
+                        // - 0<ac<pending → primary + accepted drafts
                         drop(verify_cache);
                         let accepted_input = &verify_input[..=ac];
                         let _ = crate::model::deepseek_v4_forward_all_positions_with_packed(
@@ -9752,6 +9759,20 @@ impl MlxRunner {
                         .mtp_cache
                         .get_or_insert_with(|| self.new_mtp_draft_cache());
                     let mtp_draft_started = Instant::now();
+                    // Share the pure-MTP gate (adaptive/optimistic/model default)
+                    // so hybrid tails do not re-resolve a different confidence.
+                    let (hybrid_gate, _src) = resolve_mtp_gate_from_env(
+                        Some(sampling.temperature),
+                        state.mtp_adaptive_gate.as_ref(),
+                        mtp_optimistic_draft_min_confidence_override(),
+                        if self.weights.mtp.is_some() {
+                            self.mtp_model_policy.qwen_gate_default()
+                        } else if self.weights.glm_mtp.is_some() {
+                            self.mtp_model_policy.glm_gate_default()
+                        } else {
+                            None
+                        },
+                    );
                     let (tail, log_probs, distributions, added, _top2_margins) =
                         if self.weights.glm_mtp.is_some() {
                             glm_mtp_draft_tokens_after_forced_prefix(
@@ -9763,6 +9784,7 @@ impl MlxRunner {
                                 cache,
                                 mtp_tail_cap,
                                 &mut state.rng,
+                                Some(hybrid_gate),
                             )
                         } else if self.weights.deepseek_v4_nextn.is_some() {
                             deepseek_v4_mtp_draft_tokens_after_forced_prefix(
@@ -9774,6 +9796,7 @@ impl MlxRunner {
                                 cache,
                                 mtp_tail_cap,
                                 &mut state.rng,
+                                Some(hybrid_gate),
                             )
                         } else {
                             mtp_draft_tokens_after_forced_prefix(
@@ -9785,6 +9808,7 @@ impl MlxRunner {
                                 cache,
                                 mtp_tail_cap,
                                 &mut state.rng,
+                                Some(hybrid_gate),
                             )
                         };
                     mtp_timings.mtp_draft_wall_us = mtp_timings
@@ -10139,6 +10163,11 @@ impl MlxRunner {
             let cap = mtp_warmup_cap();
             let warmup_len = if cap > 0 { total.min(cap) } else { total };
             let start_offset = total.saturating_sub(warmup_len);
+            // Absolute RoPE base: final-chunk history is only the last
+            // `available_rows` of the main prompt. Multi-chunk prefill must
+            // not warm at relative indices 0..C or long-prompt MTP RoPE is wrong.
+            let rope_start =
+                mtp_warmup_absolute_rope_start(state.cache.seq_len(), available_rows, start_offset);
             if warmup_len > 0 {
                 let warmup_hidden = slice(
                     &prefill_hidden,
@@ -10154,18 +10183,15 @@ impl MlxRunner {
                     &self.weights,
                     cache,
                     &self.cfg,
-                    start_offset,
+                    rope_start,
                 );
                 let kv_refs = cache.collect_eval_refs();
                 mlx_sys::eval(&kv_refs);
                 clear_cache();
                 state.mtp_decode_count = warmup_len;
-                // After warmup, cache.seq_len() == warmup_len (physical entries).
-                // Set rope_offset so subsequent decode steps compute RoPE at
-                // the correct absolute position: seq_len + rope_offset gives
-                // the true logical position (e.g. warmup_len + start_offset = total).
+                // Physical entries = warmup_len; next absolute pos = abs_base + total.
                 if let Some(ref mut c) = state.mtp_cache {
-                    c.rope_offset = start_offset;
+                    c.rope_offset = rope_start;
                 }
             }
         } else if self.weights.deepseek_v4_nextn.is_some()
@@ -10193,6 +10219,8 @@ impl MlxRunner {
             let cap = mtp_warmup_cap();
             let warmup_len = if cap > 0 { total.min(cap) } else { total };
             let start_offset = total.saturating_sub(warmup_len);
+            let rope_start =
+                mtp_warmup_absolute_rope_start(state.cache.seq_len(), available_rows, start_offset);
             if warmup_len > 0 {
                 let width = prefill_packed.shape().get(2).copied().unwrap_or(0);
                 let warmup_packed = slice(
@@ -10209,14 +10237,14 @@ impl MlxRunner {
                     &self.weights,
                     cache,
                     &self.cfg,
-                    start_offset,
+                    rope_start,
                 );
                 let kv_refs = cache.collect_eval_refs();
                 mlx_sys::eval(&kv_refs);
                 clear_cache();
                 state.mtp_decode_count = warmup_len;
                 if let Some(ref mut c) = state.mtp_cache {
-                    c.rope_offset = start_offset;
+                    c.rope_offset = rope_start;
                 }
             }
         } else {
@@ -10573,6 +10601,36 @@ fn gemma4_moe_long_mt_enabled() -> bool {
 ///
 /// Used in `run_mtp_decode` to peek ahead at result tokens before deciding
 /// whether the NEXT draft step should be gated by think-block state.
+/// Number of verify tokens (primary + accepted drafts) DeepSeek V4 MTP must
+/// commit into production KV after acceptance.
+///
+/// `verify_input = [last_token] ++ pending_drafts`. The primary is not yet in
+/// the production cache at `token_offset`, so even a full draft reject
+/// (`accept_count == 0`) still commits length 1. Returning 0 here was a real
+/// bug: leaving production unadvanced dropped the primary token's KV write and
+/// desynced the next decode step.
+pub(super) fn deepseek_v4_mtp_committed_verify_len(
+    accept_count: usize,
+    pending_len: usize,
+) -> usize {
+    1 + accept_count.min(pending_len)
+}
+
+/// Absolute RoPE start for MTP prefill warmup when history is only the last
+/// `available_rows` of a multi-chunk prompt of length `main_seq_len`.
+///
+/// First warmed row sits at absolute position
+/// `main_seq_len - available_rows + start_offset` (not the relative
+/// `start_offset` alone — that mis-positions long multi-chunk prompts).
+pub(super) fn mtp_warmup_absolute_rope_start(
+    main_seq_len: usize,
+    available_rows: usize,
+    start_offset: usize,
+) -> usize {
+    let abs_base = main_seq_len.saturating_sub(available_rows);
+    abs_base.saturating_add(start_offset)
+}
+
 fn compute_think_state(cfg: &ModelConfig, current: bool, tokens: &[u32]) -> bool {
     let Some(start_id) = cfg.think_start_token_id else {
         return current;
@@ -18919,5 +18977,25 @@ mod tests {
             !state.mtp_bypassed,
             "MTP bypass must start disabled so MTP is attempted on every request"
         );
+    }
+
+    #[test]
+    fn deepseek_v4_mtp_always_commits_primary_token_even_on_full_reject() {
+        // Regression: ac==0 must still commit verify_input[0] (last_token).
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(0, 1), 1);
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(0, 3), 1);
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(1, 1), 2);
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(2, 3), 3);
+        assert_eq!(deepseek_v4_mtp_committed_verify_len(5, 2), 3); // clamp to pending
+    }
+
+    #[test]
+    fn mtp_warmup_rope_uses_absolute_base_after_multi_chunk_prefill() {
+        // Prompt length 300, final-chunk history 100, warmup last 50 rows.
+        // First warmed absolute position must be 250, not relative 50.
+        assert_eq!(mtp_warmup_absolute_rope_start(300, 100, 50), 250);
+        // Single full-prompt chunk: relative start_offset is already absolute.
+        assert_eq!(mtp_warmup_absolute_rope_start(100, 100, 50), 50);
+        assert_eq!(mtp_warmup_absolute_rope_start(50, 100, 0), 0); // clamp
     }
 }

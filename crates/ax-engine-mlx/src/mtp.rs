@@ -822,8 +822,8 @@ type DraftTokens = (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3])
 ///
 /// `logprob_temperature` is the temperature applied to the draft log-prob (the
 /// in-closure token-sampling temperature is baked in at build time): `1.0` for
-/// greedy, the sampling temperature for sampled, and `temperature.max(1.0)` for
-/// stochastic.
+/// greedy, and the same sampling temperature used for the token draw for
+/// sampled/stochastic (must match so rejection sampling sees true `q(token)`).
 #[allow(clippy::too_many_arguments)]
 fn run_compiled_mtp_draft(
     head: &MtpWeights,
@@ -1121,12 +1121,20 @@ pub fn mtp_draft_tokens_after_forced_prefix(
     cache: &mut MlxKVCache,
     max_tail_depth: usize,
     rng: &mut Xorshift64,
+    // Same gate as pure MTP for this request; `None` → global profile default.
+    min_confidence: Option<f32>,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(head) = weights.mtp.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
     if forced_prefix.is_empty() {
-        return mtp_draft_tokens(
+        return mtp_draft_tokens_gated(
             weights,
             cfg,
             first_hidden,
@@ -1134,6 +1142,7 @@ pub fn mtp_draft_tokens_after_forced_prefix(
             cache,
             Some(max_tail_depth),
             rng,
+            min_confidence,
         );
     }
 
@@ -1176,12 +1185,6 @@ pub fn mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    // Use the same process-resolved gate as pure MTP; runner may prefer
-    // mtp_draft_tokens_gated after a custom forced-prefix path in future.
-    let min_confidence = resolve_mtp_draft_min_confidence(
-        crate::speculation_profile::speculation_profile_from_env(),
-        None,
-    );
     let (draft, log_probs, distributions, tail_added, top2_margins) = mtp_draft_tokens_gated(
         weights,
         cfg,
@@ -1513,7 +1516,8 @@ fn mtp_draft_tokens_stochastic(
         max_depth,
         vocab,
         temperature,
-        temperature.max(1.0),
+        // Log-prob T must match sample T so rejection sampling sees true q(token).
+        if temperature > 0.0 { temperature } else { 1.0 },
         true,
     ) {
         return result;
@@ -1553,7 +1557,8 @@ fn mtp_draft_tokens_stochastic(
         };
         lazy_tokens.push(lazy_tok.clone());
 
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
         lazy_log_probs.push(lazy_lp);
 
         prev_hidden = post_norm_hidden;
@@ -1714,12 +1719,20 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
     cache: &mut MlxKVCache,
     max_tail_depth: usize,
     rng: &mut Xorshift64,
+    // Same gate as pure MTP for this request; `None` → global profile default.
+    min_confidence: Option<f32>,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(head) = weights.glm_mtp.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
     if forced_prefix.is_empty() {
-        return glm_mtp_draft_tokens(
+        return glm_mtp_draft_tokens_gated(
             weights,
             cfg,
             first_hidden,
@@ -1727,6 +1740,7 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
             cache,
             Some(max_tail_depth),
             rng,
+            min_confidence,
         );
     }
 
@@ -1768,10 +1782,6 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    let min_confidence = resolve_mtp_draft_min_confidence(
-        crate::speculation_profile::speculation_profile_from_env(),
-        None,
-    );
     let (draft, log_probs, distributions, tail_added, top2_margins) = glm_mtp_draft_tokens_gated(
         weights,
         cfg,
@@ -1981,7 +1991,9 @@ fn glm_mtp_draft_tokens_stochastic(
             lazy_argmax_logits(&logits)
         };
         lazy_tokens.push(lazy_tok.clone());
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        // Match sample temperature (not max(T,1.0)) so q(token) is exact.
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
         lazy_log_probs.push(lazy_lp);
         prev_hidden = new_hidden;
         prev_token_arr = lazy_tok;
@@ -2008,8 +2020,8 @@ fn glm_mtp_draft_tokens_stochastic(
 
 /// Default draft temperature for the V4 nextn head's stochastic path — the
 /// AXQ artifact carries no runtime sampler config, so this matches the GLM
-/// sidecar default.
-const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
+/// sidecar default. Public so the runner rescales acceptance with the same T.
+pub const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
 
 /// KV-cache slot count for the dedicated nextn cache: llama.cpp places the
 /// MTP block at `il = n_layer + nextn_layer_offset`, so the block appends its
@@ -2233,12 +2245,21 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
     cache: &mut MlxKVCache,
     max_tail_depth: usize,
     rng: &mut Xorshift64,
+    // Same gate the pure-MTP path resolved for this request. `None` falls
+    // back to the process-global profile resolver (tests / legacy callers).
+    min_confidence: Option<f32>,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(nextn) = weights.deepseek_v4_nextn.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
     if forced_prefix.is_empty() {
-        return deepseek_v4_mtp_draft_tokens(
+        return deepseek_v4_mtp_draft_tokens_gated(
             weights,
             cfg,
             first_hidden,
@@ -2246,6 +2267,7 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
             cache,
             Some(max_tail_depth),
             rng,
+            min_confidence,
         );
     }
 
@@ -2287,10 +2309,6 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
     }
 
     let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
-    let min_confidence = resolve_mtp_draft_min_confidence(
-        crate::speculation_profile::speculation_profile_from_env(),
-        None,
-    );
     let (draft, log_probs, distributions, tail_added, top2_margins) =
         deepseek_v4_mtp_draft_tokens_gated(
             weights,
