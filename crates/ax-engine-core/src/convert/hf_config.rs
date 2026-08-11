@@ -326,8 +326,13 @@ pub(crate) fn defaults_attn_output_gate(model_type: &str) -> bool {
 }
 
 pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
-    // Nemotron-H defaults norm_topk_prob to true in config; keep true when omitted.
-    is_qwen3_5_family(model_type) || is_nemotron_h(model_type)
+    // mlx_lm / Transformers default norm_topk_prob to true for Qwen MoE hybrids
+    // (qwen3_5 MoE and qwen3_next / Qwen3.6-35B-A3B). Nemotron-H likewise.
+    // Omitting qwen3_next left converted 35B manifests with false and wrong
+    // expert routing weights when config.json had no explicit field.
+    is_qwen3_5_family(model_type)
+        || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+        || is_nemotron_h(model_type)
 }
 
 pub(crate) fn runtime_status_for_model_type(_model_type: &str) -> NativeRuntimeStatus {

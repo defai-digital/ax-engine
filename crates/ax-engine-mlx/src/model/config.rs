@@ -708,16 +708,18 @@ impl ModelConfig {
             _ => (None, 1.0),
         };
 
-        let moe_norm_topk_prob = if m.model_family == "qwen3_5" && m.moe.is_enabled() {
-            // mlx_lm.models.qwen3_5.TextModelArgs defaults norm_topk_prob to
-            // true. Older AX manifests emitted false when config.json omitted
-            // the field, which makes Qwen3.6 35B A3B route MoE experts with
-            // the wrong weights. Keep the loader compatible with those cached
-            // manifests while the converter now emits the correct default.
-            true
-        } else {
-            m.moe_norm_topk_prob
-        };
+        let moe_norm_topk_prob =
+            if matches!(m.model_family.as_str(), "qwen3_5" | "qwen3_next") && m.moe.is_enabled() {
+                // mlx_lm / Transformers default norm_topk_prob to true for Qwen MoE
+                // hybrids (qwen3_5 MoE and qwen3_next / Qwen3.6-35B-A3B). Older AX
+                // manifests emitted false when config.json omitted the field, which
+                // routes experts with the wrong weights. Keep the loader compatible
+                // with those cached manifests while the converter emits the correct
+                // default for both families.
+                true
+            } else {
+                m.moe_norm_topk_prob
+            };
 
         Self {
             compile_cache_identity: NEXT_COMPILE_CACHE_IDENTITY.fetch_add(1, Ordering::Relaxed),
@@ -1084,6 +1086,49 @@ mod tests {
         let config = ModelConfig::from_manifest(&manifest);
 
         assert_eq!(config.kv_cache_quant, vec![None, None]);
+    }
+
+    #[test]
+    fn qwen3_next_moe_forces_norm_topk_true_for_stale_manifests() {
+        // Qwen3.6-35B-A3B is family qwen3_next. Older converters wrote
+        // moe_norm_topk_prob=false when config.json omitted the field; runtime
+        // must still normalize top-k weights or expert mix desyncs from mlx_lm.
+        let mut value = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "qwen3_next",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 16,
+            "attention_head_count": 2,
+            "attention_head_dim": 8,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "moe_norm_topk_prob": false,
+            "moe": {
+                "expert_count": 8,
+                "experts_per_token": 2,
+                "expert_intermediate_size": 8
+            },
+            "tensors": [],
+        });
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(value.clone()).expect("manifest");
+        assert!(!manifest.moe_norm_topk_prob);
+        assert!(manifest.moe.is_enabled());
+        let cfg = ModelConfig::from_manifest(&manifest);
+        assert!(
+            cfg.moe_norm_topk_prob,
+            "qwen3_next MoE must force norm_topk_prob=true for stale manifests"
+        );
+
+        // Dense qwen3_next (no MoE) must keep the stored false — only MoE needs
+        // the override.
+        value["moe"] = serde_json::json!({});
+        let dense: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(value).expect("dense manifest");
+        assert!(!dense.moe.is_enabled());
+        let dense_cfg = ModelConfig::from_manifest(&dense);
+        assert!(!dense_cfg.moe_norm_topk_prob);
     }
 
     #[test]

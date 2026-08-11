@@ -2330,6 +2330,12 @@ fn qwen3_6_alias_produces_moe_config() {
             "alias '{alias}' must produce MoE config with expert_count=8"
         );
         assert_eq!(manifest.model_family, "qwen3_next");
+        // config omits norm_topk_prob — Qwen3.6-35B-A3B / qwen3_next defaults
+        // to true (Transformers & mlx_lm). A false default desyncs expert mix.
+        assert!(
+            manifest.moe_norm_topk_prob,
+            "alias '{alias}' must default moe_norm_topk_prob=true when omitted"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }
