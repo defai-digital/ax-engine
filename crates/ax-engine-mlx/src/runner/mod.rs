@@ -11920,7 +11920,8 @@ fn rotating_bounded_family_eligible(cfg: &crate::model::ModelConfig) -> bool {
     cfg.diffusion.is_none()
         && matches!(
             cfg.model_family.as_str(),
-            "gemma4" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next"
+            // gemma4_vl text SWA uses families::standard::layer_forward (same as gemma4).
+            "gemma4" | "gemma4_vl" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next"
         )
 }
 
@@ -17157,6 +17158,42 @@ mod tests {
         assert!(!ngram_request_disabled_fallback_should_feed_output(
             NgramRequestDisableReason::ShortOutputBudget
         ));
+    }
+
+    #[test]
+    fn rotating_bounded_family_eligible_includes_gemma4_vl() {
+        // gemma4_vl SWA uses families::standard::layer_forward (ring-aware).
+        let make = |family: &str| {
+            let value = serde_json::json!({
+                "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+                "model_family": family,
+                "tensor_format": "safetensors",
+                "layer_count": 2,
+                "hidden_size": 64,
+                "attention_head_count": 4,
+                "attention_head_dim": 16,
+                "kv_head_count": 1,
+                "vocab_size": 32,
+                "layer_types": ["sliding_attention", "full_attention"],
+                "sliding_window_size": 128,
+                "tensors": [],
+            });
+            let manifest: ax_engine_core::NativeModelManifest =
+                serde_json::from_value(value).expect("manifest");
+            crate::model::ModelConfig::from_manifest(&manifest)
+        };
+        assert!(
+            rotating_bounded_family_eligible(&make("gemma4")),
+            "gemma4 must be ring-eligible"
+        );
+        assert!(
+            rotating_bounded_family_eligible(&make("gemma4_vl")),
+            "gemma4_vl standard SWA path must be ring-eligible like gemma4"
+        );
+        assert!(
+            !rotating_bounded_family_eligible(&make("gpt_oss")),
+            "gpt_oss builds family-local masks without ring awareness"
+        );
     }
 
     #[test]

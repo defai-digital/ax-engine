@@ -369,6 +369,54 @@ async fn models_advertises_processed_gemma4_unified_modalities_for_native_mlx() 
 }
 
 #[tokio::test]
+async fn models_advertises_gemma4_vl_encoder_tower_image_and_video() {
+    // Encoder-VL packages (family gemma4_vl) ship vision_tower + embed_vision
+    // like standard gemma4; capability discovery must not require family==gemma4.
+    let artifact_dir = minimal_tokenizer_artifact("gemma4-vl-encoder-metadata");
+    fs::write(
+        artifact_dir.join("model-manifest.json"),
+        json!({
+            "model_family": "gemma4_vl",
+            "tensors": [
+                {"name": "vision_tower.embeddings.patch_embedding.weight", "role": "other"},
+                {"name": "embed_vision.embedding_projection.weight", "role": "other"}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("gemma4_vl manifest should write");
+    let app = build_router(native_mlx_openai_builder_state(
+        "gemma-4-e2b-it",
+        &artifact_dir,
+    ));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .expect("request should build"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let model = &json["data"][0];
+    assert_eq!(
+        model["capabilities"]["input"]["image"],
+        json!(true),
+        "gemma4_vl with vision_tower+embed_vision must advertise image input"
+    );
+    assert_eq!(
+        model["capabilities"]["input"]["video"],
+        json!(true),
+        "gemma4_vl encoder-VL per-frame ViT path must advertise video when env allows"
+    );
+    assert_eq!(
+        model["ax_engine"]["native_multimodal_input_supported"],
+        json!(true)
+    );
+}
+
+#[tokio::test]
 async fn models_advertises_named_qwen_and_minicpm_media_towers() {
     let qwen_dir = minimal_tokenizer_artifact("qwen-vl-named-tower-metadata");
     fs::write(

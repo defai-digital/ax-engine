@@ -1773,7 +1773,9 @@ pub(crate) fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::FfnGateUpExpsMxfp4Scales)
             || roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Blocks)
             || roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Scales);
-        if manifest.model_family == "gemma4" && has_moe_expert_ffn {
+        // Gemma 4 MoE dual-norm stack (post-attn, dual FFN norms, router scale).
+        // gemma4_vl shares the same text-tower MoE layout when packaged as VL.
+        if matches!(manifest.model_family.as_str(), "gemma4" | "gemma4_vl") && has_moe_expert_ffn {
             if has_any_attention {
                 require_layer_role(
                     roles,
@@ -6181,6 +6183,29 @@ mod tests {
 
         let error = NativeModelArtifacts::from_dir(&dir)
             .expect_err("Gemma4 MoE manifests must carry pre_feedforward_layernorm_2");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("ffn_norm_2"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_gemma4_vl_moe_missing_second_ffn_norm() {
+        // gemma4_vl MoE text towers use the same dual-norm contract as gemma4.
+        let mut manifest = moe_layer_manifest();
+        manifest.model_family = "gemma4_vl".to_string();
+        manifest
+            .tensors
+            .retain(|tensor| tensor.role != NativeTensorRole::FfnNorm2);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("gemma4_vl MoE must require ffn_norm_2 like gemma4");
         let NativeModelError::InvalidManifest { message } = error else {
             panic!("expected invalid manifest error");
         };

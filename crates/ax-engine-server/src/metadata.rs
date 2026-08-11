@@ -364,7 +364,10 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         .iter()
         .all(|role| has_global_tensor_role(tensors, role));
     let family = family_from_manifest(&manifest).unwrap_or_default();
-    let gemma4_standard_image = family == "gemma4"
+    // Standard encoder-VL packaging (family `gemma4` or `gemma4_vl`) ships a
+    // ViT under vision_tower.* plus embed_vision projection — same capability
+    // surface; gemma4_vl is only a separate label for registry/gating.
+    let gemma4_standard_image = matches!(family.as_str(), "gemma4" | "gemma4_vl")
         && (has_tensor_name_prefix(tensors, "vision_tower.")
             || has_tensor_name_prefix(tensors, "model.vision_tower."))
         && (has_tensor_name_prefix(tensors, "embed_vision.")

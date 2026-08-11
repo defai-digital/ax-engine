@@ -960,7 +960,14 @@ pub(crate) fn compute_kv_shared_sources(
     if !is_gemma4_target_model_type(model_type) || layer_types.is_empty() {
         return BTreeMap::new();
     }
-    let default_shared_layers = if model_type == "gemma4" { 20 } else { 0 };
+    // Standard Gemma 4 text towers (including encoder-VL packages) default to
+    // 20 KV-shared trailing layers when config omits num_kv_shared_layers.
+    // gemma4_unified / diffusion_gemma keep 0 unless the field is present.
+    let default_shared_layers = if matches!(model_type, "gemma4" | "gemma4_vl" | "gemma4-vl") {
+        20
+    } else {
+        0
+    };
     let num_shared = arch_u64(config, model_type, "num_kv_shared_layers")
         .unwrap_or(default_shared_layers)
         .min(u64::from(layer_count)) as usize;

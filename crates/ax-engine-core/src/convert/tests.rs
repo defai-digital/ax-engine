@@ -10,7 +10,7 @@ use super::deepseek_v4_quantized::{
 use super::{
     AUTO_GENERATED_MANIFEST_NOTE, ConvertError, DroppedTensorLedger, MANIFEST_TEMP_FILE_PREFIX,
     NativeTensorDataType, NativeTensorRole, compute_attention_value_from_key_layers,
-    config_quantization, convert_hf_model_dir, deepseek_v4_config,
+    compute_kv_shared_sources, config_quantization, convert_hf_model_dir, deepseek_v4_config,
     ensure_manifest_for_hf_model_dir, llama4_no_rope_layer_interval, match_tensor,
     model_family_for_type, moe_config, parse_layer_types, parse_rope_params, parse_rope_scaling,
     tensor_name_looks_like_media_role, tensor_quantization_override,
@@ -827,6 +827,33 @@ fn parses_gemma4_assistant_nested_rope_like_gemma4() {
     assert_eq!(full_theta, Some(1000000));
     assert_eq!(sliding_theta, Some(10000));
     assert_eq!(partial_rotary, Some(0.25));
+}
+
+#[test]
+fn gemma4_vl_defaults_kv_shared_layers_like_gemma4() {
+    // When num_kv_shared_layers is omitted, standard Gemma 4 text towers
+    // (including gemma4_vl) default to 20 trailing shared layers — not 0.
+    let layer_count = 30u32;
+    let layer_types: Vec<String> = (0..layer_count)
+        .map(|i| {
+            if (i + 1) % 5 == 0 {
+                "full_attention".to_string()
+            } else {
+                "sliding_attention".to_string()
+            }
+        })
+        .collect();
+    let config = serde_json::json!({ "model_type": "gemma4_vl" });
+    let shared = compute_kv_shared_sources(&config, "gemma4_vl", &layer_types, layer_count);
+    assert_eq!(
+        shared.len(),
+        20,
+        "gemma4_vl must default to 20 KV-shared layers when the field is omitted"
+    );
+    // Shared layers start after non-shared prefix (layer_count - 20 = 10).
+    assert!(shared.contains_key(&10));
+    assert!(shared.contains_key(&29));
+    assert!(!shared.contains_key(&9));
 }
 
 #[test]
