@@ -307,6 +307,7 @@ fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool 
     openai_text
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         && (chat::is_qwen_thinking_model(live.model_id.as_ref())
+            || chat::is_deepseek_model(live.model_id.as_ref())
             || matches!(
                 ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
                 ChatPromptTemplate::Gemma4

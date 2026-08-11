@@ -79,11 +79,15 @@ pub(super) fn build_chat_generate_request(
     };
     let default_repetition_penalty =
         default_native_mlx_openai_repetition_penalty(live, req.temperature);
+    // DeepSeek thinking-mode defaults (proto has no thinking flag: apply only
+    // when temperature is already stochastic, so greedy requests stay greedy).
+    let deepseek_min_p =
+        (req.temperature > 0.0 && chat::is_deepseek_model(live.model_id.as_ref())).then_some(0.05);
     let sampling = GenerateSampling {
         temperature: req.temperature,
         top_p: 1.0,
         top_k: 0,
-        min_p: None,
+        min_p: deepseek_min_p,
         repetition_penalty: default_repetition_penalty,
         repetition_context_size: None,
         no_repeat_ngram_size: 0,

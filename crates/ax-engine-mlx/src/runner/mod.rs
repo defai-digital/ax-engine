@@ -92,7 +92,8 @@ use crate::mtp_adaptive_gate::{
 };
 use crate::ngram_accel::{
     NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
-    classify_prompt_class, ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
+    THINK_SOFT_CLOSE_PROBE_RANK, ThinkSoftCloseProbe, classify_prompt_class,
+    ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
     recompute_committed_prefix_with_argmax, sequential_greedy_mtp_verify,
     single_decode_with_sampling_buffers,
 };
@@ -514,6 +515,13 @@ struct RequestState {
     /// Initialized from prompt tokens. Used to gate n-gram acceleration to think
     /// regions only, where repetition density is high for reasoning models.
     ngram_in_think: bool,
+    /// Tokens emitted while inside an open think block (budget controller).
+    think_emitted_tokens: u32,
+    /// Recomputed each decode step: inside an open think block within the
+    /// soft-close window ahead of the answer reserve / think cap. While
+    /// armed, decode routes through logits-materializing single decode and
+    /// rank-probes the think-close token before sampling.
+    think_soft_close_armed: bool,
     /// Per-request n-gram self-tune: tracks draft tokens and accepted tokens
     /// for this request.  After warmup, if acceptance rate falls below the
     /// threshold, n-gram is disabled for the rest of the request (mirrors
@@ -617,6 +625,8 @@ impl RequestState {
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
+            think_emitted_tokens: 0,
+            think_soft_close_armed: false,
             ngram_self_tune: NgramSelfTuneState::default(),
             mtp_ngram_utility_hysteresis_remaining: 0,
         }
@@ -1946,6 +1956,7 @@ fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) ->
 /// request identically to its single-sequence decode.
 fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams {
     MlxSamplingParams::new(ctx.temperature, ctx.top_p, ctx.top_k)
+        .with_min_p(ctx.min_p)
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
         .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
 }
@@ -4665,6 +4676,7 @@ impl MlxRunner {
         let sampling = ctx
             .map(|c| {
                 MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
+                    .with_min_p(c.min_p)
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
             })
@@ -5627,11 +5639,42 @@ impl MlxRunner {
                 &self.cfg.model_family,
             ),
         );
+        // Thinking-budget controller: force the think-close token when the
+        // answer reserve / think cap is exhausted or the loop detector fired
+        // inside an open think block (ds4-style soft+hard close). A budget
+        // edge carries no stop reason: generation continues so the remaining
+        // output budget funds the answer (ds4 hard-limit semantics).
+        let (sampled_tokens, stop_reason) = if let Some(ctx) = ctx
+            && let Some((forced_tokens, forced_stop)) = think_budget_close_override(
+                stop_reason,
+                !sampled_tokens.is_empty(),
+                state.ngram_in_think,
+                self.cfg.think_end_token_id,
+                ctx.max_output_tokens.saturating_sub(ctx.generated_len),
+                state.think_emitted_tokens,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+            ) {
+            state.pending_direct = None;
+            // Queued n-gram bonus tokens were verified against a think
+            // trace the forced close token just interrupted; they point at
+            // the wrong continuation and must not be served.
+            state.bonus_queue.clear();
+            (forced_tokens, forced_stop)
+        } else {
+            (sampled_tokens, stop_reason)
+        };
         // Keep tokens for LoopDetected (and continuing decode).
         if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
+            let was_in_think = state.ngram_in_think;
             for &sampled_token in &sampled_tokens {
                 state.generated_tokens.push(sampled_token);
                 update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
+            }
+            if was_in_think {
+                state.think_emitted_tokens = state
+                    .think_emitted_tokens
+                    .saturating_add(sampled_tokens.len() as u32);
             }
         }
 
@@ -7165,6 +7208,21 @@ impl MlxRunner {
         is_greedy: bool,
         options: DecodeOneOptions<'_>,
     ) -> Vec<u32> {
+        // Think soft-close arming (ds4-style rank probe): refreshed every
+        // step from the budget controller inputs. While armed, this step
+        // bypasses speculative/direct routing and rank-probes the think
+        // close token against materialized logits before sampling.
+        state.think_soft_close_armed = options.request_context.is_some_and(|ctx| {
+            think_soft_close_armed(
+                state.ngram_in_think,
+                self.cfg.think_end_token_id,
+                ctx.max_output_tokens.saturating_sub(ctx.generated_len),
+                state.think_emitted_tokens,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+            )
+        });
+
         // Serve pre-verified bonus tokens without re-running the model.
         // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
         // never populates the bonus queue.)
@@ -7321,16 +7379,18 @@ impl MlxRunner {
         // regress long-context Gemma to single-step decode (the 2026-07-26
         // decode@2048 failure mode). Speculative sessions still use the
         // stricter `should_use_session_direct_pipeline` predicate.
-        let pure_direct_pipeline = self.disable_ngram_acceleration
+        let pure_direct_pipeline = !state.think_soft_close_armed
+            && self.disable_ngram_acceleration
             && !sampling.uses_logits_processors()
             && (is_greedy || sampling.temperature <= 0.0);
         let direct_pipeline = pure_direct_pipeline
-            || should_use_session_direct_pipeline(
-                self.disable_ngram_acceleration,
-                is_greedy || sampling.temperature <= 0.0,
-                self.has_mtp(),
-                self.mtp_requested,
-            );
+            || (!state.think_soft_close_armed
+                && should_use_session_direct_pipeline(
+                    self.disable_ngram_acceleration,
+                    is_greedy || sampling.temperature <= 0.0,
+                    self.has_mtp(),
+                    self.mtp_requested,
+                ));
         if direct_pipeline {
             let last_token = state
                 .next_model_last_token
@@ -7364,13 +7424,15 @@ impl MlxRunner {
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
 
-        if ngram_request_disabled_direct_fast_path(
-            is_greedy,
-            sampling.uses_logits_processors(),
-            self.has_mtp(),
-            state.ngram_acceleration_disabled_for_request,
-            state.ngram_request_disable_reason,
-        ) {
+        if !state.think_soft_close_armed
+            && ngram_request_disabled_direct_fast_path(
+                is_greedy,
+                sampling.uses_logits_processors(),
+                self.has_mtp(),
+                state.ngram_acceleration_disabled_for_request,
+                state.ngram_request_disable_reason,
+            )
+        {
             state.ngram_acceleration.record_request_disabled_step();
             state
                 .ngram_acceleration
@@ -7768,6 +7830,16 @@ impl MlxRunner {
     ) -> Vec<u32> {
         let branch_started = Instant::now();
         let repetition_history = state.repetition_history(&[], sampling);
+        let soft_close = if state.think_soft_close_armed {
+            self.cfg
+                .think_end_token_id
+                .map(|think_end_token_id| ThinkSoftCloseProbe {
+                    think_end_token_id,
+                    rank: THINK_SOFT_CLOSE_PROBE_RANK,
+                })
+        } else {
+            None
+        };
         let result = single_decode_with_sampling_buffers(
             &self.cfg,
             &self.weights,
@@ -7780,6 +7852,7 @@ impl MlxRunner {
             &mut state.sampling_probs_buf,
             &mut state.sampling_logits_buf,
             &mut state.sampling_candidates_buf,
+            soft_close,
         );
         state
             .decode_telemetry
@@ -9968,6 +10041,10 @@ impl MlxRunner {
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
+                    let draft_temperature = crate::mtp::deepseek_v4_mtp_effective_draft_temperature(
+                        state.ngram_in_think,
+                        sampling.temperature,
+                    );
                     let (draft, log_probs, distributions, added, _top2_margins) =
                         deepseek_v4_mtp_draft_tokens_gated(
                             &self.weights,
@@ -9978,6 +10055,7 @@ impl MlxRunner {
                             Some(state.mtp_adaptive_max_depth),
                             &mut state.rng,
                             gate,
+                            draft_temperature,
                         );
                     mtp_timings.mtp_draft_wall_us = mtp_timings
                         .mtp_draft_wall_us
@@ -10427,6 +10505,27 @@ impl MlxRunner {
         final_by_max_output: bool,
         ctx: Option<&RunnerRequestContext>,
     ) -> Vec<u32> {
+        // Think soft-close window: bypass MTP / n-gram speculation so every
+        // step decides one token against materialized logits where the rank
+        // probe can fire. MTP session state resets exactly like the
+        // DirectFallback arm; a pending direct-pipeline token drains first
+        // (already committed — the probe applies from the next step).
+        if state.think_soft_close_armed {
+            state.mtp_pending_draft.clear();
+            state.mtp_pending_draft_lazy = None;
+            state.mtp_pending_draft_log_probs.clear();
+            state.mtp_pending_draft_distributions.clear();
+            state.mtp_pending_draft_sources.clear();
+            state.mtp_decode_count = 0;
+            if let Some(cache) = state.mtp_cache.as_mut() {
+                cache.reset();
+            }
+            if state.pending_direct.is_some() {
+                return self.finish_pending_direct_for_ngram_transition(state);
+            }
+            return self.run_single_decode(state, last_token, sampling);
+        }
+
         let has_linear_attention = self.cfg.linear_attention.is_some();
 
         // MTP model-based speculative decode: checked first so that MTP can
@@ -10653,6 +10752,415 @@ fn compute_think_state(cfg: &ModelConfig, current: bool, tokens: &[u32]) -> bool
         }
     }
     state
+}
+
+/// Decide whether the thinking-budget controller must force the think-close
+/// token at this step. Hard close: the answer reserve (or the per-request
+/// think budget) is exhausted. Soft close: the loop detector fired while
+/// still inside the think block (a stuck reasoning trace). The override is
+/// KV-exact — this step's forward already consumed the sampled token, and
+/// the close token rides its own forward as the step's emitted token.
+pub(crate) fn think_budget_close_decision(
+    in_think: bool,
+    think_end_token_id: Option<u32>,
+    remaining_budget: u32,
+    think_emitted_tokens: u32,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+    loop_detected: bool,
+) -> bool {
+    if !in_think || think_end_token_id.is_none() {
+        return false;
+    }
+    if max_think_tokens.is_some_and(|cap| think_emitted_tokens >= cap) {
+        return true;
+    }
+    if answer_reserve_tokens.is_some_and(|reserve| remaining_budget <= reserve) {
+        return true;
+    }
+    loop_detected
+}
+
+/// Apply the thinking-budget controller override to a decoded step (ds4-style
+/// soft+hard close). When [`think_budget_close_decision`] is due on a step
+/// that would otherwise continue — or on a loop-detected step — the step
+/// emits only the think-close token. Budget-edge closes carry `None` as the
+/// stop reason: generation continues so the remaining output budget funds the
+/// answer (ds4 hard-limit semantics), and the regular max-output path
+/// terminates the request. A loop-detected close keeps its stop reason so a
+/// stuck reasoning trace still ends the request after the forced close.
+/// Returns `None` when no override applies.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn think_budget_close_override(
+    stop_reason: Option<StopReason>,
+    sampled_nonempty: bool,
+    in_think: bool,
+    think_end_token_id: Option<u32>,
+    remaining_budget: u32,
+    think_emitted_tokens: u32,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+) -> Option<(Vec<u32>, Option<StopReason>)> {
+    if !sampled_nonempty {
+        return None;
+    }
+    let loop_detected = matches!(stop_reason, Some(StopReason::LoopDetected));
+    if !(stop_reason.is_none() || loop_detected) {
+        return None;
+    }
+    if !think_budget_close_decision(
+        in_think,
+        think_end_token_id,
+        remaining_budget,
+        think_emitted_tokens,
+        max_think_tokens,
+        answer_reserve_tokens,
+        loop_detected,
+    ) {
+        return None;
+    }
+    Some((
+        vec![think_end_token_id.expect("checked in decision")],
+        stop_reason,
+    ))
+}
+
+/// Think soft-close probe window ahead of the hard budget edge (ds4:
+/// `soft_limit_reply_budget = 1024` ahead of `hard_limit_reply_budget`).
+pub(crate) const THINK_SOFT_CLOSE_WINDOW_TOKENS: u32 = 1024;
+
+/// Decide whether the think soft-close rank probe is armed for this step.
+/// Armed only inside an open think block with a budget controller active,
+/// before the hard close is due, once generation nears the hard edge:
+/// within `THINK_SOFT_CLOSE_WINDOW_TOKENS` of the answer reserve, or of the
+/// per-request think cap. While armed, decode routes through a
+/// logits-materializing single decode that emits the think-close token
+/// early when the model itself ranks it in its top-3.
+pub(crate) fn think_soft_close_armed(
+    in_think: bool,
+    think_end_token_id: Option<u32>,
+    remaining_budget: u32,
+    think_emitted_tokens: u32,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+) -> bool {
+    if !crate::fastpath::think_soft_close_enabled() || !in_think || think_end_token_id.is_none() {
+        return false;
+    }
+    if max_think_tokens.is_none() && answer_reserve_tokens.is_none() {
+        return false;
+    }
+    // Hard close already due: the post-decode budget hook force-closes this
+    // step; probing would be wasted work.
+    if think_budget_close_decision(
+        in_think,
+        think_end_token_id,
+        remaining_budget,
+        think_emitted_tokens,
+        max_think_tokens,
+        answer_reserve_tokens,
+        false,
+    ) {
+        return false;
+    }
+    if answer_reserve_tokens.is_some_and(|reserve| {
+        remaining_budget <= reserve.saturating_add(THINK_SOFT_CLOSE_WINDOW_TOKENS)
+    }) {
+        return true;
+    }
+    max_think_tokens.is_some_and(|cap| {
+        think_emitted_tokens.saturating_add(THINK_SOFT_CLOSE_WINDOW_TOKENS) >= cap
+    })
+}
+
+#[cfg(test)]
+mod think_soft_close_armed_tests {
+    use super::{THINK_SOFT_CLOSE_WINDOW_TOKENS, think_soft_close_armed};
+
+    #[test]
+    fn inactive_without_controller_or_think_state() {
+        // No controller knobs set.
+        assert!(!think_soft_close_armed(true, Some(5), 100, 10, None, None));
+        // Outside think.
+        assert!(!think_soft_close_armed(
+            false,
+            Some(5),
+            100,
+            10,
+            None,
+            Some(512)
+        ));
+        // No close token.
+        assert!(!think_soft_close_armed(
+            true,
+            None,
+            100,
+            10,
+            None,
+            Some(512)
+        ));
+    }
+
+    #[test]
+    fn arms_within_window_of_answer_reserve() {
+        let reserve = 512;
+        // Just outside the window.
+        assert!(!think_soft_close_armed(
+            true,
+            Some(5),
+            reserve + THINK_SOFT_CLOSE_WINDOW_TOKENS + 1,
+            10,
+            None,
+            Some(reserve),
+        ));
+        // Window edge and inside.
+        assert!(think_soft_close_armed(
+            true,
+            Some(5),
+            reserve + THINK_SOFT_CLOSE_WINDOW_TOKENS,
+            10,
+            None,
+            Some(reserve),
+        ));
+        assert!(think_soft_close_armed(
+            true,
+            Some(5),
+            reserve + 1,
+            10,
+            None,
+            Some(reserve)
+        ));
+    }
+
+    #[test]
+    fn hard_close_due_disarms_probe() {
+        // remaining == reserve: hard close takes this step.
+        assert!(!think_soft_close_armed(
+            true,
+            Some(5),
+            512,
+            10,
+            None,
+            Some(512)
+        ));
+        // Think cap exhausted: hard close takes this step.
+        assert!(!think_soft_close_armed(
+            true,
+            Some(5),
+            8192,
+            1000,
+            Some(1000),
+            None
+        ));
+    }
+
+    #[test]
+    fn arms_within_window_of_think_cap() {
+        // Far from the cap.
+        assert!(!think_soft_close_armed(
+            true,
+            Some(5),
+            8192,
+            10,
+            Some(5000),
+            None
+        ));
+        // Within 1024 of the cap.
+        assert!(think_soft_close_armed(
+            true,
+            Some(5),
+            8192,
+            4000,
+            Some(5000),
+            None,
+        ));
+        // Cap larger than remaining+window is irrelevant: cap window only.
+        assert!(think_soft_close_armed(
+            true,
+            Some(5),
+            8192,
+            4999,
+            Some(5000),
+            None,
+        ));
+    }
+}
+
+#[cfg(test)]
+mod think_budget_close_decision_tests {
+    use super::think_budget_close_decision;
+
+    #[test]
+    fn inactive_without_think_state_or_close_token() {
+        assert!(!think_budget_close_decision(
+            false,
+            Some(5),
+            0,
+            0,
+            Some(1),
+            Some(1),
+            true
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            None,
+            0,
+            0,
+            Some(1),
+            Some(1),
+            true
+        ));
+    }
+
+    #[test]
+    fn hard_close_on_answer_reserve() {
+        assert!(think_budget_close_decision(
+            true,
+            Some(5),
+            512,
+            100,
+            None,
+            Some(512),
+            false
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            Some(5),
+            513,
+            100,
+            None,
+            Some(512),
+            false
+        ));
+    }
+
+    #[test]
+    fn hard_close_on_think_cap() {
+        assert!(think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            4096,
+            Some(4096),
+            None,
+            false
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            4095,
+            Some(4096),
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn soft_close_only_on_loop_inside_think() {
+        assert!(think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            10,
+            None,
+            None,
+            true
+        ));
+        assert!(!think_budget_close_decision(
+            true,
+            Some(5),
+            9999,
+            10,
+            None,
+            None,
+            false
+        ));
+    }
+}
+
+#[cfg(test)]
+mod think_budget_close_override_tests {
+    use super::{StopReason, think_budget_close_override};
+
+    #[test]
+    fn budget_edge_forces_close_but_keeps_generating() {
+        // ds4 hard-limit semantics: the forced close token carries no stop
+        // reason, so the remaining output budget funds the answer instead of
+        // truncating the request at the reserve edge.
+        let override_result =
+            think_budget_close_override(None, true, true, Some(5), 512, 100, None, Some(512));
+        assert_eq!(override_result, Some((vec![5], None)));
+    }
+
+    #[test]
+    fn think_cap_edge_forces_close_but_keeps_generating() {
+        let override_result =
+            think_budget_close_override(None, true, true, Some(5), 9999, 4096, Some(4096), None);
+        assert_eq!(override_result, Some((vec![5], None)));
+    }
+
+    #[test]
+    fn loop_detected_close_keeps_stop_reason() {
+        let override_result = think_budget_close_override(
+            Some(StopReason::LoopDetected),
+            true,
+            true,
+            Some(5),
+            9999,
+            10,
+            None,
+            None,
+        );
+        assert_eq!(
+            override_result,
+            Some((vec![5], Some(StopReason::LoopDetected)))
+        );
+    }
+
+    #[test]
+    fn no_override_outside_eligible_steps() {
+        // Terminal stops (EOS / max output) are never overridden.
+        assert_eq!(
+            think_budget_close_override(
+                Some(StopReason::EosToken),
+                true,
+                true,
+                Some(5),
+                512,
+                100,
+                None,
+                Some(512)
+            ),
+            None
+        );
+        assert_eq!(
+            think_budget_close_override(
+                Some(StopReason::MaxOutputTokens),
+                true,
+                true,
+                Some(5),
+                512,
+                100,
+                None,
+                Some(512)
+            ),
+            None
+        );
+        // Empty step, outside think, or no controller due: untouched.
+        assert_eq!(
+            think_budget_close_override(None, false, true, Some(5), 512, 100, None, Some(512)),
+            None
+        );
+        assert_eq!(
+            think_budget_close_override(None, true, false, Some(5), 512, 100, None, Some(512)),
+            None
+        );
+        assert_eq!(
+            think_budget_close_override(None, true, true, Some(5), 513, 100, None, Some(512)),
+            None
+        );
+    }
 }
 
 /// Update `ngram_in_think` in-place after emitting a single token.
@@ -12598,6 +13106,9 @@ mod tests {
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
+            max_think_tokens: None,
+            answer_reserve_tokens: None,
         }
     }
 
@@ -14876,6 +15387,9 @@ mod tests {
             ignore_eos: false,
             tool_call_mode: false,
             structured_output_mode: false,
+            min_p: None,
+            max_think_tokens: None,
+            answer_reserve_tokens: None,
         };
         assert!(!prefill_item_completes_prompt(&item, Some(&first_context)));
 

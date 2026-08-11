@@ -43,6 +43,9 @@ pub struct RunnerRequestContext {
     pub top_p: f32,
     /// Top-k sampling candidate count. 0 disables top-k filtering.
     pub top_k: u32,
+    /// Minimum-probability filter relative to the most likely token.
+    /// `None` disables it; inert for greedy argmax.
+    pub min_p: Option<f32>,
     /// Penalty applied once to each recent token before sampling.
     pub repetition_penalty: f32,
     /// Number of most-recent prompt/generated tokens considered by repetition penalty.
@@ -58,6 +61,10 @@ pub struct RunnerRequestContext {
     pub tool_call_mode: bool,
     /// Request asks the model to emit constrained JSON or another structured format.
     pub structured_output_mode: bool,
+    /// Thinking-budget controller: max tokens inside the open think block.
+    pub max_think_tokens: Option<u32>,
+    /// Thinking-budget controller: answer reserve tokens at budget end.
+    pub answer_reserve_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -506,6 +513,9 @@ mod tests {
                     ignore_eos: false,
                     tool_call_mode: false,
                     structured_output_mode: false,
+                    min_p: None,
+                    max_think_tokens: None,
+                    answer_reserve_tokens: None,
                 },
                 RunnerRequestContext {
                     request_id: RequestId(2),
@@ -525,6 +535,9 @@ mod tests {
                     ignore_eos: false,
                     tool_call_mode: false,
                     structured_output_mode: false,
+                    min_p: None,
+                    max_think_tokens: None,
+                    answer_reserve_tokens: None,
                 },
             ],
             request_multimodal_inputs: Vec::new(),
@@ -666,6 +679,9 @@ mod tests {
                 ignore_eos: false,
                 tool_call_mode: false,
                 structured_output_mode: false,
+                min_p: None,
+                max_think_tokens: None,
+                answer_reserve_tokens: None,
             }],
             request_multimodal_inputs: Vec::new(),
         });

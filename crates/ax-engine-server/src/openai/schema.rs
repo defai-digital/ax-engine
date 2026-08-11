@@ -187,6 +187,16 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) top_logprobs: Option<u32>,
     #[serde(default)]
     pub(crate) reasoning: Option<Value>,
+    /// AX extension: thinking-budget controller cap on tokens emitted inside
+    /// the open think block (forced close when reached; the remaining output
+    /// budget still funds the answer).
+    #[serde(default)]
+    pub(crate) ax_max_think_tokens: Option<u32>,
+    /// AX extension: answer reserve at the end of the output budget; the
+    /// think block is force-closed once remaining tokens drop to this level,
+    /// and the reserved tokens fund the answer.
+    #[serde(default)]
+    pub(crate) ax_answer_reserve_tokens: Option<u32>,
     /// Qwen-compatible chat-template controls used by OpenClaw, vLLM, and
     /// mlx-lm. AX owns prompt rendering on native MLX, so accept only the
     /// switches whose behavior it can reproduce exactly.

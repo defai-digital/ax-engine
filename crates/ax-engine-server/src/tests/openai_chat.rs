@@ -1392,12 +1392,8 @@ fn openai_chat_prompt_renderer_rejects_known_families_without_verified_fallback(
     .expect("sample messages should deserialize");
 
     // Llama 4 and Mistral Instruct families have verified fallbacks; keep this
-    // list aligned with `ChatUnsupportedFamily` (gemma3 / mixtral / deepseek).
-    for model_id in [
-        "google/gemma-3-4b-it",
-        "mixtral-8x7b-instruct",
-        "deepseek-ai/DeepSeek-V3",
-    ] {
+    // list aligned with `ChatUnsupportedFamily` (gemma3 / mixtral).
+    for model_id in ["google/gemma-3-4b-it", "mixtral-8x7b-instruct"] {
         let error = render_openai_chat_prompt(model_id, &messages)
             .expect_err("known unsupported chat fallback should fail closed");
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
@@ -1413,6 +1409,17 @@ fn openai_chat_prompt_renderer_rejects_known_families_without_verified_fallback(
         render_openai_chat_prompt(model_id, &messages)
             .unwrap_or_else(|err| panic!("{model_id} should render chat: {}", err.1.error.message));
     }
+
+    // DeepSeek renders with think framing instead of failing closed.
+    let deepseek = render_openai_chat_prompt("deepseek-ai/DeepSeek-V3", &messages)
+        .expect("deepseek chat should render");
+    assert!(deepseek.starts_with("<｜begin▁of▁sentence｜>"));
+    assert!(deepseek.ends_with("<｜Assistant｜></think>"));
+    // The renderer itself takes explicit options; R1's thinking-ON default is
+    // applied in `openai_chat_prompt_render_options` (covered separately).
+    let r1 = render_openai_chat_prompt("deepseek-ai/DeepSeek-R1", &messages)
+        .expect("deepseek R1 chat should render");
+    assert!(r1.ends_with("<｜Assistant｜></think>"));
 }
 
 #[test]
@@ -1915,25 +1922,172 @@ async fn openai_chat_request_preserves_text_metadata_when_adding_workload_hints(
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
+#[test]
+fn deepseek_replays_reasoning_per_turn_rules() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1", "reasoning_content": "early-thought"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2", "reasoning_content": "late-thought"}
+    ]))
+    .expect("messages should deserialize");
+    let options = ChatPromptRenderOptions {
+        enable_thinking: true,
+        preserve_thinking: false,
+    };
+    let prompt = render_openai_chat_prompt_with_options(
+        "deepseek-ai/DeepSeek-R1",
+        &messages,
+        None,
+        None,
+        options,
+    )
+    .expect("deepseek replay should render");
+    // Turn before the last user drops reasoning (still renders bare close
+    // tag + answer); the last assistant turn keeps its reasoning.
+    assert!(!prompt.contains("early-thought"));
+    assert!(prompt.contains("a1"));
+    assert!(prompt.contains("<think>late-thought</think>a2"));
+    // Tool presence preserves prior reasoning (tool_context rule).
+    let tools = json!([{"type": "function", "function": {"name": "lookup", "parameters": {}}}]);
+    let with_tools = render_openai_chat_prompt_with_options(
+        "deepseek-ai/DeepSeek-R1",
+        &messages,
+        Some(&tools),
+        None,
+        ChatPromptRenderOptions {
+            enable_thinking: true,
+            preserve_thinking: false,
+        },
+    )
+    .expect("deepseek replay with tools should render");
+    assert!(with_tools.contains("<think>early-thought</think>a1"));
+}
+
+#[test]
+fn deepseek_request_defaults_thinking_from_model_id() {
+    let r1: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-R1",
+        "messages": [{"role": "user", "content": "Hi"}]
+    }))
+    .expect("request should deserialize");
+    assert!(
+        openai_chat_prompt_render_options(&r1).enable_thinking,
+        "R1-family models default to thinking on"
+    );
+    let v3: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-V3",
+        "messages": [{"role": "user", "content": "Hi"}]
+    }))
+    .expect("request should deserialize");
+    assert!(
+        !openai_chat_prompt_render_options(&v3).enable_thinking,
+        "plain V3 defaults to thinking off"
+    );
+    let opt_in: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-V3",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "chat_template_kwargs": {"enable_thinking": true}
+    }))
+    .expect("request should deserialize");
+    assert!(openai_chat_prompt_render_options(&opt_in).enable_thinking);
+}
+
 #[tokio::test]
-async fn openai_chat_request_rejects_unsupported_ax_rendered_family() {
+async fn deepseek_thinking_budget_flows_into_workload_hints() {
+    let artifact_dir = minimal_tokenizer_artifact("deepseek-thinking-budget");
+    let state = native_mlx_openai_builder_state("deepseek-ai/DeepSeek-R1", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-R1",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 8192,
+        "ax_max_think_tokens": 4096,
+        "ax_answer_reserve_tokens": 512
+    }))
+    .expect("request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("chat builds");
+    let metadata = built
+        .generate_request
+        .metadata
+        .as_deref()
+        .expect("metadata carries budget hints");
+    let hints = RequestWorkloadHints::from_metadata(Some(metadata));
+    assert_eq!(hints.max_think_tokens, Some(4096));
+    assert_eq!(hints.answer_reserve_tokens, Some(512));
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn deepseek_thinking_defaults_apply_only_to_omitted_sampling_knobs() {
+    let artifact_dir = minimal_tokenizer_artifact("deepseek-thinking-sampling");
+    let state = native_mlx_openai_builder_state("deepseek-ai/DeepSeek-R1", &artifact_dir);
+    let live = state.snapshot();
+
+    // Omitted knobs receive the DeepSeek thinking defaults.
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-R1",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 8
+    }))
+    .expect("request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("R1 chat builds");
+    assert_eq!(built.generate_request.sampling.temperature, 1.0);
+    assert_eq!(built.generate_request.sampling.top_p, 1.0);
+    assert_eq!(built.generate_request.sampling.min_p, Some(0.05));
+    assert_eq!(built.generate_request.sampling.top_k, 0);
+
+    // Explicit client values win over the defaults.
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-R1",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 8,
+        "temperature": 0.0,
+        "min_p": 0.2
+    }))
+    .expect("request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("greedy R1 chat builds");
+    assert_eq!(built.generate_request.sampling.temperature, 0.0);
+    assert_eq!(built.generate_request.sampling.min_p, Some(0.2));
+
+    // Thinking-off DeepSeek keeps the legacy greedy defaults.
+    let state = native_mlx_openai_builder_state("deepseek-ai/DeepSeek-V3", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-V3",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 8
+    }))
+    .expect("request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("V3 chat builds");
+    assert_eq!(built.generate_request.sampling.temperature, 0.0);
+    assert_eq!(built.generate_request.sampling.min_p, None);
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_request_renders_deepseek_with_think_framing() {
     let state = test_app_state(|args| {
         args.model_id = "deepseek-ai/DeepSeek-V3".to_string();
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
     });
     let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "deepseek-ai/DeepSeek-V3",
         "messages": [{"role": "user", "content": "Hello"}],
         "max_tokens": 8
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_chat_request(&live, request) {
-        Ok(_) => panic!("AX-rendered fallback should fail closed"),
-        Err(error) => error,
-    };
-    assert_eq!(error.0, StatusCode::BAD_REQUEST);
-    assert!(error.1.error.message.contains("deepseek"));
+    let built = build_openai_chat_request(&live, request)
+        .expect("DeepSeek chat should render through the AX template");
+    let prompt = built
+        .generate_request
+        .input_text
+        .as_deref()
+        .expect("delegated backends carry rendered text");
+    assert!(prompt.starts_with("<｜begin▁of▁sentence｜>"));
+    assert!(prompt.ends_with("<｜Assistant｜></think>"), "got: {prompt}");
 }
 
 #[tokio::test]

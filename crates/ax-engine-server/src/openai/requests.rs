@@ -448,9 +448,13 @@ pub(crate) fn build_openai_chat_request(
         crate::metadata::model_supports_video(live),
     )?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
-    let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     let prompt_options = openai_chat_prompt_render_options(&request);
+    let sampling_params = default_deepseek_thinking_sampling_adjustments(
+        live,
+        prompt_options.enable_thinking,
+        OpenAiSamplingParams::from_chat_request(&request),
+    );
     // Cross-surface parity with the Ollama route's `think` gate: an explicit
     // request for thinking on a model that does not advertise reasoning is a
     // deterministic 400, not a silently open `<think>` block the model's
@@ -468,7 +472,9 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
         == SelectedBackend::Mlx
         && matches!(
             chat::ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
-            chat::ChatPromptTemplate::QwenChatMl | chat::ChatPromptTemplate::Gemma4
+            chat::ChatPromptTemplate::QwenChatMl
+                | chat::ChatPromptTemplate::Gemma4
+                | chat::ChatPromptTemplate::DeepSeekChat
         );
     response_options
         .reject_unsupported_streaming_contract(request.stream, streaming_reasoning_supported)?;
@@ -582,6 +588,11 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
+    let metadata = merge_thinking_budget_metadata(
+        metadata,
+        request.ax_max_think_tokens,
+        request.ax_answer_reserve_tokens,
+    );
 
     let user_stop = request
         .stop
@@ -995,6 +1006,30 @@ pub(crate) fn default_native_mlx_openai_repetition_penalty(
     1.0
 }
 
+/// DeepSeek thinking-mode sampling defaults (ds4 reference parity):
+/// temperature 1.0 / top_p 1.0 / min_p 0.05 / top_k 0, applied only to knobs
+/// the client omitted — an explicit client value (including temperature 0 for
+/// deterministic benchmarking) always wins.
+fn default_deepseek_thinking_sampling_adjustments(
+    live: &LiveState,
+    thinking_enabled: bool,
+    mut params: OpenAiSamplingParams,
+) -> OpenAiSamplingParams {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx
+        || !thinking_enabled
+        || !chat::is_deepseek_model(live.model_id.as_ref())
+    {
+        return params;
+    }
+    params.temperature.get_or_insert(1.0);
+    params.top_p.get_or_insert(1.0);
+    params.min_p.get_or_insert(0.05);
+    if params.seed.is_none() {
+        params.seed = Some(default_openai_seed(params.temperature.unwrap_or(1.0)));
+    }
+    params
+}
+
 fn default_openai_seed(temperature: f32) -> u64 {
     if temperature <= 0.0 {
         return 0;
@@ -1041,6 +1076,45 @@ fn openai_workload_metadata(
     let suffix = hints
         .keys()
         .map(|key| format!("{key}=true"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!("{metadata}; {suffix}"))
+}
+
+/// Merge the AX thinking-budget knobs into the workload metadata string the
+/// engine parses into [`RequestWorkloadHints`]. JSON metadata gains the keys
+/// directly; text metadata gets `key=value` suffixes.
+fn merge_thinking_budget_metadata(
+    metadata: Option<String>,
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+) -> Option<String> {
+    if max_think_tokens.is_none() && answer_reserve_tokens.is_none() {
+        return metadata;
+    }
+    let mut keys = Vec::new();
+    if let Some(value) = max_think_tokens {
+        keys.push(("ax_max_think_tokens", value));
+    }
+    if let Some(value) = answer_reserve_tokens {
+        keys.push(("ax_answer_reserve_tokens", value));
+    }
+    let Some(metadata) = metadata else {
+        let object: Map<String, Value> = keys
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), Value::from(value)))
+            .collect();
+        return Some(Value::Object(object).to_string());
+    };
+    if let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&metadata) {
+        for (key, value) in keys {
+            object.entry(key).or_insert(Value::from(value));
+        }
+        return Some(Value::Object(object).to_string());
+    }
+    let suffix = keys
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join("; ");
     Some(format!("{metadata}; {suffix}"))
@@ -1257,10 +1331,14 @@ pub(crate) fn openai_chat_prompt_render_options(
     request: &OpenAiChatCompletionHttpRequest,
 ) -> ChatPromptRenderOptions {
     let template = request.chat_template_kwargs.as_ref();
+    let model_id = request.model.as_deref().unwrap_or("");
     ChatPromptRenderOptions {
         enable_thinking: template
             .and_then(|kwargs| kwargs.enable_thinking)
-            .unwrap_or_else(|| openai_reasoning_is_enabled(request.reasoning.as_ref())),
+            .unwrap_or_else(|| {
+                openai_reasoning_is_enabled(request.reasoning.as_ref())
+                    || chat::is_deepseek_thinking_model(model_id)
+            }),
         preserve_thinking: template
             .and_then(|kwargs| kwargs.preserve_thinking)
             .unwrap_or(false),

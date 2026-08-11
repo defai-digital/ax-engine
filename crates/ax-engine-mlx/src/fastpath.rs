@@ -128,6 +128,18 @@ env_flag_default_on!(
     "AX_MLX_DECODE_SAMPLING_GPU_TOPK"
 );
 
+env_flag_default_on!(
+    /// `AX_THINK_SOFT_CLOSE` — rank-based think soft-close: while inside an
+    /// open think block and within the soft window ahead of the answer
+    /// reserve / think cap, materialize logits and emit the think-close
+    /// token early when it ranks in the model's own top-3 (ds4-style soft
+    /// close, ds4_eval.c soft_limit_think_close_rank).
+    ///
+    /// **Default: ON** (kill-switch via `AX_THINK_SOFT_CLOSE=0`).
+    think_soft_close_enabled,
+    "AX_THINK_SOFT_CLOSE"
+);
+
 env_flag!(
     /// `AX_MLX_BATCHED_PREFILL` — route eligible cold text prefill items
     /// through one padded batched forward per planned cohort

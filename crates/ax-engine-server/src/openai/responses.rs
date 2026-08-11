@@ -99,13 +99,16 @@ pub(crate) fn openai_chat_completion_response(
         Some(reasoning) if options.include_reasoning => (raw_content, Some(reasoning)),
         _ => split_reasoning_content(&raw_content, options.include_reasoning),
     };
-    let tool_calls = if options.parse_tool_calls {
-        extract_tool_calls(&mut content, options.tool_contract.as_deref())
+    let (tool_calls, preserve_tool_content) = if options.parse_tool_calls {
+        match extract_tool_calls(&mut content, options.tool_contract.as_deref()) {
+            Some((calls, preserve)) => (Some(calls), preserve),
+            None => (None, false),
+        }
     } else {
-        None
+        (None, false)
     };
     let has_tool_calls = tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
-    if has_tool_calls {
+    if has_tool_calls && !preserve_tool_content {
         content.clear();
     }
     // Client stops match visible assistant content only (ADR-040 D2): tool
@@ -235,7 +238,34 @@ fn split_tagged_reasoning(text: &str, start: &str, end: &str) -> Option<(String,
 fn extract_tool_calls(
     content: &mut String,
     tool_contract: Option<&OpenAiToolContract>,
-) -> Option<Vec<OpenAiToolCall>> {
+) -> Option<(Vec<OpenAiToolCall>, bool)> {
+    // DeepSeek DSML stanzas are self-delimiting and unambiguous; parse them
+    // whole and preserve the assistant text outside the stanzas (ds4 keeps
+    // pre/post stanza content alongside the calls). The gate is lenient like
+    // the parser: stray whitespace / duplicated bars in the open marker
+    // still engage DSML extraction.
+    if super::dsml::contains_dsml_tool_calls(content) {
+        let (functions, leftover) = super::dsml::parse_dsml_tool_calls(content)?;
+        let calls = functions
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut function)| {
+                if let Some(contract) = tool_contract {
+                    function.name = contract.canonical_tool_name(&function.name);
+                    function.arguments =
+                        contract.canonical_arguments(&function.name, function.arguments);
+                }
+                OpenAiToolCall {
+                    id: format!("call_{index}"),
+                    tool_type: "function",
+                    function,
+                }
+            })
+            .collect();
+        *content = leftover;
+        return Some((calls, true));
+    }
+
     let mut remaining = content.clone();
     let mut calls = Vec::new();
     while let Some((mut function, next_remaining)) = extract_tool_call_payload(&remaining) {
@@ -254,7 +284,7 @@ fn extract_tool_calls(
         return None;
     }
     *content = remaining.trim().to_string();
-    Some(calls)
+    Some((calls, false))
 }
 
 fn extract_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {

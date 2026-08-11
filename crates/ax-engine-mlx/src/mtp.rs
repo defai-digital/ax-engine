@@ -2046,6 +2046,19 @@ pub fn deepseek_v4_mtp_draft_log_prob_temperature() -> f32 {
     deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mtp_draft_mode_from_env())
 }
 
+/// Think-aware V4 draft temperature. Inside an open think block the target
+/// model usually samples at temperature 1.0 (DeepSeek thinking defaults), so
+/// a 0.7 draft is systematically sharper than the target and loses
+/// acceptance; match the target there. Outside think (or for sharper target
+/// sampling) keep the tuned default.
+pub fn deepseek_v4_mtp_effective_draft_temperature(in_think: bool, target_temperature: f32) -> f32 {
+    if in_think && target_temperature >= 1.0 {
+        target_temperature.min(1.0)
+    } else {
+        DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
+    }
+}
+
 /// KV-cache slot count for the dedicated nextn cache: llama.cpp places the
 /// MTP block at `il = n_layer + nextn_layer_offset`, so the block appends its
 /// raw-path latent K at slot `layer_count` and the cache needs one slot past
@@ -2251,6 +2264,7 @@ pub fn deepseek_v4_mtp_draft_tokens(
             crate::speculation_profile::speculation_profile_from_env(),
             None,
         ),
+        DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
     )
 }
 
@@ -2342,6 +2356,7 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
             Some(max_tail_depth),
             rng,
             min_confidence,
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
         );
 
     (
@@ -2364,6 +2379,7 @@ pub fn deepseek_v4_mtp_draft_tokens_gated(
     max_depth_cap: Option<usize>,
     _rng: &mut Xorshift64,
     min_confidence: f32,
+    draft_temperature: f32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(nextn) = weights.deepseek_v4_nextn.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
@@ -2404,6 +2420,7 @@ pub fn deepseek_v4_mtp_draft_tokens_gated(
             cache,
             max_depth,
             vocab,
+            draft_temperature,
         )
     };
 
@@ -2481,6 +2498,32 @@ fn deepseek_v4_mtp_draft_tokens_greedy(
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
 }
 
+#[cfg(test)]
+mod deepseek_v4_think_gate_tests {
+    use super::{DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE, deepseek_v4_mtp_effective_draft_temperature};
+
+    #[test]
+    fn inside_think_matches_target_temperature() {
+        assert_eq!(deepseek_v4_mtp_effective_draft_temperature(true, 1.0), 1.0);
+    }
+
+    #[test]
+    fn outside_think_keeps_tuned_default() {
+        assert_eq!(
+            deepseek_v4_mtp_effective_draft_temperature(false, 1.0),
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
+        );
+    }
+
+    #[test]
+    fn sharp_target_sampling_keeps_default_inside_think() {
+        assert_eq!(
+            deepseek_v4_mtp_effective_draft_temperature(true, 0.6),
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
+        );
+    }
+}
+
 /// Stochastic V4 nextn draft: GPU-side `random_categorical` sampling.
 #[allow(clippy::too_many_arguments)]
 fn deepseek_v4_mtp_draft_tokens_stochastic(
@@ -2492,8 +2535,8 @@ fn deepseek_v4_mtp_draft_tokens_stochastic(
     cache: &mut MlxKVCache,
     max_depth: usize,
     vocab: i32,
+    temperature: f32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
-    let temperature = DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE;
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
@@ -3102,6 +3145,7 @@ mod deepseek_v4_mtp_tests {
             None,
             &mut rng,
             0.0,
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
         );
         assert_eq!(draft.len(), 1);
         assert_eq!(log_probs.len(), 1);
@@ -3122,6 +3166,7 @@ mod deepseek_v4_mtp_tests {
             None,
             &mut rng,
             0.0,
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
         );
         assert_eq!(draft2.len(), 1);
         assert_eq!(added2, 1);

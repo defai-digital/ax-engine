@@ -166,6 +166,14 @@ pub enum RequestMultimodalInputError {
 pub struct RequestWorkloadHints {
     pub tool_call: bool,
     pub structured_output: bool,
+    /// Thinking-budget controller: maximum tokens allowed inside the open
+    /// think block before the close token is forced (ds4-style hard limit);
+    /// generation then continues so the remaining budget funds the answer.
+    pub max_think_tokens: Option<u32>,
+    /// Thinking-budget controller: answer reserve at the end of the output
+    /// budget; the think block is force-closed once remaining tokens drop to
+    /// this level, and the reserved tokens fund the answer.
+    pub answer_reserve_tokens: Option<u32>,
 }
 
 impl RequestWorkloadHints {
@@ -211,6 +219,16 @@ impl RequestWorkloadHints {
             truthy
         };
 
+        if key == "ax_max_think_tokens"
+            && let Some(number) = value.as_u64()
+        {
+            self.max_think_tokens = Some(number.min(u32::MAX as u64) as u32);
+        }
+        if key == "ax_answer_reserve_tokens"
+            && let Some(number) = value.as_u64()
+        {
+            self.answer_reserve_tokens = Some(number.min(u32::MAX as u64) as u32);
+        }
         if truthy
             && matches!(
                 key.as_str(),
@@ -251,6 +269,22 @@ impl RequestWorkloadHints {
     }
 
     fn merge_text(&mut self, value: &str) {
+        // Numeric thinking-budget hints parse from raw `key=value` pairs
+        // before normalization rewrites `=` / `;` separators.
+        for part in value.split([';', ',']) {
+            if let Some((key, number)) = part.trim().split_once('=')
+                && let Ok(number) = number.trim().parse::<u64>()
+            {
+                let number = number.min(u32::MAX as u64) as u32;
+                match normalize_workload_hint_token(key) {
+                    key if key == "ax_max_think_tokens" => self.max_think_tokens = Some(number),
+                    key if key == "ax_answer_reserve_tokens" => {
+                        self.answer_reserve_tokens = Some(number)
+                    }
+                    _ => {}
+                }
+            }
+        }
         let value = normalize_workload_hint_token(value);
         if value.contains("tool_call")
             || value.contains("toolcall")
@@ -844,5 +878,35 @@ mod tests {
             record.route_metadata_hint.attention_route.as_deref(),
             Some("qwen3_prefill")
         );
+    }
+}
+
+#[cfg(test)]
+mod think_budget_hint_tests {
+    use super::RequestWorkloadHints;
+
+    #[test]
+    fn parses_thinking_budget_from_json_metadata() {
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            "{\"ax_max_think_tokens\": 4096, \"ax_answer_reserve_tokens\": 512}",
+        ));
+        assert_eq!(hints.max_think_tokens, Some(4096));
+        assert_eq!(hints.answer_reserve_tokens, Some(512));
+    }
+
+    #[test]
+    fn parses_thinking_budget_from_text_metadata() {
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            "tenant=bench; ax_max_think_tokens=2048; ax_answer_reserve_tokens=256",
+        ));
+        assert_eq!(hints.max_think_tokens, Some(2048));
+        assert_eq!(hints.answer_reserve_tokens, Some(256));
+    }
+
+    #[test]
+    fn thinking_budget_defaults_absent() {
+        let hints = RequestWorkloadHints::from_metadata(None);
+        assert_eq!(hints.max_think_tokens, None);
+        assert_eq!(hints.answer_reserve_tokens, None);
     }
 }

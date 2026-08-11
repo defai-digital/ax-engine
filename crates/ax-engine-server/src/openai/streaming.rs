@@ -162,6 +162,8 @@ pub(crate) struct OpenAiStreamPipeline {
 pub(crate) enum StreamReasoningFamily {
     /// Qwen `<think>…</think>` text tags.
     QwenThink,
+    /// DeepSeek thinking: same tags, but generation starts inside the block.
+    DeepSeekThink,
     /// Gemma 4 thinking-channel tokens (captured by the channel filter).
     Gemma4Channel,
 }
@@ -195,6 +197,9 @@ fn drive_openai_stream_state<N>(
         Some(StreamReasoningFamily::QwenThink) => {
             Some(StreamReasoningMode::QwenThink(ThinkTagScanner::new()))
         }
+        Some(StreamReasoningFamily::DeepSeekThink) => Some(StreamReasoningMode::QwenThink(
+            ThinkTagScanner::new_inside_think(),
+        )),
         Some(StreamReasoningFamily::Gemma4Channel) => {
             if let Some(filter) = channel_filter.as_mut() {
                 filter.enable_reasoning_capture();
