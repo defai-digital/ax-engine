@@ -263,7 +263,7 @@ pub(super) enum GemmaGreedyVerifyRoute {
 ///
 /// - `oracle_on`: product default sequential oracle (`SEQUENTIAL_ORACLE=1`).
 /// - `guard_on`: cycle-continuation guard (default ON; only forces more oracle).
-/// - `cycle_hit`: draft continues an established tail cycle in committed history.
+/// - `cycle_hit`: draft starts by continuing an established committed-tail cycle.
 ///
 /// The guard never routes *away* from the oracle: it only adds oracle steps
 /// under formal `ORACLE=0` multi-token measurement when history is looping.
@@ -302,8 +302,11 @@ pub(super) fn draft_continues_committed_cycle(history: &[u32], draft: &[u32]) ->
         if !tail_is_exact_period(tail, period) {
             continue;
         }
-        // Draft must continue the established period phase from the history tip.
-        if draft_matches_period_continuation(history, period, draft) {
+        // Route the whole speculative window to sequential as soon as its first
+        // token continues the cycle. Requiring every draft token to continue it
+        // is fail-open: a later proposed break can hide an earlier looping token
+        // that the multi-token verifier may accept incorrectly.
+        if draft_begins_period_continuation(history, period, draft) {
             return true;
         }
     }
@@ -352,17 +355,14 @@ fn tail_is_exact_period(tail: &[u32], period: usize) -> bool {
     true
 }
 
-fn draft_matches_period_continuation(history: &[u32], period: usize, draft: &[u32]) -> bool {
+fn draft_begins_period_continuation(history: &[u32], period: usize, draft: &[u32]) -> bool {
     if period == 0 || history.len() < period {
         return false;
     }
-    let phase_base = history.len() - period;
-    for (j, &tok) in draft.iter().enumerate() {
-        if tok != history[phase_base + (j % period)] {
-            return false;
-        }
-    }
-    true
+    let Some(&first_draft_token) = draft.first() else {
+        return false;
+    };
+    first_draft_token == history[history.len() - period]
 }
 
 #[cfg(test)]
@@ -417,11 +417,11 @@ mod tests {
             3574, 711, 1161, 496, // period 3 (established)
         ];
         let draft = [3574, 711, 1161, 496, 2633];
-        // 2633 is not the period continuation (would be 3574); still the *prefix*
-        // continues the cycle — require full draft match for true.
+        // 2633 eventually breaks the period, but the speculative window starts
+        // by continuing it. The later break must not hide the risky prefix.
         assert!(
-            !draft_continues_committed_cycle(&history, &draft),
-            "wrong-phase / non-continuing draft must not trip the guard"
+            draft_continues_committed_cycle(&history, &draft),
+            "a later proposed break must not hide an initial cycle continuation"
         );
         let continuing = [3574, 711, 1161, 496, 3574];
         assert!(draft_continues_committed_cycle(&history, &continuing));
@@ -431,7 +431,8 @@ mod tests {
     fn draft_continues_period1_stuck_token_loop() {
         let history = [7, 7, 7, 7];
         assert!(draft_continues_committed_cycle(&history, &[7, 7]));
-        assert!(!draft_continues_committed_cycle(&history, &[7, 8]));
+        assert!(draft_continues_committed_cycle(&history, &[7, 8]));
+        assert!(!draft_continues_committed_cycle(&history, &[8, 7]));
     }
 
     #[test]

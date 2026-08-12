@@ -10335,6 +10335,7 @@ impl MlxRunner {
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
         state.mtp_bypassed = false;
+        state.gemma_mtp_cycle_latched = false;
         // Adaptive gate: allocate only for low-T auto when flag is on (A.0b).
         let _ = is_greedy;
         state.mtp_adaptive_gate = mtp_adaptive_maybe_init(
