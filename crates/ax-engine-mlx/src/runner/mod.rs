@@ -3080,7 +3080,8 @@ impl ExecutionRunner for MlxRunner {
     fn run(&self, input: RunnerInput) -> RunnerOutput {
         // Keep exact arithmetic model-scoped. This prevents one resident Qwen
         // MTP model from changing the projection path of another model in the
-        // same server process.
+        // same server process. Direct sessions stay off the verifier
+        // contract so an AXQ sidecar does not disable fused decode.
         let exact_arithmetic_enabled = qwen_linear_mtp_exact_scope_for_request(
             self.qwen_linear_mtp_exact_enabled,
             self.mtp_requested,
@@ -11647,11 +11648,18 @@ fn select_linear_mtp_correction_token(
 /// singleton replay at any depth (diagnostic kill switch).
 const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
 
+/// Exact arithmetic is the speculative-verifier contract.
+///
+/// An exact-eligible pack (AXQ sidecar, affine 4/6/8) auto-selects the
+/// profile at load time. Applying that profile on `--ax-direct` skips the
+/// packed linear-attention inputs route and other fused S=1 kernels. Direct
+/// decode therefore keeps the community-4-bit fast path; MTP still installs
+/// the verifier contract when `mtp_requested` is on.
 const fn qwen_linear_mtp_exact_scope_for_request(
     resolved_profile_enabled: bool,
-    _mtp_requested: bool,
+    mtp_requested: bool,
 ) -> bool {
-    resolved_profile_enabled
+    resolved_profile_enabled && mtp_requested
 }
 
 fn qwen_linear_mtp_exact_tensor_supported(
@@ -13491,9 +13499,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen_linear_exact_arithmetic_does_not_depend_on_mtp_request() {
+    fn qwen_linear_exact_arithmetic_requires_mtp_request() {
         assert!(qwen_linear_mtp_exact_scope_for_request(true, true));
-        assert!(qwen_linear_mtp_exact_scope_for_request(true, false));
+        assert!(!qwen_linear_mtp_exact_scope_for_request(true, false));
         assert!(!qwen_linear_mtp_exact_scope_for_request(false, true));
         assert!(!qwen_linear_mtp_exact_scope_for_request(false, false));
     }
