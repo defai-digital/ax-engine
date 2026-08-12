@@ -484,6 +484,12 @@ struct RequestState {
     mtp_telemetry: MtpTelemetry,
     /// Cumulative Gemma4 assistant-MTP counters for route metadata.
     gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry,
+    /// Once the formal cycle-continuation guard fires on a request, latch pure-
+    /// direct sequential verify for the rest of the generation. Residual
+    /// multi-token identity failures often appear after the first loop is
+    /// detected; latching is exactness-preserving (never routes away from
+    /// sequential) under `SEQUENTIAL_ORACLE=0`.
+    gemma_mtp_cycle_latched: bool,
     /// Number of consecutive decode steps where accept_count == 0.
     /// Used by `mtp_next_adaptive_depth` to progressively lower the depth floor.
     mtp_consecutive_misses: u32,
@@ -617,6 +623,7 @@ impl RequestState {
             mtp_skip_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
             gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
+            gemma_mtp_cycle_latched: false,
             mtp_consecutive_misses: 0,
             mtp_bypassed: false,
             auto_optimistic_active: false,
@@ -2562,12 +2569,16 @@ impl MlxRunner {
                     &cycle_history_buf[..cycle_history_len],
                     &row.pending,
                 );
+            let cycle_force = cycle_hit || row.state.gemma_mtp_cycle_latched;
             let use_sequential_oracle = row.sampling.temperature <= 0.0
                 && matches!(
-                    gemma_greedy_verify_route(oracle_on, cycle_guard_on, cycle_hit),
+                    gemma_greedy_verify_route(oracle_on, cycle_guard_on, cycle_force),
                     GemmaGreedyVerifyRoute::SequentialOracle
                 );
-            if cycle_hit && !oracle_on {
+            if cycle_force && !oracle_on {
+                if cycle_hit {
+                    row.state.gemma_mtp_cycle_latched = true;
+                }
                 row.state.mtp_telemetry.record_gemma_cycle_guard();
             }
             let (accept_count, draft_hidden, tail_token, accept_wall_us, rollback_wall_us) =
@@ -8928,16 +8939,20 @@ impl MlxRunner {
                         &cycle_history_buf[..cycle_history_len],
                         &pending,
                     );
+                let cycle_force = cycle_hit || state.gemma_mtp_cycle_latched;
                 let verify_route = gemma_greedy_verify_route(
                     force_pure_direct,
                     cycle_guard_on && gemma_assistant_draft,
-                    cycle_hit,
+                    cycle_force,
                 );
                 let gemma_sequential_oracle = gemma_assistant_draft
                     && matches!(verify_route, GemmaGreedyVerifyRoute::SequentialOracle);
                 let gemma_multitoken_adopt = gemma_assistant_draft
                     && matches!(verify_route, GemmaGreedyVerifyRoute::MultiTokenAdopt);
-                if gemma_assistant_draft && cycle_hit && !force_pure_direct {
+                if gemma_assistant_draft && cycle_force && !force_pure_direct {
+                    if cycle_hit {
+                        state.gemma_mtp_cycle_latched = true;
+                    }
                     state.mtp_telemetry.record_gemma_cycle_guard();
                 }
                 if gemma_sequential_oracle {
