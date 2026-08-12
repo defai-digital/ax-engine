@@ -294,17 +294,17 @@ env_flag_default_on!(
     "AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD"
 );
 
-env_flag_default_on!(
-    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT` — under formal
-    /// multi-token verify (`SEQUENTIAL_ORACLE=0`), force pure-direct sequential
-    /// for the first N generated tokens (see
-    /// `GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS`). Multi-token teacher-forced
-    /// adopt still disagrees with pure-direct on general-long early tokens
-    /// (measured first_diff@13) even after cycle-prefix guards.
+env_flag!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT` — experimental:
+    /// under formal multi-token verify (`SEQUENTIAL_ORACLE=0`), force the
+    /// pure-direct sequential path for the first N generated tokens (see
+    /// `GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS`).
     ///
-    /// **Default: ON** (exactness-preserving). Kill-switch via
-    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT=0` for ablations /
-    /// LONG_MT multi-token speed experiments after early identity is trusted.
+    /// **Default: OFF.** On formal A/B this desynchronizes MTP-on from the
+    /// MTP-off multi-token-compatible baseline (shared bounded ring /
+    /// `forward_all_positions` singleton) and regressed agent-coding exactness
+    /// in M5 retests. Kept as an opt-in probe only; residual general-long
+    /// identity must be fixed on the multi-token path itself.
     gemma4_assistant_mtp_early_gen_pure_direct_enabled,
     "AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT"
 );
