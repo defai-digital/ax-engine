@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use ax_engine_core::{NativeTensorQuantization, NativeTensorRole, NativeTensorSpec};
+use ax_engine_core::{NativeTensorRole, NativeTensorSpec};
 use serde::{Deserialize, Serialize};
 
 use crate::weights::QuantizedWeight;
@@ -23,10 +23,49 @@ use crate::weights::QuantizedWeight;
 pub const EXPERT_STREAM_MANIFEST_FILE: &str = "ax_expert_stream.json";
 pub const EXPERT_STREAM_SCHEMA_V1: &str = "axquant.expert-stream.v1";
 pub const EXPERT_STREAM_MODE_LAYER_STACK: &str = "layer-stack";
-/// Serve/load admission flag: `AX_STREAM_EXPERTS=1` opts into streaming.
+/// Serve/load admission: `AX_STREAM_EXPERTS=off|auto|on` (also `0`/`1`).
 pub const STREAM_EXPERTS_ENV: &str = "AX_STREAM_EXPERTS";
 /// Number of layer expert stacks kept resident concurrently (minimum 1).
 pub const STREAM_EXPERT_LAYERS_ENV: &str = "AX_STREAM_EXPERT_LAYERS";
+/// Extra unified-memory reserve (OS + KV + activations) when Auto decides
+/// whether a pack can stay fully resident. 48 GiB matches a serve process
+/// on a 192 GB Flash host without flipping the certified resident path.
+pub const AUTO_RESIDENT_HEADROOM_BYTES: u64 = 48 * 1024 * 1024 * 1024;
+
+/// How AX Engine admits SSD expert streaming.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StreamExpertsMode {
+    /// Never page experts. Required packs fail closed.
+    Off,
+    /// Stream when the pack requires it, or when full residency plus
+    /// [`AUTO_RESIDENT_HEADROOM_BYTES`] would exceed unified memory.
+    /// This is the product default: capable, not always-on.
+    #[default]
+    Auto,
+    /// Always page packed expert stacks (file manifest or inferred roles).
+    On,
+}
+
+impl StreamExpertsMode {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "0" | "false" | "no" => Ok(Self::Off),
+            "auto" => Ok(Self::Auto),
+            "on" | "1" | "true" | "yes" => Ok(Self::On),
+            other => Err(format!(
+                "invalid stream-experts mode {other:?} (expected off, auto, or on)"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Auto => "auto",
+            Self::On => "on",
+        }
+    }
+}
 
 /// Packed expert projection slots understood by v1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -205,16 +244,28 @@ pub fn streamed_skip_names(manifest: &ExpertStreamManifest) -> HashSet<String> {
     skip
 }
 
+#[cfg(test)]
 fn env_flag_enabled(value: Option<&str>) -> bool {
     matches!(
         value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
-        Some("1") | Some("true") | Some("yes")
+        Some("1") | Some("true") | Some("yes") | Some("on")
     )
 }
 
-/// Whether `AX_STREAM_EXPERTS` opts this process into expert streaming.
+pub fn stream_experts_mode_from_env(value: Option<&str>) -> Option<StreamExpertsMode> {
+    let raw = value?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    StreamExpertsMode::parse(raw).ok()
+}
+
+/// Whether `AX_STREAM_EXPERTS` force-enables streaming (`1`/`true`/`on`).
 pub fn stream_experts_env_enabled() -> bool {
-    env_flag_enabled(std::env::var(STREAM_EXPERTS_ENV).ok().as_deref())
+    matches!(
+        stream_experts_mode_from_env(std::env::var(STREAM_EXPERTS_ENV).ok().as_deref()),
+        Some(StreamExpertsMode::On)
+    )
 }
 
 /// Resident layer budget from `AX_STREAM_EXPERT_LAYERS`: `max(1, value)`,
@@ -230,50 +281,157 @@ pub fn expert_layer_budget() -> usize {
     expert_layer_budget_from_env(std::env::var(STREAM_EXPERT_LAYERS_ENV).ok().as_deref())
 }
 
-static STREAM_EXPERTS_OVERRIDE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+const STREAM_MODE_UNSET: u8 = 0;
+const STREAM_MODE_OFF: u8 = 1;
+const STREAM_MODE_AUTO: u8 = 2;
+const STREAM_MODE_ON: u8 = 3;
 
-/// Install the CLI admission flag (`--stream-experts`) before weights load.
-/// Follows the `set_speculation_profile_override` pattern: the server/SDK
-/// crates cannot mutate the process environment, so the flag latches here.
+static STREAM_EXPERTS_OVERRIDE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(STREAM_MODE_UNSET);
+
+fn mode_to_u8(mode: StreamExpertsMode) -> u8 {
+    match mode {
+        StreamExpertsMode::Off => STREAM_MODE_OFF,
+        StreamExpertsMode::Auto => STREAM_MODE_AUTO,
+        StreamExpertsMode::On => STREAM_MODE_ON,
+    }
+}
+
+fn mode_from_u8(raw: u8) -> Option<StreamExpertsMode> {
+    match raw {
+        STREAM_MODE_OFF => Some(StreamExpertsMode::Off),
+        STREAM_MODE_AUTO => Some(StreamExpertsMode::Auto),
+        STREAM_MODE_ON => Some(StreamExpertsMode::On),
+        _ => None,
+    }
+}
+
+/// Install the CLI/SDK stream mode before weights load.
+pub fn set_stream_experts_mode(mode: StreamExpertsMode) {
+    STREAM_EXPERTS_OVERRIDE.store(mode_to_u8(mode), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Backward-compatible latch: `true` is On, `false` leaves Auto (env/default).
 pub fn set_stream_experts_override(enabled: bool) {
-    STREAM_EXPERTS_OVERRIDE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    if enabled {
+        set_stream_experts_mode(StreamExpertsMode::On);
+    }
 }
 
-/// Admission state: CLI override OR `AX_STREAM_EXPERTS=1`.
+/// Effective mode: CLI/SDK override, else `AX_STREAM_EXPERTS`, else Auto.
+pub fn stream_experts_mode() -> StreamExpertsMode {
+    if let Some(mode) = mode_from_u8(STREAM_EXPERTS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed))
+    {
+        return mode;
+    }
+    stream_experts_mode_from_env(std::env::var(STREAM_EXPERTS_ENV).ok().as_deref())
+        .unwrap_or(StreamExpertsMode::Auto)
+}
+
+/// Whether the current mode force-enables streaming.
 pub fn stream_experts_requested() -> bool {
-    STREAM_EXPERTS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed)
-        || stream_experts_env_enabled()
+    matches!(stream_experts_mode(), StreamExpertsMode::On)
 }
 
-/// Admission gate for a file-backed `ax_expert_stream.json`:
-/// - no file + streaming off → `Ok(None)` (default resident load)
-/// - no file + streaming on → `Ok(None)` so the caller can infer a layer-stack
-///   plan from native expert roles (DeepSeek V4 Flash published packs, Qwen 3.8)
-/// - file `required=true` + streaming off → fail closed with the estimated
-///   full-resident byte count (never fall through to a full load)
-/// - file present + streaming on → `Ok(Some(manifest))`
+/// Host unified-memory size (`hw.memsize` on macOS). `None` when unknown.
+pub fn unified_memory_bytes() -> Option<u64> {
+    unified_memory_bytes_from_sysctl()
+}
+
+fn unified_memory_bytes_from_sysctl() -> Option<u64> {
+    let output = std::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+pub fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
+    match available_bytes {
+        None => false,
+        Some(available) => {
+            full_resident_bytes.saturating_add(AUTO_RESIDENT_HEADROOM_BYTES) > available
+        }
+    }
+}
+
+/// Decide whether to page experts.
+///
+/// - **Off:** resident load; `required=true` fails closed.
+/// - **On:** use the file manifest, or infer packed expert roles.
+/// - **Auto:** stream required packs, or optional/inferred packs that cannot
+///   fit in unified memory plus [`AUTO_RESIDENT_HEADROOM_BYTES`].
+pub fn resolve_expert_stream<F>(
+    mode: StreamExpertsMode,
+    file: Option<ExpertStreamManifest>,
+    infer: F,
+    available_bytes: Option<u64>,
+) -> Result<Option<ExpertStreamManifest>, ExpertStreamError>
+where
+    F: FnOnce() -> Result<ExpertStreamManifest, ExpertStreamError>,
+{
+    match mode {
+        StreamExpertsMode::Off => {
+            if let Some(manifest) = &file
+                && manifest.required
+            {
+                return Err(ExpertStreamError::StreamRequired {
+                    estimated_full_resident_bytes: manifest.estimated_full_resident_bytes,
+                });
+            }
+            Ok(None)
+        }
+        StreamExpertsMode::On => match file {
+            Some(manifest) => Ok(Some(manifest)),
+            None => infer().map(Some),
+        },
+        StreamExpertsMode::Auto => {
+            if file.as_ref().is_some_and(|manifest| manifest.required) {
+                return Ok(file);
+            }
+            let candidate = match file {
+                Some(manifest) => Some(manifest),
+                None => match infer() {
+                    Ok(manifest) => Some(manifest),
+                    Err(ExpertStreamError::ManifestMissing) => None,
+                    Err(error) => return Err(error),
+                },
+            };
+            match candidate {
+                Some(manifest)
+                    if manifest.required
+                        || should_auto_stream(
+                            manifest.estimated_full_resident_bytes,
+                            available_bytes,
+                        ) =>
+                {
+                    Ok(Some(manifest))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+}
+
+/// File-backed admission used by tests and doctor.
 pub fn admit_expert_stream(
     model_dir: &Path,
     requested: bool,
 ) -> Result<Option<ExpertStreamManifest>, ExpertStreamError> {
-    let manifest = match ExpertStreamManifest::read_from_dir(model_dir)? {
-        Some(manifest) => manifest,
-        None => {
-            return Ok(None);
-        }
+    let file = ExpertStreamManifest::read_from_dir(model_dir)?;
+    let mode = if requested {
+        StreamExpertsMode::On
+    } else {
+        StreamExpertsMode::Off
     };
-    if manifest.required && !requested {
-        return Err(ExpertStreamError::StreamRequired {
-            estimated_full_resident_bytes: manifest.estimated_full_resident_bytes,
-        });
-    }
-    if !requested {
-        // Optional manifest without the admission flag: keep the default
-        // fully-resident load.
-        return Ok(None);
-    }
-    Ok(Some(manifest))
+    resolve_expert_stream(mode, file, || Err(ExpertStreamError::ManifestMissing), None)
 }
 
 fn expert_role_to_proj(role: NativeTensorRole) -> Option<ExpertProj> {
@@ -762,8 +920,75 @@ mod tests {
         let dir = std::env::temp_dir().join("ax_expert_stream_admission_missing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(admit_expert_stream(&dir, true).unwrap().is_none());
+        assert!(
+            resolve_expert_stream(
+                StreamExpertsMode::Auto,
+                None,
+                || Err(ExpertStreamError::ManifestMissing),
+                Some(512 * 1024 * 1024 * 1024),
+            )
+            .unwrap()
+            .is_none()
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_streams_required_pack_without_explicit_on() {
+        let file = ExpertStreamManifest::parse(&serde_json::to_vec(&manifest_json(true)).unwrap())
+            .unwrap();
+        let decided = resolve_expert_stream(
+            StreamExpertsMode::Auto,
+            Some(file),
+            || Err(ExpertStreamError::ManifestMissing),
+            Some(512 * 1024 * 1024 * 1024),
+        )
+        .unwrap();
+        assert!(decided.is_some_and(|manifest| manifest.required));
+    }
+
+    #[test]
+    fn auto_keeps_flash_sized_pack_resident_on_512gb() {
+        let file = ExpertStreamManifest::parse(&serde_json::to_vec(&manifest_json(false)).unwrap())
+            .unwrap();
+        // ~115 GiB Flash-class optional pack on 512 GiB.
+        let mut file = file;
+        file.estimated_full_resident_bytes = 115 * 1024 * 1024 * 1024;
+        let decided = resolve_expert_stream(
+            StreamExpertsMode::Auto,
+            Some(file),
+            || Err(ExpertStreamError::ManifestMissing),
+            Some(512 * 1024 * 1024 * 1024),
+        )
+        .unwrap();
+        assert!(decided.is_none());
+    }
+
+    #[test]
+    fn auto_streams_when_pack_exceeds_memory_plus_headroom() {
+        let file = ExpertStreamManifest::parse(&serde_json::to_vec(&manifest_json(false)).unwrap())
+            .unwrap();
+        let mut file = file;
+        file.estimated_full_resident_bytes = 800 * 1024 * 1024 * 1024;
+        let decided = resolve_expert_stream(
+            StreamExpertsMode::Auto,
+            Some(file),
+            || Err(ExpertStreamError::ManifestMissing),
+            Some(512 * 1024 * 1024 * 1024),
+        )
+        .unwrap();
+        assert!(decided.is_some());
+    }
+
+    #[test]
+    fn should_auto_stream_uses_headroom() {
+        let flash = 115 * 1024 * 1024 * 1024;
+        let studio_192 = 192 * 1024 * 1024 * 1024;
+        let studio_512 = 512 * 1024 * 1024 * 1024;
+        assert!(!should_auto_stream(flash, Some(studio_192)));
+        assert!(!should_auto_stream(flash, Some(studio_512)));
+        assert!(should_auto_stream(800 * 1024 * 1024 * 1024, Some(studio_512)));
+        assert!(!should_auto_stream(flash, None));
     }
 
     #[test]
@@ -816,7 +1041,7 @@ mod tests {
             dtype: ax_engine_core::NativeTensorDataType::U32,
             source_tensor_type: None,
             source_quantized: true,
-            quantization: Some(NativeTensorQuantization {
+            quantization: Some(ax_engine_core::NativeTensorQuantization {
                 mode: "affine".into(),
                 group_size: 64,
                 bits: 2,

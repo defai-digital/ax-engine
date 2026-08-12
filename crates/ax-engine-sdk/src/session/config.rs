@@ -26,6 +26,18 @@ const NATIVE_MODEL_DIR_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 /// prediction (MTP) drafter. This is intentionally independent from n-gram
 /// speculation: callers can keep the n-gram path disabled while allowing a
 /// validated Qwen sidecar or Gemma assistant to accelerate decoding.
+/// SSD expert-stream admission for native MLX generation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MlxStreamExpertsMode {
+    /// Never page experts. Required packs fail closed.
+    Off,
+    /// Stream when required, or when the pack cannot fit in unified memory.
+    #[default]
+    Auto,
+    /// Always page packed expert stacks.
+    On,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MlxMtpPolicy {
     /// Use MTP when the loaded artifacts contain a validated drafter, otherwise
@@ -73,10 +85,10 @@ pub struct EngineSessionConfig {
     /// long-prompt comparisons. MLA models clamp through their own
     /// prefix-restore chunk policy.
     pub mlx_prefill_chunk: Option<usize>,
-    /// Admit SSD expert streaming (`ax_expert_stream.json` layer-stack
-    /// paging) for packs that require or offer it. Equivalent to
-    /// `AX_STREAM_EXPERTS=1`; without a manifest this is a hard error.
-    pub mlx_stream_experts: bool,
+    /// SSD expert streaming admission. Default is Auto: required packs and
+    /// packs that cannot fit in unified memory are paged; smaller Flash-class
+    /// packs stay resident.
+    pub mlx_stream_experts: MlxStreamExpertsMode,
     /// Fair multi-prefill progress (design Track B / PR3). Default **OFF**.
     /// When true, text prefills are interleave-capped under residual budget.
     /// Does **not** enable GPU continuous batching or claim `partial_overlap`.
@@ -118,7 +130,7 @@ pub struct PreviewSessionConfigRequest {
     pub mlx_prefill_chunk: Option<usize>,
     /// Admit SSD expert streaming (--stream-experts). See
     /// `EngineSessionConfig::mlx_stream_experts`.
-    pub mlx_stream_experts: bool,
+    pub mlx_stream_experts: MlxStreamExpertsMode,
     /// Fair multi-prefill progress (default OFF). See `EngineSessionConfig`.
     pub multi_prefill_fair: bool,
     pub max_prefill_tokens_per_request_per_step: u32,
@@ -141,7 +153,7 @@ impl Default for PreviewSessionConfigRequest {
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
-            mlx_stream_experts: false,
+            mlx_stream_experts: MlxStreamExpertsMode::Auto,
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,
@@ -169,7 +181,7 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_mtp_disable_ngram_stacking: bool,
     pub mlx_speculation_profile: Option<String>,
     pub mlx_prefill_chunk: Option<usize>,
-    pub mlx_stream_experts: bool,
+    pub mlx_stream_experts: MlxStreamExpertsMode,
     pub multi_prefill_fair: bool,
     pub max_prefill_tokens_per_request_per_step: u32,
     pub max_inflight_prefill_requests: u32,
@@ -239,7 +251,7 @@ impl Default for EngineSessionConfig {
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
-            mlx_stream_experts: false,
+            mlx_stream_experts: MlxStreamExpertsMode::Auto,
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,

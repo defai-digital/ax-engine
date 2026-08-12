@@ -23,6 +23,17 @@ const RATE_LIMIT_BURST_ENV: &str = "AX_ENGINE_RATE_LIMIT_BURST";
 const STREAM_IDLE_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_STREAM_IDLE_TIMEOUT_SECS";
 const STREAM_MAX_DURATION_SECS_ENV: &str = "AX_ENGINE_STREAM_MAX_DURATION_SECS";
 
+fn parse_stream_experts_mode(raw: &str) -> Result<ax_engine_sdk::MlxStreamExpertsMode, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" | "0" | "false" | "no" => Ok(ax_engine_sdk::MlxStreamExpertsMode::Off),
+        "auto" => Ok(ax_engine_sdk::MlxStreamExpertsMode::Auto),
+        "on" | "1" | "true" | "yes" => Ok(ax_engine_sdk::MlxStreamExpertsMode::On),
+        other => Err(format!(
+            "invalid --stream-experts {other:?} (expected off, auto, or on)"
+        )),
+    }
+}
+
 fn parse_finite_f64(raw: &str) -> Result<f64, String> {
     let value = raw
         .parse::<f64>()
@@ -183,14 +194,18 @@ pub struct ServerArgs {
     #[arg(long = "prefill-chunk")]
     pub prefill_chunk: Option<usize>,
 
-    /// Admit SSD expert streaming (layer-stack paging from
-    /// `ax_expert_stream.json`). Required for packs whose manifest says
-    /// `required=true`; loading them without this flag (or
-    /// `AX_STREAM_EXPERTS=1`) is a hard error. Setting the flag without a
-    /// manifest is also a hard error. Resident layer budget:
-    /// `AX_STREAM_EXPERT_LAYERS` (default 1).
-    #[arg(long = "stream-experts", default_value_t = false)]
-    pub stream_experts: bool,
+    /// SSD expert streaming: `off`, `auto` (default), or `on`.
+    /// Bare `--stream-experts` means `on`. Auto pages required packs and
+    /// packs that cannot fit in unified memory; smaller Flash packs stay
+    /// resident. `AX_STREAM_EXPERT_LAYERS` (default 1) is the cache budget.
+    #[arg(
+        long = "stream-experts",
+        num_args = 0..=1,
+        default_value = "auto",
+        default_missing_value = "on",
+        value_parser = parse_stream_experts_mode
+    )]
+    pub stream_experts: ax_engine_sdk::MlxStreamExpertsMode,
 
     /// Opt into fair multi-prefill progress under residual budget (default OFF).
     /// Improves progress fairness among concurrent text prefills; does **not**

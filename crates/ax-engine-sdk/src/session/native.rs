@@ -98,10 +98,13 @@ fn build_mlx_core(
     }
 
     // SSD expert streaming admission (--stream-experts / AX_STREAM_EXPERTS):
-    // latch before `load_weights` reads it. Packs whose manifest says
-    // `required=true` fail closed without it; requesting it without a
-    // manifest also fails closed.
-    ax_engine_mlx::expert_stream::set_stream_experts_override(config.mlx_stream_experts);
+    // latch before `load_weights` reads it. Default Auto streams required
+    // packs and packs that cannot fit; Off fails closed on required packs.
+    ax_engine_mlx::expert_stream::set_stream_experts_mode(match config.mlx_stream_experts {
+        crate::MlxStreamExpertsMode::Off => ax_engine_mlx::expert_stream::StreamExpertsMode::Off,
+        crate::MlxStreamExpertsMode::Auto => ax_engine_mlx::expert_stream::StreamExpertsMode::Auto,
+        crate::MlxStreamExpertsMode::On => ax_engine_mlx::expert_stream::StreamExpertsMode::On,
+    });
 
     let model_dir = config
         .mlx_model_artifacts_dir()

@@ -814,8 +814,9 @@ fn doctor_expert_stream_report(
     }
     match expert_stream::ExpertStreamManifest::read_from_dir(path) {
         Ok(Some(manifest)) => {
-            let enabled = expert_stream::stream_experts_requested();
-            if manifest.required && !enabled {
+            let mode = expert_stream::stream_experts_mode();
+            let enabled = !matches!(mode, expert_stream::StreamExpertsMode::Off);
+            if manifest.required && matches!(mode, expert_stream::StreamExpertsMode::Off) {
                 issues.push(format!(
                     "pack requires SSD expert streaming (ax_expert_stream.json required=true); serve/load with --stream-experts or {}=1 (full-resident load needs ~{} bytes)",
                     expert_stream::STREAM_EXPERTS_ENV,
@@ -2058,13 +2059,13 @@ mod expert_stream_tests {
         assert_eq!(stream.resident_bytes, 40_000_000_000);
         assert_eq!(stream.max_layer_bytes, 10_000_000_000);
         assert_eq!(stream.cached_layers, 0);
-        // Doctor runs without --stream-experts; a required pack must be
-        // flagged so operators see the admission requirement.
+        // Doctor defaults to Auto, which will stream a required pack. Only
+        // `--stream-experts off` is an admission problem.
         assert!(
             report
                 .issues
                 .iter()
-                .any(|issue| issue.contains("requires SSD expert streaming")),
+                .all(|issue| !issue.contains("requires SSD expert streaming")),
             "issues: {:?}",
             report.issues
         );

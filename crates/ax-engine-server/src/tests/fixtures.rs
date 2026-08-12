@@ -300,7 +300,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         mlx_mtp_disable_ngram_stacking: false,
         speculation_profile: None,
         prefill_chunk: None,
-        stream_experts: false,
+        stream_experts: ax_engine_sdk::MlxStreamExpertsMode::Auto,
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,

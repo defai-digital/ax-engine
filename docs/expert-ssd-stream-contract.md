@@ -149,7 +149,9 @@ Implement in `/Users/akiralam/code/_ssd-stream/ax-engine`.
    `schema_version` / `mode` → hard error.
 
 2. **Admission**
-   - Flag: `--stream-experts` on serve/load, plus env `AX_STREAM_EXPERTS=1`.
+   - Flag: `--stream-experts off|auto|on` (default **auto**; bare `--stream-experts` is `on`).
+     Env `AX_STREAM_EXPERTS=off|auto|on` (also `0`/`1`). Auto streams required packs
+     and packs that cannot fit in unified memory plus 48 GiB headroom.
    - If manifest `required=true` and streaming is off → fail closed
      (`ExpertStreamRequired`) with estimated_full_resident_bytes in the
      message. Never fall through to full `load_weights`.
