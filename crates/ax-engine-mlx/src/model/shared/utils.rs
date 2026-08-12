@@ -391,28 +391,61 @@ static UNQUANTIZED_DECODE_PROJECTION_HITS: AtomicU64 = AtomicU64::new(0);
 
 /// Metal GEMV for a single-token dense projection. Reads `weight` as
 /// `[out, in]` in place — no `[out, in] → [in, out]` transpose buffer.
+/// Eight output rows per threadgroup via simdgroup_matrix (phase1 sg_bf16).
 const UNQUANTIZED_DECODE_PROJECTION_SOURCE: &str = r#"
-    uint out_row = thread_position_in_grid.x / 32;
+    constexpr uint Tile = 8;
+    uint tg = thread_position_in_grid.x / 32;
     uint lane = thread_index_in_simdgroup;
-    if (out_row >= (uint)OutDim) {
+    uint row_base = tg * Tile;
+    if (row_base >= (uint)OutDim) {
         return;
     }
-    const uint row_base = out_row * (uint)InputDim;
-    float partial = 0.0f;
-    for (uint col = lane; col < (uint)InputDim; col += 32) {
-        float w = static_cast<float>(weight[row_base + col]);
-        float xv = static_cast<float>(x[col]);
-        partial = fma(xv, w, partial);
+    const uint N = (uint)InputDim;
+    if (row_base + Tile > (uint)OutDim) {
+        if (lane < Tile) {
+            uint row = row_base + lane;
+            if (row < (uint)OutDim) {
+                float val = 0.0f;
+                uint row_kbase = row * N;
+                for (uint c = 0; c < N; ++c) {
+                    val = fma(static_cast<float>(weight[row_kbase + c]),
+                              static_cast<float>(x[c]), val);
+                }
+                out[row] = static_cast<OutT>(val);
+            }
+        }
+        return;
     }
-    float total = simd_sum(partial);
-    if (lane == 0) {
-        out[out_row] = static_cast<OutT>(total);
+    simdgroup_matrix<float, 8, 8> acc;
+    acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    uint k = 0;
+    for (; k + Tile <= N; k += Tile) {
+        simdgroup_matrix<OutT, 8, 8> w_tile;
+        simdgroup_matrix<float, 8, 8> h_tile;
+        simdgroup_load(w_tile, weight + row_base * N + k, (ulong)N, ulong2(0, 0), false);
+        simdgroup_load(h_tile, x + k, 0, ulong2(0, 0), true);
+        simdgroup_multiply_accumulate(acc, w_tile, h_tile, acc);
+    }
+    threadgroup float out_buf[Tile * Tile];
+    simdgroup_store(acc, out_buf, Tile, ulong2(0, 0));
+    if (lane < Tile) {
+        uint row = row_base + lane;
+        float val = out_buf[lane * Tile];
+        uint row_kbase = row * N;
+        for (uint c = k; c < N; ++c) {
+            val = fma(static_cast<float>(weight[row_kbase + c]),
+                      static_cast<float>(x[c]), val);
+        }
+        out[row] = static_cast<OutT>(val);
     }
 "#;
 
 /// Decode-only unquantized projection: `logits = x @ weight.T` without
 /// materializing `weight.T`. `weight` is `[out, in]`, `x` is rank ≥ 1
 /// with last dim `in` and all other dims product 1.
+///
+/// Wired decode remasure on AXQ 27B (df-macbookpro-m5): 29.47 vs 28.78
+/// (1.024×), slower than `qw` 30.20. Production stays on `qw`.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn project_unquantized_decode(x: &MlxArray, weight: &MlxArray) -> Option<MlxArray> {
     if !matches!(
@@ -441,11 +474,20 @@ pub(crate) fn project_unquantized_decode(x: &MlxArray, weight: &MlxArray) -> Opt
     if leading != 1 {
         return None;
     }
-    let grid_x = out_dim.checked_mul(32)?;
+    let tiles = out_dim.saturating_add(7) / 8;
+    let grid_x = tiles.checked_mul(32)?;
     let x_flat = reshape(x, &[input_dim], None);
+    // simdgroup_load into a float tile requires a float source (phase1
+    // decode_logits_projection_sg_*). Hidden is 5k elements — not a
+    // 2.54 GB weight transpose.
+    let x_f32 = if x.dtype() == MlxDtype::Float32 {
+        x_flat
+    } else {
+        astype(&x_flat, MlxDtype::Float32, None)
+    };
     let kernel = UNQUANTIZED_DECODE_PROJECTION_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_unquantized_decode_projection_v1",
+            "ax_unquantized_decode_projection_sg_v2",
             &["x", "weight"],
             &["out"],
             UNQUANTIZED_DECODE_PROJECTION_SOURCE,
@@ -455,7 +497,7 @@ pub(crate) fn project_unquantized_decode(x: &MlxArray, weight: &MlxArray) -> Opt
     });
     let mut outputs = kernel
         .try_apply_with_template(
-            &[&x_flat, weight],
+            &[&x_f32, weight],
             &[KernelOutputSpec {
                 shape: vec![out_dim],
                 dtype: x.dtype(),
@@ -491,9 +533,6 @@ pub(crate) fn unquantized_decode_projection_hits() -> u64 {
 }
 
 /// Unquantized decode `lm_head` entry: no-copy GEMV, else `qw`.
-///
-/// Measured slower than MLX `transpose+matmul` on AXQ 27B (29.67 vs 30.14
-/// tok/s), so production decode stays on `qw`. Kept as the tested helper.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn project_lm_head(x: &MlxArray, lm_head: &QuantizedWeight) -> MlxArray {
     if lm_head.scales.is_none()
@@ -1259,6 +1298,35 @@ mod tests {
             peak_metal + weight_bytes / 2 < peak_transpose,
             "no-copy GEMV peak {peak_metal} should beat materialized transpose peak {peak_transpose} by ~half of {weight_bytes} weight bytes"
         );
+    }
+
+    #[test]
+    fn project_unquantized_decode_matches_bf16_x_at_weight_t() {
+        let hidden = 8;
+        let vocab = 16;
+        let w_data: Vec<f32> = (0..vocab * hidden)
+            .map(|i| (i as f32) * 0.01 - 0.5)
+            .collect();
+        let x_data: Vec<f32> = (0..hidden).map(|i| (i as f32) * 0.25).collect();
+        let weight = astype(
+            &array_f32(&w_data, &[vocab, hidden]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let x = astype(
+            &array_f32(&x_data, &[1, 1, hidden]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let metal = super::project_unquantized_decode(&x, &weight).expect("bf16 GEMV eligible");
+        let reference = matmul(&x, &transpose(&weight, &[1, 0], None), None);
+        eval(&[&metal, &reference]);
+        let got = astype(&metal, MlxDtype::Float32, None);
+        let want = astype(&reference, MlxDtype::Float32, None);
+        eval(&[&got, &want]);
+        for (g, w) in got.data_f32().iter().zip(want.data_f32().iter()) {
+            assert!((g - w).abs() < 2.0e-2, "bf16 gemv {g} vs ref {w}");
+        }
     }
 
     #[test]
