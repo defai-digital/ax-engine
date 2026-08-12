@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use ax_engine_core::{NativeTensorQuantization, NativeTensorRole, NativeTensorSpec};
 use serde::{Deserialize, Serialize};
 
 use crate::weights::QuantizedWeight;
@@ -245,13 +246,13 @@ pub fn stream_experts_requested() -> bool {
         || stream_experts_env_enabled()
 }
 
-/// Admission gate for `load_weights`:
-/// - no manifest + streaming off → `Ok(None)` (default resident load; the
-///   certified dense / Qwen 3.6 path is untouched)
-/// - no manifest + streaming on → fail closed (do not guess)
-/// - manifest `required=true` + streaming off → fail closed with the
-///   estimated full-resident byte count (never fall through to a full load)
-/// - manifest present + streaming on → `Ok(Some(manifest))`
+/// Admission gate for a file-backed `ax_expert_stream.json`:
+/// - no file + streaming off → `Ok(None)` (default resident load)
+/// - no file + streaming on → `Ok(None)` so the caller can infer a layer-stack
+///   plan from native expert roles (DeepSeek V4 Flash published packs, Qwen 3.8)
+/// - file `required=true` + streaming off → fail closed with the estimated
+///   full-resident byte count (never fall through to a full load)
+/// - file present + streaming on → `Ok(Some(manifest))`
 pub fn admit_expert_stream(
     model_dir: &Path,
     requested: bool,
@@ -259,9 +260,6 @@ pub fn admit_expert_stream(
     let manifest = match ExpertStreamManifest::read_from_dir(model_dir)? {
         Some(manifest) => manifest,
         None => {
-            if requested {
-                return Err(ExpertStreamError::ManifestMissing);
-            }
             return Ok(None);
         }
     };
@@ -276,6 +274,125 @@ pub fn admit_expert_stream(
         return Ok(None);
     }
     Ok(Some(manifest))
+}
+
+fn expert_role_to_proj(role: NativeTensorRole) -> Option<ExpertProj> {
+    match role {
+        NativeTensorRole::FfnGateUpExpsPacked => Some(ExpertProj::GateUp),
+        NativeTensorRole::FfnGateExps => Some(ExpertProj::Gate),
+        NativeTensorRole::FfnUpExps => Some(ExpertProj::Up),
+        NativeTensorRole::FfnDownExps => Some(ExpertProj::Down),
+        _ => None,
+    }
+}
+
+/// Build a non-required layer-stack plan from native expert roles.
+///
+/// Used when `--stream-experts` is set but the pack has no
+/// `ax_expert_stream.json` — the published DeepSeek V4 Flash AXQ 2/3-bit
+/// packs and any other fused-expert MoE that already maps onto
+/// `FfnGateUpExpsPacked` / `Ffn{Gate,Up,Down}Exps`.
+pub fn infer_layer_stack_manifest(
+    specs: &[NativeTensorSpec],
+    experts_per_tok: u32,
+) -> Result<ExpertStreamManifest, ExpertStreamError> {
+    if experts_per_tok < 1 {
+        return Err(ExpertStreamError::InvalidManifest(
+            "inferred stream plan requires experts_per_tok >= 1".into(),
+        ));
+    }
+    let mut tensors = Vec::new();
+    let mut expert_counts = HashSet::new();
+    let mut expert_bytes = 0u64;
+    let mut layer_bytes: HashMap<u32, u64> = HashMap::new();
+    let mut full_bytes = 0u64;
+    for spec in specs {
+        full_bytes = full_bytes.saturating_add(spec.length_bytes);
+        let Some(proj) = expert_role_to_proj(spec.role) else {
+            continue;
+        };
+        if !spec.name.ends_with(".weight")
+            && !spec.name.ends_with("_blocks")
+            && !spec.name.ends_with(".gate")
+            && !spec.name.ends_with(".up")
+            && !spec.name.ends_with(".down")
+        {
+            continue;
+        }
+        let Some(layer) = spec.layer_index else {
+            return Err(ExpertStreamError::InvalidManifest(format!(
+                "expert tensor {} is missing a layer index",
+                spec.name
+            )));
+        };
+        if spec.shape.is_empty() || spec.shape[0] == 0 {
+            return Err(ExpertStreamError::InvalidManifest(format!(
+                "expert tensor {} has no expert axis",
+                spec.name
+            )));
+        }
+        let num_experts = spec.shape[0] as u32;
+        expert_counts.insert(num_experts);
+        let bits = spec.quantization.as_ref().map(|q| q.bits).unwrap_or(4);
+        let group_size = spec.quantization.as_ref().map(|q| q.group_size).unwrap_or(64);
+        if bits == 0 || group_size == 0 {
+            return Err(ExpertStreamError::InvalidManifest(format!(
+                "expert tensor {} has invalid bits/group_size",
+                spec.name
+            )));
+        }
+        tensors.push(ExpertStreamTensor {
+            name: spec.name.clone(),
+            file: spec.file.clone(),
+            layer,
+            proj: match proj {
+                ExpertProj::GateUp => "gate_up".into(),
+                ExpertProj::Gate => "gate".into(),
+                ExpertProj::Up => "up".into(),
+                ExpertProj::Down => "down".into(),
+            },
+            expert_axis: 0,
+            num_experts,
+            bits,
+            group_size,
+            parsed_proj: Some(proj),
+        });
+        expert_bytes = expert_bytes.saturating_add(spec.length_bytes);
+        *layer_bytes.entry(layer).or_insert(0) += spec.length_bytes;
+    }
+    if tensors.is_empty() {
+        return Err(ExpertStreamError::ManifestMissing);
+    }
+    if expert_counts.len() != 1 {
+        return Err(ExpertStreamError::InvalidManifest(format!(
+            "packed expert tensors disagree on expert-axis size: {expert_counts:?}"
+        )));
+    }
+    let num_experts = *expert_counts.iter().next().expect("count set is non-empty");
+    let max_layer = layer_bytes.values().copied().max().unwrap_or(1).max(1);
+    let resident = full_bytes.saturating_sub(expert_bytes);
+    Ok(ExpertStreamManifest {
+        schema_version: EXPERT_STREAM_SCHEMA_V1.to_string(),
+        generated_by: "ax-engine-infer".into(),
+        required: false,
+        mode: EXPERT_STREAM_MODE_LAYER_STACK.to_string(),
+        num_experts,
+        experts_per_tok,
+        estimated_resident_bytes: resident,
+        estimated_full_resident_bytes: full_bytes.max(1),
+        estimated_max_layer_expert_bytes: max_layer,
+        resident_roles: vec![
+            "embedding".into(),
+            "attention".into(),
+            "router".into(),
+            "shared_expert".into(),
+            "norm".into(),
+            "lm_head".into(),
+            "mtp".into(),
+        ],
+        streamed_roles: vec!["expert".into()],
+        tensors,
+    })
 }
 
 /// One layer's paged expert stack — the same slots the resident loader fills.
@@ -641,14 +758,11 @@ mod tests {
     }
 
     #[test]
-    fn admission_flag_without_manifest_fails_closed() {
+    fn admission_flag_without_manifest_defers_to_inference() {
         let dir = std::env::temp_dir().join("ax_expert_stream_admission_missing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(matches!(
-            admit_expert_stream(&dir, true),
-            Err(ExpertStreamError::ManifestMissing)
-        ));
+        assert!(admit_expert_stream(&dir, true).unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -686,6 +800,122 @@ mod tests {
         assert!(!env_flag_enabled(Some("0")));
         assert!(env_flag_enabled(Some("1")));
         assert!(env_flag_enabled(Some("true")));
+    }
+
+    fn infer_spec(
+        name: &str,
+        role: NativeTensorRole,
+        layer: u32,
+        experts: u64,
+        bytes: u64,
+    ) -> NativeTensorSpec {
+        NativeTensorSpec {
+            name: name.to_string(),
+            role,
+            layer_index: Some(layer),
+            dtype: ax_engine_core::NativeTensorDataType::U32,
+            source_tensor_type: None,
+            source_quantized: true,
+            quantization: Some(NativeTensorQuantization {
+                mode: "affine".into(),
+                group_size: 64,
+                bits: 2,
+            }),
+            quantized_source: None,
+            shape: vec![experts, 8, 4],
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: bytes,
+        }
+    }
+
+    #[test]
+    fn infer_flash_switch_mlp_roles_without_manifest_file() {
+        let specs = vec![
+            infer_spec(
+                "model.layers.0.ffn.switch_mlp.gate_proj.weight",
+                NativeTensorRole::FfnGateUpExpsPacked,
+                0,
+                4,
+                100,
+            ),
+            infer_spec(
+                "model.layers.0.ffn.switch_mlp.down_proj.weight",
+                NativeTensorRole::FfnDownExps,
+                0,
+                4,
+                80,
+            ),
+            infer_spec(
+                "model.layers.1.ffn.switch_mlp.gate_proj.weight",
+                NativeTensorRole::FfnGateUpExpsPacked,
+                1,
+                4,
+                100,
+            ),
+            infer_spec(
+                "model.layers.1.ffn.switch_mlp.down_proj.weight",
+                NativeTensorRole::FfnDownExps,
+                1,
+                4,
+                80,
+            ),
+            NativeTensorSpec {
+                name: "model.layers.0.ffn.shared_experts.gate_proj.weight".into(),
+                role: NativeTensorRole::FfnSharedExpertGate,
+                layer_index: Some(0),
+                dtype: ax_engine_core::NativeTensorDataType::Bf16,
+                source_tensor_type: None,
+                source_quantized: false,
+                quantization: None,
+                quantized_source: None,
+                shape: vec![8, 4],
+                file: PathBuf::from("model.safetensors"),
+                offset_bytes: 0,
+                length_bytes: 64,
+            },
+        ];
+        let manifest = infer_layer_stack_manifest(&specs, 8).expect("flash roles must infer");
+        assert!(!manifest.required);
+        assert_eq!(manifest.num_experts, 4);
+        assert_eq!(manifest.experts_per_tok, 8);
+        assert_eq!(manifest.layer_indices(), vec![0, 1]);
+        assert_eq!(
+            manifest
+                .tensors
+                .iter()
+                .map(|t| t.proj.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["gate_up", "down"])
+        );
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .all(|t| !t.name.contains("shared_experts"))
+        );
+    }
+
+    #[test]
+    fn infer_without_expert_roles_fails_closed() {
+        let specs = vec![NativeTensorSpec {
+            name: "model.embed_tokens.weight".into(),
+            role: NativeTensorRole::TokenEmbedding,
+            layer_index: None,
+            dtype: ax_engine_core::NativeTensorDataType::Bf16,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantization: None,
+            quantized_source: None,
+            shape: vec![8, 4],
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: 64,
+        }];
+        assert!(matches!(
+            infer_layer_stack_manifest(&specs, 8),
+            Err(ExpertStreamError::ManifestMissing)
+        ));
     }
 
     // ------------------------------------------------------------------
@@ -883,6 +1113,73 @@ mod tests {
         assert_eq!(values[0], 10.0 * SYN_HIDDEN as f32);
         assert_eq!(values[2 * SYN_INTER as usize], 12.0 * SYN_HIDDEN as f32);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pager_pages_deepseek_v4_flash_switch_mlp_names() {
+        let dir = std::env::temp_dir().join("ax_expert_stream_flash_names");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_safetensors_f32(
+            &dir,
+            "experts.safetensors",
+            &[
+                (
+                    "model.layers.0.ffn.switch_mlp.gate_proj.weight",
+                    vec![SYN_EXPERTS, 2 * SYN_INTER, SYN_HIDDEN],
+                    synth_expert_values(0, 2 * SYN_INTER, SYN_HIDDEN),
+                ),
+                (
+                    "model.layers.0.ffn.switch_mlp.down_proj.weight",
+                    vec![SYN_EXPERTS, SYN_HIDDEN, SYN_INTER],
+                    synth_expert_values(0, SYN_HIDDEN, SYN_INTER),
+                ),
+            ],
+        );
+        let json = serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "required": false,
+            "mode": "layer-stack",
+            "num_experts": SYN_EXPERTS,
+            "experts_per_tok": 2,
+            "estimated_resident_bytes": 100,
+            "estimated_full_resident_bytes": 1000,
+            "estimated_max_layer_expert_bytes": 500,
+            "resident_roles": ["embedding", "attention", "router", "shared_expert", "norm", "lm_head"],
+            "streamed_roles": ["expert"],
+            "tensors": [
+                {
+                    "name": "model.layers.0.ffn.switch_mlp.gate_proj.weight",
+                    "file": "experts.safetensors",
+                    "layer": 0,
+                    "proj": "gate_up",
+                    "expert_axis": 0,
+                    "num_experts": SYN_EXPERTS,
+                    "bits": 2,
+                    "group_size": 64
+                },
+                {
+                    "name": "model.layers.0.ffn.switch_mlp.down_proj.weight",
+                    "file": "experts.safetensors",
+                    "layer": 0,
+                    "proj": "down",
+                    "expert_axis": 0,
+                    "num_experts": SYN_EXPERTS,
+                    "bits": 2,
+                    "group_size": 64
+                }
+            ]
+        });
+        let pager = ExpertStackPager::new(
+            Arc::new(ExpertStreamManifest::parse(&serde_json::to_vec(&json).unwrap()).unwrap()),
+            dir.clone(),
+            1,
+        );
+        let stack = pager.ensure_layer(0).expect("flash layer 0 must page");
+        assert!(stack.gate_up_exps_packed.is_some());
+        assert!(stack.down_exps.is_some());
+        assert!(stack.gate_exps.is_none() && stack.up_exps.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

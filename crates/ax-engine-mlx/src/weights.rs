@@ -694,11 +694,31 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     // fails closed. Default resident loads (certified Qwen 3.6 / GPT-OSS /
     // Gemma paths) are untouched: with no manifest this returns None and
     // streaming stays off.
-    let expert_stream_manifest = crate::expert_stream::admit_expert_stream(
+    let stream_requested = crate::expert_stream::stream_experts_requested();
+    let expert_stream_manifest = match crate::expert_stream::admit_expert_stream(
         &root,
-        crate::expert_stream::stream_experts_requested(),
+        stream_requested,
     )
-    .map_err(WeightLoadError::ExpertStream)?;
+    .map_err(WeightLoadError::ExpertStream)?
+    {
+        Some(manifest) => Some(manifest),
+        None if stream_requested => {
+            let experts_per_tok = artifacts
+                .manifest()
+                .moe
+                .experts_per_token
+                .unwrap_or(1)
+                .max(1);
+            Some(
+                crate::expert_stream::infer_layer_stack_manifest(
+                    artifacts.tensor_specs(),
+                    experts_per_tok,
+                )
+                .map_err(WeightLoadError::ExpertStream)?,
+            )
+        }
+        None => None,
+    };
     let expert_stream_skip: Option<std::collections::HashSet<String>> = expert_stream_manifest
         .as_ref()
         .map(crate::expert_stream::streamed_skip_names);
