@@ -115,6 +115,31 @@ pub fn load_safetensors(
 /// - Quantized tensor groups (`weight` + `scales` + `biases`) are
 ///   returned as separate top-level names, identical to the C loader.
 pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, String> {
+    load_safetensors_mmap_filtered(path, None)
+}
+
+/// Name-based selection for [`load_safetensors_filtered`].
+pub enum SafetensorsNameFilter<'a> {
+    /// Materialize only tensors whose names are in the set.
+    Keep(&'a std::collections::HashSet<String>),
+    /// Materialize every tensor except the names in the set.
+    Exclude(&'a std::collections::HashSet<String>),
+}
+
+/// Load a subset of the tensors in a safetensors file without materializing
+/// the rest. Uses the same memory-mapped path as [`load_safetensors_mmap`];
+/// excluded tensors are never copied and never wired into MLX storage.
+pub fn load_safetensors_filtered(
+    path: &Path,
+    filter: SafetensorsNameFilter<'_>,
+) -> Result<HashMap<String, MlxArray>, String> {
+    load_safetensors_mmap_filtered(path, Some(filter))
+}
+
+fn load_safetensors_mmap_filtered(
+    path: &Path,
+    filter: Option<SafetensorsNameFilter<'_>>,
+) -> Result<HashMap<String, MlxArray>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("mmap {}: {}", path.display(), e))? };
     let mmap = Arc::new(mmap);
@@ -157,6 +182,15 @@ pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, S
     for (name, entry) in obj {
         if name == "__metadata__" {
             continue;
+        }
+        if let Some(filter) = &filter {
+            let selected = match filter {
+                SafetensorsNameFilter::Keep(names) => names.contains(name),
+                SafetensorsNameFilter::Exclude(names) => !names.contains(name),
+            };
+            if !selected {
+                continue;
+            }
         }
         let entry_obj = entry
             .as_object()
@@ -346,6 +380,55 @@ mod tests {
         assert_eq!(mb.data_f32(), &[10.0, 20.0, 30.0, 40.0]);
 
         // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn filtered_load_selects_tensors_by_name() {
+        let dir = std::env::temp_dir().join("ax_shim_io_filtered_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("filtered.safetensors");
+
+        let a: Vec<f32> = vec![1.0, 2.0];
+        let b: Vec<f32> = vec![3.0, 4.0, 5.0, 6.0];
+        let mut data: Vec<u8> = Vec::new();
+        let a_start = data.len();
+        data.extend(a.iter().flat_map(|v| v.to_le_bytes()));
+        let a_end = data.len();
+        let b_start = data.len();
+        data.extend(b.iter().flat_map(|v| v.to_le_bytes()));
+        let b_end = data.len();
+
+        let header = serde_json::json!({
+            "a": {"dtype": "F32", "shape": [2], "data_offsets": [a_start, a_end]},
+            "b": {"dtype": "F32", "shape": [4], "data_offsets": [b_start, b_end]}
+        });
+        let header_bytes = serde_json::to_vec(&header).unwrap();
+        let mut file = std::fs::File::create(&path).unwrap();
+        std::io::Write::write_all(&mut file, &(header_bytes.len() as u64).to_le_bytes()).unwrap();
+        std::io::Write::write_all(&mut file, &header_bytes).unwrap();
+        std::io::Write::write_all(&mut file, &data).unwrap();
+        drop(file);
+
+        let mut keep = std::collections::HashSet::new();
+        keep.insert("a".to_string());
+        let kept = load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&keep))
+            .expect("keep-filtered load should succeed");
+        assert!(kept.contains_key("a") && !kept.contains_key("b"));
+        let ka = kept.get("a").unwrap();
+        eval(&[ka]);
+        assert_eq!(ka.data_f32(), &[1.0, 2.0]);
+
+        let mut exclude = std::collections::HashSet::new();
+        exclude.insert("a".to_string());
+        let rest = load_safetensors_filtered(&path, SafetensorsNameFilter::Exclude(&exclude))
+            .expect("exclude-filtered load should succeed");
+        assert!(rest.contains_key("b") && !rest.contains_key("a"));
+        let rb = rest.get("b").unwrap();
+        eval(&[rb]);
+        assert_eq!(rb.data_f32(), &[3.0, 4.0, 5.0, 6.0]);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
