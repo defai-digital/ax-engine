@@ -250,6 +250,11 @@ pub(super) const GEMMA_CYCLE_GUARD_MAX_PERIOD: usize = 16;
 /// cycle is treated as "established" (avoids killing legitimate first repeats).
 pub(super) const GEMMA_CYCLE_GUARD_MIN_ESTABLISHED_PERIODS: usize = 2;
 
+/// Generated-token count below which formal multi-token adopt is forced onto
+/// pure-direct sequential. Covers measured general-long `first_diff@13` without
+/// permanently disabling LONG_MT multi-token later in a request.
+pub(super) const GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS: usize = 32;
+
 /// Greedy Gemma assistant-MTP verify route under the formal multi-token profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GemmaGreedyVerifyRoute {
@@ -264,19 +269,31 @@ pub(super) enum GemmaGreedyVerifyRoute {
 /// - `oracle_on`: product default sequential oracle (`SEQUENTIAL_ORACLE=1`).
 /// - `guard_on`: cycle-continuation guard (default ON; only forces more oracle).
 /// - `cycle_hit`: draft starts by continuing an established committed-tail cycle.
+/// - `early_gen_force`: force pure-direct for early generated tokens under formal
+///   multi-token (non-cycle residual identity failures).
 ///
-/// The guard never routes *away* from the oracle: it only adds oracle steps
-/// under formal `ORACLE=0` multi-token measurement when history is looping.
+/// Fail-closed: every force only adds sequential verification, never removes it.
 pub(super) const fn gemma_greedy_verify_route(
     oracle_on: bool,
     guard_on: bool,
     cycle_hit: bool,
+    early_gen_force: bool,
 ) -> GemmaGreedyVerifyRoute {
-    if oracle_on || (guard_on && cycle_hit) {
+    if oracle_on || early_gen_force || (guard_on && cycle_hit) {
         GemmaGreedyVerifyRoute::SequentialOracle
     } else {
         GemmaGreedyVerifyRoute::MultiTokenAdopt
     }
+}
+
+/// Whether early-generation pure-direct should force sequential under formal
+/// multi-token verify.
+pub(super) const fn gemma_early_gen_pure_direct_force(
+    early_gen_enabled: bool,
+    generated_tokens: usize,
+    threshold: usize,
+) -> bool {
+    early_gen_enabled && generated_tokens < threshold
 }
 
 /// True when `draft` begins by continuing a repetition cycle already
@@ -372,38 +389,52 @@ mod tests {
     #[test]
     fn gemma_greedy_verify_route_truth_table() {
         use GemmaGreedyVerifyRoute::{MultiTokenAdopt, SequentialOracle};
+        // oracle_on wins regardless of other forces.
         assert_eq!(
-            gemma_greedy_verify_route(true, true, true),
+            gemma_greedy_verify_route(true, true, true, false),
             SequentialOracle
         );
         assert_eq!(
-            gemma_greedy_verify_route(true, true, false),
+            gemma_greedy_verify_route(true, false, false, false),
+            SequentialOracle
+        );
+        // Cycle force under formal multi-token.
+        assert_eq!(
+            gemma_greedy_verify_route(false, true, true, false),
+            SequentialOracle
+        );
+        // Early-gen force under formal multi-token.
+        assert_eq!(
+            gemma_greedy_verify_route(false, false, false, true),
             SequentialOracle
         );
         assert_eq!(
-            gemma_greedy_verify_route(true, false, true),
+            gemma_greedy_verify_route(false, true, false, true),
             SequentialOracle
         );
+        // No forces → multi-token adopt.
         assert_eq!(
-            gemma_greedy_verify_route(true, false, false),
-            SequentialOracle
-        );
-        assert_eq!(
-            gemma_greedy_verify_route(false, true, true),
-            SequentialOracle
-        );
-        assert_eq!(
-            gemma_greedy_verify_route(false, true, false),
+            gemma_greedy_verify_route(false, true, false, false),
             MultiTokenAdopt
         );
         assert_eq!(
-            gemma_greedy_verify_route(false, false, true),
+            gemma_greedy_verify_route(false, false, true, false),
             MultiTokenAdopt
         );
         assert_eq!(
-            gemma_greedy_verify_route(false, false, false),
+            gemma_greedy_verify_route(false, false, false, false),
             MultiTokenAdopt
         );
+    }
+
+    #[test]
+    fn gemma_early_gen_pure_direct_force_threshold() {
+        assert!(gemma_early_gen_pure_direct_force(true, 0, 32));
+        assert!(gemma_early_gen_pure_direct_force(true, 13, 32));
+        assert!(gemma_early_gen_pure_direct_force(true, 31, 32));
+        assert!(!gemma_early_gen_pure_direct_force(true, 32, 32));
+        assert!(!gemma_early_gen_pure_direct_force(true, 100, 32));
+        assert!(!gemma_early_gen_pure_direct_force(false, 0, 32));
     }
 
     #[test]

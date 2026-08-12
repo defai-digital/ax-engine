@@ -295,6 +295,21 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT` — under formal
+    /// multi-token verify (`SEQUENTIAL_ORACLE=0`), force pure-direct sequential
+    /// for the first N generated tokens (see
+    /// `GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS`). Multi-token teacher-forced
+    /// adopt still disagrees with pure-direct on general-long early tokens
+    /// (measured first_diff@13) even after cycle-prefix guards.
+    ///
+    /// **Default: ON** (exactness-preserving). Kill-switch via
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT=0` for ablations /
+    /// LONG_MT multi-token speed experiments after early identity is trusted.
+    gemma4_assistant_mtp_early_gen_pure_direct_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DECODE_MTP_TARGET_PROB_WORKSPACE` — reuse request-local CPU
     /// buffers while building/extracting MTP target probabilities.
     ///

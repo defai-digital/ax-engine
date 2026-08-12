@@ -2550,6 +2550,13 @@ impl MlxRunner {
             // except when the cycle-continuation guard forces sequential.
             let oracle_on = crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
             let cycle_guard_on = crate::fastpath::gemma4_assistant_mtp_cycle_guard_enabled();
+            let early_gen_on =
+                crate::fastpath::gemma4_assistant_mtp_early_gen_pure_direct_enabled();
+            let early_gen_force = gemma_early_gen_pure_direct_force(
+                early_gen_on,
+                row.state.generated_tokens.len(),
+                GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS,
+            );
             let mut cycle_history_buf =
                 [0u32; GEMMA_CYCLE_GUARD_MAX_PERIOD.saturating_mul(2).saturating_add(1)];
             let cycle_history_len = if row.sampling.temperature <= 0.0
@@ -2572,7 +2579,12 @@ impl MlxRunner {
             let cycle_force = cycle_hit || row.state.gemma_mtp_cycle_latched;
             let use_sequential_oracle = row.sampling.temperature <= 0.0
                 && matches!(
-                    gemma_greedy_verify_route(oracle_on, cycle_guard_on, cycle_force),
+                    gemma_greedy_verify_route(
+                        oracle_on,
+                        cycle_guard_on,
+                        cycle_force,
+                        early_gen_force,
+                    ),
                     GemmaGreedyVerifyRoute::SequentialOracle
                 );
             if cycle_force && !oracle_on {
@@ -8922,6 +8934,14 @@ impl MlxRunner {
                     crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
                 let cycle_guard_on =
                     crate::fastpath::gemma4_assistant_mtp_cycle_guard_enabled();
+                let early_gen_on =
+                    crate::fastpath::gemma4_assistant_mtp_early_gen_pure_direct_enabled();
+                let early_gen_force = gemma_assistant_draft
+                    && gemma_early_gen_pure_direct_force(
+                        early_gen_on,
+                        state.generated_tokens.len(),
+                        GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS,
+                    );
                 let mut cycle_history_buf =
                     [0u32; GEMMA_CYCLE_GUARD_MAX_PERIOD.saturating_mul(2).saturating_add(1)];
                 let cycle_history_len = if gemma_assistant_draft && !force_pure_direct && cycle_guard_on
@@ -8944,6 +8964,7 @@ impl MlxRunner {
                     force_pure_direct,
                     cycle_guard_on && gemma_assistant_draft,
                     cycle_force,
+                    early_gen_force,
                 );
                 let gemma_sequential_oracle = gemma_assistant_draft
                     && matches!(verify_route, GemmaGreedyVerifyRoute::SequentialOracle);
