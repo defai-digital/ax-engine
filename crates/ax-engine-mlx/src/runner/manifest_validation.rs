@@ -10,7 +10,8 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use ax_engine_core::{
-    NativeModelArtifacts, NativeModelManifest, NativeTensorRole, runner::NativeModelBindingSummary,
+    NativeModelArtifacts, NativeModelManifest, NativeTensorRole, is_primary_mlx_runner_family,
+    runner::NativeModelBindingSummary,
 };
 
 use super::{COMMON_EOT_TOKEN_STRINGS, MlxRunnerError};
@@ -67,40 +68,7 @@ pub(super) fn validate_mlx_supported_manifest(
 }
 
 pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
-    matches!(
-        model_family,
-        "gemma4"
-            // Encoder-based VL packaging of the Gemma 4 text tower (+ ViT).
-            | "gemma4_vl"
-            | "gemma3"
-            | "embeddinggemma"
-            | "nemotron_embed"
-            | "qwen3"
-            | "qwen3_vl"
-            | "qwen3_vl_moe"
-            | "llama3"
-            | "diffusion_gemma"
-            | "llama4"
-            | "qwen3_5"
-            | "qwen3_next"
-            | "minicpmv4_6"
-            | "glm4_moe_lite"
-            | "deepseek_v3"
-            | "deepseek_v32"
-            // Converter + registry plumbing only; the V4 runtime graph is not
-            // yet implemented and validate_mla_moe_manifest rejects loads.
-            | "deepseek_v4"
-            | "mistral3"
-            | "mixtral"
-            // Secondary open reasoner (catalog + family implementation + registry).
-            | "gpt_oss"
-            // Multimodal text backbone (same Standard route as gemma4).
-            | "gemma4_unified"
-            // Nemotron-H hybrid Mamba-2 + GQA + ReLU² MoE (Nemotron 3 Nano).
-            | "nemotron_h"
-            // Unlimited-OCR / DeepSeek-OCR multimodal MoE + dual vision.
-            | "unlimited_ocr"
-    )
+    is_primary_mlx_runner_family(model_family)
 }
 
 /// Validate DiffusionGemma-specific manifest fields.

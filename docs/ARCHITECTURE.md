@@ -144,9 +144,24 @@ Portable structural views live in `ax-engine-core` and are derived from
 - `GenerationKind` — autoregressive, block diffusion, or encoder embed
 - `WorkUnitKind` on each `ExecutionItem.planned_work_unit` — prefill chunk,
   token decode, denoise step, block commit, or embed forward
-- `ARCHITECTURE_REGISTRY` / `LayerForwardRoute` — static convert/default route
-  and layer-forward dispatch (prefer over open family-string allowlists)
+- `ARCHITECTURE_REGISTRY` / `FamilyDescriptor` / `LayerForwardRoute` — static
+  identity, primary-runner admission, defaults, and layer-forward dispatch
+  (prefer over open family-string allowlists)
 - `MultimodalPrefillAdapter` — vision/audio feed the same generation strategy
+
+The descriptor/config boundary is intentionally hybrid. Source `config.json`
+metadata is interpreted during conversion, and the native manifest describes
+the model's explicit structure. Engine-owned descriptors then select typed
+ownership and execution routes once at load time. Rust continues to own tensor
+validation, numerical operators, cache behavior, kernels, streaming policy,
+and certification gates.
+
+AX does not treat YAML or JSON as a runtime graph language. Model-provided data
+must not name arbitrary functions, enable uncertified fast paths, or assert its
+own support tier. This keeps new model onboarding data-driven where semantics
+are declarative without moving correctness-critical execution logic out of
+compiled, testable code. See
+[ADR-023](../.internal/adr/ADR-023-DATA-DRIVEN-MODEL-DESCRIPTORS.md).
 
 Native sessions bind `EngineCore::set_generation_kind` from the manifest so the
 scheduler plans `DenoiseStep` for DiffusionGemma after prefill. Runners emit
