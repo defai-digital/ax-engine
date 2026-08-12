@@ -73,6 +73,10 @@ pub struct EngineSessionConfig {
     /// long-prompt comparisons. MLA models clamp through their own
     /// prefix-restore chunk policy.
     pub mlx_prefill_chunk: Option<usize>,
+    /// Admit SSD expert streaming (`ax_expert_stream.json` layer-stack
+    /// paging) for packs that require or offer it. Equivalent to
+    /// `AX_STREAM_EXPERTS=1`; without a manifest this is a hard error.
+    pub mlx_stream_experts: bool,
     /// Fair multi-prefill progress (design Track B / PR3). Default **OFF**.
     /// When true, text prefills are interleave-capped under residual budget.
     /// Does **not** enable GPU continuous batching or claim `partial_overlap`.
@@ -112,6 +116,9 @@ pub struct PreviewSessionConfigRequest {
     /// `--prefill-step-size` mlx_lm and mlx-swift-lm receive so the three
     /// runtimes are compared on identical chunk geometry at long prompts.
     pub mlx_prefill_chunk: Option<usize>,
+    /// Admit SSD expert streaming (--stream-experts). See
+    /// `EngineSessionConfig::mlx_stream_experts`.
+    pub mlx_stream_experts: bool,
     /// Fair multi-prefill progress (default OFF). See `EngineSessionConfig`.
     pub multi_prefill_fair: bool,
     pub max_prefill_tokens_per_request_per_step: u32,
@@ -134,6 +141,7 @@ impl Default for PreviewSessionConfigRequest {
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
+            mlx_stream_experts: false,
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,
@@ -161,6 +169,7 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_mtp_disable_ngram_stacking: bool,
     pub mlx_speculation_profile: Option<String>,
     pub mlx_prefill_chunk: Option<usize>,
+    pub mlx_stream_experts: bool,
     pub multi_prefill_fair: bool,
     pub max_prefill_tokens_per_request_per_step: u32,
     pub max_inflight_prefill_requests: u32,
@@ -188,6 +197,7 @@ impl Default for ResolvedSessionConfigRequest {
             mlx_mtp_disable_ngram_stacking: default.mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: default.mlx_speculation_profile.clone(),
             mlx_prefill_chunk: default.mlx_prefill_chunk,
+            mlx_stream_experts: default.mlx_stream_experts,
             multi_prefill_fair: default.multi_prefill_fair,
             max_prefill_tokens_per_request_per_step: default
                 .max_prefill_tokens_per_request_per_step,
@@ -229,6 +239,7 @@ impl Default for EngineSessionConfig {
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
+            mlx_stream_experts: false,
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,
@@ -351,6 +362,7 @@ impl EngineSessionConfig {
             mlx_mtp_disable_ngram_stacking: request.mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: request.mlx_speculation_profile,
             mlx_prefill_chunk: request.mlx_prefill_chunk,
+            mlx_stream_experts: request.mlx_stream_experts,
             multi_prefill_fair: request.multi_prefill_fair,
             max_prefill_tokens_per_request_per_step: request
                 .max_prefill_tokens_per_request_per_step,
@@ -399,6 +411,7 @@ impl EngineSessionConfig {
             mlx_mtp_disable_ngram_stacking: request.mlx_mtp_disable_ngram_stacking,
             mlx_speculation_profile: request.mlx_speculation_profile,
             mlx_prefill_chunk: request.mlx_prefill_chunk,
+            mlx_stream_experts: request.mlx_stream_experts,
             multi_prefill_fair: request.multi_prefill_fair,
             max_prefill_tokens_per_request_per_step: request
                 .max_prefill_tokens_per_request_per_step,

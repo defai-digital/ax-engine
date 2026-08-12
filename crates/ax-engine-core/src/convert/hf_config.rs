@@ -105,6 +105,7 @@ pub(crate) fn uses_text_config(model_type: &str) -> bool {
             | "llama4"
             | "qwen3_5"
             | "qwen3_5_moe"
+            | "qwen3_5_moe_text"
             | "qwen3_5_text"
             | "qwen3_next"
             | "qwen3_6"
@@ -135,7 +136,7 @@ pub(crate) fn is_unlimited_ocr(model_type: &str) -> bool {
 pub(crate) fn is_qwen3_5_family(model_type: &str) -> bool {
     matches!(
         model_type,
-        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text" | "minicpmv4_6"
+        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5_text" | "minicpmv4_6"
     )
 }
 
@@ -557,8 +558,11 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     let is_gemma4_moe = arch_bool(config, model_type, "enable_moe_block").unwrap_or(false);
     let is_diffusion_gemma_moe =
         model_type == "diffusion_gemma" && config_has_moe_experts(config, model_type);
-    let is_qwen3_moe = matches!(model_type, "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text")
-        || (is_qwen3_5_family(model_type) && config_has_moe_experts(config, model_type));
+    let is_qwen3_moe = matches!(
+        model_type,
+        "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5_text"
+    ) || (is_qwen3_5_family(model_type)
+        && config_has_moe_experts(config, model_type));
     let is_qwen3_next_moe = matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6");
     let is_glm_moe = is_glm4_moe_lite(model_type);
     let is_mixtral = model_type == "mixtral";

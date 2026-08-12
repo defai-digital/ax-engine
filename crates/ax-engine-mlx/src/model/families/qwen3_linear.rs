@@ -137,35 +137,38 @@ pub(crate) fn layer_forward(
         // the closure aborts on the first decode. Only `cfg` (no MoE-relevant
         // MlxArray fields) and the Copy index schema are captured.
         // Guard the flag first to avoid building the input vector on every
-        // decode step when the compile path is disabled.
-        let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
-            let cfg_clone = cfg.clone();
-            let (inputs, schema) = flatten_compiled_moe_inputs(
-                &normed2,
-                &top_k_indices,
-                &top_k_weights,
-                w.gate_up_exps_packed.as_ref(),
-                w.gate_exps.as_ref(),
-                w.up_exps.as_ref(),
-                w.down_exps.as_ref(),
-                shared_out.as_ref(),
-            );
-            let input_refs: Vec<&MlxArray> = inputs.iter().collect();
-            apply_layer_moe_decode(
-                cfg.compile_cache_identity,
-                layer_idx,
-                &input_refs,
-                move |inputs: &MlxVectorArray| {
-                    let (x, indices, weights, gate_up, gate, up, down, shared) =
-                        schema.rebuild(inputs);
-                    vec![moe_experts_forward_with_cloned_weights(
-                        &cfg_clone, &x, &indices, &weights, gate_up, gate, up, down, shared, None,
-                    )]
-                },
-            )
-        } else {
-            None
-        };
+        // decode step when the compile path is disabled. SSD-streamed expert
+        // layers are excluded: their expert weights resolve at forward time.
+        let compiled_result =
+            if seq == 1 && w.expert_stream.is_none() && fastpath::moe_layer_compile_enabled() {
+                let cfg_clone = cfg.clone();
+                let (inputs, schema) = flatten_compiled_moe_inputs(
+                    &normed2,
+                    &top_k_indices,
+                    &top_k_weights,
+                    w.gate_up_exps_packed.as_ref(),
+                    w.gate_exps.as_ref(),
+                    w.up_exps.as_ref(),
+                    w.down_exps.as_ref(),
+                    shared_out.as_ref(),
+                );
+                let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+                apply_layer_moe_decode(
+                    cfg.compile_cache_identity,
+                    layer_idx,
+                    &input_refs,
+                    move |inputs: &MlxVectorArray| {
+                        let (x, indices, weights, gate_up, gate, up, down, shared) =
+                            schema.rebuild(inputs);
+                        vec![moe_experts_forward_with_cloned_weights(
+                            &cfg_clone, &x, &indices, &weights, gate_up, gate, up, down, shared,
+                            None,
+                        )]
+                    },
+                )
+            } else {
+                None
+            };
 
         if let Some(result) = compiled_result.and_then(|result| result.into_iter().next()) {
             result

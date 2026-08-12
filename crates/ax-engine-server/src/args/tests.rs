@@ -73,6 +73,7 @@ fn base_args() -> ServerArgs {
         mlx_mtp_disable_ngram_stacking: false,
         speculation_profile: None,
         prefill_chunk: None,
+        stream_experts: false,
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
@@ -195,6 +196,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
+        mlx_stream_experts: false,
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
@@ -241,6 +243,7 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
+        mlx_stream_experts: false,
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
@@ -362,6 +365,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
+        mlx_stream_experts: false,
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
@@ -1351,4 +1355,18 @@ fn stream_deadlines_reflect_explicit_flags() {
         deadlines.max_duration,
         Some(std::time::Duration::from_secs(600))
     );
+}
+
+#[test]
+fn stream_experts_flag_parses_and_threads_into_session_config() {
+    let args = ServerArgs::try_parse_from(["ax-engine-server", "--stream-experts"])
+        .expect("--stream-experts should parse");
+    assert!(args.stream_experts);
+    let config = args
+        .session_config()
+        .expect("session config should build with --stream-experts");
+    assert!(config.mlx_stream_experts);
+
+    let default = ServerArgs::try_parse_from(["ax-engine-server"]).expect("defaults parse");
+    assert!(!default.stream_experts);
 }

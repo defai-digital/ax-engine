@@ -183,6 +183,15 @@ pub struct ServerArgs {
     #[arg(long = "prefill-chunk")]
     pub prefill_chunk: Option<usize>,
 
+    /// Admit SSD expert streaming (layer-stack paging from
+    /// `ax_expert_stream.json`). Required for packs whose manifest says
+    /// `required=true`; loading them without this flag (or
+    /// `AX_STREAM_EXPERTS=1`) is a hard error. Setting the flag without a
+    /// manifest is also a hard error. Resident layer budget:
+    /// `AX_STREAM_EXPERT_LAYERS` (default 1).
+    #[arg(long = "stream-experts", default_value_t = false)]
+    pub stream_experts: bool,
+
     /// Opt into fair multi-prefill progress under residual budget (default OFF).
     /// Improves progress fairness among concurrent text prefills; does **not**
     /// enable GPU continuous batching or claim wall-clock overlap.

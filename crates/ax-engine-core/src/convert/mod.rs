@@ -2346,6 +2346,7 @@ fn validate_qwen_rope_scaling(
             | "qwen3_5"
             | "qwen3.5"
             | "qwen3_5_moe"
+            | "qwen3_5_moe_text"
             | "qwen3_5_text"
     );
     let is_default_mrope = is_qwen_mrope_family

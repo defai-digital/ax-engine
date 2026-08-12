@@ -761,6 +761,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         mlx_mtp_disable_ngram_stacking: true,
         mlx_speculation_profile: None,
         mlx_prefill_chunk: None,
+        mlx_stream_experts: false,
         multi_prefill_fair: true,
         max_prefill_tokens_per_request_per_step: 16,
         max_inflight_prefill_requests: 3,

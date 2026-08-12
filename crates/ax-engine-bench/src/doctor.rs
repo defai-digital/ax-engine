@@ -183,7 +183,27 @@ pub(crate) struct DoctorModelArtifactsReport {
     pub(crate) quantization: Option<DoctorQuantizationHint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) axquant: Option<DoctorAxquantReport>,
+    /// SSD expert streaming state from `ax_expert_stream.json`
+    /// (`axquant.expert-stream.v1`). Absent when the pack has no manifest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) expert_stream: Option<DoctorExpertStreamReport>,
     pub(crate) issues: Vec<String>,
+}
+
+/// Contract fields for `ax_expert_stream.json` surfaced in doctor JSON.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct DoctorExpertStreamReport {
+    /// Whether this process would admit streaming (`--stream-experts` or
+    /// `AX_STREAM_EXPERTS=1`).
+    pub(crate) enabled: bool,
+    /// Manifest `required`: loading without admission is a hard error.
+    pub(crate) required: bool,
+    /// Estimated resident bytes with streaming active.
+    pub(crate) resident_bytes: u64,
+    /// Estimated max bytes for one layer's expert stack (paging working set).
+    pub(crate) max_layer_bytes: u64,
+    /// Layer stacks resident at report time (doctor loads no weights: 0).
+    pub(crate) cached_layers: usize,
 }
 
 impl DoctorModelArtifactsReport {
@@ -200,6 +220,7 @@ impl DoctorModelArtifactsReport {
             model_type: None,
             quantization: None,
             axquant: None,
+            expert_stream: None,
             issues: Vec::new(),
         }
     }
@@ -700,6 +721,7 @@ fn doctor_model_artifacts_report(
     let mut model_type = None;
     let mut quantization = None;
     let mut axquant = None;
+    let mut expert_stream = None;
     let mut safetensors_present = false;
 
     if !exists {
@@ -754,6 +776,8 @@ fn doctor_model_artifacts_report(
                     .map(|issue| format!("AXQuant metadata: {issue}")),
             );
         }
+
+        expert_stream = doctor_expert_stream_report(path, &mut issues);
     }
 
     let status = if issues.is_empty() {
@@ -774,7 +798,43 @@ fn doctor_model_artifacts_report(
         model_type,
         quantization,
         axquant,
+        expert_stream,
         issues,
+    }
+}
+
+fn doctor_expert_stream_report(
+    path: &Path,
+    issues: &mut Vec<String>,
+) -> Option<DoctorExpertStreamReport> {
+    use ax_engine_mlx::expert_stream;
+    let manifest_path = path.join(expert_stream::EXPERT_STREAM_MANIFEST_FILE);
+    if !manifest_path.is_file() {
+        return None;
+    }
+    match expert_stream::ExpertStreamManifest::read_from_dir(path) {
+        Ok(Some(manifest)) => {
+            let enabled = expert_stream::stream_experts_requested();
+            if manifest.required && !enabled {
+                issues.push(format!(
+                    "pack requires SSD expert streaming (ax_expert_stream.json required=true); serve/load with --stream-experts or {}=1 (full-resident load needs ~{} bytes)",
+                    expert_stream::STREAM_EXPERTS_ENV,
+                    manifest.estimated_full_resident_bytes
+                ));
+            }
+            Some(DoctorExpertStreamReport {
+                enabled,
+                required: manifest.required,
+                resident_bytes: manifest.estimated_resident_bytes,
+                max_layer_bytes: manifest.estimated_max_layer_expert_bytes,
+                cached_layers: 0,
+            })
+        }
+        Ok(None) => None,
+        Err(error) => {
+            issues.push(format!("ax_expert_stream.json is invalid: {error}"));
+            None
+        }
     }
 }
 
@@ -1934,4 +1994,91 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
     );
 
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod expert_stream_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ax-engine-doctor-{label}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn doctor_surfaces_expert_stream_contract_fields() {
+        let dir = unique_dir("expert-stream");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"model_type":"qwen3_5_moe_text"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(ax_engine_mlx::expert_stream::EXPERT_STREAM_MANIFEST_FILE),
+            serde_json::json!({
+                "schema_version": "axquant.expert-stream.v1",
+                "generated_by": "axquant",
+                "required": true,
+                "mode": "layer-stack",
+                "num_experts": 256,
+                "experts_per_tok": 8,
+                "estimated_resident_bytes": 40_000_000_000_u64,
+                "estimated_full_resident_bytes": 800_000_000_000_u64,
+                "estimated_max_layer_expert_bytes": 10_000_000_000_u64,
+                "resident_roles": ["embedding"],
+                "streamed_roles": ["expert"],
+                "tensors": [{
+                    "name": "model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                    "file": "model-00001-of-00080.safetensors",
+                    "layer": 0,
+                    "proj": "gate_up",
+                    "expert_axis": 0,
+                    "num_experts": 256,
+                    "bits": 2,
+                    "group_size": 64
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let report = doctor_model_artifacts_report(Some(&dir));
+        let stream = report
+            .expert_stream
+            .expect("expert_stream report must be present");
+        assert!(stream.required);
+        assert_eq!(stream.resident_bytes, 40_000_000_000);
+        assert_eq!(stream.max_layer_bytes, 10_000_000_000);
+        assert_eq!(stream.cached_layers, 0);
+        // Doctor runs without --stream-experts; a required pack must be
+        // flagged so operators see the admission requirement.
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.contains("requires SSD expert streaming")),
+            "issues: {:?}",
+            report.issues
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn doctor_without_manifest_reports_no_expert_stream() {
+        let dir = unique_dir("no-expert-stream");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"model_type":"qwen3"}"#).unwrap();
+        let report = doctor_model_artifacts_report(Some(&dir));
+        assert!(report.expert_stream.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
