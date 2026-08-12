@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Closed 2026-08-12: user accepted AXQ direct 1.05× / 614 GB/s roofline; exact-off committed |
+| Status | Active; original §6(b) 1.20× restored; no-copy lm_head GEMV in flight |
 | Owner | AX Engine maintainers |
 | Last updated | 2026-08-12 |
 | Formal host | `df-macbookpro-m5` (Apple M5 Max) |
@@ -75,7 +75,7 @@ MTP accept/rollback — not from guessed kernels.
 After the runtime fix, the same contract re-run on `df-macbookpro-m5` meets all of:
 
 - **(a)** mlx-community **direct** vs same-host `mlx_lm.benchmark` on matching prompt hashes at p128/p512/p2048 gen=128: every cell `decode_tok_s` ≥ 0.97× mlx_lm and `prefill_tok_s` ≥ 0.90× mlx_lm;
-- **(b)** AXQ **direct** meets the same mlx_lm ratios if mlx_lm loads the AXQ pack, else on every p128/p512/p2048 cell `decode_tok_s` ≥ **1.05×** that cell’s AXQ baseline decode and `prefill_tok_s` ≥ that cell’s baseline prefill. **Formal amendment 2026-08-12 (user-authorized):** replaces the original 1.20× min(prefill,decode) self-baseline. This is **not** a 6-bit bandwidth waiver. Same-host roofline on `df-macbookpro-m5` (M5 Max 40-core GPU, 614 GB/s): AXQ `--ax-direct` streams 17.714 GB/token (FFN 10.640 + attn 4.526 + BF16 lm_head 2.543). Original 1.20× = 34.56 tok/s = 99.7% of Apple’s published peak. Best measured 30.14 = 87% of peak; community 4-bit gs64 is ~89% of the same peak on a smaller pack.
+- **(b)** AXQ **direct** meets the same mlx_lm ratios if mlx_lm loads the AXQ pack, else the slower of AXQ prefill/decode is ≥ 1.20× that AXQ baseline;
 - **(c)** both checkpoints **MTP**: if a same-host MTP peer row exists, AX MTP `decode_tok_s` ≥ 0.90× that peer, else AX MTP decode ≥ AX **direct** on a decode-heavy shape (gen≥128);
 - **(d)** any baseline cell that missed its peer bar has its lagging phase ≥ 1.15× that cell’s baseline.
 
@@ -108,15 +108,9 @@ Unreachable SSH is a hard stop. Do not invent numbers or substitute another host
 
 Codex prose is process, not proof. Only `df-macbookpro-m5` artifacts authorize a claim.
 
-## 9. Outcome (2026-08-12)
+## 9. Notes (2026-08-12)
 
-§6(b) was **formally amended** on 2026-08-12 to ≥1.05× (user-authorized; not a 6-bit waiver). Measured result on `df-macbookpro-m5`:
-
-- **(a)** community direct vs mlx_lm: PASS at p128/p512/p2048.
-- **(b)** AXQ direct: mlx_lm did not load the pack. Best decode 30.14 / 28.78 = **1.05×** on p128/p512/p2048. **PASS under the amended 1.05× bar.**
-- **(c)** community MTP 54.78 vs mtplx 60.14 = 0.911 PASS; AXQ MTP 1.21–1.28× AXQ direct PASS.
-- **(d)** community prefill vs mlxcel still trails at p128/p512; AX recoveries in (a) cover the mlx_lm cells.
-
-Roofline: M5 Max 40-core GPU is 614 GB/s. AXQ `--ax-direct` streams ~17.714 GB/token (FFN 10.64 + attn 4.53 + BF16 lm_head 2.54). 1.20× = 34.56 tok/s = 99.7% of published peak. Best 30.14 = 87% of peak; community 4-bit gs64 is ~89% on a smaller pack. Closed FFN / packed-attn / gated-delta A/Bs and Codex sol agree no remaining small runtime change reaches 34.56 without a smaller-byte pack (non-goal).
-
-Operator decision 2026-08-12: **accept 1.05× and commit the `--ax-direct` exact-off win** (`qwen_linear_mtp_exact_scope_for_request = profile && mtp_requested`). That is the measured decode improvement and the correct product behavior (an AXQ sidecar must not disable fused S=1 kernels on direct).
+Original §6(b) **1.20× min(prefill, decode)** is restored (unrounded). A 1.05×
+weakening was rejected. Community 3a and both MTP 3c cells already pass.
+AXQ direct best so far is 30.14/28.78 = 1.047×. Next change is a no-copy
+BF16 `lm_head` GEMV so decode does not materialize a 2.54 GB transpose.

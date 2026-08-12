@@ -4,6 +4,7 @@ use mlx_sys::{
     slice_last_dim, take, tanh, transpose,
 };
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::super::config::ModelConfig;
 use crate::fastpath;
@@ -383,6 +384,129 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     } else {
         y
     }
+}
+
+static UNQUANTIZED_DECODE_PROJECTION_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static UNQUANTIZED_DECODE_PROJECTION_HITS: AtomicU64 = AtomicU64::new(0);
+
+/// Metal GEMV for a single-token dense projection. Reads `weight` as
+/// `[out, in]` in place — no `[out, in] → [in, out]` transpose buffer.
+const UNQUANTIZED_DECODE_PROJECTION_SOURCE: &str = r#"
+    uint out_row = thread_position_in_grid.x / 32;
+    uint lane = thread_index_in_simdgroup;
+    if (out_row >= (uint)OutDim) {
+        return;
+    }
+    const uint row_base = out_row * (uint)InputDim;
+    float partial = 0.0f;
+    for (uint col = lane; col < (uint)InputDim; col += 32) {
+        float w = static_cast<float>(weight[row_base + col]);
+        float xv = static_cast<float>(x[col]);
+        partial = fma(xv, w, partial);
+    }
+    float total = simd_sum(partial);
+    if (lane == 0) {
+        out[out_row] = static_cast<OutT>(total);
+    }
+"#;
+
+/// Decode-only unquantized projection: `logits = x @ weight.T` without
+/// materializing `weight.T`. `weight` is `[out, in]`, `x` is rank ≥ 1
+/// with last dim `in` and all other dims product 1.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn project_unquantized_decode(x: &MlxArray, weight: &MlxArray) -> Option<MlxArray> {
+    if !matches!(
+        x.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || x.dtype() != weight.dtype()
+    {
+        return None;
+    }
+    let weight_shape = weight.shape();
+    if weight_shape.len() != 2 {
+        return None;
+    }
+    let out_dim = weight_shape[0];
+    let input_dim = weight_shape[1];
+    if out_dim <= 0 || input_dim <= 0 {
+        return None;
+    }
+    let x_shape = x.shape();
+    if x_shape.last().copied() != Some(input_dim) {
+        return None;
+    }
+    let leading = x_shape[..x_shape.len() - 1]
+        .iter()
+        .try_fold(1_i32, |product, dimension| product.checked_mul(*dimension))?;
+    if leading != 1 {
+        return None;
+    }
+    let grid_x = out_dim.checked_mul(32)?;
+    let x_flat = reshape(x, &[input_dim], None);
+    let kernel = UNQUANTIZED_DECODE_PROJECTION_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_unquantized_decode_projection_v1",
+            &["x", "weight"],
+            &["out"],
+            UNQUANTIZED_DECODE_PROJECTION_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[&x_flat, weight],
+            &[KernelOutputSpec {
+                shape: vec![out_dim],
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "InputDim",
+                    value: input_dim,
+                },
+            ],
+            (grid_x, 1, 1),
+            (32, 1, 1),
+            None,
+        )
+        .ok()?;
+    let flat = outputs.pop()?;
+    let mut out_shape = x_shape;
+    *out_shape.last_mut()? = out_dim;
+    Some(reshape(&flat, &out_shape, None))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn unquantized_decode_projection_hits() -> u64 {
+    UNQUANTIZED_DECODE_PROJECTION_HITS.load(Ordering::Relaxed)
+}
+
+/// Unquantized decode `lm_head` entry: no-copy GEMV, else `qw`.
+///
+/// Measured slower than MLX `transpose+matmul` on AXQ 27B (29.67 vs 30.14
+/// tok/s), so production decode stays on `qw`. Kept as the tested helper.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn project_lm_head(x: &MlxArray, lm_head: &QuantizedWeight) -> MlxArray {
+    if lm_head.scales.is_none()
+        && let Some(y) = project_unquantized_decode(x, &lm_head.weight)
+    {
+        UNQUANTIZED_DECODE_PROJECTION_HITS.fetch_add(1, Ordering::Relaxed);
+        return if let Some(bias) = &lm_head.linear_bias {
+            add(&y, bias, None)
+        } else {
+            y
+        };
+    }
+    qw(x, lm_head)
 }
 
 /// Slice the last axis of `x` to `[start, end)`.
@@ -1024,7 +1148,10 @@ fn apply_expert_linear_bias(y: &MlxArray, linear_bias: &MlxArray, indices: &MlxA
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mlx_sys::{MlxQuantizationMode, eval, quantize, quantized_matmul};
+    use mlx_sys::{
+        MlxQuantizationMode, clear_cache, contiguous, eval, get_peak_memory, matmul, quantize,
+        quantized_matmul, reset_peak_memory, transpose,
+    };
 
     #[test]
     fn qw_applies_dense_linear_bias() {
@@ -1048,6 +1175,97 @@ mod tests {
         // identity + bias → [1.5, 1.75]
         assert!((got[0] - 1.5).abs() < 1e-5, "got {}", got[0]);
         assert!((got[1] - 1.75).abs() < 1e-5, "got {}", got[1]);
+    }
+
+    #[test]
+    fn project_unquantized_decode_matches_x_at_weight_t() {
+        let hidden = 8;
+        let vocab = 16;
+        let mut w_data = vec![0.0f32; (vocab * hidden) as usize];
+        for row in 0..vocab {
+            for col in 0..hidden {
+                w_data[(row * hidden + col) as usize] = (row + 1) as f32 * 0.1 + col as f32 * 0.01;
+            }
+        }
+        let weight = array_f32(&w_data, &[vocab, hidden]);
+        let x_data: Vec<f32> = (0..hidden).map(|i| (i + 1) as f32 * 0.25).collect();
+        let x = array_f32(&x_data, &[1, 1, hidden]);
+        let hits_before = super::unquantized_decode_projection_hits();
+        let metal = super::project_unquantized_decode(&x, &weight).expect("decode GEMV eligible");
+        let lm = QuantizedWeight {
+            weight: weight.clone(),
+            scales: None,
+            biases: None,
+            group_size: 1,
+            bits: 32,
+            mode: "affine".to_string(),
+            linear_bias: None,
+        };
+        let shipped = super::project_lm_head(&x, &lm);
+        let reference = matmul(&x, &transpose(&weight, &[1, 0], None), None);
+        eval(&[&metal, &shipped, &reference]);
+        let got = metal.data_f32();
+        let shipped_got = shipped.data_f32();
+        let want = reference.data_f32();
+        assert_eq!(got.len(), want.len());
+        for i in 0..got.len() {
+            assert!(
+                (got[i] - want[i]).abs() < 1e-4,
+                "idx {i}: metal {} vs ref {}",
+                got[i],
+                want[i]
+            );
+            assert!(
+                (shipped_got[i] - want[i]).abs() < 1e-4,
+                "idx {i}: shipped {} vs ref {}",
+                shipped_got[i],
+                want[i]
+            );
+        }
+        assert!(
+            super::unquantized_decode_projection_hits() > hits_before,
+            "shipped lm_head must take the no-copy GEMV"
+        );
+    }
+
+    #[test]
+    fn project_unquantized_decode_skips_full_weight_transpose_buffer() {
+        // Large enough that a materialized W.T is visible in peak memory.
+        let hidden = 128i32;
+        let vocab = 4096i32;
+        let w_data: Vec<f32> = (0..vocab * hidden)
+            .map(|i| (i % 17) as f32 * 0.01)
+            .collect();
+        let x_data: Vec<f32> = (0..hidden).map(|i| (i % 5) as f32 * 0.1).collect();
+        let weight = array_f32(&w_data, &[vocab, hidden]);
+        let x = array_f32(&x_data, &[1, hidden]);
+        eval(&[&x, &weight]);
+
+        clear_cache();
+        reset_peak_memory();
+        let metal = super::project_unquantized_decode(&x, &weight).expect("decode GEMV eligible");
+        eval(&[&metal]);
+        let peak_metal = get_peak_memory();
+
+        clear_cache();
+        reset_peak_memory();
+        let transposed = contiguous(&transpose(&weight, &[1, 0], None), None);
+        let reference = matmul(&x, &transposed, None);
+        eval(&[&reference]);
+        let peak_transpose = get_peak_memory();
+
+        let weight_bytes = (vocab as usize) * (hidden as usize) * 4;
+        assert!(
+            peak_metal + weight_bytes / 2 < peak_transpose,
+            "no-copy GEMV peak {peak_metal} should beat materialized transpose peak {peak_transpose} by ~half of {weight_bytes} weight bytes"
+        );
+    }
+
+    #[test]
+    fn project_unquantized_decode_rejects_multi_token() {
+        let weight = array_f32(&[1.0, 0.0, 0.0, 1.0], &[2, 2]);
+        let x = array_f32(&[1.0, 2.0, 3.0, 4.0], &[1, 2, 2]);
+        assert!(super::project_unquantized_decode(&x, &weight).is_none());
     }
 
     #[test]
