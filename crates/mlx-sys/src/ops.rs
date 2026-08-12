@@ -324,6 +324,8 @@ unsafe extern "C" {
         value_head_dim: libc::c_int,
         group_size: libc::c_int,
         bits: libc::c_int,
+        ba_group_size: libc::c_int,
+        ba_bits: libc::c_int,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
@@ -1114,6 +1116,8 @@ pub fn qwen_linear_attention_inputs_packed(
     value_head_dim: i32,
     group_size: i32,
     bits: i32,
+    ba_group_size: i32,
+    ba_bits: i32,
     s: Option<&MlxStream>,
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
     unsafe {
@@ -1148,6 +1152,8 @@ pub fn qwen_linear_attention_inputs_packed(
             value_head_dim,
             group_size,
             bits,
+            ba_group_size,
+            ba_bits,
             stream,
         );
         if rc == 0 {
@@ -3201,6 +3207,8 @@ mod tests {
             value_head_dim,
             32,
             4,
+            32,
+            4,
             None,
         )
         .expect("direct packed linear-attention shim should accept qwen-compatible shapes");
@@ -3309,6 +3317,94 @@ mod tests {
         assert_close_f32(direct_z.data_f32(), portable_z.data_f32(), 1.0e-6);
         assert_close_f32(direct_a.data_f32(), portable_a.data_f32(), 1.0e-6);
         assert_close_f32(direct_b.data_f32(), portable_b.data_f32(), 1.0e-6);
+    }
+
+    #[test]
+    fn qwen_linear_attention_inputs_packed_accepts_mixed_qkvz_ba_bits() {
+        let seq = 2_i32;
+        let hidden = 64_i32;
+        let num_key_heads = 2_i32;
+        let num_value_heads = 4_i32;
+        let key_head_dim = 4_i32;
+        let value_head_dim = 4_i32;
+        let value_heads_per_key = num_value_heads / num_key_heads;
+        let qkvz_per_key = key_head_dim * 2 + value_heads_per_key * value_head_dim * 2;
+        let qkvz_out = num_key_heads * qkvz_per_key;
+        let ba_out = num_key_heads * value_heads_per_key * 2;
+        let x_data: Vec<f32> = (0..(seq * hidden))
+            .map(|i| ((i as f32) - 31.0) * 0.015625)
+            .collect();
+        let qkvz_weight_data: Vec<f32> = (0..(qkvz_out * hidden))
+            .map(|i| ((i as f32) - 200.0) * 0.0005)
+            .collect();
+        let ba_weight_data: Vec<f32> = (0..(ba_out * hidden))
+            .map(|i| ((i as f32) - 80.0) * 0.001)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_w = MlxArray::from_raw_data(
+            qkvz_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkvz_weight_data.as_slice()),
+            &[qkvz_out, hidden],
+            MlxDtype::Float32,
+        );
+        let ba_w = MlxArray::from_raw_data(
+            ba_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(ba_weight_data.as_slice()),
+            &[ba_out, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_q = quantize(
+            &qkvz_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let ba_q = quantize(
+            &ba_w,
+            Some(32),
+            Some(6),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let (qkv, z, a, b) = qwen_linear_attention_inputs_packed(
+            &x,
+            &qkvz_q[0],
+            Some(&qkvz_q[1]),
+            Some(&qkvz_q[2]),
+            &ba_q[0],
+            Some(&ba_q[1]),
+            Some(&ba_q[2]),
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            32,
+            4,
+            32,
+            6,
+            None,
+        )
+        .expect("mixed 4-bit qkvz + 6-bit ba must pack on prefill seq");
+        eval(&[&qkv, &z, &a, &b]);
+        assert_eq!(
+            qkv.shape(),
+            vec![
+                1,
+                seq,
+                num_key_heads * key_head_dim * 2 + num_value_heads * value_head_dim
+            ]
+        );
+        assert_eq!(z.shape(), vec![1, seq, num_value_heads, value_head_dim]);
+        assert_eq!(a.shape(), vec![1, seq, num_value_heads]);
+        assert_eq!(b.shape(), vec![1, seq, num_value_heads]);
     }
 
     #[test]

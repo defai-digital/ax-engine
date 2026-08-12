@@ -4923,11 +4923,11 @@ fn dense_ffn_gate_up_packing_supported(
     up: &QuantizedWeight,
 ) -> bool {
     // Qwen dense FFNs keep 4/5-bit projections split: the split runtime owns
-    // the decode matvec fast path, and 4-bit packing regressed severely on
-    // Qwen3.5-9B S0 (81 → 24 tok/s, 2026-07-24 M5 Max). Six-bit Qwen keeps
-    // both layouts so multi-token prefill can use one packed gate/up
-    // projection while decode stays split. GLM MLA MoE lite keeps split
-    // projections exclusively.
+    // the decode matvec fast path. 4-bit packing regressed Qwen3.5-9B S0
+    // (81 → 24 tok/s, 2026-07-24) and AXQ 27B 4-bit gs32 prefill on
+    // df-macbookpro-m5 (347 vs 403 tok/s p128, 2026-08-12). Six-bit Qwen
+    // keeps both layouts so multi-token prefill can use one packed gate/up
+    // while decode stays split. GLM MLA MoE lite stays split.
     if model_family == "glm4_moe_lite"
         || (model_family.starts_with("qwen") && (gate.bits != 6 || up.bits != 6))
     {
@@ -6815,6 +6815,12 @@ mod tests {
         assert!(!dense_ffn_gate_up_packing_supported(
             "qwen3_5", &q4_gate, &q4_up
         ));
+        let q4_gs32_gate = glm_quantized_weight(32, 4, true);
+        let q4_gs32_up = glm_quantized_weight(32, 4, true);
+        assert!(
+            !dense_ffn_gate_up_packing_supported("qwen3_5", &q4_gs32_gate, &q4_gs32_up),
+            "4-bit gs32 Qwen packing regressed AXQ 27B prefill; keep split"
+        );
         assert!(!dense_ffn_gate_up_packing_supported(
             "qwen3_next",
             &q4_gate,

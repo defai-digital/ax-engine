@@ -183,6 +183,8 @@ qwen_linear_attention_inputs_packed_impl(
     int value_head_dim,
     int group_size,
     int bits,
+    int ba_group_size,
+    int ba_bits,
     mx::StreamOrDevice stream) {
   if (num_key_heads <= 0 || num_value_heads <= 0 ||
       key_head_dim <= 0 || value_head_dim <= 0) {
@@ -242,13 +244,15 @@ qwen_linear_attention_inputs_packed_impl(
       stream);
   z = mx::reshape(z, {batch, seq, num_value_heads, value_head_dim}, stream);
 
+  const int ba_gs = ba_group_size > 0 ? ba_group_size : group_size;
+  const int ba_b = ba_bits > 0 ? ba_bits : bits;
   auto mixed_ba = projection_affine_or_dense_impl(
       x,
       ba_weight,
       std::move(ba_scales),
       std::move(ba_biases),
-      group_size,
-      bits,
+      ba_gs,
+      ba_b,
       stream);
   if (mixed_ba.ndim() != 3) {
     throw std::runtime_error("packed ba projection must produce [B, S, C]");
@@ -1428,6 +1432,8 @@ extern "C" int ax_mlx_qwen_linear_attention_inputs_packed(
     int value_head_dim,
     int group_size,
     int bits,
+    int ba_group_size,
+    int ba_bits,
     const mlx_stream stream) {
   AX_TRY {
     auto [qkv, z, a, b] = qwen_linear_attention_inputs_packed_impl(
@@ -1444,6 +1450,8 @@ extern "C" int ax_mlx_qwen_linear_attention_inputs_packed(
         value_head_dim,
         group_size,
         bits,
+        ba_group_size,
+        ba_bits,
         sd(stream));
     aset(qkv_res, std::move(qkv));
     aset(z_res, std::move(z));

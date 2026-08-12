@@ -722,6 +722,14 @@ fn linear_attention_full_gate_metal_allowed_for_bits(
     true
 }
 
+/// Mixed qkvz/ba quant is prefill-only. Decode keeps the matching-bits pack.
+pub(crate) const fn linear_attention_prefill_allows_mixed_pack(
+    seq: i32,
+    mixed_quant: bool,
+) -> bool {
+    !mixed_quant || seq > 1
+}
+
 fn linear_attention_inputs_packed_direct(
     cfg: &LinearAttentionConfig,
     x: &MlxArray,
@@ -730,10 +738,14 @@ fn linear_attention_inputs_packed_direct(
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
     let qkvz_quantized = qkvz_w.scales.is_some();
     let ba_quantized = ba_w.scales.is_some();
-    if qkvz_quantized
+    let mixed_quant = qkvz_quantized
         && ba_quantized
-        && (qkvz_w.group_size != ba_w.group_size || qkvz_w.bits != ba_w.bits)
-    {
+        && (qkvz_w.group_size != ba_w.group_size || qkvz_w.bits != ba_w.bits);
+    // Decode (seq==1) keeps matching-bits packing only: mixed 4/6-bit on
+    // AXQ 27B measured 29.84 vs 30.14 tok/s. Prefill (seq>1) takes the
+    // extra 31/48 packed hits — those layers are the prefill dispatch miss.
+    let seq = x.shape().get(1).copied().unwrap_or(1);
+    if !linear_attention_prefill_allows_mixed_pack(seq, mixed_quant) {
         return None;
     }
     let group_size = if qkvz_quantized {
@@ -746,6 +758,12 @@ fn linear_attention_inputs_packed_direct(
     } else {
         ba_w.bits
     };
+    let ba_group_size = if mixed_quant {
+        ba_w.group_size
+    } else {
+        group_size
+    };
+    let ba_bits = if mixed_quant { ba_w.bits } else { bits };
 
     qwen_linear_attention_inputs_packed(
         x,
@@ -761,6 +779,8 @@ fn linear_attention_inputs_packed_direct(
         cfg.value_head_dim as i32,
         group_size,
         bits,
+        ba_group_size,
+        ba_bits,
         None,
     )
     .filter(|(qkv, z, a, b)| {
@@ -868,5 +888,15 @@ mod tests {
         assert!(linear_attention_full_gate_metal_allowed_for_bits(
             "qwen3_5", false, 5, 63
         ));
+    }
+
+    #[test]
+    fn mixed_pack_is_prefill_only() {
+        assert!(linear_attention_prefill_allows_mixed_pack(128, true));
+        assert!(linear_attention_prefill_allows_mixed_pack(512, true));
+        assert!(linear_attention_prefill_allows_mixed_pack(2048, true));
+        assert!(!linear_attention_prefill_allows_mixed_pack(1, true));
+        assert!(linear_attention_prefill_allows_mixed_pack(1, false));
+        assert!(linear_attention_prefill_allows_mixed_pack(128, false));
     }
 }
