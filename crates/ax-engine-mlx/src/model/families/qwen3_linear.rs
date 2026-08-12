@@ -7,9 +7,9 @@ use super::super::profile::{
     prefill_profile_enabled,
 };
 use super::super::shared::{
-    ffn_swiglu, flatten_compiled_moe_inputs, linear_attention_forward, moe_experts_forward,
-    moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared, moe_router_qwen3,
-    rms_norm_opt, shared_expert_forward,
+    ffn_swiglu, ffn_swiglu_plus_residual, flatten_compiled_moe_inputs, linear_attention_forward,
+    moe_experts_forward, moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared,
+    moe_router_qwen3, rms_norm_opt, shared_expert_forward,
 };
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
@@ -181,10 +181,17 @@ pub(crate) fn layer_forward(
         } else {
             moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights)
         }
+    } else if w.ffn_post_norm.is_none() {
+        ffn_swiglu_plus_residual(cfg, w, &normed2, None, layer_idx, &hidden)
     } else {
         ffn_swiglu(cfg, w, &normed2, None, layer_idx)
     };
-    let ffn_out = rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
+    let fused_residual = w.router_proj.is_none() && w.ffn_post_norm.is_none();
+    let ffn_out = if fused_residual {
+        out
+    } else {
+        rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
+    };
     if let Some(started) = ffn_started {
         forward_profile_eval_elapsed(
             profile_decode_layer,
@@ -196,7 +203,11 @@ pub(crate) fn layer_forward(
     }
 
     let residual_gate_started = profile_forward_layer.then(Instant::now);
-    let out = add(&hidden, &ffn_out, None);
+    let out = if fused_residual {
+        ffn_out
+    } else {
+        add(&hidden, &ffn_out, None)
+    };
     if let Some(started) = residual_gate_started {
         forward_profile_eval_elapsed(
             profile_decode_layer,

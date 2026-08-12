@@ -57,8 +57,8 @@ use super::super::shared::{
     attention_output_projection_batched, attention_output_projection_with_post_norm,
     attention_output_projection_with_post_norm_policy, bidirectional_attention,
     direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, ffn_swiglu_batched,
-    ffn_swiglu_row_exact, flatten_attention_output_bhsd, flatten_compiled_moe_inputs,
-    flatten_gemma4_dual_path_inputs, full_precision_attention,
+    ffn_swiglu_plus_residual, ffn_swiglu_row_exact, flatten_attention_output_bhsd,
+    flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs, full_precision_attention,
     full_precision_attention_with_window, linear_attention_forward_batched, moe_experts_forward,
     moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
@@ -566,6 +566,13 @@ fn layer_shell_post_attention(
             }
             let refs: Vec<&MlxArray> = rows.iter().collect();
             concatenate(&refs, 1, None)
+        } else if seq == 1
+            && w.ffn_post_norm.is_none()
+            && w.per_layer_gate.is_none()
+            && w.layer_scalar.is_none()
+            && per_layer_input.is_none()
+        {
+            ffn_swiglu_plus_residual(cfg, w, &normed2, None, layer_idx, &hidden)
         } else {
             ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
         }
@@ -582,7 +589,15 @@ fn layer_shell_post_attention(
 
     // 18-19. Residual + per-layer input gating.
     let residual_gate_started = profile_forward_layer.then(Instant::now);
-    let out = if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
+    let fuse_ffn_residual = seq == 1
+        && w.ffn_post_norm.is_none()
+        && w.per_layer_gate.is_none()
+        && w.layer_scalar.is_none()
+        && per_layer_input.is_none()
+        && w.router_proj.is_none();
+    let out = if fuse_ffn_residual {
+        ffn_out
+    } else if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
         w.per_layer_gate.as_ref(),
         w.per_layer_proj_w.as_ref(),
         w.per_layer_post_norm.as_ref(),

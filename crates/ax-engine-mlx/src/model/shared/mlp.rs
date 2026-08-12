@@ -708,6 +708,7 @@ static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA_DUAL_GATE_UP_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -993,6 +994,49 @@ const QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE: &str = r#"
             total += partials[i];
         }
         out[row] = static_cast<OutT>(total);
+    }
+"#;
+
+const QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL_SOURCE: &str = r#"
+    uint flat = thread_position_in_grid.x;
+    uint row = flat / 256;
+    uint tid = flat % 256;
+    uint lane = tid % 32;
+    uint sg = tid / 32;
+    if (row >= OutDim) {
+        return;
+    }
+
+    float acc = 0.0f;
+    const uint row_base = row * PackedCols;
+    const uint scale_row = row * GroupCount;
+
+    for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
+        uint packed = weight[row_base + packed_col];
+        for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
+            uint input_col = packed_col * PackFactor + packed_lane;
+            uint q = (packed >> (packed_lane * Bits)) & QuantMask;
+            uint group = input_col / GroupSize;
+            uint scale_idx = scale_row + group;
+            float x_v = static_cast<float>(x[input_col]);
+            float scale = static_cast<float>(scales[scale_idx]);
+            float bias = static_cast<float>(biases[scale_idx]);
+            acc = fma(x_v, static_cast<float>(q) * scale + bias, acc);
+        }
+    }
+
+    float sum = simd_sum(acc);
+    threadgroup float partials[8];
+    if (lane == 0) {
+        partials[sg] = sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float total = 0.0f;
+        for (uint i = 0; i < 8; ++i) {
+            total += partials[i];
+        }
+        out[row] = static_cast<OutT>(total + static_cast<float>(residual[row]));
     }
 "#;
 
@@ -1749,7 +1793,13 @@ fn gemma_dense_ffn_dual_gate_up_geglu_metal(
 }
 
 /// Decode-only affine-4bit matvec for FFN down_proj (intermediate → hidden).
-fn qwen_dense_ffn_down_matvec_metal_impl(x: &MlxArray, down: &QuantizedWeight) -> Option<MlxArray> {
+/// When `residual` is `Some`, the kernel writes `residual + down(x)` so the
+/// caller can skip a separate add on the Qwen decode residual.
+fn qwen_dense_ffn_down_matvec_metal_impl(
+    x: &MlxArray,
+    down: &QuantizedWeight,
+    residual: Option<&MlxArray>,
+) -> Option<MlxArray> {
     if !matches!(
         x.dtype(),
         MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
@@ -1795,22 +1845,48 @@ fn qwen_dense_ffn_down_matvec_metal_impl(x: &MlxArray, down: &QuantizedWeight) -
         return None;
     }
 
+    if let Some(residual) = residual {
+        if residual.dtype() != x.dtype() || residual.shape().last().copied() != Some(out_dim) {
+            return None;
+        }
+        let residual_leading = residual.shape()[..residual.shape().len().saturating_sub(1)]
+            .iter()
+            .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+        if residual_leading != 1 {
+            return None;
+        }
+    }
     let mut out_shape = x_shape;
     *out_shape.last_mut()? = out_dim;
     let quant_mask = (1_i32 << down.bits) - 1;
-    let kernel = QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL.get_or_init(|| {
-        MlxMetalKernel::new(
-            "ax_qwen_dense_ffn_down_matvec_simd_v1d",
-            &["x", "weight", "scales", "biases"],
-            &["out"],
-            QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE,
-            "",
-            true,
-        )
-    });
+    let (kernel, inputs): (&MlxMetalKernel, Vec<&MlxArray>) = if let Some(residual) = residual {
+        let kernel = QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL.get_or_init(|| {
+            MlxMetalKernel::new(
+                "ax_qwen_dense_ffn_down_residual_v1",
+                &["x", "weight", "scales", "biases", "residual"],
+                &["out"],
+                QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL_SOURCE,
+                "",
+                true,
+            )
+        });
+        (kernel, vec![x, &down.weight, scales, biases, residual])
+    } else {
+        let kernel = QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL.get_or_init(|| {
+            MlxMetalKernel::new(
+                "ax_qwen_dense_ffn_down_matvec_simd_v1d",
+                &["x", "weight", "scales", "biases"],
+                &["out"],
+                QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE,
+                "",
+                true,
+            )
+        });
+        (kernel, vec![x, &down.weight, scales, biases])
+    };
     let mut outputs = kernel
         .try_apply_with_template(
-            &[x, &down.weight, scales, biases],
+            &inputs,
             &[KernelOutputSpec {
                 shape: out_shape,
                 dtype: x.dtype(),
@@ -2224,6 +2300,37 @@ pub(crate) fn ffn_swiglu(
         layer_idx,
         ProjectionBatchPolicy::Shared,
     )
+}
+
+/// Decode FFN plus residual: `residual + swiglu_ffn(x)`.
+///
+/// On the Qwen metal down path this is one kernel write instead of
+/// `down` then `add`. Other routes fall back to `add(residual, ffn_swiglu(...))`.
+pub(crate) fn ffn_swiglu_plus_residual(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    post_norm: Option<&MlxArray>,
+    layer_idx: usize,
+    residual: &MlxArray,
+) -> MlxArray {
+    let seq = x.shape().get(1).copied().unwrap_or(1);
+    if seq == 1
+        && let (Some(gate), Some(up), Some(down)) = (
+            w.gate_proj.as_ref(),
+            w.up_proj.as_ref(),
+            w.down_proj.as_ref(),
+        )
+        && let Some(ffn_hidden) = qwen_dense_ffn_gate_up_swiglu_metal(cfg, x, gate, up)
+        && let Some(fused) =
+            qwen_dense_ffn_down_matvec_metal_impl(&ffn_hidden, down, Some(residual))
+    {
+        return match post_norm {
+            Some(norm_w) => rms_norm(&fused, Some(norm_w), cfg.rms_norm_eps, None),
+            None => fused,
+        };
+    }
+    add(residual, &ffn_swiglu(cfg, w, x, post_norm, layer_idx), None)
 }
 
 pub(crate) fn ffn_swiglu_batched(
@@ -2731,7 +2838,7 @@ fn ffn_swiglu_with_policy(
             // full FFN stays on the custom 4-bit matvec kernels (gate/up/down).
             // Measured ~111.3 pure tok/s on M5 Max Qwen3.5-9B vs ~110.7 when
             // post-norm fusion shadowed the custom down path.
-            if let Some(down_out) = qwen_dense_ffn_down_matvec_metal_impl(&ffn_hidden, down) {
+            if let Some(down_out) = qwen_dense_ffn_down_matvec_metal_impl(&ffn_hidden, down, None) {
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
@@ -5328,7 +5435,7 @@ pub(crate) fn switch_gather_inputs(
 mod tests {
     use super::*;
     use mlx_sys::{
-        MlxQuantizationMode, concatenate, eval, quantize, quantized_matmul, slice_last_dim,
+        MlxQuantizationMode, add, concatenate, eval, quantize, quantized_matmul, slice_last_dim,
     };
 
     #[test]
@@ -5725,7 +5832,7 @@ mod tests {
             linear_bias: None,
         };
 
-        let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down)
+        let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
             .expect("4-bit affine down matvec should be eligible");
         let reference =
             quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(32), Some(4), None);
@@ -5734,6 +5841,43 @@ mod tests {
 
         assert_eq!(metal.shape(), vec![1, 1, 16]);
         assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
+    }
+
+    #[test]
+    fn qwen_dense_ffn_down_residual_metal_matches_add() {
+        let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.015625).collect();
+        let weight_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 400.0) * 0.00125).collect();
+        let residual_data: Vec<f32> = (0..16).map(|i| (i as f32) * 0.25 - 2.0).collect();
+        let x = array_f32(&x_data, &[1, 1, 64]);
+        let residual = array_f32(&residual_data, &[1, 1, 16]);
+        let weight = array_f32(&weight_data, &[16, 64]);
+        let q = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down = QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+        };
+
+        let fused = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, Some(&residual))
+            .expect("residual down matvec should be eligible");
+        let split = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
+            .expect("plain down matvec should be eligible");
+        let reference = add(&residual, &split, None);
+        mlx_sys::transforms::try_eval(&[&fused, &reference])
+            .expect("residual down Metal kernel must compile and evaluate");
+        assert_eq!(fused.shape(), vec![1, 1, 16]);
+        assert_close(fused.data_f32(), reference.data_f32(), 1.0e-4);
     }
 
     #[test]
