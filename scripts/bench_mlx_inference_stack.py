@@ -109,6 +109,9 @@ QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV = (
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
 )
 QWEN_LINEAR_MTP_EXACT_ENV = "AX_MLX_QWEN_LINEAR_MTP_EXACT"
+QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE_ENV = (
+    "AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE"
+)
 
 
 def default_on_env_enabled(name: str, *, explicit_enable: bool = False) -> bool:
@@ -2698,6 +2701,10 @@ def start_axengine(
         env[QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENV] = "1"
     if qwen_linear_mtp_exact:
         env[QWEN_LINEAR_MTP_EXACT_ENV] = "1"
+        # Formal Qwen linear MTP rows must opt into the certified route.
+        # Exact arithmetic alone is not an acceleration claim, but without
+        # this flag the runner silently falls back to direct decode.
+        env[QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE_ENV] = "1"
     if direct_linear_attention_inputs_route:
         env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"] = "1"
     if direct_linear_attention_post_input_route:
@@ -2719,6 +2726,10 @@ def start_axengine(
         print("  [ax-engine] MTP n-gram stacking disabled", file=sys.stderr)
     if qwen_linear_mtp_exact:
         print(f"  [ax-engine] {QWEN_LINEAR_MTP_EXACT_ENV}=1", file=sys.stderr)
+        print(
+            f"  [ax-engine] {QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE_ENV}=1",
+            file=sys.stderr,
+        )
     if mtp_approximate_optimistic:
         print(
             "  [ax-engine] AX_MLX_MTP_OPTIMISTIC=1 (approximate speed ceiling)",

@@ -1089,6 +1089,8 @@ def ax_env(args: argparse.Namespace) -> dict[str, str]:
     """
     env = os.environ.copy()
     env["AX_MLX_MTP_OPTIMISTIC"] = "1" if args.ax_mtp_optimistic else "0"
+    env["AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE"] = "1"
+    env["AX_MLX_QWEN_LINEAR_MTP_EXACT"] = "1"
     return env
 
 

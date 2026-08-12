@@ -425,7 +425,12 @@ pub fn chunked_prefill_with_sampling_buffers(
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
 
-    let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
+    let cache_only_prefix_len =
+        if crate::fastpath::skip_cache_only_split_for_family(&cfg.model_family, total) {
+            0
+        } else {
+            mlx_lm_style_cache_only_prefix_len(total, sampling)
+        };
     if cache_only_prefix_len > 0 {
         let mut offset = 0;
         while offset < cache_only_prefix_len {
@@ -960,7 +965,12 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
     // placeholder hidden (zero-shaped).  MTP warmup skips None returns;
     // this case is rare for MTP-benchmark runs (all tokens processed as a
     // single mlx-lm-style batch).
-    let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
+    let cache_only_prefix_len =
+        if crate::fastpath::skip_cache_only_split_for_family(&cfg.model_family, total) {
+            0
+        } else {
+            mlx_lm_style_cache_only_prefix_len(total, sampling)
+        };
     if cache_only_prefix_len > 0 {
         let mut offset = 0;
         while offset < cache_only_prefix_len {
@@ -1107,7 +1117,12 @@ pub fn chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
-    let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
+    let cache_only_prefix_len =
+        if crate::fastpath::skip_cache_only_split_for_family(&cfg.model_family, total) {
+            0
+        } else {
+            mlx_lm_style_cache_only_prefix_len(total, sampling)
+        };
     if cache_only_prefix_len > 0 {
         let mut offset = 0;
         while offset < cache_only_prefix_len {

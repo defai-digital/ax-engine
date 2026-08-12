@@ -4607,6 +4607,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_QWEN_LINEAR_MTP_EXACT"], "1")
+        self.assertEqual(env["AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE"], "1")
 
     def test_axengine_command_can_enable_gemma4_assistant_mtp(self) -> None:
         with (

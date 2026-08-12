@@ -1569,9 +1569,13 @@ impl MlxRunner {
                 .map(|_| 1),
             qwen_linear_attention: cfg.linear_attention.is_some(),
             qwen_linear_exact_enabled: qwen_linear_mtp_exact_enabled,
-            // ADR-020: product default stays direct-fallback for Qwen linear
-            // until Tier 2 promotion; formal harness opts in explicitly.
-            qwen_linear_certification_candidate: qwen_linear_mtp_certification_candidate_from_env(),
+            // Exact-eligible linear Qwen takes the certified MTP route when
+            // speculation is on. `--ax-direct` / disable-ngram stays
+            // fail-closed. Env opt-in still wins for formal harnesses.
+            qwen_linear_certification_candidate: resolve_qwen_linear_certification_candidate(
+                qwen_linear_mtp_certification_candidate_from_env(),
+                qwen_linear_mtp_exact_enabled,
+            ),
             // DeepSeek V4 nextn: same fail-closed product default until Tier 2.
             deepseek_v4_certification_candidate: deepseek_v4_mtp_certification_candidate_from_env(),
         });
@@ -3568,8 +3572,17 @@ impl ExecutionRunner for MlxRunner {
         // (cancelled while waiting/blocked, or cancelled by the engine after a
         // step reinserted state). Without this the per-request KV cache, MTP,
         // and n-gram state stay resident for the life of the process.
-        self.states.lock().remove(&request_id);
+        // Drain a leftover double-buffer token so its lazy Metal graph is not
+        // left in the process residency set for the next request's prefill.
+        let pending = self
+            .states
+            .lock()
+            .remove(&request_id)
+            .and_then(|mut state| state.pending_direct.take());
         self.batched_session.lock().remove(request_id.0);
+        if let Some(pending) = pending {
+            eval(&[&pending]);
+        }
     }
 
     fn embed(
@@ -5227,6 +5240,11 @@ impl MlxRunner {
                     };
                     let mut effective_prefill_token_count = prefill_tokens.len();
                     let repetition_history = state.repetition_history(prefill_tokens, sampling);
+                    if crate::fastpath::should_clear_mlx_cache_before_cold_prefill(
+                        state.cache.seq_len(),
+                    ) {
+                        clear_cache();
+                    }
                     let prefill_forward_started = Instant::now();
                     // When the runner-probe over-claimed enough to wipe
                     // out `prefill_tokens`, every input position is
@@ -5252,9 +5270,10 @@ impl MlxRunner {
                     // Long remaining prompts clamp to the pure-thr chunk (512);
                     // short prompts keep the session base (e.g. 1536 for S0 TTFT).
                     let prefill_chunk_for_request =
-                        crate::fastpath::scale_prefill_chunk_for_remaining(
+                        crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
                             base_prefill_chunk,
                             prefill_tokens.len(),
+                            &self.cfg.model_family,
                         );
                     state.decode_telemetry.record_prefill_chunk_selection(
                         prefill_chunk_for_request,
@@ -5321,9 +5340,10 @@ impl MlxRunner {
                                     self.prefill_chunk,
                                 );
                             let recompute_chunk =
-                                crate::fastpath::scale_prefill_chunk_for_remaining(
+                                crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
                                     base_recompute_chunk,
                                     token_ids.len(),
+                                    &self.cfg.model_family,
                                 );
                             state.decode_telemetry.record_prefill_chunk_selection(
                                 recompute_chunk,
@@ -5333,7 +5353,10 @@ impl MlxRunner {
                                 ),
                             );
                             let recompute_history = state.repetition_history(token_ids, sampling);
-                            let tok = if self.weights.mtp.is_some() {
+                            let tok = if should_capture_qwen_mtp_prefill_history(
+                                self.mtp_requested,
+                                self.weights.mtp.is_some(),
+                            ) {
                                 let (tok, hidden, history_tokens) =
                                     chunked_prefill_with_mtp_history_and_sampling_buffers(
                                         &self.cfg,
@@ -5404,7 +5427,10 @@ impl MlxRunner {
                             .decode_telemetry
                             .record_prefill_cache_only_continuation();
                         None
-                    } else if self.weights.mtp.is_some() {
+                    } else if should_capture_qwen_mtp_prefill_history(
+                        self.mtp_requested,
+                        self.weights.mtp.is_some(),
+                    ) {
                         let (tok, hidden, history_tokens) =
                             chunked_prefill_with_mtp_history_and_sampling_buffers(
                                 &self.cfg,

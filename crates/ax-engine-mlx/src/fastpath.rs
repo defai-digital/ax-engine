@@ -1902,6 +1902,17 @@ pub fn long_prompt_prefill_chunk() -> usize {
     })
 }
 
+/// Whether the Gemma-12B 512-token long-prompt clamp applies to this family.
+///
+/// The clamp is Gemma-12B M5 evidence (2026-07-24). Applying it to
+/// `qwen3_5` (Qwen 3.5/3.6 linear 27B) splits a 2048-token prefill into
+/// four evals and is the p2048 cell that misses mlx_lm. Decode on this
+/// family is not SWA-ring-bound, so the Gemma decode penalty does not
+/// apply. Other families keep the historical clamp.
+pub fn long_prompt_prefill_clamp_applies(model_family: &str) -> bool {
+    !model_family.eq_ignore_ascii_case("qwen3_5")
+}
+
 /// Scale a base prefill chunk for the remaining prompt length.
 ///
 /// Long remaining prompts clamp to [`long_prompt_prefill_chunk`] so formal S1
@@ -1909,8 +1920,34 @@ pub fn long_prompt_prefill_chunk() -> usize {
 /// Short prompts keep `base_chunk` (S0 34-token prompts are a single chunk
 /// either way, so TTFT is dominated by warmup/host, not chunk size).
 pub fn scale_prefill_chunk_for_remaining(base_chunk: usize, remaining_tokens: usize) -> usize {
+    scale_prefill_chunk_for_remaining_in_family(base_chunk, remaining_tokens, "")
+}
+
+/// Drop MLX's graph/buffer cache before a cold prefill so the previous
+/// request's decode residency does not inflate `eval_kv_refs` wall.
+pub fn should_clear_mlx_cache_before_cold_prefill(seq_len: usize) -> bool {
+    seq_len == 0
+}
+
+/// Qwen 3.5/3.6 (`qwen3_5`) contract shapes should use one prefill forward.
+///
+/// The n−1 cache-only split is the mlx_lm-shaped high-water path, but
+/// mlxcel-bench-decode does a single 128/512/2048 forward and is ~2×
+/// faster at p128 on M5 Max. Skip the split for this family up to 2048.
+pub fn skip_cache_only_split_for_family(model_family: &str, total_tokens: usize) -> bool {
+    model_family.eq_ignore_ascii_case("qwen3_5") && (1..=2048).contains(&total_tokens)
+}
+
+/// Family-aware variant of [`scale_prefill_chunk_for_remaining`].
+pub fn scale_prefill_chunk_for_remaining_in_family(
+    base_chunk: usize,
+    remaining_tokens: usize,
+    model_family: &str,
+) -> usize {
     let base = base_chunk.max(1);
-    if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD {
+    if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD
+        && long_prompt_prefill_clamp_applies(model_family)
+    {
         base.clamp(1, long_prompt_prefill_chunk())
     } else {
         base
@@ -3158,6 +3195,39 @@ mod tests {
         );
         assert_eq!(scale_prefill_chunk_for_remaining(256, 13_826), 256);
         assert_eq!(scale_prefill_chunk_for_remaining(0, 100), 1);
+    }
+
+    #[test]
+    fn long_prompt_prefill_clamp_skips_qwen3_5() {
+        assert!(!long_prompt_prefill_clamp_applies("qwen3_5"));
+        assert!(!long_prompt_prefill_clamp_applies("QWEN3_5"));
+        assert!(long_prompt_prefill_clamp_applies("gemma4"));
+        assert!(long_prompt_prefill_clamp_applies("qwen3_next"));
+        assert_eq!(
+            scale_prefill_chunk_for_remaining_in_family(2048, 2048, "qwen3_5"),
+            2048
+        );
+        assert_eq!(
+            scale_prefill_chunk_for_remaining_in_family(2048, 2048, "gemma4"),
+            long_prompt_prefill_chunk()
+        );
+    }
+
+    #[test]
+    fn cold_prefill_clears_mlx_cache_only_on_empty_kv() {
+        assert!(should_clear_mlx_cache_before_cold_prefill(0));
+        assert!(!should_clear_mlx_cache_before_cold_prefill(1));
+        assert!(!should_clear_mlx_cache_before_cold_prefill(2048));
+    }
+
+    #[test]
+    fn qwen3_5_skips_cache_only_split_on_contract_shapes() {
+        assert!(skip_cache_only_split_for_family("qwen3_5", 128));
+        assert!(skip_cache_only_split_for_family("qwen3_5", 512));
+        assert!(skip_cache_only_split_for_family("qwen3_5", 2048));
+        assert!(!skip_cache_only_split_for_family("qwen3_5", 2049));
+        assert!(!skip_cache_only_split_for_family("qwen3_5", 0));
+        assert!(!skip_cache_only_split_for_family("gemma4", 128));
     }
 
     #[test]
