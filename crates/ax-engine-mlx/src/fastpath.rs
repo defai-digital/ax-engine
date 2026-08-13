@@ -280,6 +280,36 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD` — under formal multi-token
+    /// verify (`SEQUENTIAL_ORACLE=0`), force the pure-direct sequential oracle
+    /// when the pending draft continues an established repetition cycle at the
+    /// committed history tail. Cycle-continuation false accepts were the
+    /// dominant formal Tier 2 divergence mode (teacher-forced multi-token
+    /// matching a loop draft while sequential greedy would break the cycle).
+    ///
+    /// **Default: ON** (exactness-preserving: only routes *more* steps to the
+    /// sequential oracle, never fewer). Kill-switch via
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD=0` for ablations.
+    gemma4_assistant_mtp_cycle_guard_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD"
+);
+
+env_flag!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT` — experimental:
+    /// under formal multi-token verify (`SEQUENTIAL_ORACLE=0`), force the
+    /// pure-direct sequential path for the first N generated tokens (see
+    /// `GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS`).
+    ///
+    /// **Default: OFF.** On formal A/B this desynchronizes MTP-on from the
+    /// MTP-off multi-token-compatible baseline (shared bounded ring /
+    /// `forward_all_positions` singleton) and regressed agent-coding exactness
+    /// in M5 retests. Kept as an opt-in probe only; residual general-long
+    /// identity must be fixed on the multi-token path itself.
+    gemma4_assistant_mtp_early_gen_pure_direct_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DECODE_MTP_TARGET_PROB_WORKSPACE` — reuse request-local CPU
     /// buffers while building/extracting MTP target probabilities.
     ///
@@ -2947,6 +2977,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_COMPILE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn gemma4_assistant_mtp_cycle_guard_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD_ENABLED",
             "1"
         ));
     }
