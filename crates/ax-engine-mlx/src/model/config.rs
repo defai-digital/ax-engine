@@ -655,11 +655,7 @@ impl ModelConfig {
         // SwiGLU / non-Gemma RoPE geometry.
         let is_gemma4 = matches!(
             m.model_family.as_str(),
-            "gemma4"
-                | "gemma4_vl"
-                | "gemma4_unified"
-                | "gemma4_assistant"
-                | "diffusion_gemma"
+            "gemma4" | "gemma4_vl" | "gemma4_unified" | "gemma4_assistant" | "diffusion_gemma"
         );
         let uses_geglu = matches!(
             m.model_family.as_str(),
@@ -941,11 +937,7 @@ pub(super) fn build_layer_configs(
     // gemma4-specific RoPE on the whole family, not just the dense target.
     let is_gemma4_family = matches!(
         m.model_family.as_str(),
-        "gemma4"
-            | "gemma4_vl"
-            | "gemma4_unified"
-            | "gemma4_assistant"
-            | "diffusion_gemma"
+        "gemma4" | "gemma4_vl" | "gemma4_unified" | "gemma4_assistant" | "diffusion_gemma"
     );
     let full_head_dim = m.global_head_dim.unwrap_or(m.attention_head_dim) as usize;
     let full_rope_dims = m

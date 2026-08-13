@@ -570,7 +570,8 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
             | "qwen3_5_text"
             | "qwen3_vl_moe"
             | "qwen3-vl-moe"
-    ) || (is_qwen3_5_family(model_type) && config_has_moe_experts(config, model_type));
+    ) || (is_qwen3_5_family(model_type)
+        && config_has_moe_experts(config, model_type));
     let is_qwen3_next_moe = matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6");
     let is_glm_moe = is_glm4_moe_lite(model_type);
     let is_mixtral = model_type == "mixtral";

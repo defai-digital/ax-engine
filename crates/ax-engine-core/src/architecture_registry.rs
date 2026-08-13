@@ -532,8 +532,6 @@ mod tests {
         // (`converts_gemma4_unified_text_without_tower_tensors`).
     }
 
-
-
     #[test]
     fn structural_caps_accept_qwen3_next_linear_and_hybrid_moe() {
         // Gated-delta linear attention is now handled by the batched linear path

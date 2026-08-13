@@ -489,11 +489,7 @@ pub(crate) fn build_omni_prefill_embeddings(
         let grid_h = image.height as usize / image.patch_size as usize;
         let grid_w = image.width as usize / image.patch_size as usize;
         // DI-W2-F1a: guard buffer length vs claimed NCHW geometry before MLX view.
-        validate_omni_pixel_buffer_len(
-            image.pixel_values.len(),
-            image.height,
-            image.width,
-        )?;
+        validate_omni_pixel_buffer_len(image.pixel_values.len(), image.height, image.width)?;
         let pixels = MlxArray::from_raw_data(
             image.pixel_values.as_ptr().cast(),
             std::mem::size_of_val(image.pixel_values.as_slice()),

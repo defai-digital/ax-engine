@@ -546,11 +546,7 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 || artifact_family.as_deref().is_some_and(|f| {
                     matches!(
                         f,
-                        "qwen3_vl"
-                            | "qwen3_vl_moe"
-                            | "qwen3_5"
-                            | "qwen3_5_moe"
-                            | "qwen3_next"
+                        "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5" | "qwen3_5_moe" | "qwen3_next"
                     )
                 })
             {

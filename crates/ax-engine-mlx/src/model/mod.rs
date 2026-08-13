@@ -2755,8 +2755,7 @@ pub fn forward_for_embedding(
     // DI-W2-002: EmbeddingGemma must use the bidirectional Gemma3 sandwich
     // path (same as batch-of-one), not the causal dense embed body.
     if cfg.model_family == "embeddinggemma" {
-        let (out, _lens) =
-            forward_for_embedding_gemma3_batch(cfg, weights, &[token_ids.to_vec()]);
+        let (out, _lens) = forward_for_embedding_gemma3_batch(cfg, weights, &[token_ids.to_vec()]);
         return out;
     }
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
@@ -2863,9 +2862,7 @@ fn forward_for_embedding_body(
 /// Returns a stable error string when the dense closure is forbidden.
 pub fn dense_embed_closure_forbidden_reason(model_family: &str) -> Option<&'static str> {
     if model_family == "embeddinggemma" {
-        Some(
-            "embeddinggemma must use gemma3 bidirectional embed path, not dense embed closure",
-        )
+        Some("embeddinggemma must use gemma3 bidirectional embed path, not dense embed closure")
     } else {
         None
     }

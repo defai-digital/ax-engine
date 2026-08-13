@@ -944,8 +944,7 @@ fn tensor_quantization(
     if matches!(
         family.family_name,
         "gemma4" | "gemma4_vl" | "gemma4_unified"
-    )
-        && tensor_name.ends_with(".router.proj.weight")
+    ) && tensor_name.ends_with(".router.proj.weight")
     {
         quantization.bits = 8;
     }

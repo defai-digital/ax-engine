@@ -184,10 +184,7 @@ pub fn select_decode_route(
     if has_media {
         Ok(if model_family == "qwen3_vl_moe" {
             "qwen3_vl_moe"
-        } else if matches!(
-            model_family,
-            "qwen3_5" | "qwen3.5" | "qwen3_5_moe"
-        ) {
+        } else if matches!(model_family, "qwen3_5" | "qwen3.5" | "qwen3_5_moe") {
             "qwen3_5"
         } else if matches!(model_family, "qwen3_next" | "qwen3.6" | "qwen3_6") {
             // Hybrid Qwen3.6 packs that load a vision tower still route media

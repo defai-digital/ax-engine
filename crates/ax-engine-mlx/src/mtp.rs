@@ -2650,8 +2650,8 @@ mod qwen_mtp_log_prob_temperature_tests {
 #[cfg(test)]
 mod deepseek_v4_think_gate_tests {
     use super::{
-        DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE, MtpDraftMode, deepseek_v4_mtp_effective_draft_temperature,
-        deepseek_v4_mtp_sample_and_log_temperature,
+        DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE, MtpDraftMode,
+        deepseek_v4_mtp_effective_draft_temperature, deepseek_v4_mtp_sample_and_log_temperature,
     };
 
     #[test]

@@ -545,11 +545,7 @@ pub(crate) fn build_vl_prefill_embeddings(
         let grid_h = image.height as usize / vision.config.patch_size;
         let grid_w = image.width as usize / vision.config.patch_size;
         // DI-W2-F1b: guard buffer length vs claimed NHWC geometry before MLX view.
-        validate_minicpm_pixel_buffer_len(
-            image.pixel_values.len(),
-            image.height,
-            image.width,
-        )?;
+        validate_minicpm_pixel_buffer_len(image.pixel_values.len(), image.height, image.width)?;
         let pixels = MlxArray::from_raw_data(
             image.pixel_values.as_ptr().cast(),
             std::mem::size_of_val(image.pixel_values.as_slice()),

@@ -320,7 +320,8 @@ pub fn set_stream_experts_override(enabled: bool) {
 
 /// Effective mode: CLI/SDK override, else `AX_STREAM_EXPERTS`, else Auto.
 pub fn stream_experts_mode() -> StreamExpertsMode {
-    if let Some(mode) = mode_from_u8(STREAM_EXPERTS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed))
+    if let Some(mode) =
+        mode_from_u8(STREAM_EXPERTS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed))
     {
         return mode;
     }
@@ -346,11 +347,7 @@ fn unified_memory_bytes_from_sysctl() -> Option<u64> {
     if !output.status.success() {
         return None;
     }
-    String::from_utf8(output.stdout)
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+    String::from_utf8(output.stdout).ok()?.trim().parse().ok()
 }
 
 pub fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
@@ -492,7 +489,11 @@ pub fn infer_layer_stack_manifest(
         let num_experts = spec.shape[0] as u32;
         expert_counts.insert(num_experts);
         let bits = spec.quantization.as_ref().map(|q| q.bits).unwrap_or(4);
-        let group_size = spec.quantization.as_ref().map(|q| q.group_size).unwrap_or(64);
+        let group_size = spec
+            .quantization
+            .as_ref()
+            .map(|q| q.group_size)
+            .unwrap_or(64);
         if bits == 0 || group_size == 0 {
             return Err(ExpertStreamError::InvalidManifest(format!(
                 "expert tensor {} has invalid bits/group_size",
@@ -987,7 +988,10 @@ mod tests {
         let studio_512 = 512 * 1024 * 1024 * 1024;
         assert!(!should_auto_stream(flash, Some(studio_192)));
         assert!(!should_auto_stream(flash, Some(studio_512)));
-        assert!(should_auto_stream(800 * 1024 * 1024 * 1024, Some(studio_512)));
+        assert!(should_auto_stream(
+            800 * 1024 * 1024 * 1024,
+            Some(studio_512)
+        ));
         assert!(!should_auto_stream(flash, None));
     }
 

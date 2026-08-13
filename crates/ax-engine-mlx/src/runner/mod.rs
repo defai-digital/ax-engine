@@ -2570,20 +2570,20 @@ impl MlxRunner {
                 row.state.generated_tokens.len(),
                 GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS,
             );
-            let mut cycle_history_buf =
-                [0u32; GEMMA_CYCLE_GUARD_MAX_PERIOD.saturating_mul(2).saturating_add(1)];
-            let cycle_history_len = if row.sampling.temperature <= 0.0
-                && !oracle_on
-                && cycle_guard_on
-            {
-                fill_gemma_cycle_history(
-                    &row.state.generated_tokens,
-                    row.last_token,
-                    &mut cycle_history_buf,
-                )
-            } else {
-                0
-            };
+            let mut cycle_history_buf = [0u32;
+                GEMMA_CYCLE_GUARD_MAX_PERIOD
+                    .saturating_mul(2)
+                    .saturating_add(1)];
+            let cycle_history_len =
+                if row.sampling.temperature <= 0.0 && !oracle_on && cycle_guard_on {
+                    fill_gemma_cycle_history(
+                        &row.state.generated_tokens,
+                        row.last_token,
+                        &mut cycle_history_buf,
+                    )
+                } else {
+                    0
+                };
             let cycle_hit = cycle_history_len > 0
                 && draft_continues_committed_cycle(
                     &cycle_history_buf[..cycle_history_len],
@@ -3948,8 +3948,7 @@ impl MlxRunner {
                 );
                 return (out, false);
             }
-            let (out, _lens) =
-                self.embedding_gemma_batch_compiled_forward(&[token_ids.to_vec()]);
+            let (out, _lens) = self.embedding_gemma_batch_compiled_forward(&[token_ids.to_vec()]);
             return (out, false);
         }
         if *EMBED_NO_COMPILE {
@@ -8268,10 +8267,12 @@ impl MlxRunner {
         // as draft sampling (think-aware stochastic T, greedy always 1.0),
         // not mode-only 0.7 while think drafts sampled at 1.0.
         let deepseek_draft_temperature = if self.weights.deepseek_v4_nextn.is_some() {
-            Some(crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
-                state.ngram_in_think,
-                sampling.temperature,
-            ))
+            Some(
+                crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
+                    state.ngram_in_think,
+                    sampling.temperature,
+                ),
+            )
         } else {
             None
         };
@@ -8992,8 +8993,7 @@ impl MlxRunner {
                 // cycle drafts while sequential greedy would break the loop).
                 let force_pure_direct =
                     crate::fastpath::gemma4_assistant_mtp_sequential_oracle_enabled();
-                let cycle_guard_on =
-                    crate::fastpath::gemma4_assistant_mtp_cycle_guard_enabled();
+                let cycle_guard_on = crate::fastpath::gemma4_assistant_mtp_cycle_guard_enabled();
                 let early_gen_on =
                     crate::fastpath::gemma4_assistant_mtp_early_gen_pure_direct_enabled();
                 let early_gen_force = gemma_assistant_draft
@@ -9002,18 +9002,20 @@ impl MlxRunner {
                         state.generated_tokens.len(),
                         GEMMA_MT_EARLY_GEN_PURE_DIRECT_TOKENS,
                     );
-                let mut cycle_history_buf =
-                    [0u32; GEMMA_CYCLE_GUARD_MAX_PERIOD.saturating_mul(2).saturating_add(1)];
-                let cycle_history_len = if gemma_assistant_draft && !force_pure_direct && cycle_guard_on
-                {
-                    fill_gemma_cycle_history(
-                        &state.generated_tokens,
-                        verify_input[0],
-                        &mut cycle_history_buf,
-                    )
-                } else {
-                    0
-                };
+                let mut cycle_history_buf = [0u32;
+                    GEMMA_CYCLE_GUARD_MAX_PERIOD
+                        .saturating_mul(2)
+                        .saturating_add(1)];
+                let cycle_history_len =
+                    if gemma_assistant_draft && !force_pure_direct && cycle_guard_on {
+                        fill_gemma_cycle_history(
+                            &state.generated_tokens,
+                            verify_input[0],
+                            &mut cycle_history_buf,
+                        )
+                    } else {
+                        0
+                    };
                 let cycle_hit = cycle_history_len > 0
                     && draft_continues_committed_cycle(
                         &cycle_history_buf[..cycle_history_len],
@@ -9856,10 +9858,12 @@ impl MlxRunner {
             // new draft generation below must advance past `</think>` /
             // `<think>` boundaries crossed by `result`.
             let deepseek_next_draft_temperature = if self.weights.deepseek_v4_nextn.is_some() {
-                Some(crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
-                    think_state_after_result,
-                    sampling.temperature,
-                ))
+                Some(
+                    crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
+                        think_state_after_result,
+                        sampling.temperature,
+                    ),
+                )
             } else {
                 None
             };
@@ -11591,7 +11595,8 @@ impl LazyTargetProbs {
                 workspace.target_probs.reserve(pending.len());
                 for (i, &needle) in pending.iter().enumerate() {
                     let row = &data[i * vocab..(i + 1) * vocab];
-                    let probability = filtered_target_token_probability(row, needle, *min_p, 1.0, 0);
+                    let probability =
+                        filtered_target_token_probability(row, needle, *min_p, 1.0, 0);
                     workspace.target_probs.push(probability);
                 }
                 Some(workspace.target_probs.as_slice())
@@ -11702,10 +11707,7 @@ fn filtered_target_token_probability(
         && min_p.is_finite()
         && min_p > 0.0
     {
-        let max_prob = candidates
-            .iter()
-            .map(|(_, p)| *p)
-            .fold(0.0f32, f32::max);
+        let max_prob = candidates.iter().map(|(_, p)| *p).fold(0.0f32, f32::max);
         let cutoff = min_p * max_prob;
         candidates.retain(|(_, p)| *p >= cutoff);
         if candidates.is_empty() {
