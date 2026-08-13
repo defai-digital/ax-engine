@@ -240,8 +240,19 @@ def snapshot_dir_name_matches(model: SmokeModel, name: str) -> bool:
     }
 
 
-def resolve_snapshot(model: SmokeModel, models_dir: Path | None) -> Path | None:
-    """Find a local snapshot for a matrix model without downloading."""
+def resolve_snapshot(
+    model: SmokeModel,
+    models_dir: Path | None,
+    *,
+    allow_hf_cache_fallback: bool = True,
+) -> Path | None:
+    """Find a local snapshot for a matrix model without downloading.
+
+    When ``models_dir`` is set and ``allow_hf_cache_fallback`` is False
+    (release-gate path with an explicit mount), resolution stays inside that
+    directory so ambient HF cache cannot silently satisfy ``--require-any``
+    (DI-W0-005).
+    """
     if models_dir is not None and models_dir.is_dir():
         # Accept models_dir itself when it is a single-model snapshot named
         # after the repo (config.json at top level), then scan children.
@@ -254,6 +265,12 @@ def resolve_snapshot(model: SmokeModel, models_dir: Path | None) -> Path | None:
             snapshot = latest_usable_snapshot(child)
             if snapshot is not None:
                 return snapshot
+        if not allow_hf_cache_fallback:
+            return None
+    elif models_dir is not None and not allow_hf_cache_fallback:
+        # Explicit models_dir was requested but missing/invalid: do not fall
+        # through to ambient cache for gate mode.
+        return None
     return latest_usable_snapshot(hf_repo_cache_dir(model.repo_id))
 
 
@@ -291,12 +308,18 @@ def download_snapshot(model: SmokeModel) -> Path:
 
 
 def ensure_binary(name: str, package: str, no_build: bool, release: bool) -> Path:
+    """Return the path to a built binary, rebuilding unless ``no_build``.
+
+    DI-W0-004: a pre-existing binary is not evidence it matches the current
+    tree. Always run an incremental ``cargo build`` unless the operator
+    explicitly opted out with ``--no-build``.
+    """
     profile = "release" if release else "debug"
     binary = REPO_ROOT / "target" / profile / name
-    if binary.is_file():
-        return binary
     if no_build:
-        raise SmokeFailure(f"binary does not exist and --no-build was given: {binary}")
+        if not binary.is_file():
+            raise SmokeFailure(f"binary does not exist and --no-build was given: {binary}")
+        return binary
     command = ["cargo", "build", "-p", package]
     if release:
         command.append("--release")
@@ -404,7 +427,13 @@ def run_model(
     bench_bin: Path,
     registry_tiers: Mapping[str, str],
 ) -> dict[str, str]:
-    snapshot = resolve_snapshot(model, args.models_dir)
+    # When an explicit models_dir is provided, never fall through to ambient HF
+    # cache (DI-W0-005). Download path still uses the cache after a successful
+    # download via download_snapshot → resolve_snapshot(..., None).
+    allow_hf = args.models_dir is None
+    snapshot = resolve_snapshot(
+        model, args.models_dir, allow_hf_cache_fallback=allow_hf
+    )
     if snapshot is None and args.download:
         snapshot = download_snapshot(model)
     if snapshot is None:

@@ -20,9 +20,12 @@ use std::sync::OnceLock;
 /// Draft sampling mode for MTP speculative decoding.
 ///
 /// `Greedy` uses argmax selection (current default, single GPU eval).
-/// `Stochastic` applies top-p/top-k filtering + temperature sampling per depth
-/// (requires per-depth GPU sync, but recovers acceptance when MTP head argmax
-/// disagrees with the target model).
+/// `Stochastic` applies temperature sampling per depth via
+/// `random_categorical(logits / T)` (no top-p/top-k truncation). Requires
+/// per-depth GPU sync, but recovers acceptance when MTP head argmax disagrees
+/// with the target model. Rejection-sampling exactness holds for any covering
+/// proposal distribution; the temperature lock between sample and log-prob is
+/// what matters for accept/reject.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MtpDraftMode {
     #[default]
@@ -971,6 +974,65 @@ fn greedy_draft_needs_temperature_log_probs(
     qwen_exact_profile: bool,
 ) -> bool {
     draft_temperature > 0.0 && !(qwen_exact_profile && min_confidence == 0.0)
+}
+
+/// Temperature at which Qwen MTP draft log-probs are recorded by
+/// [`mtp_draft_tokens_gated`] / hybrid forced-prefix tails.
+///
+/// Accept-path rejection sampling must use this same T for `q(token)` (see
+/// runner `mtp_pending_draft_log_prob_temperature`). Using the head's
+/// `draft_sampling.temperature` (often 0.7) while the greedy draft path wrote
+/// log-probs at T=1.0 breaks exactness — the common Qwen3.6 linear exact /
+/// confidence-gated path.
+///
+/// Mirrors the branch structure of [`mtp_draft_tokens_gated`]:
+/// - confidence gate force-greedy → log-probs at **1.0**
+/// - stochastic mode → head draft temperature (or 1.0 if unset)
+/// - greedy mode with temperature log-probs → head draft temperature
+/// - pure greedy (exact profile, gate 0) → **1.0** when log-probs exist
+pub fn qwen_mtp_draft_log_prob_temperature(
+    mode: MtpDraftMode,
+    draft_head_temperature: f32,
+    min_confidence: f32,
+    qwen_exact_profile: bool,
+) -> f32 {
+    let head_t = if draft_head_temperature > 0.0 {
+        draft_head_temperature
+    } else {
+        1.0
+    };
+    let gate_forces_greedy = min_confidence > 0.0 && mode != MtpDraftMode::Stochastic;
+    if gate_forces_greedy {
+        return 1.0;
+    }
+    match mode {
+        MtpDraftMode::Stochastic => head_t,
+        MtpDraftMode::Greedy => {
+            if greedy_draft_needs_temperature_log_probs(
+                draft_head_temperature,
+                min_confidence,
+                qwen_exact_profile,
+            ) {
+                head_t
+            } else {
+                1.0
+            }
+        }
+    }
+}
+
+/// Process-env draft mode + head T / gate / exact profile → recorded log-prob T.
+pub fn qwen_mtp_draft_log_prob_temperature_from_env(
+    draft_head_temperature: f32,
+    min_confidence: f32,
+    qwen_exact_profile: bool,
+) -> f32 {
+    qwen_mtp_draft_log_prob_temperature(
+        mtp_draft_mode_from_env(),
+        draft_head_temperature,
+        min_confidence,
+        qwen_exact_profile,
+    )
 }
 
 /// Like [`mtp_draft_tokens`] but with an explicit draft-confidence gate instead
@@ -2059,6 +2121,41 @@ pub fn deepseek_v4_mtp_effective_draft_temperature(in_think: bool, target_temper
     }
 }
 
+/// Temperature used for **both** DeepSeek V4 draft sampling and draft log-probs
+/// (and therefore accept-path rejection rescale).
+///
+/// - **Greedy** (default): always 1.0 — greedy drafts record log-probs at T=1.0
+///   regardless of think/target temperature.
+/// - **Stochastic**: think-aware sample temperature via
+///   [`deepseek_v4_mtp_effective_draft_temperature`].
+///
+/// DI-DS-MTP: accept rescale previously used mode-only 0.7 while stochastic
+/// think drafts sampled at 1.0, breaking rejection-sampling exactness.
+pub fn deepseek_v4_mtp_sample_and_log_temperature(
+    mode: MtpDraftMode,
+    in_think: bool,
+    target_temperature: f32,
+) -> f32 {
+    match mode {
+        MtpDraftMode::Greedy => 1.0,
+        MtpDraftMode::Stochastic => {
+            deepseek_v4_mtp_effective_draft_temperature(in_think, target_temperature)
+        }
+    }
+}
+
+/// Process-env draft mode + request think/target → sample/log temperature.
+pub fn deepseek_v4_mtp_sample_and_log_temperature_from_env(
+    in_think: bool,
+    target_temperature: f32,
+) -> f32 {
+    deepseek_v4_mtp_sample_and_log_temperature(
+        mtp_draft_mode_from_env(),
+        in_think,
+        target_temperature,
+    )
+}
+
 /// KV-cache slot count for the dedicated nextn cache: llama.cpp places the
 /// MTP block at `il = n_layer + nextn_layer_offset`, so the block appends its
 /// raw-path latent K at slot `layer_count` and the cache needs one slot past
@@ -2252,6 +2349,10 @@ pub fn deepseek_v4_mtp_draft_tokens(
     max_depth_cap: Option<usize>,
     rng: &mut Xorshift64,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    // Legacy convenience: process-env draft mode + no think context (T=0.7
+    // stochastic / T=1.0 greedy). Prefer the gated form with
+    // [`deepseek_v4_mtp_sample_and_log_temperature`] from the runner.
+    let draft_temperature = deepseek_v4_mtp_sample_and_log_temperature_from_env(false, 0.0);
     deepseek_v4_mtp_draft_tokens_gated(
         weights,
         cfg,
@@ -2264,7 +2365,7 @@ pub fn deepseek_v4_mtp_draft_tokens(
             crate::speculation_profile::speculation_profile_from_env(),
             None,
         ),
-        DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+        draft_temperature,
     )
 }
 
@@ -2272,6 +2373,9 @@ pub fn deepseek_v4_mtp_draft_tokens(
 /// through `forced_prefix` (real cache appends, correctly incrementing RoPE
 /// offsets) before drafting the tail. Mirrors
 /// [`glm_mtp_draft_tokens_after_forced_prefix`] for the hybrid n-gram+MTP path.
+///
+/// `draft_temperature` must match the temperature used for accept-path
+/// log-prob rescale (see [`deepseek_v4_mtp_sample_and_log_temperature`]).
 #[allow(clippy::too_many_arguments)]
 pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
     weights: &ModelWeights,
@@ -2285,6 +2389,7 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
     // Same gate the pure-MTP path resolved for this request. `None` falls
     // back to the process-global profile resolver (tests / legacy callers).
     min_confidence: Option<f32>,
+    draft_temperature: f32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(nextn) = weights.deepseek_v4_nextn.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
@@ -2305,7 +2410,7 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
             Some(max_tail_depth),
             rng,
             min_confidence,
-            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+            draft_temperature,
         );
     }
 
@@ -2357,7 +2462,7 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
             Some(max_tail_depth),
             rng,
             min_confidence,
-            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+            draft_temperature,
         );
 
     (
@@ -2500,8 +2605,54 @@ fn deepseek_v4_mtp_draft_tokens_greedy(
 }
 
 #[cfg(test)]
+mod qwen_mtp_log_prob_temperature_tests {
+    use super::{
+        MtpDraftMode, greedy_draft_needs_temperature_log_probs, qwen_mtp_draft_log_prob_temperature,
+    };
+
+    #[test]
+    fn exact_profile_zero_gate_records_t1_not_head_0_7() {
+        // Qwen3.6 linear exact production path: greedy drafts, no confidence
+        // gate → pure greedy log-probs at T=1.0. Accept must not use head 0.7.
+        assert!(!greedy_draft_needs_temperature_log_probs(0.7, 0.0, true));
+        assert_eq!(
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0, true),
+            1.0
+        );
+    }
+
+    #[test]
+    fn confidence_gate_force_greedy_records_t1() {
+        assert_eq!(
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.5, false),
+            1.0
+        );
+    }
+
+    #[test]
+    fn stochastic_records_head_temperature() {
+        assert_eq!(
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Stochastic, 0.7, 0.0, true),
+            0.7
+        );
+    }
+
+    #[test]
+    fn non_exact_greedy_with_head_t_uses_temperature_log_probs() {
+        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.0, false));
+        assert_eq!(
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0, false),
+            0.7
+        );
+    }
+}
+
+#[cfg(test)]
 mod deepseek_v4_think_gate_tests {
-    use super::{DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE, deepseek_v4_mtp_effective_draft_temperature};
+    use super::{
+        DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE, MtpDraftMode, deepseek_v4_mtp_effective_draft_temperature,
+        deepseek_v4_mtp_sample_and_log_temperature,
+    };
 
     #[test]
     fn inside_think_matches_target_temperature() {
@@ -2521,6 +2672,40 @@ mod deepseek_v4_think_gate_tests {
         assert_eq!(
             deepseek_v4_mtp_effective_draft_temperature(true, 0.6),
             DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
+        );
+    }
+
+    /// Simulate a think-boundary step: pre-result was inside think, result
+    /// closed the block. Next-draft sample+log T must drop to the tuned
+    /// default; accept for the *current* pending batch keeps the stored T.
+    #[test]
+    fn sample_and_log_temperature_tracks_think_boundary() {
+        let target = 1.0;
+        let pre_result_in_think = true;
+        let post_result_in_think = false; // result contained </think>
+        let draft_t_before = deepseek_v4_mtp_sample_and_log_temperature(
+            MtpDraftMode::Stochastic,
+            pre_result_in_think,
+            target,
+        );
+        let draft_t_after = deepseek_v4_mtp_sample_and_log_temperature(
+            MtpDraftMode::Stochastic,
+            post_result_in_think,
+            target,
+        );
+        assert_eq!(draft_t_before, 1.0, "inside think: match target");
+        assert_eq!(
+            draft_t_after, DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE,
+            "after </think>: next draft must leave think temperature"
+        );
+        // Greedy is always 1.0 on either side of the boundary.
+        assert_eq!(
+            deepseek_v4_mtp_sample_and_log_temperature(
+                MtpDraftMode::Greedy,
+                post_result_in_think,
+                target
+            ),
+            1.0
         );
     }
 }
@@ -2882,6 +3067,36 @@ mod deepseek_v4_mtp_tests {
         assert_eq!(
             deepseek_v4_mtp_draft_log_prob_temperature_for_mode(mtp_draft_mode_from_env()),
             deepseek_v4_mtp_draft_log_prob_temperature()
+        );
+    }
+
+    /// DI-DS-MTP: draft sampling T and accept log-prob T must stay locked.
+    #[test]
+    fn sample_and_log_temperature_matches_draft_and_accept() {
+        // Greedy always 1.0 even when think would raise effective sample T.
+        assert_eq!(
+            deepseek_v4_mtp_sample_and_log_temperature(MtpDraftMode::Greedy, true, 1.0),
+            1.0
+        );
+        assert_eq!(
+            deepseek_v4_mtp_sample_and_log_temperature(MtpDraftMode::Greedy, false, 0.7),
+            1.0
+        );
+        // Stochastic outside think: tuned 0.7 for both sample and log.
+        assert_eq!(
+            deepseek_v4_mtp_sample_and_log_temperature(MtpDraftMode::Stochastic, false, 1.0),
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
+        );
+        // Stochastic inside think at T>=1: sample and log both 1.0 (not 0.7).
+        assert_eq!(
+            deepseek_v4_mtp_sample_and_log_temperature(MtpDraftMode::Stochastic, true, 1.0),
+            1.0,
+            "think-mode stochastic must not accept-rescale as if drafts were at 0.7"
+        );
+        // Stochastic think with cooler target keeps tuned default.
+        assert_eq!(
+            deepseek_v4_mtp_sample_and_log_temperature(MtpDraftMode::Stochastic, true, 0.6),
+            DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE
         );
     }
 

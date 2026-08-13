@@ -257,6 +257,7 @@ mod tests {
             "nemotron_h",
             "nemotron_embed",
             "unlimited_ocr",
+            "whisper",
         ] {
             assert_eq!(
                 support_tier_for_family(label),

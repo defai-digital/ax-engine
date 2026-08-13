@@ -648,16 +648,24 @@ impl ModelConfig {
         };
         let rope_theta = m.rope_theta.map(|t| t as f32).unwrap_or(10000.0);
         let layer_configs = build_layer_configs(m, head_dim, rope_theta, rope_dims);
-        // gemma4_vl is a separate family label for vision capability gating;
-        // the language tower is standard Gemma 4 (GeGLU, query_scale=1.0).
+        // gemma4_vl / gemma4_unified are separate family labels for vision
+        // capability gating; the language tower is still standard Gemma 4
+        // (GeGLU, query_scale=1.0). DI-W1-001: include gemma4_unified so
+        // convert-emitted unified packages do not fall through to generic
+        // SwiGLU / non-Gemma RoPE geometry.
         let is_gemma4 = matches!(
             m.model_family.as_str(),
-            "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma"
+            "gemma4"
+                | "gemma4_vl"
+                | "gemma4_unified"
+                | "gemma4_assistant"
+                | "diffusion_gemma"
         );
         let uses_geglu = matches!(
             m.model_family.as_str(),
             "gemma4"
                 | "gemma4_vl"
+                | "gemma4_unified"
                 | "gemma4_assistant"
                 | "diffusion_gemma"
                 | "gemma3"
@@ -850,6 +858,16 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
     // generation by vocab width. qwen3_next is reserved for future variants.
     // qwen3_5 linear-attention models also emit <think> when reasoning mode
     // is enabled.
+    //
+    // DeepSeek uses the same `<think>`/`</think>` content strings, but the
+    // special-token ids differ across tokenizer generations (verified against
+    // official `tokenizer.json` added_tokens):
+    //   - deepseek_v3 / deepseek_v32 / R1: 128798 / 128799
+    //   - deepseek_v4 (Flash + Pro):         128821 / 128822
+    // Without family defaults, manifests converted without a present
+    // tokenizer.json leave think IDs unset, so `ngram_in_think` never
+    // transitions and DeepSeek V4 think-aware MTP draft temperature is inert
+    // (DI-DS-A001).
     let family_defaults = match m.model_family.as_str() {
         "qwen3" | "qwen3_5" | "qwen3_next" | "minicpmv4_6" => {
             if m.vocab_size >= 200_000 {
@@ -858,6 +876,8 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
                 (Some(151_668), Some(151_669))
             }
         }
+        "deepseek_v4" => (Some(128_821), Some(128_822)),
+        "deepseek_v3" | "deepseek_v32" => (Some(128_798), Some(128_799)),
         _ => (None, None),
     };
     // Partial explicit fields (legacy / hand-edited manifests) must not leave
@@ -921,7 +941,11 @@ pub(super) fn build_layer_configs(
     // gemma4-specific RoPE on the whole family, not just the dense target.
     let is_gemma4_family = matches!(
         m.model_family.as_str(),
-        "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma"
+        "gemma4"
+            | "gemma4_vl"
+            | "gemma4_unified"
+            | "gemma4_assistant"
+            | "diffusion_gemma"
     );
     let full_head_dim = m.global_head_dim.unwrap_or(m.attention_head_dim) as usize;
     let full_rope_dims = m

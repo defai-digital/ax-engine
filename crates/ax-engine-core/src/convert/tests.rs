@@ -1225,7 +1225,8 @@ fn converts_gemma4_unified_text_without_tower_tensors() {
 
     let manifest = convert_hf_model_dir(&dir).expect("unified text conversion should succeed");
 
-    assert_eq!(manifest.model_family, "gemma4");
+    // DI-W0-002: unified packages must not inherit Certified `gemma4` tier.
+    assert_eq!(manifest.model_family, "gemma4_unified");
     assert_eq!(manifest.hidden_size, 3072);
     assert_eq!(manifest.rope_theta, Some(1000000));
     assert_eq!(manifest.rope_theta_swa, Some(10000));
@@ -2344,11 +2345,29 @@ fn converts_qwen3_next_linear_moe_shared_expert_model_directory() {
 }
 
 #[test]
-fn qwen3_vl_moe_produces_moe_config_from_nested_text_config() {
-    // VL MoE packs nest expert counts under text_config. generate-manifest
+fn qwen3_vl_moe_model_type_produces_moe_config() {
+    // DI-W2-001: tensor map treats qwen3_vl_moe as MoE; moe_config must too.
+    let config = serde_json::json!({
+        "model_type": "qwen3_vl_moe",
+        "num_experts": 64,
+        "num_experts_per_tok": 4,
+        "moe_intermediate_size": 128,
+        "hidden_size": 256,
+    });
+    let moe = moe_config(&config, "qwen3_vl_moe");
+    assert!(
+        moe.is_enabled(),
+        "qwen3_vl_moe must populate NativeMoeConfig"
+    );
+    assert_eq!(moe.expert_count, Some(64));
+    assert_eq!(moe.experts_per_token, Some(4));
+    let moe_hyphen = moe_config(&config, "qwen3-vl-moe");
+    assert!(moe_hyphen.is_enabled(), "qwen3-vl-moe alias must also MoE");
+
+    // Official VL-MoE packs nest expert counts under text_config. generate-manifest
     // must enable moe so validation accepts switch_mlp expert tensors.
     for alias in ["qwen3_vl_moe", "qwen3-vl-moe"] {
-        let config = serde_json::json!({
+        let nested = serde_json::json!({
             "model_type": alias,
             "text_config": {
                 "model_type": "qwen3_vl_moe_text",
@@ -2360,14 +2379,14 @@ fn qwen3_vl_moe_produces_moe_config_from_nested_text_config() {
             },
             "vision_config": {"hidden_size": 1152},
         });
-        let moe = moe_config(&config, alias);
+        let nested_moe = moe_config(&nested, alias);
         assert!(
-            moe.is_enabled(),
+            nested_moe.is_enabled(),
             "{alias} must enable MoE for nested text_config experts"
         );
-        assert_eq!(moe.expert_count, Some(128), "{alias}");
-        assert_eq!(moe.experts_per_token, Some(8), "{alias}");
-        assert_eq!(moe.expert_intermediate_size, Some(768), "{alias}");
+        assert_eq!(nested_moe.expert_count, Some(128), "{alias}");
+        assert_eq!(nested_moe.experts_per_token, Some(8), "{alias}");
+        assert_eq!(nested_moe.expert_intermediate_size, Some(768), "{alias}");
     }
 }
 
@@ -4877,9 +4896,51 @@ fn parse_think_token_ids_reads_added_tokens() {
         "partial think markers must leave both unset for family defaults"
     );
 
+    // DeepSeek V3/R1 and V4 use the same content strings with different ids
+    // (official tokenizer.json). Converter must record whatever the artifact
+    // ships so runtime family defaults only fill gaps.
+    let deepseek_v4 = unique_test_dir("think-token-ids-deepseek-v4");
+    fs::write(
+        deepseek_v4.join("tokenizer.json"),
+        serde_json::json!({
+            "added_tokens": [
+                {"id": 128821, "content": "<think>"},
+                {"id": 128822, "content": "</think>"},
+                {"id": 0, "content": "<｜begin▁of▁sentence｜>"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        super::parse_think_token_ids(&deepseek_v4),
+        (Some(128821), Some(128822)),
+        "DeepSeek V4 think markers must parse by content string"
+    );
+
+    let deepseek_v3 = unique_test_dir("think-token-ids-deepseek-v3");
+    fs::write(
+        deepseek_v3.join("tokenizer.json"),
+        serde_json::json!({
+            "added_tokens": [
+                {"id": 128798, "content": "<think>"},
+                {"id": 128799, "content": "</think>"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        super::parse_think_token_ids(&deepseek_v3),
+        (Some(128798), Some(128799)),
+        "DeepSeek V3/R1 think markers must parse by content string"
+    );
+
     let _ = fs::remove_dir_all(dir);
     let _ = fs::remove_dir_all(empty);
     let _ = fs::remove_dir_all(partial);
+    let _ = fs::remove_dir_all(deepseek_v4);
+    let _ = fs::remove_dir_all(deepseek_v3);
 }
 
 /// OptiQ / mlx-lm mixed-precision fixture: global 4-bit + named 8-bit overrides

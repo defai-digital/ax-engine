@@ -283,6 +283,18 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         cert_gate_note: "Unlimited-OCR multimodal: dual vision + SWA MoE language tower",
         support_tier: ModelSupportTier::Compatible,
     },
+    // Whisper uses a dedicated encoder-decoder ASR runtime (`ax-engine-mlx`
+    // whisper module + audio endpoints). It is still a convert-supported
+    // direct family and must appear here so support_tier / lookup stay honest
+    // (Wave 0 DI-W0: convert `family_name=whisper` was previously registry-orphan).
+    ArchitectureRegistration {
+        family_label: "whisper",
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "Whisper large-v3-turbo ASR: dedicated encoder-decoder; audio endpoints only",
+        support_tier: ModelSupportTier::Compatible,
+    },
 ];
 
 /// Look up a static registration by manifest `model_family` label.
@@ -445,8 +457,82 @@ mod tests {
             resolve_layer_forward_route("gpt_oss"),
             Some(LayerForwardRoute::GptOss)
         );
+        assert_eq!(
+            resolve_layer_forward_route("whisper"),
+            Some(LayerForwardRoute::Standard)
+        );
         assert_eq!(resolve_layer_forward_route("not_a_family"), None);
     }
+
+    /// Convert emits these `family_name` values; each must have a registry row
+    /// so support_tier and layer-forward lookup do not silently fall through.
+    #[test]
+    fn convert_family_names_are_registered() {
+        // Keep in lockstep with `convert/model_family.rs` `family_name:` arms.
+        const CONVERT_FAMILY_NAMES: &[&str] = &[
+            "deepseek_v3",
+            "deepseek_v4",
+            "diffusion_gemma",
+            "embeddinggemma",
+            "gemma4",
+            "gemma4_assistant",
+            "gemma4_unified",
+            "gemma4_vl",
+            "glm4_moe_lite",
+            "gpt_oss",
+            "llama3",
+            "llama4",
+            "minicpmv4_6",
+            "mistral3",
+            "mixtral",
+            "nemotron_embed",
+            "nemotron_h",
+            "qwen3",
+            "qwen3_5",
+            "qwen3_next",
+            "qwen3_vl",
+            "qwen3_vl_moe",
+            "unlimited_ocr",
+            "whisper",
+        ];
+        for label in CONVERT_FAMILY_NAMES {
+            assert!(
+                lookup_architecture(label).is_some(),
+                "convert family_name {label:?} missing from ARCHITECTURE_REGISTRY"
+            );
+        }
+    }
+
+    #[test]
+    fn architecture_registry_labels_are_unique() {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for entry in ARCHITECTURE_REGISTRY {
+            assert!(
+                seen.insert(entry.family_label),
+                "duplicate ARCHITECTURE_REGISTRY family_label {}",
+                entry.family_label
+            );
+        }
+    }
+
+    #[test]
+    fn gemma4_unified_model_type_emits_unified_family_not_certified_gemma4() {
+        // Validate tier honesty without depending on private convert modules:
+        // registry rows must disagree so convert's family_name choice matters.
+        assert_eq!(
+            crate::support_tier::support_tier_for_family("gemma4"),
+            crate::support_tier::ModelSupportTier::Certified
+        );
+        assert_eq!(
+            crate::support_tier::support_tier_for_family("gemma4_unified"),
+            crate::support_tier::ModelSupportTier::Compatible
+        );
+        // Convert contract is covered in convert/tests.rs
+        // (`converts_gemma4_unified_text_without_tower_tensors`).
+    }
+
+
 
     #[test]
     fn structural_caps_accept_qwen3_next_linear_and_hybrid_moe() {

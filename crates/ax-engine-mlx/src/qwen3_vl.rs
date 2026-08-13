@@ -128,16 +128,26 @@ pub fn deepstack_layers(num_feature_maps: usize, language_layers: u32) -> Vec<u3
 }
 
 pub fn is_qwen3_vl_family(model_family: &str) -> bool {
+    // Dense/MoE VL packs, plus hybrid text families that may carry a vision
+    // tower (Qwen3.5 / Qwen3.6 packs sharing the portable ViT path).
     matches!(
         model_family,
-        "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5" | "qwen3.5"
+        "qwen3_vl"
+            | "qwen3_vl_moe"
+            | "qwen3_5"
+            | "qwen3.5"
+            | "qwen3_5_moe"
+            | "qwen3_next"
+            | "qwen3.6"
+            | "qwen3_6"
     )
 }
 
 pub fn text_only_decode_family(model_family: &str) -> Option<&'static str> {
     match model_family {
         "qwen3_vl" | "qwen3_vl_moe" => Some("qwen3"),
-        "qwen3_5" | "qwen3.5" => Some("qwen3_5"),
+        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" => Some("qwen3_5"),
+        "qwen3_next" | "qwen3.6" | "qwen3_6" => Some("qwen3_next"),
         _ => None,
     }
 }
@@ -174,8 +184,15 @@ pub fn select_decode_route(
     if has_media {
         Ok(if model_family == "qwen3_vl_moe" {
             "qwen3_vl_moe"
-        } else if matches!(model_family, "qwen3_5" | "qwen3.5") {
+        } else if matches!(
+            model_family,
+            "qwen3_5" | "qwen3.5" | "qwen3_5_moe"
+        ) {
             "qwen3_5"
+        } else if matches!(model_family, "qwen3_next" | "qwen3.6" | "qwen3_6") {
+            // Hybrid Qwen3.6 packs that load a vision tower still route media
+            // through the VL prefill path; text-only decode stays qwen3_next.
+            "qwen3_vl"
         } else {
             "qwen3_vl"
         })
@@ -232,6 +249,13 @@ pub(crate) fn build_vl_prefill_embeddings(
     let mut visual_positions = Vec::new();
 
     for media in &inputs.images {
+        // DI-W2-F1c: MLX indexes by claimed shape; reject buffer/shape drift
+        // (mirror gemma4_vl pixel_values.len() == expected).
+        validate_qwen3_vl_patch_buffer_len(
+            media.patches.len(),
+            media.num_patches,
+            media.patch_dim,
+        )?;
         let patches = MlxArray::from_raw_data(
             media.patches.as_ptr().cast(),
             std::mem::size_of_val(media.patches.as_slice()),
@@ -541,7 +565,13 @@ pub fn load_qwen3_vl_vision_weights(
                     | "qwen3_vl_moe"
                     | "qwen3-vl-moe"
                     | "qwen3_5"
+                    | "qwen3.5"
                     | "qwen3_5_moe"
+                    // Qwen3.6 HF aliases (convert → qwen3_next) may still ship a
+                    // vision tower; silent skip left packs without vision weights.
+                    | "qwen3_next"
+                    | "qwen3.6"
+                    | "qwen3_6"
             )
         });
     if !is_qwen_visual_config {
@@ -1282,12 +1312,41 @@ fn u32_array(values: &[u32], shape: &[i32]) -> MlxArray {
     )
 }
 
+/// Reject patch buffers whose length does not match the claimed geometry
+/// (DI-W2-F1c / gemma4_vl defensive pattern).
+fn validate_qwen3_vl_patch_buffer_len(
+    buffer_len: usize,
+    num_patches: u32,
+    patch_dim: u32,
+) -> Result<(), Qwen3VlError> {
+    let expected_elems = (num_patches as usize)
+        .checked_mul(patch_dim as usize)
+        .ok_or_else(|| Qwen3VlError::InvalidGeometry("patch tensor size overflow".into()))?;
+    if buffer_len != expected_elems {
+        return Err(Qwen3VlError::InvalidGeometry(format!(
+            "patch buffer length {buffer_len} != num_patches {num_patches} * patch_dim {patch_dim}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ax_engine_core::qwen3_vl::Qwen3VlImageRuntimeInput;
     use mlx_sys::{eval, zeros};
     use serde_json::json;
+
+    #[test]
+    fn patch_buffer_length_mismatch_is_rejected() {
+        // 2 patches * 4 dims = 8 buffer elements
+        assert!(validate_qwen3_vl_patch_buffer_len(8, 2, 4).is_ok());
+        let err = validate_qwen3_vl_patch_buffer_len(3, 2, 4).unwrap_err();
+        assert!(
+            matches!(err, Qwen3VlError::InvalidGeometry(msg) if msg.contains("patch buffer length")),
+            "short patch buffer must fail closed before from_raw_data"
+        );
+    }
 
     #[test]
     fn qwen36_moe_model_type_enters_visual_loader() {
@@ -1319,6 +1378,60 @@ mod tests {
             matches!(result, Err(WeightLoadError::TensorMissing(_))),
             "a Qwen 3.6 config must enter, not bypass, the visual loader"
         );
+    }
+
+    #[test]
+    fn qwen36_and_next_aliases_enter_visual_loader() {
+        // DI-VL-A001: model_type qwen3.6 / qwen3_next / qwen3_6 must not silent-
+        // skip the vision tower when patch weights are present.
+        for model_type in ["qwen3.6", "qwen3_6", "qwen3_next"] {
+            let config = json!({
+                "model_type": model_type,
+                "text_config": {
+                    "rope_parameters": {"mrope_section": [1, 1, 1]}
+                },
+                "vision_config": {
+                    "depth": 1,
+                    "hidden_size": 2,
+                    "intermediate_size": 4,
+                    "out_hidden_size": 2,
+                    "num_heads": 1,
+                    "in_channels": 3,
+                    "patch_size": 2,
+                    "temporal_patch_size": 2,
+                    "spatial_merge_size": 1,
+                    "num_position_embeddings": 4,
+                    "deepstack_visual_indexes": []
+                }
+            });
+            let mut tensors = HashMap::from([(
+                "vision_tower.patch_embed.proj.weight".to_string(),
+                zeros(&[2, 3, 2, 2, 2], MlxDtype::Float32, None),
+            )]);
+            let result = load_qwen3_vl_vision_weights(&[], &mut tensors, Some(&config));
+            assert!(
+                matches!(result, Err(WeightLoadError::TensorMissing(_))),
+                "{model_type} must enter the visual loader, not return Ok(None)"
+            );
+        }
+    }
+
+    #[test]
+    fn select_decode_route_media_covers_qwen_next_aliases() {
+        assert_eq!(
+            select_decode_route("qwen3_next", true).expect("route"),
+            "qwen3_vl"
+        );
+        assert_eq!(
+            select_decode_route("qwen3_next", false).expect("route"),
+            "qwen3_next"
+        );
+        assert_eq!(
+            select_decode_route("qwen3_vl_moe", true).expect("route"),
+            "qwen3_vl_moe"
+        );
+        assert!(is_qwen3_vl_family("qwen3_next"));
+        assert!(is_qwen3_vl_family("qwen3.6"));
     }
 
     #[test]

@@ -559,6 +559,8 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         model_type == "diffusion_gemma" && config_has_moe_experts(config, model_type);
     // qwen3_vl_moe is a vision+language MoE; expert counts nest under text_config
     // (uses_text_config) and tensors map via QWEN3_MOE_EXTRA_TENSOR_MAP.
+    // DI-W2-001: moe_config must classify it as MoE so manifest.moe is populated
+    // and validate_native_model_manifest accepts those roles.
     let is_qwen3_moe = matches!(
         model_type,
         "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text" | "qwen3_vl_moe" | "qwen3-vl-moe"

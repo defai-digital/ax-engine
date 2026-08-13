@@ -450,6 +450,11 @@ struct RequestState {
     /// greedy-mode drafts after Phase 1).  N-gram hybrid positions: 0.0 (delta
     /// distribution, p_draft=1.0).  Empty for pure n-gram drafts (no MTP tail).
     mtp_pending_draft_log_probs: Vec<f32>,
+    /// Temperature used when recording `mtp_pending_draft_log_probs` (DeepSeek V4
+    /// think-aware draft T, Qwen/GLM draft_sampling T, or 1.0 for greedy). Accept
+    /// on the *next* step must reuse this value for rejection rescale — do not
+    /// recompute from a possibly-changed think state (DI-DS-MTP).
+    mtp_pending_draft_log_prob_temperature: Option<f32>,
     /// Sparse draft distributions aligned with `mtp_pending_draft`.
     /// Used to sample the exact residual correction after sampled-MTP rejection.
     mtp_pending_draft_distributions: Vec<TokenDistribution>,
@@ -613,6 +618,7 @@ impl RequestState {
             mtp_pending_draft: Vec::new(),
             mtp_pending_draft_lazy: None,
             mtp_pending_draft_log_probs: Vec::new(),
+            mtp_pending_draft_log_prob_temperature: None,
             mtp_pending_draft_distributions: Vec::new(),
             mtp_pending_draft_sources: Vec::new(),
             ngram_draft_policy: None,
@@ -1959,6 +1965,13 @@ fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) ->
     }
 }
 
+/// DI-W2-002: single-item EmbeddingGemma embed must use the bidirectional
+/// Gemma3 sandwich path (same as `embedding_batch_forward` batch-of-one), not
+/// the causal dense compiled body (`build_embedding_forward_closure`).
+pub(crate) fn embedding_single_item_uses_gemma3_path(model_family: &str) -> bool {
+    model_family == "embeddinggemma"
+}
+
 /// Build the sampling parameters for a request exactly as the per-item decode
 /// path does (see `run_item`), so the batched path classifies and samples each
 /// request identically to its single-sequence decode.
@@ -2744,6 +2757,7 @@ impl MlxRunner {
             if row.state.mtp_bypassed {
                 row.state.mtp_pending_draft.clear();
                 row.state.mtp_pending_draft_log_probs.clear();
+                row.state.mtp_pending_draft_log_prob_temperature = None;
                 row.state.mtp_pending_draft_distributions.clear();
                 row.state.mtp_pending_draft_sources.clear();
             } else {
@@ -2755,6 +2769,7 @@ impl MlxRunner {
                 );
                 row.state.mtp_pending_draft = draft;
                 row.state.mtp_pending_draft_log_probs = log_probs;
+                row.state.mtp_pending_draft_log_prob_temperature = Some(1.0);
                 row.state.mtp_pending_draft_distributions = distributions;
                 row.state.mtp_pending_draft_sources =
                     vec![MtpDraftSource::Gemma4Assistant; row.state.mtp_pending_draft.len()];
@@ -3918,6 +3933,25 @@ impl MlxRunner {
         // Fuse Dense head only for Last/Cls pooling (target_position.is_some());
         // mean pooling applies Dense head after pooling (outside the closure).
         let has_dense_head = self.weights.embedding_dense_0.is_some() && target_position.is_some();
+        // DI-W2-002: production single-item EmbeddingGemma must use the same
+        // bidirectional Gemma3 sandwich path as batch-of-one. The default
+        // compiled dense body (`build_embedding_forward_closure` →
+        // `forward_for_embedding_body`) is causal and wrong for this family.
+        if embedding_single_item_uses_gemma3_path(&self.cfg.model_family) {
+            if *EMBED_NO_COMPILE {
+                let target_positions = target_position.map(|p| vec![p]);
+                let (out, _lens) = crate::model::forward_for_embedding_batch(
+                    &self.cfg,
+                    &self.weights,
+                    &[token_ids.to_vec()],
+                    target_positions.as_deref(),
+                );
+                return (out, false);
+            }
+            let (out, _lens) =
+                self.embedding_gemma_batch_compiled_forward(&[token_ids.to_vec()]);
+            return (out, false);
+        }
         if *EMBED_NO_COMPILE {
             return (
                 crate::model::forward_for_embedding(
@@ -8171,6 +8205,7 @@ impl MlxRunner {
             let drafted = draft.len();
             state.mtp_pending_draft = draft;
             state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_log_prob_temperature = Some(1.0);
             state.mtp_pending_draft_distributions = distributions;
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; drafted];
             state
@@ -8212,6 +8247,7 @@ impl MlxRunner {
             let count = lazy.tokens.len();
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp; count];
             state.mtp_pending_draft_log_probs = Vec::new();
+            state.mtp_pending_draft_log_prob_temperature = None;
             state.mtp_pending_draft_distributions = Vec::new();
             if defer_qualified {
                 state.mtp_pending_draft = vec![0; count];
@@ -8227,9 +8263,18 @@ impl MlxRunner {
         let mut mtp_timings = MtpStepTimings::default();
         // Draft log-probs are computed at T=1.0 (greedy path) or the draft
         // head's sampling temperature (stochastic path). Resolve Qwen, GLM,
-        // then DeepSeek V4 nextn — nextn has no draft_sampling struct; use
-        // deepseek_v4_mtp_draft_log_prob_temperature() so greedy stays 1.0
-        // and only stochastic uses DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE (0.7).
+        // then DeepSeek V4 nextn — nextn has no draft_sampling struct.
+        // DI-DS-MTP: DeepSeek accept rescale must use the *same* temperature
+        // as draft sampling (think-aware stochastic T, greedy always 1.0),
+        // not mode-only 0.7 while think drafts sampled at 1.0.
+        let deepseek_draft_temperature = if self.weights.deepseek_v4_nextn.is_some() {
+            Some(crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
+                state.ngram_in_think,
+                sampling.temperature,
+            ))
+        } else {
+            None
+        };
         let draft_sampling_temperature = self
             .weights
             .mtp
@@ -8241,13 +8286,8 @@ impl MlxRunner {
                     .as_ref()
                     .map(|h| h.draft_sampling.temperature)
             })
-            .or_else(|| {
-                self.weights
-                    .deepseek_v4_nextn
-                    .as_ref()
-                    .map(|_| crate::mtp::deepseek_v4_mtp_draft_log_prob_temperature())
-            });
-        let draft_log_prob_temperature = draft_sampling_temperature
+            .or(deepseek_draft_temperature);
+        let draft_log_prob_temperature_for_new_drafts = draft_sampling_temperature
             .map(|t| if t > 0.0 { t } else { 1.0 })
             .unwrap_or_else(|| {
                 if sampling.temperature > 0.0 {
@@ -8256,6 +8296,10 @@ impl MlxRunner {
                     1.0
                 }
             });
+        // Accept pending drafts with the T they were *drafted* at (carried on state).
+        let draft_log_prob_temperature = state
+            .mtp_pending_draft_log_prob_temperature
+            .unwrap_or(draft_log_prob_temperature_for_new_drafts);
         let model_acceptance_mode = if sampling.temperature > 0.0 {
             MtpModelAcceptanceMode::RejectionSampling
         } else {
@@ -8328,6 +8372,20 @@ impl MlxRunner {
                 .saturating_add(elapsed_us(mtp_draft_started));
             state.mtp_decode_count += added;
             state.mtp_pending_draft_log_probs = log_probs;
+            // DI-QW-MTP: skip-state drafts use the same gated path as pure MTP.
+            let skip_log_prob_t = self
+                .weights
+                .mtp
+                .as_ref()
+                .map(|head| {
+                    crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
+                        head.draft_sampling.temperature,
+                        gate,
+                        crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                    )
+                })
+                .unwrap_or(draft_log_prob_temperature_for_new_drafts);
+            state.mtp_pending_draft_log_prob_temperature = Some(skip_log_prob_t);
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp; draft.len()];
             // Override pending so the verify/accept pipeline sees the new drafts.
@@ -8353,6 +8411,8 @@ impl MlxRunner {
                 .assistant_draft_wall_us
                 .saturating_add(elapsed_us(assistant_draft_started));
             state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_log_prob_temperature =
+                Some(draft_log_prob_temperature_for_new_drafts);
             state.mtp_pending_draft_distributions = distributions;
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; draft.len()];
             pending = draft;
@@ -9731,6 +9791,7 @@ impl MlxRunner {
                     state.mtp_pending_draft.clear();
                     state.mtp_pending_draft_lazy = None;
                     state.mtp_pending_draft_log_probs.clear();
+                    state.mtp_pending_draft_log_prob_temperature = None;
                     state.mtp_pending_draft_distributions.clear();
                     state.mtp_pending_draft_sources.clear();
                     state.mtp_skip_logits = None;
@@ -9760,6 +9821,7 @@ impl MlxRunner {
             state.mtp_pending_draft.clear();
             state.mtp_pending_draft_lazy = None;
             state.mtp_pending_draft_log_probs.clear();
+            state.mtp_pending_draft_log_prob_temperature = None;
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources.clear();
             state.mtp_skip_logits = None;
@@ -9787,6 +9849,24 @@ impl MlxRunner {
             let draft_started = Instant::now();
             let think_state_after_result =
                 compute_think_state(&self.cfg, state.ngram_in_think, &result);
+            // DI-DS-MTP residual: next draft (and the T locked into pending
+            // log-probs) must use post-result think state. Accept rescale for
+            // *this* step still uses the T carried from when pending was
+            // drafted (`mtp_pending_draft_log_prob_temperature`); only the
+            // new draft generation below must advance past `</think>` /
+            // `<think>` boundaries crossed by `result`.
+            let deepseek_next_draft_temperature = if self.weights.deepseek_v4_nextn.is_some() {
+                Some(crate::mtp::deepseek_v4_mtp_sample_and_log_temperature_from_env(
+                    think_state_after_result,
+                    sampling.temperature,
+                ))
+            } else {
+                None
+            };
+            // Qwen draft branches below may overwrite this with the T actually
+            // used for log-probs (often 1.0 on exact/gated greedy — not head 0.7).
+            let mut next_draft_log_prob_temperature = deepseek_next_draft_temperature
+                .unwrap_or(draft_log_prob_temperature_for_new_drafts);
             let mtp_post_think_guarded =
                 self.cfg.think_start_token_id.is_some() && !think_state_after_result;
             // Pure-MTP override: when AX_MLX_MTP_DISABLE_NGRAM_STACKING=1, skip the
@@ -10025,6 +10105,10 @@ impl MlxRunner {
                                 Some(hybrid_gate),
                             )
                         } else if self.weights.deepseek_v4_nextn.is_some() {
+                            // Same think-aware draft T as pure-MTP / accept rescale
+                            // (post-result think state; see deepseek_next_draft_temperature).
+                            let hybrid_draft_t = deepseek_next_draft_temperature
+                                .expect("deepseek nextn implies next-draft temperature");
                             deepseek_v4_mtp_draft_tokens_after_forced_prefix(
                                 &self.weights,
                                 &self.cfg,
@@ -10035,8 +10119,19 @@ impl MlxRunner {
                                 mtp_tail_cap,
                                 &mut state.rng,
                                 Some(hybrid_gate),
+                                hybrid_draft_t,
                             )
                         } else {
+                            // DI-QW-MTP: lock accept T to the T used for Qwen
+                            // hybrid-tail log-probs (exact/gated greedy → 1.0).
+                            if let Some(head) = self.weights.mtp.as_ref() {
+                                next_draft_log_prob_temperature =
+                                    crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
+                                        head.draft_sampling.temperature,
+                                        hybrid_gate,
+                                        crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                                    );
+                            }
                             mtp_draft_tokens_after_forced_prefix(
                                 &self.weights,
                                 &self.cfg,
@@ -10135,6 +10230,16 @@ impl MlxRunner {
                         state.mtp_pending_draft_lazy = Some(lazy);
                         (Vec::new(), Vec::new(), Vec::new())
                     } else {
+                        // DI-QW-MTP: accept must use the T at which gated drafts
+                        // recorded log-probs (exact/gated greedy → 1.0, not head 0.7).
+                        if let Some(head) = self.weights.mtp.as_ref() {
+                            next_draft_log_prob_temperature =
+                                crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
+                                    head.draft_sampling.temperature,
+                                    gate,
+                                    crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                                );
+                        }
                         let (draft, log_probs, distributions, added, _top2_margins) =
                             mtp_draft_tokens_gated(
                                 &self.weights,
@@ -10198,10 +10303,10 @@ impl MlxRunner {
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
-                    let draft_temperature = crate::mtp::deepseek_v4_mtp_effective_draft_temperature(
-                        state.ngram_in_think,
-                        sampling.temperature,
-                    );
+                    // Must match next_draft_log_prob_temperature / accept rescale
+                    // on the following step (post-result think state).
+                    let draft_temperature = deepseek_next_draft_temperature
+                        .expect("deepseek nextn implies next-draft temperature");
                     let (draft, log_probs, distributions, added, _top2_margins) =
                         deepseek_v4_mtp_draft_tokens_gated(
                             &self.weights,
@@ -10238,6 +10343,13 @@ impl MlxRunner {
             state.mtp_pending_draft_sources = new_sources;
             if state.mtp_pending_draft_log_probs.is_empty() {
                 state.mtp_pending_draft_distributions.clear();
+                state.mtp_pending_draft_log_prob_temperature = None;
+            } else {
+                // Lock accept rescale to the T used when these log-probs were
+                // written (DeepSeek post-result think T, or Qwen exact/gated
+                // draft log-prob T — see next_draft_log_prob_temperature).
+                state.mtp_pending_draft_log_prob_temperature =
+                    Some(next_draft_log_prob_temperature);
             }
             if state.mtp_pending_draft.is_empty() {
                 state.mtp_pending_draft_sources.clear();
@@ -10347,6 +10459,7 @@ impl MlxRunner {
         state.mtp_pending_draft.clear();
         state.mtp_pending_draft_lazy = None;
         state.mtp_pending_draft_log_probs.clear();
+        state.mtp_pending_draft_log_prob_temperature = None;
         state.mtp_pending_draft_distributions.clear();
         state.mtp_pending_draft_sources.clear();
         state.mtp_adaptive_max_depth =
@@ -10672,6 +10785,7 @@ impl MlxRunner {
             state.mtp_pending_draft.clear();
             state.mtp_pending_draft_lazy = None;
             state.mtp_pending_draft_log_probs.clear();
+            state.mtp_pending_draft_log_prob_temperature = None;
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources.clear();
             state.mtp_decode_count = 0;
@@ -10715,6 +10829,7 @@ impl MlxRunner {
                 state.mtp_pending_draft.clear();
                 state.mtp_pending_draft_lazy = None;
                 state.mtp_pending_draft_log_probs.clear();
+                state.mtp_pending_draft_log_prob_temperature = None;
                 state.mtp_pending_draft_distributions.clear();
                 state.mtp_pending_draft_sources.clear();
                 state.mtp_decode_count = 0;
@@ -11419,17 +11534,27 @@ fn mtp_initial_adaptive_depth(model_family: &str, head_max_depth: usize) -> usiz
 
 /// Lazy target probability container for MTP rejection sampling.
 ///
-/// `Full` uses the existing full-vocab softmax path (default).
+/// `Full` uses the existing full-vocab softmax path (default): only the draft
+/// token probabilities are gathered on GPU.
+/// `FullRows` materializes the draft-target softmax rows so CPU-side filters
+/// (min_p, matching the primary sampler) can renorm before accept/reject.
 /// `TopK` gathers full-vocabulary softmax probabilities for only the top-k tokens
 /// per position, then does a CPU-side lookup for each draft token. This avoids
 /// transferring a `[verify_len, vocab]` softmax tensor to the CPU.
 enum LazyTargetProbs {
     Full(MlxArray),
+    /// Softmax rows for draft targets, shape `[pending_len, vocab]`.
+    FullRows {
+        probs: MlxArray,
+        vocab: i32,
+        min_p: Option<f32>,
+    },
     TopK {
         indices: MlxArray,
         probs: MlxArray,
         k: u32,
         top_p: f32,
+        min_p: Option<f32>,
     },
 }
 
@@ -11437,6 +11562,7 @@ impl LazyTargetProbs {
     fn push_eval_targets<'a>(&'a self, targets: &mut Vec<&'a MlxArray>) {
         match self {
             LazyTargetProbs::Full(arr) => targets.push(arr),
+            LazyTargetProbs::FullRows { probs, .. } => targets.push(probs),
             LazyTargetProbs::TopK { indices, probs, .. } => {
                 targets.push(indices);
                 targets.push(probs);
@@ -11455,11 +11581,27 @@ impl LazyTargetProbs {
                 workspace.target_probs.extend_from_slice(arr.data_f32());
                 Some(workspace.target_probs.as_slice())
             }
+            LazyTargetProbs::FullRows {
+                probs,
+                vocab,
+                min_p,
+            } => {
+                let vocab = *vocab as usize;
+                let data = probs.data_f32();
+                workspace.target_probs.reserve(pending.len());
+                for (i, &needle) in pending.iter().enumerate() {
+                    let row = &data[i * vocab..(i + 1) * vocab];
+                    let probability = filtered_target_token_probability(row, needle, *min_p, 1.0, 0);
+                    workspace.target_probs.push(probability);
+                }
+                Some(workspace.target_probs.as_slice())
+            }
             LazyTargetProbs::TopK {
                 indices,
                 probs,
                 k,
                 top_p,
+                min_p,
             } => {
                 let k_val = *k as usize;
                 let indices_data = indices.data_u32();
@@ -11477,6 +11619,23 @@ impl LazyTargetProbs {
                         {
                             workspace.target_candidates.push((token, prob));
                         }
+                    }
+                    // min_p relative to the unfiltered max mass present in the
+                    // gathered candidates (top-k already truncated; when k=vocab
+                    // this matches full-row min_p).
+                    if let Some(min_p) = *min_p
+                        && min_p.is_finite()
+                        && min_p > 0.0
+                    {
+                        let max_prob = workspace
+                            .target_candidates
+                            .iter()
+                            .map(|(_, p)| *p)
+                            .fold(0.0f32, f32::max);
+                        let cutoff = min_p * max_prob;
+                        workspace
+                            .target_candidates
+                            .retain(|(_, prob)| *prob >= cutoff);
                     }
                     workspace.target_candidates.sort_by(
                         |(left_token, left_prob), (right_token, right_prob)| {
@@ -11513,6 +11672,70 @@ impl LazyTargetProbs {
             }
         }
     }
+}
+
+/// Probability of `token` under the target distribution after min_p / top-p /
+/// top-k filtering, renormalized over the kept mass. Matches the primary
+/// sampler's law so rejection sampling sees the same `p(token)`.
+fn filtered_target_token_probability(
+    row_probs: &[f32],
+    token: u32,
+    min_p: Option<f32>,
+    top_p: f32,
+    top_k: u32,
+) -> f32 {
+    let mut candidates: Vec<(u32, f32)> = row_probs
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &prob)| {
+            if prob > 0.0 && prob.is_finite() {
+                Some((idx as u32, prob))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if candidates.is_empty() {
+        return 0.0;
+    }
+    if let Some(min_p) = min_p
+        && min_p.is_finite()
+        && min_p > 0.0
+    {
+        let max_prob = candidates
+            .iter()
+            .map(|(_, p)| *p)
+            .fold(0.0f32, f32::max);
+        let cutoff = min_p * max_prob;
+        candidates.retain(|(_, p)| *p >= cutoff);
+        if candidates.is_empty() {
+            return 0.0;
+        }
+    }
+    candidates.sort_by(|(lt, lp), (rt, rp)| rp.total_cmp(lp).then_with(|| lt.cmp(rt)));
+    if top_k > 0 && (top_k as usize) < candidates.len() {
+        candidates.truncate(top_k as usize);
+    }
+    if top_p.is_finite() && top_p > 0.0 && top_p < 1.0 {
+        let mut cumulative = 0.0_f32;
+        let mut keep = 0_usize;
+        for (_, prob) in &candidates {
+            cumulative += *prob;
+            keep += 1;
+            if cumulative >= top_p {
+                break;
+            }
+        }
+        candidates.truncate(keep.max(1));
+    }
+    let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if filtered_sum <= 0.0 || !filtered_sum.is_finite() {
+        return 0.0;
+    }
+    candidates
+        .iter()
+        .find(|(t, _)| *t == token)
+        .map_or(0.0, |(_, p)| (*p / filtered_sum).max(0.0))
 }
 
 /// Filter parameters passed from the draft path to the target probability
@@ -11590,6 +11813,7 @@ fn compute_mtp_target_probs(
             probs: stacked_probs,
             k,
             top_p: target_sampling.top_p,
+            min_p: target_sampling.min_p.filter(|&m| m.is_finite() && m > 0.0),
         })
     } else if draft_filter.top_k > 0 || draft_filter.top_p < 1.0 {
         // Draft-path filter applied to target probs for rejection-sampling parity.
@@ -11635,6 +11859,19 @@ fn compute_mtp_target_probs(
             probs: stacked_probs,
             k: dk_i32 as u32,
             top_p: draft_filter.top_p,
+            min_p: target_sampling.min_p.filter(|&m| m.is_finite() && m > 0.0),
+        })
+    } else if target_sampling.uses_min_p() {
+        // DeepSeek thinking defaults min_p=0.05. Materialize draft-target
+        // softmax rows so extract can renorm under the same min_p law as the
+        // primary sampler (raw single-token take would inflate p_target).
+        let probs = softmax(&scaled, -1, None);
+        // logits_all rows 0..n are the draft targets (see comment above).
+        let draft_rows = slice(&probs, &[0, 0], &[n as i32, vocab], &[1, 1], None);
+        Some(LazyTargetProbs::FullRows {
+            probs: draft_rows,
+            vocab,
+            min_p: target_sampling.min_p,
         })
     } else {
         let probs = softmax(&scaled, -1, None);
@@ -13517,6 +13754,25 @@ mod tests {
             MlxSamplingParams::new(0.6, 0.95, 20),
             Some(128)
         ));
+        // DeepSeek thinking defaults min_p=0.05 — exact linear profile must not claim support.
+        assert!(!mtp_exact_sampling_supported(
+            MlxSamplingParams::new(1.0, 1.0, 0).with_min_p(Some(0.05)),
+            None
+        ));
+    }
+
+    #[test]
+    fn filtered_target_token_probability_applies_min_p() {
+        // probs: token0=0.9, token1=0.05, token2=0.05. min_p=0.1 → cutoff=0.09
+        // keeps only token0 → p(token0)=1.0, p(token1)=0.0.
+        let row = [0.9_f32, 0.05, 0.05];
+        assert!((filtered_target_token_probability(&row, 0, Some(0.1), 1.0, 0) - 1.0).abs() < 1e-5);
+        assert_eq!(
+            filtered_target_token_probability(&row, 1, Some(0.1), 1.0, 0),
+            0.0
+        );
+        // Without min_p, raw renormalized mass is unchanged (already sums to 1).
+        assert!((filtered_target_token_probability(&row, 0, None, 1.0, 0) - 0.9).abs() < 1e-5);
     }
 
     #[test]
@@ -19222,6 +19478,26 @@ mod tests {
         assert_eq!(
             effective_embedding_pooling("qwen3", EmbeddingPooling::Last),
             EmbeddingPooling::Last
+        );
+    }
+
+    /// DI-W2-002: single-item EmbeddingGemma must share the batch-of-one Gemma3
+    /// bidirectional sandwich path (not the causal dense compiled body).
+    #[test]
+    fn embeddinggemma_single_item_dispatch_matches_batch_of_one() {
+        assert!(
+            embedding_single_item_uses_gemma3_path("embeddinggemma"),
+            "embedding_forward must divert EmbeddingGemma before build_embedding_forward_closure"
+        );
+        // Causal dense families stay on the default compiled body.
+        assert!(!embedding_single_item_uses_gemma3_path("qwen3"));
+        // Nemotron embed uses its own bidirectional branch inside the dense body.
+        assert!(!embedding_single_item_uses_gemma3_path("nemotron_embed"));
+        // Batch path uses the same family string gate for EmbeddingGemma.
+        assert_eq!(
+            embedding_single_item_uses_gemma3_path("embeddinggemma"),
+            true,
+            "single and batch both key off model_family == embeddinggemma"
         );
     }
 
