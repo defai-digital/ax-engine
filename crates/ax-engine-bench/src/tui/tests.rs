@@ -142,6 +142,21 @@ fn grouping_collapses_variants_into_families() {
             .iter()
             .all(|variant| variant.precision().contains("AXQ candidate"))
     );
+    let vl_axq = families
+        .iter()
+        .find(|f| f.key == "ax-qwen3-vl-30b-a3b-axq")
+        .unwrap();
+    assert_eq!(vl_axq.variants.len(), 2);
+    assert!(
+        !vl_axq.has_mtp(),
+        "Qwen3-VL 30B AXQ Instruct packs do not ship MTP"
+    );
+    assert!(
+        vl_axq
+            .variants
+            .iter()
+            .all(|variant| variant.precision().contains("AXQ candidate"))
+    );
     let embed = families
         .iter()
         .find(|f| f.key == "ax-embeddinggemma-300m")
@@ -196,6 +211,10 @@ fn catalog_families_map_to_registry_support_tiers() {
         catalog::registry_family_label("ax-qwen3-coder-next"),
         "qwen3_next"
     );
+    assert_eq!(
+        catalog::registry_family_label("ax-qwen3-vl-30b-a3b-axq"),
+        "qwen3_vl_moe"
+    );
     assert_eq!(catalog::registry_family_label("gpt-oss-20b"), "gpt_oss");
     assert_eq!(catalog::registry_family_label("llama3.1-8b"), "llama3");
     assert_eq!(catalog::registry_family_label("ministral-8b"), "mistral3");
@@ -209,7 +228,7 @@ fn catalog_families_map_to_registry_support_tiers() {
     let families = build_families();
     for family in &families {
         let tier = family.support_tier();
-        if family.key == "ax-qwen3.6-27b-axq" {
+        if family.key == "ax-qwen3.6-27b-axq" || family.key == "ax-qwen3-vl-30b-a3b-axq" {
             assert_eq!(
                 tier,
                 ModelSupportTier::Compatible,
