@@ -2344,6 +2344,34 @@ fn converts_qwen3_next_linear_moe_shared_expert_model_directory() {
 }
 
 #[test]
+fn qwen3_vl_moe_produces_moe_config_from_nested_text_config() {
+    // VL MoE packs nest expert counts under text_config. generate-manifest
+    // must enable moe so validation accepts switch_mlp expert tensors.
+    for alias in ["qwen3_vl_moe", "qwen3-vl-moe"] {
+        let config = serde_json::json!({
+            "model_type": alias,
+            "text_config": {
+                "model_type": "qwen3_vl_moe_text",
+                "hidden_size": 2048,
+                "num_experts": 128,
+                "num_experts_per_tok": 8,
+                "moe_intermediate_size": 768,
+                "norm_topk_prob": true,
+            },
+            "vision_config": {"hidden_size": 1152},
+        });
+        let moe = moe_config(&config, alias);
+        assert!(
+            moe.is_enabled(),
+            "{alias} must enable MoE for nested text_config experts"
+        );
+        assert_eq!(moe.expert_count, Some(128), "{alias}");
+        assert_eq!(moe.experts_per_token, Some(8), "{alias}");
+        assert_eq!(moe.expert_intermediate_size, Some(768), "{alias}");
+    }
+}
+
+#[test]
 fn qwen3_6_alias_produces_moe_config() {
     // Regression test for B1: moe_config() previously checked only
     // `model_type == "qwen3_next"` and missed the "qwen3.6" / "qwen3_6"
