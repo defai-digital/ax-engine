@@ -345,12 +345,19 @@ pub fn lookup_architecture(family_label: &str) -> Option<&'static ArchitectureRe
         .find(|entry| entry.family_label == family_label)
 }
 
+/// Resolve the MLX runner admission policy for a registered family.
+///
+/// `None` means the family is unknown, which is distinct from a known
+/// [`MlxRunnerAdmission::AuxiliaryOnly`] artifact.
+pub fn mlx_runner_admission_for_family(family_label: &str) -> Option<MlxRunnerAdmission> {
+    lookup_architecture(family_label).map(|entry| entry.mlx_runner_admission)
+}
+
 /// Return whether a registered family may enter primary MLX runner validation.
 ///
 /// Unknown labels and registered auxiliary-only artifacts both fail closed.
 pub fn is_primary_mlx_runner_family(family_label: &str) -> bool {
-    lookup_architecture(family_label)
-        .is_some_and(|entry| entry.mlx_runner_admission.allows_primary())
+    mlx_runner_admission_for_family(family_label).is_some_and(MlxRunnerAdmission::allows_primary)
 }
 
 /// Resolve the layer-forward route for a family label.
@@ -483,6 +490,11 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(auxiliary_families, vec!["gemma4_assistant"]);
+        assert_eq!(
+            mlx_runner_admission_for_family("gemma4_assistant"),
+            Some(MlxRunnerAdmission::AuxiliaryOnly)
+        );
+        assert_eq!(mlx_runner_admission_for_family("not_a_family"), None);
         assert!(is_primary_mlx_runner_family("qwen3"));
         assert!(is_primary_mlx_runner_family("deepseek_v4"));
         assert!(!is_primary_mlx_runner_family("gemma4_assistant"));

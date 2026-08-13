@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use ax_engine_core::{
-    NativeModelArtifacts, NativeModelManifest, NativeTensorRole, is_primary_mlx_runner_family,
-    runner::NativeModelBindingSummary,
+    MlxRunnerAdmission, NativeModelArtifacts, NativeModelManifest, NativeTensorRole,
+    mlx_runner_admission_for_family, runner::NativeModelBindingSummary,
 };
 
 use super::{COMMON_EOT_TOKEN_STRINGS, MlxRunnerError};
@@ -20,12 +20,7 @@ pub(super) fn validate_mlx_supported_manifest(
     artifacts: &NativeModelArtifacts,
 ) -> Result<(), MlxRunnerError> {
     let manifest = artifacts.manifest();
-    if !is_mlx_supported_model_family(&manifest.model_family) {
-        return Err(MlxRunnerError::UnsupportedFeature(format!(
-            "model_family {:?} is not supported by the MLX runner",
-            manifest.model_family
-        )));
-    }
+    validate_mlx_primary_admission(&manifest.model_family)?;
     if manifest.model_family == "glm4_moe_lite"
         || manifest.model_family == "deepseek_v4"
         || has_glm_mla_tensors(artifacts)
@@ -67,8 +62,18 @@ pub(super) fn validate_mlx_supported_manifest(
     Ok(())
 }
 
-pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
-    is_primary_mlx_runner_family(model_family)
+pub(super) fn validate_mlx_primary_admission(model_family: &str) -> Result<(), MlxRunnerError> {
+    match mlx_runner_admission_for_family(model_family) {
+        Some(MlxRunnerAdmission::Primary) => Ok(()),
+        Some(MlxRunnerAdmission::AuxiliaryOnly) => {
+            Err(MlxRunnerError::UnsupportedFeature(format!(
+                "model_family {model_family:?} is an auxiliary-only artifact and cannot be loaded as the primary MLX runner"
+            )))
+        }
+        None => Err(MlxRunnerError::UnsupportedFeature(format!(
+            "model_family {model_family:?} is not supported by the MLX runner"
+        ))),
+    }
 }
 
 /// Validate DiffusionGemma-specific manifest fields.

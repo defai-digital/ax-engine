@@ -1424,6 +1424,12 @@ impl MlxRunner {
         prefix_cache_store: Option<MlxPrefixCacheStore>,
         shared_weights: Option<&MlxSharedWeightsCell>,
     ) -> Result<Self, MlxRunnerError> {
+        // Admission and all CPU-only manifest contracts must pass before any
+        // process-global MLX setup. Otherwise a rejected first artifact could
+        // permanently decide Metal buffer caps or mutate the default stream
+        // and memory limits for later valid model loads.
+        validate_mlx_supported_manifest(artifacts)?;
+
         // AX_NO_SPEC is the CLAUDE.md-documented kill switch. Honor it at
         // the runner boundary so server and SDK paths behave the same as
         // the bench CLI, which already reads the env before constructing
@@ -1501,8 +1507,6 @@ impl MlxRunner {
         if memory_limit > 0 {
             set_memory_limit(memory_limit);
         }
-
-        validate_mlx_supported_manifest(artifacts)?;
 
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
         let terminal_token_ids = resolve_terminal_token_ids(artifacts);
@@ -16627,6 +16631,16 @@ mod tests {
     }
 
     #[test]
+    fn mlx_manifest_validation_reports_auxiliary_family_role() {
+        let error = validate_mlx_primary_admission("gemma4_assistant")
+            .expect_err("assistant artifact must not be admitted as a primary runner");
+        let message = error.to_string();
+
+        assert!(message.contains("auxiliary-only artifact"));
+        assert!(message.contains("cannot be loaded as the primary MLX runner"));
+    }
+
+    #[test]
     fn mlx_manifest_validation_rejects_incomplete_glm_contract() {
         let mut manifest = dense_manifest();
         manifest.model_family = "glm4_moe_lite".to_string();
@@ -18091,7 +18105,7 @@ mod tests {
     }
 
     #[test]
-    fn mlx_supported_model_family_covers_secondary_catalog_and_gpt_oss() {
+    fn primary_mlx_runner_registry_covers_secondary_catalog_and_gpt_oss() {
         // Recently expanded direct-mode secondary stack must clear the runner gate.
         for family in [
             "llama3",
@@ -18106,13 +18120,15 @@ mod tests {
             "qwen3_vl_moe",
         ] {
             assert!(
-                is_mlx_supported_model_family(family),
-                "{family} must be accepted by the MLX runner allowlist"
+                ax_engine_core::is_primary_mlx_runner_family(family),
+                "{family} must be admitted by the primary MLX runner registry"
             );
         }
         // Assistant MTP draft artifacts are sidecars, not primary runners.
-        assert!(!is_mlx_supported_model_family("gemma4_assistant"));
-        assert!(!is_mlx_supported_model_family("gpt2"));
+        assert!(!ax_engine_core::is_primary_mlx_runner_family(
+            "gemma4_assistant"
+        ));
+        assert!(!ax_engine_core::is_primary_mlx_runner_family("gpt2"));
     }
 
     #[test]
@@ -18802,7 +18818,7 @@ mod tests {
 
         validate_gemma4_interleaved_attention(&manifest)
             .expect("GPT-OSS alternating SWA/full attention is implemented");
-        assert!(is_mlx_supported_model_family("gpt_oss"));
+        assert!(ax_engine_core::is_primary_mlx_runner_family("gpt_oss"));
     }
 
     #[test]

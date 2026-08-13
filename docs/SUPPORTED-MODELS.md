@@ -67,9 +67,10 @@ when its family label is otherwise Certified — the tier reflects the path that
 actually runs. Unknown family labels resolve to Compatible only in the quality
 metadata API; that fallback does not authorize execution. The primary MLX
 runner admits registered `Primary` descriptors and rejects unknown or
-auxiliary-only families before structural manifest validation. After
-admission, `ArchitectureSpec::from_manifest` and specialized validators decide
-whether the concrete structure is loadable.
+auxiliary-only families after core artifact/schema validation but before any
+process-global MLX initialization or model construction. After admission,
+`ArchitectureSpec::from_manifest` and specialized validators decide whether
+the concrete structure is loadable.
 
 DeepSeek caveats:
 

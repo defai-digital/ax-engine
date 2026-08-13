@@ -91,6 +91,10 @@ materialized, and streamed layers do not use compiled MoE decode closures.
 - Make the MLX runner query the core registry instead of maintaining a second
   family allowlist.
 - Keep unknown families fail-closed.
+- Preserve the distinction between unknown and auxiliary-only artifacts in
+  diagnostics.
+- Run admission and CPU-only manifest validation before process-global MLX
+  initialization so rejected artifacts cannot affect later valid loads.
 - Add registry uniqueness and auxiliary-admission regression tests.
 - Preserve the `ArchitectureRegistration { ... }` source spelling until the
   smoke matrix stops source-parsing it; expose `FamilyDescriptor` as the
