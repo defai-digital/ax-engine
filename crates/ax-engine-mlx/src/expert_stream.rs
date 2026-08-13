@@ -714,9 +714,10 @@ impl ExpertStackPager {
             loaded.extend(tensors);
         }
         // Wire the freshly created arrays into MLX's working set, mirroring the
-        // initial-load eval for both loader paths.
+        // initial-load eval for both loader paths. Use try_eval so a paging
+        // failure stays on the ExpertStreamError path instead of panicking.
         let refs: Vec<&mlx_sys::MlxArray> = loaded.values().collect();
-        mlx_sys::eval(&refs);
+        mlx_sys::try_eval(&refs).map_err(ExpertStreamError::Paging)?;
 
         let mut stack = LayerExpertStack::default();
         for tensor in &tensors {
