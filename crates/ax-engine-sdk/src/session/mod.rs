@@ -28,8 +28,8 @@ mod stream;
 
 use artifacts::resolve_native_model_report;
 pub use config::{
-    EngineSessionConfig, MlxMtpPolicy, PreviewSessionConfigError, PreviewSessionConfigRequest,
-    ResolvedSessionConfigRequest,
+    EngineSessionConfig, MlxMtpPolicy, MlxStreamExpertsMode, PreviewSessionConfigError,
+    PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
 };
 use delegated::{
     run_delegated_generate_prevalidated, run_delegated_generate_with_config,

@@ -4186,6 +4186,7 @@ pub(crate) fn moe_experts_forward_with_cloned_weights(
         mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
+        expert_stream: None,
     };
     moe_experts_forward_impl(
         cfg,
@@ -4736,7 +4737,8 @@ fn expert_parallel_eligible(
 /// Gated by `AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL` (default OFF).
 fn try_moe_deep_expert_block_metal(
     cfg: &ModelConfig,
-    w: &LayerWeights,
+    gate_up_exps_packed: Option<&QuantizedWeight>,
+    down_exps: Option<&QuantizedWeight>,
     x: &MlxArray,
     top_k_indices: &MlxArray,
     top_k_weights: &MlxArray,
@@ -4754,8 +4756,8 @@ fn try_moe_deep_expert_block_metal(
     if seq != 1 || batch != 1 {
         return None;
     }
-    let packed = w.gate_up_exps_packed.as_ref()?;
-    let down_exps = w.down_exps.as_ref()?;
+    let packed = gate_up_exps_packed?;
+    let down_exps = down_exps?;
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
     let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
     if gather_inputs.sorted_indices {
@@ -4837,13 +4839,57 @@ fn moe_experts_forward_impl(
     // path in `dense_ffn_activation` runs.
     let v4_swiglu_clamp = deepseek_v4_swiglu_limit(cfg).is_some();
 
+    // SSD expert streaming: when the layer's fused expert stack is not
+    // resident, page it in here. Every kernel path below then runs unchanged
+    // (same gather_qmm) on the returned QuantizedWeight values.
+    let paged_experts = if w.gate_up_exps_packed.is_none()
+        && w.gate_exps.is_none()
+        && w.up_exps.is_none()
+        && w.down_exps.is_none()
+    {
+        w.expert_stream.as_ref().map(|source| {
+            source
+                .stack()
+                .expect("expert stream paging failed for MoE layer")
+        })
+    } else {
+        None
+    };
+    let gate_up_exps_packed = w.gate_up_exps_packed.as_ref().or_else(|| {
+        paged_experts
+            .as_ref()
+            .and_then(|stack| stack.gate_up_exps_packed.as_ref())
+    });
+    let gate_exps = w.gate_exps.as_ref().or_else(|| {
+        paged_experts
+            .as_ref()
+            .and_then(|stack| stack.gate_exps.as_ref())
+    });
+    let up_exps = w.up_exps.as_ref().or_else(|| {
+        paged_experts
+            .as_ref()
+            .and_then(|stack| stack.up_exps.as_ref())
+    });
+    let down_exps_ref = w.down_exps.as_ref().or_else(|| {
+        paged_experts
+            .as_ref()
+            .and_then(|stack| stack.down_exps.as_ref())
+    });
+
     // Tier 2A: try deep expert-block fusion (decode-only). Fuses gather_qmm
     // gate_up + SwiGLU + gather_qmm down + weighted-sum into one dispatch.
     // Falls back to the standard multi-dispatch path when ineligible.
     if seq == 1
         && batch == 1
         && !v4_swiglu_clamp
-        && let Some(out) = try_moe_deep_expert_block_metal(cfg, w, x, top_k_indices, top_k_weights)
+        && let Some(out) = try_moe_deep_expert_block_metal(
+            cfg,
+            gate_up_exps_packed,
+            down_exps_ref,
+            x,
+            top_k_indices,
+            top_k_weights,
+        )
     {
         return out;
     }
@@ -4852,7 +4898,7 @@ fn moe_experts_forward_impl(
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
     let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
-    let down_exps = w.down_exps.as_ref().expect("MoE layer must have down_exps");
+    let down_exps = down_exps_ref.expect("MoE layer must have down_exps");
 
     // Phase 1B: when the expert gate_up is packed and the flag is on, try the
     // packed SwiGLU Metal kernel directly on the gather_qmm output, fusing the
@@ -4860,7 +4906,7 @@ fn moe_experts_forward_impl(
     // at prefill the tensor is large and bandwidth-bound, where the separate
     // slice+silu_mul ops are faster than the single packed dispatch. Falls back
     // to the split-activation path when the kernel is ineligible or at prefill.
-    let hidden = if let Some(packed) = &w.gate_up_exps_packed {
+    let hidden = if let Some(packed) = gate_up_exps_packed {
         let gate_up_started = Instant::now();
         let out = qw_gather(
             &gather_inputs.x,
@@ -4953,7 +4999,7 @@ fn moe_experts_forward_impl(
             }
             h
         }
-    } else if let Some(gate_exps) = w.gate_exps.as_ref() {
+    } else if let Some(gate_exps) = gate_exps {
         let gate_up_started = Instant::now();
         let gate_out = qw_gather(
             &gather_inputs.x,
@@ -4961,7 +5007,7 @@ fn moe_experts_forward_impl(
             &gather_inputs.indices,
             gather_inputs.sorted_indices,
         );
-        let up_exps = w.up_exps.as_ref().expect("MoE layer must have up_exps");
+        let up_exps = up_exps.expect("MoE layer must have up_exps");
         let up_out = qw_gather(
             &gather_inputs.x,
             up_exps,
@@ -5000,10 +5046,7 @@ fn moe_experts_forward_impl(
     } else {
         // Nemotron-H ReLU² experts: only up (fc1) + down (fc2), no SwiGLU gate.
         let gate_up_started = Instant::now();
-        let up_exps = w
-            .up_exps
-            .as_ref()
-            .expect("ReLU2 MoE layer must have up_exps");
+        let up_exps = up_exps.expect("ReLU2 MoE layer must have up_exps");
         let up_out = qw_gather(
             &gather_inputs.x,
             up_exps,
@@ -6316,6 +6359,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         }
     }
 

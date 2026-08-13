@@ -105,6 +105,7 @@ pub(crate) fn uses_text_config(model_type: &str) -> bool {
             | "llama4"
             | "qwen3_5"
             | "qwen3_5_moe"
+            | "qwen3_5_moe_text"
             | "qwen3_5_text"
             | "qwen3_next"
             | "qwen3_6"
@@ -135,7 +136,7 @@ pub(crate) fn is_unlimited_ocr(model_type: &str) -> bool {
 pub(crate) fn is_qwen3_5_family(model_type: &str) -> bool {
     matches!(
         model_type,
-        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text" | "minicpmv4_6"
+        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5_text" | "minicpmv4_6"
     )
 }
 
@@ -563,7 +564,12 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     // and validate_native_model_manifest accepts those roles.
     let is_qwen3_moe = matches!(
         model_type,
-        "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text" | "qwen3_vl_moe" | "qwen3-vl-moe"
+        "qwen3_moe"
+            | "qwen3_5_moe"
+            | "qwen3_5_moe_text"
+            | "qwen3_5_text"
+            | "qwen3_vl_moe"
+            | "qwen3-vl-moe"
     ) || (is_qwen3_5_family(model_type) && config_has_moe_experts(config, model_type));
     let is_qwen3_next_moe = matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6");
     let is_glm_moe = is_glm4_moe_lite(model_type);

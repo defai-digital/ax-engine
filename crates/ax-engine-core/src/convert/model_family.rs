@@ -28,19 +28,28 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),
-        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text" => Ok(ModelFamily {
-            family_name: "qwen3_5",
-            tensor_map: HF_STANDARD_TENSOR_MAP,
-            extra_tensor_map: if matches!(model_type, "qwen3_5_moe" | "qwen3_5_text")
-                || config_has_moe_experts(config, model_type)
-            {
-                Some(QWEN3_MOE_EXTRA_TENSOR_MAP)
-            } else {
-                None
-            },
-            uses_language_model_prefix: true,
-            uses_decoder_prefix: false,
-        }),
+        // `qwen3_5_moe_text` is the Qwen 3.8 text MoE alias. It maps onto the
+        // same qwen3_5 family forward as `qwen3_5_moe`; identity gating for
+        // 2.4T-class packs happens at the artifact/manifest layer (expert
+        // stream manifest), never by silently reclassifying the certified
+        // Qwen 3.6 35B-A3B config signature.
+        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5_text" => {
+            Ok(ModelFamily {
+                family_name: "qwen3_5",
+                tensor_map: HF_STANDARD_TENSOR_MAP,
+                extra_tensor_map: if matches!(
+                    model_type,
+                    "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5_text"
+                ) || config_has_moe_experts(config, model_type)
+                {
+                    Some(QWEN3_MOE_EXTRA_TENSOR_MAP)
+                } else {
+                    None
+                },
+                uses_language_model_prefix: true,
+                uses_decoder_prefix: false,
+            })
+        }
         "qwen3_next" | "qwen3.6" | "qwen3_6" => Ok(ModelFamily {
             family_name: "qwen3_next",
             tensor_map: HF_STANDARD_TENSOR_MAP,

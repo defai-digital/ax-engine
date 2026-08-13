@@ -2134,6 +2134,7 @@ mod tests {
             qwen3_vl_vision: None,
             minicpm_v46_vision: None,
             nemotron_omni: None,
+            expert_stream: None,
         }
     }
 

@@ -74,6 +74,10 @@ pub struct ModelWeights {
     pub minicpm_v46_vision: Option<crate::minicpm_v::MiniCpmV46VisionWeights>,
     /// Nemotron H Nano Omni RADIO vision and Parakeet media towers.
     pub nemotron_omni: Option<crate::nemotron_omni::NemotronOmniWeights>,
+    /// SSD expert-streaming pager (`ax_expert_stream.json` layer-stack mode).
+    /// `None` for the default fully-resident load; when set, MoE expert
+    /// stacks are paged per layer instead of resident.
+    pub expert_stream: Option<std::sync::Arc<crate::expert_stream::ExpertStackPager>>,
 }
 
 /// The exact weights owned by one static pipeline rank.
@@ -278,6 +282,10 @@ pub struct LayerWeights {
     /// the rotated activation by this vector before the gate/up matmul so
     /// the per-channel scaling baked into the rotated weights cancels.
     pub rotation_smoothing_inverse: Option<MlxArray>,
+    /// SSD expert-streaming source for this layer. When set, the packed
+    /// expert fields above stay `None` until the MoE forward pages the
+    /// layer's fused expert stack in through this handle.
+    pub expert_stream: Option<std::sync::Arc<crate::expert_stream::ExpertLayerSource>>,
 }
 
 /// Weights for a GLM4MoELite MLA attention layer.
@@ -680,20 +688,64 @@ pub fn mmap_weights_enabled() -> bool {
 pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, WeightLoadError> {
     maybe_raise_metal_buffer_caps(artifacts);
     let root = artifacts.root_dir().to_path_buf();
+    // SSD expert streaming admission (ax_expert_stream.json). A pack marked
+    // `required=true` fails closed without --stream-experts /
+    // AX_STREAM_EXPERTS=1; requesting streaming without a manifest also
+    // fails closed. Default resident loads (certified Qwen 3.6 / GPT-OSS /
+    // Gemma paths) are untouched: with no manifest this returns None and
+    // streaming stays off.
+    let stream_mode = crate::expert_stream::stream_experts_mode();
+    let file_manifest = crate::expert_stream::ExpertStreamManifest::read_from_dir(&root)
+        .map_err(WeightLoadError::ExpertStream)?;
+    let experts_per_tok = artifacts
+        .manifest()
+        .moe
+        .experts_per_token
+        .unwrap_or(1)
+        .max(1);
+    let specs = artifacts.tensor_specs();
+    let expert_stream_manifest = crate::expert_stream::resolve_expert_stream(
+        stream_mode,
+        file_manifest,
+        || crate::expert_stream::infer_layer_stack_manifest(specs, experts_per_tok),
+        crate::expert_stream::unified_memory_bytes(),
+    )
+    .map_err(WeightLoadError::ExpertStream)?;
+    let expert_stream_skip: Option<std::collections::HashSet<String>> = expert_stream_manifest
+        .as_ref()
+        .map(crate::expert_stream::streamed_skip_names);
     // AX_MMAP_WEIGHTS=1 uses the memory-mapped safetensors path. No bytes
     // are read into a heap buffer up front; pages are pulled in by the
     // OS on first access (CPU touch or GPU dispatch). On warm page cache
     // this is roughly equivalent to the C loader; on cold disk it lets
     // the kernel decide when to read what, which can roughly halve cold
     // startup time for large models. The default remains the C loader
-    // until the mmap path has wider integration test coverage.
+    // until the mmap path has wider integration test coverage. Note that
+    // neither loader is a substitute for expert streaming: both still
+    // materialize every tensor in a file, which is why streaming uses the
+    // name-filtered loader below.
     let use_mmap = mmap_weights_enabled();
     let mut file_cache: HashMap<PathBuf, HashMap<String, MlxArray>> = HashMap::new();
     for spec in artifacts.tensor_specs() {
+        // Streamed tensors never enter the resident map and are never eval'd
+        // here; a safetensors file whose specs are all streamed is never
+        // opened at init because nothing below requests it.
+        if expert_stream_skip
+            .as_ref()
+            .is_some_and(|skip| skip.contains(&spec.name))
+        {
+            continue;
+        }
         let full = root.join(&spec.file);
         if let Entry::Vacant(entry) = file_cache.entry(full) {
             let path = entry.key().clone();
-            let tensors = if use_mmap {
+            let tensors = if let Some(skip) = expert_stream_skip.as_ref() {
+                mlx_sys::load_safetensors_filtered(
+                    &path,
+                    mlx_sys::SafetensorsNameFilter::Exclude(skip),
+                )
+                .map_err(WeightLoadError::FileMissing)?
+            } else if use_mmap {
                 mlx_sys::load_safetensors_mmap(&path).map_err(WeightLoadError::FileMissing)?
             } else {
                 load_safetensors(&path, None).map_err(WeightLoadError::FileMissing)?
@@ -1104,7 +1156,19 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                 (gate, up) => (None, gate, up),
             };
 
-        let gate_up_exps_packed = if has_role(specs, NativeTensorRole::FfnGateUpExpsPacked, idx) {
+        // Expert streaming: streamed tensor names are absent from the
+        // resident name map, so their expert slots stay None here until the
+        // MoE forward pages the layer stack in via its ExpertLayerSource.
+        let expert_streamed_role = |role: NativeTensorRole| {
+            expert_stream_skip.as_ref().is_some_and(|skip| {
+                specs
+                    .iter()
+                    .any(|s| s.role == role && s.layer_index == idx && skip.contains(&s.name))
+            })
+        };
+        let gate_up_exps_packed = if has_role(specs, NativeTensorRole::FfnGateUpExpsPacked, idx)
+            && !expert_streamed_role(NativeTensorRole::FfnGateUpExpsPacked)
+        {
             Some(take_weight(
                 specs,
                 &mut name_map,
@@ -1115,7 +1179,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         } else {
             None
         };
-        let gate_exps = if has_role(specs, NativeTensorRole::FfnGateExps, idx) {
+        let gate_exps = if has_role(specs, NativeTensorRole::FfnGateExps, idx)
+            && !expert_streamed_role(NativeTensorRole::FfnGateExps)
+        {
             Some(take_weight(
                 specs,
                 &mut name_map,
@@ -1126,7 +1192,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         } else {
             None
         };
-        let up_exps = if has_role(specs, NativeTensorRole::FfnUpExps, idx) {
+        let up_exps = if has_role(specs, NativeTensorRole::FfnUpExps, idx)
+            && !expert_streamed_role(NativeTensorRole::FfnUpExps)
+        {
             Some(take_weight(
                 specs,
                 &mut name_map,
@@ -1137,7 +1205,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         } else {
             None
         };
-        let down_exps = if has_role(specs, NativeTensorRole::FfnDownExps, idx) {
+        let down_exps = if has_role(specs, NativeTensorRole::FfnDownExps, idx)
+            && !expert_streamed_role(NativeTensorRole::FfnDownExps)
+        {
             Some(take_weight(
                 specs,
                 &mut name_map,
@@ -1376,8 +1446,37 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             mxfp4_down_exps,
             attn_sink,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         });
     }
+
+    // Expert streaming: attach the pager to layers whose fused expert stacks
+    // are streamed. Their resident expert fields stay None; the MoE forward
+    // resolves them through the handle, which pages the layer stack in.
+    let expert_stream_pager = expert_stream_manifest.as_ref().map(|manifest| {
+        let pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new(
+            std::sync::Arc::new(manifest.clone()),
+            root.clone(),
+            crate::expert_stream::expert_layer_budget(),
+        ));
+        let streamed_layers: std::collections::HashSet<u32> =
+            manifest.layer_indices().into_iter().collect();
+        for (li, layer) in layers.iter_mut().enumerate() {
+            if streamed_layers.contains(&(li as u32)) {
+                layer.expert_stream = Some(std::sync::Arc::new(
+                    crate::expert_stream::ExpertLayerSource::new(pager.clone(), li as u32),
+                ));
+            }
+        }
+        tracing::info!(
+            target = "ax_engine_mlx",
+            layers = streamed_layers.len(),
+            budget = pager.budget_layers(),
+            required = manifest.required,
+            "expert streaming active: layer-stack paging replaces resident expert loads"
+        );
+        pager
+    });
 
     // Conv1d remains the reliable fail-closed check for raw HF linear-attention
     // layout. LinearAttentionNorm is a gated-norm scale in Qwen3-Next-style
@@ -1471,6 +1570,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         qwen3_vl_vision,
         minicpm_v46_vision,
         nemotron_omni,
+        expert_stream: expert_stream_pager,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;
@@ -1732,6 +1832,7 @@ fn load_dense_llama3_layer(
         mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
+        expert_stream: None,
     })
 }
 
@@ -2768,6 +2869,7 @@ fn load_glm_mtp_sidecar(
         mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
+        expert_stream: None,
     };
 
     Some(GlmMtpWeights {
@@ -3134,6 +3236,7 @@ fn load_mtp(
         mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
+        expert_stream: None,
     };
 
     // Infer n_heads, n_kv_heads, head_dim from projection weight shapes.
@@ -4661,6 +4764,7 @@ fn load_deepseek_v4_mtp_sidecar(
         mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
+        expert_stream: None,
     };
 
     Some(DeepseekV4NextnWeights {
@@ -5712,6 +5816,8 @@ pub enum WeightLoadError {
     InvalidPipelineAssignment(String),
     #[error("invalid AXQuant vision sidecar: {0}")]
     VisionSidecarInvalid(String),
+    #[error(transparent)]
+    ExpertStream(#[from] crate::expert_stream::ExpertStreamError),
 }
 
 #[cfg(test)]

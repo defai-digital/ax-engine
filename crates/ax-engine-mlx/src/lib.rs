@@ -9,6 +9,7 @@ pub mod batched_sampling;
 pub(crate) mod diffusion;
 mod disk_page_store;
 pub mod disk_prefix_cache;
+pub mod expert_stream;
 pub mod fastpath;
 pub mod gemma4_assistant_mtp;
 pub(crate) mod gemma4_unified;

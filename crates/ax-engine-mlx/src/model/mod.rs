@@ -4860,6 +4860,7 @@ mod tests {
             qwen3_vl_vision: None,
             minicpm_v46_vision: None,
             nemotron_omni: None,
+            expert_stream: None,
         };
 
         let per_layer = compute_per_layer_inputs_arr(&cfg, &weights, &ids_scalar, &hidden)
@@ -4939,6 +4940,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         }
     }
 
@@ -5010,6 +5012,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         }
     }
 
@@ -5209,6 +5212,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         }
     }
 
@@ -5369,6 +5373,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
 
@@ -5488,6 +5493,7 @@ mod tests {
             qwen3_vl_vision: None,
             minicpm_v46_vision: None,
             nemotron_omni: None,
+            expert_stream: None,
         };
         let cache = MlxKVCache::new(0);
         let hidden = zeros(&[1, 1, 16], MlxDtype::Bfloat16, None);
@@ -5546,6 +5552,7 @@ mod tests {
             qwen3_vl_vision: None,
             minicpm_v46_vision: None,
             nemotron_omni: None,
+            expert_stream: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -5683,6 +5690,7 @@ mod tests {
             qwen3_vl_vision: None,
             minicpm_v46_vision: None,
             nemotron_omni: None,
+            expert_stream: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -5768,6 +5776,7 @@ mod tests {
             qwen3_vl_vision: None,
             minicpm_v46_vision: None,
             nemotron_omni: None,
+            expert_stream: None,
         };
         let shared = Gemma4AssistantSharedKvLayers {
             sliding_attention_layer: Some(0),
@@ -6548,6 +6557,7 @@ mod tests {
             qwen3_vl_vision: None,
             minicpm_v46_vision: None,
             nemotron_omni: None,
+            expert_stream: None,
         };
         let mut cache = MlxKVCache::new(cfg.layer_count);
 
@@ -6829,6 +6839,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32];
@@ -6927,6 +6938,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32, 1_u32, 0_u32];
@@ -7001,6 +7013,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32, 1_u32, 0_u32];
@@ -7075,6 +7088,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32, 2_u32, 2_u32, 1_u32, 0_u32];
@@ -7149,6 +7163,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         };
         let x = zeros(&[1, 16, 4], MlxDtype::Float32, None);
         let indices_data = (0..64).map(|i| (3 - (i % 4)) as u32).collect::<Vec<_>>();
@@ -7266,6 +7281,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         };
         let x = zeros(&[1, 1, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32, 2_u32];
@@ -8238,6 +8254,7 @@ mod tests {
             qwen3_vl_vision: None,
             minicpm_v46_vision: None,
             nemotron_omni: None,
+            expert_stream: None,
         };
         (model_cfg, weights)
     }

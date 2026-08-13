@@ -1246,6 +1246,7 @@ mod tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         }
     }
 

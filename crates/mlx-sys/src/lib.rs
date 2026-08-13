@@ -56,7 +56,9 @@ pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, rope_dynamic, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
 };
-pub use io::{load_safetensors, load_safetensors_mmap};
+pub use io::{
+    SafetensorsNameFilter, load_safetensors, load_safetensors_filtered, load_safetensors_mmap,
+};
 pub use mempressure::{
     device_active_bytes, device_cache_bytes, device_peak_bytes,
     device_recommended_working_set_bytes, host_resident_bytes,

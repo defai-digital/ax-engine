@@ -572,6 +572,7 @@ pub fn load_qwen3_vl_vision_weights(
                     | "qwen3_next"
                     | "qwen3.6"
                     | "qwen3_6"
+                    | "qwen3_5_moe_text"
             )
         });
     if !is_qwen_visual_config {

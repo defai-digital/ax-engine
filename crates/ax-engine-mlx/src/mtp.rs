@@ -3328,6 +3328,7 @@ mod deepseek_v4_mtp_tests {
             mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
+            expert_stream: None,
         }
     }
 
@@ -3383,6 +3384,7 @@ mod deepseek_v4_mtp_tests {
             qwen3_vl_vision: None,
             minicpm_v46_vision: None,
             nemotron_omni: None,
+            expert_stream: None,
         }
     }
 
