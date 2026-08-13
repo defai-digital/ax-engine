@@ -4353,6 +4353,7 @@ impl QuantInputSlot {
             bits: self.bits,
             mode: Self::mode_str(self.mode_tag).to_string(),
             linear_bias: self.linear_bias.map(|i| inputs.get(i)),
+            decode_weight_t: None,
         }
     }
 }
@@ -5718,6 +5719,7 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let up = QuantizedWeight {
             weight: up_q[0].clone(),
@@ -5727,6 +5729,7 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
 
         let metal = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up)
@@ -5770,6 +5773,7 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let batched = mlx_sys::zeros(&[2, 1, 32], MlxDtype::Float32, None);
         let prefill = mlx_sys::zeros(&[1, 2, 32], MlxDtype::Float32, None);
@@ -5830,6 +5834,7 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
 
         let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
@@ -5867,6 +5872,7 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
 
         let fused = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, Some(&residual))
@@ -6261,6 +6267,7 @@ mod tests {
             bits: 32,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
 
         // Capture a *clone* of the weight into the closure body. Per

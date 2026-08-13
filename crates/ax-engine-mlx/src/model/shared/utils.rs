@@ -338,6 +338,8 @@ fn qw_direct_mlx(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
             mode,
             None,
         )
+    } else if let Some(weight_t) = &qw.decode_weight_t {
+        matmul(x, weight_t, None)
     } else {
         let wt = transpose(&qw.weight, &[1, 0], None);
         matmul(x, &wt, None)
@@ -375,6 +377,8 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
             mode,
             None,
         )
+    } else if let Some(weight_t) = &qw.decode_weight_t {
+        matmul(x, weight_t, None)
     } else {
         let wt = transpose(&qw.weight, &[1, 0], None);
         matmul(x, &wt, None)
@@ -671,6 +675,7 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
                     bits: qw.bits,
                     mode: qw.mode.clone(),
                     linear_bias: None,
+                    decode_weight_t: None,
                 };
                 let qw_rem = QuantizedWeight {
                     weight: w_rem,
@@ -680,6 +685,7 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
                     bits: qw.bits,
                     mode: qw.mode.clone(),
                     linear_bias: None,
+                    decode_weight_t: None,
                 };
                 // The aligned prefix hits qmv_fast.
                 let y_al = invariant_projection_metal_impl(&x_al, &qw_al)?;
@@ -1206,6 +1212,7 @@ mod tests {
             bits: 32,
             mode: "affine".to_string(),
             linear_bias: Some(bias),
+            decode_weight_t: None,
         };
         let x = array_f32(&[1.0, 2.0], &[1, 1, 2]);
         let out = super::qw(&x, &qw);
@@ -1239,6 +1246,7 @@ mod tests {
             bits: 32,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let shipped = super::project_lm_head(&x, &lm);
         let reference = matmul(&x, &transpose(&weight, &[1, 0], None), None);
@@ -1297,6 +1305,81 @@ mod tests {
         assert!(
             peak_metal + weight_bytes / 2 < peak_transpose,
             "no-copy GEMV peak {peak_metal} should beat materialized transpose peak {peak_transpose} by ~half of {weight_bytes} weight bytes"
+        );
+    }
+
+    #[test]
+    fn qw_pretransposed_lm_head_matches_lazy_transpose() {
+        let hidden = 8i32;
+        let vocab = 16i32;
+        let w_data: Vec<f32> = (0..vocab * hidden)
+            .map(|i| (i as f32) * 0.01 - 0.5)
+            .collect();
+        let x_data: Vec<f32> = (0..hidden).map(|i| (i as f32) * 0.25).collect();
+        let weight = array_f32(&w_data, &[vocab, hidden]);
+        let x = array_f32(&x_data, &[1, 1, hidden]);
+        let mut prepared = QuantizedWeight {
+            weight: weight.clone(),
+            scales: None,
+            biases: None,
+            group_size: 1,
+            bits: 32,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+        };
+        prepared.prepare_contiguous_decode_weight_t();
+        let weight_t = prepared
+            .decode_weight_t
+            .as_ref()
+            .expect("unquantized rank-2 lm_head must materialize W_t once");
+        assert_eq!(weight_t.shape(), vec![hidden, vocab]);
+
+        let lazy = QuantizedWeight {
+            weight,
+            scales: None,
+            biases: None,
+            group_size: 1,
+            bits: 32,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+        };
+        let got = super::qw(&x, &prepared);
+        let want = super::qw(&x, &lazy);
+        eval(&[&got, &want]);
+        let got = got.data_f32();
+        let want = want.data_f32();
+        assert_eq!(got.len(), want.len());
+        for i in 0..got.len() {
+            assert!(
+                (got[i] - want[i]).abs() < 1e-4,
+                "idx {i}: prepared {} vs lazy {}",
+                got[i],
+                want[i]
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_contiguous_decode_weight_t_skips_quantized() {
+        let weight = array_f32(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let scales = array_f32(&[1.0, 1.0], &[2, 1]);
+        let biases = array_f32(&[0.0, 0.0], &[2, 1]);
+        let mut quantized = QuantizedWeight {
+            weight,
+            scales: Some(scales),
+            biases: Some(biases),
+            group_size: 2,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+        };
+        quantized.prepare_contiguous_decode_weight_t();
+        assert!(
+            quantized.decode_weight_t.is_none(),
+            "quantized lm_head must not grow a dense W_t copy"
         );
     }
 
@@ -1427,6 +1510,7 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let input_data: Vec<f32> = (0..2 * input_dim)
             .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)
@@ -1480,6 +1564,7 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let input_data: Vec<f32> = (0..2 * input_dim)
             .map(|index| ((index % 43) as f32 - 21.0) * 0.02734375)
@@ -1549,6 +1634,7 @@ mod tests {
             bits,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let input_data: Vec<f32> = (0..3 * input_dim)
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -1635,6 +1721,7 @@ mod tests {
             bits,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let input_data: Vec<f32> = (0..input_dim)
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -1706,6 +1793,7 @@ mod tests {
                 bits,
                 mode: "affine".to_string(),
                 linear_bias: None,
+                decode_weight_t: None,
             };
             let s = 3_i32;
             let input_data: Vec<f32> = (0..(s * input_dim) as usize)
@@ -1814,6 +1902,7 @@ mod tests {
             bits,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let input_data: Vec<f32> = (0..input_dim as usize)
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -1871,6 +1960,7 @@ mod tests {
             bits,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let input_data: Vec<f32> = (0..input_dim as usize)
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -1938,6 +2028,7 @@ mod tests {
                 bits,
                 mode: "affine".to_string(),
                 linear_bias: None,
+                decode_weight_t: None,
             };
             let microbatch = invariant_projection_metal_impl(&input, &weight)
                 .expect("fast invariant affine projection should support two rows");
@@ -2012,6 +2103,7 @@ mod tests {
             bits: 16,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let input_data: Vec<f32> = (0..2 * input_dim)
             .map(|index| ((index % 37) as f32 - 18.0) * 0.0234375)

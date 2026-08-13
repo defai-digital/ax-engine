@@ -509,6 +509,11 @@ pub struct QuantizedWeight {
     /// Matches mlx-lm `SwitchLinear.bias` / `QuantizedSwitchLinear.bias`, applied
     /// as `y += bias[indices]` after `gather_qmm` (see switch_layers.py).
     pub linear_bias: Option<MlxArray>,
+    /// Contiguous `[in, out]` view of an unquantized `[out, in]` weight,
+    /// materialized once at load. Decode `qw` uses this so each token does a
+    /// coalesced `x @ W_t` instead of a lazy strided transpose of a multi-GB
+    /// `lm_head`. Quantized tensors leave this `None`.
+    pub decode_weight_t: Option<MlxArray>,
 }
 
 impl QuantizedWeight {
@@ -535,12 +540,30 @@ impl QuantizedWeight {
                 quantization.mode
             },
             linear_bias: None,
+            decode_weight_t: None,
         }
     }
 
     pub fn with_linear_bias(mut self, linear_bias: Option<MlxArray>) -> Self {
         self.linear_bias = linear_bias;
         self
+    }
+
+    /// Materialize a contiguous `[in, out]` copy of an unquantized weight.
+    ///
+    /// Intended for the decode `lm_head` only (one 2–3 GB buffer at load).
+    /// No-ops when the tensor is quantized, not rank-2, or already prepared.
+    pub fn prepare_contiguous_decode_weight_t(&mut self) {
+        if self.decode_weight_t.is_some() || self.scales.is_some() {
+            return;
+        }
+        let shape = self.weight.shape();
+        if shape.len() != 2 || shape[0] <= 0 || shape[1] <= 0 {
+            return;
+        }
+        let transposed = contiguous(&transpose(&self.weight, &[1, 0], None), None);
+        eval(&[&transposed]);
+        self.decode_weight_t = Some(transposed);
     }
 
     pub fn is_quantized(&self) -> bool {
@@ -1446,6 +1469,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let gemma4_assistant_mtp = load_gemma4_assistant_mtp_status(&root, artifacts.manifest());
     let glm_mtp = load_glm_mtp_sidecar(&root, &mut name_map, artifacts.manifest());
 
+    let mut lm_head = lm_head;
+    lm_head.prepare_contiguous_decode_weight_t();
     let mut model = ModelWeights {
         token_embedding,
         final_norm,
@@ -1598,15 +1623,18 @@ pub fn load_pipeline_stage_weights(
             tied.group_size = embedding.group_size;
             tied.bits = embedding.bits;
             tied.mode.clone_from(&embedding.mode);
+            tied.prepare_contiguous_decode_weight_t();
             Some(tied)
         } else {
-            Some(take_weight(
+            let mut head = take_weight(
                 specs,
                 &mut name_map,
                 NativeTensorRole::LmHead,
                 None,
                 "lm_head",
-            )?)
+            )?;
+            head.prepare_contiguous_decode_weight_t();
+            Some(head)
         }
     } else {
         None
@@ -1949,6 +1977,7 @@ fn mtp_take_weight(
 
         mode: "affine".to_string(),
         linear_bias: None,
+        decode_weight_t: None,
     })
 }
 
@@ -2131,6 +2160,7 @@ fn mtp_take_mxfp4_experts(
         bits: 4,
         mode: "mxfp4".to_string(),
         linear_bias: None,
+        decode_weight_t: None,
     };
     let down = QuantizedWeight {
         weight: stack(&down_weight_refs, 0, None),
@@ -2140,6 +2170,7 @@ fn mtp_take_mxfp4_experts(
         bits: 4,
         mode: "mxfp4".to_string(),
         linear_bias: None,
+        decode_weight_t: None,
     };
     Some((gate_up, down))
 }
@@ -2240,7 +2271,33 @@ fn build_draft_lm_head(
         bits: spec.bits,
         mode: "affine".to_string(),
         linear_bias: None,
+        decode_weight_t: None,
     })
+}
+
+/// `AX_MLX_SKIP_VISION_SIDECAR=1` — do not merge `vision.safetensors`.
+///
+/// Text-only `--ax-direct` does not read the vision tower. Skipping the
+/// sidecar avoids eval-ing ~0.9 GB of unused buffers into the Metal
+/// residency set. Default off (load when present).
+pub(crate) fn skip_vision_sidecar_from_env(raw: Option<&str>) -> bool {
+    matches!(raw, Some(v) if v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+/// `AX_MLX_SKIP_MTP_SIDECAR=1` — do not merge `mtp.safetensors`.
+///
+/// `--ax-direct` does not run the MTP module. Skipping the sidecar avoids
+/// eval-ing ~0.85 GB of unused buffers. Default off so MTP lanes still load.
+pub(crate) fn skip_mtp_sidecar_from_env(raw: Option<&str>) -> bool {
+    matches!(raw, Some(v) if v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+fn skip_vision_sidecar() -> bool {
+    skip_vision_sidecar_from_env(std::env::var("AX_MLX_SKIP_VISION_SIDECAR").ok().as_deref())
+}
+
+fn skip_mtp_sidecar() -> bool {
+    skip_mtp_sidecar_from_env(std::env::var("AX_MLX_SKIP_MTP_SIDECAR").ok().as_deref())
 }
 
 /// AXQuant protected vision sidecar file and provenance manifest names.
@@ -2292,6 +2349,9 @@ fn load_vision_sidecar(
     root: &std::path::Path,
     name_map: &mut HashMap<String, MlxArray>,
 ) -> Result<Option<VisionSidecarInfo>, WeightLoadError> {
+    if skip_vision_sidecar() {
+        return Ok(None);
+    }
     let sidecar = root.join(VISION_SIDECAR_FILE);
     let manifest_path = root.join(VISION_SIDECAR_MANIFEST_FILE);
     if !sidecar.exists() {
@@ -2466,6 +2526,9 @@ fn load_mtp_sidecar(
     // the Qwen layout (`mtp.layers.N.*`) must never consume those tensors —
     // V4 nextn weights load via `load_deepseek_v4_mtp_sidecar`.
     if manifest.deepseek_v4.is_enabled() {
+        return (0, default_draft, None, None, MtpNormLayout::Auto);
+    }
+    if skip_mtp_sidecar() {
         return (0, default_draft, None, None, MtpNormLayout::Auto);
     }
 
@@ -4790,6 +4853,7 @@ fn split_deepseek_kv_b_projection(
 
                 mode: "affine".to_string(),
                 linear_bias: None,
+                decode_weight_t: None,
             },
             QuantizedWeight {
                 weight: unembed_out,
@@ -4800,6 +4864,7 @@ fn split_deepseek_kv_b_projection(
 
                 mode: "affine".to_string(),
                 linear_bias: None,
+                decode_weight_t: None,
             },
         ))
     }
@@ -4837,6 +4902,7 @@ fn requantize_affine_weight(
 
         mode: "affine".to_string(),
         linear_bias: None,
+        decode_weight_t: None,
     })
 }
 
@@ -4905,6 +4971,7 @@ fn concat_quantized_weight_rows(
         bits: a.bits,
         mode: a.mode.clone(),
         linear_bias,
+        decode_weight_t: None,
     })
 }
 
@@ -5117,6 +5184,7 @@ fn pack_linear_attention_projection_rows(
         bits: first.bits,
         mode: "affine".to_string(),
         linear_bias: None,
+        decode_weight_t: None,
     })
 }
 
@@ -5728,6 +5796,23 @@ mod tests {
         assert!(!mmap_weights_env_value_enabled(Some("0")));
         assert!(mmap_weights_env_value_enabled(Some("1")));
         assert!(mmap_weights_env_value_enabled(Some("true")));
+    }
+
+    #[test]
+    fn skip_vision_sidecar_from_env_is_opt_in() {
+        assert!(!skip_vision_sidecar_from_env(None));
+        assert!(!skip_vision_sidecar_from_env(Some("")));
+        assert!(!skip_vision_sidecar_from_env(Some("0")));
+        assert!(skip_vision_sidecar_from_env(Some("1")));
+        assert!(skip_vision_sidecar_from_env(Some("true")));
+    }
+
+    #[test]
+    fn skip_mtp_sidecar_from_env_is_opt_in() {
+        assert!(!skip_mtp_sidecar_from_env(None));
+        assert!(!skip_mtp_sidecar_from_env(Some("0")));
+        assert!(skip_mtp_sidecar_from_env(Some("1")));
+        assert!(skip_mtp_sidecar_from_env(Some("TRUE")));
     }
 
     #[test]
@@ -6756,6 +6841,7 @@ mod tests {
 
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         }
     }
 

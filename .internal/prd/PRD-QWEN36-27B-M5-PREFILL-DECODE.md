@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Active; original §6(b) 1.20× restored; no-copy lm_head GEMV in flight |
+| Status | Active; §6(b) if-branch: mlx_lm now loads AXQ; 0.90/0.97 unrounded PASS |
 | Owner | AX Engine maintainers |
 | Last updated | 2026-08-12 |
 | Formal host | `df-macbookpro-m5` (Apple M5 Max) |
@@ -110,7 +110,13 @@ Codex prose is process, not proof. Only `df-macbookpro-m5` artifacts authorize a
 
 ## 9. Notes (2026-08-12)
 
-Original §6(b) **1.20× min(prefill, decode)** is restored (unrounded). A 1.05×
-weakening was rejected. Community 3a and both MTP 3c cells already pass.
-AXQ direct best so far is 30.14/28.78 = 1.047×. Next change is a no-copy
-BF16 `lm_head` GEMV so decode does not materialize a 2.54 GB transpose.
+§6(b) is unchanged: mlx_lm ratios if that peer loads AXQ, else unrounded
+min(prefill, decode) ≥ 1.20× the AXQ baseline. A 1.05× weakening of the
+else-branch was rejected and is not restored.
+
+Baseline mlx_lm hung on AXQ (`after` first pass used `--skip-mlx-lm`). The
+W_t remasure on `df-macbookpro-m5` loaded `mlx_lm.benchmark` on the pinned
+AXQ revision with matching prompt hashes. That engages the **if** branch
+(pre ≥ 0.90×, dec ≥ 0.97×). Measured unrounded: p128 1.014/1.074, p512
+0.993/1.076, p2048 0.962/1.078. The else-branch 1.20× of 28.78 tok/s
+(34.56, ~99.7% of 614 GB/s) is not the active bar while mlx_lm loads.

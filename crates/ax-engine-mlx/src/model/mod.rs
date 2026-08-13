@@ -4677,6 +4677,7 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         }
     }
 
@@ -7851,6 +7852,7 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
         let plain = QuantizedWeight {
             weight: weight.clone(),
@@ -7860,6 +7862,7 @@ mod tests {
             bits: 0,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
         };
 
         for embedding in [&quantized, &plain] {
