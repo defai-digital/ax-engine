@@ -249,6 +249,14 @@ direct path and the N-gram path on the same prompt/decode shape.
   in favor of the durable tiered prefix cache (ADR-002). Native uncompressed
   KV is the only decode behavior.
 
+## Does AX Engine support Qwen 3.8?
+
+Only as an **experimental** load path, not as production support. Super-class
+Qwen 3.8 packs can convert and serve through `--stream-experts` (default
+`auto`), including 2-bit SSD expert streaming. Local decode is still too slow
+to recommend, certify, or treat as an official family. Prefer Qwen 3.6 for
+local serving. See [Supported Models](SUPPORTED-MODELS.md).
+
 ## Which runtime path should I choose first?
 
 Use the repo-owned MLX runtime first when you have a supported Qwen/Gemma/GLM

@@ -2,7 +2,7 @@
 
 **Repos:** `axquant` (`feat/expert-ssd-stream`) and `ax-engine` (`feat/expert-ssd-stream`)
 **Goal:** Run Super-class MoE (Qwen3.8-2.4T-A95B) on Macs whose unified memory is smaller than the full 2-bit expert table (~0.8 TB). A 512 GB Mac cannot resident-load that pack.
-**Non-goal:** Copy, translate, or vendor mlx-optiq. Clean-room implementation only.
+**Non-goal:** Copy, translate, or vendor mlx-optiq. Clean-room implementation only. This path is **experimental only** — local decode stays too slow even at 2-bit, so Qwen 3.8 is not a production support candidate.
 **v1 scope:** *layer-stack paging* — page one MoE layer's fused expert stack from SSD, run the existing `gather_qmm`, then evict. Not per-expert unfused GEMM (v2). Enabled families: Qwen 3.8 and DeepSeek V4 Flash (inferred from native expert roles when `ax_expert_stream.json` is absent).
 
 ## Why this shape

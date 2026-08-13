@@ -52,7 +52,7 @@ resolved session*, not how well a family is supported.
 | --- | --- |
 | **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
-| **64 GB+** | Comfortable always-on multi-role local server |
+| **64 GB+** | Comfortable always-on multi-role local server. Qwen 3.8 Super-class packs are still not a production choice — local decode stays too slow even at 2-bit. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
 Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
@@ -85,14 +85,14 @@ DeepSeek caveats:
 
 Qwen 3.8 caveat:
 
-- Qwen 3.8 Super-class MoE (for example 2.4T-A95B) is **experimental** in
-  6.16.x. The pack converts and can serve through SSD expert streaming
+- Qwen 3.8 Super-class MoE (for example 2.4T-A95B) is **experimental only**.
+  Packs can convert and technically serve through SSD expert streaming
   (`--stream-experts`, default `auto`; `on` forces paging, `off` forces
-  resident and still fails closed when the pack requires streaming). There
-  is no certification, no published throughput claim, and the stream contract
-  may still change. Official Qwen 3.8 support is planned for **v7.0.0**
-  (about one week after 6.16.1). Do not present this preview as certified
-  Qwen 3.5 / 3.6 support.
+  resident and still fails closed when the pack requires streaming).
+- Local inference is too slow even on the 2-bit stream path. That is why this
+  family is **not a production support candidate**: no certification, no
+  published throughput claim, and no plan to promote it to official /
+  Certified support. Do not present Qwen 3.8 as a Qwen 3.5 / 3.6 substitute.
 
 A model moves between tiers by landing evidence, not by renaming:
 
