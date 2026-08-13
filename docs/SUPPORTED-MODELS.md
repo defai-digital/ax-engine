@@ -83,6 +83,17 @@ DeepSeek caveats:
   certification evidence, and it is not a support claim. Delegated adapters
   must not be used to present V4 as supported.
 
+Qwen 3.8 caveat:
+
+- Qwen 3.8 Super-class MoE (for example 2.4T-A95B) is **experimental** in
+  6.16.x. The pack converts and can serve through SSD expert streaming
+  (`--stream-experts`, default `auto`; `on` forces paging, `off` forces
+  resident and still fails closed when the pack requires streaming). There
+  is no certification, no published throughput claim, and the stream contract
+  may still change. Official Qwen 3.8 support is planned for **v7.0.0**
+  (about one week after 6.16.1). Do not present this preview as certified
+  Qwen 3.5 / 3.6 support.
+
 A model moves between tiers by landing evidence, not by renaming:
 
 - Compatible → Certified: a repo-owned graph (or a registered route) plus

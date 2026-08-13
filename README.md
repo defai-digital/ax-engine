@@ -154,6 +154,11 @@ aliases, presets, or manual model directories; they are not all AutomatosX-manag
 packages. Full matrix:
 [Supported Models](docs/SUPPORTED-MODELS.md).
 
+**Qwen 3.8 is experimental in 6.16.x.** Super-class packs can load through the
+SSD expert-stream path (`--stream-experts`, default `auto`), but this is a
+preview with no certification or published performance claims. Official Qwen 3.8
+support is planned for **v7.0.0** (about one week after this release).
+
 **Recommended starting packages** (serve-ready, match published benches):
 
 | Goal | Alias / family | Why |
