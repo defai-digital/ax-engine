@@ -19498,9 +19498,8 @@ mod tests {
         // Nemotron embed uses its own bidirectional branch inside the dense body.
         assert!(!embedding_single_item_uses_gemma3_path("nemotron_embed"));
         // Batch path uses the same family string gate for EmbeddingGemma.
-        assert_eq!(
+        assert!(
             embedding_single_item_uses_gemma3_path("embeddinggemma"),
-            true,
             "single and batch both key off model_family == embeddinggemma"
         );
     }
