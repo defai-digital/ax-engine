@@ -154,11 +154,12 @@ aliases, presets, or manual model directories; they are not all AutomatosX-manag
 packages. Full matrix:
 [Supported Models](docs/SUPPORTED-MODELS.md).
 
-**Qwen 3.8 is experimental only, not a production target.** Super-class packs
-can technically load through the SSD expert-stream path (`--stream-experts`,
-default `auto`), but local inference is too slow even at 2-bit to recommend or
-certify. There is no published throughput claim and no plan to promote Qwen 3.8
-to official / production support. Prefer Qwen 3.6 for local serving.
+**Qwen 3.8 Super-class (2.4T) is experimental only, not a production target.**
+Those packs can technically load through the SSD expert-stream path
+(`--stream-experts`, default `auto`), but local inference is too slow even at
+2-bit to recommend or certify. **Expect AX Engine v7.0.0 to support Qwen 3.8
+27B** as the production-size family. Until then, prefer Qwen 3.6 for local
+serving.
 
 **Recommended starting packages** (serve-ready, match published benches):
 

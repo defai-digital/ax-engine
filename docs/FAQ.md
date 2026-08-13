@@ -251,11 +251,13 @@ direct path and the N-gram path on the same prompt/decode shape.
 
 ## Does AX Engine support Qwen 3.8?
 
-Only as an **experimental** load path, not as production support. Super-class
-Qwen 3.8 packs can convert and serve through `--stream-experts` (default
-`auto`), including 2-bit SSD expert streaming. Local decode is still too slow
-to recommend, certify, or treat as an official family. Prefer Qwen 3.6 for
-local serving. See [Supported Models](SUPPORTED-MODELS.md).
+Super-class Qwen 3.8 (2.4T) is an **experimental** load path only, not
+production support. Those packs can convert and serve through
+`--stream-experts` (default `auto`), including 2-bit SSD expert streaming, but
+local decode is still too slow to recommend or certify.
+
+**Expect AX Engine v7.0.0 to support Qwen 3.8 27B.** Until that release,
+prefer Qwen 3.6 for local serving. See [Supported Models](SUPPORTED-MODELS.md).
 
 ## Which runtime path should I choose first?
 
