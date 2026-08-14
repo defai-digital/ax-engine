@@ -38,6 +38,21 @@ pub(crate) fn set_qwen_prefill_dequant_dense_family(active: bool) {
     QWEN_PREFILL_DEQUANT_DENSE_FAMILY.set(active);
 }
 
+/// Skip a no-op BF16 astype when the gather is already BF16.
+pub(crate) fn qwen_prefill_maybe_skip_bf16_astype(
+    x: &MlxArray,
+    model_family: &str,
+    seq: i32,
+) -> MlxArray {
+    if fastpath::should_qwen_prefill_skip_bf16_astype(model_family, seq)
+        && x.dtype() == MlxDtype::Bfloat16
+    {
+        x.clone()
+    } else {
+        astype(x, MlxDtype::Bfloat16, None)
+    }
+}
+
 fn activation_seq_len(x: &MlxArray) -> i32 {
     let shape = x.shape();
     match shape.len() {
@@ -1589,6 +1604,26 @@ mod tests {
         assert!(
             max_abs < 1e-4,
             "prefill must use BF16 W_t, not the 2-bit decode cache, max_abs={max_abs}"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_skip_bf16_astype_skips_when_already_bf16() {
+        let data = [1.0f32, -0.5, 0.25, 2.0];
+        let x = array_f32(&data, &[1, 2, 2]);
+        let bf = astype(&x, MlxDtype::Bfloat16, None);
+        eval(&[&bf]);
+        let skipped = super::qwen_prefill_maybe_skip_bf16_astype(&bf, "qwen3_5", 1024);
+        let forced = astype(&bf, MlxDtype::Bfloat16, None);
+        eval(&[&skipped, &forced]);
+        assert_eq!(skipped.dtype(), MlxDtype::Bfloat16);
+        assert_eq!(skipped.shape(), forced.shape());
+        let cast = super::qwen_prefill_maybe_skip_bf16_astype(&x, "qwen3_5", 1024);
+        eval(&[&cast]);
+        assert_eq!(cast.dtype(), MlxDtype::Bfloat16);
+        assert!(
+            fastpath::should_qwen_prefill_skip_bf16_astype_for(true, "qwen3_5", 1024),
+            "shipped skip-astype gate must accept prefill seq"
         );
     }
 

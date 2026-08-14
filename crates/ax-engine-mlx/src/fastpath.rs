@@ -2938,6 +2938,41 @@ pub fn should_qwen_la_norm_qkvz_fuse(model_family: &str, seq: i32) -> bool {
     should_qwen_la_norm_qkvz_fuse_for(qwen_la_norm_qkvz_fuse_enabled(), model_family, seq)
 }
 
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_SKIP_BF16_ASTYPE` — when the embedding gather is
+    /// already BF16, skip the redundant `astype(..., bfloat16)` on Qwen
+    /// prefill (`seq > 1`). Not FFN, not contiguous, not compile.
+    ///
+    /// **Default: OFF**. Remasured binary `f2afbf68…` (2026-08-14): 3b
+    /// 1.027348 / 3d 1.052426 wash (0.995× q2only). Skipping a no-op
+    /// embed astype does not cut compute-bound qmm.
+    qwen_prefill_skip_bf16_astype_enabled,
+    "AX_MLX_QWEN_PREFILL_SKIP_BF16_ASTYPE"
+);
+
+/// Whether Qwen prefill should skip a no-op BF16 astype.
+pub fn should_qwen_prefill_skip_bf16_astype(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_skip_bf16_astype_for(
+        qwen_prefill_skip_bf16_astype_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_skip_bf16_astype`].
+pub fn should_qwen_prefill_skip_bf16_astype_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq > 1
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
 /// Pure helper for [`should_qwen_la_norm_qkvz_fuse`].
 pub fn should_qwen_la_norm_qkvz_fuse_for(
     enabled: bool,
@@ -4933,6 +4968,25 @@ mod tests {
         assert!(!should_qwen_la_norm_qkvz_fuse_for(true, "qwen3_5", 1));
         assert!(!should_qwen_la_norm_qkvz_fuse_for(true, "gemma4", 1024));
         assert!(!should_qwen_la_norm_qkvz_fuse_for(false, "qwen3_5", 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_skip_bf16_astype_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_skip_bf16_astype_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_skip_bf16_astype_for(
+            true, "qwen3_next", 2
+        ));
+        assert!(!should_qwen_prefill_skip_bf16_astype_for(
+            true, "qwen3_5", 1
+        ));
+        assert!(!should_qwen_prefill_skip_bf16_astype_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_skip_bf16_astype_for(
+            false, "qwen3_5", 1024
+        ));
     }
 
     #[test]

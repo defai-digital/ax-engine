@@ -1036,7 +1036,11 @@ fn forward_and_logits_mode(
         MlxDtype::Uint32,
     );
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = shared::utils::qwen_prefill_maybe_skip_bf16_astype(
+        &hidden,
+        &cfg.model_family,
+        token_ids.len() as i32,
+    );
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1578,7 +1582,11 @@ pub fn forward_all_positions_update_cache(
         return;
     }
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = shared::utils::qwen_prefill_maybe_skip_bf16_astype(
+        &hidden,
+        &cfg.model_family,
+        token_ids.len() as i32,
+    );
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1632,7 +1640,11 @@ pub fn forward_all_positions(
         return reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None);
     }
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = shared::utils::qwen_prefill_maybe_skip_bf16_astype(
+        &hidden,
+        &cfg.model_family,
+        token_ids.len() as i32,
+    );
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1710,7 +1722,11 @@ pub fn forward_all_positions_with_post_norm_greedy(
         MlxDtype::Uint32,
     );
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = shared::utils::qwen_prefill_maybe_skip_bf16_astype(
+        &hidden,
+        &cfg.model_family,
+        token_ids.len() as i32,
+    );
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1965,7 +1981,11 @@ pub fn forward_all_positions_post_norm_last_lm_head(
         return (last_logits, normed);
     }
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = shared::utils::qwen_prefill_maybe_skip_bf16_astype(
+        &hidden,
+        &cfg.model_family,
+        token_ids.len() as i32,
+    );
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
