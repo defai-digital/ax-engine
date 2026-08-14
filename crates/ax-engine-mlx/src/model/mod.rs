@@ -6395,7 +6395,7 @@ mod tests {
         let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
         let mut cache = MlxKVCache::new(1);
 
-        let out = linear_attention_forward(&cfg, &weights, &hidden, &mut cache, 0);
+        let out = linear_attention_forward(&cfg, &weights, &hidden, &mut cache, 0, false, false);
 
         assert_eq!(out.shape(), vec![1, 2, 8]);
         assert_eq!(cache.collect_eval_refs().len(), 2);

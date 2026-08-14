@@ -19,7 +19,9 @@ pub(crate) use attention::{
     full_precision_attention, full_precision_attention_with_window, prepare_value_bhsd,
     prepare_value_bhsd_from_proj, prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_flat,
-    qk_norm_rope_bhsd_from_proj_with_route,
+    qk_norm_rope_bhsd_from_proj_with_route, qwen_prefill_maybe_async_sdpa,
+    qwen_prefill_maybe_eval_attn_input, qwen_prefill_maybe_last_token_flat,
+    rope_bhsd_batch_offset_safe, set_qwen_prefill_reuse_rope_active,
 };
 pub(crate) use deepseek_v4_attention::deepseek_v4_attention_forward;
 pub(crate) use hyper_connection::{hc_head, hc_post, hc_pre};
@@ -44,8 +46,8 @@ pub(super) use rope::{build_llama3_rope_freqs, build_yarn_rope_freqs};
 pub(crate) use utils::scale_hidden_pub;
 pub(crate) use utils::{
     ProjectionBatchPolicy, add_then_multiply_scalar, apply_final_logit_softcap,
-    packed_qkv_kv_head_count, qw, qw_gather, qw_with_policy, scale_hidden, shape_element_count,
-    squeeze_switch_singleton,
+    packed_qkv_kv_head_count, qw, qw_gather, qw_with_policy, scale_hidden,
+    set_qwen_prefill_dequant_dense_family, shape_element_count, squeeze_switch_singleton,
 };
 
 // Additional re-exports used by test code (via `use super::*` in #[cfg(test)] mod).

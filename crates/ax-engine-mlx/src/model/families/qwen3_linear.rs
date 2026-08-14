@@ -76,6 +76,10 @@ pub(crate) fn layer_forward(
     skip_post_attention_ffn: bool,
 ) -> MlxArray {
     let seq = hidden.shape()[1] as usize;
+    crate::model::shared::set_qwen_prefill_dequant_dense_family(matches!(
+        cfg.model_family.to_ascii_lowercase().as_str(),
+        "qwen3_5" | "qwen3_next"
+    ));
     let profile_decode_layer = seq == 1 && decode_profile_enabled();
     let profile_prefill_layer = seq > 1 && prefill_profile_enabled();
     let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
@@ -91,12 +95,33 @@ pub(crate) fn layer_forward(
         };
     let hidden = &hidden_owned;
     // linear_attention_forward includes its own per-layer profiling.
-    let attn_proj = linear_attention_forward(cfg, w, &normed, cache, layer_idx);
+    let skip_unused_la_out = fastpath::should_qwen_prefill_skip_unused_la_out(
+        &cfg.model_family,
+        skip_post_attention_ffn,
+        seq as i32,
+    );
+    let last_token_out_proj = fastpath::should_qwen_prefill_last_token_o_proj(
+        &cfg.model_family,
+        last_position_only,
+        seq as i32,
+    );
+    let attn_proj = linear_attention_forward(
+        cfg,
+        w,
+        &normed,
+        cache,
+        layer_idx,
+        skip_unused_la_out,
+        last_token_out_proj,
+    );
 
     let residual_norm_started = profile_forward_layer.then(Instant::now);
 
     // Cache-only terminal layer: linear state already in cache; residual discarded.
     if skip_post_attention_ffn {
+        if skip_unused_la_out {
+            return hidden.clone();
+        }
         let hidden = add(hidden, &attn_proj, None);
         if let Some(started) = residual_norm_started {
             forward_profile_eval_elapsed(
@@ -277,6 +302,18 @@ pub(crate) fn layer_forward(
     out
 }
 
+fn slice_bsh_last_token(x: &MlxArray) -> MlxArray {
+    let shape = x.shape();
+    let last = shape[1] - 1;
+    slice(
+        x,
+        &[0, last, 0],
+        &[shape[0], last + 1, shape[2]],
+        &[1, 1, 1],
+        None,
+    )
+}
+
 /// Residual add + pre-FFN RMSNorm for a Qwen linear-attention layer.
 ///
 /// Prefill (not last-only) uses the same `add_rms_norm_pair` fuse as
@@ -290,17 +327,19 @@ fn qwen_linear_attn_residual_ffn_norm(
     last_only: bool,
 ) -> (MlxArray, MlxArray) {
     if last_only {
-        let residual = add(hidden, attn_proj, None);
-        let seq = residual.shape().get(1).copied().unwrap_or(1);
-        let hs = residual.shape().get(2).copied().unwrap_or(0);
-        let last = (seq - 1).max(0);
-        let sliced = slice(
-            &residual,
-            &[0, last, 0],
-            &[1, last + 1, hs],
-            &[1, 1, 1],
-            None,
-        );
+        let hidden_for_add = if attn_proj.shape().get(1).copied().unwrap_or(1) == 1
+            && hidden.shape().get(1).copied().unwrap_or(1) > 1
+        {
+            slice_bsh_last_token(hidden)
+        } else {
+            hidden.clone()
+        };
+        let residual = add(&hidden_for_add, attn_proj, None);
+        let sliced = if residual.shape().get(1).copied().unwrap_or(1) > 1 {
+            slice_bsh_last_token(&residual)
+        } else {
+            residual
+        };
         let normed = rms_norm(&sliced, Some(ffn_norm), eps, None);
         return (sliced, normed);
     }
@@ -362,6 +401,22 @@ mod tests {
         eval(&[&last_residual, &last_normed]);
         assert_eq!(last_residual.shape(), vec![1, 1, 32]);
         assert_eq!(last_normed.shape(), vec![1, 1, 32]);
+
+        let attn_last = slice_bsh_last_token(&attn);
+        let (last_from_sliced, _) =
+            qwen_linear_attn_residual_ffn_norm(&hidden, &attn_last, &norm_w, 1e-6, true);
+        eval(&[&last_from_sliced]);
+        assert_eq!(last_from_sliced.shape(), vec![1, 1, 32]);
+        for (a, b) in last_residual
+            .data_f32()
+            .iter()
+            .zip(last_from_sliced.data_f32().iter())
+        {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "last-token o_proj residual must match full-seq last row: {a} vs {b}"
+            );
+        }
     }
 
     #[test]

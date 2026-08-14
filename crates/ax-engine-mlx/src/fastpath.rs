@@ -2209,6 +2209,662 @@ pub fn should_qwen_prefill_q2_down_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
+env_flag!(
+    /// `AX_MLX_QWEN_GD_PREFILL_CHUNKWISE` — split GatedDelta prefill at
+    /// `seq >= 1024` into no-copy 256-token chunks (B=1 views, no
+    /// `contiguous` materialize). Not tile-512 (copies + sequential 512 TG),
+    /// not streaming, not compiled GD.
+    ///
+    /// **Default: OFF**. Remasured binary `282cf2fd…` (2026-08-14): 3b
+    /// 1.031608 / 3d 1.054279 wash (0.999× q2only).
+    qwen_gd_prefill_chunkwise_enabled,
+    "AX_MLX_QWEN_GD_PREFILL_CHUNKWISE"
+);
+
+/// Whether GatedDelta prefill should use the no-copy 256-token chunkwise path.
+pub fn should_qwen_gd_prefill_chunkwise(seq: i32) -> bool {
+    should_qwen_gd_prefill_chunkwise_for(qwen_gd_prefill_chunkwise_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_gd_prefill_chunkwise`].
+pub fn should_qwen_gd_prefill_chunkwise_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_FFN_GS64` — runtime gs64 overlay of dense FFN
+    /// gate/up/down (and packed gate+up) at `seq >= 1024`. Decode stays on
+    /// the checkpoint group size. Same bits, not Hub requant, not 2-bit.
+    ///
+    /// **Default: OFF**. Remasured binary `4a2744c7…` (2026-08-14): 3b
+    /// 1.021428 / 3d 1.051264 regression (0.989× q2only).
+    qwen_prefill_ffn_gs64_enabled,
+    "AX_MLX_QWEN_PREFILL_FFN_GS64"
+);
+
+/// Whether Qwen split/packed prefill should use a gs64 FFN overlay.
+pub fn should_qwen_prefill_ffn_gs64(seq: i32) -> bool {
+    should_qwen_prefill_ffn_gs64_for(qwen_prefill_ffn_gs64_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_ffn_gs64`].
+pub fn should_qwen_prefill_ffn_gs64_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_Q3_FFN` — 3-bit gs32 overlay of dense FFN
+    /// gate/up/down (and packed gate+up) at `seq >= 1024`. Decode stays on
+    /// the checkpoint pack. Not Hub requant, not 2-bit down (washed), not
+    /// gs64 (regressed).
+    ///
+    /// **Default: OFF**. Remasured binary `dc7036c2…` (2026-08-14): 3b
+    /// 0.998390 / 3d 1.014054 regression (0.967× q2only). MLX 3-bit qmm
+    /// is slower than 4/6-bit at M=1024.
+    qwen_prefill_q3_ffn_enabled,
+    "AX_MLX_QWEN_PREFILL_Q3_FFN"
+);
+
+/// Whether Qwen split/packed prefill should use a 3-bit FFN overlay.
+pub fn should_qwen_prefill_q3_ffn(seq: i32) -> bool {
+    should_qwen_prefill_q3_ffn_for(qwen_prefill_q3_ffn_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_q3_ffn`].
+pub fn should_qwen_prefill_q3_ffn_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_CONTIGUOUS_FFN_WEIGHTS` — materialize contiguous
+    /// FFN `weight`/`scales`/`biases` for `seq >= 1024` qmm. Decode keeps the
+    /// checkpoint views. Not activation `contiguous([B,S,H])` (washed), not a
+    /// fuse, not a bit-width overlay.
+    ///
+    /// **Default: OFF**. Remasured binary `99c3b4cc…` (2026-08-14): 3b
+    /// 1.027826 / 3d 1.051032 wash (0.995× q2only).
+    qwen_prefill_contiguous_ffn_weights_enabled,
+    "AX_MLX_QWEN_PREFILL_CONTIGUOUS_FFN_WEIGHTS"
+);
+
+/// Whether Qwen prefill should use contiguous FFN quantized tensors.
+pub fn should_qwen_prefill_contiguous_ffn_weights(seq: i32) -> bool {
+    should_qwen_prefill_contiguous_ffn_weights_for(
+        qwen_prefill_contiguous_ffn_weights_enabled(),
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_contiguous_ffn_weights`].
+pub fn should_qwen_prefill_contiguous_ffn_weights_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_ASYNC_GATE_UP` — `async_eval([gate, up])` at
+    /// `seq >= 1024` so the two split FFN qmms (community) or the packed
+    /// gate+up qmm (AXQ) submit before SwiGLU/down is built. Not GPU
+    /// dual-stream (closed), not pipeline-block `async_eval(hidden)` (washed),
+    /// not a fuse/compile/bit-width overlay.
+    ///
+    /// **Default: OFF**. Remasured binary `aebcaa13…` (2026-08-14): 3b
+    /// 1.024894 / 3d 1.049201 wash (0.992× q2only).
+    qwen_prefill_async_gate_up_enabled,
+    "AX_MLX_QWEN_PREFILL_ASYNC_GATE_UP"
+);
+
+/// Whether Qwen prefill should async-submit gate/up before down.
+pub fn should_qwen_prefill_async_gate_up(seq: i32) -> bool {
+    should_qwen_prefill_async_gate_up_for(qwen_prefill_async_gate_up_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_async_gate_up`].
+pub fn should_qwen_prefill_async_gate_up_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_FFN_F32_INPUT` — cast Qwen dense FFN activations
+    /// to Float32 for `seq >= 1024` qmm, then restore the original dtype.
+    /// Not a fuse, not compile, not a bit-width overlay, not async-gate-up.
+    ///
+    /// **Default: OFF**. Remasured binary `128d9a6c…` (2026-08-14): 3b
+    /// 0.851037 / 3d 0.870636 regression (0.824× q2only). F32 activations
+    /// make the steel qmm slower at M=1024.
+    qwen_prefill_ffn_f32_input_enabled,
+    "AX_MLX_QWEN_PREFILL_FFN_F32_INPUT"
+);
+
+/// Whether Qwen prefill FFN should run qmm in Float32.
+pub fn should_qwen_prefill_ffn_f32_input(seq: i32) -> bool {
+    should_qwen_prefill_ffn_f32_input_for(qwen_prefill_ffn_f32_input_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_ffn_f32_input`].
+pub fn should_qwen_prefill_ffn_f32_input_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_EVAL_FFN_INPUT` — `eval(&[x])` the Qwen dense
+    /// FFN activation at `seq >= 1024` before gate/up/packed qmm so the
+    /// residual+norm graph materializes once. Not a fuse, not compile, not
+    /// a bit-width overlay, not async-gate-up, not F32-input.
+    ///
+    /// **Default: OFF**. Remasured binary `56b9ea50…` (2026-08-14): 3b
+    /// 1.021296 / 3d 1.043878 wash (0.989× q2only). Extra sync eval does
+    /// not cut compute-bound qmm.
+    qwen_prefill_eval_ffn_input_enabled,
+    "AX_MLX_QWEN_PREFILL_EVAL_FFN_INPUT"
+);
+
+/// Whether Qwen prefill FFN should eval its input before qmm.
+pub fn should_qwen_prefill_eval_ffn_input(seq: i32) -> bool {
+    should_qwen_prefill_eval_ffn_input_for(qwen_prefill_eval_ffn_input_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_eval_ffn_input`].
+pub fn should_qwen_prefill_eval_ffn_input_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_EVAL_LA_INPUT` — `eval(&[x])` the Qwen linear-
+    /// attention activation at `seq >= 1024` before QKVZ/BA qmm so the
+    /// residual+norm graph materializes once. Not a fuse, not compile, not
+    /// a bit-width overlay, not async-gate-up, not F32-input, not FFN-input
+    /// eval (closed wash).
+    ///
+    /// **Default: OFF**. Remasured binary `e2e8dc60…` (2026-08-14): 3b
+    /// 1.018881 / 3d 1.044070 wash (0.987× q2only). Sync eval of LA input
+    /// does not cut compute-bound qmm.
+    qwen_prefill_eval_la_input_enabled,
+    "AX_MLX_QWEN_PREFILL_EVAL_LA_INPUT"
+);
+
+/// Whether Qwen prefill LA should eval its input before qmm.
+pub fn should_qwen_prefill_eval_la_input(seq: i32) -> bool {
+    should_qwen_prefill_eval_la_input_for(qwen_prefill_eval_la_input_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_eval_la_input`].
+pub fn should_qwen_prefill_eval_la_input_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_ASYNC_LA_OUTPUTS` — `async_eval([qkv,z,a,b])`
+    /// at `seq >= 1024` after packed LA projections so the QKVZ/BA qmm
+    /// submits before conv/GatedDelta is built. Not GPU dual-stream
+    /// (closed), not FFN async-gate-up (closed), not sync eval of LA/FFN
+    /// input (closed washes), not a fuse/compile/bit-width overlay.
+    ///
+    /// **Default: OFF**. Remasured binary `d27396ad…` (2026-08-14): 3b
+    /// 1.029902 / 3d 1.054108 wash (0.997× q2only). Async submit of LA
+    /// outputs does not cut compute-bound qmm.
+    qwen_prefill_async_la_outputs_enabled,
+    "AX_MLX_QWEN_PREFILL_ASYNC_LA_OUTPUTS"
+);
+
+/// Whether Qwen prefill should async-submit packed LA outputs.
+pub fn should_qwen_prefill_async_la_outputs(seq: i32) -> bool {
+    should_qwen_prefill_async_la_outputs_for(qwen_prefill_async_la_outputs_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_async_la_outputs`].
+pub fn should_qwen_prefill_async_la_outputs_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_ASYNC_PACKED_GATE_UP` — `async_eval([packed])`
+    /// at `seq >= 1024` after the packed gate+up qmm so it submits before
+    /// SwiGLU/down is built. Not split `async_eval([gate,up])` (closed),
+    /// not GPU dual-stream, not a fuse/compile/bit-width overlay.
+    ///
+    /// **Default: OFF**. Remasured binary `7e6557af…` (2026-08-14): 3b
+    /// 1.026856 / 3d 1.050946 wash (0.994× q2only). Async submit of packed
+    /// gate+up does not cut compute-bound qmm.
+    qwen_prefill_async_packed_gate_up_enabled,
+    "AX_MLX_QWEN_PREFILL_ASYNC_PACKED_GATE_UP"
+);
+
+/// Whether Qwen prefill should async-submit packed gate+up before SwiGLU.
+pub fn should_qwen_prefill_async_packed_gate_up(seq: i32) -> bool {
+    should_qwen_prefill_async_packed_gate_up_for(
+        qwen_prefill_async_packed_gate_up_enabled(),
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_async_packed_gate_up`].
+pub fn should_qwen_prefill_async_packed_gate_up_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_CONTIGUOUS_LA_WEIGHTS` — contiguous QKVZ/BA
+    /// `weight`/`scales`/`biases` for `seq >= 1024` qmm. Decode keeps the
+    /// checkpoint views. Not FFN contiguous-weights (closed wash), not
+    /// activation contiguous, not a fuse/compile/bit-width overlay.
+    ///
+    /// **Default: OFF**. Remasured binary `8578ce78…` (2026-08-14): 3b
+    /// 1.025765 / 3d 1.050233 wash (0.993× q2only). Contiguous LA weights
+    /// do not cut compute-bound qmm.
+    qwen_prefill_contiguous_la_weights_enabled,
+    "AX_MLX_QWEN_PREFILL_CONTIGUOUS_LA_WEIGHTS"
+);
+
+/// Whether Qwen prefill should use contiguous LA quantized tensors.
+pub fn should_qwen_prefill_contiguous_la_weights(seq: i32) -> bool {
+    should_qwen_prefill_contiguous_la_weights_for(
+        qwen_prefill_contiguous_la_weights_enabled(),
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_contiguous_la_weights`].
+pub fn should_qwen_prefill_contiguous_la_weights_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_EVAL_ATTN_INPUT` — `eval(&[x])` the Qwen full-
+    /// attention activation at `seq >= 1024` before QKVO qmm so the
+    /// residual+norm graph materializes once. Not a fuse, not compile, not
+    /// a bit-width overlay, not FFN/LA input eval (closed washes).
+    ///
+    /// **Default: OFF**. Remasured binary `03568893…` (2026-08-14): 3b
+    /// 1.023343 / 3d 1.047094 wash (0.991× q2only). Sync eval of attn
+    /// input does not cut compute-bound qmm.
+    qwen_prefill_eval_attn_input_enabled,
+    "AX_MLX_QWEN_PREFILL_EVAL_ATTN_INPUT"
+);
+
+/// Whether Qwen prefill attention should eval its input before qmm.
+pub fn should_qwen_prefill_eval_attn_input(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_eval_attn_input_for(
+        qwen_prefill_eval_attn_input_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_eval_attn_input`].
+pub fn should_qwen_prefill_eval_attn_input_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_EVAL_FFN_HIDDEN` — `eval(&[h])` the Qwen SwiGLU
+    /// activation at `seq >= 1024` before down qmm so silu_mul materializes
+    /// once. Not eval of FFN *input* (closed wash), not a fuse, not compile,
+    /// not a bit-width overlay.
+    ///
+    /// **Default: OFF**. Remasured binary `5aa63cc4…` (2026-08-14): 3b
+    /// 1.015480 / 3d 1.038232 regression (0.983× q2only). Sync eval of
+    /// SwiGLU hidden before down does not cut compute-bound qmm.
+    qwen_prefill_eval_ffn_hidden_enabled,
+    "AX_MLX_QWEN_PREFILL_EVAL_FFN_HIDDEN"
+);
+
+/// Whether Qwen prefill FFN should eval SwiGLU hidden before down qmm.
+pub fn should_qwen_prefill_eval_ffn_hidden(seq: i32) -> bool {
+    should_qwen_prefill_eval_ffn_hidden_for(qwen_prefill_eval_ffn_hidden_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_eval_ffn_hidden`].
+pub fn should_qwen_prefill_eval_ffn_hidden_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_CONTIGUOUS_ATTN_WEIGHTS` — contiguous QKVO /
+    /// packed-QKV `weight`/`scales`/`biases` for `seq >= 1024` qmm. Decode
+    /// keeps the checkpoint views. Not FFN/LA contiguous-weights (closed
+    /// washes), not a fuse/compile/bit-width overlay.
+    ///
+    /// **Default: OFF**. Remasured binary `a91776cc…` (2026-08-14): 3b
+    /// 1.026977 / 3d 1.050236 wash (0.994× q2only). Contiguous attn
+    /// weights do not cut compute-bound qmm.
+    qwen_prefill_contiguous_attn_weights_enabled,
+    "AX_MLX_QWEN_PREFILL_CONTIGUOUS_ATTN_WEIGHTS"
+);
+
+/// Whether Qwen prefill should use contiguous attention quantized tensors.
+pub fn should_qwen_prefill_contiguous_attn_weights(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_contiguous_attn_weights_for(
+        qwen_prefill_contiguous_attn_weights_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_contiguous_attn_weights`].
+pub fn should_qwen_prefill_contiguous_attn_weights_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_LA_OUT` — on cache-only last-layer
+    /// prefill (`skip_post_attention_ffn`), skip LA `out_proj` and the
+    /// discarded residual add after conv/recurrent state is written. Not
+    /// skip unused LA out *reshape* (closed wash), not a fuse/compile.
+    ///
+    /// **Default: OFF**. Remasured binary `ce7dd8ae…` (2026-08-14): 3b
+    /// 1.026321 / 3d 1.050153 wash (0.994× q2only). Skipping unused last-
+    /// layer LA out_proj does not cut compute-bound qmm.
+    qwen_prefill_skip_unused_la_out_enabled,
+    "AX_MLX_QWEN_PREFILL_SKIP_UNUSED_LA_OUT"
+);
+
+/// Whether Qwen cache-only last-layer prefill should skip unused LA out_proj.
+pub fn should_qwen_prefill_skip_unused_la_out(
+    model_family: &str,
+    skip_post_attention_ffn: bool,
+    seq: i32,
+) -> bool {
+    should_qwen_prefill_skip_unused_la_out_for(
+        qwen_prefill_skip_unused_la_out_enabled(),
+        model_family,
+        skip_post_attention_ffn,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_skip_unused_la_out`].
+pub fn should_qwen_prefill_skip_unused_la_out_for(
+    enabled: bool,
+    model_family: &str,
+    skip_post_attention_ffn: bool,
+    seq: i32,
+) -> bool {
+    enabled
+        && skip_post_attention_ffn
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_ASYNC_DOWN` — `async_eval([down])` at
+    /// `seq >= 1024` after the dense FFN down qmm so it submits before
+    /// residual/next-layer rms is built. Not split async-gate-up (closed),
+    /// not async-packed-gate-up (closed), not pipeline-block (closed).
+    ///
+    /// **Default: OFF**. Remeasured on `df-macbookpro-m5` after-async-down
+    /// (`09d9a68d…`) 3b 1.025088 / 3d 1.048606 wash (0.993× q2only).
+    qwen_prefill_async_down_enabled,
+    "AX_MLX_QWEN_PREFILL_ASYNC_DOWN"
+);
+
+/// Whether Qwen prefill should async-submit FFN down before residual.
+pub fn should_qwen_prefill_async_down(seq: i32) -> bool {
+    should_qwen_prefill_async_down_for(qwen_prefill_async_down_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_async_down`].
+pub fn should_qwen_prefill_async_down_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_LAST_TOKEN_O_PROJ` — on last-position-only
+    /// generate prefill (`seq >= 1024`), slice SDPA / LA recurrent output
+    /// to the last token *before* flatten + o_proj / LA out_proj. KV and
+    /// linear state are already written. Not skip-unused-LA-out (cache-only
+    /// skip of the whole last-layer out_proj), not a fuse/compile/bit-width
+    /// overlay, not eval/async/contiguous.
+    ///
+    /// **Default: OFF**. Remasured binary `ad3de508…` (2026-08-14): 3b
+    /// 1.026098 / 3d 1.051811 wash (0.994× q2only). One last-layer o_proj
+    /// slice cannot move the 1.15/1.20 bars.
+    qwen_prefill_last_token_o_proj_enabled,
+    "AX_MLX_QWEN_PREFILL_LAST_TOKEN_O_PROJ"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_REUSE_ROPE` — precompute NeoX cos/sin once per
+    /// prefill forward (`seq >= 1024`) and apply to every full-attn Q/K.
+    /// Not compiled QK-RoPE (closed), not fused prefill attention (closed),
+    /// not last-token o_proj (closed 3d miss), not eval/async/contiguous.
+    ///
+    /// **Default: OFF**. Remasured binary `fc8b7496…` (2026-08-14): community
+    /// and AXQ p2048 crashed (`SSE stream ended without a terminal response`)
+    /// on the first 1024-token chunk. Skipping fused C++ qk_norm_rope for the
+    /// portable apply is a regression. Helpers stay for the unit tests.
+    qwen_prefill_reuse_rope_enabled,
+    "AX_MLX_QWEN_PREFILL_REUSE_ROPE"
+);
+
+/// Whether Qwen prefill should reuse one cos/sin table across full-attn layers.
+pub fn should_qwen_prefill_reuse_rope(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_reuse_rope_for(qwen_prefill_reuse_rope_enabled(), model_family, seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_reuse_rope`].
+pub fn should_qwen_prefill_reuse_rope_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+/// Whether Qwen last-only prefill should run o_proj on the last token only.
+pub fn should_qwen_prefill_last_token_o_proj(
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    should_qwen_prefill_last_token_o_proj_for(
+        qwen_prefill_last_token_o_proj_enabled(),
+        model_family,
+        last_position_only,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_last_token_o_proj`].
+pub fn should_qwen_prefill_last_token_o_proj_for(
+    enabled: bool,
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    enabled
+        && last_position_only
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_ASYNC_SDPA` — `async_eval([sdpa])` at
+    /// `seq >= 1024` after full-attn SDPA so it submits before flatten +
+    /// o_proj is built. Not async-down (closed), not async-LA-outputs
+    /// (closed), not fused-attn (closed), not reuse-RoPE (crashed).
+    ///
+    /// **Default: OFF**. Remasured binary `db50b0f2…` (2026-08-14): 3b
+    /// 1.028962 / 3d 1.050581 wash (0.996× q2only). Async submit of SDPA
+    /// does not cut compute-bound qmm.
+    qwen_prefill_async_sdpa_enabled,
+    "AX_MLX_QWEN_PREFILL_ASYNC_SDPA"
+);
+
+/// Whether Qwen prefill should async-submit SDPA before o_proj.
+pub fn should_qwen_prefill_async_sdpa(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_async_sdpa_for(qwen_prefill_async_sdpa_enabled(), model_family, seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_async_sdpa`].
+pub fn should_qwen_prefill_async_sdpa_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_ASYNC_GD` — `async_eval([gd])` at `seq >= 1024`
+    /// after GatedDelta so the recurrent kernel submits before
+    /// rms_norm_gated + out_proj is built. Not async-LA-outputs (packed
+    /// QKVZ/BA, closed), not async-SDPA (closed), not GD-chunkwise (closed).
+    ///
+    /// **Default: OFF**. Remasured binary `af8582ff…` (2026-08-14): 3b
+    /// 1.031631 / 3d 1.054870 wash (0.999× q2only). Async submit of
+    /// GatedDelta does not cut compute-bound qmm.
+    qwen_prefill_async_gd_enabled,
+    "AX_MLX_QWEN_PREFILL_ASYNC_GD"
+);
+
+/// Whether Qwen prefill should async-submit GatedDelta before LA out_proj.
+pub fn should_qwen_prefill_async_gd(seq: i32) -> bool {
+    should_qwen_prefill_async_gd_for(qwen_prefill_async_gd_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_async_gd`].
+pub fn should_qwen_prefill_async_gd_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_EVAL_GD` — `eval([gd])` at `seq >= 1024` after
+    /// GatedDelta so the recurrent kernel materializes once before
+    /// rms_norm_gated + out_proj. Not async-GD (closed wash), not
+    /// eval-LA-input (before QKVZ/BA, closed), not eval-FFN-hidden (closed).
+    ///
+    /// **Default: OFF**. Remasured binary `09808d15…` (2026-08-14): 3b
+    /// 1.024523 / 3d 1.047978 wash/regression (0.992× q2only). Sync eval of
+    /// GatedDelta does not cut compute-bound qmm.
+    qwen_prefill_eval_gd_enabled,
+    "AX_MLX_QWEN_PREFILL_EVAL_GD"
+);
+
+/// Whether Qwen prefill should eval GatedDelta before LA out_proj.
+pub fn should_qwen_prefill_eval_gd(seq: i32) -> bool {
+    should_qwen_prefill_eval_gd_for(qwen_prefill_eval_gd_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_eval_gd`].
+pub fn should_qwen_prefill_eval_gd_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_CONTIGUOUS_GD` — `contiguous(gd)` at
+    /// `seq >= 1024` after GatedDelta so rms_norm_gated + out_proj see a
+    /// packed activation. Not GD-contiguous *inputs* (closed), not FFN/LA/attn
+    /// weight contiguous (closed), not eval/async-GD (closed).
+    ///
+    /// **Default: OFF**. Remasured binary `2863e243…` (2026-08-14): 3b
+    /// 1.029082 / 3d 1.053013 wash (0.997× q2only). Contiguous GatedDelta
+    /// output does not cut compute-bound qmm.
+    qwen_prefill_contiguous_gd_enabled,
+    "AX_MLX_QWEN_PREFILL_CONTIGUOUS_GD"
+);
+
+/// Whether Qwen prefill should contiguous GatedDelta before LA out_proj.
+pub fn should_qwen_prefill_contiguous_gd(seq: i32) -> bool {
+    should_qwen_prefill_contiguous_gd_for(qwen_prefill_contiguous_gd_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_contiguous_gd`].
+pub fn should_qwen_prefill_contiguous_gd_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_SPLIT_PACKED` — at `seq >= 1024`, run Qwen dense
+    /// FFN gate/up as two steel `quantized_matmul`s instead of one packed
+    /// qmm with 2× output rows. Gemma prefill already prefers split because
+    /// two qmatmuls beat packed at 128/512/2048. Not a fuse, compile, async,
+    /// contiguous, eval, tile, or bit-width overlay. Not the closed 4-bit
+    /// *pack* (that merged split → packed and regressed).
+    ///
+    /// **Default: OFF**. Remasured binary `efe6e151…` (2026-08-14): 3b
+    /// 1.025586 / 3d 1.050229 wash (0.993× q2only). Two steel qmatmuls do
+    /// not beat packed 2×-wide qmm at M=1024 on this 27B path.
+    qwen_prefill_split_packed_enabled,
+    "AX_MLX_QWEN_PREFILL_SPLIT_PACKED"
+);
+
+/// Whether Qwen prefill should split packed gate/up into two qmms.
+pub fn should_qwen_prefill_split_packed(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_split_packed_for(qwen_prefill_split_packed_enabled(), model_family, seq)
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE` — at `seq >= 1024`, dequantize
+    /// affine weights once and run steel dense `matmul` instead of
+    /// `quantized_matmul`. This changes the compute kernel (dense GEMM vs
+    /// fused dequant+MMA), not overlay/eval/async/contiguous/split/bit-width.
+    /// Not a Hub requant. Decode GEMV (seq=1) stays on steel qmm.
+    ///
+    /// **Default: OFF**. Not remasured on `df-macbookpro-m5` four-lane.
+    /// Enable with `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE=1`.
+    qwen_prefill_dequant_dense_enabled,
+    "AX_MLX_QWEN_PREFILL_DEQUANT_DENSE"
+);
+
+/// Whether Qwen prefill should replace qmm with dequant + dense GEMM.
+pub fn should_qwen_prefill_dequant_dense(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_dequant_dense_for(qwen_prefill_dequant_dense_enabled(), model_family, seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_dequant_dense`].
+pub fn should_qwen_prefill_dequant_dense_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+/// Pure helper for [`should_qwen_prefill_split_packed`].
+pub fn should_qwen_prefill_split_packed_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
 /// Whether Qwen prefill should merge matching-bit QKVZ/BA into one qmm.
 pub fn should_qwen_la_fused_qkvz_ba_qmm(seq: i32, same_quant: bool) -> bool {
     should_qwen_la_fused_qkvz_ba_qmm_for(qwen_la_fused_qkvz_ba_qmm_enabled(), seq, same_quant)
@@ -3772,6 +4428,344 @@ mod tests {
         );
         assert!(!should_qwen_prefill_q2_down_for(true, 1));
         assert!(!should_qwen_prefill_q2_down_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_gd_prefill_chunkwise_is_seq_gated() {
+        assert!(should_qwen_gd_prefill_chunkwise_for(true, 1024));
+        assert!(should_qwen_gd_prefill_chunkwise_for(true, 2048));
+        assert!(
+            !should_qwen_gd_prefill_chunkwise_for(true, 512),
+            "512-token GD chunkwise stays on the oneshot TG path"
+        );
+        assert!(!should_qwen_gd_prefill_chunkwise_for(true, 1));
+        assert!(!should_qwen_gd_prefill_chunkwise_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_ffn_gs64_is_seq_gated() {
+        assert!(should_qwen_prefill_ffn_gs64_for(true, 1024));
+        assert!(should_qwen_prefill_ffn_gs64_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_ffn_gs64_for(true, 512),
+            "512-token FFN gs64 overlay stays closed"
+        );
+        assert!(!should_qwen_prefill_ffn_gs64_for(true, 1));
+        assert!(!should_qwen_prefill_ffn_gs64_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_q3_ffn_is_seq_gated() {
+        assert!(should_qwen_prefill_q3_ffn_for(true, 1024));
+        assert!(should_qwen_prefill_q3_ffn_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_q3_ffn_for(true, 512),
+            "512-token FFN q3 overlay stays closed"
+        );
+        assert!(!should_qwen_prefill_q3_ffn_for(true, 1));
+        assert!(!should_qwen_prefill_q3_ffn_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_contiguous_ffn_weights_is_seq_gated() {
+        assert!(should_qwen_prefill_contiguous_ffn_weights_for(true, 1024));
+        assert!(should_qwen_prefill_contiguous_ffn_weights_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_contiguous_ffn_weights_for(true, 512),
+            "512-token FFN weight contiguous stays closed"
+        );
+        assert!(!should_qwen_prefill_contiguous_ffn_weights_for(true, 1));
+        assert!(!should_qwen_prefill_contiguous_ffn_weights_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_async_gate_up_is_seq_gated() {
+        assert!(should_qwen_prefill_async_gate_up_for(true, 1024));
+        assert!(should_qwen_prefill_async_gate_up_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_async_gate_up_for(true, 512),
+            "512-token async gate/up stays closed"
+        );
+        assert!(!should_qwen_prefill_async_gate_up_for(true, 1));
+        assert!(!should_qwen_prefill_async_gate_up_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_ffn_f32_input_is_seq_gated() {
+        assert!(should_qwen_prefill_ffn_f32_input_for(true, 1024));
+        assert!(should_qwen_prefill_ffn_f32_input_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_ffn_f32_input_for(true, 512),
+            "512-token FFN f32 input stays closed"
+        );
+        assert!(!should_qwen_prefill_ffn_f32_input_for(true, 1));
+        assert!(!should_qwen_prefill_ffn_f32_input_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_eval_ffn_input_is_seq_gated() {
+        assert!(should_qwen_prefill_eval_ffn_input_for(true, 1024));
+        assert!(should_qwen_prefill_eval_ffn_input_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_eval_ffn_input_for(true, 512),
+            "512-token FFN input eval stays closed"
+        );
+        assert!(!should_qwen_prefill_eval_ffn_input_for(true, 1));
+        assert!(!should_qwen_prefill_eval_ffn_input_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_eval_la_input_is_seq_gated() {
+        assert!(should_qwen_prefill_eval_la_input_for(true, 1024));
+        assert!(should_qwen_prefill_eval_la_input_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_eval_la_input_for(true, 512),
+            "512-token LA input eval stays closed"
+        );
+        assert!(!should_qwen_prefill_eval_la_input_for(true, 1));
+        assert!(!should_qwen_prefill_eval_la_input_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_async_la_outputs_is_seq_gated() {
+        assert!(should_qwen_prefill_async_la_outputs_for(true, 1024));
+        assert!(should_qwen_prefill_async_la_outputs_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_async_la_outputs_for(true, 512),
+            "512-token async LA outputs stays closed"
+        );
+        assert!(!should_qwen_prefill_async_la_outputs_for(true, 1));
+        assert!(!should_qwen_prefill_async_la_outputs_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_async_packed_gate_up_is_seq_gated() {
+        assert!(should_qwen_prefill_async_packed_gate_up_for(true, 1024));
+        assert!(should_qwen_prefill_async_packed_gate_up_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_async_packed_gate_up_for(true, 512),
+            "512-token async packed gate/up stays closed"
+        );
+        assert!(!should_qwen_prefill_async_packed_gate_up_for(true, 1));
+        assert!(!should_qwen_prefill_async_packed_gate_up_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_contiguous_la_weights_is_seq_gated() {
+        assert!(should_qwen_prefill_contiguous_la_weights_for(true, 1024));
+        assert!(should_qwen_prefill_contiguous_la_weights_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_contiguous_la_weights_for(true, 512),
+            "512-token LA weight contiguous stays closed"
+        );
+        assert!(!should_qwen_prefill_contiguous_la_weights_for(true, 1));
+        assert!(!should_qwen_prefill_contiguous_la_weights_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_eval_attn_input_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_eval_attn_input_for(true, "qwen3_5", 1024));
+        assert!(should_qwen_prefill_eval_attn_input_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(
+            !should_qwen_prefill_eval_attn_input_for(true, "qwen3_5", 512),
+            "512-token attn input eval stays closed"
+        );
+        assert!(!should_qwen_prefill_eval_attn_input_for(true, "qwen3_5", 1));
+        assert!(!should_qwen_prefill_eval_attn_input_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_eval_attn_input_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_eval_ffn_hidden_is_seq_gated() {
+        assert!(should_qwen_prefill_eval_ffn_hidden_for(true, 1024));
+        assert!(should_qwen_prefill_eval_ffn_hidden_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_eval_ffn_hidden_for(true, 512),
+            "512-token FFN hidden eval stays closed"
+        );
+        assert!(!should_qwen_prefill_eval_ffn_hidden_for(true, 1));
+        assert!(!should_qwen_prefill_eval_ffn_hidden_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_contiguous_attn_weights_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_contiguous_attn_weights_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_contiguous_attn_weights_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(
+            !should_qwen_prefill_contiguous_attn_weights_for(true, "qwen3_5", 512),
+            "512-token attn weight contiguous stays closed"
+        );
+        assert!(!should_qwen_prefill_contiguous_attn_weights_for(
+            true, "qwen3_5", 1
+        ));
+        assert!(!should_qwen_prefill_contiguous_attn_weights_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_contiguous_attn_weights_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_skip_unused_la_out_is_seq_family_and_skip_gated() {
+        assert!(should_qwen_prefill_skip_unused_la_out_for(
+            true, "qwen3_5", true, 1024
+        ));
+        assert!(should_qwen_prefill_skip_unused_la_out_for(
+            true, "qwen3_next", true, 2048
+        ));
+        assert!(
+            !should_qwen_prefill_skip_unused_la_out_for(true, "qwen3_5", true, 512),
+            "512-token unused LA out skip stays closed"
+        );
+        assert!(!should_qwen_prefill_skip_unused_la_out_for(
+            true, "qwen3_5", false, 1024
+        ));
+        assert!(!should_qwen_prefill_skip_unused_la_out_for(
+            true, "gemma4", true, 1024
+        ));
+        assert!(!should_qwen_prefill_skip_unused_la_out_for(
+            false, "qwen3_5", true, 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_async_down_is_seq_gated() {
+        assert!(should_qwen_prefill_async_down_for(true, 1024));
+        assert!(should_qwen_prefill_async_down_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_async_down_for(true, 512),
+            "512-token async down stays closed"
+        );
+        assert!(!should_qwen_prefill_async_down_for(true, 1));
+        assert!(!should_qwen_prefill_async_down_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_last_token_o_proj_is_seq_family_and_last_only_gated() {
+        assert!(should_qwen_prefill_last_token_o_proj_for(
+            true, "qwen3_5", true, 1024
+        ));
+        assert!(should_qwen_prefill_last_token_o_proj_for(
+            true, "qwen3_next", true, 2048
+        ));
+        assert!(
+            !should_qwen_prefill_last_token_o_proj_for(true, "qwen3_5", true, 512),
+            "512-token last-token o_proj stays closed"
+        );
+        assert!(!should_qwen_prefill_last_token_o_proj_for(
+            true, "qwen3_5", false, 1024
+        ));
+        assert!(!should_qwen_prefill_last_token_o_proj_for(
+            true, "gemma4", true, 1024
+        ));
+        assert!(!should_qwen_prefill_last_token_o_proj_for(
+            false, "qwen3_5", true, 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_reuse_rope_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_reuse_rope_for(true, "qwen3_5", 1024));
+        assert!(should_qwen_prefill_reuse_rope_for(true, "qwen3_next", 2048));
+        assert!(
+            !should_qwen_prefill_reuse_rope_for(true, "qwen3_5", 512),
+            "512-token rope reuse stays closed"
+        );
+        assert!(!should_qwen_prefill_reuse_rope_for(true, "qwen3_5", 1));
+        assert!(!should_qwen_prefill_reuse_rope_for(true, "gemma4", 1024));
+        assert!(!should_qwen_prefill_reuse_rope_for(false, "qwen3_5", 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_async_sdpa_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_async_sdpa_for(true, "qwen3_5", 1024));
+        assert!(should_qwen_prefill_async_sdpa_for(true, "qwen3_next", 2048));
+        assert!(
+            !should_qwen_prefill_async_sdpa_for(true, "qwen3_5", 512),
+            "512-token async SDPA stays closed"
+        );
+        assert!(!should_qwen_prefill_async_sdpa_for(true, "qwen3_5", 1));
+        assert!(!should_qwen_prefill_async_sdpa_for(true, "gemma4", 1024));
+        assert!(!should_qwen_prefill_async_sdpa_for(false, "qwen3_5", 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_async_gd_is_seq_gated() {
+        assert!(should_qwen_prefill_async_gd_for(true, 1024));
+        assert!(should_qwen_prefill_async_gd_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_async_gd_for(true, 512),
+            "512-token async GD stays closed"
+        );
+        assert!(!should_qwen_prefill_async_gd_for(true, 1));
+        assert!(!should_qwen_prefill_async_gd_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_eval_gd_is_seq_gated() {
+        assert!(should_qwen_prefill_eval_gd_for(true, 1024));
+        assert!(should_qwen_prefill_eval_gd_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_eval_gd_for(true, 512),
+            "512-token eval GD stays closed"
+        );
+        assert!(!should_qwen_prefill_eval_gd_for(true, 1));
+        assert!(!should_qwen_prefill_eval_gd_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_contiguous_gd_is_seq_gated() {
+        assert!(should_qwen_prefill_contiguous_gd_for(true, 1024));
+        assert!(should_qwen_prefill_contiguous_gd_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_contiguous_gd_for(true, 512),
+            "512-token contiguous GD stays closed"
+        );
+        assert!(!should_qwen_prefill_contiguous_gd_for(true, 1));
+        assert!(!should_qwen_prefill_contiguous_gd_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_split_packed_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_split_packed_for(true, "qwen3_5", 1024));
+        assert!(should_qwen_prefill_split_packed_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(
+            !should_qwen_prefill_split_packed_for(true, "qwen3_5", 512),
+            "512-token split-packed stays closed"
+        );
+        assert!(!should_qwen_prefill_split_packed_for(true, "qwen3_5", 1));
+        assert!(!should_qwen_prefill_split_packed_for(true, "gemma4", 1024));
+        assert!(!should_qwen_prefill_split_packed_for(false, "qwen3_5", 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_dequant_dense_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_dequant_dense_for(true, "qwen3_5", 1024));
+        assert!(should_qwen_prefill_dequant_dense_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(
+            !should_qwen_prefill_dequant_dense_for(true, "qwen3_5", 512),
+            "512-token dequant-dense stays closed"
+        );
+        assert!(!should_qwen_prefill_dequant_dense_for(true, "qwen3_5", 1));
+        assert!(!should_qwen_prefill_dequant_dense_for(true, "gemma4", 1024));
+        assert!(!should_qwen_prefill_dequant_dense_for(
+            false, "qwen3_5", 1024
+        ));
     }
 
     #[test]

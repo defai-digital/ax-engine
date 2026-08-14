@@ -1,7 +1,8 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, concatenate, contiguous, qwen_linear_attention_inputs_packed,
+    MlxArray, MlxDtype, async_eval, concatenate, contiguous, qwen_linear_attention_inputs_packed,
     qwen_linear_attention_inputs_packed_compiled, qwen_linear_attention_post_input,
-    qwen_linear_attention_post_input_compiled, reshape, rms_norm, silu_mul_quantized_matmul, slice,
+    qwen_linear_attention_post_input_compiled, eval, reshape, rms_norm, silu_mul_quantized_matmul,
+    slice,
     slice_last_dim, zeros,
 };
 use std::time::Instant;
@@ -34,10 +35,13 @@ use crate::linear_attention_ops::{
 };
 use crate::weights::{LayerWeights, LinearAttentionWeights, QuantizedWeight};
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 thread_local! {
     static INITIAL_RECURRENT_ZEROS: RefCell<Option<((i32, i32, i32), MlxArray)>> =
         const { RefCell::new(None) };
+    static PREFILL_LA_CONTIG_W: RefCell<HashMap<usize, QuantizedWeight>> =
+        RefCell::new(HashMap::new());
 }
 
 /// Initial gated-delta recurrent state (`mx.zeros(..., float32)`).
@@ -74,6 +78,8 @@ pub(crate) fn linear_attention_forward(
     x: &MlxArray,
     cache: &mut MlxKVCache,
     layer_idx: usize,
+    skip_out_proj: bool,
+    last_token_out_proj: bool,
 ) -> MlxArray {
     let linear_cfg = cfg
         .linear_attention
@@ -102,6 +108,7 @@ pub(crate) fn linear_attention_forward(
     let profile_started = Instant::now();
     let (qkv, z, a, b) =
         linear_attention_inputs(cfg, linear_cfg, linear_w, x, seq, profile_enabled);
+    qwen_prefill_maybe_async_la_outputs(&qkv, &z, &a, &b, seq);
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::Projection,
@@ -160,9 +167,19 @@ pub(crate) fn linear_attention_forward(
     if let (Some(conv_state), Some(recurrent_state)) = (prefix_conv_state, prefix_recurrent_state) {
         cache.set_linear_prefix_checkpoint(layer_idx, conv_state, recurrent_state);
     }
+    qwen_prefill_maybe_async_gd(&out, seq);
+    qwen_prefill_maybe_eval_gd(&out, seq);
+    let out = qwen_prefill_maybe_contiguous_gd(out, seq);
+    if let Some(skipped) = qwen_prefill_maybe_skip_unused_la_out(x, skip_out_proj) {
+        return skipped;
+    }
 
     let profile_started = Instant::now();
     let value_dim = linear_cfg.value_dim() as i32;
+    let (out, z, seq) = match qwen_prefill_maybe_last_token_la_out(&out, &z, last_token_out_proj) {
+        Some((out, z, seq)) => (out, z, seq),
+        None => (out, z, seq),
+    };
     let out = if let Some(fused) =
         try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim)
     {
@@ -602,6 +619,141 @@ fn linear_attention_post_input(
     (q, k, split.v, new_conv_state)
 }
 
+/// Submit packed LA projections before conv/GatedDelta is attached.
+fn qwen_prefill_maybe_async_la_outputs(
+    qkv: &MlxArray,
+    z: &MlxArray,
+    a: &MlxArray,
+    b: &MlxArray,
+    seq: i32,
+) {
+    qwen_prefill_maybe_async_la_outputs_for(
+        qkv,
+        z,
+        a,
+        b,
+        fastpath::qwen_prefill_async_la_outputs_enabled(),
+        seq,
+    );
+}
+
+/// Pure helper for [`qwen_prefill_maybe_async_la_outputs`].
+pub(crate) fn qwen_prefill_maybe_async_la_outputs_for(
+    qkv: &MlxArray,
+    z: &MlxArray,
+    a: &MlxArray,
+    b: &MlxArray,
+    enabled: bool,
+    seq: i32,
+) {
+    if fastpath::should_qwen_prefill_async_la_outputs_for(enabled, seq) {
+        mlx_sys::async_eval(&[qkv, z, a, b]);
+    }
+}
+
+/// Pack GatedDelta output so rms_norm_gated + out_proj see a contiguous view.
+fn qwen_prefill_maybe_contiguous_gd(gd_out: MlxArray, seq: i32) -> MlxArray {
+    qwen_prefill_maybe_contiguous_gd_for(gd_out, fastpath::qwen_prefill_contiguous_gd_enabled(), seq)
+}
+
+/// Pure helper for [`qwen_prefill_maybe_contiguous_gd`].
+pub(crate) fn qwen_prefill_maybe_contiguous_gd_for(
+    gd_out: MlxArray,
+    enabled: bool,
+    seq: i32,
+) -> MlxArray {
+    if fastpath::should_qwen_prefill_contiguous_gd_for(enabled, seq) {
+        contiguous(&gd_out, None)
+    } else {
+        gd_out
+    }
+}
+
+/// Materialize GatedDelta output once before rms_norm_gated + out_proj.
+fn qwen_prefill_maybe_eval_gd(gd_out: &MlxArray, seq: i32) {
+    qwen_prefill_maybe_eval_gd_for(gd_out, fastpath::qwen_prefill_eval_gd_enabled(), seq);
+}
+
+/// Pure helper for [`qwen_prefill_maybe_eval_gd`].
+pub(crate) fn qwen_prefill_maybe_eval_gd_for(gd_out: &MlxArray, enabled: bool, seq: i32) {
+    if fastpath::should_qwen_prefill_eval_gd_for(enabled, seq) {
+        eval(&[gd_out]);
+    }
+}
+
+/// Submit GatedDelta output before rms_norm_gated + out_proj is encoded.
+fn qwen_prefill_maybe_async_gd(gd_out: &MlxArray, seq: i32) {
+    qwen_prefill_maybe_async_gd_for(gd_out, fastpath::qwen_prefill_async_gd_enabled(), seq);
+}
+
+/// Pure helper for [`qwen_prefill_maybe_async_gd`].
+pub(crate) fn qwen_prefill_maybe_async_gd_for(gd_out: &MlxArray, enabled: bool, seq: i32) {
+    if fastpath::should_qwen_prefill_async_gd_for(enabled, seq) {
+        async_eval(&[gd_out]);
+    }
+}
+
+/// After conv/recurrent state is written, skip unused LA out_proj.
+pub(crate) fn qwen_prefill_maybe_skip_unused_la_out(
+    x: &MlxArray,
+    skip_out_proj: bool,
+) -> Option<MlxArray> {
+    skip_out_proj.then(|| x.clone())
+}
+
+/// After conv/recurrent state is written, slice LA output + gate to the last
+/// token so last-only generate prefill runs rms_norm_gated + out_proj at S=1.
+pub(crate) fn qwen_prefill_maybe_last_token_la_out(
+    out: &MlxArray,
+    z: &MlxArray,
+    last_token_out_proj: bool,
+) -> Option<(MlxArray, MlxArray, i32)> {
+    if !last_token_out_proj {
+        return None;
+    }
+    let seq = out.shape().get(1).copied().unwrap_or(1);
+    if seq <= 1 {
+        return None;
+    }
+    Some((slice_seq_axis1(out), slice_seq_axis1(z), 1))
+}
+
+fn slice_seq_axis1(x: &MlxArray) -> MlxArray {
+    let shape = x.shape();
+    let last = shape[1] - 1;
+    let mut start = vec![0i32; shape.len()];
+    let mut stop = shape.clone();
+    start[1] = last;
+    stop[1] = last + 1;
+    let strides = vec![1i32; shape.len()];
+    slice(x, &start, &stop, &strides, None)
+}
+
+/// Cache a contiguous overlay of one LA quantized projection.
+pub(crate) fn cached_prefill_la_contiguous_weight(src: &QuantizedWeight) -> QuantizedWeight {
+    let key = src as *const QuantizedWeight as usize;
+    PREFILL_LA_CONTIG_W.with(|cache| {
+        if let Some(existing) = cache.borrow().get(&key) {
+            return existing.clone();
+        }
+        let made = crate::weights::contiguous_affine_weight(src);
+        cache.borrow_mut().insert(key, made.clone());
+        made
+    })
+}
+
+/// Materialize the Qwen linear-attention activation once before QKVZ/BA qmm.
+fn qwen_prefill_maybe_eval_la_input(x: &MlxArray, seq: i32) {
+    qwen_prefill_maybe_eval_la_input_for(x, fastpath::qwen_prefill_eval_la_input_enabled(), seq);
+}
+
+/// Pure helper for [`qwen_prefill_maybe_eval_la_input`].
+pub(crate) fn qwen_prefill_maybe_eval_la_input_for(x: &MlxArray, enabled: bool, seq: i32) {
+    if fastpath::should_qwen_prefill_eval_la_input_for(enabled, seq) {
+        mlx_sys::eval(&[x]);
+    }
+}
+
 pub(crate) fn linear_attention_inputs(
     model_cfg: &ModelConfig,
     cfg: &LinearAttentionConfig,
@@ -610,12 +762,22 @@ pub(crate) fn linear_attention_inputs(
     seq: i32,
     profile_enabled: bool,
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
+    qwen_prefill_maybe_eval_la_input(x, seq);
     if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
         let (qkvz_w, ba_w) = if fastpath::should_qwen_la_prefill_q2(seq) {
             match (w.prefill_q2_qkvz.as_ref(), w.prefill_q2_ba.as_ref()) {
                 (Some(q2_qkvz), Some(q2_ba)) => (q2_qkvz, q2_ba),
                 _ => (qkvz_w, ba_w),
             }
+        } else {
+            (qkvz_w, ba_w)
+        };
+        let contig_qkvz;
+        let contig_ba;
+        let (qkvz_w, ba_w) = if fastpath::should_qwen_prefill_contiguous_la_weights(seq) {
+            contig_qkvz = cached_prefill_la_contiguous_weight(qkvz_w);
+            contig_ba = cached_prefill_la_contiguous_weight(ba_w);
+            (&contig_qkvz, &contig_ba)
         } else {
             (qkvz_w, ba_w)
         };
@@ -1183,6 +1345,262 @@ mod tests {
         assert!(!linear_attention_prefill_allows_mixed_pack(1, true));
         assert!(linear_attention_prefill_allows_mixed_pack(1, false));
         assert!(linear_attention_prefill_allows_mixed_pack(128, false));
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_skip_unused_la_out_returns_input_when_set() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let x = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 32, 1],
+            MlxDtype::Float32,
+        );
+        let skipped = qwen_prefill_maybe_skip_unused_la_out(&x, true)
+            .expect("skip must return the unused residual placeholder");
+        mlx_sys::eval(&[&skipped]);
+        assert_eq!(skipped.shape(), x.shape());
+        assert!(
+            skipped.data_f32().iter().all(|v| v.is_finite()),
+            "skipped unused LA out must leave a finite placeholder"
+        );
+        assert!(qwen_prefill_maybe_skip_unused_la_out(&x, false).is_none());
+        assert!(
+            fastpath::should_qwen_prefill_skip_unused_la_out_for(true, "qwen3_5", true, 1024),
+            "shipped unused-LA-out skip must accept the p2048 cache-only last layer"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_last_token_la_out_slices_seq_when_set() {
+        let out_data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let z_data: Vec<f32> = (0..16).map(|i| (i as f32) + 100.0).collect();
+        let out = MlxArray::from_raw_data(
+            out_data.as_ptr() as *const u8,
+            std::mem::size_of_val(out_data.as_slice()),
+            &[1, 4, 2, 2],
+            MlxDtype::Float32,
+        );
+        let z = MlxArray::from_raw_data(
+            z_data.as_ptr() as *const u8,
+            std::mem::size_of_val(z_data.as_slice()),
+            &[1, 4, 2, 2],
+            MlxDtype::Float32,
+        );
+        let (sliced_out, sliced_z, seq) = qwen_prefill_maybe_last_token_la_out(&out, &z, true)
+            .expect("last-token LA out must slice when set");
+        mlx_sys::eval(&[&sliced_out, &sliced_z]);
+        assert_eq!(seq, 1);
+        assert_eq!(sliced_out.shape(), vec![1, 1, 2, 2]);
+        assert_eq!(sliced_z.shape(), vec![1, 1, 2, 2]);
+        assert_eq!(sliced_out.data_f32(), vec![12.0, 13.0, 14.0, 15.0]);
+        assert_eq!(sliced_z.data_f32(), vec![112.0, 113.0, 114.0, 115.0]);
+        assert!(qwen_prefill_maybe_last_token_la_out(&out, &z, false).is_none());
+        assert!(
+            fastpath::should_qwen_prefill_last_token_o_proj_for(true, "qwen3_5", true, 1024),
+            "shipped last-token o_proj must accept the p2048 generate last layer"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_async_gd_submits_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let gd = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 4, 2, 4],
+            MlxDtype::Float32,
+        );
+        qwen_prefill_maybe_async_gd_for(&gd, true, 1024);
+        mlx_sys::eval(&[&gd]);
+        assert_eq!(gd.shape(), vec![1, 4, 2, 4]);
+        assert!(
+            gd.data_f32().iter().all(|v| v.is_finite()),
+            "async GD must leave a finite materialized tensor"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_async_gd_for(true, 1024),
+            "shipped async-GD gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_async_gd_for(&gd, false, 1024);
+        qwen_prefill_maybe_async_gd_for(&gd, true, 512);
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_eval_gd_materializes_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let gd = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 4, 2, 4],
+            MlxDtype::Float32,
+        );
+        qwen_prefill_maybe_eval_gd_for(&gd, true, 1024);
+        mlx_sys::eval(&[&gd]);
+        assert_eq!(gd.shape(), vec![1, 4, 2, 4]);
+        assert!(
+            gd.data_f32().iter().all(|v| v.is_finite()),
+            "eval GD must leave a finite materialized tensor"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_eval_gd_for(true, 1024),
+            "shipped eval-GD gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_eval_gd_for(&gd, false, 1024);
+        qwen_prefill_maybe_eval_gd_for(&gd, true, 512);
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_contiguous_gd_packs_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let gd = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 4, 2, 4],
+            MlxDtype::Float32,
+        );
+        let packed = qwen_prefill_maybe_contiguous_gd_for(gd, true, 1024);
+        mlx_sys::eval(&[&packed]);
+        assert_eq!(packed.shape(), vec![1, 4, 2, 4]);
+        assert!(
+            packed.data_f32().iter().all(|v| v.is_finite()),
+            "contiguous GD must leave a finite packed tensor"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_contiguous_gd_for(true, 1024),
+            "shipped contiguous-GD gate must accept the p2048 chunk length"
+        );
+        let data2: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let gd2 = MlxArray::from_raw_data(
+            data2.as_ptr() as *const u8,
+            std::mem::size_of_val(data2.as_slice()),
+            &[1, 4, 2, 4],
+            MlxDtype::Float32,
+        );
+        let kept = qwen_prefill_maybe_contiguous_gd_for(gd2, false, 1024);
+        mlx_sys::eval(&[&kept]);
+        assert_eq!(kept.shape(), vec![1, 4, 2, 4]);
+    }
+
+    #[test]
+    fn cached_prefill_la_contiguous_weight_keeps_bits_and_qws() {
+        let hidden_data: Vec<f32> = (0..32 * 32)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let proj_data: Vec<f32> = (0..64 * 32)
+            .map(|i| ((i as f32) - 768.0) * 0.0003)
+            .collect();
+        let hidden = MlxArray::from_raw_data(
+            hidden_data.as_ptr() as *const u8,
+            std::mem::size_of_val(hidden_data.as_slice()),
+            &[1, 32, 32],
+            MlxDtype::Float32,
+        );
+        let proj_w = MlxArray::from_raw_data(
+            proj_data.as_ptr() as *const u8,
+            std::mem::size_of_val(proj_data.as_slice()),
+            &[64, 32],
+            MlxDtype::Float32,
+        );
+        let dq = mlx_sys::quantize(
+            &proj_w,
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let src = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let contig = cached_prefill_la_contiguous_weight(&src);
+        assert_eq!(contig.bits, 4);
+        assert_eq!(contig.group_size, 32);
+        let again = cached_prefill_la_contiguous_weight(&src);
+        assert_eq!(again.bits, contig.bits);
+        let out = qw(&hidden, &contig);
+        mlx_sys::eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 32, 64]);
+        assert!(
+            out.data_f32().iter().all(|v| v.is_finite()),
+            "contiguous LA-weight qmm must produce finite values"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_contiguous_la_weights_for(true, 1024),
+            "shipped LA contiguous-weight gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_eval_la_input_materializes_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let x = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 32, 1],
+            MlxDtype::Float32,
+        );
+        qwen_prefill_maybe_eval_la_input_for(&x, true, 1024);
+        mlx_sys::eval(&[&x]);
+        assert_eq!(x.shape(), vec![1, 32, 1]);
+        assert!(
+            x.data_f32().iter().all(|v| v.is_finite()),
+            "eval-la-input must leave a finite materialized activation"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_eval_la_input_for(true, 1024),
+            "shipped LA input-eval gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_eval_la_input_for(&x, false, 1024);
+        qwen_prefill_maybe_eval_la_input_for(&x, true, 512);
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_async_la_outputs_submits_at_min_seq() {
+        let qkv_data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let z_data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125 + 0.1).collect();
+        let a_data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125 + 0.2).collect();
+        let b_data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125 + 0.3).collect();
+        let from = |data: &[f32]| {
+            MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                std::mem::size_of_val(data),
+                &[1, 32, 1],
+                MlxDtype::Float32,
+            )
+        };
+        let qkv = from(&qkv_data);
+        let z = from(&z_data);
+        let a = from(&a_data);
+        let b = from(&b_data);
+        qwen_prefill_maybe_async_la_outputs_for(&qkv, &z, &a, &b, true, 1024);
+        mlx_sys::eval(&[&qkv, &z, &a, &b]);
+        assert_eq!(qkv.shape(), vec![1, 32, 1]);
+        assert!(
+            qkv.data_f32()
+                .iter()
+                .chain(z.data_f32().iter())
+                .chain(a.data_f32().iter())
+                .chain(b.data_f32().iter())
+                .all(|v| v.is_finite()),
+            "async LA outputs must leave finite materialized tensors"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_async_la_outputs_for(true, 1024),
+            "shipped async LA-outputs gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_async_la_outputs_for(&qkv, &z, &a, &b, false, 1024);
+        qwen_prefill_maybe_async_la_outputs_for(&qkv, &z, &a, &b, true, 512);
     }
 
     #[test]

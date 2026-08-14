@@ -34,6 +34,8 @@ static GATED_DELTA_PREFILL_COMPILE_CACHE: OnceLock<GatedDeltaPrefillCompileCache
 pub(crate) const GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY: usize = 512;
 pub(crate) const GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY: usize = 1024;
 pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 2048;
+/// Chunkwise prefill tile: 256-token no-copy views (not the closed 512 TG tile).
+pub(crate) const GATED_DELTA_CHUNKWISE_TILE: usize = 256;
 
 /// Runner prefill-chunk cap for linear-attention families.
 ///
@@ -570,6 +572,99 @@ fn gated_delta_prefill_tiled(
     (concatenate(&refs, 1, None), state_cur)
 }
 
+/// GatedDelta prefill as no-copy 256-token chunks.
+///
+/// Distinct from [`gated_delta_prefill_tiled`]: B=1 production slices stay
+/// views (no `contiguous` copy of q/k/v/a/b per tile). Tile length is 256,
+/// not the closed 512 TG specialization. State still carries sequentially —
+/// GatedDelta's rank-1 map is not a scalar decay, so independent chunks
+/// would be numerically wrong.
+#[allow(clippy::too_many_arguments)]
+fn gated_delta_prefill_chunkwise(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    state: &MlxArray,
+    tile: i32,
+) -> (MlxArray, MlxArray) {
+    assert!(
+        tile > 0,
+        "gated_delta prefill chunkwise tile must be positive"
+    );
+    let q_shape = q.shape();
+    let v_shape = v.shape();
+    let batch = q_shape[0];
+    let seq = q_shape[1];
+    let num_key_heads = q_shape[2];
+    let key_head_dim = q_shape[3];
+    let num_value_heads = v_shape[2];
+    let value_head_dim = v_shape[3];
+    let skip_copy = batch == 1;
+    let mut state_cur = state.clone();
+    let mut ys: Vec<MlxArray> = Vec::new();
+    let mut start = 0i32;
+    while start < seq {
+        let end = (start + tile).min(seq);
+        let q_view = slice(
+            q,
+            &[0, start, 0, 0],
+            &[batch, end, num_key_heads, key_head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let k_view = slice(
+            k,
+            &[0, start, 0, 0],
+            &[batch, end, num_key_heads, key_head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let v_view = slice(
+            v,
+            &[0, start, 0, 0],
+            &[batch, end, num_value_heads, value_head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let a_view = slice(
+            a_raw,
+            &[0, start, 0],
+            &[batch, end, num_value_heads],
+            &[1, 1, 1],
+            None,
+        );
+        let b_view = slice(
+            b_raw,
+            &[0, start, 0],
+            &[batch, end, num_value_heads],
+            &[1, 1, 1],
+            None,
+        );
+        let (q_t, k_t, v_t, a_t, b_t) = if skip_copy {
+            (q_view, k_view, v_view, a_view, b_view)
+        } else {
+            (
+                contiguous(&q_view, None),
+                contiguous(&k_view, None),
+                contiguous(&v_view, None),
+                contiguous(&a_view, None),
+                contiguous(&b_view, None),
+            )
+        };
+        let (y_t, next_state) =
+            gated_delta_kernel_impl(&q_t, &k_t, &v_t, a_log, &a_t, dt_bias, &b_t, &state_cur);
+        ys.push(y_t);
+        state_cur = next_state;
+        start = end;
+    }
+    let refs: Vec<&MlxArray> = ys.iter().collect();
+    (concatenate(&refs, 1, None), state_cur)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gated_delta_kernel_impl(
     q: &MlxArray,
@@ -675,6 +770,19 @@ fn gated_delta_kernel_impl(
             b_raw,
             state,
             GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32,
+        );
+    }
+    if fastpath::should_qwen_gd_prefill_chunkwise(seq) {
+        return gated_delta_prefill_chunkwise(
+            q,
+            k,
+            v,
+            a_log,
+            a_raw,
+            dt_bias,
+            b_raw,
+            state,
+            GATED_DELTA_CHUNKWISE_TILE as i32,
         );
     }
     let seq_i32 = scalar_i32(seq);
@@ -2036,6 +2144,53 @@ mod tests {
         mlx_sys::eval(&[&got_y, &got_state, &want_y, &want_state]);
         assert_close("y", got_y.data_f32(), &want_y.data_f32(), 1e-5);
         assert_close("state", got_state.data_f32(), &want_state.data_f32(), 1e-5);
+    }
+
+    #[test]
+    fn gated_delta_prefill_chunkwise_matches_oneshot() {
+        const SEQ: usize = 16;
+        const TILE: i32 = 8;
+        const KEY_HEAD_DIM: usize = 32;
+        const VALUE_HEAD_DIM: usize = 4;
+        let q_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data: Vec<f32> = (0..SEQ * VALUE_HEAD_DIM)
+            .map(|idx| ((idx % 3) as f32 - 1.0) * 0.04)
+            .collect();
+        let a_log_data = vec![-0.2];
+        let a_raw_data: Vec<f32> = (0..SEQ).map(|i| (i as f32) * 0.01 - 0.05).collect();
+        let dt_bias_data = vec![0.05];
+        let b_raw_data: Vec<f32> = (0..SEQ).map(|i| (i as f32) * 0.02 - 0.1).collect();
+        let state_data: Vec<f32> = (0..VALUE_HEAD_DIM * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+            .collect();
+        let q = f32_array(&q_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let k = f32_array(&k_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let v = f32_array(&v_data, &[1, SEQ as i32, 1, VALUE_HEAD_DIM as i32]);
+        let a_log = f32_array(&a_log_data, &[1]);
+        let a_raw = f32_array(&a_raw_data, &[1, SEQ as i32, 1]);
+        let dt_bias = f32_array(&dt_bias_data, &[1]);
+        let b_raw = f32_array(&b_raw_data, &[1, SEQ as i32, 1]);
+        let state = f32_array(
+            &state_data,
+            &[1, 1, VALUE_HEAD_DIM as i32, KEY_HEAD_DIM as i32],
+        );
+        let (want_y, want_state) =
+            gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+        let (got_y, got_state) = gated_delta_prefill_chunkwise(
+            &q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state, TILE,
+        );
+        mlx_sys::eval(&[&got_y, &got_state, &want_y, &want_state]);
+        assert_close("y", got_y.data_f32(), &want_y.data_f32(), 1e-5);
+        assert_close("state", got_state.data_f32(), &want_state.data_f32(), 1e-5);
+        assert!(
+            fastpath::should_qwen_gd_prefill_chunkwise_for(true, 1024),
+            "shipped chunkwise gate must accept the p2048 chunk length"
+        );
     }
 
     #[test]
