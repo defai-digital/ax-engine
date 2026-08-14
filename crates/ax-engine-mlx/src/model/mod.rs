@@ -1044,6 +1044,11 @@ fn forward_and_logits_mode(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    shared::utils::qwen_prefill_maybe_async_embed(
+        &hidden,
+        &cfg.model_family,
+        token_ids.len() as i32,
+    );
 
     let seq = token_ids.len();
     // Single-token decode never needs explicit SDPA masks — except in
@@ -1590,6 +1595,11 @@ pub fn forward_all_positions_update_cache(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    shared::utils::qwen_prefill_maybe_async_embed(
+        &hidden,
+        &cfg.model_family,
+        token_ids.len() as i32,
+    );
 
     let seq = token_ids.len();
     let masks =
@@ -1648,6 +1658,11 @@ pub fn forward_all_positions(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    shared::utils::qwen_prefill_maybe_async_embed(
+        &hidden,
+        &cfg.model_family,
+        token_ids.len() as i32,
+    );
 
     let seq = token_ids.len();
     let masks =
@@ -1730,6 +1745,7 @@ pub fn forward_all_positions_with_post_norm_greedy(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    shared::utils::qwen_prefill_maybe_async_embed(&hidden, &cfg.model_family, seq as i32);
     let masks =
         build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
@@ -1810,6 +1826,7 @@ pub fn forward_all_positions_with_post_norm_ids(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    shared::utils::qwen_prefill_maybe_async_embed(&hidden, &cfg.model_family, seq as i32);
 
     let masks =
         build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
@@ -1989,6 +2006,11 @@ pub fn forward_all_positions_post_norm_last_lm_head(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    shared::utils::qwen_prefill_maybe_async_embed(
+        &hidden,
+        &cfg.model_family,
+        token_ids.len() as i32,
+    );
 
     let seq = token_ids.len();
     let masks =

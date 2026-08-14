@@ -2973,6 +2973,36 @@ pub fn should_qwen_prefill_skip_bf16_astype_for(
         )
 }
 
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_ASYNC_EMBED` — after token embed (+ optional
+    /// `hidden_states_scale`), `async_eval([hidden])` at `seq >= 1024` so
+    /// the GPU starts the gather while the host builds the first-layer
+    /// graph. Not skip-astype (closed wash), not pipeline-block
+    /// `async_eval(hidden)` after layers (closed), not post-qmm async
+    /// (gate-up / packed / LA / down / SDPA / GD, all closed).
+    ///
+    /// **Default: OFF**. Remasured binary `a3d8e261…` (2026-08-14): 3b
+    /// 1.029260 / 3d 1.054017 wash (0.997× q2only). Async submit of the
+    /// embed gather does not cut compute-bound qmm.
+    qwen_prefill_async_embed_enabled,
+    "AX_MLX_QWEN_PREFILL_ASYNC_EMBED"
+);
+
+/// Whether Qwen prefill should async-submit the embedding gather.
+pub fn should_qwen_prefill_async_embed(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_async_embed_for(qwen_prefill_async_embed_enabled(), model_family, seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_async_embed`].
+pub fn should_qwen_prefill_async_embed_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
 /// Pure helper for [`should_qwen_la_norm_qkvz_fuse`].
 pub fn should_qwen_la_norm_qkvz_fuse_for(
     enabled: bool,
@@ -4985,6 +5015,22 @@ mod tests {
             true, "gemma4", 1024
         ));
         assert!(!should_qwen_prefill_skip_bf16_astype_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_async_embed_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_async_embed_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_async_embed_for(
+            true, "qwen3_next", 1024
+        ));
+        assert!(!should_qwen_prefill_async_embed_for(true, "qwen3_5", 512));
+        assert!(!should_qwen_prefill_async_embed_for(true, "qwen3_5", 1));
+        assert!(!should_qwen_prefill_async_embed_for(true, "gemma4", 1024));
+        assert!(!should_qwen_prefill_async_embed_for(
             false, "qwen3_5", 1024
         ));
     }

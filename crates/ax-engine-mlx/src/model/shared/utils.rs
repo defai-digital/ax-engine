@@ -1,7 +1,7 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
-    concatenate, contiguous, dequantize_with_mode, eval, expand_dims_axes, gather_mm, matmul,
-    multiply, reshape, slice, slice_last_dim, take, tanh, transpose,
+    async_eval, concatenate, contiguous, dequantize_with_mode, eval, expand_dims_axes, gather_mm,
+    matmul, multiply, reshape, slice, slice_last_dim, take, tanh, transpose,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -50,6 +50,28 @@ pub(crate) fn qwen_prefill_maybe_skip_bf16_astype(
         x.clone()
     } else {
         astype(x, MlxDtype::Bfloat16, None)
+    }
+}
+
+/// Submit the embedding gather so GPU starts while the first layer is built.
+pub(crate) fn qwen_prefill_maybe_async_embed(hidden: &MlxArray, model_family: &str, seq: i32) {
+    qwen_prefill_maybe_async_embed_for(
+        hidden,
+        fastpath::qwen_prefill_async_embed_enabled(),
+        model_family,
+        seq,
+    );
+}
+
+/// Pure helper for [`qwen_prefill_maybe_async_embed`].
+pub(crate) fn qwen_prefill_maybe_async_embed_for(
+    hidden: &MlxArray,
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) {
+    if fastpath::should_qwen_prefill_async_embed_for(enabled, model_family, seq) {
+        async_eval(&[hidden]);
     }
 }
 
@@ -1625,6 +1647,26 @@ mod tests {
             fastpath::should_qwen_prefill_skip_bf16_astype_for(true, "qwen3_5", 1024),
             "shipped skip-astype gate must accept prefill seq"
         );
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_async_embed_submits_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let hidden = array_f32(&data, &[1, 4, 8]);
+        super::qwen_prefill_maybe_async_embed_for(&hidden, true, "qwen3_5", 1024);
+        eval(&[&hidden]);
+        assert_eq!(hidden.shape(), vec![1, 4, 8]);
+        assert!(
+            hidden.data_f32().iter().all(|v| v.is_finite()),
+            "async embed must leave a finite materialized tensor"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_async_embed_for(true, "qwen3_5", 1024),
+            "shipped async-embed gate must accept the p2048 chunk length"
+        );
+        super::qwen_prefill_maybe_async_embed_for(&hidden, false, "qwen3_5", 1024);
+        super::qwen_prefill_maybe_async_embed_for(&hidden, true, "qwen3_5", 512);
+        super::qwen_prefill_maybe_async_embed_for(&hidden, true, "gemma4", 1024);
     }
 
     #[test]
