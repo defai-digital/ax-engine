@@ -2856,8 +2856,10 @@ env_flag!(
     /// fused dequant+MMA), not overlay/eval/async/contiguous/split/bit-width.
     /// Not a Hub requant. Decode GEMV (seq=1) stays on steel qmm.
     ///
-    /// **Default: OFF**. Not remasured on `df-macbookpro-m5` four-lane.
-    /// Enable with `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE=1`.
+    /// **Default: OFF**. Remasured binary `81a35c6f…` (2026-08-14) with
+    /// `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE=1`: 3b **0.998513** / 3d
+    /// **1.020320** regression (0.967× q2only). Dense GEMM is slower than
+    /// steel qmm at M=1024 on this 27B path.
     qwen_prefill_dequant_dense_enabled,
     "AX_MLX_QWEN_PREFILL_DEQUANT_DENSE"
 );
