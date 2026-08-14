@@ -47,6 +47,8 @@ pub(crate) fn linear_attention_prefill_chunk_cap(streaming: bool) -> usize {
         GATED_DELTA_THREADGROUP_CACHE_CAPACITY
     } else if fastpath::qwen_prefill_chunk_1536_enabled() {
         1536
+    } else if fastpath::qwen_prefill_chunk_1280_enabled() {
+        1280
     } else {
         GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY
     }
@@ -2083,10 +2085,14 @@ mod tests {
             linear_attention_prefill_chunk_cap(true),
             GATED_DELTA_THREADGROUP_CACHE_CAPACITY
         );
-        // Default-OFF after the ~899 vs 908.5 wash: non-streaming cap is 1024.
+        // Default-OFF after the 1280 wash: non-streaming cap is 1024.
         assert_eq!(
             linear_attention_prefill_chunk_cap(false),
             GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY
+        );
+        assert!(
+            !fastpath::qwen_prefill_chunk_1280_enabled(),
+            "closed 1280 chunk stays opt-in"
         );
     }
 

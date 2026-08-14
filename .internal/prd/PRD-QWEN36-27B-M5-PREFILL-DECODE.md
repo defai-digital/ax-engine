@@ -4,7 +4,7 @@
 | --- | --- |
 | Status | Paused 2026-08-14; §6(b) 1.20 and §6(d) 1.15 still unmet |
 | Owner | AX Engine maintainers |
-| Last updated | 2026-08-14 (branch `perf/qwen-prefill-decode`; last remasure LA-norm-QKVZ fuse `1fe62f3b…` 3b 1.027604 / 3d 1.052036 FAIL; flag stays OFF) |
+| Last updated | 2026-08-14 (branch `perf/qwen-prefill-decode`; last remasure chunk-1280 `8c08e31b…` 3b 1.024008 / 3d 1.048763 FAIL; flag stays OFF) |
 | Formal host | `df-macbookpro-m5` (Apple M5 Max) |
 | Product position | Restore Qwen 3.6 27B **prefill** and **decode** to peer-competitive rates vs **mlxcel** (`.internal/reference/mlxcel`) on both community 4-bit and AXQ 6-bit, in **direct** and **MTP** |
 | Related | ADR-003 dispatch-bound decode; ADR-020 Qwen36 linear MTP Tier 2; `docs/performance/decode-gap.md`; `.internal/reports/prefill-regression-investigation-2026-07-28.md` |

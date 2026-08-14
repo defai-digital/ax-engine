@@ -2017,6 +2017,20 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_CHUNK_1280` — raise the linear-attention runner
+    /// chunk cap to 1280 so p2048 is 1280+768. FFN qmm runs at M=1280 then
+    /// M=768. GatedDelta already tiles at 1024 when seq>1024, so this is not
+    /// the closed 1536 (1536+512) or single-2048 path. Not FFN-host-fusion
+    /// or dequant-dense.
+    ///
+    /// **Default: OFF**. Remasured binary `8c08e31b…` (2026-08-14): 3b
+    /// 1.024008 / 3d 1.048763 wash (0.992× q2only). M=1280+768 does not
+    /// beat two 1024s.
+    qwen_prefill_chunk_1280_enabled,
+    "AX_MLX_QWEN_PREFILL_CHUNK_1280"
+);
+
+env_flag!(
     /// `AX_MLX_QWEN_COMPILED_GATED_DELTA_PREFILL` — wrap the GatedDelta
     /// prefill TG oneshot (`qwen35_gated_delta_v3`) in `mx::compile`.
     ///
@@ -4388,6 +4402,22 @@ mod tests {
         assert!(probe(
             "AX_FASTPATH_TEST_QWEN_PREFILL_CHUNK_1536_ENABLED",
             "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_chunk_1280_uses_opt_in_contract() {
+        assert!(
+            !qwen_prefill_chunk_1280_enabled(),
+            "closed 1280 chunk stays default-off"
+        );
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_CHUNK_1280_ENABLED",
+            "1"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_CHUNK_1280_DISABLED",
+            "0"
         ));
     }
 
