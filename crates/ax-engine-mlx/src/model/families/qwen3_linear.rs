@@ -84,8 +84,18 @@ pub(crate) fn layer_forward(
     let profile_prefill_layer = seq > 1 && prefill_profile_enabled();
     let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
 
+    let fuse_la_norm =
+        fastpath::should_qwen_la_norm_qkvz_fuse(&cfg.model_family, seq as i32);
+    if fuse_la_norm {
+        crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(Some((
+            w.attn_norm.clone(),
+            cfg.rms_norm_eps,
+        )));
+    }
     let (hidden_owned, normed) =
-        if fastpath::should_qwen_prefill_interlayer_add_rms(&cfg.model_family, seq as i32)
+        if fuse_la_norm {
+            (hidden.clone(), hidden.clone())
+        } else if fastpath::should_qwen_prefill_interlayer_add_rms(&cfg.model_family, seq as i32)
             && let Some(ffn) = take_qwen_prefill_pending_ffn()
         {
             apply_qwen_prefill_pending_ffn(hidden, &ffn, &w.attn_norm, cfg.rms_norm_eps)
@@ -114,6 +124,9 @@ pub(crate) fn layer_forward(
         skip_unused_la_out,
         last_token_out_proj,
     );
+    if fuse_la_norm {
+        crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(None);
+    }
 
     let residual_norm_started = profile_forward_layer.then(Instant::now);
 

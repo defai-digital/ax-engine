@@ -342,6 +342,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     // (Wave 0 DI-W0: convert `family_name=whisper` was previously registry-orphan).
     ArchitectureRegistration {
         family_label: "whisper",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,

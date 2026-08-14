@@ -1,9 +1,8 @@
 use mlx_sys::{
     MlxArray, MlxDtype, async_eval, concatenate, contiguous, qwen_linear_attention_inputs_packed,
     qwen_linear_attention_inputs_packed_compiled, qwen_linear_attention_post_input,
-    qwen_linear_attention_post_input_compiled, eval, reshape, rms_norm, silu_mul_quantized_matmul,
-    slice,
-    slice_last_dim, zeros,
+    qwen_linear_attention_post_input_compiled, eval, reshape, rms_norm, rms_norm_quantized_matmul,
+    silu_mul_quantized_matmul, slice, slice_last_dim, zeros,
 };
 use std::time::Instant;
 
@@ -36,6 +35,49 @@ use crate::linear_attention_ops::{
 use crate::weights::{LayerWeights, LinearAttentionWeights, QuantizedWeight};
 use std::cell::RefCell;
 use std::collections::HashMap;
+
+thread_local! {
+    static LA_NORM_QKVZ_FUSE: RefCell<Option<(MlxArray, f32)>> = const { RefCell::new(None) };
+}
+
+/// Bind `attn_norm` so packed QKVZ/BA can fuse RMSNorm into the qmm.
+pub(crate) fn set_qwen_la_norm_qkvz_fuse_weights(norm: Option<(MlxArray, f32)>) {
+    LA_NORM_QKVZ_FUSE.with(|slot| {
+        *slot.borrow_mut() = norm;
+    });
+}
+
+fn qwen_la_norm_qkvz_fuse_weights() -> Option<(MlxArray, f32)> {
+    LA_NORM_QKVZ_FUSE.with(|slot| slot.borrow().clone())
+}
+
+pub(crate) fn qw_rms_norm_qmm(
+    x: &MlxArray,
+    norm_w: &MlxArray,
+    eps: f32,
+    proj: &QuantizedWeight,
+) -> MlxArray {
+    match &proj.scales {
+        Some(scales) => {
+            let biases = match proj.mlx_quantization_mode() {
+                mlx_sys::MlxQuantizationMode::Affine => proj.biases.as_ref(),
+                _ => None,
+            };
+            rms_norm_quantized_matmul(
+                x,
+                norm_w,
+                eps,
+                &proj.weight,
+                scales,
+                biases,
+                proj.group_size,
+                proj.bits,
+                None,
+            )
+        }
+        None => qw(&rms_norm(x, Some(norm_w), eps, None), proj),
+    }
+}
 
 thread_local! {
     static INITIAL_RECURRENT_ZEROS: RefCell<Option<((i32, i32, i32), MlxArray)>> =
@@ -781,7 +823,9 @@ pub(crate) fn linear_attention_inputs(
         } else {
             (qkvz_w, ba_w)
         };
-        if !fastpath::qwen_linear_mtp_exact_enabled()
+        let fuse_norm = qwen_la_norm_qkvz_fuse_weights();
+        if fuse_norm.is_none()
+            && !fastpath::qwen_linear_mtp_exact_enabled()
             && !profile_enabled
             && should_fuse_qkvz_ba_qmm(qkvz_w, ba_w, seq)
             && let Some(outputs) =
@@ -792,7 +836,8 @@ pub(crate) fn linear_attention_inputs(
         let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(model_cfg)
             && fastpath::qwen_direct_cpp_linear_attention_inputs_enabled()
             && !fastpath::qwen_linear_mtp_exact_enabled();
-        if !fastpath::qwen_linear_mtp_exact_enabled()
+        if fuse_norm.is_none()
+            && !fastpath::qwen_linear_mtp_exact_enabled()
             && (fastpath::direct_cpp_linear_attention_inputs_enabled() || qwen_default_enabled)
         {
             record_linear_attention_direct_cpp_inputs_attempt();
@@ -810,7 +855,11 @@ pub(crate) fn linear_attention_inputs(
         }
 
         let profile_started = Instant::now();
-        let mixed_qkvz = qw(x, qkvz_w);
+        let mixed_qkvz = if let Some((norm_w, eps)) = &fuse_norm {
+            qw_rms_norm_qmm(x, norm_w, *eps, qkvz_w)
+        } else {
+            qw(x, qkvz_w)
+        };
         linear_attention_profile_eval_elapsed(
             profile_enabled,
             LinearAttentionProfileStage::ProjectionQkvz,
@@ -865,7 +914,11 @@ pub(crate) fn linear_attention_inputs(
         );
 
         let profile_started = Instant::now();
-        let mixed_ba = qw(x, ba_w);
+        let mixed_ba = if let Some((norm_w, eps)) = &fuse_norm {
+            qw_rms_norm_qmm(x, norm_w, *eps, ba_w)
+        } else {
+            qw(x, ba_w)
+        };
         linear_attention_profile_eval_elapsed(
             profile_enabled,
             LinearAttentionProfileStage::ProjectionBa,
@@ -2055,5 +2108,73 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn qw_rms_norm_qmm_matches_rms_then_qw() {
+        let hidden_data: Vec<f32> = (0..8 * 64)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let proj_data: Vec<f32> = (0..96 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0004)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            hidden_data.as_ptr() as *const u8,
+            std::mem::size_of_val(hidden_data.as_slice()),
+            &[1, 8, 64],
+            MlxDtype::Float32,
+        );
+        let proj_w = MlxArray::from_raw_data(
+            proj_data.as_ptr() as *const u8,
+            std::mem::size_of_val(proj_data.as_slice()),
+            &[96, 64],
+            MlxDtype::Float32,
+        );
+        let dq = mlx_sys::quantize(
+            &proj_w,
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let proj = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let norm_data = vec![1.0f32; 64];
+        let norm_w = MlxArray::from_raw_data(
+            norm_data.as_ptr() as *const u8,
+            std::mem::size_of_val(norm_data.as_slice()),
+            &[64],
+            MlxDtype::Float32,
+        );
+        let fused = qw_rms_norm_qmm(&x, &norm_w, 1e-6, &proj);
+        let portable = qw(&rms_norm(&x, Some(&norm_w), 1e-6, None), &proj);
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        let g = fused.data_f32();
+        let w = portable.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..g.len() {
+            max_abs = max_abs.max((g[i] - w[i]).abs());
+        }
+        assert!(
+            max_abs < 3.0e-2,
+            "LA norm+qmm fuse must match rms then qw, max_abs={max_abs}"
+        );
+        assert!(
+            fastpath::should_qwen_la_norm_qkvz_fuse_for(true, "qwen3_5", 1024),
+            "shipped LA norm fuse gate must accept the p2048 chunk length"
+        );
     }
 }

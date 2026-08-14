@@ -2869,6 +2869,38 @@ pub fn should_qwen_prefill_dequant_dense(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_dequant_dense_for(qwen_prefill_dequant_dense_enabled(), model_family, seq)
 }
 
+env_flag!(
+    /// `AX_MLX_QWEN_LA_NORM_QKVZ_FUSE` — at `seq >= 1024`, fuse linear-attn
+    /// `attn_norm` into packed QKVZ/BA `quantized_matmul` via
+    /// `rms_norm_quantized_matmul`. Not FFN fuse, not dequant-dense, not the
+    /// closed full-attn `AX_MLX_QWEN_ATTN_NORM_QKV_FUSE`.
+    ///
+    /// **Default: OFF**. Remasured binary `1fe62f3b…` (2026-08-14): 3b
+    /// 1.027604 / 3d 1.052036 wash (0.995× q2only). Fusing RMSNorm into LA
+    /// qmm does not cut compute-bound qmm.
+    qwen_la_norm_qkvz_fuse_enabled,
+    "AX_MLX_QWEN_LA_NORM_QKVZ_FUSE"
+);
+
+/// Whether Qwen prefill should fuse attn RMSNorm into LA QKVZ/BA qmm.
+pub fn should_qwen_la_norm_qkvz_fuse(model_family: &str, seq: i32) -> bool {
+    should_qwen_la_norm_qkvz_fuse_for(qwen_la_norm_qkvz_fuse_enabled(), model_family, seq)
+}
+
+/// Pure helper for [`should_qwen_la_norm_qkvz_fuse`].
+pub fn should_qwen_la_norm_qkvz_fuse_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
 /// Pure helper for [`should_qwen_prefill_dequant_dense`].
 pub fn should_qwen_prefill_dequant_dense_for(
     enabled: bool,
@@ -4798,6 +4830,19 @@ mod tests {
         assert!(!should_qwen_prefill_dequant_dense_for(
             false, "qwen3_5", 1024
         ));
+    }
+
+    #[test]
+    fn qwen_la_norm_qkvz_fuse_is_seq_and_family_gated() {
+        assert!(should_qwen_la_norm_qkvz_fuse_for(true, "qwen3_5", 1024));
+        assert!(should_qwen_la_norm_qkvz_fuse_for(true, "qwen3_next", 2048));
+        assert!(
+            !should_qwen_la_norm_qkvz_fuse_for(true, "qwen3_5", 512),
+            "512-token LA norm fuse stays closed"
+        );
+        assert!(!should_qwen_la_norm_qkvz_fuse_for(true, "qwen3_5", 1));
+        assert!(!should_qwen_la_norm_qkvz_fuse_for(true, "gemma4", 1024));
+        assert!(!should_qwen_la_norm_qkvz_fuse_for(false, "qwen3_5", 1024));
     }
 
     #[test]

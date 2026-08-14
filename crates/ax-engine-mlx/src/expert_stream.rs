@@ -749,6 +749,10 @@ impl ExpertStackPager {
                 bits: tensor.bits as i32,
                 mode: "affine".to_string(),
                 linear_bias,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
             };
             stack.insert(proj, quantized);
         }

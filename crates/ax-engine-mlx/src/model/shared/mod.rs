@@ -25,7 +25,10 @@ pub(crate) use attention::{
 };
 pub(crate) use deepseek_v4_attention::deepseek_v4_attention_forward;
 pub(crate) use hyper_connection::{hc_head, hc_post, hc_pre};
-pub(crate) use linear_attention::{linear_attention_forward, linear_attention_forward_batched};
+pub(crate) use linear_attention::{
+    linear_attention_forward, linear_attention_forward_batched,
+    set_qwen_la_norm_qkvz_fuse_weights,
+};
 pub(crate) use mla::glm_mla_attention_forward;
 pub(crate) use mlp::moe_router_deepseek_v4;
 #[cfg(test)]
