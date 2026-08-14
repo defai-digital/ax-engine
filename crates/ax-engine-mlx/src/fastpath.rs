@@ -2184,6 +2184,43 @@ pub fn should_qwen_la_flat_inputs(seq: i32) -> bool {
     should_qwen_la_flat_inputs_for(qwen_la_flat_inputs_enabled(), seq)
 }
 
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_CONTIGUOUS_LA_INPUT` — `contiguous([B,S,H])` the
+    /// linear-attn activation before the two packed QKVZ/BA prefill qmms at
+    /// `seq >= 1024`. Not FFN `contiguous([B,S,H])` (washed), not LA *weight*
+    /// contiguous (washed), not QKV-before-conv1d (washed), not flatten
+    /// (washed), not dequant-dense.
+    ///
+    /// **Default: OFF**. Remasured binary `2680dd89…` (2026-08-14): 3b
+    /// 1.028100 / 3d 1.052324 wash (0.996× q2only). Contiguous LA input
+    /// does not cut compute-bound qmm.
+    qwen_prefill_contiguous_la_input_enabled,
+    "AX_MLX_QWEN_PREFILL_CONTIGUOUS_LA_INPUT"
+);
+
+/// Whether LA prefill should `contiguous` the activation before QKVZ/BA qmm.
+pub fn should_qwen_prefill_contiguous_la_input(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_contiguous_la_input_for(
+        qwen_prefill_contiguous_la_input_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_contiguous_la_input`].
+pub fn should_qwen_prefill_contiguous_la_input_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
 /// Pure helper for [`should_qwen_la_flat_inputs`].
 pub fn should_qwen_la_flat_inputs_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
@@ -4486,6 +4523,29 @@ mod tests {
         );
         assert!(!should_qwen_la_flat_inputs_for(true, 1));
         assert!(!should_qwen_la_flat_inputs_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_contiguous_la_input_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_contiguous_la_input_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_contiguous_la_input_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(
+            !should_qwen_prefill_contiguous_la_input_for(true, "qwen3_5", 512),
+            "512-token LA input contiguous stays closed"
+        );
+        assert!(!should_qwen_prefill_contiguous_la_input_for(
+            true, "qwen3_5", 1
+        ));
+        assert!(!should_qwen_prefill_contiguous_la_input_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_contiguous_la_input_for(
+            false, "qwen3_5", 1024
+        ));
     }
 
     #[test]

@@ -805,6 +805,14 @@ pub(crate) fn linear_attention_inputs(
     profile_enabled: bool,
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
     qwen_prefill_maybe_eval_la_input(x, seq);
+    let x_contig;
+    let x = if fastpath::should_qwen_prefill_contiguous_la_input(&model_cfg.model_family, seq)
+    {
+        x_contig = contiguous(x, None);
+        &x_contig
+    } else {
+        x
+    };
     if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
         let (qkvz_w, ba_w) = if fastpath::should_qwen_la_prefill_q2(seq) {
             match (w.prefill_q2_qkvz.as_ref(), w.prefill_q2_ba.as_ref()) {
@@ -2175,6 +2183,68 @@ mod tests {
         assert!(
             fastpath::should_qwen_la_norm_qkvz_fuse_for(true, "qwen3_5", 1024),
             "shipped LA norm fuse gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_contiguous_la_input_qw_matches_view() {
+        let full: Vec<f32> = (0..16 * 64)
+            .map(|i| ((i as f32) - 512.0) * 0.0009765625)
+            .collect();
+        let proj_data: Vec<f32> = (0..96 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0004)
+            .collect();
+        let wide = MlxArray::from_raw_data(
+            full.as_ptr() as *const u8,
+            std::mem::size_of_val(full.as_slice()),
+            &[1, 16, 64],
+            MlxDtype::Float32,
+        );
+        let view = slice(&wide, &[0, 4, 0], &[1, 12, 64], &[1, 1, 1], None);
+        let proj_w = MlxArray::from_raw_data(
+            proj_data.as_ptr() as *const u8,
+            std::mem::size_of_val(proj_data.as_slice()),
+            &[96, 64],
+            MlxDtype::Float32,
+        );
+        let dq = mlx_sys::quantize(
+            &proj_w,
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let proj = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let packed = qw(&contiguous(&view, None), &proj);
+        let portable = qw(&view, &proj);
+        eval(&[&packed, &portable]);
+        assert_eq!(packed.shape(), portable.shape());
+        let g = packed.data_f32();
+        let w = portable.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..g.len() {
+            max_abs = max_abs.max((g[i] - w[i]).abs());
+        }
+        assert!(
+            max_abs < 3.0e-2,
+            "contiguous LA input qmm must match view qmm, max_abs={max_abs}"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_contiguous_la_input_for(true, "qwen3_5", 1024),
+            "shipped LA input contiguous gate must accept the p2048 chunk length"
         );
     }
 }
