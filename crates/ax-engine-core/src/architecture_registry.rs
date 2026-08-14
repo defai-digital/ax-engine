@@ -19,14 +19,34 @@ pub enum LayerForwardRoute {
     Llama4,
     GlmMoeLite,
     DeepseekV3,
-    /// DeepSeek V4 (Flash): registered for converter/manifest plumbing; the
-    /// repo-owned runtime graph is not yet implemented.
+    /// DeepSeek V4 (Flash): dedicated repo-owned graph with experimental
+    /// certification status.
     DeepseekV4,
     Mistral3,
     Mixtral,
     GptOss,
     /// Nemotron-H hybrid: per-layer Mamba-2 / attention / ReLU² MoE mixers.
     NemotronH,
+}
+
+/// Whether an architecture artifact may be loaded as the primary MLX runner.
+///
+/// Registration alone is not admission: auxiliary artifacts such as an MTP
+/// assistant are known to the converter and runtime but must be attached to a
+/// primary model instead of being loaded as a standalone generation runner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MlxRunnerAdmission {
+    /// The manifest may enter the primary MLX runner validation pipeline.
+    Primary,
+    /// The manifest is a known auxiliary artifact and cannot run standalone.
+    AuxiliaryOnly,
+}
+
+impl MlxRunnerAdmission {
+    /// Whether this registration is eligible for primary-runner validation.
+    pub const fn allows_primary(self) -> bool {
+        matches!(self, Self::Primary)
+    }
 }
 
 impl LayerForwardRoute {
@@ -65,6 +85,8 @@ impl LayerForwardRoute {
 pub struct ArchitectureRegistration {
     /// Canonical `model_family` label stored on the manifest.
     pub family_label: &'static str,
+    /// Primary-versus-auxiliary admission policy for the MLX runner.
+    pub mlx_runner_admission: MlxRunnerAdmission,
     /// Default generation paradigm when the manifest does not force another.
     pub default_generation: GenerationKind,
     /// Layer-forward implementation route (ADR-038 composition boundary).
@@ -78,6 +100,12 @@ pub struct ArchitectureRegistration {
     pub support_tier: ModelSupportTier,
 }
 
+/// Forward-compatible name for a complete model-family descriptor.
+///
+/// The existing type name and struct literal spelling remain stable because
+/// repository smoke tooling source-parses registry rows today.
+pub type FamilyDescriptor = ArchitectureRegistration;
+
 /// All statically registered architecture labels.
 ///
 /// Adding a hybrid that reuses existing primitives should primarily add a row
@@ -85,6 +113,7 @@ pub struct ArchitectureRegistration {
 pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     ArchitectureRegistration {
         family_label: "qwen3",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: true,
@@ -93,6 +122,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "qwen3_5",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -101,6 +131,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "qwen3_next",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -109,6 +140,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "minicpmv4_6",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -117,6 +149,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "llama3",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: true,
@@ -125,6 +158,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "gemma3",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -133,6 +167,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "gemma4",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -141,6 +176,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "gemma4_assistant",
+        mlx_runner_admission: MlxRunnerAdmission::AuxiliaryOnly,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -149,6 +185,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "gemma4_unified",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -157,6 +194,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "gemma4_vl",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -165,6 +203,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "qwen3_vl",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: true,
@@ -173,6 +212,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "qwen3_vl_moe",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -181,6 +221,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "diffusion_gemma",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::BlockDiffusion,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -189,6 +230,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "embeddinggemma",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::EncoderEmbed,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -197,6 +239,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "nemotron_embed",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::EncoderEmbed,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -205,6 +248,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "glm4_moe_lite",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::GlmMoeLite,
         dense_batched_decode_candidate: false,
@@ -213,6 +257,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "deepseek_v3",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::DeepseekV3,
         dense_batched_decode_candidate: false,
@@ -221,6 +266,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "deepseek_v32",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::DeepseekV3,
         dense_batched_decode_candidate: false,
@@ -229,14 +275,16 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "deepseek_v4",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::DeepseekV4,
         dense_batched_decode_candidate: false,
-        cert_gate_note: "sparse attention + hash-routed MoE; repo-owned graph in progress; no certification evidence",
+        cert_gate_note: "sparse attention + hash-routed MoE; repo-owned graph with limited smoke evidence; no certification evidence",
         support_tier: ModelSupportTier::Experimental,
     },
     ArchitectureRegistration {
         family_label: "mistral3",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Mistral3,
         dense_batched_decode_candidate: false,
@@ -245,6 +293,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "mixtral",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Mixtral,
         dense_batched_decode_candidate: false,
@@ -253,6 +302,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "llama4",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Llama4,
         dense_batched_decode_candidate: false,
@@ -261,6 +311,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "gpt_oss",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::GptOss,
         dense_batched_decode_candidate: false,
@@ -269,6 +320,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "nemotron_h",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::NemotronH,
         dense_batched_decode_candidate: false,
@@ -277,6 +329,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "unlimited_ocr",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
@@ -304,6 +357,21 @@ pub fn lookup_architecture(family_label: &str) -> Option<&'static ArchitectureRe
         .find(|entry| entry.family_label == family_label)
 }
 
+/// Resolve the MLX runner admission policy for a registered family.
+///
+/// `None` means the family is unknown, which is distinct from a known
+/// [`MlxRunnerAdmission::AuxiliaryOnly`] artifact.
+pub fn mlx_runner_admission_for_family(family_label: &str) -> Option<MlxRunnerAdmission> {
+    lookup_architecture(family_label).map(|entry| entry.mlx_runner_admission)
+}
+
+/// Return whether a registered family may enter primary MLX runner validation.
+///
+/// Unknown labels and registered auxiliary-only artifacts both fail closed.
+pub fn is_primary_mlx_runner_family(family_label: &str) -> bool {
+    mlx_runner_admission_for_family(family_label).is_some_and(MlxRunnerAdmission::allows_primary)
+}
+
 /// Resolve the layer-forward route for a family label.
 ///
 /// Prefer this over open-coding family string matches at dispatch sites.
@@ -329,6 +397,8 @@ pub fn default_generation_for_family(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::architecture::{ArchitectureSpec, StructuralCapabilities};
     use crate::generation::GenerationKind;
@@ -409,6 +479,38 @@ mod tests {
         assert!(!diff.dense_batched_decode_candidate);
         assert_eq!(diff.default_generation, GenerationKind::BlockDiffusion);
         assert_eq!(diff.layer_forward_route, LayerForwardRoute::Standard);
+    }
+
+    #[test]
+    fn registry_family_labels_are_unique() {
+        let mut seen = BTreeSet::new();
+        for entry in ARCHITECTURE_REGISTRY {
+            assert!(
+                seen.insert(entry.family_label),
+                "duplicate architecture registration for {}",
+                entry.family_label
+            );
+        }
+    }
+
+    #[test]
+    fn primary_mlx_runner_admission_excludes_auxiliary_and_unknown_artifacts() {
+        let auxiliary_families = ARCHITECTURE_REGISTRY
+            .iter()
+            .filter(|entry| !entry.mlx_runner_admission.allows_primary())
+            .map(|entry| entry.family_label)
+            .collect::<Vec<_>>();
+
+        assert_eq!(auxiliary_families, vec!["gemma4_assistant"]);
+        assert_eq!(
+            mlx_runner_admission_for_family("gemma4_assistant"),
+            Some(MlxRunnerAdmission::AuxiliaryOnly)
+        );
+        assert_eq!(mlx_runner_admission_for_family("not_a_family"), None);
+        assert!(is_primary_mlx_runner_family("qwen3"));
+        assert!(is_primary_mlx_runner_family("deepseek_v4"));
+        assert!(!is_primary_mlx_runner_family("gemma4_assistant"));
+        assert!(!is_primary_mlx_runner_family("not_a_family"));
     }
 
     #[test]

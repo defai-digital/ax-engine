@@ -620,6 +620,347 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_QWEN_FUSED_PREFILL_ATTENTION` — Qwen-family entry to the
+    /// mlxcel `fused_causal_prefill_attention` residual (attn RMSNorm →
+    /// QKV → QK-norm → RoPE → maskless causal SDPA → o-proj).
+    ///
+    /// **Default: OFF**. Offset-0 remasured p2048 895.52 vs 891.02 (2026-08-13);
+    /// offset chunks crashed SSE. Gemma stays on `AX_MLX_FUSED_PREFILL_ATTENTION`
+    /// (also OFF). Not an FFN host-fusion/compile lever.
+    qwen_fused_prefill_attention_enabled,
+    "AX_MLX_QWEN_FUSED_PREFILL_ATTENTION"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_LINEAR_ADD_RMS_NORM` — fuse `hidden + attn` with the
+    /// pre-FFN RMSNorm on Qwen linear-attention layers (`add_rms_norm_pair`).
+    ///
+    /// **Default: OFF**. AXQ remasured p2048 890.38 vs 891.02 (2026-08-13).
+    /// Full-attn `standard::layer_forward` already uses this pair.
+    qwen_linear_add_rms_norm_enabled,
+    "AX_MLX_QWEN_LINEAR_ADD_RMS_NORM"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_INTERLAYER_ADD_RMS` — on Qwen linear→linear
+    /// prefill boundaries, defer the post-FFN residual add and fuse it with
+    /// the next layer's attn RMSNorm (`add_rms_norm_pair`).
+    ///
+    /// **Default: OFF**. Community p2048 904.845/858=1.054599 (0.996× standing
+    /// 908.5, 2026-08-13). AXQ p2048 886.952/862.825=1.027962 (0.995× q2only).
+    /// Same class as linear-attn add_rms wash. Not FFN compile.
+    qwen_prefill_interlayer_add_rms_enabled,
+    "AX_MLX_QWEN_PREFILL_INTERLAYER_ADD_RMS"
+);
+
+/// Whether Qwen generate prefill should fuse post-FFN add into the next
+/// linear layer's attn RMSNorm.
+pub fn should_qwen_prefill_interlayer_add_rms(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_interlayer_add_rms_for(
+        qwen_prefill_interlayer_add_rms_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_interlayer_add_rms`].
+pub fn should_qwen_prefill_interlayer_add_rms_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq > 1
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+/// Whether this linear layer should stash raw FFN for the next linear layer.
+pub fn should_defer_qwen_prefill_ffn_residual(
+    model_family: &str,
+    seq: i32,
+    layer_idx: usize,
+    next_is_linear: bool,
+    skip_post_attention_ffn: bool,
+) -> bool {
+    should_defer_qwen_prefill_ffn_residual_for(
+        should_qwen_prefill_interlayer_add_rms(model_family, seq),
+        next_is_linear,
+        skip_post_attention_ffn,
+        layer_idx,
+    )
+}
+
+/// Pure helper for [`should_defer_qwen_prefill_ffn_residual`].
+pub fn should_defer_qwen_prefill_ffn_residual_for(
+    interlayer_enabled: bool,
+    next_is_linear: bool,
+    skip_post_attention_ffn: bool,
+    layer_idx: usize,
+) -> bool {
+    interlayer_enabled && next_is_linear && !skip_post_attention_ffn && layer_idx < usize::MAX
+}
+
+/// Families whose full-attn prefill can use the fused causal chain.
+pub fn fused_prefill_attention_family_supported(model_family: &str) -> bool {
+    matches!(
+        model_family,
+        "gemma4" | "gemma4_vl" | "gemma3" | "qwen3_5" | "qwen3_next"
+    )
+}
+
+/// Whether this family should attempt fused causal prefill attention.
+/// Qwen uses the Qwen-scoped default-ON flag; Gemma keeps the global
+/// default-OFF probe.
+pub fn fused_prefill_attention_should_try(model_family: &str) -> bool {
+    if !fused_prefill_attention_family_supported(model_family) {
+        return false;
+    }
+    if model_family.starts_with("qwen") {
+        qwen_fused_prefill_attention_enabled()
+    } else {
+        fused_prefill_attention_enabled()
+    }
+}
+
+/// Qwen p2048's second 1024-token chunk crashed the offset fused
+/// `qkv_rope_split` + `sdpa_oproj` pair. Offset-0 one-shot fuse stays on.
+pub fn fused_prefill_qwen_skip_offset(model_family: &str, offset_chunk: bool) -> bool {
+    model_family.starts_with("qwen") && offset_chunk
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_SKIP_LINEAR_PREFILL_MASK` — do not materialize SDPA
+    /// causal/offset masks for linear-attention layers.
+    ///
+    /// **Default: OFF**. Remasured binary `39ea84c7…` (2026-08-13): community
+    /// p2048 904.629/858=1.054347; AXQ p2048 888.720/862.825=1.030012
+    /// (0.997× q2only). Wash. Not FFN/add_rms/pipeline-block.
+    qwen_skip_linear_prefill_mask_enabled,
+    "AX_MLX_QWEN_SKIP_LINEAR_PREFILL_MASK"
+);
+
+/// Whether Qwen prefill should omit the SDPA mask on a linear-attn layer.
+pub fn should_skip_linear_prefill_mask(model_family: &str, is_linear_layer: bool) -> bool {
+    should_skip_linear_prefill_mask_for(
+        qwen_skip_linear_prefill_mask_enabled(),
+        model_family,
+        is_linear_layer,
+    )
+}
+
+/// Pure helper for [`should_skip_linear_prefill_mask`].
+pub fn should_skip_linear_prefill_mask_for(
+    enabled: bool,
+    model_family: &str,
+    is_linear_layer: bool,
+) -> bool {
+    enabled
+        && is_linear_layer
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_EVAL_KV_ONLY` — on intermediate Qwen
+    /// `forward_cache_only` chunks, `eval` KV + linear-state refs only.
+    ///
+    /// **Default: OFF**. Paired with skip-linear-mask; remasured wash
+    /// (2026-08-13, `39ea84c7…`). Not the closed lazy-intermediate skip.
+    qwen_prefill_eval_kv_only_enabled,
+    "AX_MLX_QWEN_PREFILL_EVAL_KV_ONLY"
+);
+
+/// Whether an intermediate Qwen cache-only chunk should eval KV refs only.
+pub fn should_qwen_prefill_eval_kv_only(
+    model_family: &str,
+    is_final_chunk: bool,
+    total_tokens: usize,
+) -> bool {
+    should_qwen_prefill_eval_kv_only_for(
+        qwen_prefill_eval_kv_only_enabled(),
+        model_family,
+        is_final_chunk,
+        total_tokens,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_eval_kv_only`].
+pub fn should_qwen_prefill_eval_kv_only_for(
+    enabled: bool,
+    model_family: &str,
+    is_final_chunk: bool,
+    total_tokens: usize,
+) -> bool {
+    enabled
+        && !is_final_chunk
+        && skip_cache_only_split_for_family(model_family, total_tokens)
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_EXACT_SIZE_FIRST_KV` — first prefill write stores K/V (and
+    /// GLM-MLA latents) at the exact prompt length instead of
+    /// `zeros` + `slice_update` into a `KV_CHUNK_TOKENS` (256) padded
+    /// buffer.
+    ///
+    /// **Default: OFF**. Remasured binary `96730eee…` (2026-08-13): community
+    /// p2048 906.145/858=1.056114; AXQ p2048 888.896/862.825=1.030216
+    /// (0.998× q2only). p2048 first write is already 1024-aligned. Not FFN.
+    exact_size_first_kv_enabled,
+    "AX_MLX_EXACT_SIZE_FIRST_KV"
+);
+
+/// Whether a fresh-layer first write should store the prompt-sized buffer.
+pub fn should_exact_size_first_kv(write_start: usize) -> bool {
+    should_exact_size_first_kv_for(exact_size_first_kv_enabled(), write_start)
+}
+
+/// Pure helper for [`should_exact_size_first_kv`].
+pub fn should_exact_size_first_kv_for(enabled: bool, write_start: usize) -> bool {
+    enabled && write_start == 0
+}
+
+env_flag!(
+    /// `AX_MLX_EXACT_SIZE_KV_GROW` — when a prefill chunk appends exactly
+    /// at the current FA/MLA capacity and the new length is
+    /// `KV_CHUNK_TOKENS`-aligned, `concatenate` old∥new instead of
+    /// `zeros(new_cap)` + two `slice_update`s.
+    ///
+    /// **Default: OFF**. Remasured binary `1b4a9e67…` (2026-08-13): community
+    /// p2048 903.997/858=1.053610; AXQ p2048 886.967/862.825=1.027980
+    /// (0.995× q2only). Slight regression. Not FFN.
+    exact_size_kv_grow_enabled,
+    "AX_MLX_EXACT_SIZE_KV_GROW"
+);
+
+/// Whether a capacity-tight aligned grow should concatenate instead of zeros.
+pub fn should_exact_size_kv_grow(
+    write_start: usize,
+    old_capacity: usize,
+    write_end: usize,
+    new_capacity: usize,
+) -> bool {
+    should_exact_size_kv_grow_for(
+        exact_size_kv_grow_enabled(),
+        write_start,
+        old_capacity,
+        write_end,
+        new_capacity,
+    )
+}
+
+/// Pure helper for [`should_exact_size_kv_grow`].
+pub fn should_exact_size_kv_grow_for(
+    enabled: bool,
+    write_start: usize,
+    old_capacity: usize,
+    write_end: usize,
+    new_capacity: usize,
+) -> bool {
+    enabled && write_start == old_capacity && write_end == new_capacity && write_end > old_capacity
+}
+
+env_flag!(
+    /// `AX_MLX_SKIP_UNUSED_FULL_KV_VIEW_SLICE` — when the SDPA view is the
+    /// entire FA backing buffer, return K/V directly instead of a no-op
+    /// `slice`.
+    ///
+    /// **Default: OFF**. Remasured binary `6643006c…` (2026-08-13): community
+    /// p2048 903.515/858=1.053048; AXQ p2048 887.394/862.825=1.028475
+    /// (0.996× q2only). Wash. Not FFN.
+    skip_unused_full_kv_view_slice_enabled,
+    "AX_MLX_SKIP_UNUSED_FULL_KV_VIEW_SLICE"
+);
+
+/// Whether a full-buffer FA view can skip the identity slice.
+pub fn should_skip_unused_full_kv_view_slice(
+    view_start: usize,
+    write_end: usize,
+    capacity: usize,
+) -> bool {
+    should_skip_unused_full_kv_view_slice_for(
+        skip_unused_full_kv_view_slice_enabled(),
+        view_start,
+        write_end,
+        capacity,
+    )
+}
+
+/// Pure helper for [`should_skip_unused_full_kv_view_slice`].
+pub fn should_skip_unused_full_kv_view_slice_for(
+    enabled: bool,
+    view_start: usize,
+    write_end: usize,
+    capacity: usize,
+) -> bool {
+    enabled && view_start == 0 && write_end == capacity && capacity > 0
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_SKIP_UNUSED_LA_OUT_RESHAPE` — after `rms_norm_gated`,
+    /// skip `reshape([1,S,V])` when the tensor is already that shape
+    /// before `out_proj` qmm.
+    ///
+    /// **Default: OFF**. Remasured binary `0928ddf1…` (2026-08-13): community
+    /// p2048 904.239/858=1.053892; AXQ p2048 888.900/862.825=1.030221
+    /// (0.998× q2only). Wash. Not the closed silu_mul fuse.
+    qwen_skip_unused_la_out_reshape_enabled,
+    "AX_MLX_QWEN_SKIP_UNUSED_LA_OUT_RESHAPE"
+);
+
+/// Whether LA `out_proj` can take `hidden` without a reshape.
+pub fn should_skip_unused_la_out_reshape(shape: &[i32], seq: i32, value_dim: i32) -> bool {
+    should_skip_unused_la_out_reshape_for(
+        qwen_skip_unused_la_out_reshape_enabled(),
+        shape,
+        seq,
+        value_dim,
+    )
+}
+
+/// Pure helper for [`should_skip_unused_la_out_reshape`].
+pub fn should_skip_unused_la_out_reshape_for(
+    enabled: bool,
+    shape: &[i32],
+    seq: i32,
+    value_dim: i32,
+) -> bool {
+    enabled && shape == [1, seq, value_dim]
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_LA_REUSE_INITIAL_STATE_ZEROS` — reuse one Float32 zeros
+    /// template for the initial gated-delta recurrent state instead of
+    /// allocating `zeros` on every linear layer of p2048 chunk 1 (48
+    /// identical shapes). Chunk 2 already has state. Not FFN, not
+    /// GatedDelta tile/compile/contiguous.
+    ///
+    /// **Default: OFF**. Remasured binary `dc519b17…` (2026-08-13): community
+    /// p2048 904.358/858=1.054032; AXQ p2048 888.016/862.825=1.029195
+    /// (0.997× q2only). Wash. Not GatedDelta tile/compile/contiguous.
+    qwen_la_reuse_initial_state_zeros_enabled,
+    "AX_MLX_QWEN_LA_REUSE_INITIAL_STATE_ZEROS"
+);
+
+/// Whether the initial recurrent state should reuse a zeros template.
+pub fn should_reuse_la_initial_state_zeros() -> bool {
+    should_reuse_la_initial_state_zeros_for(qwen_la_reuse_initial_state_zeros_enabled())
+}
+
+/// Pure helper for [`should_reuse_la_initial_state_zeros`].
+pub fn should_reuse_la_initial_state_zeros_for(enabled: bool) -> bool {
+    enabled
+}
+
+env_flag!(
     /// `AX_MLX_PREFILL_CLEAR_CACHE_PER_CHUNK` — after each *intermediate*
     /// prefill chunk is evaluated, call MLX `clear_cache()` (return freelist
     /// to the OS / pool) before building the next chunk's graph.
@@ -925,6 +1266,52 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_QWEN_ATTN_NORM_QKV_FUSE` — Qwen full-attn: fuse `attn_norm`
+    /// with packed QKV `quantized_matmul` via `rms_norm_quantized_matmul`.
+    ///
+    /// **Default: OFF**. Four-lane remasure (binary `544a8b5d…`, 2026-08-13):
+    /// community p2048 906.020/858.000=1.055968 (3d FAIL; 0.997× standing
+    /// 908.5). p128 463.775 vs standing 472.770 (regression). AXQ --ax-direct
+    /// panicked (`portable path materializes attn_norm`) when exact skipped
+    /// the fuse after `normed` was cleared. Gemma stays OFF.
+    qwen_attn_norm_qkv_fuse_enabled,
+    "AX_MLX_QWEN_ATTN_NORM_QKV_FUSE"
+);
+
+/// Whether this family should fuse attn RMSNorm into packed QKV qmm.
+pub fn should_attn_norm_qkv_fuse(model_family: &str) -> bool {
+    should_attn_norm_qkv_fuse_for(
+        qwen_attn_norm_qkv_fuse_enabled(),
+        attn_norm_qkv_fuse_enabled(),
+        model_family,
+    )
+}
+
+/// Pure helper for [`should_attn_norm_qkv_fuse`].
+pub fn should_attn_norm_qkv_fuse_for(
+    qwen_enabled: bool,
+    global_enabled: bool,
+    model_family: &str,
+) -> bool {
+    if model_family.eq_ignore_ascii_case("qwen3_5") {
+        qwen_enabled
+    } else {
+        global_enabled
+    }
+}
+
+/// Whether the fused rms+QKV call will run. Exact / moe-mt identity skip
+/// the fuse and still need a standalone `attn_norm`.
+pub fn should_call_attn_norm_qkv_fuse(
+    family_enabled: bool,
+    packed_qkv: bool,
+    has_kv_source: bool,
+    skip_fuse: bool,
+) -> bool {
+    family_enabled && packed_qkv && !has_kv_source && !skip_fuse
+}
+
+env_flag!(
     /// `AX_MLX_DUAL_QMM_GEGLU` — multi-token split dense FFN: one C++ call for
     /// `gelu_approx(qmm(x,gate)) * qmm(x,up)` (no mx::compile). Profile residual:
     /// pure Gemma 13.8k `post_attn_ffn_gate_up` ~3.3s (only stage with thr≥21
@@ -1106,6 +1493,60 @@ pub fn pipeline_granularity() -> PipelineGranularity {
         Ok(raw) => parse_pipeline_granularity(&raw),
         Err(_) => PipelineGranularity::Off,
     })
+}
+
+/// Qwen prefill fires an `async_eval` hint every this many layers when
+/// [`should_qwen_prefill_pipeline_block`] is on. mlxcel `block:N` analog.
+pub const QWEN_PREFILL_PIPELINE_BLOCK: usize = 8;
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_PIPELINE_BLOCK` — after every 8 non-final Qwen
+    /// 3.5/3.6 prefill layers with `seq >= 1024`, `async_eval(hidden)` so
+    /// GPU can start layer N while the host builds N+1.
+    ///
+    /// **Default: OFF**. Community p2048 904.335/858=1.054004 (0.995× standing
+    /// 908.5, 2026-08-13). AXQ p2048 888.809/862.825=1.030115 (0.998× q2only).
+    /// Same class as intermediate-chunk async_eval. Not FFN compile.
+    qwen_prefill_pipeline_block_enabled,
+    "AX_MLX_QWEN_PREFILL_PIPELINE_BLOCK"
+);
+
+/// Whether Qwen generate prefill should submit a layer-block pipeline hint.
+pub fn should_qwen_prefill_pipeline_block(
+    model_family: &str,
+    seq: usize,
+    layer_idx: usize,
+    total_layers: usize,
+) -> bool {
+    should_qwen_prefill_pipeline_block_for(
+        qwen_prefill_pipeline_block_enabled(),
+        model_family,
+        seq,
+        layer_idx,
+        total_layers,
+        QWEN_PREFILL_PIPELINE_BLOCK,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_pipeline_block`].
+pub fn should_qwen_prefill_pipeline_block_for(
+    enabled: bool,
+    model_family: &str,
+    seq: usize,
+    layer_idx: usize,
+    total_layers: usize,
+    block: usize,
+) -> bool {
+    enabled
+        && seq >= 1024
+        && block >= 1
+        && total_layers > 0
+        && layer_idx + 1 < total_layers
+        && (layer_idx + 1).is_multiple_of(block)
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
 }
 
 /// Whether a layer-boundary pipeline hint should fire after `layer_idx`
@@ -1343,12 +1784,9 @@ env_flag!(
     /// `fast_scaled_dot_product_attention_causal` (native causal), never an
     /// array mask for full-window layers.
     ///
-    /// Profile residual: pure Gemma 13.8k `sdpa` ~1.22s; 8/48 full-attention
-    /// layers grow full-context SDPA and currently pay array masks after the
-    /// first prefill chunk.
-    ///
-    /// **Default: OFF** (opt-in pure A/B). Sliding-window layers still need
-    /// explicit masks when the window constraint is active.
+    /// **Default: OFF**. Gemma 13.8k A/B rejected (1.064×). Qwen 3.6 27B
+    /// p2048 remasured 889.3 vs 891.0 (2026-08-13). Sliding-window layers
+    /// still need explicit masks when the window constraint is active.
     native_offset_causal_enabled,
     "AX_MLX_NATIVE_OFFSET_CAUSAL"
 );
@@ -1364,6 +1802,140 @@ env_flag!(
     dense_geglu_down_fuse_enabled,
     "AX_MLX_DENSE_GEGLU_DOWN_FUSE"
 );
+
+env_flag!(
+    /// `AX_MLX_QWEN_SWIGLU_DOWN_FUSE` — multi-token split SwiGLU product fused
+    /// into the dense FFN down_proj quantized matmul (one C++ graph for
+    /// `silu(gate)*up → down qmm`).
+    ///
+    /// **Default: OFF**. AXQ remasured p2048 876.21 vs 891.02 (2026-08-13).
+    /// Gemma GEGLU fuse stays on `AX_MLX_DENSE_GEGLU_DOWN_FUSE` (also OFF).
+    qwen_swiglu_down_fuse_enabled,
+    "AX_MLX_QWEN_SWIGLU_DOWN_FUSE"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_DUAL_QMM_SWIGLU` — multi-token split gate/up as one C++
+    /// call: `silu(qmm(x,gate)) * qmm(x,up)`. No `mx::compile`, no down fuse,
+    /// no dual-stream. Targets p2048 `gate_up` 837ms + activation 54ms.
+    ///
+    /// **Default: OFF**. AXQ remasured p2048 875.21 vs 891.02 (2026-08-13).
+    /// Gemma stays on `AX_MLX_DUAL_QMM_GEGLU` (also default OFF).
+    qwen_dual_qmm_swiglu_enabled,
+    "AX_MLX_QWEN_DUAL_QMM_SWIGLU"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_DUAL_QMM_SWIGLU_METAL` — multi-token 4-bit
+    /// gate/up qmm + SwiGLU in one Metal kernel using `simdgroup_matrix`
+    /// 8×8 MMA.
+    ///
+    /// **Default: OFF**. Community remasured p2048 prefill ~179 vs 908
+    /// (~0.20×, 2026-08-13). Same class as Gemma dual Metal 8.5× reject.
+    /// Host-FFI `dual_qmm_swiglu` also stays OFF (875 vs 891).
+    qwen_prefill_dual_qmm_swiglu_metal_enabled,
+    "AX_MLX_QWEN_PREFILL_DUAL_QMM_SWIGLU_METAL"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_FLAT_DOWN_QMM` — reshape Qwen split-prefill down
+    /// activations `[B,S,I] → [B*S,I]` before the affine qmm, then restore
+    /// `[B,S,H]`. Standalone down GEMM (no silu+down fuse).
+    ///
+    /// **Default: OFF**. AXQ remasured p2048 888.33 vs 891.02 (2026-08-13).
+    /// Gemma stays on the 3-D qw path.
+    qwen_prefill_flat_down_qmm_enabled,
+    "AX_MLX_QWEN_PREFILL_FLAT_DOWN_QMM"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_FLAT_FFN` — reshape Qwen split-prefill FFN
+    /// activations `[B,S,H] → [B*S,H]` before gate/up/down qmm, then
+    /// restore `[B,S,H]`. All three affine qmms see a 2-D leading dim.
+    ///
+    /// **Default: OFF**. Four-lane remasure (binary `77435b62…`, 2026-08-13):
+    /// AXQ p2048 889.673/862.825=1.031116 (0.9985× q2only 891). Community
+    /// p2048 909.796/858.000=1.060369 (3d FAIL). Same class as standalone
+    /// flat-down 888. Standalone down flatten stays OFF.
+    qwen_prefill_flat_ffn_enabled,
+    "AX_MLX_QWEN_PREFILL_FLAT_FFN"
+);
+
+/// Whether Qwen prefill FFN should flatten `[B,S,H] → [B*S,H]`.
+pub fn should_qwen_prefill_flat_ffn(model_family: &str, seq: i32, rank: usize) -> bool {
+    should_qwen_prefill_flat_ffn_for(qwen_prefill_flat_ffn_enabled(), model_family, seq, rank)
+}
+
+/// Pure helper for [`should_qwen_prefill_flat_ffn`].
+pub fn should_qwen_prefill_flat_ffn_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+    rank: usize,
+) -> bool {
+    enabled && seq > 1 && rank == 3 && model_family.eq_ignore_ascii_case("qwen3_5")
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_CONTIGUOUS_FFN` — materialize a contiguous
+    /// `[B,S,H]` before Qwen split-prefill gate/up/down qmm.
+    ///
+    /// **Default: OFF**. Four-lane remasure (binary `f72c4606…`, 2026-08-13):
+    /// AXQ p2048 891.078/862.825=1.032745 (1.0001× q2only 891). Community
+    /// p2048 908.312/858.000=1.058639 (3d FAIL). Flat-FFN stays OFF.
+    qwen_prefill_contiguous_ffn_enabled,
+    "AX_MLX_QWEN_PREFILL_CONTIGUOUS_FFN"
+);
+
+/// Whether Qwen prefill FFN should `contiguous` the activation.
+pub fn should_qwen_prefill_contiguous_ffn(model_family: &str, seq: i32, rank: usize) -> bool {
+    should_qwen_prefill_contiguous_ffn_for(
+        qwen_prefill_contiguous_ffn_enabled(),
+        model_family,
+        seq,
+        rank,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_contiguous_ffn`].
+pub fn should_qwen_prefill_contiguous_ffn_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+    rank: usize,
+) -> bool {
+    enabled && seq > 1 && rank == 3 && model_family.eq_ignore_ascii_case("qwen3_5")
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_LA_OUT_PROJ_SILU_MUL_QMM` — Qwen linear-attention
+    /// prefill output: `rms_norm` then `silu(z) * normed` fused into the
+    /// `out_proj` quantized matmul.
+    ///
+    /// **Default: OFF**. Four-lane remasure (binary `2b846b04…`, 2026-08-13):
+    /// AXQ p2048 890.888/862.825=1.032524 (0.9999× q2only 891). Community
+    /// p2048 909.631/858.000=1.060177 (3d FAIL). SwiGLU→down stays OFF.
+    qwen_la_out_proj_silu_mul_qmm_enabled,
+    "AX_MLX_QWEN_LA_OUT_PROJ_SILU_MUL_QMM"
+);
+
+/// Whether Qwen linear-attn prefill should fuse gated RMS into out_proj qmm.
+pub fn should_qwen_la_out_proj_silu_mul_qmm(model_family: &str, seq: i32) -> bool {
+    should_qwen_la_out_proj_silu_mul_qmm_for(
+        qwen_la_out_proj_silu_mul_qmm_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_la_out_proj_silu_mul_qmm`].
+pub fn should_qwen_la_out_proj_silu_mul_qmm_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled && seq > 1 && model_family.eq_ignore_ascii_case("qwen3_5")
+}
 
 env_flag!(
     /// `AX_MLX_DIRECT_CPP_QK_NORM_ROPE` — opt-in direct C++ probe route for
@@ -1389,6 +1961,306 @@ env_flag_default_on!(
     qwen_direct_cpp_qk_norm_rope_enabled,
     "AX_MLX_QWEN_DIRECT_CPP_QK_NORM_ROPE"
 );
+
+env_flag!(
+    /// `AX_MLX_QWEN_COMPILED_QK_NORM_ROPE` — wrap the Qwen base-RoPE
+    /// `as_strided → rms_norm → rope(base)` C++ path in `mx::compile`.
+    ///
+    /// **Default: OFF**. Four-lane remasure (binary `41fd8313…`, 2026-08-13):
+    /// AXQ p2048 890.684/862.825=1.032288 (0.9996× q2only 891). Community
+    /// p2048 908.406/858.000=1.058749 (3d FAIL). Freqs compile stays OFF.
+    qwen_compiled_qk_norm_rope_enabled,
+    "AX_MLX_QWEN_COMPILED_QK_NORM_ROPE"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_CONTIGUOUS` — `contiguous` Q/K/V/A/B
+    /// before the GatedDelta prefill TG kernel.
+    ///
+    /// **Default: OFF**. Four-lane remasure (binary `6e56e7ed…`, 2026-08-13):
+    /// AXQ p2048 889.558/862.825=1.030983 (0.9984× q2only 891). Community
+    /// p2048 908.438/858.000=1.058787 (3d FAIL). Tile-512/streaming stay OFF.
+    qwen_gated_delta_prefill_contiguous_enabled,
+    "AX_MLX_QWEN_GATED_DELTA_PREFILL_CONTIGUOUS"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_LA_FUSED_QKVZ_BA_QMM` — one concatenated affine qmm for
+    /// matching-bit packed QKVZ+BA on Qwen multi-token prefill.
+    ///
+    /// **Default: OFF**. Per-forward concat (binary `37125559…`) p2048
+    /// 887.779/862.825=1.028921. Load-time concat (binary `1fa58239…`)
+    /// community p2048 907.712/858=1.057940 (0.999× standing 908.5). Wash.
+    qwen_la_fused_qkvz_ba_qmm_enabled,
+    "AX_MLX_QWEN_LA_FUSED_QKVZ_BA_QMM"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_DOWN_COMPILE` — shape-compile only the Qwen split
+    /// prefill **down** qmm.
+    ///
+    /// **Default: OFF**. Four-lane remasure (binary `99f65ba3…`, 2026-08-13):
+    /// community p2048 904.141/858=1.053779 (0.995× standing 908.5). 3a PASS.
+    /// Same class as full split FFN compile 888.77. Keep imperative down qw.
+    qwen_prefill_down_compile_enabled,
+    "AX_MLX_QWEN_PREFILL_DOWN_COMPILE"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_CHUNK_1536` — raise the linear-attention runner
+    /// chunk cap to 1536 so p2048 is 1536+512.
+    ///
+    /// **Default: OFF**. Interim community p2048 ~898.7 vs standing 908.5
+    /// (2026-08-13). Same class as single-2048 889–890. Keep two 1024s.
+    qwen_prefill_chunk_1536_enabled,
+    "AX_MLX_QWEN_PREFILL_CHUNK_1536"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_COMPILED_GATED_DELTA_PREFILL` — wrap the GatedDelta
+    /// prefill TG oneshot (`qwen35_gated_delta_v3`) in `mx::compile`.
+    ///
+    /// **Default: OFF**. Community p2048 905.390/858=1.055235 (0.997× standing
+    /// 908.5, 2026-08-13). Same class as compiled QK-RoPE / split FFN compile.
+    qwen_compiled_gated_delta_prefill_enabled,
+    "AX_MLX_QWEN_COMPILED_GATED_DELTA_PREFILL"
+);
+
+/// Whether GatedDelta prefill should use the compiled TG oneshot.
+pub fn should_qwen_compiled_gated_delta_prefill(seq: i32) -> bool {
+    should_qwen_compiled_gated_delta_prefill_for(qwen_compiled_gated_delta_prefill_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_compiled_gated_delta_prefill`].
+pub fn should_qwen_compiled_gated_delta_prefill_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq > 1
+}
+
+/// Minimum leading elements before Qwen packed FFN prefill compile engages.
+/// 512-token packed compile was slower; p2048 is two 1024 chunks (unmeasured).
+pub const QWEN_PACKED_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 1024;
+
+env_flag!(
+    /// `AX_MLX_QWEN_PACKED_FFN_PREFILL_COMPILE` — let the dense packed FFN
+    /// prefill compile (`AX_MLX_DENSE_FFN_COMPILE_PREFILL`) engage on Qwen
+    /// when `leading >= 1024`.
+    ///
+    /// **Default: OFF**. Community p2048 904.620/858=1.054337 (0.996× standing
+    /// 908.5, 2026-08-13). Community 4-bit has no packed gate/up, so this
+    /// cannot move 3d. 512-token packed compile stays closed. Same class as
+    /// split FFN compile.
+    qwen_packed_ffn_prefill_compile_enabled,
+    "AX_MLX_QWEN_PACKED_FFN_PREFILL_COMPILE"
+);
+
+/// Whether Qwen packed FFN prefill should use the fixed-shape compile path.
+pub fn should_qwen_packed_ffn_prefill_compile(model_family: &str, leading: i64) -> bool {
+    should_qwen_packed_ffn_prefill_compile_for(
+        qwen_packed_ffn_prefill_compile_enabled(),
+        model_family,
+        leading,
+    )
+}
+
+/// Pure helper for [`should_qwen_packed_ffn_prefill_compile`].
+pub fn should_qwen_packed_ffn_prefill_compile_for(
+    enabled: bool,
+    model_family: &str,
+    leading: i64,
+) -> bool {
+    enabled
+        && model_family.to_ascii_lowercase().starts_with("qwen")
+        && leading >= QWEN_PACKED_FFN_PREFILL_COMPILE_MIN_LEADING
+}
+
+/// Whether Qwen split prefill should compile the standalone down qmm.
+pub fn should_qwen_prefill_down_compile(seq: i32, leading: i64) -> bool {
+    should_qwen_prefill_down_compile_for(qwen_prefill_down_compile_enabled(), seq, leading)
+}
+
+/// Pure helper for [`should_qwen_prefill_down_compile`].
+pub fn should_qwen_prefill_down_compile_for(enabled: bool, seq: i32, leading: i64) -> bool {
+    enabled && seq > 1 && leading >= QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING
+}
+
+/// Minimum sequence length before packed LA input compile engages.
+/// 512-token packed FFN compile was slower; p2048 is two 1024 chunks.
+pub const QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ: i32 = 1024;
+
+env_flag!(
+    /// `AX_MLX_QWEN_PACKED_LA_INPUTS_COMPILE` — compile packed QKVZ/BA
+    /// projection (two affine qmm + reshape/slice/concat) when `seq >= 1024`.
+    ///
+    /// **Default: OFF**. Remasured binary `6b6b2e06…` (2026-08-13): community
+    /// p2048 904.726/858=1.054460; AXQ p2048 888.959/862.825=1.030289
+    /// (0.998× q2only). Wash. Not FFN/GatedDelta compile, not fused QKVZ+BA.
+    qwen_packed_la_inputs_compile_enabled,
+    "AX_MLX_QWEN_PACKED_LA_INPUTS_COMPILE"
+);
+
+/// Whether packed LA inputs should use the fixed-shape compile path.
+pub fn should_qwen_packed_la_inputs_compile(seq: i32) -> bool {
+    should_qwen_packed_la_inputs_compile_for(qwen_packed_la_inputs_compile_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_packed_la_inputs_compile`].
+pub fn should_qwen_packed_la_inputs_compile_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_LA_POST_INPUT_COMPILE` — compile the existing C++
+    /// post-input block (conv1d + SiLU + split + qk RMSNorm + scale) when
+    /// `seq >= 1024`.
+    ///
+    /// **Default: OFF**. Remasured binary `e535cf3e…` (2026-08-13): community
+    /// p2048 911.056/858=1.061838; AXQ p2048 894.749/862.825=1.036999
+    /// (1.004× q2only). Wash. Not packed-LA-inputs compile, not GatedDelta
+    /// compile, not prefill post-input Metal.
+    qwen_la_post_input_compile_enabled,
+    "AX_MLX_QWEN_LA_POST_INPUT_COMPILE"
+);
+
+/// Whether LA post-input should use the fixed-shape compile path.
+pub fn should_qwen_la_post_input_compile(seq: i32) -> bool {
+    should_qwen_la_post_input_compile_for(qwen_la_post_input_compile_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_la_post_input_compile`].
+pub fn should_qwen_la_post_input_compile_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_LA_DUAL_STREAM_QKVZ_BA` — issue packed QKVZ and BA affine
+    /// qmm on two GPU streams so M5 Max can overlap the two independent
+    /// projections at `seq >= 1024`.
+    ///
+    /// **Default: OFF**. Remasured binary `f1d47194…` (2026-08-13): community
+    /// p2048 894.153/858=1.042137 (0.984× standing); AXQ p2048
+    /// 879.421/862.825=1.019234 (0.987× q2only). Regression. Same class as
+    /// closed FFN dual-stream.
+    qwen_la_dual_stream_qkvz_ba_enabled,
+    "AX_MLX_QWEN_LA_DUAL_STREAM_QKVZ_BA"
+);
+
+/// Whether packed LA QKVZ/BA should issue on two GPU streams.
+pub fn should_qwen_la_dual_stream_qkvz_ba(seq: i32) -> bool {
+    should_qwen_la_dual_stream_qkvz_ba_for(qwen_la_dual_stream_qkvz_ba_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_la_dual_stream_qkvz_ba`].
+pub fn should_qwen_la_dual_stream_qkvz_ba_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_LA_FLAT_INPUTS` — reshape packed QKVZ/BA activations
+    /// `[B,S,H]→[B*S,H]` before the two affine qmm at `seq >= 1024`.
+    ///
+    /// **Default: OFF**. Remasured binary `07de1419…` (2026-08-14): community
+    /// p2048 904.487/858=1.054181; AXQ p2048 888.640/862.825=1.029919
+    /// (0.997× q2only). Wash. Not whole-FFN flatten, not dual-stream.
+    qwen_la_flat_inputs_enabled,
+    "AX_MLX_QWEN_LA_FLAT_INPUTS"
+);
+
+/// Whether packed LA inputs should flatten to 2-D before qmm.
+pub fn should_qwen_la_flat_inputs(seq: i32) -> bool {
+    should_qwen_la_flat_inputs_for(qwen_la_flat_inputs_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_la_flat_inputs`].
+pub fn should_qwen_la_flat_inputs_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_LA_CONTIGUOUS_QKV` — `contiguous` the packed QKV
+    /// activation before the post-input depthwise conv1d at `seq >= 1024`.
+    ///
+    /// **Default: OFF**. Remasured binary `0f01c381…` (2026-08-13): community
+    /// p2048 904.710/858=1.054442; AXQ p2048 887.915/862.825=1.029078
+    /// (0.997× q2only). Wash. Not GatedDelta contiguous, not FFN contiguous.
+    qwen_la_contiguous_qkv_enabled,
+    "AX_MLX_QWEN_LA_CONTIGUOUS_QKV"
+);
+
+/// Whether packed LA QKV should be materialized before post-input conv1d.
+pub fn should_qwen_la_contiguous_qkv(seq: i32) -> bool {
+    should_qwen_la_contiguous_qkv_for(qwen_la_contiguous_qkv_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_la_contiguous_qkv`].
+pub fn should_qwen_la_contiguous_qkv_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_LA_PREFILL_Q2_PROJ` — use a load-time 2-bit gs32 overlay
+    /// of packed QKVZ/BA for `seq >= 1024`. Decode keeps the checkpoint pack.
+    ///
+    /// **Default: OFF**. Remasured binary `82ffde4a…` (2026-08-14): community
+    /// p2048 903.735/858=1.053305; AXQ p2048 889.075/862.825=1.030423
+    /// (0.998× q2only). Wash. Not Hub requant, not 2-bit decode lm_head.
+    qwen_la_prefill_q2_proj_enabled,
+    "AX_MLX_QWEN_LA_PREFILL_Q2_PROJ"
+);
+
+/// Whether packed LA prefill should use the 2-bit projection overlay.
+pub fn should_qwen_la_prefill_q2(seq: i32) -> bool {
+    should_qwen_la_prefill_q2_for(qwen_la_prefill_q2_proj_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_la_prefill_q2`].
+pub fn should_qwen_la_prefill_q2_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_Q2_DOWN` — use a 2-bit gs32 overlay of dense
+    /// `down_proj` for `seq >= 1024`. Decode and gate/up stay on the
+    /// checkpoint pack.
+    ///
+    /// **Default: OFF**. Remasured wash/regression on M5 (3b 1.028080 /
+    /// 3d 1.053854). Not Hub requant, not 2-bit LA QKVZ/BA (washed), not
+    /// 2-bit decode lm_head.
+    qwen_prefill_q2_down_enabled,
+    "AX_MLX_QWEN_PREFILL_Q2_DOWN"
+);
+
+/// Whether Qwen split prefill should use a 2-bit down overlay.
+pub fn should_qwen_prefill_q2_down(seq: i32) -> bool {
+    should_qwen_prefill_q2_down_for(qwen_prefill_q2_down_enabled(), seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_q2_down`].
+pub fn should_qwen_prefill_q2_down_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+}
+
+/// Whether Qwen prefill should merge matching-bit QKVZ/BA into one qmm.
+pub fn should_qwen_la_fused_qkvz_ba_qmm(seq: i32, same_quant: bool) -> bool {
+    should_qwen_la_fused_qkvz_ba_qmm_for(qwen_la_fused_qkvz_ba_qmm_enabled(), seq, same_quant)
+}
+
+/// Pure helper for [`should_qwen_la_fused_qkvz_ba_qmm`].
+pub fn should_qwen_la_fused_qkvz_ba_qmm_for(enabled: bool, seq: i32, same_quant: bool) -> bool {
+    enabled && seq > 1 && same_quant
+}
+
+/// Whether GatedDelta prefill should materialize contiguous QKV/AB.
+pub fn should_qwen_gated_delta_prefill_contiguous(seq: i32) -> bool {
+    should_qwen_gated_delta_prefill_contiguous_for(
+        qwen_gated_delta_prefill_contiguous_enabled(),
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_gated_delta_prefill_contiguous`].
+pub fn should_qwen_gated_delta_prefill_contiguous_for(enabled: bool, seq: i32) -> bool {
+    enabled && seq > 1
+}
 
 env_flag!(
     /// `AX_MLX_GEMMA_DIRECT_CPP_QK_NORM_ROPE` — opt-in Gemma-family direct C++
@@ -1476,6 +2348,17 @@ env_flag_default_on!(
     "AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL"
 );
 
+env_flag!(
+    /// `AX_MLX_QWEN_LINEAR_ATTENTION_PREFILL_POST_INPUT_METAL` — route Qwen
+    /// linear-attention multi-token post-input (conv + SiLU + split + QK-norm)
+    /// through the existing Metal kernel (`Seq` is already a template).
+    ///
+    /// **Default: OFF**. AXQ remasured p2048 874.96 vs 891.02 (2026-08-13).
+    /// Decode stays on the seq<=4 default-ON flag.
+    qwen_linear_attention_prefill_post_input_metal_enabled,
+    "AX_MLX_QWEN_LINEAR_ATTENTION_PREFILL_POST_INPUT_METAL"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_QWEN_GATED_DELTA_DECODE_METAL` — route Qwen single-token
     /// GatedDelta recurrent updates through the decode-specialized Metal
@@ -1495,13 +2378,32 @@ env_flag!(
     /// **Default: OFF** (opt-in via
     /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING=1`).
     ///
-    /// The legacy tiered TG-cache kernel remains the production default: it
-    /// matches the README high-water cells on p=128/512, and the medium 1024
-    /// specialization (with the runner's linear-attention chunk clamp) is
-    /// still the best measured long-prompt path on Qwen 3.6 27B. Streaming is
-    /// retained for A/B on very long prompts where TG occupancy dominates.
+    /// p128/p512 stay on the 512 TG kernel either way. Default-on streaming
+    /// (one 2048 forward) was remasured on df-macbookpro-m5 AXQ p2048 at
+    /// 871 vs 891 tok/s for two 1024 TG chunks (2026-08-13). Keep 1024.
     qwen_gated_delta_prefill_streaming_enabled,
     "AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_TILE_512` — tile multi-token GatedDelta
+    /// prefill at the 512 TG specialization when seq > 512.
+    ///
+    /// **Default: OFF**. Alone on two 1024 chunks: 892.80 vs 891.02.
+    /// Combined with one 2048 FFN: 889.96 vs 891.02 (2026-08-13).
+    qwen_gated_delta_prefill_tile_512_enabled,
+    "AX_MLX_QWEN_GATED_DELTA_PREFILL_TILE_512"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_SINGLE_2048` — raise the linear-attention runner
+    /// chunk cap to 2048 so p2048 is one FFN pass (M=2048).
+    ///
+    /// **Default: OFF**. With tile-512 remasured p2048 889.96 vs 891.02
+    /// (2026-08-13). Same class as 2048+tile-1024 887. Keep two 1024 FFN
+    /// stacks. Streaming stays default-OFF.
+    qwen_prefill_single_2048_enabled,
+    "AX_MLX_QWEN_PREFILL_SINGLE_2048"
 );
 
 env_flag_default_on!(
@@ -1665,6 +2567,32 @@ env_flag_default_on!(
     dense_ffn_compile_prefill_enabled,
     "AX_MLX_DENSE_FFN_COMPILE_PREFILL"
 );
+
+env_flag!(
+    /// `AX_MLX_QWEN_COMPILED_DUAL_GATE_UP` — compile the two split affine
+    /// gate/up qmms on Qwen multi-token prefill (`mx::compile`, shape-specific).
+    ///
+    /// **Default: OFF**. AXQ p2048 remasured 890.96 vs 891.02 for two
+    /// imperative qw (2026-08-13). Gemma stays on `AX_MLX_COMPILED_DUAL_GATE_UP`
+    /// (also default OFF). Dual-stream GPU overlap remains default-OFF.
+    qwen_compiled_dual_gate_up_enabled,
+    "AX_MLX_QWEN_COMPILED_DUAL_GATE_UP"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_SPLIT_FFN_PREFILL_COMPILE` — shape-compile the Qwen
+    /// **split** FFN (gate + up + SwiGLU + down) for multi-token prefill.
+    ///
+    /// **Default: OFF**. AXQ remasured p2048 888.77 vs 891.02 for imperative
+    /// split qw (2026-08-13). Packed Qwen prefill compile stays forbidden.
+    qwen_split_ffn_prefill_compile_enabled,
+    "AX_MLX_QWEN_SPLIT_FFN_PREFILL_COMPILE"
+);
+
+/// Minimum `batch * seq` before Qwen split FFN prefill compile engages.
+/// 128 covers every formal 27B contract shape; shorter prompts stay
+/// imperative so compile tax is not paid on decode-adjacent microbenches.
+pub const QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 128;
 
 /// Minimum leading element count (product of non-last dims) before dense FFN
 /// prefill compile engages. `batch * seq` for standard `[B,S,H]` layouts;
@@ -1932,6 +2860,17 @@ pub fn long_prompt_prefill_chunk() -> usize {
     })
 }
 
+/// Whether the Gemma-12B 512-token long-prompt clamp applies to this family.
+///
+/// The clamp is Gemma-12B M5 evidence (2026-07-24). Applying it to
+/// `qwen3_5` (Qwen 3.5/3.6 linear 27B) splits a 2048-token prefill into
+/// four evals and is the p2048 cell that misses mlx_lm. Decode on this
+/// family is not SWA-ring-bound, so the Gemma decode penalty does not
+/// apply. Other families keep the historical clamp.
+pub fn long_prompt_prefill_clamp_applies(model_family: &str) -> bool {
+    !model_family.eq_ignore_ascii_case("qwen3_5")
+}
+
 /// Scale a base prefill chunk for the remaining prompt length.
 ///
 /// Long remaining prompts clamp to [`long_prompt_prefill_chunk`] so formal S1
@@ -1939,8 +2878,110 @@ pub fn long_prompt_prefill_chunk() -> usize {
 /// Short prompts keep `base_chunk` (S0 34-token prompts are a single chunk
 /// either way, so TTFT is dominated by warmup/host, not chunk size).
 pub fn scale_prefill_chunk_for_remaining(base_chunk: usize, remaining_tokens: usize) -> usize {
+    scale_prefill_chunk_for_remaining_in_family(base_chunk, remaining_tokens, "")
+}
+
+/// Drop MLX's graph/buffer cache before a cold prefill so the previous
+/// request's decode residency does not inflate `eval_kv_refs` wall.
+pub fn should_clear_mlx_cache_before_cold_prefill(seq_len: usize) -> bool {
+    seq_len == 0
+}
+
+/// Contract shapes (p128/p512/p2048) should use one prefill forward.
+///
+/// The n−1 cache-only split is the mlx_lm-shaped high-water path, but
+/// mlxcel-bench-decode does a single 128/512/2048 forward. On
+/// `df-macbookpro-m5` Wave-1 that split left Gemma 4 E2B p128 at 0.35×
+/// mlxcel. Skip it for Certified non-DeepSeek families up to 2048.
+pub fn skip_cache_only_split_for_family(model_family: &str, total_tokens: usize) -> bool {
+    if !(1..=2048).contains(&total_tokens) {
+        return false;
+    }
+    matches!(
+        model_family.to_ascii_lowercase().as_str(),
+        "qwen3_5" | "qwen3_next" | "qwen3" | "gemma4" | "glm4_moe_lite" | "gpt_oss"
+    )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_INTERMEDIATE_ASYNC_EVAL` — after each non-final
+    /// Qwen 3.5/3.6 prefill chunk, `async_eval` KV so GPU runs chunk N while
+    /// the host builds chunk N+1.
+    ///
+    /// Qwen 3.6 27B p2048 remasured 890.5 vs 891.0 for the lazy two-chunk
+    /// graph (2026-08-13). **Default: OFF**.
+    qwen_prefill_intermediate_async_eval_enabled,
+    "AX_MLX_QWEN_PREFILL_INTERMEDIATE_ASYNC_EVAL"
+);
+
+/// Whether a non-final Qwen prefill chunk should async-submit KV.
+pub fn should_async_eval_intermediate_qwen_prefill(
+    model_family: &str,
+    is_final_chunk: bool,
+) -> bool {
+    should_async_eval_intermediate_qwen_prefill_for(
+        qwen_prefill_intermediate_async_eval_enabled(),
+        model_family,
+        is_final_chunk,
+    )
+}
+
+/// Pure helper for [`should_async_eval_intermediate_qwen_prefill`].
+pub fn should_async_eval_intermediate_qwen_prefill_for(
+    enabled: bool,
+    model_family: &str,
+    is_final_chunk: bool,
+) -> bool {
+    enabled && !is_final_chunk && model_family.eq_ignore_ascii_case("qwen3_5")
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_LAZY_INTERMEDIATE` — skip the blocking
+    /// `eval_with_kv_refs` after a non-final Qwen 3.5/3.6 `--ax-direct`
+    /// chunk on contract totals `1..=2048`.
+    ///
+    /// **Default: OFF**. Four-lane remasure (binary `b50c209f…`, 2026-08-13):
+    /// AXQ p2048 889.887/862.825=1.031365 (0.9987× q2only 891). Community
+    /// p2048 910.410/858.000=1.061085 (3d still FAIL). Same class as
+    /// intermediate async_eval 890.5. Cache-only prefix still last-chunk-evals.
+    qwen_prefill_lazy_intermediate_enabled,
+    "AX_MLX_QWEN_PREFILL_LAZY_INTERMEDIATE"
+);
+
+/// Whether a non-final Qwen `--ax-direct` chunk should stay lazy.
+pub fn should_keep_lazy_intermediate_qwen_prefill(
+    model_family: &str,
+    is_final_chunk: bool,
+    total_tokens: usize,
+) -> bool {
+    should_keep_lazy_intermediate_qwen_prefill_for(
+        qwen_prefill_lazy_intermediate_enabled(),
+        model_family,
+        is_final_chunk,
+        total_tokens,
+    )
+}
+
+/// Pure helper for [`should_keep_lazy_intermediate_qwen_prefill`].
+pub fn should_keep_lazy_intermediate_qwen_prefill_for(
+    enabled: bool,
+    model_family: &str,
+    is_final_chunk: bool,
+    total_tokens: usize,
+) -> bool {
+    enabled && !is_final_chunk && skip_cache_only_split_for_family(model_family, total_tokens)
+}
+
+/// Family-aware variant of [`scale_prefill_chunk_for_remaining`].
+pub fn scale_prefill_chunk_for_remaining_in_family(
+    base_chunk: usize,
+    remaining_tokens: usize,
+    model_family: &str,
+) -> usize {
     let base = base_chunk.max(1);
-    if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD {
+    if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD
+        && long_prompt_prefill_clamp_applies(model_family)
+    {
         base.clamp(1, long_prompt_prefill_chunk())
     } else {
         base
@@ -2502,6 +3543,21 @@ mod tests {
     }
 
     #[test]
+    fn qwen_linear_attention_prefill_post_input_metal_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_ATTENTION_PREFILL_POST_INPUT_METAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_ATTENTION_PREFILL_POST_INPUT_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_ATTENTION_PREFILL_POST_INPUT_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
     fn qwen_linear_attention_decode_post_input_metal_uses_default_on_contract() {
         assert!(parse_bool_env_default_on(
             "AX_FASTPATH_TEST_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_UNSET"
@@ -2517,6 +3573,40 @@ mod tests {
     }
 
     #[test]
+    fn fused_prefill_attention_qwen_is_family_scoped_and_default_on() {
+        assert!(super::fused_prefill_attention_family_supported("qwen3_5"));
+        assert!(super::fused_prefill_attention_family_supported(
+            "qwen3_next"
+        ));
+        assert!(super::fused_prefill_attention_family_supported("gemma4"));
+        assert!(!super::fused_prefill_attention_family_supported(
+            "glm4_moe_lite"
+        ));
+        assert!(
+            !super::fused_prefill_attention_should_try("qwen3_5"),
+            "Qwen fused prefill stays default-OFF after 895 vs 891"
+        );
+        assert!(!super::fused_prefill_qwen_skip_offset("qwen3_5", false));
+        assert!(super::fused_prefill_qwen_skip_offset("qwen3_5", true));
+        assert!(!super::fused_prefill_qwen_skip_offset("gemma4", true));
+        assert!(
+            !super::fused_prefill_attention_should_try("gemma4"),
+            "Gemma fused prefill must stay default-OFF"
+        );
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_FUSED_PREFILL_ATTENTION_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_FUSED_PREFILL_ATTENTION_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_FUSED_PREFILL_ATTENTION_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
     fn qwen_gated_delta_decode_metal_uses_default_on_contract() {
         assert!(parse_bool_env_default_on(
             "AX_FASTPATH_TEST_QWEN_GATED_DELTA_DECODE_METAL_UNSET"
@@ -2527,6 +3617,224 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_QWEN_GATED_DELTA_DECODE_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_gated_delta_prefill_contiguous_is_seq_gated() {
+        assert!(should_qwen_gated_delta_prefill_contiguous_for(true, 1024));
+        assert!(should_qwen_gated_delta_prefill_contiguous_for(true, 2));
+        assert!(
+            !should_qwen_gated_delta_prefill_contiguous_for(true, 1),
+            "decode already uses a contiguous row-0 path"
+        );
+        assert!(!should_qwen_gated_delta_prefill_contiguous_for(false, 1024));
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_CONTIGUOUS_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_CONTIGUOUS_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_CONTIGUOUS_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_la_fused_qkvz_ba_qmm_is_seq_and_quant_gated() {
+        assert!(should_qwen_la_fused_qkvz_ba_qmm_for(true, 1024, true));
+        assert!(should_qwen_la_fused_qkvz_ba_qmm_for(true, 2, true));
+        assert!(
+            !should_qwen_la_fused_qkvz_ba_qmm_for(true, 1, true),
+            "decode keeps matching-bits two-qmm packing"
+        );
+        assert!(!should_qwen_la_fused_qkvz_ba_qmm_for(true, 1024, false));
+        assert!(!should_qwen_la_fused_qkvz_ba_qmm_for(false, 1024, true));
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_LA_FUSED_QKVZ_BA_QMM_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_LA_FUSED_QKVZ_BA_QMM_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_LA_FUSED_QKVZ_BA_QMM_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_down_compile_is_seq_and_leading_gated() {
+        assert!(should_qwen_prefill_down_compile_for(true, 1024, 128));
+        assert!(should_qwen_prefill_down_compile_for(true, 2, 2048));
+        assert!(!should_qwen_prefill_down_compile_for(true, 1, 128));
+        assert!(!should_qwen_prefill_down_compile_for(true, 1024, 64));
+        assert!(!should_qwen_prefill_down_compile_for(false, 1024, 128));
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_DOWN_COMPILE_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_DOWN_COMPILE_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_DOWN_COMPILE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_chunk_1536_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_CHUNK_1536_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_CHUNK_1536_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_CHUNK_1536_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_compiled_gated_delta_prefill_is_seq_gated() {
+        assert!(should_qwen_compiled_gated_delta_prefill_for(true, 1024));
+        assert!(should_qwen_compiled_gated_delta_prefill_for(true, 2));
+        assert!(!should_qwen_compiled_gated_delta_prefill_for(true, 1));
+        assert!(!should_qwen_compiled_gated_delta_prefill_for(false, 1024));
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_COMPILED_GATED_DELTA_PREFILL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_COMPILED_GATED_DELTA_PREFILL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_COMPILED_GATED_DELTA_PREFILL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_packed_la_inputs_compile_is_seq_gated() {
+        assert!(should_qwen_packed_la_inputs_compile_for(true, 1024));
+        assert!(should_qwen_packed_la_inputs_compile_for(true, 2048));
+        assert!(
+            !should_qwen_packed_la_inputs_compile_for(true, 512),
+            "512-token packed LA compile stays closed"
+        );
+        assert!(!should_qwen_packed_la_inputs_compile_for(true, 1));
+        assert!(!should_qwen_packed_la_inputs_compile_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_la_post_input_compile_is_seq_gated() {
+        assert!(should_qwen_la_post_input_compile_for(true, 1024));
+        assert!(should_qwen_la_post_input_compile_for(true, 2048));
+        assert!(
+            !should_qwen_la_post_input_compile_for(true, 512),
+            "512-token post-input compile stays closed"
+        );
+        assert!(!should_qwen_la_post_input_compile_for(true, 1));
+        assert!(!should_qwen_la_post_input_compile_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_la_dual_stream_qkvz_ba_is_seq_gated() {
+        assert!(should_qwen_la_dual_stream_qkvz_ba_for(true, 1024));
+        assert!(should_qwen_la_dual_stream_qkvz_ba_for(true, 2048));
+        assert!(
+            !should_qwen_la_dual_stream_qkvz_ba_for(true, 512),
+            "512-token LA dual-stream stays closed"
+        );
+        assert!(!should_qwen_la_dual_stream_qkvz_ba_for(true, 1));
+        assert!(!should_qwen_la_dual_stream_qkvz_ba_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_la_flat_inputs_is_seq_gated() {
+        assert!(should_qwen_la_flat_inputs_for(true, 1024));
+        assert!(should_qwen_la_flat_inputs_for(true, 2048));
+        assert!(
+            !should_qwen_la_flat_inputs_for(true, 512),
+            "512-token LA flatten stays closed"
+        );
+        assert!(!should_qwen_la_flat_inputs_for(true, 1));
+        assert!(!should_qwen_la_flat_inputs_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_la_contiguous_qkv_is_seq_gated() {
+        assert!(should_qwen_la_contiguous_qkv_for(true, 1024));
+        assert!(should_qwen_la_contiguous_qkv_for(true, 2048));
+        assert!(
+            !should_qwen_la_contiguous_qkv_for(true, 512),
+            "512-token LA qkv contiguous stays closed"
+        );
+        assert!(!should_qwen_la_contiguous_qkv_for(true, 1));
+        assert!(!should_qwen_la_contiguous_qkv_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_la_prefill_q2_is_seq_gated() {
+        assert!(should_qwen_la_prefill_q2_for(true, 1024));
+        assert!(should_qwen_la_prefill_q2_for(true, 2048));
+        assert!(
+            !should_qwen_la_prefill_q2_for(true, 512),
+            "512-token LA q2 overlay stays closed"
+        );
+        assert!(!should_qwen_la_prefill_q2_for(true, 1));
+        assert!(!should_qwen_la_prefill_q2_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_q2_down_is_seq_gated() {
+        assert!(should_qwen_prefill_q2_down_for(true, 1024));
+        assert!(should_qwen_prefill_q2_down_for(true, 2048));
+        assert!(
+            !should_qwen_prefill_q2_down_for(true, 512),
+            "512-token FFN down q2 overlay stays closed"
+        );
+        assert!(!should_qwen_prefill_q2_down_for(true, 1));
+        assert!(!should_qwen_prefill_q2_down_for(false, 1024));
+    }
+
+    #[test]
+    fn qwen_packed_ffn_prefill_compile_is_leading_gated() {
+        assert!(should_qwen_packed_ffn_prefill_compile_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_packed_ffn_prefill_compile_for(
+            true, "QWEN3_5", 2048
+        ));
+        assert!(
+            !should_qwen_packed_ffn_prefill_compile_for(true, "qwen3_5", 512),
+            "512-token packed compile stays closed"
+        );
+        assert!(!should_qwen_packed_ffn_prefill_compile_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_packed_ffn_prefill_compile_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_compiled_qk_norm_rope_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_COMPILED_QK_NORM_ROPE_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_COMPILED_QK_NORM_ROPE_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_COMPILED_QK_NORM_ROPE_ENABLED",
             "1"
         ));
     }
@@ -2598,6 +3906,39 @@ mod tests {
         assert!(!parse_bool_env("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_UNSET"));
         assert!(!probe("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_DISABLED", "0"));
         assert!(probe("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_ENABLED", "1"));
+    }
+
+    #[test]
+    fn qwen_attn_norm_qkv_fuse_is_family_scoped_and_opt_in() {
+        assert!(should_attn_norm_qkv_fuse_for(true, false, "qwen3_5"));
+        assert!(should_attn_norm_qkv_fuse_for(true, false, "QWEN3_5"));
+        assert!(
+            !should_attn_norm_qkv_fuse_for(false, false, "qwen3_5"),
+            "Qwen kill-switch must disable the fuse"
+        );
+        assert!(
+            !should_attn_norm_qkv_fuse_for(true, false, "gemma4"),
+            "Gemma must stay on the global default-OFF flag"
+        );
+        assert!(should_attn_norm_qkv_fuse_for(false, true, "gemma4"));
+        assert!(should_call_attn_norm_qkv_fuse(true, true, false, false));
+        assert!(
+            !should_call_attn_norm_qkv_fuse(true, true, false, true),
+            "exact / moe-mt skip must keep standalone attn_norm"
+        );
+        assert!(!should_call_attn_norm_qkv_fuse(true, false, false, false));
+        assert!(!should_call_attn_norm_qkv_fuse(true, true, true, false));
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_ATTN_NORM_QKV_FUSE_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_ATTN_NORM_QKV_FUSE_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_ATTN_NORM_QKV_FUSE_ENABLED",
+            "1"
+        ));
     }
 
     #[test]
@@ -2908,6 +4249,137 @@ mod tests {
     }
 
     #[test]
+    fn qwen_gated_delta_prefill_streaming_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_STREAMING_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_STREAMING_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_STREAMING_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_gated_delta_prefill_tile_512_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_TILE_512_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_TILE_512_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_TILE_512_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_single_2048_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_SINGLE_2048_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_SINGLE_2048_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_SINGLE_2048_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_flat_ffn_is_family_seq_and_rank_gated() {
+        assert!(should_qwen_prefill_flat_ffn_for(true, "qwen3_5", 1024, 3));
+        assert!(should_qwen_prefill_flat_ffn_for(true, "QWEN3_5", 128, 3));
+        assert!(
+            !should_qwen_prefill_flat_ffn_for(true, "qwen3_5", 1, 3),
+            "decode must stay on the 3-D qw path"
+        );
+        assert!(!should_qwen_prefill_flat_ffn_for(true, "qwen3_5", 1024, 2));
+        assert!(!should_qwen_prefill_flat_ffn_for(false, "qwen3_5", 1024, 3));
+        assert!(!should_qwen_prefill_flat_ffn_for(true, "gemma4", 1024, 3));
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_FFN_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_FFN_DISABLED",
+            "0"
+        ));
+        assert!(probe("AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_FFN_ENABLED", "1"));
+    }
+
+    #[test]
+    fn qwen_prefill_contiguous_ffn_is_family_seq_and_rank_gated() {
+        assert!(should_qwen_prefill_contiguous_ffn_for(
+            true, "qwen3_5", 1024, 3
+        ));
+        assert!(should_qwen_prefill_contiguous_ffn_for(
+            true, "QWEN3_5", 128, 3
+        ));
+        assert!(
+            !should_qwen_prefill_contiguous_ffn_for(true, "qwen3_5", 1, 3),
+            "decode must not pay a contiguous copy"
+        );
+        assert!(!should_qwen_prefill_contiguous_ffn_for(
+            true, "qwen3_5", 1024, 2
+        ));
+        assert!(!should_qwen_prefill_contiguous_ffn_for(
+            false, "qwen3_5", 1024, 3
+        ));
+        assert!(!should_qwen_prefill_contiguous_ffn_for(
+            true, "gemma4", 1024, 3
+        ));
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_CONTIGUOUS_FFN_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_CONTIGUOUS_FFN_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_CONTIGUOUS_FFN_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_la_out_proj_silu_mul_qmm_is_family_and_seq_gated() {
+        assert!(should_qwen_la_out_proj_silu_mul_qmm_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_la_out_proj_silu_mul_qmm_for(
+            true, "QWEN3_5", 128
+        ));
+        assert!(
+            !should_qwen_la_out_proj_silu_mul_qmm_for(true, "qwen3_5", 1),
+            "decode keeps rms_norm_gated + qw"
+        );
+        assert!(!should_qwen_la_out_proj_silu_mul_qmm_for(
+            false, "qwen3_5", 1024
+        ));
+        assert!(!should_qwen_la_out_proj_silu_mul_qmm_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_LA_OUT_PROJ_SILU_MUL_QMM_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_LA_OUT_PROJ_SILU_MUL_QMM_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_LA_OUT_PROJ_SILU_MUL_QMM_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
     fn qwen_dense_ffn_gate_up_matvec_metal_uses_default_on_kill_switch_contract() {
         assert!(parse_bool_env_default_on(
             "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_UNSET"
@@ -2964,6 +4436,170 @@ mod tests {
         ));
         assert_eq!(super::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING, 256);
         assert_eq!(super::MOE_PACKED_GEGLU_PREFILL_MAX_SEQ, 512);
+    }
+
+    #[test]
+    fn qwen_compiled_dual_gate_up_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_COMPILED_DUAL_GATE_UP_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_COMPILED_DUAL_GATE_UP_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_COMPILED_DUAL_GATE_UP_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_split_ffn_prefill_compile_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_SPLIT_FFN_PREFILL_COMPILE_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_SPLIT_FFN_PREFILL_COMPILE_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_SPLIT_FFN_PREFILL_COMPILE_ENABLED",
+            "1"
+        ));
+        assert_eq!(super::QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING, 128);
+    }
+
+    #[test]
+    fn qwen_linear_add_rms_norm_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_ADD_RMS_NORM_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_ADD_RMS_NORM_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_ADD_RMS_NORM_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_pipeline_block_is_family_seq_and_stride_gated() {
+        assert!(should_qwen_prefill_pipeline_block_for(
+            true, "qwen3_5", 1024, 7, 64, 8
+        ));
+        assert!(should_qwen_prefill_pipeline_block_for(
+            true,
+            "QWEN3_NEXT",
+            2048,
+            15,
+            64,
+            8
+        ));
+        assert!(
+            !should_qwen_prefill_pipeline_block_for(true, "qwen3_5", 512, 7, 64, 8),
+            "short prefill stays one lazy graph"
+        );
+        assert!(!should_qwen_prefill_pipeline_block_for(
+            true, "qwen3_5", 1024, 6, 64, 8
+        ));
+        assert!(
+            !should_qwen_prefill_pipeline_block_for(true, "qwen3_5", 1024, 63, 64, 8),
+            "never fire after the final layer"
+        );
+        assert!(!should_qwen_prefill_pipeline_block_for(
+            true, "gemma4", 1024, 7, 64, 8
+        ));
+        assert!(!should_qwen_prefill_pipeline_block_for(
+            false, "qwen3_5", 1024, 7, 64, 8
+        ));
+        assert_eq!(super::QWEN_PREFILL_PIPELINE_BLOCK, 8);
+    }
+
+    #[test]
+    fn qwen_prefill_interlayer_add_rms_is_family_and_seq_gated() {
+        assert!(should_qwen_prefill_interlayer_add_rms_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_interlayer_add_rms_for(
+            true,
+            "QWEN3_NEXT",
+            128
+        ));
+        assert!(!should_qwen_prefill_interlayer_add_rms_for(
+            true, "qwen3_5", 1
+        ));
+        assert!(!should_qwen_prefill_interlayer_add_rms_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_interlayer_add_rms_for(
+            false, "qwen3_5", 1024
+        ));
+        assert!(should_defer_qwen_prefill_ffn_residual_for(
+            true, true, false, 3
+        ));
+        assert!(
+            !should_defer_qwen_prefill_ffn_residual_for(true, false, false, 3),
+            "do not defer into a full-attn layer"
+        );
+        assert!(!should_defer_qwen_prefill_ffn_residual_for(
+            true, true, true, 3
+        ));
+    }
+
+    #[test]
+    fn qwen_swiglu_down_fuse_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_SWIGLU_DOWN_FUSE_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_SWIGLU_DOWN_FUSE_DISABLED",
+            "0"
+        ));
+        assert!(probe("AX_FASTPATH_TEST_QWEN_SWIGLU_DOWN_FUSE_ENABLED", "1"));
+    }
+
+    #[test]
+    fn qwen_prefill_dual_qmm_swiglu_metal_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_DUAL_QMM_SWIGLU_METAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_DUAL_QMM_SWIGLU_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_DUAL_QMM_SWIGLU_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_flat_down_qmm_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_DOWN_QMM_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_DOWN_QMM_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_DOWN_QMM_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_dual_qmm_swiglu_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_DUAL_QMM_SWIGLU_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_DUAL_QMM_SWIGLU_DISABLED",
+            "0"
+        ));
+        assert!(probe("AX_FASTPATH_TEST_QWEN_DUAL_QMM_SWIGLU_ENABLED", "1"));
     }
 
     #[test]
@@ -3203,6 +4839,222 @@ mod tests {
         );
         assert_eq!(scale_prefill_chunk_for_remaining(256, 13_826), 256);
         assert_eq!(scale_prefill_chunk_for_remaining(0, 100), 1);
+    }
+
+    #[test]
+    fn long_prompt_prefill_clamp_skips_qwen3_5() {
+        assert!(!long_prompt_prefill_clamp_applies("qwen3_5"));
+        assert!(!long_prompt_prefill_clamp_applies("QWEN3_5"));
+        assert!(long_prompt_prefill_clamp_applies("gemma4"));
+        assert!(long_prompt_prefill_clamp_applies("qwen3_next"));
+        assert_eq!(
+            scale_prefill_chunk_for_remaining_in_family(2048, 2048, "qwen3_5"),
+            2048
+        );
+        assert_eq!(
+            scale_prefill_chunk_for_remaining_in_family(2048, 2048, "gemma4"),
+            long_prompt_prefill_chunk()
+        );
+    }
+
+    #[test]
+    fn cold_prefill_clears_mlx_cache_only_on_empty_kv() {
+        assert!(should_clear_mlx_cache_before_cold_prefill(0));
+        assert!(!should_clear_mlx_cache_before_cold_prefill(1));
+        assert!(!should_clear_mlx_cache_before_cold_prefill(2048));
+    }
+
+    #[test]
+    fn qwen_prefill_intermediate_async_eval_is_family_and_chunk_gated() {
+        assert!(should_async_eval_intermediate_qwen_prefill_for(
+            true, "qwen3_5", false
+        ));
+        assert!(should_async_eval_intermediate_qwen_prefill_for(
+            true, "QWEN3_5", false
+        ));
+        assert!(
+            !should_async_eval_intermediate_qwen_prefill_for(true, "qwen3_5", true),
+            "final chunk must still block so decode sees settled KV"
+        );
+        assert!(!should_async_eval_intermediate_qwen_prefill_for(
+            false, "qwen3_5", false
+        ));
+        assert!(!should_async_eval_intermediate_qwen_prefill_for(
+            true, "gemma4", false
+        ));
+        assert!(!should_async_eval_intermediate_qwen_prefill_for(
+            true,
+            "qwen3_next",
+            false
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_lazy_intermediate_is_family_total_and_chunk_gated() {
+        assert!(should_keep_lazy_intermediate_qwen_prefill_for(
+            true, "qwen3_5", false, 2048
+        ));
+        assert!(should_keep_lazy_intermediate_qwen_prefill_for(
+            true, "QWEN3_5", false, 2048
+        ));
+        assert!(
+            should_keep_lazy_intermediate_qwen_prefill_for(true, "qwen3_5", false, 128),
+            "single-chunk contract totals still match the skip_cache_only gate"
+        );
+        assert!(
+            !should_keep_lazy_intermediate_qwen_prefill_for(true, "qwen3_5", true, 2048),
+            "final chunk must still eval so decode sees settled KV"
+        );
+        assert!(!should_keep_lazy_intermediate_qwen_prefill_for(
+            false, "qwen3_5", false, 2048
+        ));
+        assert!(!should_keep_lazy_intermediate_qwen_prefill_for(
+            true, "qwen3_5", false, 2049
+        ));
+        assert!(!should_keep_lazy_intermediate_qwen_prefill_for(
+            true, "gemma4", false, 2048
+        ));
+        assert!(!should_keep_lazy_intermediate_qwen_prefill_for(
+            true,
+            "qwen3_next",
+            false,
+            2048
+        ));
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_LAZY_INTERMEDIATE_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_LAZY_INTERMEDIATE_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_PREFILL_LAZY_INTERMEDIATE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn certified_non_deepseek_skips_cache_only_split_on_contract_shapes() {
+        for family in [
+            "qwen3_5",
+            "qwen3_next",
+            "qwen3",
+            "gemma4",
+            "glm4_moe_lite",
+            "gpt_oss",
+        ] {
+            assert!(
+                skip_cache_only_split_for_family(family, 128),
+                "{family} p128"
+            );
+            assert!(skip_cache_only_split_for_family(family, 2048));
+            assert!(!skip_cache_only_split_for_family(family, 2049));
+        }
+        assert!(!skip_cache_only_split_for_family("qwen3_5", 0));
+        assert!(!skip_cache_only_split_for_family("deepseek_v32", 128));
+        assert!(!skip_cache_only_split_for_family("gemma4_vl", 128));
+    }
+
+    #[test]
+    fn qwen_skip_linear_prefill_mask_is_family_and_layer_gated() {
+        assert!(should_skip_linear_prefill_mask_for(true, "qwen3_5", true));
+        assert!(should_skip_linear_prefill_mask_for(
+            true,
+            "QWEN3_NEXT",
+            true
+        ));
+        assert!(
+            !should_skip_linear_prefill_mask_for(true, "qwen3_5", false),
+            "full-attn layers still need the offset mask"
+        );
+        assert!(!should_skip_linear_prefill_mask_for(true, "gemma4", true));
+        assert!(!should_skip_linear_prefill_mask_for(false, "qwen3_5", true));
+    }
+
+    #[test]
+    fn qwen_prefill_eval_kv_only_is_intermediate_and_family_gated() {
+        assert!(should_qwen_prefill_eval_kv_only_for(
+            true, "qwen3_5", false, 2048
+        ));
+        assert!(
+            !should_qwen_prefill_eval_kv_only_for(true, "qwen3_5", true, 2048),
+            "final chunk still evals logits + KV"
+        );
+        assert!(!should_qwen_prefill_eval_kv_only_for(
+            true, "qwen3_5", false, 2049
+        ));
+        assert!(!should_qwen_prefill_eval_kv_only_for(
+            true, "gemma4", false, 2048
+        ));
+        assert!(!should_qwen_prefill_eval_kv_only_for(
+            false, "qwen3_5", false, 2048
+        ));
+    }
+
+    #[test]
+    fn exact_size_first_kv_is_write_start_gated() {
+        assert!(should_exact_size_first_kv_for(true, 0));
+        assert!(
+            !should_exact_size_first_kv_for(true, 128),
+            "append after the first write still grows in KV_CHUNK_TOKENS"
+        );
+        assert!(!should_exact_size_first_kv_for(false, 0));
+    }
+
+    #[test]
+    fn exact_size_kv_grow_is_aligned_tight_append() {
+        assert!(should_exact_size_kv_grow_for(true, 1024, 1024, 2048, 2048));
+        assert!(
+            !should_exact_size_kv_grow_for(true, 128, 128, 129, 256),
+            "decode +1 must keep the padded zeros grow"
+        );
+        assert!(!should_exact_size_kv_grow_for(true, 512, 1024, 1536, 1536));
+        assert!(!should_exact_size_kv_grow_for(
+            false, 1024, 1024, 2048, 2048
+        ));
+    }
+
+    #[test]
+    fn skip_unused_full_kv_view_slice_is_full_buffer_gated() {
+        assert!(should_skip_unused_full_kv_view_slice_for(
+            true, 0, 2048, 2048
+        ));
+        assert!(
+            !should_skip_unused_full_kv_view_slice_for(true, 0, 128, 256),
+            "padded first write still needs the live-token slice"
+        );
+        assert!(!should_skip_unused_full_kv_view_slice_for(
+            true, 1024, 2048, 2048
+        ));
+        assert!(!should_skip_unused_full_kv_view_slice_for(
+            false, 0, 2048, 2048
+        ));
+    }
+
+    #[test]
+    fn skip_unused_la_out_reshape_is_shape_gated() {
+        assert!(should_skip_unused_la_out_reshape_for(
+            true,
+            &[1, 1024, 2048],
+            1024,
+            2048
+        ));
+        assert!(
+            !should_skip_unused_la_out_reshape_for(true, &[1, 1024, 32, 64], 1024, 2048),
+            "BHSD still needs the flatten into [1,S,V]"
+        );
+        assert!(!should_skip_unused_la_out_reshape_for(
+            false,
+            &[1, 1024, 2048],
+            1024,
+            2048
+        ));
+    }
+
+    #[test]
+    fn reuse_la_initial_state_zeros_is_flag_gated() {
+        assert!(should_reuse_la_initial_state_zeros_for(true));
+        assert!(!should_reuse_la_initial_state_zeros_for(false));
     }
 
     #[test]

@@ -1437,6 +1437,12 @@ impl MlxRunner {
         prefix_cache_store: Option<MlxPrefixCacheStore>,
         shared_weights: Option<&MlxSharedWeightsCell>,
     ) -> Result<Self, MlxRunnerError> {
+        // Admission and all CPU-only manifest contracts must pass before any
+        // process-global MLX setup. Otherwise a rejected first artifact could
+        // permanently decide Metal buffer caps or mutate the default stream
+        // and memory limits for later valid model loads.
+        validate_mlx_supported_manifest(artifacts)?;
+
         // AX_NO_SPEC is the CLAUDE.md-documented kill switch. Honor it at
         // the runner boundary so server and SDK paths behave the same as
         // the bench CLI, which already reads the env before constructing
@@ -1515,8 +1521,6 @@ impl MlxRunner {
             set_memory_limit(memory_limit);
         }
 
-        validate_mlx_supported_manifest(artifacts)?;
-
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
         let terminal_token_ids = resolve_terminal_token_ids(artifacts);
         let kv_layer_windows = kv_layer_windows_from_config(&cfg);
@@ -1582,9 +1586,13 @@ impl MlxRunner {
                 .map(|_| 1),
             qwen_linear_attention: cfg.linear_attention.is_some(),
             qwen_linear_exact_enabled: qwen_linear_mtp_exact_enabled,
-            // ADR-020: product default stays direct-fallback for Qwen linear
-            // until Tier 2 promotion; formal harness opts in explicitly.
-            qwen_linear_certification_candidate: qwen_linear_mtp_certification_candidate_from_env(),
+            // Exact-eligible linear Qwen takes the certified MTP route when
+            // speculation is on. `--ax-direct` / disable-ngram stays
+            // fail-closed. Env opt-in still wins for formal harnesses.
+            qwen_linear_certification_candidate: resolve_qwen_linear_certification_candidate(
+                qwen_linear_mtp_certification_candidate_from_env(),
+                qwen_linear_mtp_exact_enabled,
+            ),
             // DeepSeek V4 nextn: same fail-closed product default until Tier 2.
             deepseek_v4_certification_candidate: deepseek_v4_mtp_certification_candidate_from_env(),
         });
@@ -1602,18 +1610,16 @@ impl MlxRunner {
         // `AX_MLX_MLA_PREFILL_CHUNK=N`. Non-MLA tiers ignore MLA resolution
         // and keep the caller-supplied cold chunk.
         //
-        // Linear-attention tiers (Qwen3.5 9B, Qwen3-Next family — Qwen 3.6
-        // and Qwen Coder Next) clamp prefill chunks to the medium GatedDelta
-        // specialization (1024). The 2048 TG-cache tier was measured to lose
-        // ~15% per-token throughput vs 1024 on Qwen 3.6 27B (Hv=48). Opt-in
-        // streaming prefill can raise the cap (no TG CacheCapacity array).
+        // Linear-attention tiers keep a 2048 runner chunk. GatedDelta tiles
+        // at 1024 TG (the winning specialization). Streaming remains opt-in.
+        // Whole-stack 1024 clamp forced FFN to M=1024 (891 vs mlx_lm 951).
         let linear_attention_chunk_cap =
             if (0..cfg.layer_count).any(|i| cfg.is_linear_attention_layer(i)) {
-                if crate::fastpath::qwen_gated_delta_prefill_streaming_enabled() {
-                    Some(crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY)
-                } else {
-                    Some(crate::linear_attention_ops::GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY)
-                }
+                Some(
+                    crate::linear_attention_ops::linear_attention_prefill_chunk_cap(
+                        crate::fastpath::qwen_gated_delta_prefill_streaming_enabled(),
+                    ),
+                )
             } else {
                 None
             };
@@ -3142,7 +3148,8 @@ impl ExecutionRunner for MlxRunner {
     fn run(&self, input: RunnerInput) -> RunnerOutput {
         // Keep exact arithmetic model-scoped. This prevents one resident Qwen
         // MTP model from changing the projection path of another model in the
-        // same server process.
+        // same server process. Direct sessions stay off the verifier
+        // contract so an AXQ sidecar does not disable fused decode.
         let exact_arithmetic_enabled = qwen_linear_mtp_exact_scope_for_request(
             self.qwen_linear_mtp_exact_enabled,
             self.mtp_requested,
@@ -3634,8 +3641,17 @@ impl ExecutionRunner for MlxRunner {
         // (cancelled while waiting/blocked, or cancelled by the engine after a
         // step reinserted state). Without this the per-request KV cache, MTP,
         // and n-gram state stay resident for the life of the process.
-        self.states.lock().remove(&request_id);
+        // Drain a leftover double-buffer token so its lazy Metal graph is not
+        // left in the process residency set for the next request's prefill.
+        let pending = self
+            .states
+            .lock()
+            .remove(&request_id)
+            .and_then(|mut state| state.pending_direct.take());
         self.batched_session.lock().remove(request_id.0);
+        if let Some(pending) = pending {
+            eval(&[&pending]);
+        }
     }
 
     fn embed(
@@ -5311,6 +5327,11 @@ impl MlxRunner {
                     };
                     let mut effective_prefill_token_count = prefill_tokens.len();
                     let repetition_history = state.repetition_history(prefill_tokens, sampling);
+                    if crate::fastpath::should_clear_mlx_cache_before_cold_prefill(
+                        state.cache.seq_len(),
+                    ) {
+                        clear_cache();
+                    }
                     let prefill_forward_started = Instant::now();
                     // When the runner-probe over-claimed enough to wipe
                     // out `prefill_tokens`, every input position is
@@ -5336,9 +5357,10 @@ impl MlxRunner {
                     // Long remaining prompts clamp to the pure-thr chunk (512);
                     // short prompts keep the session base (e.g. 1536 for S0 TTFT).
                     let prefill_chunk_for_request =
-                        crate::fastpath::scale_prefill_chunk_for_remaining(
+                        crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
                             base_prefill_chunk,
                             prefill_tokens.len(),
+                            &self.cfg.model_family,
                         );
                     state.decode_telemetry.record_prefill_chunk_selection(
                         prefill_chunk_for_request,
@@ -5405,9 +5427,10 @@ impl MlxRunner {
                                     self.prefill_chunk,
                                 );
                             let recompute_chunk =
-                                crate::fastpath::scale_prefill_chunk_for_remaining(
+                                crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
                                     base_recompute_chunk,
                                     token_ids.len(),
+                                    &self.cfg.model_family,
                                 );
                             state.decode_telemetry.record_prefill_chunk_selection(
                                 recompute_chunk,
@@ -5417,7 +5440,10 @@ impl MlxRunner {
                                 ),
                             );
                             let recompute_history = state.repetition_history(token_ids, sampling);
-                            let tok = if self.weights.mtp.is_some() {
+                            let tok = if should_capture_qwen_mtp_prefill_history(
+                                self.mtp_requested,
+                                self.weights.mtp.is_some(),
+                            ) {
                                 let (tok, hidden, history_tokens) =
                                     chunked_prefill_with_mtp_history_and_sampling_buffers(
                                         &self.cfg,
@@ -5488,7 +5514,10 @@ impl MlxRunner {
                             .decode_telemetry
                             .record_prefill_cache_only_continuation();
                         None
-                    } else if self.weights.mtp.is_some() {
+                    } else if should_capture_qwen_mtp_prefill_history(
+                        self.mtp_requested,
+                        self.weights.mtp.is_some(),
+                    ) {
                         let (tok, hidden, history_tokens) =
                             chunked_prefill_with_mtp_history_and_sampling_buffers(
                                 &self.cfg,
@@ -11956,11 +11985,18 @@ fn select_linear_mtp_correction_token(
 /// singleton replay at any depth (diagnostic kill switch).
 const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
 
+/// Exact arithmetic is the speculative-verifier contract.
+///
+/// An exact-eligible pack (AXQ sidecar, affine 4/6/8) auto-selects the
+/// profile at load time. Applying that profile on `--ax-direct` skips the
+/// packed linear-attention inputs route and other fused S=1 kernels. Direct
+/// decode therefore keeps the community-4-bit fast path; MTP still installs
+/// the verifier contract when `mtp_requested` is on.
 const fn qwen_linear_mtp_exact_scope_for_request(
     resolved_profile_enabled: bool,
-    _mtp_requested: bool,
+    mtp_requested: bool,
 ) -> bool {
-    resolved_profile_enabled
+    resolved_profile_enabled && mtp_requested
 }
 
 fn qwen_linear_mtp_exact_tensor_supported(
@@ -13819,9 +13855,9 @@ mod tests {
     }
 
     #[test]
-    fn qwen_linear_exact_arithmetic_does_not_depend_on_mtp_request() {
+    fn qwen_linear_exact_arithmetic_requires_mtp_request() {
         assert!(qwen_linear_mtp_exact_scope_for_request(true, true));
-        assert!(qwen_linear_mtp_exact_scope_for_request(true, false));
+        assert!(!qwen_linear_mtp_exact_scope_for_request(true, false));
         assert!(!qwen_linear_mtp_exact_scope_for_request(false, true));
         assert!(!qwen_linear_mtp_exact_scope_for_request(false, false));
     }
@@ -16399,6 +16435,9 @@ mod tests {
             in_proj_b: Some(unit_weight()),
             in_proj_qkvz: None,
             in_proj_ba: None,
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
             conv1d_bias: None,
             d: None,
             conv1d_dense: mlx_sys::zeros(&[1, 1, 1], MlxDtype::Float32, None),
@@ -16417,6 +16456,9 @@ mod tests {
             in_proj_b: None,
             in_proj_qkvz: Some(unit_weight()),
             in_proj_ba: Some(unit_weight()),
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
             conv1d_bias: None,
             d: None,
             conv1d_dense: mlx_sys::zeros(&[1, 1, 1], MlxDtype::Float32, None),
@@ -16946,6 +16988,16 @@ mod tests {
                 .to_string()
                 .contains("not supported by the MLX runner")
         );
+    }
+
+    #[test]
+    fn mlx_manifest_validation_reports_auxiliary_family_role() {
+        let error = validate_mlx_primary_admission("gemma4_assistant")
+            .expect_err("assistant artifact must not be admitted as a primary runner");
+        let message = error.to_string();
+
+        assert!(message.contains("auxiliary-only artifact"));
+        assert!(message.contains("cannot be loaded as the primary MLX runner"));
     }
 
     #[test]
@@ -18413,7 +18465,7 @@ mod tests {
     }
 
     #[test]
-    fn mlx_supported_model_family_covers_secondary_catalog_and_gpt_oss() {
+    fn primary_mlx_runner_registry_covers_secondary_catalog_and_gpt_oss() {
         // Recently expanded direct-mode secondary stack must clear the runner gate.
         for family in [
             "llama3",
@@ -18428,13 +18480,15 @@ mod tests {
             "qwen3_vl_moe",
         ] {
             assert!(
-                is_mlx_supported_model_family(family),
-                "{family} must be accepted by the MLX runner allowlist"
+                ax_engine_core::is_primary_mlx_runner_family(family),
+                "{family} must be admitted by the primary MLX runner registry"
             );
         }
         // Assistant MTP draft artifacts are sidecars, not primary runners.
-        assert!(!is_mlx_supported_model_family("gemma4_assistant"));
-        assert!(!is_mlx_supported_model_family("gpt2"));
+        assert!(!ax_engine_core::is_primary_mlx_runner_family(
+            "gemma4_assistant"
+        ));
+        assert!(!ax_engine_core::is_primary_mlx_runner_family("gpt2"));
     }
 
     #[test]
@@ -19124,7 +19178,7 @@ mod tests {
 
         validate_gemma4_interleaved_attention(&manifest)
             .expect("GPT-OSS alternating SWA/full attention is implemented");
-        assert!(is_mlx_supported_model_family("gpt_oss"));
+        assert!(ax_engine_core::is_primary_mlx_runner_family("gpt_oss"));
     }
 
     #[test]

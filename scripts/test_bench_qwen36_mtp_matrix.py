@@ -335,6 +335,8 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
             env = matrix.ax_env(args)
 
         self.assertEqual(env["AX_MLX_MTP_OPTIMISTIC"], "0")
+        self.assertEqual(env["AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE"], "1")
+        self.assertEqual(env["AX_MLX_QWEN_LINEAR_MTP_EXACT"], "1")
 
     def test_ax_env_enables_optimistic_when_flag_is_true(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -343,6 +345,8 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
             env = matrix.ax_env(args)
 
         self.assertEqual(env["AX_MLX_MTP_OPTIMISTIC"], "1")
+        self.assertEqual(env["AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE"], "1")
+        self.assertEqual(env["AX_MLX_QWEN_LINEAR_MTP_EXACT"], "1")
 
     def test_ax_command_is_mtp_only_and_disables_ngram_stacking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

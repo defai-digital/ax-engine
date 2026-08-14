@@ -2687,13 +2687,16 @@ impl MlxKVCache {
         match entry {
             None => {
                 let capacity = chunk_ceiling(write_end);
-                // Fresh-layer fast path: when the prompt is chunk-aligned
-                // (capacity == new_tokens), skip zeros+slice_update by storing
-                // new_k/new_v directly.  Capacity stays correct for usage_snapshot;
-                // the first decode step grows to chunk_ceiling(new_tokens + 1) as
-                // normal.  Saves ~6 MLX graph nodes per layer per chunk-aligned prefill
-                // (e.g. 512-token prompt → 210 fewer nodes for a 35-layer model).
-                if write_start == 0 && capacity == new_tokens {
+                // Fresh-layer fast path: store new_k/new_v directly and skip
+                // zeros+slice_update. Aligned prompts (capacity == new_tokens)
+                // always take this path. Unaligned first writes (p128) take it
+                // when `AX_MLX_EXACT_SIZE_FIRST_KV` is on (default): capacity
+                // is the exact prompt length; the first decode step grows to
+                // chunk_ceiling(new_tokens + 1).
+                if crate::fastpath::should_exact_size_first_kv(write_start)
+                    || (write_start == 0 && capacity == new_tokens)
+                {
+                    let capacity = new_tokens;
                     let view_start = window
                         .filter(|&w| w > 0 && w < new_tokens)
                         .map(|w| new_tokens - w)
@@ -2797,27 +2800,47 @@ impl MlxKVCache {
                     "KV cache append cannot change dtype for an existing layer"
                 );
                 if write_end > lkv.capacity {
-                    // Grow: allocate a larger buffer and copy existing data.
                     let new_capacity = chunk_ceiling(write_end);
-                    let buf_shape = [1i32, lkv.n_kv_heads, new_capacity as i32, lkv.head_dim];
-                    let k_new = zeros(&buf_shape, lkv.dtype, None);
-                    let v_new = zeros(&buf_shape, lkv.dtype, None);
-                    let old_stop = [1i32, lkv.n_kv_heads, lkv.capacity as i32, lkv.head_dim];
-                    let zero_start = [0i32, 0, 0, 0];
-                    let ones = [1i32, 1, 1, 1];
-                    lkv.k = slice_update(&k_new, &lkv.k, &zero_start, &old_stop, &ones, None);
-                    lkv.v = slice_update(&v_new, &lkv.v, &zero_start, &old_stop, &ones, None);
-                    lkv.capacity = new_capacity;
-                    // Invalidate cached views — they point to the old (smaller) buffer.
-                    lkv.last_k_view = None;
-                    lkv.last_v_view = None;
-                    self.growth_count = self.growth_count.saturating_add(1);
+                    if crate::fastpath::should_exact_size_kv_grow(
+                        write_start,
+                        lkv.capacity,
+                        write_end,
+                        new_capacity,
+                    ) {
+                        // Aligned tight grow (p2048 chunk 2: 1024→2048):
+                        // concatenate old∥new instead of zeros + two slice_updates.
+                        lkv.k = concatenate(&[&lkv.k, &new_k], 2, None);
+                        lkv.v = concatenate(&[&lkv.v, &new_v], 2, None);
+                        lkv.capacity = new_capacity;
+                        lkv.last_k_view = None;
+                        lkv.last_v_view = None;
+                        self.growth_count = self.growth_count.saturating_add(1);
+                    } else {
+                        let buf_shape = [1i32, lkv.n_kv_heads, new_capacity as i32, lkv.head_dim];
+                        let k_new = zeros(&buf_shape, lkv.dtype, None);
+                        let v_new = zeros(&buf_shape, lkv.dtype, None);
+                        let old_stop = [1i32, lkv.n_kv_heads, lkv.capacity as i32, lkv.head_dim];
+                        let zero_start = [0i32, 0, 0, 0];
+                        let ones = [1i32, 1, 1, 1];
+                        lkv.k = slice_update(&k_new, &lkv.k, &zero_start, &old_stop, &ones, None);
+                        lkv.v = slice_update(&v_new, &lkv.v, &zero_start, &old_stop, &ones, None);
+                        lkv.capacity = new_capacity;
+                        lkv.last_k_view = None;
+                        lkv.last_v_view = None;
+                        self.growth_count = self.growth_count.saturating_add(1);
+                        let start = [0i32, 0, write_start as i32, 0];
+                        let stop = [1i32, lkv.n_kv_heads, write_end as i32, lkv.head_dim];
+                        let strides = [1i32, 1, 1, 1];
+                        lkv.k = slice_update(&lkv.k, &new_k, &start, &stop, &strides, None);
+                        lkv.v = slice_update(&lkv.v, &new_v, &start, &stop, &strides, None);
+                    }
+                } else {
+                    let start = [0i32, 0, write_start as i32, 0];
+                    let stop = [1i32, lkv.n_kv_heads, write_end as i32, lkv.head_dim];
+                    let strides = [1i32, 1, 1, 1];
+                    lkv.k = slice_update(&lkv.k, &new_k, &start, &stop, &strides, None);
+                    lkv.v = slice_update(&lkv.v, &new_v, &start, &stop, &strides, None);
                 }
-                let start = [0i32, 0, write_start as i32, 0];
-                let stop = [1i32, lkv.n_kv_heads, write_end as i32, lkv.head_dim];
-                let strides = [1i32, 1, 1, 1];
-                lkv.k = slice_update(&lkv.k, &new_k, &start, &stop, &strides, None);
-                lkv.v = slice_update(&lkv.v, &new_v, &start, &stop, &strides, None);
             }
         }
 
@@ -2829,6 +2852,15 @@ impl MlxKVCache {
             .filter(|window| *window > 0)
             .map(|window| write_end.saturating_sub(window))
             .unwrap_or(0);
+        if crate::fastpath::should_skip_unused_full_kv_view_slice(
+            view_start,
+            write_end,
+            lkv.capacity,
+        ) {
+            lkv.last_k_view = Some(lkv.k.clone());
+            lkv.last_v_view = Some(lkv.v.clone());
+            return (lkv.k.clone(), lkv.v.clone());
+        }
         let start = view_start as i32;
         let end = write_end as i32;
         let k_view = slice(
@@ -2892,10 +2924,13 @@ impl MlxKVCache {
         match entry {
             None => {
                 let capacity = chunk_ceiling(write_end);
-                // Fresh-layer fast path: when the prompt is chunk-aligned the
-                // quantize outputs are exactly capacity-sized, so they become
-                // the backing buffers directly (no zeros + slice_update).
-                if write_start == 0 && capacity == append.new_tokens {
+                // Fresh-layer fast path: quantize outputs become the backing
+                // buffers directly (no zeros + slice_update). Unaligned first
+                // writes (p128) take this path when exact-size first KV is on.
+                if crate::fastpath::should_exact_size_first_kv(write_start)
+                    || (write_start == 0 && capacity == append.new_tokens)
+                {
+                    let capacity = append.new_tokens;
                     let quantized = QuantizedLayerKV {
                         k: QuantizedTensorKV::from_quantized(new_k, spec),
                         v: QuantizedTensorKV::from_quantized(new_v, spec),
@@ -3655,7 +3690,10 @@ impl MlxKVCache {
         match entry {
             None => {
                 let capacity = chunk_ceiling(write_end);
-                if write_start == 0 && capacity == new_tokens {
+                if crate::fastpath::should_exact_size_first_kv(write_start)
+                    || (write_start == 0 && capacity == new_tokens)
+                {
+                    let capacity = new_tokens;
                     self.growth_count = self.growth_count.saturating_add(1);
                     *entry = Some(GlmMlaLayerCache {
                         kv_latent: new_kv_latent.clone(),
@@ -5124,6 +5162,33 @@ mod tests {
         assert_eq!(usage.logical_bytes, 96);
         assert_eq!(usage.capacity_bytes, 8192);
         assert_eq!(usage.growth_count, 1);
+    }
+
+    #[test]
+    fn aligned_prefill_grow_concatenates_instead_of_zeros() {
+        let mut cache = MlxKVCache::new(1);
+        let k0 = zeros(&[1, 2, 1024, 4], MlxDtype::Bfloat16, None);
+        let v0 = zeros(&[1, 2, 1024, 4], MlxDtype::Bfloat16, None);
+        let _ = cache.append(0, k0, v0);
+        cache.advance(1024);
+        assert_eq!(contiguous_layer(&cache, 0).capacity, 1024);
+
+        let k1 = zeros(&[1, 2, 1024, 4], MlxDtype::Bfloat16, None);
+        let v1 = zeros(&[1, 2, 1024, 4], MlxDtype::Bfloat16, None);
+        let (k_view, v_view) = cache.append(0, k1, v1);
+        cache.advance(1024);
+
+        assert_eq!(k_view.shape(), vec![1, 2, 2048, 4]);
+        assert_eq!(v_view.shape(), vec![1, 2, 2048, 4]);
+        assert_eq!(contiguous_layer(&cache, 0).capacity, 2048);
+        assert_eq!(cache.usage_snapshot().capacity_tokens, 2048);
+        assert_eq!(contiguous_layer(&cache, 0).k.shape(), vec![1, 2, 2048, 4]);
+        let layer = contiguous_layer(&cache, 0);
+        assert_eq!(
+            layer.last_k_view.as_ref().map(MlxArray::shape),
+            Some(layer.k.shape()),
+            "full-buffer view must skip the identity slice"
+        );
     }
 
     #[test]

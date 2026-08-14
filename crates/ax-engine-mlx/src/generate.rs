@@ -425,7 +425,12 @@ pub fn chunked_prefill_with_sampling_buffers(
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
 
-    let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
+    let cache_only_prefix_len =
+        if crate::fastpath::skip_cache_only_split_for_family(&cfg.model_family, total) {
+            0
+        } else {
+            mlx_lm_style_cache_only_prefix_len(total, sampling)
+        };
     if cache_only_prefix_len > 0 {
         let mut offset = 0;
         while offset < cache_only_prefix_len {
@@ -514,6 +519,7 @@ pub fn chunked_prefill_with_sampling_buffers(
             forward_cache_only(cfg, weights, chunk, cache, cache.seq_len())
         };
         cache.advance(chunk.len());
+        maybe_async_eval_intermediate_qwen_prefill(cfg, cache, is_final_chunk);
         offset = end;
 
         if offset == total {
@@ -539,12 +545,26 @@ pub fn chunked_prefill_with_sampling_buffers(
             // memory consumed by the prefill computation graph.
             clear_cache();
             return tok;
-        } else {
+        } else if !crate::fastpath::should_keep_lazy_intermediate_qwen_prefill(
+            &cfg.model_family,
+            is_final_chunk,
+            total,
+        ) {
             // Drain GPU queue. hidden depends on all transformer layers
             // (KV cache writes via attention); eval_with_kv_refs explicitly
             // materialises the KV cache arrays alongside the hidden state to
             // prevent O(N²) lazy-graph growth across chunks.
-            eval_with_kv_refs(&logits, cache);
+            if crate::fastpath::should_qwen_prefill_eval_kv_only(
+                &cfg.model_family,
+                is_final_chunk,
+                total,
+            ) {
+                // Cache-only hidden is discarded; KV + linear-state refs
+                // already depend on the layer stack.
+                eval_kv_refs(cache);
+            } else {
+                eval_with_kv_refs(&logits, cache);
+            }
             // mlxcel residual (issue #672): release freelist between chunks so
             // differently-sized attention/mask/logits transients do not keep
             // each shape's high-water mark across the whole prompt. KV arrays
@@ -553,6 +573,10 @@ pub fn chunked_prefill_with_sampling_buffers(
                 clear_cache();
             }
         }
+        // Qwen 3.5/3.6 contract totals stay lazy across the two 1024
+        // chunks. The final iteration's eval_with_kv_refs materialises
+        // KV + linear-attn state (same last-chunk-only policy as the
+        // cache-only prefix path).
     }
 }
 
@@ -960,7 +984,12 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
     // placeholder hidden (zero-shaped).  MTP warmup skips None returns;
     // this case is rare for MTP-benchmark runs (all tokens processed as a
     // single mlx-lm-style batch).
-    let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
+    let cache_only_prefix_len =
+        if crate::fastpath::skip_cache_only_split_for_family(&cfg.model_family, total) {
+            0
+        } else {
+            mlx_lm_style_cache_only_prefix_len(total, sampling)
+        };
     if cache_only_prefix_len > 0 {
         let mut offset = 0;
         while offset < cache_only_prefix_len {
@@ -1073,15 +1102,13 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             clear_cache();
             return (tok, post_norm_all, history_tokens);
         } else {
-            // Non-final chunk: skip lm_head projection (hidden×vocab_size).
-            // Defer materialisation until the final chunk's eval (same contract
-            // as the greedy cache-only multi-chunk path): intermediate
-            // barriers force a full layer-stack eval per sub-chunk and hurt
-            // MTP long-prompt TTFT (Qwen linear clamp → multiple chunks).
-            // KV writes stay on the lazy graph and are pulled by the final
-            // `eval_with_kv_refs` / `eval_kv_refs` on the completing step.
+            // Non-final chunk: skip lm_head. Qwen 3.6 27B p2048 is two 1024
+            // chunks under skip_cache_only_split — async-submit KV so GPU
+            // runs this chunk while the host builds the next (mlxcel #672).
+            // Other families keep the lazy chain until the final barrier.
             let _hidden = forward_cache_only(cfg, weights, chunk, cache, chunk_offset);
             cache.advance(chunk.len());
+            maybe_async_eval_intermediate_qwen_prefill(cfg, cache, false);
             offset = end;
         }
     }
@@ -1107,7 +1134,12 @@ pub fn chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
-    let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
+    let cache_only_prefix_len =
+        if crate::fastpath::skip_cache_only_split_for_family(&cfg.model_family, total) {
+            0
+        } else {
+            mlx_lm_style_cache_only_prefix_len(total, sampling)
+        };
     if cache_only_prefix_len > 0 {
         let mut offset = 0;
         while offset < cache_only_prefix_len {
@@ -1226,6 +1258,7 @@ pub fn chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
         }
         let _hidden = forward_cache_only(cfg, weights, chunk, cache, chunk_offset);
         cache.advance(chunk.len());
+        maybe_async_eval_intermediate_qwen_prefill(cfg, cache, false);
         offset = end;
     }
 }
@@ -1276,6 +1309,19 @@ fn eval_kv_refs(cache: &MlxKVCache) {
 /// Non-blocking KV submit for intermediate cache-only chunks under
 /// `AX_MLX_CACHE_ONLY_CHUNK_ASYNC_EVAL`. MLX dependency tracking chains the
 /// next chunk's graph onto these pending arrays.
+fn maybe_async_eval_intermediate_qwen_prefill(
+    cfg: &ModelConfig,
+    cache: &MlxKVCache,
+    is_final_chunk: bool,
+) {
+    if crate::fastpath::should_async_eval_intermediate_qwen_prefill(
+        &cfg.model_family,
+        is_final_chunk,
+    ) {
+        async_eval_kv_refs(cache);
+    }
+}
+
 fn async_eval_kv_refs(cache: &MlxKVCache) {
     let kv_refs = cache.collect_eval_refs();
     if !kv_refs.is_empty() {

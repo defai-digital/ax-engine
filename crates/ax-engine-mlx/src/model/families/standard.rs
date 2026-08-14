@@ -57,8 +57,8 @@ use super::super::shared::{
     attention_output_projection_batched, attention_output_projection_with_post_norm,
     attention_output_projection_with_post_norm_policy, bidirectional_attention,
     direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, ffn_swiglu_batched,
-    ffn_swiglu_row_exact, flatten_attention_output_bhsd, flatten_compiled_moe_inputs,
-    flatten_gemma4_dual_path_inputs, full_precision_attention,
+    ffn_swiglu_plus_residual, ffn_swiglu_row_exact, flatten_attention_output_bhsd,
+    flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs, full_precision_attention,
     full_precision_attention_with_window, linear_attention_forward_batched, moe_experts_forward,
     moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
@@ -569,6 +569,13 @@ fn layer_shell_post_attention(
             }
             let refs: Vec<&MlxArray> = rows.iter().collect();
             concatenate(&refs, 1, None)
+        } else if seq == 1
+            && w.ffn_post_norm.is_none()
+            && w.per_layer_gate.is_none()
+            && w.layer_scalar.is_none()
+            && per_layer_input.is_none()
+        {
+            ffn_swiglu_plus_residual(cfg, w, &normed2, None, layer_idx, &hidden)
         } else {
             ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
         }
@@ -585,7 +592,15 @@ fn layer_shell_post_attention(
 
     // 18-19. Residual + per-layer input gating.
     let residual_gate_started = profile_forward_layer.then(Instant::now);
-    let out = if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
+    let fuse_ffn_residual = seq == 1
+        && w.ffn_post_norm.is_none()
+        && w.per_layer_gate.is_none()
+        && w.layer_scalar.is_none()
+        && per_layer_input.is_none()
+        && w.router_proj.is_none();
+    let out = if fuse_ffn_residual {
+        ffn_out
+    } else if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
         w.per_layer_gate.as_ref(),
         w.per_layer_proj_w.as_ref(),
         w.per_layer_post_norm.as_ref(),
@@ -846,10 +861,17 @@ fn layer_forward_internal(
         return hidden.clone();
     }
 
-    // 1. Attention norm (may be fused into packed QKV below when
-    // AX_MLX_ATTN_NORM_QKV_FUSE=1).
-    let fuse_attn_norm_qkv =
-        fastpath::attn_norm_qkv_fuse_enabled() && w.qkv_packed.is_some() && kv_source.is_none();
+    // 1. Attention norm (may be fused into packed QKV below).
+    // Only skip the standalone rms when the fused QKV path will actually
+    // run. Exact / moe-mt identity skip the fuse and still need `normed`.
+    let skip_qkv_fuse = crate::fastpath::qwen_linear_mtp_exact_enabled()
+        || crate::fastpath::moe_mt_bf16_identity_enabled();
+    let fuse_attn_norm_qkv = fastpath::should_call_attn_norm_qkv_fuse(
+        fastpath::should_attn_norm_qkv_fuse(&cfg.model_family),
+        w.qkv_packed.is_some(),
+        kv_source.is_some(),
+        skip_qkv_fuse,
+    );
     let normed = if fuse_attn_norm_qkv {
         None
     } else {
@@ -872,7 +894,7 @@ fn layer_forward_internal(
     // portable path below.
     let fused_prefill = 'fused: {
         let dbg = fastpath::prefill_time_debug_env();
-        if !fastpath::fused_prefill_attention_enabled() || seq <= 1 {
+        if !fastpath::fused_prefill_attention_should_try(&cfg.model_family) || seq <= 1 {
             break 'fused None;
         }
         // Offset chunks (chunked prefill continuation) fuse via the two-stage
@@ -888,8 +910,10 @@ fn layer_forward_internal(
             Some("ring_layout")
         } else if protected_prefix_window.is_some() {
             Some("protected_prefix")
-        } else if !matches!(cfg.model_family.as_str(), "gemma4" | "gemma4_vl" | "gemma3") {
+        } else if !fastpath::fused_prefill_attention_family_supported(&cfg.model_family) {
             Some("family")
+        } else if fastpath::fused_prefill_qwen_skip_offset(&cfg.model_family, offset_chunk) {
+            Some("qwen_offset_chunk")
         } else if !matches!(head_dim, 64 | 80 | 128 | 256) {
             // Mirrors mlxcel's NAX gate: fast SDPA only has steel kernels
             // for these head dims; anything else (Gemma 4 global layers at
@@ -1306,7 +1330,6 @@ fn layer_forward_internal(
             // MoE multi-token (smokef99/104): pos0 RowExact + rest Shared QKV.
             // Formal exact at w≈1.016 (smokef99); full Shared breaks exactness.
             let moe_mt_exact = crate::fastpath::moe_mt_bf16_identity_enabled();
-            let skip_qkv_fuse = crate::fastpath::qwen_linear_mtp_exact_enabled() || moe_mt_exact;
             let (q_raw, k_raw, v_raw, attn_gate_raw) = if fuse_attn_norm_qkv && !skip_qkv_fuse {
                 qkv_project_with_input_norm(
                     cfg,

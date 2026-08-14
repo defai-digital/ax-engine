@@ -1093,7 +1093,14 @@ pub(crate) fn build_layer_masks(
             std::collections::HashMap::with_capacity(cfg.layer_configs.len());
         cfg.layer_configs
             .iter()
-            .map(|lc| {
+            .enumerate()
+            .map(|(layer_idx, lc)| {
+                if crate::fastpath::should_skip_linear_prefill_mask(
+                    &cfg.model_family,
+                    cfg.is_linear_attention_layer(layer_idx),
+                ) {
+                    return None;
+                }
                 let mask_key_len = attention_mask_key_len(seq, key_len, lc.sliding_window);
                 // For decode (seq==1) with sliding window, key_len is already truncated
                 // to ≤ window by attention_mask_key_len. The single query can attend to

@@ -470,12 +470,30 @@ pub fn apply_layer_dense_ffn_prefill(
     inputs: &[&MlxArray],
     ffn_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
 ) -> Option<Vec<MlxArray>> {
+    apply_layer_dense_ffn_prefill_min(
+        model_identity,
+        layer_index,
+        leading_elements,
+        crate::fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING,
+        inputs,
+        ffn_fn,
+    )
+}
+
+/// Like [`apply_layer_dense_ffn_prefill`] with a caller-chosen min leading
+/// (Qwen split prefill uses 128 so contract p128 amortizes).
+pub fn apply_layer_dense_ffn_prefill_min(
+    model_identity: u64,
+    layer_index: usize,
+    leading_elements: i64,
+    min_leading: i64,
+    inputs: &[&MlxArray],
+    ffn_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
+) -> Option<Vec<MlxArray>> {
     if !crate::fastpath::dense_ffn_compile_prefill_enabled() {
         return None;
     }
-    // Skip short prompts: compile amortization needs long sequences (README
-    // mid/long prompts). Matches DENSE_FFN_PREFILL_COMPILE_MIN_LEADING.
-    if leading_elements < crate::fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING {
+    if leading_elements < min_leading {
         return None;
     }
     let cache = LAYER_DENSE_FFN_PREFILL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));

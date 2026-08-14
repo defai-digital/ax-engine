@@ -622,6 +622,10 @@ pub(super) fn load_quantized_linear(
         bits,
         mode: "affine".to_string(),
         linear_bias: take_optional(map, &format!("{base}.bias")),
+        decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
     })
 }
 

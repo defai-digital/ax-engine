@@ -33,6 +33,32 @@ pub(super) fn qwen_linear_mtp_certification_candidate_from_env() -> bool {
         .is_some_and(|raw| truthy_opt_in(&raw))
 }
 
+/// Decide whether the loaded Qwen linear model may take the certified MTP
+/// route.
+///
+/// Capability is independent of n-gram/direct session flags: the SDK
+/// constructs with n-gram disabled and later enables MTP via
+/// `set_mtp_requested`. Route safety must already be true then, or the
+/// setter is a no-op and "MTP" silently stays direct. Activation remains
+/// `mtp_requested` / `AX_NO_SPEC`. Env opt-in still wins when the exact
+/// profile is off.
+pub(super) fn resolve_qwen_linear_certification_candidate(
+    env_opt_in: bool,
+    exact_profile_enabled: bool,
+) -> bool {
+    env_opt_in || exact_profile_enabled
+}
+
+/// Prefill should materialize MTP hidden history only when decode will consume
+/// it. Sidecar presence alone is not enough: AXQ packs ship `mtp.safetensors`
+/// and `--ax-direct` must keep the regular last-token prefill path.
+pub(super) fn should_capture_qwen_mtp_prefill_history(
+    mtp_requested: bool,
+    has_mtp_weights: bool,
+) -> bool {
+    mtp_requested && has_mtp_weights
+}
+
 /// Explicitly expose the experimental DeepSeek V4 nextn MTP route to a formal
 /// harness. Product default stays direct-fallback until Tier 2 evidence exists
 /// (docs: no MTP acceptance-rate claim).
@@ -326,6 +352,22 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn exact_profile_admits_certified_route_independently_of_session_flags() {
+        assert!(resolve_qwen_linear_certification_candidate(false, true));
+        assert!(resolve_qwen_linear_certification_candidate(true, false));
+        assert!(resolve_qwen_linear_certification_candidate(true, true));
+        assert!(!resolve_qwen_linear_certification_candidate(false, false));
+    }
+
+    #[test]
+    fn direct_session_does_not_capture_mtp_prefill_history() {
+        assert!(!should_capture_qwen_mtp_prefill_history(false, true));
+        assert!(!should_capture_qwen_mtp_prefill_history(true, false));
+        assert!(!should_capture_qwen_mtp_prefill_history(false, false));
+        assert!(should_capture_qwen_mtp_prefill_history(true, true));
+    }
 
     #[test]
     fn certification_candidate_opt_in_is_strictly_truthy() {

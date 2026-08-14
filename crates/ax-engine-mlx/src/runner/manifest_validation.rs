@@ -10,7 +10,8 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use ax_engine_core::{
-    NativeModelArtifacts, NativeModelManifest, NativeTensorRole, runner::NativeModelBindingSummary,
+    MlxRunnerAdmission, NativeModelArtifacts, NativeModelManifest, NativeTensorRole,
+    mlx_runner_admission_for_family, runner::NativeModelBindingSummary,
 };
 
 use super::{COMMON_EOT_TOKEN_STRINGS, MlxRunnerError};
@@ -19,12 +20,7 @@ pub(super) fn validate_mlx_supported_manifest(
     artifacts: &NativeModelArtifacts,
 ) -> Result<(), MlxRunnerError> {
     let manifest = artifacts.manifest();
-    if !is_mlx_supported_model_family(&manifest.model_family) {
-        return Err(MlxRunnerError::UnsupportedFeature(format!(
-            "model_family {:?} is not supported by the MLX runner",
-            manifest.model_family
-        )));
-    }
+    validate_mlx_primary_admission(&manifest.model_family)?;
     if manifest.model_family == "glm4_moe_lite"
         || manifest.model_family == "deepseek_v4"
         || has_glm_mla_tensors(artifacts)
@@ -66,41 +62,18 @@ pub(super) fn validate_mlx_supported_manifest(
     Ok(())
 }
 
-pub(super) fn is_mlx_supported_model_family(model_family: &str) -> bool {
-    matches!(
-        model_family,
-        "gemma4"
-            // Encoder-based VL packaging of the Gemma 4 text tower (+ ViT).
-            | "gemma4_vl"
-            | "gemma3"
-            | "embeddinggemma"
-            | "nemotron_embed"
-            | "qwen3"
-            | "qwen3_vl"
-            | "qwen3_vl_moe"
-            | "llama3"
-            | "diffusion_gemma"
-            | "llama4"
-            | "qwen3_5"
-            | "qwen3_next"
-            | "minicpmv4_6"
-            | "glm4_moe_lite"
-            | "deepseek_v3"
-            | "deepseek_v32"
-            // Converter + registry plumbing only; the V4 runtime graph is not
-            // yet implemented and validate_mla_moe_manifest rejects loads.
-            | "deepseek_v4"
-            | "mistral3"
-            | "mixtral"
-            // Secondary open reasoner (catalog + family implementation + registry).
-            | "gpt_oss"
-            // Multimodal text backbone (same Standard route as gemma4).
-            | "gemma4_unified"
-            // Nemotron-H hybrid Mamba-2 + GQA + ReLU² MoE (Nemotron 3 Nano).
-            | "nemotron_h"
-            // Unlimited-OCR / DeepSeek-OCR multimodal MoE + dual vision.
-            | "unlimited_ocr"
-    )
+pub(super) fn validate_mlx_primary_admission(model_family: &str) -> Result<(), MlxRunnerError> {
+    match mlx_runner_admission_for_family(model_family) {
+        Some(MlxRunnerAdmission::Primary) => Ok(()),
+        Some(MlxRunnerAdmission::AuxiliaryOnly) => {
+            Err(MlxRunnerError::UnsupportedFeature(format!(
+                "model_family {model_family:?} is an auxiliary-only artifact and cannot be loaded as the primary MLX runner"
+            )))
+        }
+        None => Err(MlxRunnerError::UnsupportedFeature(format!(
+            "model_family {model_family:?} is not supported by the MLX runner"
+        ))),
+    }
 }
 
 /// Validate DiffusionGemma-specific manifest fields.

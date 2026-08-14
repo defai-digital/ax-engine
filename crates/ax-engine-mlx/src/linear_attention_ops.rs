@@ -1,8 +1,11 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::thread::ThreadId;
 
 use mlx_sys::{
-    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, astype, concatenate,
-    conv1d, multiply, reshape, rms_norm, slice, slice_last_dim, zeros,
+    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
+    MlxVectorArray, astype, concatenate, contiguous, conv1d, multiply, reshape, rms_norm, slice,
+    slice_last_dim, zeros,
 };
 #[cfg(test)]
 use mlx_sys::{add, exp, less, log1p, negative, sigmoid, where_cond};
@@ -24,9 +27,33 @@ static GATED_DELTA_DECODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static DECODE_POST_INPUT_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static RMS_NORM_GATE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static RMS_NORM_FULL_GATE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+type GatedDeltaPrefillCompileKey = (i32, i32, i32, i32, i32, i32, ThreadId);
+type GatedDeltaPrefillCompileCache =
+    Mutex<HashMap<GatedDeltaPrefillCompileKey, Option<MlxClosure>>>;
+static GATED_DELTA_PREFILL_COMPILE_CACHE: OnceLock<GatedDeltaPrefillCompileCache> = OnceLock::new();
 pub(crate) const GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY: usize = 512;
 pub(crate) const GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY: usize = 1024;
 pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 2048;
+
+/// Runner prefill-chunk cap for linear-attention families.
+///
+/// Production clamp is 1024. 1536 remasured community p2048 ~899 vs 908.5.
+/// One 2048 FFN + tile-512 remasured 889.96 vs 891.02 (2026-08-13).
+/// Streaming / `AX_MLX_QWEN_PREFILL_SINGLE_2048=1` still take 2048.
+pub(crate) fn linear_attention_prefill_chunk_cap(streaming: bool) -> usize {
+    if streaming || fastpath::qwen_prefill_single_2048_enabled() {
+        GATED_DELTA_THREADGROUP_CACHE_CAPACITY
+    } else if fastpath::qwen_prefill_chunk_1536_enabled() {
+        1536
+    } else {
+        GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY
+    }
+}
+
+/// seq>512 is eligible for the 512 TG tile path (p2048's 1024 chunks).
+pub(crate) fn gated_delta_prefill_tile_512_seq_eligible(seq: i32) -> bool {
+    seq > GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32
+}
 
 /// compute_g from mlx-lm/mlx-swift-lm:
 /// `exp(-exp(A_log.float32) * softplus(a + dt_bias))`.
@@ -166,15 +193,14 @@ pub fn linear_attention_decode_post_input_metal(
     k_scale: f32,
     eps: f32,
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
-    if !fastpath::qwen_linear_attention_decode_post_input_metal_enabled() {
-        return None;
-    }
-    let conv_state = cached_conv_state?;
     let qkv_shape = qkv.shape();
-    if qkv_shape.len() != 3 || !(1..=4).contains(&qkv_shape[1]) {
+    if qkv_shape.len() != 3 {
         return None;
     }
     let seq = qkv_shape[1];
+    if seq < 1 || seq > GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32 {
+        return None;
+    }
     if cfg.key_head_dim != cfg.value_head_dim {
         return None;
     }
@@ -190,9 +216,18 @@ pub fn linear_attention_decode_post_input_metal(
     if qkv_shape[2] != conv_dim {
         return None;
     }
-    if conv_state.shape() != vec![batch, tail_len, conv_dim] {
-        return None;
-    }
+    let zero_state;
+    let conv_state = if let Some(state) = cached_conv_state {
+        if state.shape() != vec![batch, tail_len, conv_dim] {
+            return None;
+        }
+        state
+    } else {
+        // First prefill chunk has no cached conv state. Zeros match the
+        // portable conv1d cold start so Metal can engage on chunk 1.
+        zero_state = zeros(&[batch, tail_len, conv_dim], qkv.dtype(), None);
+        &zero_state
+    };
     if conv_weight.shape() != vec![conv_dim, cfg.conv_kernel_dim as i32, 1] {
         return None;
     }
@@ -443,6 +478,98 @@ pub(crate) fn gated_delta_kernel_with_prefix_checkpoint(
     (output, final_state, checkpoint)
 }
 
+/// Run GatedDelta as sequential `tile`-length TG kernels, carrying state.
+///
+/// Production uses `tile = 512` (default-ON) so a 1024-token chunk keeps
+/// the winning short TG specialization. The 2048 TG tier lost ~15% vs 512;
+/// tiling 1024 as two 512 kernels is the unused recurrent A/B. `tile = 1024`
+/// remains the fallback when the 512 tile flag is off.
+#[allow(clippy::too_many_arguments)]
+fn gated_delta_prefill_tiled(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    state: &MlxArray,
+    tile: i32,
+) -> (MlxArray, MlxArray) {
+    assert!(tile > 0, "gated_delta prefill tile must be positive");
+    let q_shape = q.shape();
+    let v_shape = v.shape();
+    let batch = q_shape[0];
+    let seq = q_shape[1];
+    let num_key_heads = q_shape[2];
+    let key_head_dim = q_shape[3];
+    let num_value_heads = v_shape[2];
+    let value_head_dim = v_shape[3];
+    let mut state_cur = state.clone();
+    let mut ys: Vec<MlxArray> = Vec::new();
+    let mut start = 0i32;
+    while start < seq {
+        let end = (start + tile).min(seq);
+        let q_t = contiguous(
+            &slice(
+                q,
+                &[0, start, 0, 0],
+                &[batch, end, num_key_heads, key_head_dim],
+                &[1, 1, 1, 1],
+                None,
+            ),
+            None,
+        );
+        let k_t = contiguous(
+            &slice(
+                k,
+                &[0, start, 0, 0],
+                &[batch, end, num_key_heads, key_head_dim],
+                &[1, 1, 1, 1],
+                None,
+            ),
+            None,
+        );
+        let v_t = contiguous(
+            &slice(
+                v,
+                &[0, start, 0, 0],
+                &[batch, end, num_value_heads, value_head_dim],
+                &[1, 1, 1, 1],
+                None,
+            ),
+            None,
+        );
+        let a_t = contiguous(
+            &slice(
+                a_raw,
+                &[0, start, 0],
+                &[batch, end, num_value_heads],
+                &[1, 1, 1],
+                None,
+            ),
+            None,
+        );
+        let b_t = contiguous(
+            &slice(
+                b_raw,
+                &[0, start, 0],
+                &[batch, end, num_value_heads],
+                &[1, 1, 1],
+                None,
+            ),
+            None,
+        );
+        let (y_t, next_state) =
+            gated_delta_kernel_impl(&q_t, &k_t, &v_t, a_log, &a_t, dt_bias, &b_t, &state_cur);
+        ys.push(y_t);
+        state_cur = next_state;
+        start = end;
+    }
+    let refs: Vec<&MlxArray> = ys.iter().collect();
+    (concatenate(&refs, 1, None), state_cur)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gated_delta_kernel_impl(
     q: &MlxArray,
@@ -463,6 +590,21 @@ fn gated_delta_kernel_impl(
     let key_head_dim = q_shape[3];
     let num_value_heads = v_shape[2];
     let value_head_dim = v_shape[3];
+    let q_c;
+    let k_c;
+    let v_c;
+    let a_c;
+    let b_c;
+    let (q, k, v, a_raw, b_raw) = if fastpath::should_qwen_gated_delta_prefill_contiguous(seq) {
+        q_c = contiguous(q, None);
+        k_c = contiguous(k, None);
+        v_c = contiguous(v, None);
+        a_c = contiguous(a_raw, None);
+        b_c = contiguous(b_raw, None);
+        (&q_c, &k_c, &v_c, &a_c, &b_c)
+    } else {
+        (q, k, v, a_raw, b_raw)
+    };
     if seq == 1 && fastpath::qwen_gated_delta_decode_metal_enabled() {
         return gated_delta_decode_kernel(
             q,
@@ -482,8 +624,10 @@ fn gated_delta_kernel_impl(
         );
     }
     // Multi-token prefill hybrid:
-    // - default: legacy fused kernel with CacheCapacity 512/1024/2048.
+    // - default: 512 TG oneshot, or tile at 512 when seq>512 so p2048's
+    //   two 1024 chunks keep the winning short specialization.
     // - opt-in streaming (seq>512): no CacheCapacity TG array.
+    // - tile-at-1024 only when the 512 tile flag is off (seq>1024).
     if seq > GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32
         && fastpath::qwen_gated_delta_prefill_streaming_enabled()
     {
@@ -505,13 +649,41 @@ fn gated_delta_kernel_impl(
             state_shape,
         );
     }
+    if gated_delta_prefill_tile_512_seq_eligible(seq)
+        && fastpath::qwen_gated_delta_prefill_tile_512_enabled()
+    {
+        return gated_delta_prefill_tiled(
+            q,
+            k,
+            v,
+            a_log,
+            a_raw,
+            dt_bias,
+            b_raw,
+            state,
+            GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32,
+        );
+    }
+    if seq > GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32 {
+        return gated_delta_prefill_tiled(
+            q,
+            k,
+            v,
+            a_log,
+            a_raw,
+            dt_bias,
+            b_raw,
+            state,
+            GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32,
+        );
+    }
     let seq_i32 = scalar_i32(seq);
     assert!(
         seq <= GATED_DELTA_THREADGROUP_CACHE_CAPACITY as i32,
         "gated_delta_kernel t_len ({seq}) exceeds threadgroup cache capacity ({GATED_DELTA_THREADGROUP_CACHE_CAPACITY})"
     );
     // Three-tier CacheCapacity. The 2048 tier loses ~15% per-token vs 512 on
-    // Qwen 3.6 27B (Hv=48); production clamps linear prefill chunks to 1024.
+    // Qwen 3.6 27B (Hv=48); seq>1024 tiles at 1024 instead of this branch.
     let cache_capacity = if seq <= GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32 {
         GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32
     } else if seq <= GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32 {
@@ -547,6 +719,27 @@ fn gated_delta_kernel_impl(
             true,
         )
     });
+    if let Some(compiled) = try_compiled_gated_delta_oneshot(
+        q,
+        k,
+        v,
+        a_log,
+        a_raw,
+        dt_bias,
+        b_raw,
+        state,
+        &seq_i32,
+        batch,
+        seq,
+        num_key_heads,
+        key_head_dim,
+        num_value_heads,
+        value_head_dim,
+        cache_capacity,
+        &state_shape,
+    ) {
+        return compiled;
+    }
     let outputs = kernel.apply_with_template(
         &[q, k, v, a_log, a_raw, dt_bias, b_raw, state, &seq_i32],
         &[
@@ -599,6 +792,121 @@ fn gated_delta_kernel_impl(
         outputs.next().expect("gated delta y output"),
         outputs.next().expect("gated delta state output"),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_compiled_gated_delta_oneshot(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    state: &MlxArray,
+    seq_i32: &MlxArray,
+    batch: i32,
+    seq: i32,
+    num_key_heads: i32,
+    key_head_dim: i32,
+    num_value_heads: i32,
+    value_head_dim: i32,
+    cache_capacity: i32,
+    state_shape: &[i32],
+) -> Option<(MlxArray, MlxArray)> {
+    if !fastpath::should_qwen_compiled_gated_delta_prefill(seq) {
+        return None;
+    }
+    let kernel = GATED_DELTA_KERNEL.get()?;
+    let q_dtype = q.dtype();
+    let state_dtype = state.dtype();
+    let y_shape = vec![batch, seq, num_value_heads, value_head_dim];
+    let state_shape = state_shape.to_vec();
+    let key = (
+        seq,
+        key_head_dim,
+        value_head_dim,
+        num_key_heads,
+        num_value_heads,
+        cache_capacity,
+        std::thread::current().id(),
+    );
+    let cache = GATED_DELTA_PREFILL_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().ok()?;
+    if !guard.contains_key(&key) {
+        let y_shape_c = y_shape.clone();
+        let state_shape_c = state_shape.clone();
+        let body = move |inputs: &MlxVectorArray| {
+            let q = inputs.get(0);
+            let k = inputs.get(1);
+            let v = inputs.get(2);
+            let a_log = inputs.get(3);
+            let a_raw = inputs.get(4);
+            let dt_bias = inputs.get(5);
+            let b_raw = inputs.get(6);
+            let state = inputs.get(7);
+            let seq_len = inputs.get(8);
+            kernel.apply_with_template(
+                &[
+                    &q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state, &seq_len,
+                ],
+                &[
+                    KernelOutputSpec {
+                        shape: y_shape_c.clone(),
+                        dtype: q_dtype,
+                    },
+                    KernelOutputSpec {
+                        shape: state_shape_c.clone(),
+                        dtype: state_dtype,
+                    },
+                ],
+                &[
+                    KernelTemplateArg::Dtype {
+                        name: "InT",
+                        dtype: q_dtype,
+                    },
+                    KernelTemplateArg::Dtype {
+                        name: "StT",
+                        dtype: state_dtype,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Dk",
+                        value: key_head_dim,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Dv",
+                        value: value_head_dim,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Hk",
+                        value: num_key_heads,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "Hv",
+                        value: num_value_heads,
+                    },
+                    KernelTemplateArg::Int {
+                        name: "CacheCapacity",
+                        value: cache_capacity,
+                    },
+                ],
+                (32, value_head_dim, batch * num_value_heads),
+                (32, 4, 1),
+                None,
+            )
+        };
+        let compiled = MlxClosure::new_dyn(body).compile(false).ok();
+        guard.insert(key, compiled);
+    }
+    let closure = guard.get(&key)?.as_ref()?;
+    let outputs = closure
+        .try_apply(&[q, k, v, a_log, a_raw, dt_bias, b_raw, state, seq_i32])
+        .ok()?;
+    if outputs.len() != 2 {
+        return None;
+    }
+    let mut outputs = outputs.into_iter();
+    Some((outputs.next()?, outputs.next()?))
 }
 
 /// Multi-token GatedDelta prefill without a CacheCapacity-sized TG cache.
@@ -1641,6 +1949,8 @@ mod tests {
 
     #[test]
     fn gated_delta_kernel_accepts_medium_prefill_specialization() {
+        // seq=1024 is the production p2048 chunk. Default-ON tile-512 splits
+        // this into two 512 TG kernels; this test drives that shipped path.
         let seq = (GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY) as i32;
         let q = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
         let k = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
@@ -1657,6 +1967,75 @@ mod tests {
 
         assert_eq!(y.shape(), vec![1, seq, 1, 4]);
         assert_eq!(new_state.shape(), vec![1, 1, 4, 32]);
+    }
+
+    #[test]
+    fn linear_attention_prefill_chunk_cap_follows_streaming() {
+        assert_eq!(
+            linear_attention_prefill_chunk_cap(true),
+            GATED_DELTA_THREADGROUP_CACHE_CAPACITY
+        );
+        // Default-OFF after the ~899 vs 908.5 wash: non-streaming cap is 1024.
+        assert_eq!(
+            linear_attention_prefill_chunk_cap(false),
+            GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY
+        );
+    }
+
+    #[test]
+    fn gated_delta_prefill_tile_512_is_seq_gated() {
+        assert!(!gated_delta_prefill_tile_512_seq_eligible(1));
+        assert!(!gated_delta_prefill_tile_512_seq_eligible(
+            GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32
+        ));
+        assert!(gated_delta_prefill_tile_512_seq_eligible(
+            GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32 + 1
+        ));
+        assert!(gated_delta_prefill_tile_512_seq_eligible(
+            GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32
+        ));
+    }
+
+    #[test]
+    fn gated_delta_prefill_tiled_matches_oneshot_short_seq() {
+        const SEQ: usize = 16;
+        const TILE: i32 = 8;
+        const KEY_HEAD_DIM: usize = 32;
+        const VALUE_HEAD_DIM: usize = 4;
+        let q_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data: Vec<f32> = (0..SEQ * VALUE_HEAD_DIM)
+            .map(|idx| ((idx % 3) as f32 - 1.0) * 0.04)
+            .collect();
+        let a_log_data = vec![-0.2];
+        let a_raw_data: Vec<f32> = (0..SEQ).map(|i| (i as f32) * 0.01 - 0.05).collect();
+        let dt_bias_data = vec![0.05];
+        let b_raw_data: Vec<f32> = (0..SEQ).map(|i| (i as f32) * 0.02 - 0.1).collect();
+        let state_data: Vec<f32> = (0..VALUE_HEAD_DIM * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+            .collect();
+        let q = f32_array(&q_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let k = f32_array(&k_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let v = f32_array(&v_data, &[1, SEQ as i32, 1, VALUE_HEAD_DIM as i32]);
+        let a_log = f32_array(&a_log_data, &[1]);
+        let a_raw = f32_array(&a_raw_data, &[1, SEQ as i32, 1]);
+        let dt_bias = f32_array(&dt_bias_data, &[1]);
+        let b_raw = f32_array(&b_raw_data, &[1, SEQ as i32, 1]);
+        let state = f32_array(
+            &state_data,
+            &[1, 1, VALUE_HEAD_DIM as i32, KEY_HEAD_DIM as i32],
+        );
+        let (want_y, want_state) =
+            gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+        let (got_y, got_state) =
+            gated_delta_prefill_tiled(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state, TILE);
+        mlx_sys::eval(&[&got_y, &got_state, &want_y, &want_state]);
+        assert_close("y", got_y.data_f32(), &want_y.data_f32(), 1e-5);
+        assert_close("state", got_state.data_f32(), &want_state.data_f32(), 1e-5);
     }
 
     #[test]
@@ -1959,6 +2338,86 @@ mod tests {
                 1e-6,
             );
         }
+    }
+
+    #[test]
+    fn prefill_post_input_metal_matches_portable_seq8_cold_start() {
+        // p2048 first chunk has no cached conv state. Metal must match
+        // portable conv1d cold start at a multi-token prefill shape.
+        let (q_scale, k_scale) = linear_attention_qk_scale(32);
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 2,
+            num_key_heads: 1,
+            key_head_dim: 32,
+            value_head_dim: 32,
+            conv_kernel_dim: 4,
+            q_scale,
+            k_scale,
+        };
+        let conv_dim = cfg.conv_dim();
+        let seq = 8_i32;
+        let qkv_data: Vec<f32> = (0..seq as usize * conv_dim)
+            .map(|idx| ((idx % 17) as f32 - 8.0) * 0.01)
+            .collect();
+        let weight_data: Vec<f32> = (0..conv_dim * cfg.conv_kernel_dim)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.02)
+            .collect();
+        let qkv = f32_array(&qkv_data, &[1, seq, conv_dim as i32]);
+        let weight = f32_array(
+            &weight_data,
+            &[conv_dim as i32, cfg.conv_kernel_dim as i32, 1],
+        );
+        let (conv_out, portable_state) = linear_attention_conv1d(&cfg, &qkv, &weight, None);
+        let split = split_linear_attention_qkv(&cfg, &conv_out);
+        let (portable_q, portable_k) =
+            normalize_linear_attention_qk(&cfg, &split.q, &split.k, 1e-6);
+        let (metal_q, metal_k, metal_v, metal_state) = linear_attention_decode_post_input_metal(
+            &cfg, &qkv, &weight, None, q_scale, k_scale, 1e-6,
+        )
+        .expect("prefill post-input Metal path should accept seq=8 cold start");
+        let portable_q = mlx_sys::contiguous(&portable_q, None);
+        let portable_k = mlx_sys::contiguous(&portable_k, None);
+        let portable_v = mlx_sys::contiguous(&split.v, None);
+        let portable_state = mlx_sys::contiguous(&portable_state, None);
+        let metal_q = mlx_sys::contiguous(&metal_q, None);
+        let metal_k = mlx_sys::contiguous(&metal_k, None);
+        let metal_v = mlx_sys::contiguous(&metal_v, None);
+        let metal_state = mlx_sys::contiguous(&metal_state, None);
+        mlx_sys::eval(&[
+            &portable_q,
+            &portable_k,
+            &portable_v,
+            &portable_state,
+            &metal_q,
+            &metal_k,
+            &metal_v,
+            &metal_state,
+        ]);
+        assert_close(
+            "prefill_post_input_q",
+            metal_q.data_f32(),
+            portable_q.data_f32(),
+            2e-5,
+        );
+        assert_close(
+            "prefill_post_input_k",
+            metal_k.data_f32(),
+            portable_k.data_f32(),
+            2e-5,
+        );
+        assert_close(
+            "prefill_post_input_v",
+            metal_v.data_f32(),
+            portable_v.data_f32(),
+            2e-5,
+        );
+        assert_close(
+            "prefill_post_input_state",
+            metal_state.data_f32(),
+            portable_state.data_f32(),
+            1e-6,
+        );
     }
 
     #[test]

@@ -35,8 +35,9 @@ pub use architecture::{
     ArchitectureSpec, AttentionKind, CacheKind, FfnKind, LayerSpec, StructuralCapabilities,
 };
 pub use architecture_registry::{
-    ARCHITECTURE_REGISTRY, ArchitectureRegistration, LayerForwardRoute,
-    default_generation_for_family, lookup_architecture, resolve_layer_forward_route,
+    ARCHITECTURE_REGISTRY, ArchitectureRegistration, FamilyDescriptor, LayerForwardRoute,
+    MlxRunnerAdmission, default_generation_for_family, is_primary_mlx_runner_family,
+    lookup_architecture, mlx_runner_admission_for_family, resolve_layer_forward_route,
 };
 pub use distributed::{
     ActivationDtype, ActivationFrame, ActivationFrameHeader, PIPELINE_WIRE_VERSION,

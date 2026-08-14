@@ -1,17 +1,23 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, async_eval,
-    compiled_dual_gate_up_qmm, compiled_gelu_approx_split_mlp, concatenate, contiguous, divide,
-    dual_affine_qmm, dual_qmm_geglu, exp, expand_dims, expand_dims_axes, gelu_approx_mul,
-    gelu_approx_mul_quantized_matmul, log1p, maximum, minimum, multiply, negative, power,
-    quantized_matmul_rms_norm, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul, slice,
-    slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
+    compiled_dual_gate_up_qmm, compiled_dual_gate_up_qmm_forced, compiled_gelu_approx_split_mlp,
+    concatenate, contiguous, divide, dual_affine_qmm, dual_qmm_geglu, dual_qmm_swiglu, exp,
+    expand_dims, expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, log1p,
+    maximum, minimum, multiply, negative, power, quantized_matmul_rms_norm,
+    quantized_matmul_with_mode, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul,
+    silu_mul_quantized_matmul, slice, slice_last_dim, softmax, softmax_precise, sum_axis, take,
+    take_along_axis, topk_axis, zeros,
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::fastpath;
-use crate::per_layer_compile::{apply_layer_dense_ffn_decode, apply_layer_dense_ffn_prefill};
+use crate::per_layer_compile::{
+    apply_layer_dense_ffn_decode, apply_layer_dense_ffn_prefill, apply_layer_dense_ffn_prefill_min,
+};
 use crate::weights::{LayerWeights, QuantizedWeight};
 
 use super::super::config::{GlmRouterConfig, ModelConfig};
@@ -262,7 +268,7 @@ fn qkv_project_inner(
             && projection_policy == ProjectionBatchPolicy::Shared
             && !fastpath::qwen_linear_mtp_exact_enabled()
             && !fastpath::moe_mt_bf16_identity_enabled()
-            && fastpath::attn_norm_qkv_fuse_enabled()
+            && fastpath::should_attn_norm_qkv_fuse(&cfg.model_family)
             && let Some(scales) = packed.scales.as_ref()
         {
             rms_norm_quantized_matmul(
@@ -708,7 +714,9 @@ static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA_DUAL_GATE_UP_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -951,6 +959,115 @@ const GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE: &str = r#"
     }
 "#;
 
+/// Qwen prefill 4-bit dual gate/up + SwiGLU using simdgroup_matrix 8×8 MMA.
+/// Distinct from the scalar Gemma dual GEMM (8.5× reject) and from host-FFI
+/// `dual_qmm_swiglu` (875 vs 891). Each TG is one simdgroup owning an
+/// 8-token × 8-output tile.
+const QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL_SOURCE: &str = r#"
+    constexpr uint Tile = 8;
+    uint token0 = threadgroup_position_in_grid.x * Tile;
+    uint row0 = threadgroup_position_in_grid.y * Tile;
+    uint lane = thread_index_in_simdgroup;
+    if (token0 >= (uint)Leading || row0 >= (uint)OutDim) {
+        return;
+    }
+    const uint input_dim = (uint)PackedCols * (uint)PackFactor;
+    const bool partial =
+        token0 + Tile > (uint)Leading || row0 + Tile > (uint)OutDim;
+
+    if (partial) {
+        uint ntok = min(Tile, (uint)Leading - token0);
+        uint nrows = min(Tile, (uint)OutDim - row0);
+        for (uint t = lane; t < ntok; t += 32) {
+            for (uint r = 0; r < nrows; ++r) {
+                float gate_acc = 0.0f;
+                float up_acc = 0.0f;
+                uint tok = token0 + t;
+                uint row = row0 + r;
+                for (uint col = 0; col < input_dim; ++col) {
+                    uint packed_col = col / (uint)PackFactor;
+                    uint packed_lane = col % (uint)PackFactor;
+                    uint shift = packed_lane * (uint)Bits;
+                    uint group = col / (uint)GroupSize;
+                    uint scale_idx = row * (uint)GroupCount + group;
+                    uint gq = (gate_weight[row * (uint)PackedCols + packed_col] >> shift)
+                        & (uint)QuantMask;
+                    uint uq = (up_weight[row * (uint)PackedCols + packed_col] >> shift)
+                        & (uint)QuantMask;
+                    float xv = static_cast<float>(x[tok * input_dim + col]);
+                    gate_acc = fma(
+                        xv,
+                        static_cast<float>(gq) * static_cast<float>(gate_scales[scale_idx])
+                            + static_cast<float>(gate_biases[scale_idx]),
+                        gate_acc);
+                    up_acc = fma(
+                        xv,
+                        static_cast<float>(uq) * static_cast<float>(up_scales[scale_idx])
+                            + static_cast<float>(up_biases[scale_idx]),
+                        up_acc);
+                }
+                float sigmoid = 1.0f / (1.0f + exp(-gate_acc));
+                out[tok * (uint)OutDim + row] =
+                    static_cast<OutT>((gate_acc * sigmoid) * up_acc);
+            }
+        }
+        return;
+    }
+
+    threadgroup float x_tg[Tile * Tile];
+    threadgroup float gw_tg[Tile * Tile];
+    threadgroup float uw_tg[Tile * Tile];
+    simdgroup_matrix<float, 8, 8> gate_acc;
+    simdgroup_matrix<float, 8, 8> up_acc;
+    gate_acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    up_acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    for (uint k0 = 0; k0 < input_dim; k0 += Tile) {
+        for (uint i = lane; i < Tile * Tile; i += 32) {
+            uint t = i / Tile;
+            uint kk = i % Tile;
+            uint row = row0 + t;
+            uint col = k0 + kk;
+            uint packed_col = col / (uint)PackFactor;
+            uint packed_lane = col % (uint)PackFactor;
+            uint shift = packed_lane * (uint)Bits;
+            uint group = col / (uint)GroupSize;
+            uint scale_idx = row * (uint)GroupCount + group;
+            uint gq = (gate_weight[row * (uint)PackedCols + packed_col] >> shift)
+                & (uint)QuantMask;
+            uint uq = (up_weight[row * (uint)PackedCols + packed_col] >> shift)
+                & (uint)QuantMask;
+            x_tg[i] = static_cast<float>(x[(token0 + t) * input_dim + col]);
+            gw_tg[i] = static_cast<float>(gq) * static_cast<float>(gate_scales[scale_idx])
+                + static_cast<float>(gate_biases[scale_idx]);
+            uw_tg[i] = static_cast<float>(uq) * static_cast<float>(up_scales[scale_idx])
+                + static_cast<float>(up_biases[scale_idx]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_matrix<float, 8, 8> x_tile;
+        simdgroup_matrix<float, 8, 8> gw_tile;
+        simdgroup_matrix<float, 8, 8> uw_tile;
+        simdgroup_load(x_tile, x_tg, Tile, ulong2(0, 0), false);
+        simdgroup_load(gw_tile, gw_tg, Tile, ulong2(0, 0), true);
+        simdgroup_load(uw_tile, uw_tg, Tile, ulong2(0, 0), true);
+        simdgroup_multiply_accumulate(gate_acc, x_tile, gw_tile, gate_acc);
+        simdgroup_multiply_accumulate(up_acc, x_tile, uw_tile, up_acc);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    threadgroup float gate_out_tg[Tile * Tile];
+    threadgroup float up_out_tg[Tile * Tile];
+    simdgroup_store(gate_acc, gate_out_tg, Tile, ulong2(0, 0));
+    simdgroup_store(up_acc, up_out_tg, Tile, ulong2(0, 0));
+    for (uint i = lane; i < Tile * Tile; i += 32) {
+        uint t = i / Tile;
+        uint r = i % Tile;
+        float g = gate_out_tg[i];
+        float u = up_out_tg[i];
+        float sigmoid = 1.0f / (1.0f + exp(-g));
+        out[(token0 + t) * (uint)OutDim + (row0 + r)] =
+            static_cast<OutT>((g * sigmoid) * u);
+    }
+"#;
+
 /// Single-matrix affine-4bit decode matvec (FFN down_proj).
 /// v1d: 256 threads per output row (same layout as gate/up).
 const QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE: &str = r#"
@@ -993,6 +1110,49 @@ const QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE: &str = r#"
             total += partials[i];
         }
         out[row] = static_cast<OutT>(total);
+    }
+"#;
+
+const QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL_SOURCE: &str = r#"
+    uint flat = thread_position_in_grid.x;
+    uint row = flat / 256;
+    uint tid = flat % 256;
+    uint lane = tid % 32;
+    uint sg = tid / 32;
+    if (row >= OutDim) {
+        return;
+    }
+
+    float acc = 0.0f;
+    const uint row_base = row * PackedCols;
+    const uint scale_row = row * GroupCount;
+
+    for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
+        uint packed = weight[row_base + packed_col];
+        for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
+            uint input_col = packed_col * PackFactor + packed_lane;
+            uint q = (packed >> (packed_lane * Bits)) & QuantMask;
+            uint group = input_col / GroupSize;
+            uint scale_idx = scale_row + group;
+            float x_v = static_cast<float>(x[input_col]);
+            float scale = static_cast<float>(scales[scale_idx]);
+            float bias = static_cast<float>(biases[scale_idx]);
+            acc = fma(x_v, static_cast<float>(q) * scale + bias, acc);
+        }
+    }
+
+    float sum = simd_sum(acc);
+    threadgroup float partials[8];
+    if (lane == 0) {
+        partials[sg] = sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float total = 0.0f;
+        for (uint i = 0; i < 8; ++i) {
+            total += partials[i];
+        }
+        out[row] = static_cast<OutT>(total + static_cast<float>(residual[row]));
     }
 "#;
 
@@ -1561,6 +1721,168 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
     outputs.pop()
 }
 
+/// Multi-token Qwen 4-bit dual gate/up + SwiGLU via simdgroup_matrix MMA.
+/// Flag is call-site only so tests can drive the body after a wash flip.
+fn qwen_prefill_dual_qmm_swiglu_metal(
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Option<MlxArray> {
+    if !matches!(
+        x.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let x_shape = x.shape();
+    let input_dim = *x_shape.last()?;
+    if input_dim <= 0 {
+        return None;
+    }
+    let leading_elements = x_shape[..x_shape.len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    if leading_elements <= 1 || leading_elements > 2048 {
+        return None;
+    }
+    let leading = i32::try_from(leading_elements).ok()?;
+    let (Some(gate_scales), Some(gate_biases), Some(up_scales), Some(up_biases)) = (
+        gate.scales.as_ref(),
+        gate.biases.as_ref(),
+        up.scales.as_ref(),
+        up.biases.as_ref(),
+    ) else {
+        return None;
+    };
+    if gate.bits != 4
+        || up.bits != 4
+        || gate.group_size != up.group_size
+        || (gate.group_size != 32 && gate.group_size != 64)
+        || gate.group_size <= 0
+    {
+        return None;
+    }
+    let gate_weight_shape = gate.weight.shape();
+    let up_weight_shape = up.weight.shape();
+    if gate_weight_shape.len() != 2 || gate_weight_shape != up_weight_shape {
+        return None;
+    }
+    let out_dim = gate_weight_shape[0];
+    let packed_cols = gate_weight_shape[1];
+    if out_dim <= 0 || packed_cols <= 0 {
+        return None;
+    }
+    let pack_factor = 32 / gate.bits;
+    if packed_cols.checked_mul(pack_factor)? != input_dim {
+        return None;
+    }
+    if input_dim % gate.group_size != 0 {
+        return None;
+    }
+    let group_count = input_dim / gate.group_size;
+    let expected = vec![out_dim, group_count];
+    if gate_scales.shape() != expected
+        || gate_biases.shape() != expected
+        || up_scales.shape() != expected
+        || up_biases.shape() != expected
+    {
+        return None;
+    }
+    let x_flat = if x_shape.len() == 2 && x_shape[0] == leading {
+        x.clone()
+    } else {
+        reshape(x, &[leading, input_dim], None)
+    };
+    let quant_mask = (1_i32 << gate.bits) - 1;
+    let kernel = QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen_prefill_dual_qmm_swiglu_sg_v1",
+            &[
+                "x",
+                "gate_weight",
+                "gate_scales",
+                "gate_biases",
+                "up_weight",
+                "up_scales",
+                "up_biases",
+            ],
+            &["out"],
+            QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let token_tiles = (leading + 7) / 8;
+    let row_tiles = (out_dim + 7) / 8;
+    let grid_x = token_tiles.checked_mul(32)?;
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[
+                &x_flat,
+                &gate.weight,
+                gate_scales,
+                gate_biases,
+                &up.weight,
+                up_scales,
+                up_biases,
+            ],
+            &[KernelOutputSpec {
+                shape: vec![leading, out_dim],
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "Leading",
+                    value: leading,
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackedCols",
+                    value: packed_cols,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupSize",
+                    value: gate.group_size,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupCount",
+                    value: group_count,
+                },
+                KernelTemplateArg::Int {
+                    name: "Bits",
+                    value: gate.bits,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackFactor",
+                    value: pack_factor,
+                },
+                KernelTemplateArg::Int {
+                    name: "QuantMask",
+                    value: quant_mask,
+                },
+            ],
+            (grid_x, row_tiles, 1),
+            (32, 1, 1),
+            None,
+        )
+        .ok()?;
+    let flat_out = outputs.pop()?;
+    if x_shape.len() == 2 && x_shape[0] == leading {
+        Some(flat_out)
+    } else {
+        let mut restored = x_shape;
+        *restored.last_mut()? = out_dim;
+        Some(reshape(&flat_out, &restored, None))
+    }
+}
+
 /// Multi-token Gemma dual gate/up affine Metal + fused GEGLU product.
 ///
 /// Profile residual: pure Gemma prefill is dominated by two multi-token qmm
@@ -1749,7 +2071,13 @@ fn gemma_dense_ffn_dual_gate_up_geglu_metal(
 }
 
 /// Decode-only affine-4bit matvec for FFN down_proj (intermediate → hidden).
-fn qwen_dense_ffn_down_matvec_metal_impl(x: &MlxArray, down: &QuantizedWeight) -> Option<MlxArray> {
+/// When `residual` is `Some`, the kernel writes `residual + down(x)` so the
+/// caller can skip a separate add on the Qwen decode residual.
+fn qwen_dense_ffn_down_matvec_metal_impl(
+    x: &MlxArray,
+    down: &QuantizedWeight,
+    residual: Option<&MlxArray>,
+) -> Option<MlxArray> {
     if !matches!(
         x.dtype(),
         MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
@@ -1795,22 +2123,48 @@ fn qwen_dense_ffn_down_matvec_metal_impl(x: &MlxArray, down: &QuantizedWeight) -
         return None;
     }
 
+    if let Some(residual) = residual {
+        if residual.dtype() != x.dtype() || residual.shape().last().copied() != Some(out_dim) {
+            return None;
+        }
+        let residual_leading = residual.shape()[..residual.shape().len().saturating_sub(1)]
+            .iter()
+            .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+        if residual_leading != 1 {
+            return None;
+        }
+    }
     let mut out_shape = x_shape;
     *out_shape.last_mut()? = out_dim;
     let quant_mask = (1_i32 << down.bits) - 1;
-    let kernel = QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL.get_or_init(|| {
-        MlxMetalKernel::new(
-            "ax_qwen_dense_ffn_down_matvec_simd_v1d",
-            &["x", "weight", "scales", "biases"],
-            &["out"],
-            QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE,
-            "",
-            true,
-        )
-    });
+    let (kernel, inputs): (&MlxMetalKernel, Vec<&MlxArray>) = if let Some(residual) = residual {
+        let kernel = QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL.get_or_init(|| {
+            MlxMetalKernel::new(
+                "ax_qwen_dense_ffn_down_residual_v1",
+                &["x", "weight", "scales", "biases", "residual"],
+                &["out"],
+                QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL_SOURCE,
+                "",
+                true,
+            )
+        });
+        (kernel, vec![x, &down.weight, scales, biases, residual])
+    } else {
+        let kernel = QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL.get_or_init(|| {
+            MlxMetalKernel::new(
+                "ax_qwen_dense_ffn_down_matvec_simd_v1d",
+                &["x", "weight", "scales", "biases"],
+                &["out"],
+                QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE,
+                "",
+                true,
+            )
+        });
+        (kernel, vec![x, &down.weight, scales, biases])
+    };
     let mut outputs = kernel
         .try_apply_with_template(
-            &[x, &down.weight, scales, biases],
+            &inputs,
             &[KernelOutputSpec {
                 shape: out_shape,
                 dtype: x.dtype(),
@@ -2226,6 +2580,37 @@ pub(crate) fn ffn_swiglu(
     )
 }
 
+/// Decode FFN plus residual: `residual + swiglu_ffn(x)`.
+///
+/// On the Qwen metal down path this is one kernel write instead of
+/// `down` then `add`. Other routes fall back to `add(residual, ffn_swiglu(...))`.
+pub(crate) fn ffn_swiglu_plus_residual(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    post_norm: Option<&MlxArray>,
+    layer_idx: usize,
+    residual: &MlxArray,
+) -> MlxArray {
+    let seq = x.shape().get(1).copied().unwrap_or(1);
+    if seq == 1
+        && let (Some(gate), Some(up), Some(down)) = (
+            w.gate_proj.as_ref(),
+            w.up_proj.as_ref(),
+            w.down_proj.as_ref(),
+        )
+        && let Some(ffn_hidden) = qwen_dense_ffn_gate_up_swiglu_metal(cfg, x, gate, up)
+        && let Some(fused) =
+            qwen_dense_ffn_down_matvec_metal_impl(&ffn_hidden, down, Some(residual))
+    {
+        return match post_norm {
+            Some(norm_w) => rms_norm(&fused, Some(norm_w), cfg.rms_norm_eps, None),
+            None => fused,
+        };
+    }
+    add(residual, &ffn_swiglu(cfg, w, x, post_norm, layer_idx), None)
+}
+
 pub(crate) fn ffn_swiglu_batched(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -2244,7 +2629,36 @@ fn ffn_swiglu_with_policy(
     layer_idx: usize,
     projection_policy: ProjectionBatchPolicy,
 ) -> MlxArray {
-    let seq = x.shape().get(1).copied().unwrap_or(1);
+    let shape = x.shape();
+    let seq = shape.get(1).copied().unwrap_or(1);
+    if fastpath::should_qwen_prefill_flat_ffn(&cfg.model_family, seq, shape.len()) {
+        let (flat, orig) = flatten_qwen_prefill_ffn_activation(x);
+        let out =
+            ffn_swiglu_with_policy_inner(cfg, w, &flat, post_norm, layer_idx, projection_policy);
+        return restore_qwen_prefill_ffn_activation(&out, orig);
+    }
+    if fastpath::should_qwen_prefill_contiguous_ffn(&cfg.model_family, seq, shape.len()) {
+        let x = contiguous(x, None);
+        return ffn_swiglu_with_policy_inner(cfg, w, &x, post_norm, layer_idx, projection_policy);
+    }
+    ffn_swiglu_with_policy_inner(cfg, w, x, post_norm, layer_idx, projection_policy)
+}
+
+fn ffn_swiglu_with_policy_inner(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    post_norm: Option<&MlxArray>,
+    layer_idx: usize,
+    projection_policy: ProjectionBatchPolicy,
+) -> MlxArray {
+    // 3-D `[B,S,H]` uses S. Flattened prefill `[B*S,H]` uses the leading
+    // token count so Metal/compile gates do not see hidden_size as seq.
+    let seq = if x.shape().len() == 2 {
+        x.shape()[0]
+    } else {
+        x.shape().get(1).copied().unwrap_or(1)
+    };
     let leading_elements = x.shape()[..x.shape().len().saturating_sub(1)]
         .iter()
         .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))
@@ -2343,7 +2757,7 @@ fn ffn_swiglu_with_policy(
             apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
         } else if seq > 1
             && leading_elements >= fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
-            && dense_ffn_prefill_compile_supported(&cfg.model_family)
+            && dense_ffn_prefill_compile_supported(&cfg.model_family, leading_elements)
             && compile_ok_for_quant
             && fastpath::dense_ffn_compile_prefill_enabled()
         {
@@ -2628,6 +3042,133 @@ fn ffn_swiglu_with_policy(
             );
             return out;
         }
+        // Qwen prefill 4-bit dual gate/up + SwiGLU Metal (simdgroup MMA).
+        // Host-FFI dual_qmm_swiglu stays OFF (875 vs 891).
+        if qwen_dense_ffn
+            && seq > 1
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && fastpath::qwen_prefill_dual_qmm_swiglu_metal_enabled()
+            && let Some(ffn_hidden) = qwen_prefill_dual_qmm_swiglu_metal(x, gate_w, up_w)
+        {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                gate_up_started,
+                &[&ffn_hidden],
+            );
+            let activation_started = Instant::now();
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnActivation,
+                activation_started,
+                &[&ffn_hidden],
+            );
+            let down_started = Instant::now();
+            let down = w
+                .down_proj
+                .as_ref()
+                .expect("dense FFN layer must have down_proj");
+            if let Some(norm_w) = post_norm {
+                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    down_started,
+                    &[&out],
+                );
+                return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+            }
+            let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                down_started,
+                &[&out],
+            );
+            return out;
+        }
+        // Qwen multi-token dual affine qmm + SwiGLU in one C++ call (no
+        // compile, no down fuse, no dual-stream). Targets p2048 gate_up
+        // 837ms + activation 54ms. Gemma stays on dual_qmm_geglu (OFF).
+        if qwen_dense_ffn
+            && seq > 1
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && fastpath::qwen_dual_qmm_swiglu_enabled()
+            && let Some(ffn_hidden) = qwen_dual_qmm_swiglu(x, gate_w, up_w)
+        {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                gate_up_started,
+                &[&ffn_hidden],
+            );
+            let activation_started = Instant::now();
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnActivation,
+                activation_started,
+                &[&ffn_hidden],
+            );
+            let down_started = Instant::now();
+            let down = w
+                .down_proj
+                .as_ref()
+                .expect("dense FFN layer must have down_proj");
+            if let Some(norm_w) = post_norm {
+                if projection_policy == ProjectionBatchPolicy::Shared
+                    && fastpath::dense_qmatmul_rms_norm_enabled()
+                    && let Some(scales) = down.scales.as_ref()
+                {
+                    let out = quantized_matmul_rms_norm(
+                        &ffn_hidden,
+                        &down.weight,
+                        scales,
+                        down.biases.as_ref(),
+                        down.group_size,
+                        down.bits,
+                        norm_w,
+                        cfg.rms_norm_eps,
+                        None,
+                    );
+                    forward_profile_eval_elapsed(
+                        profile_decode,
+                        profile_prefill,
+                        DecodeProfileStage::PostAttnFfnDown,
+                        down_started,
+                        &[&out],
+                    );
+                    return out;
+                }
+                let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    down_started,
+                    &[&out],
+                );
+                return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+            }
+            let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                down_started,
+                &[&out],
+            );
+            return out;
+        }
         // Multi-token Gemma dual gate/up Metal + fused GEGLU (opt-in only:
         // pure-wall A/B on mbp-m5 measured ~8.5× regression vs MLX dual qmm).
         if cfg.uses_geglu
@@ -2731,7 +3272,7 @@ fn ffn_swiglu_with_policy(
             // full FFN stays on the custom 4-bit matvec kernels (gate/up/down).
             // Measured ~111.3 pure tok/s on M5 Max Qwen3.5-9B vs ~110.7 when
             // post-norm fusion shadowed the custom down path.
-            if let Some(down_out) = qwen_dense_ffn_down_matvec_metal_impl(&ffn_hidden, down) {
+            if let Some(down_out) = qwen_dense_ffn_down_matvec_metal_impl(&ffn_hidden, down, None) {
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
@@ -2834,6 +3375,30 @@ fn ffn_swiglu_with_policy(
                 return result;
             }
         }
+        // Qwen split **prefill** compile (seq>1): same graph as decode compile
+        // (gate + up + SwiGLU + down), shape-specific so qmm stays on the
+        // multi-token kernel. Packed Qwen prefill compile stays forbidden.
+        if qwen_dense_ffn
+            && seq > 1
+            && leading_elements >= fastpath::QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && fastpath::qwen_split_ffn_prefill_compile_enabled()
+            && let Some(ffn_out) = qwen_compiled_split_prefill_ffn(
+                cfg.compile_cache_identity,
+                layer_idx,
+                x,
+                gate_w,
+                up_w,
+                w.down_proj.as_ref(),
+                post_norm,
+                cfg.rms_norm_eps,
+                projection_policy,
+            )
+        {
+            return ffn_out;
+        }
         // mlxcel residual: `compiled_gelu_approx_mlp_forward` for split affine
         // qGELU MLP. gs64/bits=4 + single-token: shapeless compile (#680).
         // Multi-token non-4bit (flip Gemma MLP bits=8): shape-specific compile
@@ -2887,7 +3452,16 @@ fn ffn_swiglu_with_policy(
         // wall. Prefer (in order): shape-compiled dual qmm, single-FFI dual
         // affine qmm (Metal GEGLU kept), portable two-qw. Compile and dual-FFI
         // are opt-in env kill-switches (default OFF after pure rejects).
-        if cfg.uses_geglu
+        // Qwen split prefill uses the *forced* compile (Gemma env stays OFF).
+        if qwen_dense_ffn
+            && seq > 1
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && let Some((gate, up)) = qwen_compiled_split_prefill_gate_up(x, gate_w, up_w)
+        {
+            (gate, up)
+        } else if cfg.uses_geglu
             && seq > 1
             && !profile_decode
             && !profile_prefill
@@ -2962,10 +3536,16 @@ fn ffn_swiglu_with_policy(
     // Multi-token split GEGLU→down fuse (C++ gelu_approx_mul + down qmm).
     // Profile residual after dual gate_up qmm: activation + down (~2.5s force-eval).
     // Opt-in: AX_MLX_DENSE_GEGLU_DOWN_FUSE=1.
-    let down = w
+    let down_src = w
         .down_proj
         .as_ref()
         .expect("dense FFN layer must have down_proj");
+    let down_q2 = if qwen_dense_ffn && fastpath::should_qwen_prefill_q2_down(seq) {
+        cached_prefill_q2_down(cfg.compile_cache_identity, layer_idx, down_src)
+    } else {
+        None
+    };
+    let down = down_q2.as_ref().unwrap_or(down_src);
     if cfg.uses_geglu
         && seq > 1
         && !profile_decode
@@ -3005,6 +3585,28 @@ fn ffn_swiglu_with_policy(
             None => fused,
         };
     }
+    // Qwen SwiGLU→down fuse. Same residual as Gemma GEGLU fuse (activation +
+    // down after split gate/up). Gemma env stays OFF.
+    if qwen_dense_ffn
+        && seq > 1
+        && !profile_decode
+        && !profile_prefill
+        && projection_policy == ProjectionBatchPolicy::Shared
+        && fastpath::qwen_swiglu_down_fuse_enabled()
+        && let Some(fused) = qwen_swiglu_down_fuse(&gate_out, &up_out, down)
+    {
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnActivation,
+            Instant::now(),
+            &[&fused],
+        );
+        return match post_norm {
+            Some(norm_w) => rms_norm(&fused, Some(norm_w), cfg.rms_norm_eps, None),
+            None => fused,
+        };
+    }
 
     // Gemma4 uses GEGLU with fast-approx GELU gate (matches mlx_lm's `nn.gelu_approx`).
     // Qwen3 uses SwiGLU (SiLU gate).
@@ -3022,6 +3624,49 @@ fn ffn_swiglu_with_policy(
         &[&ffn_hidden],
     );
     let down_started = Instant::now();
+    // Standalone down GEMM: flatten [B,S,I] → [B*S,I] so MLX picks the 2-D
+    // qmm kernel. Does not fuse silu+down (that path remasured 876 vs 891).
+    if qwen_dense_ffn
+        && seq > 1
+        && !profile_decode
+        && !profile_prefill
+        && projection_policy == ProjectionBatchPolicy::Shared
+        && fastpath::qwen_prefill_down_compile_enabled()
+        && let Some(out) =
+            qwen_compiled_prefill_down_qmm(cfg.compile_cache_identity, layer_idx, &ffn_hidden, down)
+    {
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnDown,
+            down_started,
+            &[&out],
+        );
+        return match post_norm {
+            Some(norm_w) => rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None),
+            None => out,
+        };
+    }
+    if qwen_dense_ffn
+        && seq > 1
+        && !profile_decode
+        && !profile_prefill
+        && projection_policy == ProjectionBatchPolicy::Shared
+        && fastpath::qwen_prefill_flat_down_qmm_enabled()
+        && let Some(out) = qwen_prefill_flat_down_qmm(&ffn_hidden, down)
+    {
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnDown,
+            down_started,
+            &[&out],
+        );
+        return match post_norm {
+            Some(norm_w) => rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None),
+            None => out,
+        };
+    }
     if let Some(norm_w) = post_norm {
         if !profile_decode
             && !profile_prefill
@@ -3070,6 +3715,274 @@ fn ffn_swiglu_with_policy(
     out
 }
 
+/// Shape-compiled dual affine qmm for Qwen split **prefill** (seq>1).
+/// Gemma stays on env-gated [`compiled_dual_gate_up_qmm`] (default OFF).
+fn qwen_compiled_split_prefill_gate_up(
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Option<(MlxArray, MlxArray)> {
+    if !fastpath::qwen_compiled_dual_gate_up_enabled() {
+        return None;
+    }
+    let x_shape = x.shape();
+    if x_shape.len() < 2 || x_shape[x_shape.len() - 2] <= 1 {
+        return None;
+    }
+    let (g_s, u_s) = (gate.scales.as_ref()?, up.scales.as_ref()?);
+    let (g_b, u_b) = (gate.biases.as_ref()?, up.biases.as_ref()?);
+    if gate.group_size <= 0
+        || gate.bits <= 0
+        || up.group_size != gate.group_size
+        || up.bits != gate.bits
+    {
+        return None;
+    }
+    compiled_dual_gate_up_qmm_forced(
+        x,
+        &gate.weight,
+        g_s,
+        g_b,
+        &up.weight,
+        u_s,
+        u_b,
+        gate.group_size,
+        gate.bits,
+        None,
+    )
+}
+
+/// Shape-compiled Qwen split FFN for **prefill** (gate + up + SwiGLU + down).
+/// Packed Qwen prefill compile stays forbidden; this is the unused split
+/// `mx.compile` analog for contract shapes (leading ≥ 128).
+fn qwen_compiled_split_prefill_ffn(
+    model_identity: u64,
+    layer_idx: usize,
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+    down: Option<&QuantizedWeight>,
+    post_norm: Option<&MlxArray>,
+    rms_norm_eps: f32,
+    projection_policy: ProjectionBatchPolicy,
+) -> Option<MlxArray> {
+    let x_shape = x.shape();
+    if x_shape.len() < 2 || x_shape[x_shape.len() - 2] <= 1 {
+        return None;
+    }
+    let leading_elements: i64 = x_shape
+        .iter()
+        .rev()
+        .skip(1)
+        .map(|d| i64::from(*d))
+        .product();
+    if leading_elements < fastpath::QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING {
+        return None;
+    }
+    let down = down?;
+    if gate.scales.is_none() || up.scales.is_none() || down.scales.is_none() {
+        return None;
+    }
+    let (inputs, schema) = flatten_split_dense_ffn_inputs(x, gate, up, down, post_norm)?;
+    let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+    let body = move |inputs: &MlxVectorArray| {
+        let x = inputs.get(0);
+        let (gate_qw, up_qw, down_qw, post_norm_w) = schema.rebuild(inputs);
+        let gate = qw_with_policy(&x, &gate_qw, projection_policy);
+        let up = qw_with_policy(&x, &up_qw, projection_policy);
+        let hidden = silu_mul(&gate, &up, None);
+        let out = qw_with_policy(&hidden, &down_qw, projection_policy);
+        if let Some(norm_w) = post_norm_w {
+            vec![rms_norm(&out, Some(&norm_w), rms_norm_eps, None)]
+        } else {
+            vec![out]
+        }
+    };
+    apply_layer_dense_ffn_prefill_min(
+        model_identity,
+        layer_idx,
+        leading_elements,
+        fastpath::QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING,
+        &input_refs,
+        body,
+    )
+    .and_then(|r| r.into_iter().next())
+}
+
+/// Shape-compile only the Qwen split-prefill **down** qmm.
+/// Full split FFN compile and flat-down stay OFF.
+fn qwen_compiled_prefill_down_qmm(
+    model_identity: u64,
+    layer_idx: usize,
+    hidden: &MlxArray,
+    down: &QuantizedWeight,
+) -> Option<MlxArray> {
+    let shape = hidden.shape();
+    if shape.len() < 2 || shape[shape.len() - 2] <= 1 {
+        return None;
+    }
+    let leading: i64 = shape[..shape.len() - 1]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    if !fastpath::should_qwen_prefill_down_compile(shape[shape.len() - 2], leading) {
+        return None;
+    }
+    let scales = down.scales.as_ref()?;
+    let biases = down.biases.as_ref()?;
+    if down.group_size <= 0 || down.bits <= 0 {
+        return None;
+    }
+    let inputs = [hidden, &down.weight, scales, biases];
+    let group_size = down.group_size;
+    let bits = down.bits;
+    let mode = down.mlx_quantization_mode();
+    let body = move |inputs: &MlxVectorArray| {
+        let x = inputs.get(0);
+        let weight = inputs.get(1);
+        let scales = inputs.get(2);
+        let biases = inputs.get(3);
+        vec![quantized_matmul_with_mode(
+            &x,
+            &weight,
+            &scales,
+            Some(&biases),
+            true,
+            Some(group_size),
+            Some(bits),
+            mode,
+            None,
+        )]
+    };
+    apply_layer_dense_ffn_prefill_min(
+        model_identity,
+        layer_idx ^ 0xD0_00_00,
+        leading,
+        fastpath::QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING,
+        &inputs,
+        body,
+    )
+    .and_then(|r| r.into_iter().next())
+}
+
+/// Flatten leading dims and run the down affine qmm as a 2-D matmul.
+/// Flag is call-site only so tests can drive the body after a wash flip.
+/// Flatten `[B,S,H] → [B*S,H]` for Qwen prefill FFN qmm. Shipped by
+/// [`ffn_swiglu_with_policy`] when [`fastpath::should_qwen_prefill_flat_ffn`].
+pub(crate) fn flatten_qwen_prefill_ffn_activation(x: &MlxArray) -> (MlxArray, [i32; 3]) {
+    let shape = x.shape();
+    let batch = shape[0];
+    let seq = shape[1];
+    let hidden = shape[2];
+    (
+        reshape(x, &[batch * seq, hidden], None),
+        [batch, seq, hidden],
+    )
+}
+
+/// Restore `[B*S,H'] → [B,S,H']` after a flattened Qwen prefill FFN.
+pub(crate) fn restore_qwen_prefill_ffn_activation(out: &MlxArray, orig: [i32; 3]) -> MlxArray {
+    let out_last = out.shape().last().copied().unwrap_or(orig[2]);
+    reshape(out, &[orig[0], orig[1], out_last], None)
+}
+
+thread_local! {
+    static PREFILL_Q2_DOWN: RefCell<HashMap<(u64, usize), QuantizedWeight>> =
+        RefCell::new(HashMap::new());
+}
+
+fn cached_prefill_q2_down(
+    model_identity: u64,
+    layer_idx: usize,
+    src: &QuantizedWeight,
+) -> Option<QuantizedWeight> {
+    let key = (model_identity, layer_idx);
+    PREFILL_Q2_DOWN.with(|slot| {
+        if let Some(existing) = slot.borrow().get(&key) {
+            return Some(existing.clone());
+        }
+        let made = crate::weights::requant_affine_to_prefill_q2(src)?;
+        slot.borrow_mut().insert(key, made.clone());
+        Some(made)
+    })
+}
+
+fn qwen_prefill_flat_down_qmm(hidden: &MlxArray, down: &QuantizedWeight) -> Option<MlxArray> {
+    let shape = hidden.shape();
+    if shape.len() < 2 {
+        return None;
+    }
+    let last = *shape.last()?;
+    if last <= 0 || shape[shape.len() - 2] <= 1 {
+        return None;
+    }
+    if down.scales.is_none() || down.group_size <= 0 || down.bits <= 0 {
+        return None;
+    }
+    let leading: i64 = shape[..shape.len() - 1]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    if leading <= 1 {
+        return None;
+    }
+    let flat = reshape(hidden, &[leading as i32, last], None);
+    let out = qw(&flat, down);
+    let mut out_shape = shape;
+    *out_shape.last_mut()? = *out.shape().last()?;
+    Some(reshape(&out, &out_shape, None))
+}
+
+/// One C++ call: `silu(qmm(x,gate)) * qmm(x,up)` for Qwen split prefill.
+/// Flag is call-site only so tests can drive the body after a wash flip.
+fn qwen_dual_qmm_swiglu(
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Option<MlxArray> {
+    let (g_s, u_s) = (gate.scales.as_ref()?, up.scales.as_ref()?);
+    let (g_b, u_b) = (gate.biases.as_ref()?, up.biases.as_ref()?);
+    if gate.group_size <= 0
+        || gate.bits <= 0
+        || up.group_size != gate.group_size
+        || up.bits != gate.bits
+    {
+        return None;
+    }
+    dual_qmm_swiglu(
+        x,
+        &gate.weight,
+        g_s,
+        g_b,
+        &up.weight,
+        u_s,
+        u_b,
+        gate.group_size,
+        gate.bits,
+        None,
+    )
+}
+
+/// Fuse `silu(gate)*up` into the down affine qmm for Qwen split prefill.
+fn qwen_swiglu_down_fuse(
+    gate: &MlxArray,
+    up: &MlxArray,
+    down: &QuantizedWeight,
+) -> Option<MlxArray> {
+    let scales = down.scales.as_ref()?;
+    if down.group_size <= 0 || down.bits <= 0 {
+        return None;
+    }
+    silu_mul_quantized_matmul(
+        gate,
+        up,
+        &down.weight,
+        scales,
+        down.biases.as_ref(),
+        down.group_size,
+        down.bits,
+        None,
+    )
+}
+
 fn prefer_split_dense_ffn_gate_up(
     model_family: &str,
     qwen_dense_ffn: bool,
@@ -3111,8 +4024,11 @@ fn gemma4_split_prefill_ffn_enabled() -> bool {
     })
 }
 
-fn dense_ffn_prefill_compile_supported(model_family: &str) -> bool {
-    !model_family.starts_with("qwen")
+fn dense_ffn_prefill_compile_supported(model_family: &str, leading_elements: i64) -> bool {
+    if model_family.starts_with("qwen") {
+        return fastpath::should_qwen_packed_ffn_prefill_compile(model_family, leading_elements);
+    }
+    true
 }
 
 pub(crate) fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
@@ -4249,6 +5165,10 @@ impl QuantInputSlot {
             bits: self.bits,
             mode: Self::mode_str(self.mode_tag).to_string(),
             linear_bias: self.linear_bias.map(|i| inputs.get(i)),
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         }
     }
 }
@@ -5373,14 +6293,713 @@ pub(crate) fn switch_gather_inputs(
 mod tests {
     use super::*;
     use mlx_sys::{
-        MlxQuantizationMode, concatenate, eval, quantize, quantized_matmul, slice_last_dim,
+        MlxQuantizationMode, add, concatenate, eval, quantize, quantized_matmul, slice,
+        slice_last_dim,
     };
 
     #[test]
-    fn dense_ffn_prefill_compile_keeps_qwen_imperative() {
-        assert!(!dense_ffn_prefill_compile_supported("qwen3_5"));
-        assert!(!dense_ffn_prefill_compile_supported("qwen3_next"));
-        assert!(dense_ffn_prefill_compile_supported("gemma4"));
+    fn dense_ffn_prefill_compile_keeps_qwen_imperative_by_default() {
+        assert!(!dense_ffn_prefill_compile_supported("qwen3_5", 512));
+        assert!(!dense_ffn_prefill_compile_supported("qwen3_next", 128));
+        assert!(dense_ffn_prefill_compile_supported("gemma4", 512));
+        assert!(
+            !dense_ffn_prefill_compile_supported("qwen3_5", 1024),
+            "Qwen packed prefill compile stays opt-in after community 3d wash"
+        );
+        assert!(fastpath::should_qwen_packed_ffn_prefill_compile_for(
+            true, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_compiled_split_prefill_gate_up_stays_opt_in_after_wash() {
+        let x = array_f32(&vec![0.1; 128], &[1, 2, 64]);
+        let w = QuantizedWeight {
+            weight: array_f32(&vec![0.0; 64], &[1, 64]),
+            scales: Some(array_f32(&[1.0], &[1])),
+            biases: Some(array_f32(&[0.0], &[1])),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        assert!(
+            qwen_compiled_split_prefill_gate_up(&x, &w, &w).is_none(),
+            "dual-qmm compile must stay default-OFF after the 890.96 vs 891 wash"
+        );
+    }
+
+    #[test]
+    fn qwen_compiled_split_prefill_ffn_matches_two_qmm_4bit_gs32() {
+        // Contract p128 leading=128. AXQ language FFN is 4-bit gs32.
+        let x_data: Vec<f32> = (0..128 * 64)
+            .map(|i| ((i as f32) - 4096.0) * 0.000244140625)
+            .collect();
+        let gate_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0005)
+            .collect();
+        let up_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 512.0) * -0.0004)
+            .collect();
+        let down_data: Vec<f32> = (0..64 * 32)
+            .map(|i| ((i as f32) - 768.0) * 0.0003)
+            .collect();
+        let x = array_f32(&x_data, &[1, 128, 64]);
+        let gate_w = array_f32(&gate_data, &[32, 64]);
+        let up_w = array_f32(&up_data, &[32, 64]);
+        let down_w = array_f32(&down_data, &[64, 32]);
+        let gq = quantize(
+            &gate_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let uq = quantize(
+            &up_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(gq.len(), 3);
+        assert_eq!(uq.len(), 3);
+        assert_eq!(dq.len(), 3);
+        let qweight = |q: &[MlxArray]| QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let gate = qweight(&gq);
+        let up = qweight(&uq);
+        let down = qweight(&dq);
+        let compiled = qwen_compiled_split_prefill_ffn(
+            0x5157_454e_5052_4546,
+            0,
+            &x,
+            &gate,
+            &up,
+            Some(&down),
+            None,
+            1e-6,
+            ProjectionBatchPolicy::Shared,
+        )
+        .expect("Qwen 4-bit gs32 split FFN prefill compile should engage at leading=128");
+        let p_gate = quantized_matmul(
+            &x,
+            &gq[0],
+            &gq[1],
+            Some(&gq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let p_up = quantized_matmul(
+            &x,
+            &uq[0],
+            &uq[1],
+            Some(&uq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let hidden = silu_mul(&p_gate, &p_up, None);
+        let portable = quantized_matmul(
+            &hidden,
+            &dq[0],
+            &dq[1],
+            Some(&dq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&compiled, &portable]);
+        assert_eq!(compiled.shape(), portable.shape());
+        assert_close(compiled.data_f32(), portable.data_f32(), 3.0e-2);
+        let decode = array_f32(&x_data[..64], &[1, 1, 64]);
+        assert!(
+            qwen_compiled_split_prefill_ffn(
+                0x5157_454e_5052_4546,
+                0,
+                &decode,
+                &gate,
+                &up,
+                Some(&down),
+                None,
+                1e-6,
+                ProjectionBatchPolicy::Shared,
+            )
+            .is_none(),
+            "split FFN prefill compile must reject decode seq==1"
+        );
+    }
+
+    #[test]
+    fn qwen_compiled_prefill_down_qmm_matches_qw_4bit_gs32() {
+        let hidden_data: Vec<f32> = (0..128 * 32)
+            .map(|i| ((i as f32) - 2048.0) * 0.00048828125)
+            .collect();
+        let down_data: Vec<f32> = (0..64 * 32)
+            .map(|i| ((i as f32) - 768.0) * 0.0003)
+            .collect();
+        let hidden = array_f32(&hidden_data, &[1, 128, 32]);
+        let down_w = array_f32(&down_data, &[64, 32]);
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let compiled = qwen_compiled_prefill_down_qmm(0x444F_574E_5052_4546, 3, &hidden, &down)
+            .expect("down-only prefill compile should engage at leading=128");
+        let portable = qw(&hidden, &down);
+        eval(&[&compiled, &portable]);
+        assert_eq!(compiled.shape(), portable.shape());
+        assert_close(compiled.data_f32(), portable.data_f32(), 3.0e-2);
+        let decode = array_f32(&hidden_data[..32], &[1, 1, 32]);
+        assert!(
+            qwen_compiled_prefill_down_qmm(0x444F_574E_5052_4546, 3, &decode, &down).is_none(),
+            "down-only prefill compile must reject decode seq==1"
+        );
+    }
+
+    #[test]
+    fn cached_prefill_q2_down_requants_4bit_and_qws() {
+        let hidden_data: Vec<f32> = (0..32 * 32)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let down_data: Vec<f32> = (0..64 * 32)
+            .map(|i| ((i as f32) - 768.0) * 0.0003)
+            .collect();
+        let hidden = array_f32(&hidden_data, &[1, 32, 32]);
+        let down_w = array_f32(&down_data, &[64, 32]);
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let q2 = cached_prefill_q2_down(0x5132_444F_574E, 7, &down)
+            .expect("4-bit gs32 down must grow a 2-bit overlay");
+        assert_eq!(q2.bits, crate::weights::PREFILL_LA_Q2_BITS);
+        assert_eq!(q2.group_size, crate::weights::PREFILL_LA_Q2_GROUP_SIZE);
+        let again = cached_prefill_q2_down(0x5132_444F_574E, 7, &down)
+            .expect("second lookup must hit the overlay cache");
+        assert_eq!(again.bits, q2.bits);
+        let out = qw(&hidden, &q2);
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 32, 64]);
+        assert!(
+            out.data_f32().iter().all(|v| v.is_finite()),
+            "2-bit down qmm must produce finite values"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_q2_down_for(true, 1024),
+            "shipped down q2 gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_dual_qmm_swiglu_metal_matches_two_qmm_silu_mul_4bit_gs32() {
+        let x_data: Vec<f32> = (0..8 * 64)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let gate_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0005)
+            .collect();
+        let up_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 512.0) * -0.0004)
+            .collect();
+        let x = array_f32(&x_data, &[1, 8, 64]);
+        let gate_w = array_f32(&gate_data, &[32, 64]);
+        let up_w = array_f32(&up_data, &[32, 64]);
+        let gq = quantize(
+            &gate_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let uq = quantize(
+            &up_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(gq.len(), 3);
+        assert_eq!(uq.len(), 3);
+        let qweight = |q: &[MlxArray]| QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let gate = qweight(&gq);
+        let up = qweight(&uq);
+        let metal = qwen_prefill_dual_qmm_swiglu_metal(&x, &gate, &up)
+            .expect("Qwen 4-bit gs32 prefill dual qmm Metal should engage");
+        let p_gate = quantized_matmul(
+            &x,
+            &gq[0],
+            &gq[1],
+            Some(&gq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let p_up = quantized_matmul(
+            &x,
+            &uq[0],
+            &uq[1],
+            Some(&uq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let portable = silu_mul(&p_gate, &p_up, None);
+        eval(&[&metal, &portable]);
+        assert_eq!(metal.shape(), portable.shape());
+        assert_close(metal.data_f32(), portable.data_f32(), 5.0e-2);
+        let decode = array_f32(&x_data[..64], &[1, 1, 64]);
+        assert!(
+            qwen_prefill_dual_qmm_swiglu_metal(&decode, &gate, &up).is_none(),
+            "prefill dual qmm Metal must reject decode seq==1"
+        );
+    }
+
+    #[test]
+    fn qwen_attn_norm_qkv_fuse_matches_rms_then_qw_4bit_gs32() {
+        // Shipped Qwen full-attn fuse: rms_norm_quantized_matmul vs rms + qw.
+        let x_data: Vec<f32> = (0..8 * 64)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let w_data: Vec<f32> = (0..96 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0004)
+            .collect();
+        let x = array_f32(&x_data, &[1, 8, 64]);
+        let weight = array_f32(&w_data, &[96, 64]);
+        let qw_q = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let norm_w = array_f32(&vec![1.0f32; 64], &[64]);
+        let fused = rms_norm_quantized_matmul(
+            &x,
+            &norm_w,
+            1e-6,
+            &qw_q[0],
+            &qw_q[1],
+            Some(&qw_q[2]),
+            32,
+            4,
+            None,
+        );
+        let normed = rms_norm(&x, Some(&norm_w), 1e-6, None);
+        let portable = quantized_matmul(
+            &normed,
+            &qw_q[0],
+            &qw_q[1],
+            Some(&qw_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        assert_close(fused.data_f32(), portable.data_f32(), 3.0e-2);
+        assert!(fastpath::should_attn_norm_qkv_fuse_for(
+            true, false, "qwen3_5"
+        ));
+        assert!(!fastpath::should_attn_norm_qkv_fuse_for(
+            true, false, "gemma4"
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_contiguous_ffn_qw_matches_view_4bit_gs32() {
+        // Shipped path: contiguous([B,S,H]) then qw must match qw on the view.
+        let full: Vec<f32> = (0..16 * 64)
+            .map(|i| ((i as f32) - 512.0) * 0.0009765625)
+            .collect();
+        let down_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0004)
+            .collect();
+        let wide = array_f32(&full, &[1, 16, 64]);
+        let view = slice(&wide, &[0, 4, 0], &[1, 12, 64], &[1, 1, 1], None);
+        assert_eq!(view.shape(), vec![1, 8, 64]);
+        let down_w = array_f32(&down_data, &[32, 64]);
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let packed = qw(&contiguous(&view, None), &down);
+        let portable = qw(&view, &down);
+        eval(&[&packed, &portable]);
+        assert_eq!(packed.shape(), portable.shape());
+        assert_close(packed.data_f32(), portable.data_f32(), 3.0e-2);
+        assert!(fastpath::should_qwen_prefill_contiguous_ffn_for(
+            true, "qwen3_5", 8, 3
+        ));
+        assert!(!fastpath::should_qwen_prefill_contiguous_ffn_for(
+            true, "qwen3_5", 1, 3
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_flat_ffn_activation_qw_matches_3d_4bit_gs32() {
+        // Drives the shipped flatten/restore used by ffn_swiglu_with_policy
+        // so gate/up/down qmm see [B*S,H] but the layer output stays [B,S,H'].
+        let hidden_data: Vec<f32> = (0..8 * 64)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let down_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0004)
+            .collect();
+        let hidden = array_f32(&hidden_data, &[1, 8, 64]);
+        let down_w = array_f32(&down_data, &[32, 64]);
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let (flat, orig) = flatten_qwen_prefill_ffn_activation(&hidden);
+        assert_eq!(flat.shape(), vec![8, 64]);
+        assert_eq!(orig, [1, 8, 64]);
+        let flat_out = restore_qwen_prefill_ffn_activation(&qw(&flat, &down), orig);
+        let portable = qw(&hidden, &down);
+        eval(&[&flat_out, &portable]);
+        assert_eq!(flat_out.shape(), portable.shape());
+        assert_eq!(flat_out.shape(), vec![1, 8, 32]);
+        assert_close(flat_out.data_f32(), portable.data_f32(), 3.0e-2);
+        assert!(!fastpath::should_qwen_prefill_flat_ffn_for(
+            true, "qwen3_5", 1, 3
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_flat_down_qmm_matches_3d_qw_4bit_gs32() {
+        let hidden_data: Vec<f32> = (0..8 * 64)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let down_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0004)
+            .collect();
+        let hidden = array_f32(&hidden_data, &[1, 8, 64]);
+        let down_w = array_f32(&down_data, &[32, 64]);
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(dq.len(), 3);
+        let down = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let flat = qwen_prefill_flat_down_qmm(&hidden, &down)
+            .expect("Qwen 4-bit gs32 flat down qmm should engage");
+        let portable = qw(&hidden, &down);
+        eval(&[&flat, &portable]);
+        assert_eq!(flat.shape(), portable.shape());
+        assert_eq!(flat.shape(), vec![1, 8, 32]);
+        assert_close(flat.data_f32(), portable.data_f32(), 3.0e-2);
+        let decode = array_f32(&hidden_data[..64], &[1, 1, 64]);
+        assert!(
+            qwen_prefill_flat_down_qmm(&decode, &down).is_none(),
+            "flat down qmm must reject decode seq==1"
+        );
+    }
+
+    #[test]
+    fn qwen_dual_qmm_swiglu_matches_two_qmm_silu_mul_4bit_gs32() {
+        // AXQ language FFN is 4-bit gs32. Drive the C++ body directly so a
+        // later wash flip of the call-site flag does not skip this test.
+        let x_data: Vec<f32> = (0..8 * 64)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let gate_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0005)
+            .collect();
+        let up_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 512.0) * -0.0004)
+            .collect();
+        let x = array_f32(&x_data, &[1, 8, 64]);
+        let gate_w = array_f32(&gate_data, &[32, 64]);
+        let up_w = array_f32(&up_data, &[32, 64]);
+        let gq = quantize(
+            &gate_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let uq = quantize(
+            &up_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(gq.len(), 3);
+        assert_eq!(uq.len(), 3);
+        let qweight = |q: &[MlxArray]| QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let gate = qweight(&gq);
+        let up = qweight(&uq);
+        let fused = qwen_dual_qmm_swiglu(&x, &gate, &up)
+            .expect("Qwen 4-bit gs32 dual qmm + SwiGLU should engage");
+        let p_gate = quantized_matmul(
+            &x,
+            &gq[0],
+            &gq[1],
+            Some(&gq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let p_up = quantized_matmul(
+            &x,
+            &uq[0],
+            &uq[1],
+            Some(&uq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let portable = silu_mul(&p_gate, &p_up, None);
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        assert_close(fused.data_f32(), portable.data_f32(), 3.0e-2);
+        let mut bad_gate = gate.clone();
+        bad_gate.group_size = 0;
+        assert!(
+            qwen_dual_qmm_swiglu(&x, &bad_gate, &up).is_none(),
+            "dual qmm + SwiGLU must reject group_size<=0"
+        );
+    }
+
+    #[test]
+    fn qwen_swiglu_down_fuse_matches_silu_mul_then_qmm_4bit_gs32() {
+        let gate_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
+        let up_data: Vec<f32> = (0..512).map(|i| ((i as f32) + 1.0) * 0.0078125).collect();
+        let down_data: Vec<f32> = (0..2048).map(|i| ((i as f32) - 1024.0) * 0.0004).collect();
+        let gate = array_f32(&gate_data, &[1, 8, 64]);
+        let up = array_f32(&up_data, &[1, 8, 64]);
+        let down_w = array_f32(&down_data, &[32, 64]);
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(dq.len(), 3);
+        let down = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let fused =
+            qwen_swiglu_down_fuse(&gate, &up, &down).expect("Qwen SwiGLU+down fuse should engage");
+        let hidden = silu_mul(&gate, &up, None);
+        let portable = quantized_matmul(
+            &hidden,
+            &dq[0],
+            &dq[1],
+            Some(&dq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        assert_close(fused.data_f32(), portable.data_f32(), 3.0e-2);
+    }
+
+    #[test]
+    fn qwen_la_out_proj_silu_mul_qmm_matches_rms_silu_then_qw_4bit_gs32() {
+        // Shipped LA output fuse: rms_norm(hidden) then silu(z)*normed @ out_proj.
+        let hidden_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
+        let gate_data: Vec<f32> = (0..512).map(|i| ((i as f32) + 1.0) * 0.0078125).collect();
+        let proj_data: Vec<f32> = (0..2048).map(|i| ((i as f32) - 1024.0) * 0.0004).collect();
+        let hidden = array_f32(&hidden_data, &[1, 8, 64]);
+        let gate = array_f32(&gate_data, &[1, 8, 64]);
+        let proj_w = array_f32(&proj_data, &[32, 64]);
+        let pq = quantize(
+            &proj_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let norm_w = array_f32(&vec![1.0f32; 64], &[64]);
+        let normed = rms_norm(&hidden, Some(&norm_w), 1e-6, None);
+        let fused =
+            silu_mul_quantized_matmul(&gate, &normed, &pq[0], &pq[1], Some(&pq[2]), 32, 4, None)
+                .expect("LA out_proj silu_mul qmm should engage on 4-bit gs32");
+        let gated = silu_mul(&gate, &normed, None);
+        let portable = quantized_matmul(
+            &gated,
+            &pq[0],
+            &pq[1],
+            Some(&pq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        assert_close(fused.data_f32(), portable.data_f32(), 3.0e-2);
+        assert!(fastpath::should_qwen_la_out_proj_silu_mul_qmm_for(
+            true, "qwen3_5", 8
+        ));
+        assert!(!fastpath::should_qwen_la_out_proj_silu_mul_qmm_for(
+            true, "qwen3_5", 1
+        ));
     }
 
     #[test]
@@ -5656,6 +7275,10 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         };
         let up = QuantizedWeight {
             weight: up_q[0].clone(),
@@ -5665,6 +7288,10 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         };
 
         let metal = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up)
@@ -5708,6 +7335,10 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         };
         let batched = mlx_sys::zeros(&[2, 1, 32], MlxDtype::Float32, None);
         let prefill = mlx_sys::zeros(&[1, 2, 32], MlxDtype::Float32, None);
@@ -5768,9 +7399,13 @@ mod tests {
             bits: 4,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         };
 
-        let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down)
+        let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
             .expect("4-bit affine down matvec should be eligible");
         let reference =
             quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(32), Some(4), None);
@@ -5779,6 +7414,47 @@ mod tests {
 
         assert_eq!(metal.shape(), vec![1, 1, 16]);
         assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
+    }
+
+    #[test]
+    fn qwen_dense_ffn_down_residual_metal_matches_add() {
+        let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.015625).collect();
+        let weight_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 400.0) * 0.00125).collect();
+        let residual_data: Vec<f32> = (0..16).map(|i| (i as f32) * 0.25 - 2.0).collect();
+        let x = array_f32(&x_data, &[1, 1, 64]);
+        let residual = array_f32(&residual_data, &[1, 1, 16]);
+        let weight = array_f32(&weight_data, &[16, 64]);
+        let q = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down = QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+
+        let fused = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, Some(&residual))
+            .expect("residual down matvec should be eligible");
+        let split = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
+            .expect("plain down matvec should be eligible");
+        let reference = add(&residual, &split, None);
+        mlx_sys::transforms::try_eval(&[&fused, &reference])
+            .expect("residual down Metal kernel must compile and evaluate");
+        assert_eq!(fused.shape(), vec![1, 1, 16]);
+        assert_close(fused.data_f32(), reference.data_f32(), 1.0e-4);
     }
 
     #[test]
@@ -6162,6 +7838,10 @@ mod tests {
             bits: 32,
             mode: "affine".to_string(),
             linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         };
 
         // Capture a *clone* of the weight into the closure body. Per

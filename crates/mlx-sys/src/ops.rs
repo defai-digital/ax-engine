@@ -45,6 +45,18 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    fn ax_mlx_silu_mul_quantized_matmul(
+        res: *mut ffi::mlx_array,
+        gate: ffi::mlx_array,
+        x: ffi::mlx_array,
+        weight: ffi::mlx_array,
+        scales: ffi::mlx_array,
+        biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_gelu_approx_quantized_ffn(
         res: *mut ffi::mlx_array,
         x: ffi::mlx_array,
@@ -78,6 +90,20 @@ unsafe extern "C" {
     ) -> libc::c_int;
 
     /// Profile-backed: shape-specific compile of multi-token gate+up qmm only.
+    fn ax_mlx_dual_qmm_swiglu(
+        res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        gate_weight: ffi::mlx_array,
+        gate_scales: ffi::mlx_array,
+        gate_biases: ffi::mlx_array,
+        up_weight: ffi::mlx_array,
+        up_scales: ffi::mlx_array,
+        up_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_dual_qmm_geglu(
         res: *mut ffi::mlx_array,
         x: ffi::mlx_array,
@@ -108,6 +134,21 @@ unsafe extern "C" {
     ) -> libc::c_int;
 
     fn ax_mlx_compiled_dual_gate_up_qmm(
+        gate_res: *mut ffi::mlx_array,
+        up_res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        gate_weight: ffi::mlx_array,
+        gate_scales: ffi::mlx_array,
+        gate_biases: ffi::mlx_array,
+        up_weight: ffi::mlx_array,
+        up_scales: ffi::mlx_array,
+        up_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
+    fn ax_mlx_compiled_dual_gate_up_qmm_forced(
         gate_res: *mut ffi::mlx_array,
         up_res: *mut ffi::mlx_array,
         x: ffi::mlx_array,
@@ -324,10 +365,54 @@ unsafe extern "C" {
         value_head_dim: libc::c_int,
         group_size: libc::c_int,
         bits: libc::c_int,
+        ba_group_size: libc::c_int,
+        ba_bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
+    fn ax_mlx_qwen_linear_attention_inputs_packed_compiled(
+        qkv_res: *mut ffi::mlx_array,
+        z_res: *mut ffi::mlx_array,
+        a_res: *mut ffi::mlx_array,
+        b_res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        qkvz_weight: ffi::mlx_array,
+        qkvz_scales: ffi::mlx_array,
+        qkvz_biases: ffi::mlx_array,
+        ba_weight: ffi::mlx_array,
+        ba_scales: ffi::mlx_array,
+        ba_biases: ffi::mlx_array,
+        num_key_heads: libc::c_int,
+        num_value_heads: libc::c_int,
+        key_head_dim: libc::c_int,
+        value_head_dim: libc::c_int,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        ba_group_size: libc::c_int,
+        ba_bits: libc::c_int,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
     fn ax_mlx_qwen_linear_attention_post_input(
+        q_res: *mut ffi::mlx_array,
+        k_res: *mut ffi::mlx_array,
+        v_res: *mut ffi::mlx_array,
+        new_conv_state_res: *mut ffi::mlx_array,
+        qkv: ffi::mlx_array,
+        conv_weight: ffi::mlx_array,
+        cached_conv_state: ffi::mlx_array,
+        num_key_heads: libc::c_int,
+        key_head_dim: libc::c_int,
+        num_value_heads: libc::c_int,
+        value_head_dim: libc::c_int,
+        conv_kernel_dim: libc::c_int,
+        q_scale: libc::c_float,
+        k_scale: libc::c_float,
+        rms_norm_eps: libc::c_float,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
+    fn ax_mlx_qwen_linear_attention_post_input_compiled(
         q_res: *mut ffi::mlx_array,
         k_res: *mut ffi::mlx_array,
         v_res: *mut ffi::mlx_array,
@@ -641,6 +726,43 @@ pub fn gelu_approx_mul_quantized_matmul(
     )
 }
 
+/// Compute `quantized_matmul(silu(gate) * x, weight, ...)` in one C++ call.
+/// Qwen SwiGLU analog of [`gelu_approx_mul_quantized_matmul`].
+#[allow(clippy::too_many_arguments)]
+pub fn silu_mul_quantized_matmul(
+    gate: &MlxArray,
+    x: &MlxArray,
+    weight: &MlxArray,
+    scales: &MlxArray,
+    biases: Option<&MlxArray>,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<MlxArray> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let biases = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_silu_mul_quantized_matmul(
+            &mut res.inner,
+            gate.inner,
+            x.inner,
+            weight.inner,
+            scales.inner,
+            biases,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some(res);
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
 /// Compute a packed dense GEGLU FFN block through AX's direct MLX C++ shim.
 ///
 /// The expression is:
@@ -676,6 +798,47 @@ pub fn dual_qmm_geglu(
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
         let rc = ax_mlx_dual_qmm_geglu(
+            &mut res.inner,
+            x.inner,
+            gate_weight.inner,
+            gate_scales.inner,
+            gate_biases.inner,
+            up_weight.inner,
+            up_scales.inner,
+            up_biases.inner,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some(res);
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
+/// Dual affine qmm + SwiGLU in one C++ call: `silu(qmm(x,gate)) * qmm(x,up)`.
+/// Qwen analog of [`dual_qmm_geglu`]. No `mx::compile`, no down fuse, no
+/// dual-stream.
+#[allow(clippy::too_many_arguments)]
+pub fn dual_qmm_swiglu(
+    x: &MlxArray,
+    gate_weight: &MlxArray,
+    gate_scales: &MlxArray,
+    gate_biases: &MlxArray,
+    up_weight: &MlxArray,
+    up_scales: &MlxArray,
+    up_biases: &MlxArray,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<MlxArray> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_dual_qmm_swiglu(
             &mut res.inner,
             x.inner,
             gate_weight.inner,
@@ -765,6 +928,50 @@ pub fn compiled_dual_gate_up_qmm(
         let mut gate = MlxArray::empty();
         let mut up = MlxArray::empty();
         let rc = ax_mlx_compiled_dual_gate_up_qmm(
+            &mut gate.inner,
+            &mut up.inner,
+            x.inner,
+            gate_weight.inner,
+            gate_scales.inner,
+            gate_biases.inner,
+            up_weight.inner,
+            up_scales.inner,
+            up_biases.inner,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some((gate, up));
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
+/// Same compile as [`compiled_dual_gate_up_qmm`] but skips the Gemma
+/// `AX_MLX_COMPILED_DUAL_GATE_UP` kill-switch. Qwen split prefill uses this
+/// so two 4-bit affine qmms share one shape-specific `mx::compile` without
+/// flipping Gemma (default-OFF after the 13.8k +2.1% wall reject).
+#[allow(clippy::too_many_arguments)]
+pub fn compiled_dual_gate_up_qmm_forced(
+    x: &MlxArray,
+    gate_weight: &MlxArray,
+    gate_scales: &MlxArray,
+    gate_biases: &MlxArray,
+    up_weight: &MlxArray,
+    up_scales: &MlxArray,
+    up_biases: &MlxArray,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<(MlxArray, MlxArray)> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut gate = MlxArray::empty();
+        let mut up = MlxArray::empty();
+        let rc = ax_mlx_compiled_dual_gate_up_qmm_forced(
             &mut gate.inner,
             &mut up.inner,
             x.inner,
@@ -1114,6 +1321,8 @@ pub fn qwen_linear_attention_inputs_packed(
     value_head_dim: i32,
     group_size: i32,
     bits: i32,
+    ba_group_size: i32,
+    ba_bits: i32,
     s: Option<&MlxStream>,
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
     unsafe {
@@ -1148,6 +1357,69 @@ pub fn qwen_linear_attention_inputs_packed(
             value_head_dim,
             group_size,
             bits,
+            ba_group_size,
+            ba_bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some((qkv, z, a, b));
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
+/// Shape-specific `mx::compile` of [`qwen_linear_attention_inputs_packed`].
+///
+/// Requires affine scales/biases on both QKVZ and BA. Returns `None` on
+/// unsupported shapes or compile failure so the caller can keep the
+/// imperative packed path.
+#[allow(clippy::too_many_arguments)]
+pub fn qwen_linear_attention_inputs_packed_compiled(
+    x: &MlxArray,
+    qkvz_weight: &MlxArray,
+    qkvz_scales: &MlxArray,
+    qkvz_biases: &MlxArray,
+    ba_weight: &MlxArray,
+    ba_scales: &MlxArray,
+    ba_biases: &MlxArray,
+    num_key_heads: i32,
+    num_value_heads: i32,
+    key_head_dim: i32,
+    value_head_dim: i32,
+    group_size: i32,
+    bits: i32,
+    ba_group_size: i32,
+    ba_bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut qkv = MlxArray::empty();
+        let mut z = MlxArray::empty();
+        let mut a = MlxArray::empty();
+        let mut b = MlxArray::empty();
+        let rc = ax_mlx_qwen_linear_attention_inputs_packed_compiled(
+            &mut qkv.inner,
+            &mut z.inner,
+            &mut a.inner,
+            &mut b.inner,
+            x.inner,
+            qkvz_weight.inner,
+            qkvz_scales.inner,
+            qkvz_biases.inner,
+            ba_weight.inner,
+            ba_scales.inner,
+            ba_biases.inner,
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            group_size,
+            bits,
+            ba_group_size,
+            ba_bits,
             stream,
         );
         if rc == 0 {
@@ -1203,6 +1475,58 @@ pub fn qwen_linear_attention_post_input(
             cached_conv_state
                 .map(|state| state.inner)
                 .unwrap_or_else(null_ffi_array),
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            conv_kernel_dim,
+            q_scale,
+            k_scale,
+            rms_norm_eps,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some((q, k, v, new_conv_state));
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
+/// Shape-specific `mx::compile` of [`qwen_linear_attention_post_input`].
+///
+/// Requires an explicit conv-state tensor (chunk 1 passes zeros). Returns
+/// `None` on unsupported shapes or compile failure.
+#[allow(clippy::too_many_arguments)]
+pub fn qwen_linear_attention_post_input_compiled(
+    qkv: &MlxArray,
+    conv_weight: &MlxArray,
+    cached_conv_state: &MlxArray,
+    num_key_heads: i32,
+    key_head_dim: i32,
+    num_value_heads: i32,
+    value_head_dim: i32,
+    conv_kernel_dim: i32,
+    q_scale: f32,
+    k_scale: f32,
+    rms_norm_eps: f32,
+    s: Option<&MlxStream>,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut q = MlxArray::empty();
+        let mut k = MlxArray::empty();
+        let mut v = MlxArray::empty();
+        let mut new_conv_state = MlxArray::empty();
+        let rc = ax_mlx_qwen_linear_attention_post_input_compiled(
+            &mut q.inner,
+            &mut k.inner,
+            &mut v.inner,
+            &mut new_conv_state.inner,
+            qkv.inner,
+            conv_weight.inner,
+            cached_conv_state.inner,
             num_key_heads,
             key_head_dim,
             num_value_heads,
@@ -3201,6 +3525,8 @@ mod tests {
             value_head_dim,
             32,
             4,
+            32,
+            4,
             None,
         )
         .expect("direct packed linear-attention shim should accept qwen-compatible shapes");
@@ -3309,6 +3635,304 @@ mod tests {
         assert_close_f32(direct_z.data_f32(), portable_z.data_f32(), 1.0e-6);
         assert_close_f32(direct_a.data_f32(), portable_a.data_f32(), 1.0e-6);
         assert_close_f32(direct_b.data_f32(), portable_b.data_f32(), 1.0e-6);
+    }
+
+    #[test]
+    fn qwen_linear_attention_inputs_packed_accepts_mixed_qkvz_ba_bits() {
+        let seq = 2_i32;
+        let hidden = 64_i32;
+        let num_key_heads = 2_i32;
+        let num_value_heads = 4_i32;
+        let key_head_dim = 4_i32;
+        let value_head_dim = 4_i32;
+        let value_heads_per_key = num_value_heads / num_key_heads;
+        let qkvz_per_key = key_head_dim * 2 + value_heads_per_key * value_head_dim * 2;
+        let qkvz_out = num_key_heads * qkvz_per_key;
+        let ba_out = num_key_heads * value_heads_per_key * 2;
+        let x_data: Vec<f32> = (0..(seq * hidden))
+            .map(|i| ((i as f32) - 31.0) * 0.015625)
+            .collect();
+        let qkvz_weight_data: Vec<f32> = (0..(qkvz_out * hidden))
+            .map(|i| ((i as f32) - 200.0) * 0.0005)
+            .collect();
+        let ba_weight_data: Vec<f32> = (0..(ba_out * hidden))
+            .map(|i| ((i as f32) - 80.0) * 0.001)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_w = MlxArray::from_raw_data(
+            qkvz_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkvz_weight_data.as_slice()),
+            &[qkvz_out, hidden],
+            MlxDtype::Float32,
+        );
+        let ba_w = MlxArray::from_raw_data(
+            ba_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(ba_weight_data.as_slice()),
+            &[ba_out, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_q = quantize(
+            &qkvz_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let ba_q = quantize(
+            &ba_w,
+            Some(32),
+            Some(6),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let (qkv, z, a, b) = qwen_linear_attention_inputs_packed(
+            &x,
+            &qkvz_q[0],
+            Some(&qkvz_q[1]),
+            Some(&qkvz_q[2]),
+            &ba_q[0],
+            Some(&ba_q[1]),
+            Some(&ba_q[2]),
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            32,
+            4,
+            32,
+            6,
+            None,
+        )
+        .expect("mixed 4-bit qkvz + 6-bit ba must pack on prefill seq");
+        eval(&[&qkv, &z, &a, &b]);
+        assert_eq!(
+            qkv.shape(),
+            vec![
+                1,
+                seq,
+                num_key_heads * key_head_dim * 2 + num_value_heads * value_head_dim
+            ]
+        );
+        assert_eq!(z.shape(), vec![1, seq, num_value_heads, value_head_dim]);
+        assert_eq!(a.shape(), vec![1, seq, num_value_heads]);
+        assert_eq!(b.shape(), vec![1, seq, num_value_heads]);
+    }
+
+    #[test]
+    fn qwen_linear_attention_inputs_packed_flat_matches_portable_at_min_seq() {
+        // Shipped packed C++ flattens [1,S,H]→[S,H] before the two qmm at
+        // seq>=1024. Dual-stream stays default-OFF. Numerics must match the
+        // portable two-qmm path.
+        let seq = 1024_i32;
+        let hidden = 32_i32;
+        let num_key_heads = 2_i32;
+        let num_value_heads = 4_i32;
+        let key_head_dim = 4_i32;
+        let value_head_dim = 4_i32;
+        let value_heads_per_key = num_value_heads / num_key_heads;
+        let qkvz_per_key = key_head_dim * 2 + value_heads_per_key * value_head_dim * 2;
+        let qkvz_out = num_key_heads * qkvz_per_key;
+        let ba_out = num_key_heads * value_heads_per_key * 2;
+        let x_data: Vec<f32> = (0..(seq * hidden))
+            .map(|i| ((i as f32) - 31.0) * 0.015625)
+            .collect();
+        let qkvz_weight_data: Vec<f32> = (0..(qkvz_out * hidden))
+            .map(|i| ((i as f32) - 200.0) * 0.0005)
+            .collect();
+        let ba_weight_data: Vec<f32> = (0..(ba_out * hidden))
+            .map(|i| ((i as f32) - 80.0) * 0.001)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_w = MlxArray::from_raw_data(
+            qkvz_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkvz_weight_data.as_slice()),
+            &[qkvz_out, hidden],
+            MlxDtype::Float32,
+        );
+        let ba_w = MlxArray::from_raw_data(
+            ba_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(ba_weight_data.as_slice()),
+            &[ba_out, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_q = quantize(
+            &qkvz_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let ba_q = quantize(
+            &ba_w,
+            Some(32),
+            Some(6),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let (d_qkv, d_z, d_a, d_b) = qwen_linear_attention_inputs_packed(
+            &x,
+            &qkvz_q[0],
+            Some(&qkvz_q[1]),
+            Some(&qkvz_q[2]),
+            &ba_q[0],
+            Some(&ba_q[1]),
+            Some(&ba_q[2]),
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            32,
+            4,
+            32,
+            6,
+            None,
+        )
+        .expect("dual-stream packed LA must engage at seq>=1024");
+        let p_qkvz = quantized_matmul(
+            &x,
+            &qkvz_q[0],
+            &qkvz_q[1],
+            Some(&qkvz_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let p_ba = quantized_matmul(
+            &x,
+            &ba_q[0],
+            &ba_q[1],
+            Some(&ba_q[2]),
+            true,
+            Some(32),
+            Some(6),
+            None,
+        );
+        eval(&[&d_qkv, &d_z, &d_a, &d_b, &p_qkvz, &p_ba]);
+        assert_eq!(d_qkv.shape()[1], seq);
+        assert_eq!(d_z.shape(), vec![1, seq, num_value_heads, value_head_dim]);
+        assert_eq!(d_a.shape(), vec![1, seq, num_value_heads]);
+        assert_eq!(d_b.shape(), vec![1, seq, num_value_heads]);
+        assert_eq!(p_qkvz.shape(), vec![1, seq, qkvz_out]);
+        assert_eq!(p_ba.shape(), vec![1, seq, ba_out]);
+    }
+
+    #[test]
+    fn qwen_linear_attention_inputs_packed_compiled_matches_imperative() {
+        let seq = 2_i32;
+        let hidden = 64_i32;
+        let num_key_heads = 2_i32;
+        let num_value_heads = 4_i32;
+        let key_head_dim = 4_i32;
+        let value_head_dim = 4_i32;
+        let value_heads_per_key = num_value_heads / num_key_heads;
+        let qkvz_per_key = key_head_dim * 2 + value_heads_per_key * value_head_dim * 2;
+        let qkvz_out = num_key_heads * qkvz_per_key;
+        let ba_out = num_key_heads * value_heads_per_key * 2;
+        let x_data: Vec<f32> = (0..(seq * hidden))
+            .map(|i| ((i as f32) - 31.0) * 0.015625)
+            .collect();
+        let qkvz_weight_data: Vec<f32> = (0..(qkvz_out * hidden))
+            .map(|i| ((i as f32) - 200.0) * 0.0005)
+            .collect();
+        let ba_weight_data: Vec<f32> = (0..(ba_out * hidden))
+            .map(|i| ((i as f32) - 80.0) * 0.001)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_w = MlxArray::from_raw_data(
+            qkvz_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkvz_weight_data.as_slice()),
+            &[qkvz_out, hidden],
+            MlxDtype::Float32,
+        );
+        let ba_w = MlxArray::from_raw_data(
+            ba_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(ba_weight_data.as_slice()),
+            &[ba_out, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_q = quantize(
+            &qkvz_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let ba_q = quantize(
+            &ba_w,
+            Some(32),
+            Some(6),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let (c_qkv, c_z, c_a, c_b) = qwen_linear_attention_inputs_packed_compiled(
+            &x,
+            &qkvz_q[0],
+            &qkvz_q[1],
+            &qkvz_q[2],
+            &ba_q[0],
+            &ba_q[1],
+            &ba_q[2],
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            32,
+            4,
+            32,
+            6,
+            None,
+        )
+        .expect("compiled packed LA inputs must engage for mixed 4/6-bit");
+        let (p_qkv, p_z, p_a, p_b) = qwen_linear_attention_inputs_packed(
+            &x,
+            &qkvz_q[0],
+            Some(&qkvz_q[1]),
+            Some(&qkvz_q[2]),
+            &ba_q[0],
+            Some(&ba_q[1]),
+            Some(&ba_q[2]),
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            32,
+            4,
+            32,
+            6,
+            None,
+        )
+        .expect("imperative packed LA inputs");
+        eval(&[&c_qkv, &c_z, &c_a, &c_b, &p_qkv, &p_z, &p_a, &p_b]);
+        assert_eq!(c_qkv.shape(), p_qkv.shape());
+        assert_eq!(c_z.shape(), p_z.shape());
+        assert_eq!(c_a.shape(), p_a.shape());
+        assert_eq!(c_b.shape(), p_b.shape());
+        assert_close_f32(c_qkv.data_f32(), p_qkv.data_f32(), 1.0e-5);
+        assert_close_f32(c_z.data_f32(), p_z.data_f32(), 1.0e-5);
+        assert_close_f32(c_a.data_f32(), p_a.data_f32(), 1.0e-5);
+        assert_close_f32(c_b.data_f32(), p_b.data_f32(), 1.0e-5);
     }
 
     #[test]
@@ -3476,6 +4100,98 @@ mod tests {
     }
 
     #[test]
+    fn qwen_linear_attention_post_input_compiled_matches_imperative() {
+        let batch = 1_i32;
+        let seq = 2_i32;
+        let num_key_heads = 2_i32;
+        let key_head_dim = 4_i32;
+        let num_value_heads = 4_i32;
+        let value_head_dim = 3_i32;
+        let conv_kernel_dim = 4_i32;
+        let tail_len = conv_kernel_dim - 1;
+        let key_dim = num_key_heads * key_head_dim;
+        let value_dim = num_value_heads * value_head_dim;
+        let conv_dim = 2 * key_dim + value_dim;
+        let (q_scale, k_scale) = (1.0_f32 / (key_head_dim as f32).sqrt(), 0.5_f32);
+        let eps = 1.0e-6_f32;
+        let qkv_data: Vec<f32> = (0..(batch * seq * conv_dim))
+            .map(|i| ((i as f32) - 16.0) * 0.0625)
+            .collect();
+        let conv_weight_data: Vec<f32> = (0..(conv_dim * conv_kernel_dim))
+            .map(|i| ((i as f32) - 32.0) * 0.015625)
+            .collect();
+        let cached_state_data: Vec<f32> = (0..(batch * tail_len * conv_dim))
+            .map(|i| ((i as f32) - 8.0) * 0.03125)
+            .collect();
+        let qkv = MlxArray::from_raw_data(
+            qkv_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkv_data.as_slice()),
+            &[batch, seq, conv_dim],
+            MlxDtype::Float32,
+        );
+        let conv_weight = MlxArray::from_raw_data(
+            conv_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(conv_weight_data.as_slice()),
+            &[conv_dim, conv_kernel_dim, 1],
+            MlxDtype::Float32,
+        );
+        let cached_state = MlxArray::from_raw_data(
+            cached_state_data.as_ptr() as *const u8,
+            std::mem::size_of_val(cached_state_data.as_slice()),
+            &[batch, tail_len, conv_dim],
+            MlxDtype::Float32,
+        );
+        let (c_q, c_k, c_v, c_state) = qwen_linear_attention_post_input_compiled(
+            &qkv,
+            &conv_weight,
+            &cached_state,
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            conv_kernel_dim,
+            q_scale,
+            k_scale,
+            eps,
+            None,
+        )
+        .expect("compiled post-input must engage with explicit conv state");
+        let (p_q, p_k, p_v, p_state) = qwen_linear_attention_post_input(
+            &qkv,
+            &conv_weight,
+            Some(&cached_state),
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            conv_kernel_dim,
+            q_scale,
+            k_scale,
+            eps,
+            None,
+        )
+        .expect("imperative post-input");
+        eval(&[&c_q, &c_k, &c_v, &c_state, &p_q, &p_k, &p_v, &p_state]);
+        assert_eq!(c_q.shape(), p_q.shape());
+        assert_eq!(c_k.shape(), p_k.shape());
+        assert_eq!(c_v.shape(), p_v.shape());
+        assert_eq!(c_state.shape(), p_state.shape());
+        let dense = |arr: &MlxArray| {
+            let materialized = contiguous(arr, None);
+            eval(&[&materialized]);
+            materialized
+        };
+        assert_close_f32(dense(&c_q).data_f32(), dense(&p_q).data_f32(), 1.0e-5);
+        assert_close_f32(dense(&c_k).data_f32(), dense(&p_k).data_f32(), 1.0e-5);
+        assert_close_f32(dense(&c_v).data_f32(), dense(&p_v).data_f32(), 1.0e-5);
+        assert_close_f32(
+            dense(&c_state).data_f32(),
+            dense(&p_state).data_f32(),
+            1.0e-5,
+        );
+    }
+
+    #[test]
     fn qwen_linear_attention_post_input_direct_handles_empty_cached_state() {
         // First decode step in a fresh sequence: cached_conv_state is None,
         // shim must materialise zeros internally and still return the right
@@ -3606,6 +4322,153 @@ mod tests {
         );
     }
 
+    #[test]
+    fn silu_mul_quantized_matmul_matches_portable_4bit_gs32() {
+        // AXQ 27B down_proj is 4-bit gs32. Fuse must match silu_mul + qmm.
+        let gate_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
+        let up_data: Vec<f32> = (0..512).map(|i| ((i as f32) + 1.0) * 0.0078125).collect();
+        let weight_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
+        let gate = MlxArray::from_raw_data(
+            gate_data.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_data.as_slice()),
+            &[1, 8, 64],
+            MlxDtype::Float32,
+        );
+        let up = MlxArray::from_raw_data(
+            up_data.as_ptr() as *const u8,
+            std::mem::size_of_val(up_data.as_slice()),
+            &[1, 8, 64],
+            MlxDtype::Float32,
+        );
+        let weight = MlxArray::from_raw_data(
+            weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(weight_data.as_slice()),
+            &[64, 64],
+            MlxDtype::Float32,
+        );
+        let q = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let fused = silu_mul_quantized_matmul(&gate, &up, &q[0], &q[1], Some(&q[2]), 32, 4, None)
+            .expect("silu+down qmm fuse should engage for 4-bit gs32");
+        let hidden = silu_mul(&gate, &up, None);
+        let portable = quantized_matmul(
+            &hidden,
+            &q[0],
+            &q[1],
+            Some(&q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        for (a, b) in fused.data_f32().iter().zip(portable.data_f32().iter()) {
+            assert!(
+                (a - b).abs() < 2e-2 || (a - b).abs() / (b.abs().max(1e-6)) < 2e-2,
+                "silu+down fuse must match portable: {a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn dual_qmm_swiglu_matches_two_qmm_silu_mul_4bit_gs32() {
+        // AXQ 27B language FFN is 4-bit gs32. One C++ call must match two
+        // affine qmm + silu_mul on a multi-token prefill shape.
+        let x_data: Vec<f32> = (0..8 * 64)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let gate_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0005)
+            .collect();
+        let up_data: Vec<f32> = (0..32 * 64)
+            .map(|i| ((i as f32) - 512.0) * -0.0004)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, 8, 64],
+            MlxDtype::Float32,
+        );
+        let gate_w = MlxArray::from_raw_data(
+            gate_data.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_data.as_slice()),
+            &[32, 64],
+            MlxDtype::Float32,
+        );
+        let up_w = MlxArray::from_raw_data(
+            up_data.as_ptr() as *const u8,
+            std::mem::size_of_val(up_data.as_slice()),
+            &[32, 64],
+            MlxDtype::Float32,
+        );
+        let gq = quantize(
+            &gate_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let uq = quantize(
+            &up_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(gq.len(), 3);
+        assert_eq!(uq.len(), 3);
+        let fused = dual_qmm_swiglu(
+            &x, &gq[0], &gq[1], &gq[2], &uq[0], &uq[1], &uq[2], 32, 4, None,
+        )
+        .expect("dual qmm + SwiGLU should engage for 4-bit gs32");
+        let p_gate = quantized_matmul(
+            &x,
+            &gq[0],
+            &gq[1],
+            Some(&gq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let p_up = quantized_matmul(
+            &x,
+            &uq[0],
+            &uq[1],
+            Some(&uq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let portable = silu_mul(&p_gate, &p_up, None);
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        for (a, b) in fused.data_f32().iter().zip(portable.data_f32().iter()) {
+            assert!(
+                (a - b).abs() < 2e-2 || (a - b).abs() / (b.abs().max(1e-6)) < 2e-2,
+                "dual qmm + SwiGLU must match portable: {a} vs {b}"
+            );
+        }
+        assert!(
+            dual_qmm_swiglu(
+                &x, &gq[0], &gq[1], &gq[2], &uq[0], &uq[1], &uq[2], 0, 4, None,
+            )
+            .is_none(),
+            "dual qmm + SwiGLU must reject group_size<=0"
+        );
+    }
+
     fn compiled_split_mlp_matches_portable(bits: i32) {
         // x [2,4,64]; weight [out=64, in=64] so group_size=64 divides last dim.
         // bits=4 → shapeless (#680); bits=8 multi-token → shape-specific (#705).
@@ -3730,6 +4593,101 @@ mod tests {
                 "compiled dual up must match portable: {a} vs {b}"
             );
         }
+    }
+
+    #[test]
+    fn compiled_dual_gate_up_qmm_forced_matches_portable_4bit_gs32() {
+        // AXQ 27B language FFN is 4-bit gs32. Forced compile must match two
+        // affine qmms without AX_MLX_COMPILED_DUAL_GATE_UP (Gemma stays off).
+        let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
+        let gate_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
+        let up_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 1024.0) * -0.0002).collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, 8, 64],
+            MlxDtype::Float32,
+        );
+        let gate_w = MlxArray::from_raw_data(
+            gate_data.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_data.as_slice()),
+            &[64, 64],
+            MlxDtype::Float32,
+        );
+        let up_w = MlxArray::from_raw_data(
+            up_data.as_ptr() as *const u8,
+            std::mem::size_of_val(up_data.as_slice()),
+            &[64, 64],
+            MlxDtype::Float32,
+        );
+        let gq = quantize(
+            &gate_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let uq = quantize(
+            &up_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(gq.len(), 3);
+        assert_eq!(uq.len(), 3);
+        let (c_gate, c_up) = compiled_dual_gate_up_qmm_forced(
+            &x, &gq[0], &gq[1], &gq[2], &uq[0], &uq[1], &uq[2], 32, 4, None,
+        )
+        .expect("forced 4-bit gs32 dual gate/up compile should engage without env");
+        let p_gate = quantized_matmul(
+            &x,
+            &gq[0],
+            &gq[1],
+            Some(&gq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let p_up = quantized_matmul(
+            &x,
+            &uq[0],
+            &uq[1],
+            Some(&uq[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&c_gate, &c_up, &p_gate, &p_up]);
+        assert_eq!(c_gate.shape(), p_gate.shape());
+        assert_eq!(c_up.shape(), p_up.shape());
+        for (a, b) in c_gate.data_f32().iter().zip(p_gate.data_f32().iter()) {
+            assert!(
+                (a - b).abs() < 2e-2 || (a - b).abs() / (b.abs().max(1e-6)) < 2e-2,
+                "forced compiled dual gate must match portable 4-bit: {a} vs {b}"
+            );
+        }
+        for (a, b) in c_up.data_f32().iter().zip(p_up.data_f32().iter()) {
+            assert!(
+                (a - b).abs() < 2e-2 || (a - b).abs() / (b.abs().max(1e-6)) < 2e-2,
+                "forced compiled dual up must match portable 4-bit: {a} vs {b}"
+            );
+        }
+        // Env-gated entry stays off unless AX_MLX_COMPILED_DUAL_GATE_UP=1.
+        unsafe {
+            std::env::remove_var("AX_MLX_COMPILED_DUAL_GATE_UP");
+        }
+        assert!(
+            compiled_dual_gate_up_qmm(
+                &x, &gq[0], &gq[1], &gq[2], &uq[0], &uq[1], &uq[2], 32, 4, None
+            )
+            .is_none(),
+            "Gemma env-gated compile must stay default-OFF"
+        );
     }
 
     #[test]

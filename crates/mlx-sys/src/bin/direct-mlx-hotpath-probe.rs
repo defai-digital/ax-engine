@@ -1476,6 +1476,8 @@ fn direct_qwen_linear_attention_inputs(fixture: &Fixture) -> CandidateOutput {
         linear.value_head_dim,
         fixture.group_size,
         fixture.bits,
+        fixture.group_size,
+        fixture.bits,
         None,
     )
     .expect("direct Qwen linear-attention packed input shim should accept fixture shapes");
