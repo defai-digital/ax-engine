@@ -565,6 +565,21 @@ fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
             "qwen3-coder-next",
         ),
         (
+            "models--AutomatosX--AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+            "qwen3_5_moe",
+            "holo3-35b",
+        ),
+        (
+            "models--AutomatosX--AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+            "qwen3_5_moe",
+            "holo3-35b",
+        ),
+        (
+            "models--AutomatosX--AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+            "qwen3_5_moe",
+            "ornith-35b",
+        ),
+        (
             "models--AutomatosX--AX-EmbeddingGemma-300M-MLX-8bit",
             "gemma3_text",
             "embeddinggemma-300m",
@@ -777,6 +792,32 @@ fn qwen3_coder_next_preset_selects_mlx_preview_defaults() {
 }
 
 #[test]
+fn holo3_35b_preset_selects_mlx_preview_defaults() {
+    let mlx_model_artifacts_dir = PathBuf::from("/tmp/AX-Holo3-35B-A3B-MLX-AXQ-4bit");
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Holo3_35b),
+        mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(args.effective_model_id().unwrap(), "holo3-35b");
+    assert_eq!(
+        args.effective_support_tier(),
+        PreviewSupportTier::MlxPreview
+    );
+    assert_eq!(
+        actual.resolved_backend.selected_backend,
+        SelectedBackend::Mlx
+    );
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(mlx_model_artifacts_dir.as_path())
+    );
+}
+
+#[test]
 fn glm_preset_selects_native_mlx_by_default() {
     // GLM 4.7 Flash is a direct-support model: the preset selects the native
     // MLX tier by default. Delegation requires an explicit delegated tier.
@@ -802,6 +843,7 @@ fn render_presets_lists_glm_preset() {
     assert!(presets.contains("gemma4-12b\tmodel_id=gemma4-12b"));
     assert!(presets.contains("qwen3.5-9b\tmodel_id=qwen3.5-9b"));
     assert!(presets.contains("qwen3.6-27b\tmodel_id=qwen36-27b"));
+    assert!(presets.contains("holo3-35b\tmodel_id=holo3-35b"));
     assert!(presets.contains("qwen3-coder-next\tmodel_id=qwen3-coder-next"));
     assert!(presets.contains("glm4.7-flash-4bit\tmodel_id=glm4_moe_lite"));
     assert!(presets.contains("llama3.3-70b\tmodel_id=llama3.3-70b"));

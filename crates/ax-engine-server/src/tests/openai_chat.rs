@@ -7,7 +7,7 @@ use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
     build_openai_chat_request_offloading_media, build_openai_llama_cpp_chat_request,
     build_openai_mlx_lm_chat_request, chat_template_kwargs_for_model_id,
-    openai_chat_prompt_render_options, openai_chat_stop_sequences,
+    delegated_chat_template_kwargs, openai_chat_prompt_render_options, openai_chat_stop_sequences,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;
@@ -437,6 +437,113 @@ fn openai_chat_prompt_renderer_uses_qwen36_function_xml_tool_contract() {
     ));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_uses_ornith_function_xml_and_official_history() {
+    // Ornith keeps a product id, but its hub jinja is Qwen3.5-class:
+    // JSON tool schemas + function= calls, tools-first system turn, and an
+    // always-on empty <think> wrapper on prior assistant turns.
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "Use project conventions."},
+        {"role": "user", "content": "Read README.md"},
+        {"role": "assistant", "content": "I will read it."},
+        {"role": "user", "content": "Continue"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    for model_id in ["ornith-35b", "Ornith-1.0-397B-FP8"] {
+        let prompt = render_openai_chat_prompt_with_tools(
+            model_id,
+            &messages,
+            Some(&json!([
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"]
+                        }
+                    }
+                }
+            ])),
+            Some(&json!("auto")),
+        )
+        .expect("ornith tool prompt should render");
+
+        assert!(
+            prompt.starts_with(
+                "<|im_start|>system\n# Tools\n\nYou have access to the following functions:"
+            ),
+            "tools contract must precede caller system text: {prompt}"
+        );
+        assert!(prompt.contains("\n\nUse project conventions.<|im_end|>"));
+        assert!(!prompt.contains("<function>\n<name>read_file</name>"));
+        assert!(prompt.contains("<function=example_function_name>"));
+        assert!(
+            prompt.contains(
+                "<|im_start|>assistant\n<think>\n\n</think>\n\nI will read it.<|im_end|>"
+            )
+        );
+        // Default OpenAI helper keeps thinking off; native request options turn it
+        // on for Ornith (covered below).
+        assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+    }
+
+    let holo3 = render_openai_chat_prompt_with_tools(
+        "holo3-35b",
+        &messages,
+        Some(&json!([{
+            "type": "function",
+            "function": {"name": "read_file", "parameters": {"type": "object"}}
+        }])),
+        Some(&json!("auto")),
+    )
+    .expect("holo3 should share the Qwen3.5 function-XML contract");
+    assert!(holo3.contains("<function=example_function_name>"));
+    assert!(!holo3.contains("<function>\n<name>read_file</name>"));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_defaults_ornith_thinking_on() {
+    for model in ["ornith-35b", "Ornith-1.0-397B-FP8"] {
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Reply briefly"}]
+        }))
+        .expect("ornith request should deserialize");
+        let options = openai_chat_prompt_render_options(&request);
+        assert!(options.enable_thinking, "{model}");
+        assert!(!options.preserve_thinking, "{model}");
+    }
+
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "ornith-35b",
+        "messages": [{"role": "user", "content": "Reply briefly"}]
+    }))
+    .expect("ornith request should deserialize");
+    let options = openai_chat_prompt_render_options(&request);
+
+    let prompt = render_openai_chat_prompt_with_options(
+        "ornith-35b",
+        &request.messages,
+        None,
+        None,
+        options,
+    )
+    .expect("ornith thinking prompt should render");
+    assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING));
+
+    let off: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "ornith-35b",
+        "messages": [{"role": "user", "content": "Reply briefly"}],
+        "chat_template_kwargs": {"enable_thinking": false}
+    }))
+    .expect("explicit thinking override should deserialize");
+    assert!(!openai_chat_prompt_render_options(&off).enable_thinking);
 }
 
 #[test]
@@ -1420,6 +1527,51 @@ fn openai_chat_prompt_renderer_rejects_known_families_without_verified_fallback(
     let r1 = render_openai_chat_prompt("deepseek-ai/DeepSeek-R1", &messages)
         .expect("deepseek R1 chat should render");
     assert!(r1.ends_with("<｜Assistant｜></think>"));
+}
+
+#[test]
+fn openai_chat_template_kwargs_leave_ornith_thinking_at_hub_default() {
+    // Official Ornith jinja opens <think> unless enable_thinking is explicitly
+    // false. Do not inject the generic Qwen enable_thinking=false default.
+    assert_eq!(chat_template_kwargs_for_model_id("ornith-35b"), None);
+    assert_eq!(
+        chat_template_kwargs_for_model_id("AX-Ornith-1.0-35B-MLX-AXQ-4bit"),
+        None
+    );
+    assert_eq!(
+        chat_template_kwargs_for_model_id("deepreinforce-ai/Ornith-1.0-35B"),
+        None
+    );
+    assert_eq!(
+        chat_template_kwargs_for_model_id("Ornith-1.0-397B-FP8"),
+        None
+    );
+}
+
+#[test]
+fn delegated_ornith_kwargs_honor_explicit_thinking_off() {
+    use crate::openai::schema::OpenAiChatTemplateKwargs;
+
+    assert_eq!(delegated_chat_template_kwargs("ornith-35b", None), None);
+    assert_eq!(
+        delegated_chat_template_kwargs("Ornith-1.0-397B-FP8", None),
+        None
+    );
+    assert_eq!(
+        delegated_chat_template_kwargs(
+            "ornith-35b",
+            Some(&OpenAiChatTemplateKwargs {
+                enable_thinking: Some(false),
+                preserve_thinking: None,
+            })
+        ),
+        Some(json!({"enable_thinking": false}))
+    );
+    // Generic Qwen still defaults thinking off when the request omits kwargs.
+    assert_eq!(
+        delegated_chat_template_kwargs("Qwen3.6-35B-A3B-4bit", None),
+        Some(json!({"enable_thinking": false}))
+    );
 }
 
 #[test]

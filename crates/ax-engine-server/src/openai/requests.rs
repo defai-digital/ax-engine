@@ -32,7 +32,7 @@ use crate::openai::chat_requests::{
     render_qwen3_vl_chat_with_media,
 };
 pub(crate) use crate::openai::chat_requests::{
-    chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
+    chat_template_kwargs_for_model_id, delegated_chat_template_kwargs, openai_chat_stop_sequences,
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
@@ -449,7 +449,7 @@ pub(crate) fn build_openai_chat_request(
     )?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
-    let prompt_options = openai_chat_prompt_render_options(&request);
+    let prompt_options = openai_chat_prompt_render_options_for_live(&request, live);
     let sampling_params = default_deepseek_thinking_sampling_adjustments(
         live,
         prompt_options.enable_thinking,
@@ -668,7 +668,10 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
             sampling,
             stop_sequences,
             metadata,
-            chat_template_kwargs: chat_template_kwargs_for_model_id(live.model_id.as_ref()),
+            chat_template_kwargs: delegated_chat_template_kwargs(
+                live.model_id.as_ref(),
+                request.chat_template_kwargs.as_ref(),
+            ),
         },
         stream: request.stream,
         response_options,
@@ -1330,14 +1333,34 @@ pub(crate) fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
 pub(crate) fn openai_chat_prompt_render_options(
     request: &OpenAiChatCompletionHttpRequest,
 ) -> ChatPromptRenderOptions {
+    openai_chat_prompt_render_options_for_model(request, request.model.as_deref().unwrap_or(""))
+}
+
+pub(crate) fn openai_chat_prompt_render_options_for_live(
+    request: &OpenAiChatCompletionHttpRequest,
+    live: &LiveState,
+) -> ChatPromptRenderOptions {
+    let model_id = request
+        .model
+        .as_deref()
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or(live.model_id.as_ref());
+    openai_chat_prompt_render_options_for_model(request, model_id)
+}
+
+fn openai_chat_prompt_render_options_for_model(
+    request: &OpenAiChatCompletionHttpRequest,
+    model_id: &str,
+) -> ChatPromptRenderOptions {
     let template = request.chat_template_kwargs.as_ref();
-    let model_id = request.model.as_deref().unwrap_or("");
     ChatPromptRenderOptions {
         enable_thinking: template
             .and_then(|kwargs| kwargs.enable_thinking)
             .unwrap_or_else(|| {
                 openai_reasoning_is_enabled(request.reasoning.as_ref())
                     || chat::is_deepseek_thinking_model(model_id)
+                    // Official Ornith serving leaves <think> open by default.
+                    || chat::is_ornith_model(model_id)
             }),
         preserve_thinking: template
             .and_then(|kwargs| kwargs.preserve_thinking)

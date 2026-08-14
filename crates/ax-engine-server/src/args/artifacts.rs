@@ -164,7 +164,13 @@ fn infer_gemma4_model_id(path_label: &str) -> String {
 }
 
 fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
-    let mut model_id = if path_label.contains("qwen3-vl") {
+    // Named Qwen3.5-class fine-tunes share the qwen3_5_moe graph with official
+    // Qwen 3.6 35B-A3B but must keep product ids distinct (not "qwen3.6").
+    let mut model_id = if path_label.contains("holo3") || path_label.contains("holo-3") {
+        "holo3-35b".to_string()
+    } else if path_label.contains("ornith") {
+        "ornith-35b".to_string()
+    } else if path_label.contains("qwen3-vl") {
         infer_qwen3_vl_model_id(path_label)
     } else if path_label.contains("qwen3-embedding-0-6b") {
         "qwen3-embedding-0.6b".to_string()

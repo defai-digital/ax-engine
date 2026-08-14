@@ -12,7 +12,7 @@ use ax_engine_sdk::{
 };
 use axum::Json;
 use axum::http::StatusCode;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
@@ -239,8 +239,12 @@ pub(crate) fn render_openai_chat_prompt_with_options(
         return render_llama3_openai_chat_prompt(messages, tools);
     }
     let tool_contract_style = qwen_tool_contract_style(model_id);
-    let rendered_messages =
-        render_openai_chat_message_pairs(messages, tool_contract_style, options.preserve_thinking)?;
+    let rendered_messages = render_openai_chat_message_pairs(
+        model_id,
+        messages,
+        tool_contract_style,
+        options.preserve_thinking,
+    )?;
     let rendered_messages =
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
     chat::render_prompt_with_qwen_thinking(model_id, &rendered_messages, options.enable_thinking)
@@ -966,6 +970,29 @@ pub(crate) fn chat_template_kwargs_for_model_id(model_id: &str) -> Option<serde_
     chat::template_kwargs_for_model_id(model_id)
 }
 
+/// Delegated mlx_lm must honor request kwargs (title calls send
+/// `enable_thinking: false`) over the model default. Ornith's default is
+/// `None` (hub thinking-on); an explicit false must still reach the backend.
+pub(crate) fn delegated_chat_template_kwargs(
+    model_id: &str,
+    requested: Option<&crate::openai::schema::OpenAiChatTemplateKwargs>,
+) -> Option<serde_json::Value> {
+    let mut kwargs = match chat_template_kwargs_for_model_id(model_id) {
+        Some(Value::Object(object)) => object,
+        Some(other) => return Some(other),
+        None => Map::new(),
+    };
+    if let Some(requested) = requested {
+        if let Some(enable_thinking) = requested.enable_thinking {
+            kwargs.insert("enable_thinking".to_string(), json!(enable_thinking));
+        }
+        if let Some(preserve_thinking) = requested.preserve_thinking {
+            kwargs.insert("preserve_thinking".to_string(), json!(preserve_thinking));
+        }
+    }
+    (!kwargs.is_empty()).then(|| Value::Object(kwargs))
+}
+
 pub(crate) fn openai_chat_stop_sequences(
     model_id: &str,
     stop: Option<OpenAiStopInput>,
@@ -977,6 +1004,7 @@ pub(crate) fn openai_chat_stop_sequences(
 }
 
 fn render_openai_chat_message_pairs(
+    model_id: &str,
     messages: &[OpenAiChatMessage],
     tool_contract_style: QwenToolContractStyle,
     preserve_thinking: bool,
@@ -990,6 +1018,7 @@ fn render_openai_chat_message_pairs(
             let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
             let mut content = render_openai_chat_content(message.content.as_ref())?;
             append_qwen_assistant_history(
+                model_id,
                 role,
                 &mut content,
                 message,
@@ -1002,6 +1031,7 @@ fn render_openai_chat_message_pairs(
 }
 
 fn append_qwen_assistant_history(
+    model_id: &str,
     role: &str,
     content: &mut String,
     message: &OpenAiChatMessage,
@@ -1011,20 +1041,35 @@ fn append_qwen_assistant_history(
     if role != "assistant" {
         return;
     }
-    if preserve_thinking
-        && let Some(reasoning) = message
-            .reasoning_content
-            .as_deref()
-            .map(str::trim)
-            .filter(|reasoning| !reasoning.is_empty())
-    {
+    let reasoning = message
+        .reasoning_content
+        .as_deref()
+        .map(str::trim)
+        .filter(|reasoning| !reasoning.is_empty());
+    if chat::is_ornith_model(model_id) {
+        // Official Ornith jinja always wraps prior assistant turns as
+        // `<think>\n{reasoning}\n</think>\n\n{content}`, even when empty.
+        // Replay actual CoT only when preserve_thinking is on so ordinary
+        // agent transcripts do not grow by hidden reasoning.
         let visible = std::mem::take(content);
         content.push_str("<think>\n");
-        content.push_str(reasoning);
-        content.push_str("\n</think>");
-        if !visible.trim().is_empty() {
-            content.push_str("\n\n");
-            content.push_str(&visible);
+        if preserve_thinking {
+            if let Some(reasoning) = reasoning {
+                content.push_str(reasoning);
+            }
+        }
+        content.push_str("\n</think>\n\n");
+        content.push_str(&visible);
+    } else if preserve_thinking {
+        if let Some(reasoning) = reasoning {
+            let visible = std::mem::take(content);
+            content.push_str("<think>\n");
+            content.push_str(reasoning);
+            content.push_str("\n</think>");
+            if !visible.trim().is_empty() {
+                content.push_str("\n\n");
+                content.push_str(&visible);
+            }
         }
     }
     if let Some(tool_calls) = message.tool_calls.as_ref()
@@ -1674,6 +1719,23 @@ fn prepend_qwen_tool_contract(
     let Some(contract) = render_tool_contract_system_message(tools, tool_choice, style) else {
         return messages;
     };
+    // Official Ornith jinja puts the tools contract first, then any caller
+    // system text, in the same system turn.
+    if chat::is_ornith_model(model_id) {
+        if let Some((role, content)) = messages.first_mut()
+            && role == "system"
+        {
+            let existing = std::mem::take(content);
+            content.push_str(&contract);
+            if !existing.trim().is_empty() {
+                content.push_str("\n\n");
+                content.push_str(&existing);
+            }
+        } else {
+            messages.insert(0, ("system".to_string(), contract));
+        }
+        return messages;
+    }
     if let Some((role, content)) = messages.first_mut()
         && role == "system"
     {
@@ -1848,6 +1910,7 @@ fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
         // (not Coder-Next XML declarations).
         || normalized.contains("qwen3-6")
         || normalized.contains("qwen36")
+        || chat::is_qwen35_class_named_finetune(model_id)
     {
         QwenToolContractStyle::FunctionXml
     } else {
@@ -2438,6 +2501,7 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
             &mut collected,
         )?;
         append_qwen_assistant_history(
+            model_id,
             role,
             &mut content,
             message,

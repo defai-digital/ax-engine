@@ -174,6 +174,28 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
             "qwen36-35b-a3b",
         ),
     ),
+    # Holo3-35B-A3B: Qwen3.5-class 35B-A3B MoE GUI-agent VLM (text path native).
+    ModelProfile(
+        label="holo3-35b",
+        preset="holo3-35b",
+        repo_id="AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+        aliases=(
+            "holo3-35b",
+            "holo3-35b-a3b",
+            "holo3",
+            "holo3-35b-4bit",
+            "holo3-35b-a3b-4bit",
+        ),
+    ),
+    ModelProfile(
+        label="holo3-35b-6bit",
+        preset="holo3-35b",
+        repo_id="AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+        aliases=(
+            "holo3-35b-6bit",
+            "holo3-35b-a3b-6bit",
+        ),
+    ),
     # --- Secondary: research / enterprise Llama (standard graph) ---
     ModelProfile(
         label="llama3.1-8b",
@@ -427,6 +449,21 @@ AUTOMATOSX_MODEL_PROFILES = (
         "ax-qwen3.6-35b",
         "AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
         ("ax-qwen36-35b", "ax-qwen3.6-35b-a3b", "ax-qwen3.6-35b-optiq-4bit"),
+    ),
+    _automatosx_profile(
+        "ax-holo3-35b-4bit",
+        "AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+        ("ax-holo3-35b-a3b-4bit", "ax-holo3-4bit"),
+    ),
+    _automatosx_profile(
+        "ax-holo3-35b-6bit",
+        "AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+        ("ax-holo3-35b-a3b-6bit", "ax-holo3-6bit"),
+    ),
+    _automatosx_profile(
+        "ax-holo3-35b",
+        "AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+        ("ax-holo3", "ax-holo3-35b-a3b"),
     ),
 )
 

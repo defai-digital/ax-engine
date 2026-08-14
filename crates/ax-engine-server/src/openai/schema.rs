@@ -261,8 +261,10 @@ pub(crate) struct OpenAiChatMessage {
     pub(crate) content: Option<OpenAiChatContent>,
     #[serde(default)]
     pub(crate) tool_calls: Option<Value>,
-    /// Provider-compatible assistant reasoning replay. It is included in a
-    /// Qwen history prompt only when `preserve_thinking=true`.
+    /// Provider-compatible assistant reasoning replay. Generic Qwen history
+    /// includes it only when `preserve_thinking=true`. Ornith always emits the
+    /// official empty `<think>` wrapper; the text is filled only when that
+    /// flag is set.
     #[serde(default)]
     pub(crate) reasoning_content: Option<String>,
     #[serde(default)]
