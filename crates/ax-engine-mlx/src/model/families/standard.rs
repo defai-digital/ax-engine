@@ -64,8 +64,11 @@ use super::super::shared::{
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
     moe_router_qwen3, packed_qkv_kv_head_count, per_layer_input_gate_project,
     prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route,
+    rope_bhsd_batch_offset_safe,
     qkv_project, qkv_project_batched, qkv_project_pos0_exact_rest_shared, qkv_project_row_exact,
-    qkv_project_with_input_norm, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
+    qkv_project_with_input_norm, qw, qwen_prefill_maybe_async_sdpa,
+    qwen_prefill_maybe_last_token_flat, rms_norm_opt,
+    shape_element_count, shared_expert_forward,
 };
 use crate::attention_mask::{batched_decode_validity_mask_with_window, create_ring_sliding_mask};
 use crate::batched_kv_cache::BatchedKvCache;
@@ -202,23 +205,37 @@ fn layer_shell_post_attention(
     // Common multi-token path fuses residual-add + pre-FFN RMSNorm into one
     // compiled composite (mlxcel-style; used every Gemma/Qwen dense layer).
     let (hidden, normed2, per_layer_input_owned) = if last_only_active {
-        let residual = add(hidden, attn_proj, None);
-        let last = (seq - 1) as i32;
+        let hidden_for_add = if attn_proj.shape().get(1).copied().unwrap_or(1) == 1
+            && hidden.shape().get(1).copied().unwrap_or(1) > 1
+        {
+            let last = (seq - 1) as i32;
+            let hs = cfg.hidden_size as i32;
+            slice(hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
+        } else {
+            hidden.clone()
+        };
+        let residual = add(&hidden_for_add, attn_proj, None);
+        let last = residual.shape().get(1).copied().unwrap_or(1) - 1;
         let hs = cfg.hidden_size as i32;
-        let sliced_hidden = slice(
-            &residual,
-            &[0, last, 0],
-            &[1, last + 1, hs],
-            &[1, 1, 1],
-            None,
-        );
+        let sliced_hidden = if residual.shape().get(1).copied().unwrap_or(1) > 1 {
+            slice(
+                &residual,
+                &[0, last, 0],
+                &[1, last + 1, hs],
+                &[1, 1, 1],
+                None,
+            )
+        } else {
+            residual
+        };
         let sliced_pli = per_layer_input.map(|pli| {
             let dims = pli.shape();
             let pli_last_dim = *dims.last().unwrap_or(&hs);
+            let pli_last = (seq - 1) as i32;
             slice(
                 pli,
-                &[0, last, 0],
-                &[1, last + 1, pli_last_dim],
+                &[0, pli_last, 0],
+                &[1, pli_last + 1, pli_last_dim],
                 &[1, 1, 1],
                 None,
             )
@@ -759,6 +776,13 @@ fn layer_forward_internal(
     ) = layer_params(cfg, layer_idx);
 
     let seq = hidden.shape()[1] as usize;
+    crate::model::shared::set_qwen_prefill_reuse_rope_active(
+        fastpath::should_qwen_prefill_reuse_rope(&cfg.model_family, seq as i32),
+    );
+    crate::model::shared::set_qwen_prefill_dequant_dense_family(matches!(
+        cfg.model_family.to_ascii_lowercase().as_str(),
+        "qwen3_5" | "qwen3_next"
+    ));
     let protected_prefix_window =
         (cfg.model_family == "unlimited_ocr" && seq == 1 && cache.seq_len() > 0)
             .then_some(cfg.protected_prefix_sliding_window)
@@ -830,15 +854,12 @@ fn layer_forward_internal(
             if let Some(mrope) = mrope {
                 crate::qwen3_vl::apply_interleaved_mrope(&k, mrope, rope_dims)
             } else {
-                rope(
+                rope_bhsd_batch_offset_safe(
                     &k,
                     rope_dims as i32,
-                    false,
                     rope_base,
-                    1.0,
                     token_offset as i32,
                     rope_freqs_ref,
-                    None,
                 )
             }
         };
@@ -877,6 +898,13 @@ fn layer_forward_internal(
     } else {
         Some(rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None))
     };
+    if let Some(normed) = normed.as_ref() {
+        crate::model::shared::qwen_prefill_maybe_eval_attn_input(
+            normed,
+            &cfg.model_family,
+            seq as i32,
+        );
+    }
 
     let ring_layout = cache.sliding_ring_layout(sliding_window, seq);
     let profile_gemma4_moe_decode =
@@ -1300,15 +1328,12 @@ fn layer_forward_internal(
                 let q_rope = if let Some(mrope) = mrope {
                     crate::qwen3_vl::apply_interleaved_mrope(&q, mrope, rope_dims)
                 } else {
-                    rope(
+                    rope_bhsd_batch_offset_safe(
                         &q,
                         rope_dims as i32,
-                        false,
                         rope_base,
-                        1.0,
                         token_offset as i32,
                         rope_freqs_ref,
-                        None,
                     )
                 };
                 if let Some(started) = rope_kv_started {
@@ -1488,25 +1513,19 @@ fn layer_forward_internal(
                     )
                 } else {
                     (
-                        rope(
+                        rope_bhsd_batch_offset_safe(
                             &q,
                             rope_dims as i32,
-                            false,
                             rope_base,
-                            1.0,
                             token_offset as i32,
                             rope_freqs_ref,
-                            None,
                         ),
-                        rope(
+                        rope_bhsd_batch_offset_safe(
                             &k,
                             rope_dims as i32,
-                            false,
                             rope_base,
-                            1.0,
                             token_offset as i32,
                             rope_freqs_ref,
-                            None,
                         ),
                     )
                 };
@@ -1657,11 +1676,20 @@ fn layer_forward_internal(
                 &[&attn_sdpa],
             );
         }
+        qwen_prefill_maybe_async_sdpa(&attn_sdpa, &cfg.model_family, seq as i32);
         post_attn_started = profile_forward_layer.then(Instant::now);
         let output_proj_started = profile_forward_layer.then(Instant::now);
 
         // 10-11. Flatten + output projection (+ optional post-attn RMSNorm).
+        // Last-only generate prefill: o_proj is position-wise and KV is already
+        // written, so slice SDPA to the last token before flatten/o_proj.
+        let last_token_o_proj = fastpath::should_qwen_prefill_last_token_o_proj(
+            &cfg.model_family,
+            last_position_only_after_attention,
+            seq as i32,
+        );
         let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
+        let attn_flat = qwen_prefill_maybe_last_token_flat(&attn_flat, last_token_o_proj);
         // RowExact o_proj under moe_mt (smokef99 exact). Shared o_proj broke
         // formal identity (smokef100).
         let o_policy = if crate::fastpath::moe_mt_bf16_identity_enabled() {

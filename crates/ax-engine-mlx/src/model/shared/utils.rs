@@ -1,8 +1,10 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
-    concatenate, contiguous, expand_dims_axes, gather_mm, matmul, multiply, reshape, slice,
-    slice_last_dim, take, tanh, transpose,
+    concatenate, contiguous, dequantize_with_mode, eval, expand_dims_axes, gather_mm, matmul,
+    multiply, reshape, slice, slice_last_dim, take, tanh, transpose,
 };
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -23,6 +25,65 @@ pub(crate) enum ProjectionBatchPolicy {
     Shared,
     /// Preserve the single-row reduction graph for every decode row.
     RowExact,
+}
+
+thread_local! {
+    static QWEN_PREFILL_DEQUANT_DENSE_FAMILY: Cell<bool> = const { Cell::new(false) };
+    static PREFILL_DEQUANT_DENSE_T: RefCell<HashMap<usize, MlxArray>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Mark the current Qwen3.5 / Qwen3-Next layer so `qw` may dequant+dense.
+pub(crate) fn set_qwen_prefill_dequant_dense_family(active: bool) {
+    QWEN_PREFILL_DEQUANT_DENSE_FAMILY.set(active);
+}
+
+fn activation_seq_len(x: &MlxArray) -> i32 {
+    let shape = x.shape();
+    match shape.len() {
+        0 => 0,
+        1 => shape[0],
+        _ => shape[shape.len() - 2],
+    }
+}
+
+fn qwen_prefill_dequant_dense_applies(x: &MlxArray) -> bool {
+    QWEN_PREFILL_DEQUANT_DENSE_FAMILY.get()
+        && fastpath::should_qwen_prefill_dequant_dense_for(
+            fastpath::qwen_prefill_dequant_dense_enabled(),
+            "qwen3_5",
+            activation_seq_len(x),
+        )
+}
+
+fn cached_prefill_dequant_weight_t(qw: &QuantizedWeight) -> Option<MlxArray> {
+    let scales = qw.scales.as_ref()?;
+    let key = qw as *const QuantizedWeight as usize;
+    PREFILL_DEQUANT_DENSE_T.with(|cache| {
+        if let Some(existing) = cache.borrow().get(&key) {
+            return Some(existing.clone());
+        }
+        let mode = qw.mlx_quantization_mode();
+        let quant_biases = match mode {
+            mlx_sys::MlxQuantizationMode::Affine => qw.biases.as_ref(),
+            _ => None,
+        };
+        let dense = dequantize_with_mode(
+            &qw.weight,
+            scales,
+            quant_biases,
+            Some(qw.group_size),
+            Some(qw.bits),
+            mode,
+            None,
+            Some(MlxDtype::Bfloat16),
+            None,
+        );
+        let weight_t = transpose(&dense, &[1, 0], None);
+        eval(&[&weight_t]);
+        cache.borrow_mut().insert(key, weight_t.clone());
+        Some(weight_t)
+    })
 }
 
 static INVARIANT_AFFINE_QMV_FAST_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -334,7 +395,11 @@ fn decode_lm_head_quant_cache_eligible(x: &MlxArray) -> bool {
 fn qw_direct_mlx(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     // Always MLX quantized_matmul / dense matmul (no invariant). Used by
     // RowExact so multi-token rows match pure-direct MLX singletons.
-    let y = if let Some(scales) = &qw.scales {
+    let y = if qwen_prefill_dequant_dense_applies(x)
+        && let Some(weight_t) = cached_prefill_dequant_weight_t(qw)
+    {
+        matmul(x, &weight_t, None)
+    } else if let Some(scales) = &qw.scales {
         let mode = qw.mlx_quantization_mode();
         let quant_biases = match mode {
             mlx_sys::MlxQuantizationMode::Affine => qw.biases.as_ref(),
@@ -390,6 +455,10 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
         && let Some(invariant) = invariant_projection_metal_impl(x, qw)
     {
         invariant
+    } else if qwen_prefill_dequant_dense_applies(x)
+        && let Some(weight_t) = cached_prefill_dequant_weight_t(qw)
+    {
+        matmul(x, &weight_t, None)
     } else if let Some(scales) = &qw.scales {
         // MXFP8/MXFP4 have no affine group-bias channel; pass None for those modes.
         let mode = qw.mlx_quantization_mode();
@@ -1520,6 +1589,70 @@ mod tests {
         assert!(
             max_abs < 1e-4,
             "prefill must use BF16 W_t, not the 2-bit decode cache, max_abs={max_abs}"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_dequant_dense_matches_quantized_matmul() {
+        let input_dim = 64i32;
+        let output_dim = 128i32;
+        let seq = 1024i32;
+        let weight_data: Vec<f32> = (0..input_dim * output_dim)
+            .map(|index| ((index % 127) as f32 - 63.0) * 0.015625)
+            .collect();
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
+        let quantized = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let qw = QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(quantized[1].clone()),
+            biases: Some(quantized[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let input_data: Vec<f32> = (0..seq * input_dim)
+            .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)
+            .collect();
+        let x = array_f32(&input_data, &[1, seq, input_dim]);
+        super::set_qwen_prefill_dequant_dense_family(false);
+        let via_qmm = super::qw(&x, &qw);
+        let weight_t = super::cached_prefill_dequant_weight_t(&qw)
+            .expect("affine 4-bit weight must dequantize");
+        let via_dense = matmul(&x, &weight_t, None);
+        eval(&[&via_qmm, &via_dense]);
+        let qmm = via_qmm.data_f32();
+        let dense = via_dense.data_f32();
+        assert_eq!(qmm.len(), dense.len());
+        let mut max_abs = 0.0f32;
+        for i in 0..qmm.len() {
+            max_abs = max_abs.max((qmm[i] - dense[i]).abs());
+        }
+        assert!(
+            max_abs < 2e-2,
+            "dequant+dense must match steel qmm, max_abs={max_abs}"
+        );
+        let x_decode = array_f32(&input_data[..input_dim as usize], &[1, 1, input_dim]);
+        super::set_qwen_prefill_dequant_dense_family(true);
+        let decode_out = super::qw(&x_decode, &qw);
+        super::set_qwen_prefill_dequant_dense_family(false);
+        let decode_qmm = super::qw(&x_decode, &qw);
+        eval(&[&decode_out, &decode_qmm]);
+        assert_eq!(
+            decode_out.data_f32(),
+            decode_qmm.data_f32(),
+            "seq=1 must stay on steel qmm"
         );
     }
 

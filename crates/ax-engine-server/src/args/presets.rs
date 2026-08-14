@@ -24,6 +24,10 @@ pub enum ServerPreset {
     Qwen36_27b,
     #[value(name = "qwen3.6-35b", alias = "qwen36-35b")]
     Qwen36_35b,
+    /// H Company Holo3-35B-A3B GUI-agent VLM (Qwen3.5-class 35B-A3B MoE text path).
+    /// Same native `qwen3_5` graph as Qwen 3.6 35B; vision tower BF16-sidecar.
+    #[value(name = "holo3-35b", alias = "holo3-35b-a3b", alias = "holo3")]
+    Holo3_35b,
     #[value(name = "qwen3-coder-next", alias = "qwen3-coder")]
     Qwen3CoderNext,
     // Secondary: research / enterprise Llama
@@ -171,6 +175,26 @@ impl ServerPreset {
                     "qwen36-35b-a3b",
                 ],
                 model_types: &["qwen3_next", "qwen3_6", "qwen3.6", "qwen3_5_moe"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            // Holo3-35B-A3B: Qwen3.5-class 35B-A3B MoE fine-tune (GUI agent VLM).
+            // Language path uses the same native qwen3_5 MoE runner as Qwen 3.6
+            // 35B; product id stays holo3-35b so Hub/catalog rows are not
+            // mislabeled as the official Qwen 3.6 certificate family.
+            Self::Holo3_35b => PresetDefinition {
+                preset: self,
+                label: "holo3-35b",
+                model_id: "holo3-35b",
+                aliases: &[
+                    "holo3-35b",
+                    "holo3-35b-a3b",
+                    "holo3",
+                    "holo-3-35b",
+                    "ax-holo3-35b",
+                    "ax-holo3-35b-a3b",
+                ],
+                model_types: &["qwen3_5_moe", "qwen3_5", "qwen3_next", "qwen3_6", "qwen3.6"],
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
@@ -323,6 +347,7 @@ pub fn render_presets() -> String {
         ServerPreset::Qwen35_9b,
         ServerPreset::Qwen36_27b,
         ServerPreset::Qwen36_35b,
+        ServerPreset::Holo3_35b,
         ServerPreset::Qwen3CoderNext,
         ServerPreset::Llama31_8b,
         ServerPreset::Llama33_70b,

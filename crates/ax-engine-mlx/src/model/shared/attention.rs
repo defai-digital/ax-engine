@@ -1,12 +1,13 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, broadcast_to,
-    concatenate, contiguous, eval,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, arange, as_strided, astype, async_eval,
+    broadcast_to, concatenate, contiguous, cos, eval, multiply, outer,
     qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
-    scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
-    slice_update, transpose,
+    scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks, sin,
+    slice, slice_update, subtract, transpose,
 };
 #[cfg(test)]
-use mlx_sys::{matmul, multiply, slice, softmax_precise};
+use mlx_sys::{matmul, softmax_precise};
+use std::cell::{Cell, RefCell};
 
 use crate::attention_mask::{create_causal_mask, create_ring_sliding_mask};
 use crate::fastpath;
@@ -14,6 +15,54 @@ use crate::kv_cache::{MlxKVCache, SlidingRingLayout};
 
 use super::super::config::ModelConfig;
 use super::norm::{rms_norm_no_scale_bshd, use_flat_qk_norm_path};
+
+/// Materialize the Qwen full-attention activation once before QKVO qmm.
+pub(crate) fn qwen_prefill_maybe_eval_attn_input(
+    x: &MlxArray,
+    model_family: &str,
+    seq: i32,
+) {
+    qwen_prefill_maybe_eval_attn_input_for(
+        x,
+        fastpath::qwen_prefill_eval_attn_input_enabled(),
+        model_family,
+        seq,
+    );
+}
+
+/// Pure helper for [`qwen_prefill_maybe_eval_attn_input`].
+pub(crate) fn qwen_prefill_maybe_eval_attn_input_for(
+    x: &MlxArray,
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) {
+    if fastpath::should_qwen_prefill_eval_attn_input_for(enabled, model_family, seq) {
+        eval(&[x]);
+    }
+}
+
+/// Submit full-attn SDPA before flatten + o_proj is encoded.
+pub(crate) fn qwen_prefill_maybe_async_sdpa(attn_sdpa: &MlxArray, model_family: &str, seq: i32) {
+    qwen_prefill_maybe_async_sdpa_for(
+        attn_sdpa,
+        fastpath::qwen_prefill_async_sdpa_enabled(),
+        model_family,
+        seq,
+    );
+}
+
+/// Pure helper for [`qwen_prefill_maybe_async_sdpa`].
+pub(crate) fn qwen_prefill_maybe_async_sdpa_for(
+    attn_sdpa: &MlxArray,
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) {
+    if fastpath::should_qwen_prefill_async_sdpa_for(enabled, model_family, seq) {
+        async_eval(&[attn_sdpa]);
+    }
+}
 
 #[allow(dead_code)]
 pub(crate) fn bhsd_view_from_proj(
@@ -115,6 +164,158 @@ pub(crate) fn qk_norm_rope_bhsd_from_proj(
     )
 }
 
+thread_local! {
+    static REUSE_ROPE_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static REUSE_ROPE_TABLE: RefCell<Option<ReuseRopeTable>> = const { RefCell::new(None) };
+}
+
+struct ReuseRopeTable {
+    key: (i32, i32, i32, u64),
+    cos: MlxArray,
+    sin: MlxArray,
+}
+
+/// Arm last-token-chunk reuse of one NeoX cos/sin table for this thread.
+pub(crate) fn set_qwen_prefill_reuse_rope_active(active: bool) {
+    REUSE_ROPE_ACTIVE.with(|slot| slot.set(active));
+    if !active {
+        REUSE_ROPE_TABLE.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+fn qwen_prefill_reuse_rope_active() -> bool {
+    REUSE_ROPE_ACTIVE.with(Cell::get)
+}
+
+fn reuse_rope_key(
+    token_offset: i32,
+    seq: i32,
+    rope_dims: i32,
+    rope_base: Option<f32>,
+    rope_freqs: Option<&MlxArray>,
+) -> (i32, i32, i32, u64) {
+    let tag = rope_freqs
+        .map(|freqs| freqs as *const MlxArray as u64)
+        .or_else(|| rope_base.map(|base| base.to_bits() as u64))
+        .unwrap_or(0);
+    (token_offset, seq, rope_dims, tag)
+}
+
+fn reused_neox_cos_sin(
+    token_offset: i32,
+    seq: i32,
+    rope_dims: i32,
+    rope_base: Option<f32>,
+    rope_freqs: Option<&MlxArray>,
+) -> (MlxArray, MlxArray) {
+    let key = reuse_rope_key(token_offset, seq, rope_dims, rope_base, rope_freqs);
+    REUSE_ROPE_TABLE.with(|slot| {
+        if let Some(cached) = slot.borrow().as_ref()
+            && cached.key == key
+        {
+            return (cached.cos.clone(), cached.sin.clone());
+        }
+        let (cos_h, sin_h) =
+            build_neox_rope_cos_sin(token_offset, seq, rope_dims, rope_base, rope_freqs);
+        *slot.borrow_mut() = Some(ReuseRopeTable {
+            key,
+            cos: cos_h.clone(),
+            sin: sin_h.clone(),
+        });
+        (cos_h, sin_h)
+    })
+}
+
+fn build_neox_rope_cos_sin(
+    token_offset: i32,
+    seq: i32,
+    rope_dims: i32,
+    rope_base: Option<f32>,
+    rope_freqs: Option<&MlxArray>,
+) -> (MlxArray, MlxArray) {
+    let positions = arange(
+        f64::from(token_offset),
+        f64::from(token_offset + seq),
+        1.0,
+        MlxDtype::Float32,
+        None,
+    );
+    let half = rope_dims / 2;
+    let inv_freq = if let Some(freqs) = rope_freqs {
+        freqs.clone()
+    } else {
+        let base = rope_base.unwrap_or(10_000.0);
+        let data: Vec<f32> = (0..half)
+            .map(|index| 1.0 / base.powf((2 * index) as f32 / rope_dims as f32))
+            .collect();
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[half],
+            MlxDtype::Float32,
+        )
+    };
+    let theta = outer(&positions, &inv_freq, None);
+    let cos_h = reshape(&cos(&theta, None), &[1, 1, seq, half], None);
+    let sin_h = reshape(&sin(&theta, None), &[1, 1, seq, half], None);
+    (cos_h, sin_h)
+}
+
+/// Apply a cached NeoX cos/sin table to `[B, H, S, D]`.
+pub(crate) fn apply_reused_neox_rope(
+    bhsd: &MlxArray,
+    rope_dims: i32,
+    rope_base: Option<f32>,
+    token_offset: i32,
+    rope_freqs: Option<&MlxArray>,
+) -> MlxArray {
+    let shape = bhsd.shape();
+    let seq = shape[2];
+    let head_dim = shape[3];
+    let (cos_h, sin_h) = reused_neox_cos_sin(token_offset, seq, rope_dims, rope_base, rope_freqs);
+    let rotary = if head_dim > rope_dims {
+        slice(
+            bhsd,
+            &[0, 0, 0, 0],
+            &[shape[0], shape[1], seq, rope_dims],
+            &[1, 1, 1, 1],
+            None,
+        )
+    } else {
+        bhsd.clone()
+    };
+    let half = rope_dims / 2;
+    let x1 = slice(
+        &rotary,
+        &[0, 0, 0, 0],
+        &[shape[0], shape[1], seq, half],
+        &[1, 1, 1, 1],
+        None,
+    );
+    let x2 = slice(
+        &rotary,
+        &[0, 0, 0, half],
+        &[shape[0], shape[1], seq, rope_dims],
+        &[1, 1, 1, 1],
+        None,
+    );
+    let rx = subtract(&multiply(&x1, &cos_h, None), &multiply(&x2, &sin_h, None), None);
+    let ry = add(&multiply(&x2, &cos_h, None), &multiply(&x1, &sin_h, None), None);
+    let embedded = concatenate(&[&rx, &ry], -1, None);
+    if head_dim > rope_dims {
+        let pass = slice(
+            bhsd,
+            &[0, 0, 0, rope_dims],
+            &[shape[0], shape[1], seq, head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        concatenate(&[&embedded, &pass], -1, None)
+    } else {
+        embedded
+    }
+}
+
 /// Apply RoPE to a BHSD array, working around an MLX <= 0.31.x bug: for a
 /// batched single-position input ([B, H, 1, D] with B > 1) and a non-zero
 /// position offset, MLX `fast::rope` rotates only batch 0 and returns the
@@ -129,6 +330,9 @@ pub(crate) fn rope_bhsd_batch_offset_safe(
     rope_freqs: Option<&MlxArray>,
 ) -> MlxArray {
     let shape = bhsd.shape();
+    if qwen_prefill_reuse_rope_active() {
+        return apply_reused_neox_rope(bhsd, rope_dims, rope_base, token_offset, rope_freqs);
+    }
     if let [batch, heads, seq, head_dim] = shape[..]
         && batch > 1
         && seq == 1
@@ -211,6 +415,18 @@ pub(crate) fn qk_norm_rope_bhsd_from_proj_with_route(
     // MLX <= 0.31.x batched single-position offset bug; keep the buggy shape
     // on the composed path where rope_bhsd_batch_offset_safe applies.
     let batched_single_pos_offset = qw_out.shape()[0] > 1 && seq == 1 && token_offset > 0;
+    // Reuse one cos/sin table across full-attn layers: skip the fused C++
+    // rope so the portable apply path can share the cached trig.
+    if qwen_prefill_reuse_rope_active() {
+        let q = qk_norm_bhsd_from_proj(qw_out, norm, n_heads, head_dim, seq, eps);
+        return apply_reused_neox_rope(
+            &q,
+            rope_dims as i32,
+            rope_base,
+            token_offset as i32,
+            rope_freqs,
+        );
+    }
     if direct_qk_norm_rope_route_allowed(direct_route_enabled, norm) && !batched_single_pos_offset {
         return direct_qk_norm_rope_bhsd_from_proj(
             qw_out,
@@ -318,6 +534,28 @@ pub(crate) fn prepare_value_bhsd(
         v
     };
     transpose(&v, &[0, 2, 1, 3], None)
+}
+
+/// Slice flattened `[B, S, H]` attention output to the last token so
+/// last-only generate prefill can o_proj at S=1. KV append has already
+/// happened. Operates after flatten so the last row is contiguous.
+pub(crate) fn qwen_prefill_maybe_last_token_flat(
+    attn_flat: &MlxArray,
+    last_token_out_proj: bool,
+) -> MlxArray {
+    let shape = attn_flat.shape();
+    let seq = shape.get(1).copied().unwrap_or(1);
+    if !last_token_out_proj || seq <= 1 {
+        return attn_flat.clone();
+    }
+    let last = seq - 1;
+    slice(
+        attn_flat,
+        &[0, last, 0],
+        &[shape[0], last + 1, shape[2]],
+        &[1, 1, 1],
+        None,
+    )
 }
 
 /// Convert SDPA output `[B, H, S, D]` to `[B, S, H * D]` for the output projection.
@@ -1284,6 +1522,8 @@ mod tests {
     use super::{
         build_bidirectional_canvas_mask, build_layer_masks_with_media_ranges,
         media_prefix_mask_array, qwen_direct_qk_norm_rope_default_family,
+        apply_reused_neox_rope, qwen_prefill_maybe_eval_attn_input_for,
+        qwen_prefill_maybe_last_token_flat, set_qwen_prefill_reuse_rope_active,
     };
     use crate::model::{LayerConfig, ModelConfig};
     use mlx_sys::{MlxArray, eval};
@@ -1293,6 +1533,143 @@ mod tests {
         let len = mask.nbytes();
         let ptr = mask.data_raw();
         unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_eval_attn_input_materializes_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let x = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 32, 1],
+            mlx_sys::MlxDtype::Float32,
+        );
+        qwen_prefill_maybe_eval_attn_input_for(&x, true, "qwen3_5", 1024);
+        eval(&[&x]);
+        assert_eq!(x.shape(), vec![1, 32, 1]);
+        assert!(
+            x.data_f32().iter().all(|v| v.is_finite()),
+            "eval-attn-input must leave a finite materialized activation"
+        );
+        assert!(
+            crate::fastpath::should_qwen_prefill_eval_attn_input_for(true, "qwen3_5", 1024),
+            "shipped attn input-eval gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_eval_attn_input_for(&x, false, "qwen3_5", 1024);
+        qwen_prefill_maybe_eval_attn_input_for(&x, true, "gemma4", 1024);
+        qwen_prefill_maybe_eval_attn_input_for(&x, true, "qwen3_5", 512);
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_async_sdpa_submits_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let sdpa = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 2, 4, 4],
+            mlx_sys::MlxDtype::Float32,
+        );
+        super::qwen_prefill_maybe_async_sdpa_for(&sdpa, true, "qwen3_5", 1024);
+        eval(&[&sdpa]);
+        assert_eq!(sdpa.shape(), vec![1, 2, 4, 4]);
+        assert!(
+            sdpa.data_f32().iter().all(|v| v.is_finite()),
+            "async SDPA must leave a finite materialized tensor"
+        );
+        assert!(
+            crate::fastpath::should_qwen_prefill_async_sdpa_for(true, "qwen3_5", 1024),
+            "shipped async-SDPA gate must accept the p2048 chunk length"
+        );
+        super::qwen_prefill_maybe_async_sdpa_for(&sdpa, false, "qwen3_5", 1024);
+        super::qwen_prefill_maybe_async_sdpa_for(&sdpa, true, "gemma4", 1024);
+        super::qwen_prefill_maybe_async_sdpa_for(&sdpa, true, "qwen3_5", 512);
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_last_token_flat_slices_seq_when_set() {
+        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let attn = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 4, 4],
+            mlx_sys::MlxDtype::Float32,
+        );
+        let sliced = qwen_prefill_maybe_last_token_flat(&attn, true);
+        eval(&[&sliced]);
+        assert_eq!(sliced.shape(), vec![1, 1, 4]);
+        assert_eq!(sliced.data_f32(), vec![12.0, 13.0, 14.0, 15.0]);
+        let kept = qwen_prefill_maybe_last_token_flat(&attn, false);
+        eval(&[&kept]);
+        assert_eq!(kept.shape(), attn.shape());
+        assert!(
+            crate::fastpath::should_qwen_prefill_last_token_o_proj_for(true, "qwen3_5", true, 1024),
+            "shipped last-token o_proj must accept the p2048 generate last layer"
+        );
+    }
+
+    #[test]
+    fn apply_reused_neox_rope_matches_mlx_fast_rope() {
+        let data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.03125).collect();
+        let x = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 2, 4, 8],
+            mlx_sys::MlxDtype::Float32,
+        );
+        set_qwen_prefill_reuse_rope_active(true);
+        let reused = apply_reused_neox_rope(&x, 8, Some(10_000.0), 0, None);
+        let reference = mlx_sys::rope(&x, 8, false, Some(10_000.0), 1.0, 0, None, None);
+        eval(&[&reused, &reference]);
+        set_qwen_prefill_reuse_rope_active(false);
+        assert_eq!(reused.shape(), reference.shape());
+        for (a, b) in reused.data_f32().iter().zip(reference.data_f32().iter()) {
+            assert!(
+                (a - b).abs() < 2e-4 || (a - b).abs() / (b.abs().max(1e-6)) < 2e-4,
+                "reused NeoX rope must match mlx_fast_rope: {a} vs {b}"
+            );
+        }
+        assert!(
+            crate::fastpath::should_qwen_prefill_reuse_rope_for(true, "qwen3_5", 1024),
+            "shipped rope reuse must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn apply_reused_neox_rope_matches_mlx_at_qwen36_27b_shape() {
+        // Qwen 3.6 27B full-attn: 24 heads, head_dim 128, partial rotary 32.
+        let seq = 32;
+        let heads = 24;
+        let head_dim = 128;
+        let rope_dims = 32;
+        let n = heads * seq * head_dim;
+        let data: Vec<f32> = (0..n).map(|i| ((i as f32) - 64.0) * 0.0078125).collect();
+        let x = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, heads as i32, seq as i32, head_dim as i32],
+            mlx_sys::MlxDtype::Float32,
+        );
+        set_qwen_prefill_reuse_rope_active(true);
+        let reused = apply_reused_neox_rope(&x, rope_dims, Some(10_000_000.0), 0, None);
+        let reference = mlx_sys::rope(
+            &x,
+            rope_dims,
+            false,
+            Some(10_000_000.0),
+            1.0,
+            0,
+            None,
+            None,
+        );
+        eval(&[&reused, &reference]);
+        set_qwen_prefill_reuse_rope_active(false);
+        assert_eq!(reused.shape(), reference.shape());
+        for (a, b) in reused.data_f32().iter().zip(reference.data_f32().iter()) {
+            assert!(
+                (a - b).abs() < 5e-4 || (a - b).abs() / (b.abs().max(1e-6)) < 5e-4,
+                "27B-shaped reused rope must match mlx_fast_rope: {a} vs {b}"
+            );
+        }
     }
 
     #[test]

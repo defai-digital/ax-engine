@@ -100,7 +100,11 @@ impl ChatUnsupportedFamily {
 impl ChatPromptTemplate {
     pub(crate) fn for_model_id(model_id: &str) -> Self {
         let normalized = model_id.to_ascii_lowercase();
-        if normalized.contains("qwen") || normalized.contains("minicpm") {
+        // Qwen3.5-class fine-tunes (Holo3 / Ornith) share ChatML + thinking markers.
+        if normalized.contains("qwen")
+            || normalized.contains("minicpm")
+            || is_qwen35_class_named_finetune(model_id)
+        {
             Self::QwenChatMl
         } else if normalized.contains("gemma-4")
             || normalized.contains("gemma4")
@@ -200,6 +204,11 @@ pub(crate) fn normalize_role(role: &str) -> Result<&'static str, String> {
 }
 
 pub(crate) fn template_kwargs_for_model_id(model_id: &str) -> Option<Value> {
+    // Ornith's hub template defaults thinking on. Do not inject
+    // enable_thinking=false the way we do for generic Qwen chat.
+    if is_ornith_model(model_id) {
+        return None;
+    }
     // Gemma 4 / Qwen / GLM all default thinking off for OpenAI-compatible short
     // answers. Callers that want thinking must opt in via the request
     // `reasoning` field (native) or chat_template_kwargs (delegated).
@@ -332,7 +341,23 @@ fn json_contains_u64(value: &Value, target: u64) -> bool {
     }
 }
 
+/// Qwen3.5-class 35B-A3B fine-tunes that keep product ids (Holo3 / Ornith)
+/// but share official Qwen3.5 ChatML + function-XML tools.
+pub(crate) fn is_qwen35_class_named_finetune(model_id: &str) -> bool {
+    let m = model_id.to_ascii_lowercase();
+    m.contains("holo3") || m.contains("holo-3") || m.contains("ornith")
+}
+
+pub(crate) fn is_ornith_model(model_id: &str) -> bool {
+    model_id.to_ascii_lowercase().contains("ornith")
+}
+
 pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
+    // Named 35B-A3B fine-tunes keep product ids (holo3 / ornith) but use the
+    // same Qwen3.5/3.6 thinking contract as the official MoE packs.
+    if is_qwen35_class_named_finetune(model_id) {
+        return true;
+    }
     let m = model_id.to_ascii_lowercase();
     if !m.contains("qwen") {
         return false;
@@ -1571,6 +1596,14 @@ mod tests {
             ChatPromptTemplate::QwenChatMl
         );
         assert_eq!(
+            ChatPromptTemplate::for_model_id("ornith-35b"),
+            ChatPromptTemplate::QwenChatMl
+        );
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("AX-Ornith-1.0-35B-MLX-AXQ-4bit"),
+            ChatPromptTemplate::QwenChatMl
+        );
+        assert_eq!(
             ChatPromptTemplate::for_model_id("glm4.7-flash-4bit"),
             ChatPromptTemplate::Glm47
         );
@@ -1756,6 +1789,10 @@ mod tests {
             "Qwen3.6-35B-A3B-4bit",
             "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
             "Qwen/Qwen3-VL-8B-Thinking",
+            "ornith-35b",
+            "AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+            "Ornith-1.0-397B-FP8",
+            "holo3-35b",
         ] {
             assert!(is_qwen_thinking_model(model_id), "{model_id}");
         }

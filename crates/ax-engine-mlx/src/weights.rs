@@ -735,6 +735,11 @@ impl LinearAttentionWeights {
 /// decode 2-bit `lm_head`, but gs32 to match the packed QKVZ/BA group size.
 pub const PREFILL_LA_Q2_BITS: i32 = 2;
 pub const PREFILL_LA_Q2_GROUP_SIZE: i32 = 32;
+/// Prefill-only FFN overlay: keep checkpoint bits, requant gs32→gs64.
+pub const PREFILL_FFN_GS64_GROUP_SIZE: i32 = 64;
+/// Prefill-only FFN overlay: 3-bit gs32 (between washed 2-bit and steel 4/6-bit).
+pub const PREFILL_FFN_Q3_BITS: i32 = 3;
+pub const PREFILL_FFN_Q3_GROUP_SIZE: i32 = 32;
 
 pub(crate) fn requant_affine_to_prefill_q2(src: &QuantizedWeight) -> Option<QuantizedWeight> {
     let scales = src.scales.as_ref()?;
@@ -778,6 +783,138 @@ pub(crate) fn requant_affine_to_prefill_q2(src: &QuantizedWeight) -> Option<Quan
         decode_q4_scales: None,
         decode_q4_biases: None,
     })
+}
+
+/// Prefill-only FFN overlay: dequant then requant affine at gs64, same bits.
+///
+/// Not Hub requant, not 2-bit (washed). Targets the isolated 1.314 s FFN
+/// `quantized_matmul` wall by selecting MLX's gs64 kernel.
+pub(crate) fn requant_affine_to_prefill_gs64(src: &QuantizedWeight) -> Option<QuantizedWeight> {
+    let scales = src.scales.as_ref()?;
+    if src.bits <= 0
+        || src.group_size <= 0
+        || src.group_size == PREFILL_FFN_GS64_GROUP_SIZE
+        || src.mode != "affine"
+    {
+        return None;
+    }
+    let dense = dequantize(
+        &src.weight,
+        scales,
+        src.biases.as_ref(),
+        Some(src.group_size),
+        Some(src.bits),
+        None,
+    );
+    let last = *dense.shape().last()?;
+    if last <= 0 || last % PREFILL_FFN_GS64_GROUP_SIZE != 0 {
+        return None;
+    }
+    let quantized = quantize(
+        &dense,
+        Some(PREFILL_FFN_GS64_GROUP_SIZE),
+        Some(src.bits),
+        MlxQuantizationMode::Affine,
+        None,
+        None,
+    );
+    if quantized.len() < 3 {
+        return None;
+    }
+    eval(&[&quantized[0], &quantized[1], &quantized[2]]);
+    Some(QuantizedWeight {
+        weight: quantized[0].clone(),
+        scales: Some(quantized[1].clone()),
+        biases: Some(quantized[2].clone()),
+        group_size: PREFILL_FFN_GS64_GROUP_SIZE,
+        bits: src.bits,
+        mode: "affine".to_string(),
+        linear_bias: src.linear_bias.clone(),
+        decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
+    })
+}
+
+/// Prefill-only FFN overlay: dequant then requant affine at 3-bit gs32.
+///
+/// Not Hub requant, not 2-bit (washed), not gs64 (regressed). Targets the
+/// isolated 1.314 s FFN `quantized_matmul` wall via a different MLX bits
+/// specialization. No-ops when the source is already ≤3-bit.
+pub(crate) fn requant_affine_to_prefill_q3(src: &QuantizedWeight) -> Option<QuantizedWeight> {
+    let scales = src.scales.as_ref()?;
+    if src.bits <= PREFILL_FFN_Q3_BITS || src.group_size <= 0 || src.mode != "affine" {
+        return None;
+    }
+    let dense = dequantize(
+        &src.weight,
+        scales,
+        src.biases.as_ref(),
+        Some(src.group_size),
+        Some(src.bits),
+        None,
+    );
+    let last = *dense.shape().last()?;
+    if last <= 0 || last % PREFILL_FFN_Q3_GROUP_SIZE != 0 {
+        return None;
+    }
+    let quantized = quantize(
+        &dense,
+        Some(PREFILL_FFN_Q3_GROUP_SIZE),
+        Some(PREFILL_FFN_Q3_BITS),
+        MlxQuantizationMode::Affine,
+        None,
+        None,
+    );
+    if quantized.len() < 3 {
+        return None;
+    }
+    eval(&[&quantized[0], &quantized[1], &quantized[2]]);
+    Some(QuantizedWeight {
+        weight: quantized[0].clone(),
+        scales: Some(quantized[1].clone()),
+        biases: Some(quantized[2].clone()),
+        group_size: PREFILL_FFN_Q3_GROUP_SIZE,
+        bits: PREFILL_FFN_Q3_BITS,
+        mode: "affine".to_string(),
+        linear_bias: src.linear_bias.clone(),
+        decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
+    })
+}
+
+/// Materialize contiguous `weight` / `scales` / `biases` for prefill qmm.
+///
+/// Does not change bits or group size. Not the closed activation
+/// `contiguous([B,S,H])` FFN path.
+pub(crate) fn contiguous_affine_weight(src: &QuantizedWeight) -> QuantizedWeight {
+    let weight = contiguous(&src.weight, None);
+    let scales = src.scales.as_ref().map(|s| contiguous(s, None));
+    let biases = src.biases.as_ref().map(|b| contiguous(b, None));
+    let mut refs: Vec<&MlxArray> = vec![&weight];
+    if let Some(s) = scales.as_ref() {
+        refs.push(s);
+    }
+    if let Some(b) = biases.as_ref() {
+        refs.push(b);
+    }
+    eval(&refs);
+    QuantizedWeight {
+        weight,
+        scales,
+        biases,
+        group_size: src.group_size,
+        bits: src.bits,
+        mode: src.mode.clone(),
+        linear_bias: src.linear_bias.clone(),
+        decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
+    }
 }
 
 /// Tensors above this size bust MLX's default per-command-buffer byte cap
@@ -5304,6 +5441,72 @@ fn concat_quantized_weight_rows(
     })
 }
 
+/// Split a packed gate+up projection back into two row-halves.
+///
+/// Packed FFN concatenates gate then up on axis 0. Slicing that axis is
+/// exact for affine / matching-quant packs and lets prefill run two steel
+/// `quantized_matmul`s instead of one 2×-wide qmm.
+pub(crate) fn split_packed_ffn_gate_up(
+    packed: &QuantizedWeight,
+) -> Option<(QuantizedWeight, QuantizedWeight)> {
+    let rows = packed.weight.shape().first().copied()?;
+    if rows < 2 || rows % 2 != 0 {
+        return None;
+    }
+    let half = rows / 2;
+    Some((
+        slice_quantized_weight_rows(packed, 0, half)?,
+        slice_quantized_weight_rows(packed, half, rows)?,
+    ))
+}
+
+fn slice_quantized_weight_rows(
+    src: &QuantizedWeight,
+    start: i32,
+    stop: i32,
+) -> Option<QuantizedWeight> {
+    let weight = slice_leading_rows(&src.weight, start, stop)?;
+    let scales = match src.scales.as_ref() {
+        Some(s) => Some(slice_leading_rows(s, start, stop)?),
+        None => None,
+    };
+    let biases = match src.biases.as_ref() {
+        Some(b) => Some(slice_leading_rows(b, start, stop)?),
+        None => None,
+    };
+    let linear_bias = match src.linear_bias.as_ref() {
+        Some(b) => Some(slice_leading_rows(b, start, stop)?),
+        None => None,
+    };
+    Some(QuantizedWeight {
+        weight,
+        scales,
+        biases,
+        group_size: src.group_size,
+        bits: src.bits,
+        mode: src.mode.clone(),
+        linear_bias,
+        decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
+    })
+}
+
+fn slice_leading_rows(array: &MlxArray, start: i32, stop: i32) -> Option<MlxArray> {
+    let shape = array.shape();
+    if shape.is_empty() || start < 0 || stop <= start || stop > shape[0] {
+        return None;
+    }
+    let rank = shape.len();
+    let mut begin = vec![0i32; rank];
+    let mut end = shape.clone();
+    begin[0] = start;
+    end[0] = stop;
+    let strides = vec![1i32; rank];
+    Some(slice(array, &begin, &end, &strides, None))
+}
+
 fn pack_dense_ffn_gate_up_projection(
     gate: &QuantizedWeight,
     up: &QuantizedWeight,
@@ -7223,6 +7426,24 @@ mod tests {
         );
         assert_eq!(packed.group_size, 64);
         assert_eq!(packed.bits, 4);
+    }
+
+    #[test]
+    fn split_packed_ffn_gate_up_recovers_gate_then_up_rows() {
+        let gate = glm_quantized_weight(64, 4, true);
+        let up = glm_quantized_weight(64, 4, true);
+        let packed =
+            pack_dense_ffn_gate_up_projection(&gate, &up).expect("matching FFN projections pack");
+        let (gate_back, up_back) =
+            split_packed_ffn_gate_up(&packed).expect("even packed FFN must split");
+        assert_eq!(gate_back.weight.shape(), gate.weight.shape());
+        assert_eq!(up_back.weight.shape(), up.weight.shape());
+        assert_eq!(gate_back.bits, packed.bits);
+        assert_eq!(up_back.group_size, packed.group_size);
+        assert!(
+            crate::fastpath::should_qwen_prefill_split_packed_for(true, "qwen3_5", 1024),
+            "shipped split-packed gate must accept the p2048 chunk length"
+        );
     }
 
     #[test]

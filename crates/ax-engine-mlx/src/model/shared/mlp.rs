@@ -260,9 +260,20 @@ fn qkv_project_inner(
         let packed_rows = packed.weight.shape().first().copied().unwrap_or(0) as usize;
         packed_qkv_kv_head_count(cfg, head_dim, packed_rows)
     });
+    let use_contig = fastpath::should_qwen_prefill_contiguous_attn_weights(&cfg.model_family, seq);
+    let contig_packed;
+    let contig_q;
+    let contig_k;
+    let contig_v;
     if !prefer_split
         && let (Some(packed), Some(kv_head_count)) = (&w.qkv_packed, packed_kv_head_count)
     {
+        let packed = if use_contig {
+            contig_packed = cached_prefill_attn_contiguous_weight(packed);
+            &contig_packed
+        } else {
+            packed
+        };
         let slices = qkv_slices(cfg, head_dim, kv_head_count);
         let out = if let Some((norm_w, eps)) = input_norm
             && projection_policy == ProjectionBatchPolicy::Shared
@@ -329,7 +340,13 @@ fn qkv_project_inner(
         } else {
             x
         };
-        let q_full = qw_with_policy(x_in, w.q_proj.as_ref().unwrap(), projection_policy);
+        let q_w = if use_contig {
+            contig_q = cached_prefill_attn_contiguous_weight(w.q_proj.as_ref().unwrap());
+            &contig_q
+        } else {
+            w.q_proj.as_ref().unwrap()
+        };
+        let q_full = qw_with_policy(x_in, q_w, projection_policy);
         let (q, gate) = if cfg.attn_output_gate {
             // attn_output_gate=true: q_proj output is [B, L, n_heads, 2*head_dim] interleaved.
             // Split by reshaping to [B, L, n_heads, 2*head_dim] and slicing last dim,
@@ -355,12 +372,24 @@ fn qkv_project_inner(
             // q_proj output is exactly [B, L, n_heads * head_dim] — no slice needed.
             (q_full, None)
         };
-        let k = qw_with_policy(x_in, w.k_proj.as_ref().unwrap(), projection_policy);
-        let v = w
-            .v_proj
-            .as_ref()
-            .map(|v_proj| qw_with_policy(x_in, v_proj, projection_policy))
-            .unwrap_or_else(|| k.clone());
+        let k_w = if use_contig {
+            contig_k = cached_prefill_attn_contiguous_weight(w.k_proj.as_ref().unwrap());
+            &contig_k
+        } else {
+            w.k_proj.as_ref().unwrap()
+        };
+        let k = qw_with_policy(x_in, k_w, projection_policy);
+        let v = if let Some(v_proj) = w.v_proj.as_ref() {
+            let v_w = if use_contig {
+                contig_v = cached_prefill_attn_contiguous_weight(v_proj);
+                &contig_v
+            } else {
+                v_proj
+            };
+            qw_with_policy(x_in, v_w, projection_policy)
+        } else {
+            k.clone()
+        };
         (q, k, v, gate)
     }
 }
@@ -435,6 +464,18 @@ pub(crate) fn attention_output_projection_with_post_norm_policy(
     eps: f32,
     projection_policy: ProjectionBatchPolicy,
 ) -> MlxArray {
+    let seq = attn_flat.shape().get(1).copied().unwrap_or(1);
+    let contig_o;
+    let o_proj = if fastpath::should_qwen_prefill_contiguous_attn_weights_for(
+        fastpath::qwen_prefill_contiguous_attn_weights_enabled(),
+        "qwen3_5",
+        seq,
+    ) {
+        contig_o = cached_prefill_attn_contiguous_weight(o_proj);
+        &contig_o
+    } else {
+        o_proj
+    };
     // Fused o_proj+rmsnorm is Shared-only; fall back when RowExact is required.
     // Skip when invariant projections are active (MoE exact): fused kernel
     // bypasses invariant and pure-direct would then diverge from multi-token.
@@ -2631,17 +2672,60 @@ fn ffn_swiglu_with_policy(
 ) -> MlxArray {
     let shape = x.shape();
     let seq = shape.get(1).copied().unwrap_or(1);
-    if fastpath::should_qwen_prefill_flat_ffn(&cfg.model_family, seq, shape.len()) {
+    let qwen_dense_ffn = !cfg.uses_geglu && cfg.model_family.starts_with("qwen");
+    let (x_f32, restore_dtype) = qwen_prefill_ffn_f32_input(x, qwen_dense_ffn, seq);
+    let x = &x_f32;
+    let out = if fastpath::should_qwen_prefill_flat_ffn(&cfg.model_family, seq, shape.len()) {
         let (flat, orig) = flatten_qwen_prefill_ffn_activation(x);
-        let out =
+        let inner =
             ffn_swiglu_with_policy_inner(cfg, w, &flat, post_norm, layer_idx, projection_policy);
-        return restore_qwen_prefill_ffn_activation(&out, orig);
-    }
-    if fastpath::should_qwen_prefill_contiguous_ffn(&cfg.model_family, seq, shape.len()) {
+        restore_qwen_prefill_ffn_activation(&inner, orig)
+    } else if fastpath::should_qwen_prefill_contiguous_ffn(&cfg.model_family, seq, shape.len()) {
         let x = contiguous(x, None);
-        return ffn_swiglu_with_policy_inner(cfg, w, &x, post_norm, layer_idx, projection_policy);
+        ffn_swiglu_with_policy_inner(cfg, w, &x, post_norm, layer_idx, projection_policy)
+    } else {
+        ffn_swiglu_with_policy_inner(cfg, w, x, post_norm, layer_idx, projection_policy)
+    };
+    qwen_prefill_ffn_restore_dtype(&out, restore_dtype)
+}
+
+/// Cast Qwen prefill FFN activations to Float32 for the steel qmm.
+pub(crate) fn qwen_prefill_ffn_f32_input(
+    x: &MlxArray,
+    qwen_dense_ffn: bool,
+    seq: i32,
+) -> (MlxArray, Option<MlxDtype>) {
+    qwen_prefill_ffn_f32_input_for(
+        x,
+        fastpath::qwen_prefill_ffn_f32_input_enabled(),
+        qwen_dense_ffn,
+        seq,
+    )
+}
+
+/// Pure helper for [`qwen_prefill_ffn_f32_input`].
+pub(crate) fn qwen_prefill_ffn_f32_input_for(
+    x: &MlxArray,
+    enabled: bool,
+    qwen_dense_ffn: bool,
+    seq: i32,
+) -> (MlxArray, Option<MlxDtype>) {
+    if qwen_dense_ffn
+        && fastpath::should_qwen_prefill_ffn_f32_input_for(enabled, seq)
+        && x.dtype() != MlxDtype::Float32
+    {
+        (astype(x, MlxDtype::Float32, None), Some(x.dtype()))
+    } else {
+        (x.clone(), None)
     }
-    ffn_swiglu_with_policy_inner(cfg, w, x, post_norm, layer_idx, projection_policy)
+}
+
+/// Restore the pre-FFN activation dtype after a Float32 qmm pass.
+pub(crate) fn qwen_prefill_ffn_restore_dtype(y: &MlxArray, orig: Option<MlxDtype>) -> MlxArray {
+    match orig {
+        Some(dtype) if y.dtype() != dtype => astype(y, dtype, None),
+        _ => y.clone(),
+    }
 }
 
 fn ffn_swiglu_with_policy_inner(
@@ -2683,13 +2767,164 @@ fn ffn_swiglu_with_policy_inner(
 
     let has_split_gate_up = w.gate_proj.is_some() && w.up_proj.is_some();
     let qwen_dense_ffn = !cfg.uses_geglu && cfg.model_family.starts_with("qwen");
+    qwen_prefill_maybe_eval_ffn_input(x, qwen_dense_ffn, seq);
+    let use_prefill_ffn_gs64 = qwen_dense_ffn && fastpath::should_qwen_prefill_ffn_gs64(seq);
+    let packed_gs64 = if use_prefill_ffn_gs64 {
+        w.gate_up_packed.as_ref().and_then(|src| {
+            cached_prefill_ffn_gs64(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_PACKED,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let gate_gs64 = if use_prefill_ffn_gs64 {
+        w.gate_proj.as_ref().and_then(|src| {
+            cached_prefill_ffn_gs64(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_GATE,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let up_gs64 = if use_prefill_ffn_gs64 {
+        w.up_proj.as_ref().and_then(|src| {
+            cached_prefill_ffn_gs64(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_UP,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let down_gs64 = if use_prefill_ffn_gs64 {
+        w.down_proj.as_ref().and_then(|src| {
+            cached_prefill_ffn_gs64(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_DOWN,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let use_prefill_ffn_q3 = qwen_dense_ffn && fastpath::should_qwen_prefill_q3_ffn(seq);
+    let packed_q3 = if use_prefill_ffn_q3 {
+        w.gate_up_packed.as_ref().and_then(|src| {
+            cached_prefill_ffn_q3(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_PACKED,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let gate_q3 = if use_prefill_ffn_q3 {
+        w.gate_proj.as_ref().and_then(|src| {
+            cached_prefill_ffn_q3(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_GATE,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let up_q3 = if use_prefill_ffn_q3 {
+        w.up_proj.as_ref().and_then(|src| {
+            cached_prefill_ffn_q3(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_UP,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let down_q3 = if use_prefill_ffn_q3 {
+        w.down_proj.as_ref().and_then(|src| {
+            cached_prefill_ffn_q3(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_DOWN,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let use_prefill_ffn_contig_w =
+        qwen_dense_ffn && fastpath::should_qwen_prefill_contiguous_ffn_weights(seq);
+    let packed_cw = if use_prefill_ffn_contig_w {
+        w.gate_up_packed.as_ref().and_then(|src| {
+            cached_prefill_ffn_contiguous_weight(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_PACKED,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let gate_cw = if use_prefill_ffn_contig_w {
+        w.gate_proj.as_ref().and_then(|src| {
+            cached_prefill_ffn_contiguous_weight(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_GATE,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let up_cw = if use_prefill_ffn_contig_w {
+        w.up_proj.as_ref().and_then(|src| {
+            cached_prefill_ffn_contiguous_weight(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_UP,
+                src,
+            )
+        })
+    } else {
+        None
+    };
+    let down_cw = if use_prefill_ffn_contig_w {
+        w.down_proj.as_ref().and_then(|src| {
+            cached_prefill_ffn_contiguous_weight(
+                cfg.compile_cache_identity,
+                layer_idx,
+                PREFILL_FFN_GS64_DOWN,
+                src,
+            )
+        })
+    } else {
+        None
+    };
     let prefer_split_gate_up = prefer_split_dense_ffn_gate_up(
         &cfg.model_family,
         qwen_dense_ffn,
         seq,
         leading_elements,
         has_split_gate_up,
-    );
+    ) || (qwen_dense_ffn
+        && fastpath::should_qwen_prefill_split_packed(&cfg.model_family, seq)
+        && (has_split_gate_up || w.gate_up_packed.is_some()));
 
     // Compiled dense FFN with packed gate_up.
     // - SwiGLU (Qwen): decode shapeless + prefill fixed-shape.
@@ -2783,8 +3018,14 @@ fn ffn_swiglu_with_policy_inner(
     // kernel can engage. Gemma4 publication-shape prefill also keeps split gate/up: paired
     // 128/512/2048 checks found its two MLX qmatmuls faster than the packed
     // fixed-shape graph, while decode retains the packed route.
-    let (gate_out, up_out) = if !prefer_split_gate_up && let Some(packed) = &w.gate_up_packed {
+    let (gate_out, up_out) = if !prefer_split_gate_up && let Some(packed_src) = &w.gate_up_packed {
+        let packed = packed_q3
+            .as_ref()
+            .or(packed_gs64.as_ref())
+            .or(packed_cw.as_ref())
+            .unwrap_or(packed_src);
         let out = qw_with_policy(x, packed, projection_policy);
+        qwen_prefill_maybe_async_packed_gate_up(&out, qwen_dense_ffn, seq);
         let packed_dim = out
             .shape()
             .last()
@@ -2883,6 +3124,7 @@ fn ffn_swiglu_with_policy_inner(
             gate_up_profile_recorded = profile_decode || profile_prefill;
             let activation_started = Instant::now();
             if let Some(ffn_hidden) = packed_swiglu_metal(&out, half) {
+                qwen_prefill_maybe_eval_ffn_hidden(&ffn_hidden, qwen_dense_ffn, seq);
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
@@ -2891,10 +3133,15 @@ fn ffn_swiglu_with_policy_inner(
                     &[&ffn_hidden],
                 );
                 let down_started = Instant::now();
-                let down = w
+                let down_src = w
                     .down_proj
                     .as_ref()
                     .expect("dense FFN layer must have down_proj");
+                let down = down_q3
+                    .as_ref()
+                    .or(down_gs64.as_ref())
+                    .or(down_cw.as_ref())
+                    .unwrap_or(down_src);
                 if let Some(norm_w) = post_norm {
                     if !profile_decode
                         && !profile_prefill
@@ -2923,6 +3170,7 @@ fn ffn_swiglu_with_policy_inner(
                         return out;
                     }
                     let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+                    qwen_prefill_maybe_async_down(&out, qwen_dense_ffn, seq);
                     forward_profile_eval_elapsed(
                         profile_decode,
                         profile_prefill,
@@ -2933,6 +3181,7 @@ fn ffn_swiglu_with_policy_inner(
                     return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
                 }
                 let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+                qwen_prefill_maybe_async_down(&out, qwen_dense_ffn, seq);
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
@@ -2948,8 +3197,33 @@ fn ffn_swiglu_with_policy_inner(
         let up = mlx_slice_last_dim(&out, half, half * 2);
         (gate, up)
     } else {
-        let gate_w = w.gate_proj.as_ref().unwrap();
-        let up_w = w.up_proj.as_ref().unwrap();
+        let split_from_packed = if w.gate_proj.is_none() {
+            w.gate_up_packed
+                .as_ref()
+                .and_then(cached_prefill_split_packed_ffn)
+        } else {
+            None
+        };
+        let gate_src = w
+            .gate_proj
+            .as_ref()
+            .or(split_from_packed.as_ref().map(|(g, _)| g))
+            .expect("dense FFN split path requires gate_proj or packed");
+        let up_src = w
+            .up_proj
+            .as_ref()
+            .or(split_from_packed.as_ref().map(|(_, u)| u))
+            .expect("dense FFN split path requires up_proj or packed");
+        let gate_w = gate_q3
+            .as_ref()
+            .or(gate_gs64.as_ref())
+            .or(gate_cw.as_ref())
+            .unwrap_or(gate_src);
+        let up_w = up_q3
+            .as_ref()
+            .or(up_gs64.as_ref())
+            .or(up_cw.as_ref())
+            .unwrap_or(up_src);
         // Multi-token dual qmm + GEGLU in one C++ call (opt-in; mlxcel sequence
         // without mx::compile). Pure A/B residual: gate_up ~3.3s.
         if cfg.uses_geglu
@@ -3512,6 +3786,8 @@ fn ffn_swiglu_with_policy_inner(
     };
     // Opt-in: co-submit dual gate/up before GEGLU (AX_MLX_ASYNC_DUAL_GATE_UP).
     // Profile residual gate_up ~3.26s; mlxcel builds both qmm then activation.
+    // Qwen p2048: default-ON async_eval of the pair at seq>=1024 (not dual-stream).
+    qwen_prefill_maybe_async_gate_up(&gate_out, &up_out, qwen_dense_ffn, seq);
     if seq > 1 && fastpath::async_dual_gate_up_enabled() {
         async_eval(&[&gate_out, &up_out]);
     }
@@ -3545,7 +3821,12 @@ fn ffn_swiglu_with_policy_inner(
     } else {
         None
     };
-    let down = down_q2.as_ref().unwrap_or(down_src);
+    let down = down_q3
+        .as_ref()
+        .or(down_gs64.as_ref())
+        .or(down_q2.as_ref())
+        .or(down_cw.as_ref())
+        .unwrap_or(down_src);
     if cfg.uses_geglu
         && seq > 1
         && !profile_decode
@@ -3616,6 +3897,7 @@ fn ffn_swiglu_with_policy_inner(
     // closure experiment.
     let activation_started = Instant::now();
     let ffn_hidden = dense_ffn_activation(cfg, &gate_out, &up_out);
+    qwen_prefill_maybe_eval_ffn_hidden(&ffn_hidden, qwen_dense_ffn, seq);
     forward_profile_eval_elapsed(
         profile_decode,
         profile_prefill,
@@ -3695,6 +3977,7 @@ fn ffn_swiglu_with_policy_inner(
             return out;
         }
         let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+        qwen_prefill_maybe_async_down(&out, qwen_dense_ffn, seq);
         forward_profile_eval_elapsed(
             profile_decode,
             profile_prefill,
@@ -3705,6 +3988,7 @@ fn ffn_swiglu_with_policy_inner(
         return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
     }
     let out = qw_with_policy(&ffn_hidden, down, projection_policy);
+    qwen_prefill_maybe_async_down(&out, qwen_dense_ffn, seq);
     forward_profile_eval_elapsed(
         profile_decode,
         profile_prefill,
@@ -3902,6 +4186,208 @@ fn cached_prefill_q2_down(
         }
         let made = crate::weights::requant_affine_to_prefill_q2(src)?;
         slot.borrow_mut().insert(key, made.clone());
+        Some(made)
+    })
+}
+
+thread_local! {
+    static PREFILL_FFN_GS64: RefCell<HashMap<(u64, usize, u8), QuantizedWeight>> =
+        RefCell::new(HashMap::new());
+}
+
+const PREFILL_FFN_GS64_PACKED: u8 = 0;
+const PREFILL_FFN_GS64_GATE: u8 = 1;
+const PREFILL_FFN_GS64_UP: u8 = 2;
+const PREFILL_FFN_GS64_DOWN: u8 = 3;
+
+fn cached_prefill_ffn_gs64(
+    model_identity: u64,
+    layer_idx: usize,
+    slot: u8,
+    src: &QuantizedWeight,
+) -> Option<QuantizedWeight> {
+    let key = (model_identity, layer_idx, slot);
+    PREFILL_FFN_GS64.with(|cache| {
+        if let Some(existing) = cache.borrow().get(&key) {
+            return Some(existing.clone());
+        }
+        let made = crate::weights::requant_affine_to_prefill_gs64(src)?;
+        cache.borrow_mut().insert(key, made.clone());
+        Some(made)
+    })
+}
+
+thread_local! {
+    static PREFILL_FFN_Q3: RefCell<HashMap<(u64, usize, u8), QuantizedWeight>> =
+        RefCell::new(HashMap::new());
+}
+
+fn cached_prefill_ffn_q3(
+    model_identity: u64,
+    layer_idx: usize,
+    slot: u8,
+    src: &QuantizedWeight,
+) -> Option<QuantizedWeight> {
+    let key = (model_identity, layer_idx, slot);
+    PREFILL_FFN_Q3.with(|cache| {
+        if let Some(existing) = cache.borrow().get(&key) {
+            return Some(existing.clone());
+        }
+        let made = crate::weights::requant_affine_to_prefill_q3(src)?;
+        cache.borrow_mut().insert(key, made.clone());
+        Some(made)
+    })
+}
+
+thread_local! {
+    static PREFILL_FFN_CONTIG_W: RefCell<HashMap<(u64, usize, u8), QuantizedWeight>> =
+        RefCell::new(HashMap::new());
+    static PREFILL_ATTN_CONTIG_W: RefCell<HashMap<usize, QuantizedWeight>> =
+        RefCell::new(HashMap::new());
+    static PREFILL_SPLIT_PACKED: RefCell<HashMap<usize, (QuantizedWeight, QuantizedWeight)>> =
+        RefCell::new(HashMap::new());
+}
+
+fn cached_prefill_split_packed_ffn(
+    src: &QuantizedWeight,
+) -> Option<(QuantizedWeight, QuantizedWeight)> {
+    let key = src as *const QuantizedWeight as usize;
+    PREFILL_SPLIT_PACKED.with(|cache| {
+        if let Some(existing) = cache.borrow().get(&key) {
+            return Some(existing.clone());
+        }
+        let made = crate::weights::split_packed_ffn_gate_up(src)?;
+        cache.borrow_mut().insert(key, made.clone());
+        Some(made)
+    })
+}
+
+/// Cache a contiguous overlay of one attention quantized projection.
+pub(crate) fn cached_prefill_attn_contiguous_weight(src: &QuantizedWeight) -> QuantizedWeight {
+    let key = src as *const QuantizedWeight as usize;
+    PREFILL_ATTN_CONTIG_W.with(|cache| {
+        if let Some(existing) = cache.borrow().get(&key) {
+            return existing.clone();
+        }
+        let made = crate::weights::contiguous_affine_weight(src);
+        cache.borrow_mut().insert(key, made.clone());
+        made
+    })
+}
+
+/// Submit FFN down qmm work before residual/next-layer rms is attached.
+fn qwen_prefill_maybe_async_down(down_out: &MlxArray, qwen_dense_ffn: bool, seq: i32) {
+    qwen_prefill_maybe_async_down_for(
+        down_out,
+        fastpath::qwen_prefill_async_down_enabled(),
+        qwen_dense_ffn,
+        seq,
+    );
+}
+
+/// Pure helper for [`qwen_prefill_maybe_async_down`].
+pub(crate) fn qwen_prefill_maybe_async_down_for(
+    down_out: &MlxArray,
+    enabled: bool,
+    qwen_dense_ffn: bool,
+    seq: i32,
+) {
+    if qwen_dense_ffn && fastpath::should_qwen_prefill_async_down_for(enabled, seq) {
+        async_eval(&[down_out]);
+    }
+}
+
+/// Materialize the Qwen SwiGLU activation once before down qmm.
+fn qwen_prefill_maybe_eval_ffn_hidden(h: &MlxArray, qwen_dense_ffn: bool, seq: i32) {
+    qwen_prefill_maybe_eval_ffn_hidden_for(
+        h,
+        fastpath::qwen_prefill_eval_ffn_hidden_enabled(),
+        qwen_dense_ffn,
+        seq,
+    );
+}
+
+/// Pure helper for [`qwen_prefill_maybe_eval_ffn_hidden`].
+pub(crate) fn qwen_prefill_maybe_eval_ffn_hidden_for(
+    h: &MlxArray,
+    enabled: bool,
+    qwen_dense_ffn: bool,
+    seq: i32,
+) {
+    if qwen_dense_ffn && fastpath::should_qwen_prefill_eval_ffn_hidden_for(enabled, seq) {
+        mlx_sys::eval(&[h]);
+    }
+}
+
+/// Submit packed gate+up qmm work before SwiGLU/down is attached.
+fn qwen_prefill_maybe_async_packed_gate_up(packed: &MlxArray, qwen_dense_ffn: bool, seq: i32) {
+    qwen_prefill_maybe_async_packed_gate_up_for(
+        packed,
+        fastpath::qwen_prefill_async_packed_gate_up_enabled(),
+        qwen_dense_ffn,
+        seq,
+    );
+}
+
+/// Pure helper for [`qwen_prefill_maybe_async_packed_gate_up`].
+pub(crate) fn qwen_prefill_maybe_async_packed_gate_up_for(
+    packed: &MlxArray,
+    enabled: bool,
+    qwen_dense_ffn: bool,
+    seq: i32,
+) {
+    if qwen_dense_ffn && fastpath::should_qwen_prefill_async_packed_gate_up_for(enabled, seq) {
+        async_eval(&[packed]);
+    }
+}
+
+/// Submit gate/up qmm work before SwiGLU/down is attached. Qwen seq>=1024 only.
+fn qwen_prefill_maybe_async_gate_up(
+    gate: &MlxArray,
+    up: &MlxArray,
+    qwen_dense_ffn: bool,
+    seq: i32,
+) {
+    if qwen_dense_ffn && fastpath::should_qwen_prefill_async_gate_up(seq) {
+        async_eval(&[gate, up]);
+    }
+}
+
+/// Materialize the Qwen dense FFN activation once before gate/up/packed qmm.
+fn qwen_prefill_maybe_eval_ffn_input(x: &MlxArray, qwen_dense_ffn: bool, seq: i32) {
+    qwen_prefill_maybe_eval_ffn_input_for(
+        x,
+        fastpath::qwen_prefill_eval_ffn_input_enabled(),
+        qwen_dense_ffn,
+        seq,
+    );
+}
+
+/// Pure helper for [`qwen_prefill_maybe_eval_ffn_input`].
+pub(crate) fn qwen_prefill_maybe_eval_ffn_input_for(
+    x: &MlxArray,
+    enabled: bool,
+    qwen_dense_ffn: bool,
+    seq: i32,
+) {
+    if qwen_dense_ffn && fastpath::should_qwen_prefill_eval_ffn_input_for(enabled, seq) {
+        mlx_sys::eval(&[x]);
+    }
+}
+
+fn cached_prefill_ffn_contiguous_weight(
+    model_identity: u64,
+    layer_idx: usize,
+    slot: u8,
+    src: &QuantizedWeight,
+) -> Option<QuantizedWeight> {
+    let key = (model_identity, layer_idx, slot);
+    PREFILL_FFN_CONTIG_W.with(|cache| {
+        if let Some(existing) = cache.borrow().get(&key) {
+            return Some(existing.clone());
+        }
+        let made = crate::weights::contiguous_affine_weight(src);
+        cache.borrow_mut().insert(key, made.clone());
         Some(made)
     })
 }
@@ -6293,7 +6779,7 @@ pub(crate) fn switch_gather_inputs(
 mod tests {
     use super::*;
     use mlx_sys::{
-        MlxQuantizationMode, add, concatenate, eval, quantize, quantized_matmul, slice,
+        MlxQuantizationMode, add, astype, concatenate, eval, quantize, quantized_matmul, slice,
         slice_last_dim,
     };
 
@@ -6552,6 +7038,333 @@ mod tests {
             fastpath::should_qwen_prefill_q2_down_for(true, 1024),
             "shipped down q2 gate must accept the p2048 chunk length"
         );
+    }
+
+    #[test]
+    fn cached_prefill_ffn_gs64_requants_4bit_gs32_and_qws() {
+        let hidden_data: Vec<f32> = (0..64 * 64)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let down_data: Vec<f32> = (0..64 * 64)
+            .map(|i| ((i as f32) - 768.0) * 0.0003)
+            .collect();
+        let hidden = array_f32(&hidden_data, &[1, 64, 64]);
+        let down_w = array_f32(&down_data, &[64, 64]);
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let gs64 = cached_prefill_ffn_gs64(0x4753_3634, 3, PREFILL_FFN_GS64_DOWN, &down)
+            .expect("4-bit gs32 down must grow a gs64 overlay");
+        assert_eq!(gs64.bits, 4);
+        assert_eq!(gs64.group_size, crate::weights::PREFILL_FFN_GS64_GROUP_SIZE);
+        let again = cached_prefill_ffn_gs64(0x4753_3634, 3, PREFILL_FFN_GS64_DOWN, &down)
+            .expect("second lookup must hit the overlay cache");
+        assert_eq!(again.group_size, gs64.group_size);
+        let out = qw(&hidden, &gs64);
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 64, 64]);
+        assert!(
+            out.data_f32().iter().all(|v| v.is_finite()),
+            "gs64 down qmm must produce finite values"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_ffn_gs64_for(true, 1024),
+            "shipped FFN gs64 gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn cached_prefill_ffn_q3_requants_4bit_and_qws() {
+        let hidden_data: Vec<f32> = (0..32 * 32)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let down_data: Vec<f32> = (0..64 * 32)
+            .map(|i| ((i as f32) - 768.0) * 0.0003)
+            .collect();
+        let hidden = array_f32(&hidden_data, &[1, 32, 32]);
+        let down_w = array_f32(&down_data, &[64, 32]);
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let q3 = cached_prefill_ffn_q3(0x5133_4646_4e51, 5, PREFILL_FFN_GS64_DOWN, &down)
+            .expect("4-bit gs32 down must grow a 3-bit overlay");
+        assert_eq!(q3.bits, crate::weights::PREFILL_FFN_Q3_BITS);
+        assert_eq!(q3.group_size, crate::weights::PREFILL_FFN_Q3_GROUP_SIZE);
+        let again = cached_prefill_ffn_q3(0x5133_4646_4e51, 5, PREFILL_FFN_GS64_DOWN, &down)
+            .expect("second lookup must hit the overlay cache");
+        assert_eq!(again.bits, q3.bits);
+        let out = qw(&hidden, &q3);
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 32, 64]);
+        assert!(
+            out.data_f32().iter().all(|v| v.is_finite()),
+            "3-bit down qmm must produce finite values"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_q3_ffn_for(true, 1024),
+            "shipped FFN q3 gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn cached_prefill_ffn_contiguous_weight_keeps_bits_and_qws() {
+        let hidden_data: Vec<f32> = (0..32 * 32)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let down_data: Vec<f32> = (0..64 * 32)
+            .map(|i| ((i as f32) - 768.0) * 0.0003)
+            .collect();
+        let hidden = array_f32(&hidden_data, &[1, 32, 32]);
+        let down_w = array_f32(&down_data, &[64, 32]);
+        let dq = quantize(
+            &down_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let contig =
+            cached_prefill_ffn_contiguous_weight(0x434f_4e54, 2, PREFILL_FFN_GS64_DOWN, &down)
+                .expect("affine down must grow a contiguous overlay");
+        assert_eq!(contig.bits, 4);
+        assert_eq!(contig.group_size, 32);
+        let again =
+            cached_prefill_ffn_contiguous_weight(0x434f_4e54, 2, PREFILL_FFN_GS64_DOWN, &down)
+                .expect("second lookup must hit the overlay cache");
+        assert_eq!(again.bits, contig.bits);
+        let out = qw(&hidden, &contig);
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 32, 64]);
+        assert!(
+            out.data_f32().iter().all(|v| v.is_finite()),
+            "contiguous-weight qmm must produce finite values"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_contiguous_ffn_weights_for(true, 1024),
+            "shipped FFN contiguous-weight gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_async_gate_up_submits_pair_at_min_seq() {
+        let gate_data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.01).collect();
+        let up_data: Vec<f32> = (0..32).map(|i| (i as f32) * -0.01).collect();
+        let gate = array_f32(&gate_data, &[1, 32, 1]);
+        let up = array_f32(&up_data, &[1, 32, 1]);
+        qwen_prefill_maybe_async_gate_up(&gate, &up, true, 1024);
+        eval(&[&gate, &up]);
+        assert_eq!(gate.shape(), vec![1, 32, 1]);
+        assert_eq!(up.shape(), vec![1, 32, 1]);
+        assert!(
+            fastpath::should_qwen_prefill_async_gate_up_for(true, 1024),
+            "shipped async gate/up gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_async_gate_up(&gate, &up, false, 1024);
+        qwen_prefill_maybe_async_gate_up(&gate, &up, true, 512);
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_async_packed_gate_up_submits_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let packed = array_f32(&data, &[1, 32, 1]);
+        qwen_prefill_maybe_async_packed_gate_up_for(&packed, true, true, 1024);
+        eval(&[&packed]);
+        assert_eq!(packed.shape(), vec![1, 32, 1]);
+        assert!(
+            packed.data_f32().iter().all(|v| v.is_finite()),
+            "async packed gate/up must leave a finite materialized tensor"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_async_packed_gate_up_for(true, 1024),
+            "shipped async packed-gate/up gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_async_packed_gate_up_for(&packed, false, true, 1024);
+        qwen_prefill_maybe_async_packed_gate_up_for(&packed, true, false, 1024);
+        qwen_prefill_maybe_async_packed_gate_up_for(&packed, true, true, 512);
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_eval_ffn_hidden_materializes_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let h = array_f32(&data, &[1, 32, 1]);
+        qwen_prefill_maybe_eval_ffn_hidden_for(&h, true, true, 1024);
+        eval(&[&h]);
+        assert_eq!(h.shape(), vec![1, 32, 1]);
+        assert!(
+            h.data_f32().iter().all(|v| v.is_finite()),
+            "eval-ffn-hidden must leave a finite materialized activation"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_eval_ffn_hidden_for(true, 1024),
+            "shipped FFN hidden-eval gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_eval_ffn_hidden_for(&h, false, true, 1024);
+        qwen_prefill_maybe_eval_ffn_hidden_for(&h, true, false, 1024);
+        qwen_prefill_maybe_eval_ffn_hidden_for(&h, true, true, 512);
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_async_down_submits_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let down = array_f32(&data, &[1, 32, 1]);
+        qwen_prefill_maybe_async_down_for(&down, true, true, 1024);
+        eval(&[&down]);
+        assert_eq!(down.shape(), vec![1, 32, 1]);
+        assert!(
+            down.data_f32().iter().all(|v| v.is_finite()),
+            "async down must leave a finite materialized tensor"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_async_down_for(true, 1024),
+            "shipped async-down gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_async_down_for(&down, false, true, 1024);
+        qwen_prefill_maybe_async_down_for(&down, true, false, 1024);
+        qwen_prefill_maybe_async_down_for(&down, true, true, 512);
+    }
+
+    #[test]
+    fn cached_prefill_attn_contiguous_weight_keeps_bits_and_qws() {
+        let hidden_data: Vec<f32> = (0..32 * 32)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let proj_data: Vec<f32> = (0..64 * 32)
+            .map(|i| ((i as f32) - 768.0) * 0.0003)
+            .collect();
+        let hidden = array_f32(&hidden_data, &[1, 32, 32]);
+        let proj_w = array_f32(&proj_data, &[64, 32]);
+        let dq = quantize(
+            &proj_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let src = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: Some(dq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let contig = cached_prefill_attn_contiguous_weight(&src);
+        assert_eq!(contig.bits, 4);
+        assert_eq!(contig.group_size, 32);
+        let again = cached_prefill_attn_contiguous_weight(&src);
+        assert_eq!(again.bits, contig.bits);
+        let out = qw(&hidden, &contig);
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 32, 64]);
+        assert!(
+            out.data_f32().iter().all(|v| v.is_finite()),
+            "contiguous attn-weight qmm must produce finite values"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_contiguous_attn_weights_for(true, "qwen3_5", 1024),
+            "shipped attn contiguous-weight gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_ffn_f32_input_promotes_bf16_at_min_seq() {
+        let data: Vec<f32> = (0..8).map(|i| (i as f32) * 0.125).collect();
+        let bf16 = astype(&array_f32(&data, &[1, 8, 1]), MlxDtype::Bfloat16, None);
+        eval(&[&bf16]);
+        assert_eq!(bf16.dtype(), MlxDtype::Bfloat16);
+        let (promoted, restore) = qwen_prefill_ffn_f32_input_for(&bf16, true, true, 1024);
+        eval(&[&promoted]);
+        assert_eq!(promoted.dtype(), MlxDtype::Float32);
+        assert_eq!(restore, Some(MlxDtype::Bfloat16));
+        let back = qwen_prefill_ffn_restore_dtype(&promoted, restore);
+        eval(&[&back]);
+        assert_eq!(back.dtype(), MlxDtype::Bfloat16);
+        let (short, short_restore) = qwen_prefill_ffn_f32_input_for(&bf16, true, true, 512);
+        assert!(short_restore.is_none());
+        assert_eq!(short.dtype(), MlxDtype::Bfloat16);
+        let (other, other_restore) = qwen_prefill_ffn_f32_input_for(&bf16, true, false, 1024);
+        assert!(other_restore.is_none());
+        assert_eq!(other.dtype(), MlxDtype::Bfloat16);
+        assert!(
+            fastpath::should_qwen_prefill_ffn_f32_input_for(true, 1024),
+            "shipped FFN f32-input gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_eval_ffn_input_materializes_at_min_seq() {
+        let data: Vec<f32> = (0..32).map(|i| (i as f32) * 0.03125).collect();
+        let x = array_f32(&data, &[1, 32, 1]);
+        qwen_prefill_maybe_eval_ffn_input_for(&x, true, true, 1024);
+        eval(&[&x]);
+        assert_eq!(x.shape(), vec![1, 32, 1]);
+        assert!(
+            x.data_f32().iter().all(|v| v.is_finite()),
+            "eval-ffn-input must leave a finite materialized activation"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_eval_ffn_input_for(true, 1024),
+            "shipped FFN input-eval gate must accept the p2048 chunk length"
+        );
+        qwen_prefill_maybe_eval_ffn_input_for(&x, false, true, 1024);
+        qwen_prefill_maybe_eval_ffn_input_for(&x, true, false, 1024);
+        qwen_prefill_maybe_eval_ffn_input_for(&x, true, true, 512);
     }
 
     #[test]

@@ -2,9 +2,9 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Standing path frozen; §6(b) 1.20 and §6(d) 1.15 still unmet (recorded, not weakened) |
+| Status | Paused 2026-08-14; §6(b) 1.20 and §6(d) 1.15 still unmet |
 | Owner | AX Engine maintainers |
-| Last updated | 2026-08-14 (standing freeze: 3b 1.032679 / 3d 1.058916 FAIL; 3a/3c PASS) |
+| Last updated | 2026-08-14 (pause report `.internal/reports/qwen36-27b-m5-prefill-decode-status-2026-08-14.md`; last remasure split-packed `efe6e151…` 3b 1.025586 / 3d 1.050229 FAIL; M5 remasure stopped) |
 | Formal host | `df-macbookpro-m5` (Apple M5 Max) |
 | Product position | Restore Qwen 3.6 27B **prefill** and **decode** to peer-competitive rates vs **mlxcel** (`.internal/reference/mlxcel`) on both community 4-bit and AXQ 6-bit, in **direct** and **MTP** |
 | Related | ADR-003 dispatch-bound decode; ADR-020 Qwen36 linear MTP Tier 2; `docs/performance/decode-gap.md`; `.internal/reports/prefill-regression-investigation-2026-07-28.md` |
@@ -375,3 +375,42 @@ Four-lane + MTP scoreboard (scratch `scoreboard.md`), unrounded:
 The §6 numeric bar is unchanged. The residual miss is prefill
 arithmetic (qmm union ≈1.89 s vs 1.978 s budget), not an
 untried software lever.
+
+GD-chunkwise remasure (binary `282cf2fd…`): community p2048
+904.570/858=1.054279 FAIL (0.996× standing). 3a PASS. AXQ p2048
+890.097/862.825=1.031608 FAIL (0.999× q2only). Wash. Flag
+restored to opt-in. MTP killed. Bar stays unrounded 1.20. Not
+committed.
+
+FFN-gs64 remasure (binary `4a2744c7…`): community p2048
+901.984/858=1.051264 FAIL (0.993× standing). 3a PASS. AXQ p2048
+881.313/862.825=1.021428 FAIL (0.989× q2only). Regression.
+Flag restored to opt-in. MTP killed. Bar stays unrounded 1.20.
+Not committed. MLX gs64 `quantized_matmul` is not faster than
+gs32 at M=1024.
+
+FFN-q3 remasure (binary `dc7036c2…`): community p2048
+870.058/858=1.014054 FAIL (0.958× standing). 3a PASS. AXQ p2048
+861.436/862.825=0.998390 FAIL (0.967× q2only). Regression.
+Flag restored to opt-in. MTP killed. Bar stays unrounded 1.20.
+Not committed. MLX 3-bit qmm is slower than 4/6-bit at M=1024.
+Bit-width overlays of FFN qmm are closed (2-bit, 3-bit, gs64).
+
+FFN-contig-w remasure (binary `99c3b4cc…`): community p2048
+901.784/858=1.051032 FAIL (0.993× standing). 3a PASS. AXQ p2048
+886.834/862.825=1.027826 FAIL (0.995× q2only). Wash. Flag
+restored to opt-in. MTP killed. Bar stays unrounded 1.20. Not
+committed.
+
+Async-gate-up remasure (binary `aebcaa13…`): community p2048
+900.214/858=1.049201 FAIL (0.991× standing). 3a PASS. AXQ p2048
+884.304/862.825=1.024894 FAIL (0.992× q2only). Wash. Flag
+restored to opt-in. MTP killed. Bar stays unrounded 1.20. Not
+committed.
+
+FFN-f32 remasure (binary `128d9a6c…`): community p2048
+747.005/858=0.870636 FAIL (0.822× standing). 3a FAIL p2048 pre
+0.804. AXQ p2048 734.296/862.825=0.851037 FAIL (0.824× q2only).
+Regression. Flag restored to opt-in. MTP killed. Bar stays
+unrounded 1.20. Not committed. F32 FFN activations make the
+steel qmm slower at M=1024.
