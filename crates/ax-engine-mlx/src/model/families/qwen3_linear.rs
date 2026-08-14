@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, MlxVectorArray, add, rms_norm, slice};
+use mlx_sys::{MlxArray, MlxVectorArray, add, add_rms_norm_pair, rms_norm, slice};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -15,6 +15,40 @@ use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::per_layer_compile::apply_layer_moe_decode;
 use crate::weights::LayerWeights;
+use std::cell::RefCell;
+
+thread_local! {
+    static PENDING_PREFILL_FFN: RefCell<Option<MlxArray>> = const { RefCell::new(None) };
+}
+
+/// Drop a leftover deferred FFN so a new generate forward starts clean.
+pub(crate) fn clear_qwen_prefill_pending_ffn() {
+    PENDING_PREFILL_FFN.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
+}
+
+fn take_qwen_prefill_pending_ffn() -> Option<MlxArray> {
+    PENDING_PREFILL_FFN.with(|slot| slot.borrow_mut().take())
+}
+
+fn stash_qwen_prefill_pending_ffn(ffn: MlxArray) {
+    PENDING_PREFILL_FFN.with(|slot| {
+        *slot.borrow_mut() = Some(ffn);
+    });
+}
+
+/// Fuse a deferred post-FFN residual into this layer's attn RMSNorm.
+///
+/// Matches `add(hidden, ffn)` then `rms_norm(..., attn_norm)`.
+pub(crate) fn apply_qwen_prefill_pending_ffn(
+    hidden: &MlxArray,
+    ffn: &MlxArray,
+    attn_norm: &MlxArray,
+    eps: f32,
+) -> (MlxArray, MlxArray) {
+    add_rms_norm_pair(hidden, ffn, attn_norm, eps, None)
+}
 
 /// Full layer forward for Qwen3.5/Qwen3Next linear-attention layers.
 ///
@@ -46,15 +80,24 @@ pub(crate) fn layer_forward(
     let profile_prefill_layer = seq > 1 && prefill_profile_enabled();
     let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
 
-    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    let (hidden_owned, normed) =
+        if fastpath::should_qwen_prefill_interlayer_add_rms(&cfg.model_family, seq as i32)
+            && let Some(ffn) = take_qwen_prefill_pending_ffn()
+        {
+            apply_qwen_prefill_pending_ffn(hidden, &ffn, &w.attn_norm, cfg.rms_norm_eps)
+        } else {
+            let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+            (hidden.clone(), normed)
+        };
+    let hidden = &hidden_owned;
     // linear_attention_forward includes its own per-layer profiling.
     let attn_proj = linear_attention_forward(cfg, w, &normed, cache, layer_idx);
 
     let residual_norm_started = profile_forward_layer.then(Instant::now);
-    let hidden = add(hidden, &attn_proj, None);
 
     // Cache-only terminal layer: linear state already in cache; residual discarded.
     if skip_post_attention_ffn {
+        let hidden = add(hidden, &attn_proj, None);
         if let Some(started) = residual_norm_started {
             forward_profile_eval_elapsed(
                 profile_decode_layer,
@@ -72,14 +115,13 @@ pub(crate) fn layer_forward(
     // to the last position is safe and avoids redundant compute on preceding
     // positions whose output will be discarded by the post-loop slice.
     let last_only_active = last_position_only && seq > 1;
-    let hidden = if last_only_active {
-        let last = (seq - 1) as i32;
-        let hs = cfg.hidden_size as i32;
-        slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
-    } else {
-        hidden
-    };
-    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    let (hidden, normed2) = qwen_linear_attn_residual_ffn_norm(
+        hidden,
+        &attn_proj,
+        &w.ffn_norm,
+        cfg.rms_norm_eps,
+        last_only_active,
+    );
     if let Some(started) = residual_norm_started {
         forward_profile_eval_elapsed(
             profile_decode_layer,
@@ -89,6 +131,15 @@ pub(crate) fn layer_forward(
             &[&normed2],
         );
     }
+
+    let should_defer_this_ffn = w.router_proj.is_none()
+        && fastpath::should_defer_qwen_prefill_ffn_residual(
+            &cfg.model_family,
+            seq as i32,
+            layer_idx,
+            cfg.is_linear_attention_layer(layer_idx.saturating_add(1)),
+            skip_post_attention_ffn,
+        );
 
     let ffn_started = profile_forward_layer.then(Instant::now);
     let out = if w.router_proj.is_some() {
@@ -181,12 +232,13 @@ pub(crate) fn layer_forward(
         } else {
             moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights)
         }
-    } else if w.ffn_post_norm.is_none() {
+    } else if w.ffn_post_norm.is_none() && !should_defer_this_ffn && w.router_proj.is_none() {
         ffn_swiglu_plus_residual(cfg, w, &normed2, None, layer_idx, &hidden)
     } else {
         ffn_swiglu(cfg, w, &normed2, None, layer_idx)
     };
-    let fused_residual = w.router_proj.is_none() && w.ffn_post_norm.is_none();
+    let fused_residual =
+        w.router_proj.is_none() && w.ffn_post_norm.is_none() && !should_defer_this_ffn;
     let ffn_out = if fused_residual {
         out
     } else {
@@ -200,6 +252,11 @@ pub(crate) fn layer_forward(
             started,
             &[&ffn_out],
         );
+    }
+
+    if should_defer_this_ffn {
+        stash_qwen_prefill_pending_ffn(ffn_out);
+        return hidden;
     }
 
     let residual_gate_started = profile_forward_layer.then(Instant::now);
@@ -218,4 +275,130 @@ pub(crate) fn layer_forward(
         );
     }
     out
+}
+
+/// Residual add + pre-FFN RMSNorm for a Qwen linear-attention layer.
+///
+/// Prefill (not last-only) uses the same `add_rms_norm_pair` fuse as
+/// full-attn `standard::layer_forward`. Last-only slices after the add
+/// so the FFN sees `[1, 1, H]`. Kill-switch keeps the split ops.
+fn qwen_linear_attn_residual_ffn_norm(
+    hidden: &MlxArray,
+    attn_proj: &MlxArray,
+    ffn_norm: &MlxArray,
+    eps: f32,
+    last_only: bool,
+) -> (MlxArray, MlxArray) {
+    if last_only {
+        let residual = add(hidden, attn_proj, None);
+        let seq = residual.shape().get(1).copied().unwrap_or(1);
+        let hs = residual.shape().get(2).copied().unwrap_or(0);
+        let last = (seq - 1).max(0);
+        let sliced = slice(
+            &residual,
+            &[0, last, 0],
+            &[1, last + 1, hs],
+            &[1, 1, 1],
+            None,
+        );
+        let normed = rms_norm(&sliced, Some(ffn_norm), eps, None);
+        return (sliced, normed);
+    }
+    if fastpath::qwen_linear_add_rms_norm_enabled() {
+        return add_rms_norm_pair(hidden, attn_proj, ffn_norm, eps, None);
+    }
+    let residual = add(hidden, attn_proj, None);
+    let normed = rms_norm(&residual, Some(ffn_norm), eps, None);
+    (residual, normed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlx_sys::{MlxDtype, eval};
+
+    fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    #[test]
+    fn qwen_linear_attn_residual_ffn_norm_matches_split_add_rms() {
+        let hidden_data: Vec<f32> = (0..256).map(|i| ((i as f32) - 128.0) * 0.015625).collect();
+        let attn_data: Vec<f32> = (0..256).map(|i| ((i as f32) - 64.0) * -0.0078125).collect();
+        let norm_data: Vec<f32> = (0..32).map(|i| 0.75 + (i as f32) * 0.01).collect();
+        let hidden = array_f32(&hidden_data, &[1, 8, 32]);
+        let attn = array_f32(&attn_data, &[1, 8, 32]);
+        let norm_w = array_f32(&norm_data, &[32]);
+        let (residual, normed) =
+            qwen_linear_attn_residual_ffn_norm(&hidden, &attn, &norm_w, 1e-6, false);
+        let split_residual = add(&hidden, &attn, None);
+        let split_normed = rms_norm(&split_residual, Some(&norm_w), 1e-6, None);
+        eval(&[&residual, &normed, &split_residual, &split_normed]);
+        assert_eq!(residual.shape(), split_residual.shape());
+        assert_eq!(normed.shape(), split_normed.shape());
+        for (a, b) in residual
+            .data_f32()
+            .iter()
+            .zip(split_residual.data_f32().iter())
+        {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "fused residual must match add: {a} vs {b}"
+            );
+        }
+        for (a, b) in normed.data_f32().iter().zip(split_normed.data_f32().iter()) {
+            assert!(
+                (a - b).abs() < 2e-3 || (a - b).abs() / (b.abs().max(1e-6)) < 2e-3,
+                "fused pre-FFN RMSNorm must match split: {a} vs {b}"
+            );
+        }
+        let (last_residual, last_normed) =
+            qwen_linear_attn_residual_ffn_norm(&hidden, &attn, &norm_w, 1e-6, true);
+        eval(&[&last_residual, &last_normed]);
+        assert_eq!(last_residual.shape(), vec![1, 1, 32]);
+        assert_eq!(last_normed.shape(), vec![1, 1, 32]);
+    }
+
+    #[test]
+    fn apply_qwen_prefill_pending_ffn_matches_add_then_rms() {
+        let hidden_data: Vec<f32> = (0..256).map(|i| ((i as f32) - 128.0) * 0.015625).collect();
+        let ffn_data: Vec<f32> = (0..256).map(|i| ((i as f32) - 32.0) * 0.01171875).collect();
+        let norm_data: Vec<f32> = (0..32).map(|i| 0.8 + (i as f32) * 0.008).collect();
+        let hidden = array_f32(&hidden_data, &[1, 8, 32]);
+        let ffn = array_f32(&ffn_data, &[1, 8, 32]);
+        let norm_w = array_f32(&norm_data, &[32]);
+        let (fused_hidden, fused_norm) =
+            apply_qwen_prefill_pending_ffn(&hidden, &ffn, &norm_w, 1e-6);
+        let split_hidden = add(&hidden, &ffn, None);
+        let split_norm = rms_norm(&split_hidden, Some(&norm_w), 1e-6, None);
+        eval(&[&fused_hidden, &fused_norm, &split_hidden, &split_norm]);
+        assert_eq!(fused_hidden.shape(), split_hidden.shape());
+        assert_eq!(fused_norm.shape(), split_norm.shape());
+        for (a, b) in fused_hidden
+            .data_f32()
+            .iter()
+            .zip(split_hidden.data_f32().iter())
+        {
+            assert!((a - b).abs() < 1e-5, "fused residual {a} vs add {b}");
+        }
+        for (a, b) in fused_norm
+            .data_f32()
+            .iter()
+            .zip(split_norm.data_f32().iter())
+        {
+            assert!(
+                (a - b).abs() < 2e-3 || (a - b).abs() / (b.abs().max(1e-6)) < 2e-3,
+                "fused attn RMSNorm {a} vs split {b}"
+            );
+        }
+        clear_qwen_prefill_pending_ffn();
+        stash_qwen_prefill_pending_ffn(ffn);
+        assert!(take_qwen_prefill_pending_ffn().is_some());
+        assert!(take_qwen_prefill_pending_ffn().is_none());
+    }
 }

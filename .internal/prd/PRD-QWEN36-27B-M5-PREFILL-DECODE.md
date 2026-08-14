@@ -2,9 +2,9 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Active; §6(b) if-branch: mlx_lm now loads AXQ; 0.90/0.97 unrounded PASS |
+| Status | Standing path frozen; §6(b) 1.20 and §6(d) 1.15 still unmet (recorded, not weakened) |
 | Owner | AX Engine maintainers |
-| Last updated | 2026-08-12 |
+| Last updated | 2026-08-14 (standing freeze: 3b 1.032679 / 3d 1.058916 FAIL; 3a/3c PASS) |
 | Formal host | `df-macbookpro-m5` (Apple M5 Max) |
 | Product position | Restore Qwen 3.6 27B **prefill** and **decode** to peer-competitive rates vs **mlxcel** (`.internal/reference/mlxcel`) on both community 4-bit and AXQ 6-bit, in **direct** and **MTP** |
 | Related | ADR-003 dispatch-bound decode; ADR-020 Qwen36 linear MTP Tier 2; `docs/performance/decode-gap.md`; `.internal/reports/prefill-regression-investigation-2026-07-28.md` |
@@ -116,7 +116,262 @@ else-branch was rejected and is not restored.
 
 Baseline mlx_lm hung on AXQ (`after` first pass used `--skip-mlx-lm`). The
 W_t remasure on `df-macbookpro-m5` loaded `mlx_lm.benchmark` on the pinned
-AXQ revision with matching prompt hashes. That engages the **if** branch
-(pre ≥ 0.90×, dec ≥ 0.97×). Measured unrounded: p128 1.014/1.074, p512
-0.993/1.076, p2048 0.962/1.078. The else-branch 1.20× of 28.78 tok/s
-(34.56, ~99.7% of 614 GB/s) is not the active bar while mlx_lm loads.
+AXQ revision with matching prompt hashes. Skeptic rejected treating the
+mlx_lm 0.90/0.97 if-branch as §6(b) completion. The restored gate is the
+else-bar: unrounded `min(prefill, decode)` ≥ 1.20× that AXQ baseline.
+
+q4 `lm_head` remasure (2026-08-13, binary `bd9f55b0…`): decode 33.774700 /
+33.674339 / 33.317386 = 1.173×; prefill 1.125058 / 1.063227 / 1.030131.
+min() FAIL.
+
+2-bit decode + seq-gated 4-bit FFN pack (binary `bb6dca12…`): decode
+34.459012 / 34.307110 / 33.946753 = 1.197/1.196/1.196; prefill 1.055 /
+1.035 / 1.021. Pack regressed prefill vs q4 and is reverted.
+
+2-bit decode-only remasure (binary `0cefe513…`): decode 34.420446 /
+34.319905 / 33.950246 = 1.196×; prefill 1.135047 / 1.069711 / 1.032679.
+min() FAIL.
+
+Streaming gated-delta one-chunk p2048 (binary `a783768e…`): prefill
+871.645145 / 862.825 = 1.010 (0.978× the 1024-chunk q2only 891). Closed
+negative; flag restored to opt-in.
+
+2048 runner chunk + GatedDelta tiled at 1024 (binary `303c3ffd…`): AXQ
+p2048 887.054718 / 862.825 = 1.028 (0.996× q2only 891). Community p2048
+904.739 / 858 = 1.054 (need 1.15). Wash; chunk cap restored to 1024.
+
+Dual-stream Qwen gate/up qmm (binary `55f15572…`): p2048 868.614 / 862.825
+= 1.007 (0.975× q2only). Closed negative; reverted.
+
+Native offset-causal SDPA (binary `ee434354…`): p2048 889.344 / 862.825 =
+1.031 (0.998× q2only 891). Wash; flag restored to opt-in.
+
+Intermediate-chunk async_eval (binary `9cc1a98e…`): p2048 890.528 / 862.825
+= 1.032 (0.999× q2only). Wash; flag restored to opt-in.
+
+Compiled dual gate/up (binary `0d149b98…`): unrounded vs AXQ baseline
+p128 446.818/390.946=1.142915, p512 749.054/700.015=1.070054, p2048
+890.962/862.825=1.032611; decode 1.196. vs q2only p2048 890.962/891.022
+= 0.9999. Wash; flag restored to opt-in.
+
+Split FFN prefill compile (binary `8b05ec6a…`): p128 441.166/390.946
+=1.128459, p512 750.117/700.015=1.071573, p2048 888.772/862.825
+=1.030072; vs q2only p2048 0.9975. Slight regression. Flag restored
+to opt-in. Else-bar still unmet. Not committed. Standing path remains
+2-bit decode-only lm_head + BF16 W_t prefill + 1024 TG + split qw.
+
+SwiGLU→down fuse (binary `bb258fa0…`): p128 441.186/390.946=1.128509,
+p512 738.981/700.015=1.055665, p2048 876.209/862.825=1.015511; vs
+q2only p2048 0.9834. Prefill regression. Flag restored to opt-in.
+Else-bar still unmet. Not committed.
+
+Qwen fused causal prefill (binary `e60c1b0b…`, offset-0 only): p128
+446.004/390.946=1.140833, p512 754.403/700.015=1.077696, p2048
+895.521/862.825=1.037893; vs q2only p2048 1.005. Offset chunks crashed
+SSE. Flag restored to opt-in. Else-bar still unmet. Not committed.
+
+Linear-attn `add_rms_norm_pair` (binary `c3030962…`): p128
+443.896/390.946=1.135440, p512 747.326/700.015=1.067586, p2048
+890.379/862.825=1.031935; vs q2only p2048 0.9993. Wash. Flag restored
+to opt-in. Else-bar still unmet. Not committed. Standing path remains
+2-bit decode-only lm_head + BF16 W_t + 1024 TG + split qw.
+
+Prefill post-input Metal (binary `35b0ef16…`): p128 443.810/390.946=1.135220,
+p512 742.344/700.015=1.060469, p2048 874.955/862.825=1.014059; vs q2only
+p2048 0.982. Regression (per-token Metal loop vs C++ conv1d). Flag restored
+to opt-in. Else-bar still unmet. Not committed.
+
+Dual qmm + SwiGLU host FFI (binary `75d6f950…`): p128 438.082/390.946=1.120568,
+p512 737.739/700.015=1.053891, p2048 875.207/862.825=1.014350; vs q2only
+p2048 0.9823. Prefill regression (~1.8% vs standing 891). Flag restored
+to opt-in. Else-bar still unmet. Not committed. Standing path remains
+2-bit decode-only lm_head + BF16 W_t + 1024 TG + split qw.
+
+GatedDelta tile-512 (binary `e187d0e9…`): AXQ p2048 892.804/862.825=1.034745
+(1.002× q2only 891). Community p2048 912.109/858=1.063065 (3d still FAIL).
+Community MTP 54.9/60.1=0.913. AXQ MTP decode dropped to 23–24 tok/s under
+this flag. Wash. Flag restored to opt-in. Not committed.
+
+Standalone flat down qmm (binary `97bfa5d0…`): p128 439.559/390.946=1.124347,
+p512 746.803/700.015=1.066839, p2048 888.334/862.825=1.029565; vs q2only
+p2048 0.997. Slight regression. Flag restored to opt-in. Else-bar still
+unmet. Not committed. Standing path remains 2-bit decode-only + 1024 TG
++ split qw.
+
+Single 2048 FFN + GD tile-512 (binary `18ea389c…`): AXQ p2048
+889.956/862.825=1.031444 (0.9988× q2only 891). Community p2048
+906.719/858=1.056783 (3d still FAIL). Same class as 2048+tile-1024 887.
+Flags restored to opt-in. Else-bar still unmet. Not committed.
+
+Qwen prefill dual qmm + SwiGLU Metal (simdgroup 8×8, binary `8f0b4e56…`):
+community p128/p512/p2048 prefill ~159/180/179 vs standing 473/783/908
+(~0.20–0.34×). Decode unchanged (~34.4). Kernel-level reject (same class
+as Gemma dual Metal 8.5×). Flag restored to opt-in. Not committed.
+Standing path remains 2-bit decode-only + 1024 TG + MLX split qw.
+
+Lazy intermediate `--ax-direct` skip-eval (binary `b50c209f…`): AXQ p128
+437.974/34.517 = 1.120292/1.199157; p512 744.862/34.387 =
+1.064065/1.198779; p2048 889.887/33.958 = 1.031365/1.196320. min()
+1.031365 FAIL. vs q2only p2048 0.9987. Community p2048 910.410/858.000
+= 1.061085 (3d FAIL; 3a PASS). Flag restored to opt-in. Not committed.
+Standing path remains 2-bit decode-only + 1024 TG + MLX split qw.
+
+Whole-FFN flatten `[B,S,H]→[B*S,H]` (binary `77435b62…`): AXQ p128
+445.717/34.415 = 1.140098/1.195616; p512 749.531/34.330 =
+1.070736/1.196804; p2048 889.673/33.944 = 1.031116/1.195850. min()
+1.031116 FAIL. vs q2only p2048 0.9985. Community p2048
+909.796/858.000=1.060369 (3d FAIL; 3a PASS). Flag restored to opt-in.
+Not committed.
+
+LA out_proj `silu_mul_quantized_matmul` (binary `2b846b04…`): AXQ p128
+445.094/34.444 = 1.138504/1.196624; p512 748.281/34.349 =
+1.068950/1.197453; p2048 890.888/33.949 = 1.032524/1.196012. min()
+1.032524 FAIL. vs q2only p2048 0.9999. Community p2048
+909.631/858.000=1.060177 (3d FAIL; 3a PASS). Flag restored to opt-in.
+Not committed. Standing path remains 2-bit decode-only + 1024 TG + MLX
+split qw.
+
+Qwen attn-norm-QKV fuse (binary `544a8b5d…`): community p128/p512/p2048
+463.775/777.160/906.020 vs standing 472.770/783.422/908.549 (p2048
+1.055968 vs base, 3d FAIL). AXQ `--ax-direct` panicked
+(`portable path materializes attn_norm`) when exact skipped the fuse.
+Flag restored to opt-in. Panic gate added. Not committed.
+
+In flight: Qwen prefill `contiguous([B,S,H])` before split FFN qmm
+(`AX_MLX_QWEN_PREFILL_CONTIGUOUS_FFN` default-ON). Not a closed fuse.
+Bar stays unrounded 1.20.
+
+Contiguous-FFN remasure (binary `f72c4606…`): AXQ p128/p512/p2048 min
+1.137266/1.072541/1.032745 FAIL. vs q2only p2048 1.000064. Community
+p2048 908.312/858=1.058639 (3d FAIL). Flag restored to opt-in.
+
+Compiled Qwen base-RoPE remasure (binary `41fd8313…`): AXQ p2048
+890.684/862.825=1.032288 FAIL (0.9996× q2only). Community p2048
+908.406/858=1.058749 (3d FAIL). Flag restored to opt-in.
+
+GatedDelta-contiguous remasure (binary `6e56e7ed…`): AXQ p128/p512/p2048
+min 1.133067/1.069044/1.030983 FAIL. vs q2only p2048 0.9984. Community
+p2048 908.438/858=1.058787 (3d FAIL; 3a PASS). Flag restored to opt-in.
+
+Per-forward QKVZ+BA concat (binary `37125559…`): AXQ p2048
+887.779/862.825=1.028921 FAIL (0.996× q2only). Community p2048
+904.615/858=1.054331 (3d FAIL; 3a PASS). Concat-every-forward tax.
+
+Load-time fused QKVZ+BA (binary `1fa58239…`): community p2048
+907.712/858=1.057940 FAIL (0.999× standing 908.5). 3a PASS. Flag
+restored to opt-in.
+
+Down-only prefill compile (binary `99f65ba3…`): community p2048
+904.141/858=1.053779 FAIL (0.995× standing 908.5). 3a PASS. Flag
+restored to opt-in.
+
+1536-chunk remasure (binary `c8658c41…`): community p2048
+899.856/858=1.048784 FAIL (0.990× standing 908.5). 3a PASS. Flag
+restored to opt-in.
+
+Compiled GatedDelta remasure (binary `26cf1a69…`): community p2048
+905.390/858=1.055235 FAIL (0.997× standing 908.5). 3a PASS. AXQ lane
+killed incomplete after 3d already FAIL. Flag restored to opt-in.
+Same class as compiled QK-RoPE / split FFN compile. Standing path
+remains 2-bit decode-only + 1024 TG + MLX split qw. Bar stays
+unrounded 1.20. Not committed.
+
+qodercli Qwen3.8-Max (2026-08-13): p2048 FFN is compute-bound inside
+MLX `quantized_matmul` (same kernel mlxcel uses). Closed ±2% washes
+are expected; **unrounded 1.20 vs own AXQ baseline is not reachable
+without requant**, which stays forbidden. Product peer remains mlxcel
+(`PRD-M5-FLEET-AX-VS-MLXCEL`). Do not treat this paragraph as a bar
+change.
+
+Packed FFN prefill compile remasure (binary `b4ada020…`): community
+p2048 904.620/858=1.054337 FAIL (0.996× standing). 3a PASS. AXQ p2048
+886.947/862.825=1.027957 FAIL (0.995× q2only 891). Packed compile
+regressed AXQ and cannot engage community 4-bit. Flag restored to
+opt-in. MTP killed after 3b/3d FAIL. Bar stays unrounded 1.20. Not
+committed.
+
+Interlayer add_rms remasure (binary `269d695d…`): community p2048
+904.845/858=1.054599 FAIL (0.996× standing). 3a PASS. AXQ p2048
+886.952/862.825=1.027962 FAIL (0.995× q2only). Wash. Flag restored
+to opt-in. MTP killed. Bar stays unrounded 1.20. Not committed.
+
+Pipeline-block remasure (binary `5a3427d3…`): community p2048
+904.335/858=1.054004 FAIL (0.995× standing). 3a PASS. AXQ p2048
+888.809/862.825=1.030115 FAIL (0.998× q2only). Wash. Flag restored
+to opt-in. MTP killed. Bar stays unrounded 1.20. Not committed.
+
+Reuse LA initial zeros remasure (binary `dc519b17…`): community p2048
+904.358/858=1.054032 FAIL (0.995× standing). 3a PASS. AXQ p2048
+888.016/862.825=1.029195 FAIL (0.997× q2only). Wash. Flag restored
+to opt-in. MTP killed. Bar stays unrounded 1.20. Not committed.
+
+Packed LA inputs compile remasure (binary `6b6b2e06…`): community p2048
+904.726/858=1.054460 FAIL (0.996× standing). 3a PASS. AXQ p2048
+888.959/862.825=1.030289 FAIL (0.998× q2only). Wash. Flag restored
+to opt-in. MTP killed. Bar stays unrounded 1.20. Not committed.
+
+LA post-input compile remasure (binary `e535cf3e…`): community p2048
+911.056/858=1.061838 FAIL (1.003× standing). 3a PASS. AXQ p2048
+894.749/862.825=1.036999 FAIL (1.004× q2only). Wash. Flag restored
+to opt-in. MTP killed. Bar stays unrounded 1.20. Not committed.
+
+LA dual-stream remasure (binary `f1d47194…`): community p2048
+894.153/858=1.042137 FAIL (0.984× standing). 3a PASS. AXQ p2048
+879.421/862.825=1.019234 FAIL (0.987× q2only). Regression. Flag
+restored to opt-in (Rust + C++). MTP killed. Bar stays unrounded
+1.20. Not committed.
+
+LA flatten remasure (binary `07de1419…`): community p2048
+904.487/858=1.054181 FAIL (0.996× standing). 3a PASS. AXQ p2048
+888.640/862.825=1.029919 FAIL (0.997× q2only). Wash. Flag restored
+to opt-in (Rust + C++). MTP killed. Bar stays unrounded 1.20. Not
+committed.
+
+LA contiguous-QKV remasure (binary `0f01c381…`): community p2048
+904.710/858=1.054442 FAIL (0.996× standing). 3a PASS. AXQ p2048
+887.915/862.825=1.029078 FAIL (0.997× q2only). Wash. Flag restored
+to opt-in. MTP killed. Bar stays unrounded 1.20. Not committed.
+
+LA prefill-q2 remasure (binary `82ffde4a…`): community p2048
+903.735/858=1.053305 FAIL (0.995× standing). 3a PASS. AXQ p2048
+889.075/862.825=1.030423 FAIL (0.998× q2only). Wash. Flag restored
+to opt-in. MTP killed. Bar stays unrounded 1.20. Not committed.
+
+Prefill-q2-down remasure (binary `1e6bcf13…`): community p2048
+904.205/858=1.053854 FAIL (0.995× standing). 3a PASS. AXQ p2048
+887.053/862.825=1.028080 FAIL (0.996× q2only). Wash/slight
+regression. Flag restored to opt-in. MTP killed. Bar stays
+unrounded 1.20. Not committed.
+
+ax-code GLM 5.2 1M (`.internal/ax-code-glm52-review/glm-final.md`):
+qoder's unreachable headline is right; FFN-only is incomplete.
+Compute-bound qmm union (FFN + LA proj + attn QKVO) ≈ 1.89 s of
+the 2.305 s wall; movable non-qmm ≈ 0.36 s. 3b needs −327 ms
+(`PASS_1_20: no ; need_ms=327 ; available_ms≈40`). Named unused
+`AX_MLX_QWEN_GD_PREFILL_CHUNKWISE` (honest 0–40 ms). Do not
+reopen custom 4-bit qmm, 2-bit overlays, or compile/flatten/
+contiguous/dual-stream. Chunkwise GD was **not** implemented:
+no 3b/3d cell can still move to the bar.
+
+## 10. Standing freeze (2026-08-14)
+
+Production path kept: 2-bit decode-only `lm_head` + BF16 `W_t`
+prefill + 1024 TG + packed C++ qw. Every later 27B experiment
+flag is default-OFF.
+
+Four-lane + MTP scoreboard (scratch `scoreboard.md`), unrounded:
+
+- **3a PASS** — community direct vs mlx_lm at p128/p512/p2048
+  (`after-wt/community-direct.json`, binary `b960bba2…`).
+- **3b FAIL 1.032679** — AXQ p2048 891.022 / 862.825 (need
+  1035.390). Decode 33.950 / 28.385 = 1.196. Source
+  `after-q2only/axq-direct.json`, binary `0cefe513…`.
+- **3c PASS** — community MTP 54.7 / mtplx 60.1 = 0.910
+  (`after-wt` flappy matrix). AXQ MTP decode 34.95–36.75 ≥
+  AXQ direct on gen=128 (`after-wt/axq-mtp.json`).
+- **3d FAIL 1.058916** — community p2048 908.549 / 857.999
+  (need 986.699).
+
+The §6 numeric bar is unchanged. The residual miss is prefill
+arithmetic (qmm union ≈1.89 s vs 1.978 s budget), not an
+untried software lever.

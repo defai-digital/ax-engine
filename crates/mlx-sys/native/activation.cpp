@@ -1,9 +1,11 @@
 #include "ax_shim_internal.h"
 
+#include <cstring>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -38,6 +40,38 @@ static thread_local std::optional<linear_attn_scale_cache> la_scale_cache;
 // Static string avoids per-call std::string("affine") construction in every
 // quantized matmul dispatch.
 static const std::string kAffineMode("affine");
+
+// Default-OFF after remasure f1d47194… regressed AXQ p2048 879 vs 891.
+// Enable with AX_MLX_QWEN_LA_DUAL_STREAM_QKVZ_BA=1. Not FFN dual-stream.
+bool qwen_la_dual_stream_qkvz_ba_env_enabled() {
+  const char* v = std::getenv("AX_MLX_QWEN_LA_DUAL_STREAM_QKVZ_BA");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
+std::pair<mx::Stream, mx::Stream>& qwen_la_dual_streams() {
+  static std::pair<mx::Stream, mx::Stream> streams = []() {
+    return std::make_pair(
+        mx::new_stream(mx::Device::gpu), mx::new_stream(mx::Device::gpu));
+  }();
+  return streams;
+}
+
+// Default-OFF after remasure 07de1419… washed AXQ p2048 888.640 vs 891.
+// Enable with AX_MLX_QWEN_LA_FLAT_INPUTS=1. Not whole-FFN flatten.
+bool qwen_la_flat_inputs_env_enabled() {
+  const char* v = std::getenv("AX_MLX_QWEN_LA_FLAT_INPUTS");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
 
 mx::array gelu_approx_mul_impl(
     const mx::array& gate,
@@ -137,6 +171,39 @@ mx::array dual_qmm_geglu_impl(
   return gelu_approx_mul_impl(gate, up, stream);
 }
 
+// Qwen SwiGLU analog of dual_qmm_geglu: two affine qmms + silu(gate)*up.
+// Does NOT compile, pack, fuse into down, or dual-stream. Targets the
+// p2048 profile gate_up (837ms) + activation (54ms) residual.
+mx::array dual_qmm_swiglu_impl(
+    const mx::array& x,
+    const mx::array& gate_weight,
+    const mx::array& gate_scales,
+    std::optional<mx::array> gate_biases,
+    const mx::array& up_weight,
+    const mx::array& up_scales,
+    std::optional<mx::array> up_biases,
+    int group_size,
+    int bits,
+    mx::StreamOrDevice stream) {
+  auto gate = quantized_matmul_affine_impl(
+      x,
+      gate_weight,
+      gate_scales,
+      std::move(gate_biases),
+      group_size,
+      bits,
+      stream);
+  auto up = quantized_matmul_affine_impl(
+      x,
+      up_weight,
+      up_scales,
+      std::move(up_biases),
+      group_size,
+      bits,
+      stream);
+  return silu_mul_impl(gate, up, stream);
+}
+
 mx::array projection_affine_or_dense_impl(
     const mx::array& x,
     const mx::array& weight,
@@ -194,14 +261,52 @@ qwen_linear_attention_inputs_packed_impl(
     throw std::runtime_error("num_value_heads must be divisible by num_key_heads");
   }
 
+  mx::StreamOrDevice qkvz_s = stream;
+  mx::StreamOrDevice ba_s = stream;
+  const int seq_hint = (x.ndim() >= 2) ? x.shape(x.ndim() - 2) : 1;
+  if (seq_hint >= 1024 && qwen_la_dual_stream_qkvz_ba_env_enabled()) {
+    auto& streams = qwen_la_dual_streams();
+    qkvz_s = streams.first;
+    ba_s = streams.second;
+  }
+
+  mx::array x_qmm = x;
+  const bool flatten = seq_hint >= 1024 && x.ndim() == 3 &&
+                       qwen_la_flat_inputs_env_enabled();
+  if (flatten) {
+    x_qmm = mx::reshape(x, {x.shape(0) * seq_hint, x.shape(2)}, stream);
+  }
+
+  // Issue both independent qmms before reshape/slice so M5 Max can overlap
+  // them when dual-stream is on. Single-stream path is unchanged numerically.
   auto mixed_qkvz = projection_affine_or_dense_impl(
-      x,
+      x_qmm,
       qkvz_weight,
       std::move(qkvz_scales),
       std::move(qkvz_biases),
       group_size,
       bits,
-      stream);
+      qkvz_s);
+  const int ba_gs = ba_group_size > 0 ? ba_group_size : group_size;
+  const int ba_b = ba_bits > 0 ? ba_bits : bits;
+  auto mixed_ba = projection_affine_or_dense_impl(
+      x_qmm,
+      ba_weight,
+      std::move(ba_scales),
+      std::move(ba_biases),
+      ba_gs,
+      ba_b,
+      ba_s);
+  if (flatten) {
+    if (mixed_qkvz.ndim() == 2) {
+      mixed_qkvz = mx::reshape(
+          mixed_qkvz, {x.shape(0), seq_hint, mixed_qkvz.shape(1)}, stream);
+    }
+    if (mixed_ba.ndim() == 2) {
+      mixed_ba = mx::reshape(
+          mixed_ba, {x.shape(0), seq_hint, mixed_ba.shape(1)}, stream);
+    }
+  }
   if (mixed_qkvz.ndim() != 3) {
     throw std::runtime_error("packed qkvz projection must produce [B, S, C]");
   }
@@ -244,16 +349,6 @@ qwen_linear_attention_inputs_packed_impl(
       stream);
   z = mx::reshape(z, {batch, seq, num_value_heads, value_head_dim}, stream);
 
-  const int ba_gs = ba_group_size > 0 ? ba_group_size : group_size;
-  const int ba_b = ba_bits > 0 ? ba_bits : bits;
-  auto mixed_ba = projection_affine_or_dense_impl(
-      x,
-      ba_weight,
-      std::move(ba_scales),
-      std::move(ba_biases),
-      ba_gs,
-      ba_b,
-      stream);
   if (mixed_ba.ndim() != 3) {
     throw std::runtime_error("packed ba projection must produce [B, S, C]");
   }
@@ -409,6 +504,22 @@ bool compiled_qk_norm_rope_env_enabled() {
           s == "ON" || s == "YES");
 }
 
+// Qwen 3.5/3.6 full-attn uses base-RoPE (no freqs). The freqs compile above
+// never engages. **Default OFF** after remasure 890.684 vs 891.022 (2026-08-13).
+bool compiled_qk_norm_rope_qwen_default_on() {
+  const char* v = std::getenv("AX_MLX_QWEN_COMPILED_QK_NORM_ROPE");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
+bool compiled_qk_norm_rope_any_enabled() {
+  return compiled_qk_norm_rope_env_enabled() || compiled_qk_norm_rope_qwen_default_on();
+}
+
 using CompiledQkNormRopeFn =
     std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
 
@@ -486,6 +597,81 @@ CompiledQkNormRopeFn& get_compiled_qk_norm_rope_freqs(
   return iter->second;
 }
 
+CompiledQkNormRopeFn& get_compiled_qk_norm_rope_base(
+    int n_heads,
+    int head_dim,
+    int rope_dims,
+    bool traditional,
+    float eps,
+    float base,
+    uint64_t shape_sig) {
+  struct Key {
+    int n_heads;
+    int head_dim;
+    int rope_dims;
+    int traditional;
+    float eps;
+    float base;
+    uint64_t shape_sig;
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const noexcept {
+      size_t h = std::hash<int>{}(k.n_heads);
+      h ^= std::hash<int>{}(k.head_dim) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<int>{}(k.rope_dims) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<int>{}(k.traditional) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<float>{}(k.eps) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<float>{}(k.base) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<uint64_t>{}(k.shape_sig) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  struct KeyEq {
+    bool operator()(const Key& a, const Key& b) const noexcept {
+      return a.n_heads == b.n_heads && a.head_dim == b.head_dim &&
+             a.rope_dims == b.rope_dims && a.traditional == b.traditional &&
+             a.eps == b.eps && a.base == b.base && a.shape_sig == b.shape_sig;
+    }
+  };
+  static std::mutex& mu = *new std::mutex();
+  static std::unordered_map<Key, CompiledQkNormRopeFn, KeyHash, KeyEq>& cache =
+      *new std::unordered_map<Key, CompiledQkNormRopeFn, KeyHash, KeyEq>();
+  std::lock_guard<std::mutex> lock(mu);
+  Key key{n_heads, head_dim, rope_dims, traditional ? 1 : 0, eps, base, shape_sig};
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  auto fn = [n_heads, head_dim, rope_dims, traditional, eps, base](
+                const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+    const auto& proj = inputs[0];
+    const auto& norm_w = inputs[1];
+    const auto& offset_arr = inputs[2];
+    auto batch = proj.shape(0);
+    auto seq = proj.shape(1);
+    mx::Shape bhsd_shape{batch, n_heads, seq, head_dim};
+    mx::Strides bhsd_strides{
+        static_cast<int64_t>(seq) * n_heads * head_dim,
+        head_dim,
+        static_cast<int64_t>(n_heads) * head_dim,
+        1};
+    auto bhsd = mx::as_strided(proj, bhsd_shape, bhsd_strides, 0);
+    auto normed = mx::fast::rms_norm(bhsd, norm_w, eps);
+    auto out = mx::fast::rope(
+        normed,
+        rope_dims,
+        traditional,
+        std::make_optional(base),
+        1.0f,
+        offset_arr,
+        std::nullopt);
+    return {std::move(out)};
+  };
+  mx::enable_compile();
+  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/false));
+  return iter->second;
+}
+
 uint64_t qk_norm_rope_shape_sig(const mx::array& proj) {
   uint64_t h = static_cast<uint64_t>(proj.ndim());
   for (auto d : proj.shape()) {
@@ -523,6 +709,24 @@ mx::array qk_norm_rope_bhsd_from_proj_impl(
   // Compiled proportional / freqs path (mlxcel parity). Requires norm weight
   // + freqs (proportional full-attention). Falls through for sliding default
   // rope (base, no freqs) and for decode shapes when env is off.
+  if (compiled_qk_norm_rope_any_enabled() && norm.has_value() && has_base && seq > 1 &&
+      !freqs.has_value()) {
+    auto offset_arr = mx::array(offset);
+    auto& compiled_fn = get_compiled_qk_norm_rope_base(
+        n_heads,
+        head_dim,
+        rope_dims,
+        traditional,
+        eps,
+        base,
+        qk_norm_rope_shape_sig(proj));
+    auto result = compiled_fn({proj, *norm, offset_arr});
+    if (result.size() != 1) {
+      throw std::runtime_error("compiled qk_norm_rope base expected one output");
+    }
+    return std::move(result[0]);
+  }
+
   if (compiled_qk_norm_rope_env_enabled() && norm.has_value() && freqs.has_value() &&
       !has_base) {
     auto offset_arr = mx::array(offset);
@@ -792,6 +996,38 @@ extern "C" int ax_mlx_gelu_approx_mul_quantized_matmul(
   AX_TRY {
     auto s = sd(stream);
     auto hidden = gelu_approx_mul_impl(aref(gate), aref(x), s);
+    aset(
+        res,
+        quantized_matmul_affine_impl(
+            hidden,
+            aref(weight),
+            aref(scales),
+            opt_arr(biases),
+            group_size,
+            bits,
+            s));
+    return 0;
+  } AX_CATCH
+}
+
+// Qwen SwiGLU analog of gelu_approx_mul_quantized_matmul: one C++ graph
+// for silu(gate)*up → down affine qmm. Gemma GEGLU fuse stays separate.
+extern "C" int ax_mlx_silu_mul_quantized_matmul(
+    mlx_array* res,
+    const mlx_array gate,
+    const mlx_array x,
+    const mlx_array weight,
+    const mlx_array scales,
+    const mlx_array biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    if (group_size <= 0 || bits <= 0) {
+      return 1;
+    }
+    auto s = sd(stream);
+    auto hidden = silu_mul_impl(aref(gate), aref(x), s);
     aset(
         res,
         quantized_matmul_affine_impl(
@@ -1238,7 +1474,92 @@ uint64_t dual_gate_up_shape_sig(const ShapeLike& shape) {
   return h;
 }
 
+// Shared body for env-gated (Gemma, default OFF) and forced (Qwen split
+// prefill) dual-qmm compile. `force` skips AX_MLX_COMPILED_DUAL_GATE_UP so
+// Qwen 27B p2048 can compile two affine qmms without flipping Gemma.
+int compiled_dual_gate_up_qmm_body(
+    mlx_array* gate_res,
+    mlx_array* up_res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    int group_size,
+    int bits,
+    bool force) {
+  if (!force && !compiled_dual_gate_up_env_enabled()) {
+    return 1;
+  }
+  if (group_size <= 0 || bits <= 0) {
+    return 1;
+  }
+  if (!gate_biases.ctx || !up_biases.ctx) {
+    return 1;
+  }
+  const auto& x_shape = aref(x).shape();
+  // Multi-token prefill only (decode already has cheap seq==1 path).
+  const bool multi_token =
+      x_shape.size() >= 2 && x_shape[x_shape.size() - 2] > 1;
+  if (!multi_token) {
+    return 1;
+  }
+  const uint64_t shape_sig = dual_gate_up_shape_sig(x_shape);
+  auto& compiled_fn =
+      get_compiled_dual_gate_up_qmm(group_size, bits, shape_sig);
+  auto result = compiled_fn({
+      aref(x),
+      aref(gate_weight),
+      aref(gate_scales),
+      aref(gate_biases),
+      aref(up_weight),
+      aref(up_scales),
+      aref(up_biases),
+  });
+  if (result.size() != 2) {
+    return 1;
+  }
+  aset(gate_res, std::move(result[0]));
+  aset(up_res, std::move(result[1]));
+  return 0;
+}
+
 } // namespace
+
+extern "C" int ax_mlx_dual_qmm_swiglu(
+    mlx_array* res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    if (group_size <= 0 || bits <= 0) {
+      return 1;
+    }
+    aset(
+        res,
+        dual_qmm_swiglu_impl(
+            aref(x),
+            aref(gate_weight),
+            aref(gate_scales),
+            opt_arr(gate_biases),
+            aref(up_weight),
+            aref(up_scales),
+            opt_arr(up_biases),
+            group_size,
+            bits,
+            sd(stream)));
+    return 0;
+  } AX_CATCH
+}
 
 extern "C" int ax_mlx_dual_qmm_geglu(
     mlx_array* res,
@@ -1377,41 +1698,267 @@ extern "C" int ax_mlx_compiled_dual_gate_up_qmm(
     const mlx_stream stream) {
   AX_TRY {
     (void)stream;
-    if (!compiled_dual_gate_up_env_enabled()) {
-      return 1;
-    }
-    if (group_size <= 0 || bits <= 0) {
-      return 1;
-    }
-    if (!gate_biases.ctx || !up_biases.ctx) {
-      return 1;
-    }
-    const auto& x_shape = aref(x).shape();
-    // Multi-token prefill only (decode already has cheap seq==1 path).
-    const bool multi_token =
-        x_shape.size() >= 2 && x_shape[x_shape.size() - 2] > 1;
-    if (!multi_token) {
-      return 1;
-    }
-    const uint64_t shape_sig = dual_gate_up_shape_sig(x_shape);
-    auto& compiled_fn =
-        get_compiled_dual_gate_up_qmm(group_size, bits, shape_sig);
-    auto result = compiled_fn({
-        aref(x),
-        aref(gate_weight),
-        aref(gate_scales),
-        aref(gate_biases),
-        aref(up_weight),
-        aref(up_scales),
-        aref(up_biases),
-    });
-    if (result.size() != 2) {
-      return 1;
-    }
-    aset(gate_res, std::move(result[0]));
-    aset(up_res, std::move(result[1]));
-    return 0;
+    return compiled_dual_gate_up_qmm_body(
+        gate_res,
+        up_res,
+        x,
+        gate_weight,
+        gate_scales,
+        gate_biases,
+        up_weight,
+        up_scales,
+        up_biases,
+        group_size,
+        bits,
+        /*force=*/false);
   } AX_CATCH
+}
+
+extern "C" int ax_mlx_compiled_dual_gate_up_qmm_forced(
+    mlx_array* gate_res,
+    mlx_array* up_res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    (void)stream;
+    return compiled_dual_gate_up_qmm_body(
+        gate_res,
+        up_res,
+        x,
+        gate_weight,
+        gate_scales,
+        gate_biases,
+        up_weight,
+        up_scales,
+        up_biases,
+        group_size,
+        bits,
+        /*force=*/true);
+  } AX_CATCH
+}
+
+// Shape-specific compile of packed QKVZ/BA projection (two affine qmm +
+// reshape/slice/concat). Not FFN compile, not GatedDelta compile. Weights
+// stay inputs so one graph covers every layer with the same shape/bits.
+namespace {
+
+using CompiledPackedLaFn =
+    std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+
+static const std::string kPackedLaAffineMode("affine");
+
+uint64_t packed_la_shape_sig(const mx::Shape& shape) {
+  uint64_t h = static_cast<uint64_t>(shape.size());
+  for (auto d : shape) {
+    h = h * 1315423911u + static_cast<uint64_t>(static_cast<uint32_t>(d));
+  }
+  return h;
+}
+
+mx::array packed_la_slice_last(const mx::array& x, int start, int stop) {
+  mx::Shape starts(x.ndim(), 0);
+  mx::Shape stops = x.shape();
+  starts[x.ndim() - 1] = start;
+  stops[x.ndim() - 1] = stop;
+  return mx::slice(x, std::move(starts), std::move(stops));
+}
+
+CompiledPackedLaFn& get_compiled_packed_la_inputs(
+    int num_key_heads,
+    int num_value_heads,
+    int key_head_dim,
+    int value_head_dim,
+    int group_size,
+    int bits,
+    int ba_group_size,
+    int ba_bits,
+    uint64_t shape_sig) {
+  struct Key {
+    int num_key_heads;
+    int num_value_heads;
+    int key_head_dim;
+    int value_head_dim;
+    int group_size;
+    int bits;
+    int ba_group_size;
+    int ba_bits;
+    uint64_t shape_sig;
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const noexcept {
+      size_t h = std::hash<int>{}(k.num_key_heads);
+      auto mix = [&](int v) {
+        h ^= std::hash<int>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      };
+      mix(k.num_value_heads);
+      mix(k.key_head_dim);
+      mix(k.value_head_dim);
+      mix(k.group_size);
+      mix(k.bits);
+      mix(k.ba_group_size);
+      mix(k.ba_bits);
+      h ^= std::hash<uint64_t>{}(k.shape_sig) + 0x9e3779b9 + (h << 6) +
+           (h >> 2);
+      return h;
+    }
+  };
+  struct KeyEq {
+    bool operator()(const Key& a, const Key& b) const noexcept {
+      return a.num_key_heads == b.num_key_heads &&
+             a.num_value_heads == b.num_value_heads &&
+             a.key_head_dim == b.key_head_dim &&
+             a.value_head_dim == b.value_head_dim &&
+             a.group_size == b.group_size && a.bits == b.bits &&
+             a.ba_group_size == b.ba_group_size && a.ba_bits == b.ba_bits &&
+             a.shape_sig == b.shape_sig;
+    }
+  };
+  static std::mutex mu;
+  static std::unordered_map<Key, CompiledPackedLaFn, KeyHash, KeyEq> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  Key key{num_key_heads, num_value_heads, key_head_dim, value_head_dim,
+          group_size,    bits,            ba_group_size, ba_bits, shape_sig};
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  auto fn = [=](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+    // inputs: x, qkvz_w, qkvz_s, qkvz_b, ba_w, ba_s, ba_b
+    const auto& x = inputs[0];
+    auto mixed_qkvz = mx::quantized_matmul(
+        x,
+        inputs[1],
+        inputs[2],
+        std::optional<mx::array>(inputs[3]),
+        true,
+        std::make_optional<int>(group_size),
+        std::make_optional<int>(bits),
+        kPackedLaAffineMode);
+    const int batch = mixed_qkvz.shape(0);
+    const int seq = mixed_qkvz.shape(1);
+    const int value_heads_per_key = num_value_heads / num_key_heads;
+    const int value_dim_per_key = value_heads_per_key * value_head_dim;
+    const int qkvz_per_key = key_head_dim * 2 + value_dim_per_key * 2;
+    mixed_qkvz = mx::reshape(
+        mixed_qkvz, {batch, seq, num_key_heads, qkvz_per_key});
+    auto q = packed_la_slice_last(mixed_qkvz, 0, key_head_dim);
+    auto k = packed_la_slice_last(mixed_qkvz, key_head_dim, key_head_dim * 2);
+    auto v = packed_la_slice_last(
+        mixed_qkvz, key_head_dim * 2, key_head_dim * 2 + value_dim_per_key);
+    auto z = packed_la_slice_last(
+        mixed_qkvz, key_head_dim * 2 + value_dim_per_key, qkvz_per_key);
+    const int key_dim = num_key_heads * key_head_dim;
+    const int value_dim = num_value_heads * value_head_dim;
+    auto qkv = mx::concatenate(
+        {
+            mx::reshape(q, {batch, seq, key_dim}),
+            mx::reshape(k, {batch, seq, key_dim}),
+            mx::reshape(v, {batch, seq, value_dim}),
+        },
+        2);
+    z = mx::reshape(z, {batch, seq, num_value_heads, value_head_dim});
+    auto mixed_ba = mx::quantized_matmul(
+        x,
+        inputs[4],
+        inputs[5],
+        std::optional<mx::array>(inputs[6]),
+        true,
+        std::make_optional<int>(ba_group_size),
+        std::make_optional<int>(ba_bits),
+        kPackedLaAffineMode);
+    auto ba = mx::reshape(
+        mixed_ba, {batch, seq, num_key_heads, value_heads_per_key * 2});
+    auto b = mx::reshape(
+        packed_la_slice_last(ba, 0, value_heads_per_key),
+        {batch, seq, num_value_heads});
+    auto a = mx::reshape(
+        packed_la_slice_last(ba, value_heads_per_key, value_heads_per_key * 2),
+        {batch, seq, num_value_heads});
+    return {std::move(qkv), std::move(z), std::move(a), std::move(b)};
+  };
+  mx::enable_compile();
+  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/false));
+  return iter->second;
+}
+
+} // namespace
+
+extern "C" int ax_mlx_qwen_linear_attention_inputs_packed_compiled(
+    mlx_array* qkv_res,
+    mlx_array* z_res,
+    mlx_array* a_res,
+    mlx_array* b_res,
+    const mlx_array x,
+    const mlx_array qkvz_weight,
+    const mlx_array qkvz_scales,
+    const mlx_array qkvz_biases,
+    const mlx_array ba_weight,
+    const mlx_array ba_scales,
+    const mlx_array ba_biases,
+    int num_key_heads,
+    int num_value_heads,
+    int key_head_dim,
+    int value_head_dim,
+    int group_size,
+    int bits,
+    int ba_group_size,
+    int ba_bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    (void)stream;
+    if (group_size <= 0 || bits <= 0 || ba_group_size <= 0 || ba_bits <= 0) {
+      return 1;
+    }
+    if (!qkvz_scales.ctx || !qkvz_biases.ctx || !ba_scales.ctx ||
+        !ba_biases.ctx) {
+      return 1;
+    }
+    if (num_key_heads <= 0 || num_value_heads <= 0 || key_head_dim <= 0 ||
+        value_head_dim <= 0 || num_value_heads % num_key_heads != 0) {
+      return 1;
+    }
+    const auto& x_ref = aref(x);
+    const auto& x_shape = x_ref.shape();
+    if (x_shape.size() < 2 || x_shape[x_shape.size() - 2] <= 1) {
+      return 1;
+    }
+    auto& compiled_fn = get_compiled_packed_la_inputs(
+        num_key_heads,
+        num_value_heads,
+        key_head_dim,
+        value_head_dim,
+        group_size,
+        bits,
+        ba_group_size,
+        ba_bits,
+        packed_la_shape_sig(x_shape));
+    auto result = compiled_fn({
+        x_ref,
+        aref(qkvz_weight),
+        aref(qkvz_scales),
+        aref(qkvz_biases),
+        aref(ba_weight),
+        aref(ba_scales),
+        aref(ba_biases),
+    });
+    if (result.size() != 4) {
+      return 1;
+    }
+    aset(qkv_res, std::move(result[0]));
+    aset(z_res, std::move(result[1]));
+    aset(a_res, std::move(result[2]));
+    aset(b_res, std::move(result[3]));
+    return 0;
+  }
+  AX_CATCH
 }
 
 extern "C" int ax_mlx_qwen_linear_attention_inputs_packed(
@@ -1459,6 +2006,199 @@ extern "C" int ax_mlx_qwen_linear_attention_inputs_packed(
     aset(b_res, std::move(b));
     return 0;
   } AX_CATCH
+}
+
+// Shape-specific compile of the existing C++ post-input block. Not the
+// closed prefill post-input Metal kernel and not GatedDelta compile.
+// Conv state is always an input so chunk 1 (zeros) and chunk 2 share one
+// graph keyed by shape + scales.
+namespace {
+
+using CompiledLaPostInputFn =
+    std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
+
+mx::array compiled_post_input_slice_last(
+    const mx::array& x, int start, int stop) {
+  mx::Shape starts(x.ndim(), 0);
+  mx::Shape stops = x.shape();
+  starts[x.ndim() - 1] = start;
+  stops[x.ndim() - 1] = stop;
+  return mx::slice(x, std::move(starts), std::move(stops));
+}
+
+uint64_t compiled_post_input_shape_sig(const mx::Shape& shape) {
+  uint64_t h = static_cast<uint64_t>(shape.size());
+  for (auto d : shape) {
+    h = h * 1315423911u + static_cast<uint64_t>(static_cast<uint32_t>(d));
+  }
+  return h;
+}
+
+CompiledLaPostInputFn& get_compiled_la_post_input(
+    int num_key_heads,
+    int key_head_dim,
+    int num_value_heads,
+    int value_head_dim,
+    int conv_kernel_dim,
+    float q_scale,
+    float k_scale,
+    float rms_norm_eps,
+    uint64_t shape_sig) {
+  struct Key {
+    int num_key_heads;
+    int key_head_dim;
+    int num_value_heads;
+    int value_head_dim;
+    int conv_kernel_dim;
+    uint32_t q_scale_bits;
+    uint32_t k_scale_bits;
+    uint32_t eps_bits;
+    uint64_t shape_sig;
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const noexcept {
+      size_t h = std::hash<int>{}(k.num_key_heads);
+      auto mix_i = [&](int v) {
+        h ^= std::hash<int>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      };
+      auto mix_u = [&](uint32_t v) {
+        h ^= std::hash<uint32_t>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      };
+      mix_i(k.key_head_dim);
+      mix_i(k.num_value_heads);
+      mix_i(k.value_head_dim);
+      mix_i(k.conv_kernel_dim);
+      mix_u(k.q_scale_bits);
+      mix_u(k.k_scale_bits);
+      mix_u(k.eps_bits);
+      h ^= std::hash<uint64_t>{}(k.shape_sig) + 0x9e3779b9 + (h << 6) +
+           (h >> 2);
+      return h;
+    }
+  };
+  struct KeyEq {
+    bool operator()(const Key& a, const Key& b) const noexcept {
+      return a.num_key_heads == b.num_key_heads &&
+             a.key_head_dim == b.key_head_dim &&
+             a.num_value_heads == b.num_value_heads &&
+             a.value_head_dim == b.value_head_dim &&
+             a.conv_kernel_dim == b.conv_kernel_dim &&
+             a.q_scale_bits == b.q_scale_bits &&
+             a.k_scale_bits == b.k_scale_bits && a.eps_bits == b.eps_bits &&
+             a.shape_sig == b.shape_sig;
+    }
+  };
+  static std::mutex mu;
+  static std::unordered_map<Key, CompiledLaPostInputFn, KeyHash, KeyEq> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  uint32_t q_bits = 0;
+  uint32_t k_bits = 0;
+  uint32_t e_bits = 0;
+  std::memcpy(&q_bits, &q_scale, sizeof(q_bits));
+  std::memcpy(&k_bits, &k_scale, sizeof(k_bits));
+  std::memcpy(&e_bits, &rms_norm_eps, sizeof(e_bits));
+  Key key{num_key_heads, key_head_dim, num_value_heads, value_head_dim,
+          conv_kernel_dim, q_bits, k_bits, e_bits, shape_sig};
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  auto fn = [=](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+    // inputs: qkv, conv_weight, conv_state
+    const auto& qkv = inputs[0];
+    const auto& conv_weight = inputs[1];
+    const auto& conv_state = inputs[2];
+    const int batch = qkv.shape(0);
+    const int seq = qkv.shape(1);
+    const int conv_dim = qkv.shape(2);
+    const int key_dim = num_key_heads * key_head_dim;
+    const int value_dim = num_value_heads * value_head_dim;
+    const int tail_len = conv_kernel_dim - 1;
+    auto conv_input = mx::concatenate({conv_state, qkv}, 1);
+    const int total = conv_input.shape(1);
+    auto new_conv_state = mx::slice(
+        conv_input,
+        mx::Shape{0, total - tail_len, 0},
+        mx::Shape{batch, total, conv_dim},
+        mx::Shape{1, 1, 1});
+    auto conv_out =
+        mx::conv1d(conv_input, conv_weight, 1, 0, 1, conv_dim);
+    conv_out = mx::multiply(conv_out, mx::sigmoid(conv_out));
+    auto q_flat = compiled_post_input_slice_last(conv_out, 0, key_dim);
+    auto k_flat = compiled_post_input_slice_last(conv_out, key_dim, 2 * key_dim);
+    auto v_flat = compiled_post_input_slice_last(
+        conv_out, 2 * key_dim, 2 * key_dim + value_dim);
+    auto q = mx::reshape(q_flat, {batch, seq, num_key_heads, key_head_dim});
+    auto k = mx::reshape(k_flat, {batch, seq, num_key_heads, key_head_dim});
+    auto v =
+        mx::reshape(v_flat, {batch, seq, num_value_heads, value_head_dim});
+    std::optional<mx::array> no_weight = std::nullopt;
+    q = mx::fast::rms_norm(q, no_weight, rms_norm_eps);
+    k = mx::fast::rms_norm(k, no_weight, rms_norm_eps);
+    q = mx::multiply(q, mx::array(q_scale, q.dtype()));
+    k = mx::multiply(k, mx::array(k_scale, k.dtype()));
+    return {std::move(q), std::move(k), std::move(v), std::move(new_conv_state)};
+  };
+  mx::enable_compile();
+  auto [iter, _] = cache.emplace(key, mx::compile(fn, /*shapeless=*/false));
+  return iter->second;
+}
+
+} // namespace
+
+extern "C" int ax_mlx_qwen_linear_attention_post_input_compiled(
+    mlx_array* q_res,
+    mlx_array* k_res,
+    mlx_array* v_res,
+    mlx_array* new_conv_state_res,
+    const mlx_array qkv,
+    const mlx_array conv_weight,
+    const mlx_array cached_conv_state,
+    int num_key_heads,
+    int key_head_dim,
+    int num_value_heads,
+    int value_head_dim,
+    int conv_kernel_dim,
+    float q_scale,
+    float k_scale,
+    float rms_norm_eps,
+    const mlx_stream stream) {
+  AX_TRY {
+    (void)stream;
+    if (num_key_heads <= 0 || num_value_heads <= 0 || key_head_dim <= 0 ||
+        value_head_dim <= 0 || conv_kernel_dim <= 1 ||
+        num_value_heads % num_key_heads != 0) {
+      return 1;
+    }
+    if (!cached_conv_state.ctx) {
+      return 1;
+    }
+    const auto& qkv_ref = aref(qkv);
+    const auto& qkv_shape = qkv_ref.shape();
+    if (qkv_shape.size() < 2 || qkv_shape[qkv_shape.size() - 2] <= 1) {
+      return 1;
+    }
+    auto& compiled_fn = get_compiled_la_post_input(
+        num_key_heads,
+        key_head_dim,
+        num_value_heads,
+        value_head_dim,
+        conv_kernel_dim,
+        q_scale,
+        k_scale,
+        rms_norm_eps,
+        compiled_post_input_shape_sig(qkv_shape));
+    auto result = compiled_fn({qkv_ref, aref(conv_weight), aref(cached_conv_state)});
+    if (result.size() != 4) {
+      return 1;
+    }
+    aset(q_res, std::move(result[0]));
+    aset(k_res, std::move(result[1]));
+    aset(v_res, std::move(result[2]));
+    aset(new_conv_state_res, std::move(result[3]));
+    return 0;
+  }
+  AX_CATCH
 }
 
 extern "C" int ax_mlx_qwen_linear_attention_post_input(

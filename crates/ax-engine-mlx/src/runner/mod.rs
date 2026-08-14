@@ -1597,18 +1597,16 @@ impl MlxRunner {
         // `AX_MLX_MLA_PREFILL_CHUNK=N`. Non-MLA tiers ignore MLA resolution
         // and keep the caller-supplied cold chunk.
         //
-        // Linear-attention tiers (Qwen3.5 9B, Qwen3-Next family — Qwen 3.6
-        // and Qwen Coder Next) clamp prefill chunks to the medium GatedDelta
-        // specialization (1024). The 2048 TG-cache tier was measured to lose
-        // ~15% per-token throughput vs 1024 on Qwen 3.6 27B (Hv=48). Opt-in
-        // streaming prefill can raise the cap (no TG CacheCapacity array).
+        // Linear-attention tiers keep a 2048 runner chunk. GatedDelta tiles
+        // at 1024 TG (the winning specialization). Streaming remains opt-in.
+        // Whole-stack 1024 clamp forced FFN to M=1024 (891 vs mlx_lm 951).
         let linear_attention_chunk_cap =
             if (0..cfg.layer_count).any(|i| cfg.is_linear_attention_layer(i)) {
-                if crate::fastpath::qwen_gated_delta_prefill_streaming_enabled() {
-                    Some(crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY)
-                } else {
-                    Some(crate::linear_attention_ops::GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY)
-                }
+                Some(
+                    crate::linear_attention_ops::linear_attention_prefill_chunk_cap(
+                        crate::fastpath::qwen_gated_delta_prefill_streaming_enabled(),
+                    ),
+                )
             } else {
                 None
             };
@@ -16081,6 +16079,9 @@ mod tests {
             in_proj_b: Some(unit_weight()),
             in_proj_qkvz: None,
             in_proj_ba: None,
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
             conv1d_bias: None,
             d: None,
             conv1d_dense: mlx_sys::zeros(&[1, 1, 1], MlxDtype::Float32, None),
@@ -16099,6 +16100,9 @@ mod tests {
             in_proj_b: None,
             in_proj_qkvz: Some(unit_weight()),
             in_proj_ba: Some(unit_weight()),
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
             conv1d_bias: None,
             d: None,
             conv1d_dense: mlx_sys::zeros(&[1, 1, 1], MlxDtype::Float32, None),

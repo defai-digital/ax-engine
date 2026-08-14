@@ -1,6 +1,8 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, concatenate, qwen_linear_attention_inputs_packed,
-    qwen_linear_attention_post_input, reshape, slice, slice_last_dim, zeros,
+    MlxArray, MlxDtype, concatenate, contiguous, qwen_linear_attention_inputs_packed,
+    qwen_linear_attention_inputs_packed_compiled, qwen_linear_attention_post_input,
+    qwen_linear_attention_post_input_compiled, reshape, rms_norm, silu_mul_quantized_matmul, slice,
+    slice_last_dim, zeros,
 };
 use std::time::Instant;
 
@@ -30,7 +32,41 @@ use crate::linear_attention_ops::{
     linear_attention_decode_post_input_metal, normalize_linear_attention_qk,
     rms_norm_gated_with_full_gate_policy, split_linear_attention_qkv,
 };
-use crate::weights::{LayerWeights, LinearAttentionWeights};
+use crate::weights::{LayerWeights, LinearAttentionWeights, QuantizedWeight};
+use std::cell::RefCell;
+
+thread_local! {
+    static INITIAL_RECURRENT_ZEROS: RefCell<Option<((i32, i32, i32), MlxArray)>> =
+        const { RefCell::new(None) };
+}
+
+/// Initial gated-delta recurrent state (`mx.zeros(..., float32)`).
+///
+/// When [`fastpath::should_reuse_la_initial_state_zeros`] is on, reuse one
+/// template per thread for the common Qwen hybrid shape so p2048 chunk 1
+/// does not allocate 48 identical zeros tensors.
+fn initial_recurrent_state_zeros(linear_cfg: &LinearAttentionConfig) -> MlxArray {
+    let dims = (
+        linear_cfg.num_value_heads as i32,
+        linear_cfg.value_head_dim as i32,
+        linear_cfg.key_head_dim as i32,
+    );
+    let shape = [1, dims.0, dims.1, dims.2];
+    if !fastpath::should_reuse_la_initial_state_zeros() {
+        return zeros(&shape, MlxDtype::Float32, None);
+    }
+    INITIAL_RECURRENT_ZEROS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((cached_dims, arr)) = slot.as_ref()
+            && *cached_dims == dims
+        {
+            return arr.clone();
+        }
+        let arr = zeros(&shape, MlxDtype::Float32, None);
+        *slot = Some((dims, arr.clone()));
+        arr
+    })
+}
 
 pub(crate) fn linear_attention_forward(
     cfg: &ModelConfig,
@@ -90,18 +126,9 @@ pub(crate) fn linear_attention_forward(
     let a_log_f32 = linear_w.a_log.clone();
     let dt_bias_f32 = linear_w.dt_bias.clone();
     // State is always float32: mlx_lm initialises state as mx.zeros(..., dtype=mx.float32).
-    let state = recurrent_state.cloned().unwrap_or_else(|| {
-        zeros(
-            &[
-                1,
-                linear_cfg.num_value_heads as i32,
-                linear_cfg.value_head_dim as i32,
-                linear_cfg.key_head_dim as i32,
-            ],
-            MlxDtype::Float32,
-            None,
-        )
-    });
+    let state = recurrent_state
+        .cloned()
+        .unwrap_or_else(|| initial_recurrent_state_zeros(linear_cfg));
     // g and beta are computed inside the Metal kernel (fused) instead of as separate
     // lazy MLX ops, eliminating ~8 kernel dispatches per layer.
     let (out, new_recurrent_state, prefix_recurrent_state) =
@@ -135,15 +162,26 @@ pub(crate) fn linear_attention_forward(
     }
 
     let profile_started = Instant::now();
-    let out = rms_norm_gated_with_full_gate_policy(
-        &out,
-        &z,
-        &linear_w.norm,
-        cfg.rms_norm_eps,
-        linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx),
-    );
-    let flat = reshape(&out, &[1, seq, linear_cfg.value_dim() as i32], None);
-    let out = qw(&flat, &linear_w.out_proj);
+    let value_dim = linear_cfg.value_dim() as i32;
+    let out = if let Some(fused) =
+        try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim)
+    {
+        fused
+    } else {
+        let out = rms_norm_gated_with_full_gate_policy(
+            &out,
+            &z,
+            &linear_w.norm,
+            cfg.rms_norm_eps,
+            linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx),
+        );
+        let flat = if fastpath::should_skip_unused_la_out_reshape(&out.shape(), seq, value_dim) {
+            out
+        } else {
+            reshape(&out, &[1, seq, value_dim], None)
+        };
+        qw(&flat, &linear_w.out_proj)
+    };
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::Output,
@@ -151,6 +189,33 @@ pub(crate) fn linear_attention_forward(
         &[&out],
     );
     out
+}
+
+fn try_qwen_la_out_proj_silu_mul_qmm(
+    cfg: &ModelConfig,
+    hidden: &MlxArray,
+    gate: &MlxArray,
+    linear_w: &LinearAttentionWeights,
+    seq: i32,
+    value_dim: i32,
+) -> Option<MlxArray> {
+    if !fastpath::should_qwen_la_out_proj_silu_mul_qmm(&cfg.model_family, seq) {
+        return None;
+    }
+    let scales = linear_w.out_proj.scales.as_ref()?;
+    let normed = rms_norm(hidden, Some(&linear_w.norm), cfg.rms_norm_eps, None);
+    let flat_n = reshape(&normed, &[1, seq, value_dim], None);
+    let flat_z = reshape(gate, &[1, seq, value_dim], None);
+    silu_mul_quantized_matmul(
+        &flat_z,
+        &flat_n,
+        &linear_w.out_proj.weight,
+        scales,
+        linear_w.out_proj.biases.as_ref(),
+        linear_w.out_proj.group_size,
+        linear_w.out_proj.bits,
+        None,
+    )
 }
 
 fn linear_attention_conv_prefix_state(
@@ -427,10 +492,20 @@ fn linear_attention_post_input(
     let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(cfg)
         && fastpath::qwen_direct_cpp_linear_attention_post_input_enabled();
     let seq = qkv.shape().get(1).copied().unwrap_or_default();
+    let qkv_storage = if fastpath::should_qwen_la_contiguous_qkv(seq) {
+        Some(contiguous(qkv, None))
+    } else {
+        None
+    };
+    let qkv = qkv_storage.as_ref().unwrap_or(qkv);
     let speculative_multi_token =
         (2..=4).contains(&seq) && fastpath::qwen_linear_mtp_exact_enabled();
+    let prefill_metal = seq > 1
+        && seq <= crate::linear_attention_ops::GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32
+        && fastpath::qwen_linear_attention_prefill_post_input_metal_enabled();
     if (seq == 1 || speculative_multi_token)
         && fastpath::qwen_linear_attention_decode_post_input_metal_enabled()
+        || prefill_metal
     {
         record_linear_attention_decode_post_input_metal_attempt();
         if profile_enabled {
@@ -456,6 +531,33 @@ fn linear_attention_post_input(
         if profile_enabled {
             record_linear_attention_direct_cpp_post_input_profile_blocked();
             record_linear_attention_direct_cpp_post_input_fallback();
+        } else if fastpath::should_qwen_la_post_input_compile(seq)
+            && let Some(state) = cached_conv_state.cloned().or_else(|| {
+                let batch = qkv.shape().first().copied().unwrap_or(1);
+                let tail = (linear_cfg.conv_kernel_dim as i32 - 1).max(0);
+                Some(zeros(
+                    &[batch, tail, linear_cfg.conv_dim() as i32],
+                    qkv.dtype(),
+                    None,
+                ))
+            })
+            && let Some(outputs) = qwen_linear_attention_post_input_compiled(
+                qkv,
+                &linear_w.conv1d_dense,
+                &state,
+                linear_cfg.num_key_heads as i32,
+                linear_cfg.key_head_dim as i32,
+                linear_cfg.num_value_heads as i32,
+                linear_cfg.value_head_dim as i32,
+                linear_cfg.conv_kernel_dim as i32,
+                linear_cfg.q_scale,
+                linear_cfg.k_scale,
+                cfg.rms_norm_eps,
+                None,
+            )
+        {
+            record_linear_attention_direct_cpp_post_input_hit();
+            return outputs;
         } else if let Some(outputs) = qwen_linear_attention_post_input(
             qkv,
             &linear_w.conv1d_dense,
@@ -509,6 +611,22 @@ pub(crate) fn linear_attention_inputs(
     profile_enabled: bool,
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
     if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
+        let (qkvz_w, ba_w) = if fastpath::should_qwen_la_prefill_q2(seq) {
+            match (w.prefill_q2_qkvz.as_ref(), w.prefill_q2_ba.as_ref()) {
+                (Some(q2_qkvz), Some(q2_ba)) => (q2_qkvz, q2_ba),
+                _ => (qkvz_w, ba_w),
+            }
+        } else {
+            (qkvz_w, ba_w)
+        };
+        if !fastpath::qwen_linear_mtp_exact_enabled()
+            && !profile_enabled
+            && should_fuse_qkvz_ba_qmm(qkvz_w, ba_w, seq)
+            && let Some(outputs) =
+                linear_attention_inputs_fused_qmm(cfg, x, qkvz_w, ba_w, w.fused_qkvz_ba.as_ref())
+        {
+            return outputs;
+        }
         let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(model_cfg)
             && fastpath::qwen_direct_cpp_linear_attention_inputs_enabled()
             && !fastpath::qwen_linear_mtp_exact_enabled();
@@ -730,6 +848,154 @@ pub(crate) const fn linear_attention_prefill_allows_mixed_pack(
     !mixed_quant || seq > 1
 }
 
+fn should_fuse_qkvz_ba_qmm(qkvz_w: &QuantizedWeight, ba_w: &QuantizedWeight, seq: i32) -> bool {
+    fastpath::should_qwen_la_fused_qkvz_ba_qmm(seq, qkvz_w.matching_affine_quant(ba_w))
+}
+
+fn packed_la_outputs_match_cfg(
+    qkv: &MlxArray,
+    z: &MlxArray,
+    a: &MlxArray,
+    b: &MlxArray,
+    x: &MlxArray,
+    cfg: &LinearAttentionConfig,
+) -> bool {
+    let seq = x.shape()[1];
+    qkv.shape() == vec![1, seq, cfg.conv_dim() as i32]
+        && z.shape()
+            == vec![
+                1,
+                seq,
+                cfg.num_value_heads as i32,
+                cfg.value_head_dim as i32,
+            ]
+        && a.shape() == vec![1, seq, cfg.num_value_heads as i32]
+        && b.shape() == vec![1, seq, cfg.num_value_heads as i32]
+}
+
+fn packed_qkvz_ba_widths(cfg: &LinearAttentionConfig) -> (i32, i32) {
+    let value_heads_per_key = cfg.num_value_heads / cfg.num_key_heads;
+    let value_dim_per_key = value_heads_per_key * cfg.value_head_dim;
+    let qkvz_per_key = cfg.key_head_dim * 2 + value_dim_per_key * 2;
+    (
+        (cfg.num_key_heads * qkvz_per_key) as i32,
+        (cfg.num_key_heads * value_heads_per_key * 2) as i32,
+    )
+}
+
+fn split_packed_qkvz_ba_projection(
+    cfg: &LinearAttentionConfig,
+    mixed_qkvz: &MlxArray,
+    mixed_ba: &MlxArray,
+    batch: i32,
+    seq: i32,
+) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
+    let value_heads_per_key = cfg.num_value_heads / cfg.num_key_heads;
+    let value_dim_per_key = value_heads_per_key * cfg.value_head_dim;
+    let qkvz_per_key = cfg.key_head_dim * 2 + value_dim_per_key * 2;
+    let mixed_qkvz = reshape(
+        mixed_qkvz,
+        &[batch, seq, cfg.num_key_heads as i32, qkvz_per_key as i32],
+        None,
+    );
+    let q = slice_last_dim(&mixed_qkvz, 0, cfg.key_head_dim as i32, None);
+    let k = slice_last_dim(
+        &mixed_qkvz,
+        cfg.key_head_dim as i32,
+        (cfg.key_head_dim * 2) as i32,
+        None,
+    );
+    let v = slice_last_dim(
+        &mixed_qkvz,
+        (cfg.key_head_dim * 2) as i32,
+        (cfg.key_head_dim * 2 + value_dim_per_key) as i32,
+        None,
+    );
+    let z = slice_last_dim(
+        &mixed_qkvz,
+        (cfg.key_head_dim * 2 + value_dim_per_key) as i32,
+        qkvz_per_key as i32,
+        None,
+    );
+    let qkv = concatenate(
+        &[
+            &reshape(&q, &[batch, seq, cfg.key_dim() as i32], None),
+            &reshape(&k, &[batch, seq, cfg.key_dim() as i32], None),
+            &reshape(&v, &[batch, seq, cfg.value_dim() as i32], None),
+        ],
+        2,
+        None,
+    );
+    let z = reshape(
+        &z,
+        &[
+            batch,
+            seq,
+            cfg.num_value_heads as i32,
+            cfg.value_head_dim as i32,
+        ],
+        None,
+    );
+    let ba = reshape(
+        mixed_ba,
+        &[
+            batch,
+            seq,
+            cfg.num_key_heads as i32,
+            (value_heads_per_key * 2) as i32,
+        ],
+        None,
+    );
+    let b = reshape(
+        &slice_last_dim(&ba, 0, value_heads_per_key as i32, None),
+        &[batch, seq, cfg.num_value_heads as i32],
+        None,
+    );
+    let a = reshape(
+        &slice_last_dim(
+            &ba,
+            value_heads_per_key as i32,
+            (value_heads_per_key * 2) as i32,
+            None,
+        ),
+        &[batch, seq, cfg.num_value_heads as i32],
+        None,
+    );
+    (qkv, z, a, b)
+}
+
+fn linear_attention_inputs_fused_qmm(
+    cfg: &LinearAttentionConfig,
+    x: &MlxArray,
+    qkvz_w: &QuantizedWeight,
+    ba_w: &QuantizedWeight,
+    load_fused: Option<&QuantizedWeight>,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    let owned = if load_fused.is_none() {
+        qkvz_w.concat_output_rows(ba_w)
+    } else {
+        None
+    };
+    let fused = load_fused.or(owned.as_ref())?;
+    let mixed = qw(x, fused);
+    let (qkvz_out, ba_out) = packed_qkvz_ba_widths(cfg);
+    let last = *mixed.shape().last()?;
+    if last != qkvz_out + ba_out {
+        return None;
+    }
+    let batch = x.shape().first().copied().unwrap_or(1);
+    let seq = x.shape().get(1).copied()?;
+    let mixed_qkvz = slice_last_dim(&mixed, 0, qkvz_out, None);
+    let mixed_ba = slice_last_dim(&mixed, qkvz_out, qkvz_out + ba_out, None);
+    Some(split_packed_qkvz_ba_projection(
+        cfg,
+        &mixed_qkvz,
+        &mixed_ba,
+        batch,
+        seq,
+    ))
+}
+
 fn linear_attention_inputs_packed_direct(
     cfg: &LinearAttentionConfig,
     x: &MlxArray,
@@ -765,6 +1031,36 @@ fn linear_attention_inputs_packed_direct(
     };
     let ba_bits = if mixed_quant { ba_w.bits } else { bits };
 
+    if fastpath::should_qwen_packed_la_inputs_compile(seq)
+        && let (Some(qkvz_scales), Some(qkvz_biases), Some(ba_scales), Some(ba_biases)) = (
+            qkvz_w.scales.as_ref(),
+            qkvz_w.biases.as_ref(),
+            ba_w.scales.as_ref(),
+            ba_w.biases.as_ref(),
+        )
+        && let Some(compiled) = qwen_linear_attention_inputs_packed_compiled(
+            x,
+            &qkvz_w.weight,
+            qkvz_scales,
+            qkvz_biases,
+            &ba_w.weight,
+            ba_scales,
+            ba_biases,
+            cfg.num_key_heads as i32,
+            cfg.num_value_heads as i32,
+            cfg.key_head_dim as i32,
+            cfg.value_head_dim as i32,
+            group_size,
+            bits,
+            ba_group_size,
+            ba_bits,
+            None,
+        )
+        .filter(|(qkv, z, a, b)| packed_la_outputs_match_cfg(qkv, z, a, b, x, cfg))
+    {
+        return Some(compiled);
+    }
+
     qwen_linear_attention_inputs_packed(
         x,
         &qkvz_w.weight,
@@ -783,18 +1079,7 @@ fn linear_attention_inputs_packed_direct(
         ba_bits,
         None,
     )
-    .filter(|(qkv, z, a, b)| {
-        qkv.shape() == vec![1, x.shape()[1], cfg.conv_dim() as i32]
-            && z.shape()
-                == vec![
-                    1,
-                    x.shape()[1],
-                    cfg.num_value_heads as i32,
-                    cfg.value_head_dim as i32,
-                ]
-            && a.shape() == vec![1, x.shape()[1], cfg.num_value_heads as i32]
-            && b.shape() == vec![1, x.shape()[1], cfg.num_value_heads as i32]
-    })
+    .filter(|(qkv, z, a, b)| packed_la_outputs_match_cfg(qkv, z, a, b, x, cfg))
 }
 
 // ---------------------------------------------------------------------------
@@ -898,5 +1183,459 @@ mod tests {
         assert!(!linear_attention_prefill_allows_mixed_pack(1, true));
         assert!(linear_attention_prefill_allows_mixed_pack(1, false));
         assert!(linear_attention_prefill_allows_mixed_pack(128, false));
+    }
+
+    #[test]
+    fn packed_la_inputs_compile_matches_imperative_at_min_seq() {
+        let seq = fastpath::QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ;
+        let hidden = 32_i32;
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 4,
+            num_key_heads: 2,
+            key_head_dim: 4,
+            value_head_dim: 4,
+            conv_kernel_dim: 4,
+            q_scale: 0.25,
+            k_scale: 0.5,
+        };
+        let (qkvz_out, ba_out) = packed_qkvz_ba_widths(&cfg);
+        let x_data: Vec<f32> = (0..(seq * hidden))
+            .map(|i| ((i as f32) - 31.0) * 0.015625)
+            .collect();
+        let qkvz_data: Vec<f32> = (0..(qkvz_out * hidden))
+            .map(|i| ((i as f32) - 400.0) * 0.0005)
+            .collect();
+        let ba_data: Vec<f32> = (0..(ba_out * hidden))
+            .map(|i| ((i as f32) - 80.0) * 0.001)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_w = MlxArray::from_raw_data(
+            qkvz_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkvz_data.as_slice()),
+            &[qkvz_out, hidden],
+            MlxDtype::Float32,
+        );
+        let ba_w = MlxArray::from_raw_data(
+            ba_data.as_ptr() as *const u8,
+            std::mem::size_of_val(ba_data.as_slice()),
+            &[ba_out, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_q = mlx_sys::quantize(
+            &qkvz_w,
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let ba_q = mlx_sys::quantize(
+            &ba_w,
+            Some(32),
+            Some(6),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let qkvz_qw = affine_quant_weight(
+            qkvz_q[0].clone(),
+            qkvz_q[1].clone(),
+            qkvz_q[2].clone(),
+            4,
+            32,
+        );
+        let ba_qw = affine_quant_weight(ba_q[0].clone(), ba_q[1].clone(), ba_q[2].clone(), 6, 32);
+        assert!(
+            fastpath::should_qwen_packed_la_inputs_compile_for(true, seq),
+            "shipped compile gate must accept the p2048 chunk length"
+        );
+        let (compiled_qkv, compiled_z, compiled_a, compiled_b) =
+            qwen_linear_attention_inputs_packed_compiled(
+                &x,
+                &qkvz_qw.weight,
+                qkvz_qw.scales.as_ref().expect("qkvz scales"),
+                qkvz_qw.biases.as_ref().expect("qkvz biases"),
+                &ba_qw.weight,
+                ba_qw.scales.as_ref().expect("ba scales"),
+                ba_qw.biases.as_ref().expect("ba biases"),
+                cfg.num_key_heads as i32,
+                cfg.num_value_heads as i32,
+                cfg.key_head_dim as i32,
+                cfg.value_head_dim as i32,
+                32,
+                4,
+                32,
+                6,
+                None,
+            )
+            .expect("compiled packed LA inputs must engage at seq>=1024");
+        let (imp_qkv, imp_z, imp_a, imp_b) = qwen_linear_attention_inputs_packed(
+            &x,
+            &qkvz_qw.weight,
+            qkvz_qw.scales.as_ref(),
+            qkvz_qw.biases.as_ref(),
+            &ba_qw.weight,
+            ba_qw.scales.as_ref(),
+            ba_qw.biases.as_ref(),
+            cfg.num_key_heads as i32,
+            cfg.num_value_heads as i32,
+            cfg.key_head_dim as i32,
+            cfg.value_head_dim as i32,
+            32,
+            4,
+            32,
+            6,
+            None,
+        )
+        .expect("imperative packed LA inputs must stay the fallback");
+        mlx_sys::eval(&[
+            &compiled_qkv,
+            &compiled_z,
+            &compiled_a,
+            &compiled_b,
+            &imp_qkv,
+            &imp_z,
+            &imp_a,
+            &imp_b,
+        ]);
+        for (got, want, name) in [
+            (&compiled_qkv, &imp_qkv, "qkv"),
+            (&compiled_z, &imp_z, "z"),
+            (&compiled_a, &imp_a, "a"),
+            (&compiled_b, &imp_b, "b"),
+        ] {
+            assert_eq!(got.shape(), want.shape(), "{name} shape");
+            let g = got.data_f32();
+            let w = want.data_f32();
+            assert_eq!(g.len(), w.len(), "{name} len");
+            for i in 0..g.len() {
+                let err = (g[i] - w[i]).abs();
+                assert!(
+                    err < 2.0e-4,
+                    "{name}[{i}] compiled {} imperative {} err {err}",
+                    g[i],
+                    w[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn contiguous_packed_qkv_post_input_matches_view() {
+        let seq = 2_i32;
+        let num_key_heads = 2_i32;
+        let key_head_dim = 4_i32;
+        let num_value_heads = 4_i32;
+        let value_head_dim = 3_i32;
+        let conv_kernel_dim = 4_i32;
+        let conv_dim = num_key_heads * key_head_dim * 2 + num_value_heads * value_head_dim;
+        let tail = conv_kernel_dim - 1;
+        let qkv_data: Vec<f32> = (0..(seq * conv_dim))
+            .map(|i| ((i as f32) - 16.0) * 0.0625)
+            .collect();
+        let conv_data: Vec<f32> = (0..(conv_dim * conv_kernel_dim))
+            .map(|i| ((i as f32) - 32.0) * 0.015625)
+            .collect();
+        let state_data: Vec<f32> = (0..(tail * conv_dim))
+            .map(|i| ((i as f32) - 8.0) * 0.03125)
+            .collect();
+        let dense = MlxArray::from_raw_data(
+            qkv_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkv_data.as_slice()),
+            &[1, seq, conv_dim],
+            MlxDtype::Float32,
+        );
+        let half = conv_dim / 2;
+        let view = concatenate(
+            &[
+                &slice_last_dim(&dense, 0, half, None),
+                &slice_last_dim(&dense, half, conv_dim, None),
+            ],
+            2,
+            None,
+        );
+        let compact = contiguous(&view, None);
+        let conv_weight = MlxArray::from_raw_data(
+            conv_data.as_ptr() as *const u8,
+            std::mem::size_of_val(conv_data.as_slice()),
+            &[conv_dim, conv_kernel_dim, 1],
+            MlxDtype::Float32,
+        );
+        let state = MlxArray::from_raw_data(
+            state_data.as_ptr() as *const u8,
+            std::mem::size_of_val(state_data.as_slice()),
+            &[1, tail, conv_dim],
+            MlxDtype::Float32,
+        );
+        let (q_s, k_s, v_s, st_s) = qwen_linear_attention_post_input(
+            &view,
+            &conv_weight,
+            Some(&state),
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            conv_kernel_dim,
+            0.5,
+            0.5,
+            1.0e-6,
+            None,
+        )
+        .expect("view qkv post-input");
+        let (q_c, k_c, v_c, st_c) = qwen_linear_attention_post_input(
+            &compact,
+            &conv_weight,
+            Some(&state),
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            conv_kernel_dim,
+            0.5,
+            0.5,
+            1.0e-6,
+            None,
+        )
+        .expect("contiguous qkv post-input");
+        mlx_sys::eval(&[&q_s, &k_s, &v_s, &st_s, &q_c, &k_c, &v_c, &st_c]);
+        assert_eq!(q_s.shape(), q_c.shape());
+        assert_eq!(k_s.shape(), k_c.shape());
+        assert_eq!(v_s.shape(), v_c.shape());
+        assert_eq!(st_s.shape(), st_c.shape());
+        for (got, want, name) in [
+            (&q_c, &q_s, "q"),
+            (&k_c, &k_s, "k"),
+            (&v_c, &v_s, "v"),
+            (&st_c, &st_s, "state"),
+        ] {
+            let g = contiguous(got, None);
+            let w = contiguous(want, None);
+            mlx_sys::eval(&[&g, &w]);
+            let gd = g.data_f32();
+            let wd = w.data_f32();
+            assert_eq!(gd.len(), wd.len(), "{name} len");
+            for i in 0..gd.len() {
+                let err = (gd[i] - wd[i]).abs();
+                assert!(
+                    err < 2.0e-4,
+                    "{name}[{i}] contiguous {} view {} err {err}",
+                    gd[i],
+                    wd[i]
+                );
+            }
+        }
+        assert!(
+            fastpath::should_qwen_la_contiguous_qkv_for(true, 1024),
+            "shipped contiguous gate must accept the p2048 chunk length"
+        );
+    }
+
+    fn affine_quant_weight(
+        weight: MlxArray,
+        scales: MlxArray,
+        biases: MlxArray,
+        bits: i32,
+        group_size: i32,
+    ) -> QuantizedWeight {
+        QuantizedWeight {
+            weight,
+            scales: Some(scales),
+            biases: Some(biases),
+            group_size,
+            bits,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        }
+    }
+
+    #[test]
+    fn matching_affine_quant_rejects_mixed_bits() {
+        let w = mlx_sys::zeros(&[4, 8], MlxDtype::Uint32, None);
+        let s = mlx_sys::zeros(&[4, 1], MlxDtype::Float32, None);
+        let b = mlx_sys::zeros(&[4, 1], MlxDtype::Float32, None);
+        let q4 = affine_quant_weight(w.clone(), s.clone(), b.clone(), 4, 32);
+        let q6 = affine_quant_weight(w, s, b, 6, 32);
+        assert!(q4.matching_affine_quant(&q4));
+        assert!(!q4.matching_affine_quant(&q6));
+        assert!(!should_fuse_qkvz_ba_qmm(&q4, &q6, 1024));
+        assert!(
+            !fastpath::should_qwen_la_fused_qkvz_ba_qmm_for(true, 1, true),
+            "decode must not take the fused prefill qmm"
+        );
+    }
+
+    #[test]
+    fn initial_recurrent_state_zeros_reuses_shape() {
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 4,
+            num_key_heads: 2,
+            key_head_dim: 8,
+            value_head_dim: 4,
+            conv_kernel_dim: 4,
+            q_scale: 0.125,
+            k_scale: 0.35355338,
+        };
+        let a = initial_recurrent_state_zeros(&cfg);
+        let b = initial_recurrent_state_zeros(&cfg);
+        assert_eq!(a.shape(), vec![1, 4, 4, 8]);
+        assert_eq!(b.shape(), a.shape());
+        assert_eq!(a.dtype(), MlxDtype::Float32);
+    }
+
+    #[test]
+    fn fused_qkvz_ba_qmm_matches_split_two_qmm() {
+        let seq = 2_i32;
+        let hidden = 32_i32;
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 4,
+            num_key_heads: 2,
+            key_head_dim: 4,
+            value_head_dim: 4,
+            conv_kernel_dim: 4,
+            q_scale: 0.25,
+            k_scale: 0.5,
+        };
+        let (qkvz_out, ba_out) = packed_qkvz_ba_widths(&cfg);
+        let x_data: Vec<f32> = (0..(seq * hidden))
+            .map(|i| ((i as f32) - 31.0) * 0.03125)
+            .collect();
+        let qkvz_data: Vec<f32> = (0..(qkvz_out * hidden))
+            .map(|i| ((i as f32) - 400.0) * 0.0005)
+            .collect();
+        let ba_data: Vec<f32> = (0..(ba_out * hidden))
+            .map(|i| ((i as f32) - 80.0) * 0.001)
+            .collect();
+        let from_f32 = |data: &[f32], shape: &[i32]| {
+            MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                std::mem::size_of_val(data),
+                shape,
+                MlxDtype::Float32,
+            )
+        };
+        let x = from_f32(&x_data, &[1, seq, hidden]);
+        let qkvz_q = mlx_sys::quantize(
+            &from_f32(&qkvz_data, &[qkvz_out, hidden]),
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let ba_q = mlx_sys::quantize(
+            &from_f32(&ba_data, &[ba_out, hidden]),
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let qkvz_w = affine_quant_weight(
+            qkvz_q[0].clone(),
+            qkvz_q[1].clone(),
+            qkvz_q[2].clone(),
+            4,
+            32,
+        );
+        let ba_w = affine_quant_weight(ba_q[0].clone(), ba_q[1].clone(), ba_q[2].clone(), 4, 32);
+        assert!(
+            fastpath::should_qwen_la_fused_qkvz_ba_qmm_for(
+                true,
+                seq,
+                qkvz_w.matching_affine_quant(&ba_w)
+            ),
+            "matching 4-bit qkvz/ba must be eligible when the fuse flag is on"
+        );
+
+        let mut packed = LinearAttentionWeights {
+            in_proj_qkv: None,
+            in_proj_z: None,
+            in_proj_a: None,
+            in_proj_b: None,
+            in_proj_qkvz: Some(qkvz_w.clone()),
+            in_proj_ba: Some(ba_w.clone()),
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
+            conv1d_dense: zeros(&[1, 1, 1], MlxDtype::Float32, None),
+            conv1d_bias: None,
+            dt_bias: zeros(&[1], MlxDtype::Float32, None),
+            a_log: zeros(&[1], MlxDtype::Float32, None),
+            d: None,
+            norm: zeros(&[1], MlxDtype::Float32, None),
+            out_proj: qkvz_w.clone(),
+        };
+        packed.prepare_fused_qkvz_ba_prefill();
+        packed.prepare_prefill_q2_projections();
+        let q2 = packed
+            .prefill_q2_qkvz
+            .as_ref()
+            .expect("4-bit qkvz must grow a 2-bit prefill overlay");
+        let b2 = packed
+            .prefill_q2_ba
+            .as_ref()
+            .expect("4-bit ba must grow a 2-bit prefill overlay");
+        assert_eq!(q2.bits, crate::weights::PREFILL_LA_Q2_BITS);
+        assert_eq!(b2.bits, crate::weights::PREFILL_LA_Q2_BITS);
+        assert_eq!(q2.group_size, crate::weights::PREFILL_LA_Q2_GROUP_SIZE);
+        assert!(
+            fastpath::should_qwen_la_prefill_q2_for(true, 1024),
+            "shipped q2 gate must accept the p2048 chunk length"
+        );
+        let (q2_qkv, q2_z, q2_a, q2_b) = linear_attention_inputs_packed_direct(&cfg, &x, q2, b2)
+            .expect("2-bit packed LA inputs must engage");
+        mlx_sys::eval(&[&q2_qkv, &q2_z, &q2_a, &q2_b]);
+        assert_eq!(q2_qkv.shape()[1], seq);
+        assert!(
+            packed.fused_qkvz_ba.is_some(),
+            "load-time matching-bit concat must populate fused_qkvz_ba"
+        );
+        let (fused_qkv, fused_z, fused_a, fused_b) = linear_attention_inputs_fused_qmm(
+            &cfg,
+            &x,
+            &qkvz_w,
+            &ba_w,
+            packed.fused_qkvz_ba.as_ref(),
+        )
+        .expect("matching 4-bit qkvz/ba should fuse");
+        let split_qkvz = qw(&x, &qkvz_w);
+        let split_ba = qw(&x, &ba_w);
+        let (split_qkv, split_z, split_a, split_b) =
+            split_packed_qkvz_ba_projection(&cfg, &split_qkvz, &split_ba, 1, seq);
+        mlx_sys::eval(&[
+            &fused_qkv, &fused_z, &fused_a, &fused_b, &split_qkv, &split_z, &split_a, &split_b,
+        ]);
+        for (got, want, name) in [
+            (&fused_qkv, &split_qkv, "qkv"),
+            (&fused_z, &split_z, "z"),
+            (&fused_a, &split_a, "a"),
+            (&fused_b, &split_b, "b"),
+        ] {
+            assert_eq!(got.shape(), want.shape(), "{name} shape");
+            let g = got.data_f32();
+            let w = want.data_f32();
+            assert_eq!(g.len(), w.len(), "{name} len");
+            for i in 0..g.len() {
+                let err = (g[i] - w[i]).abs();
+                assert!(
+                    err < 2.0e-5,
+                    "{name}[{i}] fused {} split {} err {err}",
+                    g[i],
+                    w[i]
+                );
+            }
+        }
     }
 }

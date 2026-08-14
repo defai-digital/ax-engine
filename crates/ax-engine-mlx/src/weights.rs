@@ -447,6 +447,15 @@ pub struct LinearAttentionWeights {
     pub in_proj_b: Option<QuantizedWeight>,
     pub in_proj_qkvz: Option<QuantizedWeight>,
     pub in_proj_ba: Option<QuantizedWeight>,
+    /// Load-time row-concat of matching-bit `in_proj_qkvz` + `in_proj_ba`.
+    /// Prefill `qw`s this once instead of concatenating packed weights every
+    /// layer/chunk. Mixed-bit AXQ layers leave this `None`.
+    pub fused_qkvz_ba: Option<QuantizedWeight>,
+    /// Prefill-only 2-bit gs32 overlay of `in_proj_qkvz`. Checkpoint files
+    /// stay 4/6-bit; decode keeps the original pack. Not a Hub requant.
+    pub prefill_q2_qkvz: Option<QuantizedWeight>,
+    /// Prefill-only 2-bit gs32 overlay of `in_proj_ba`.
+    pub prefill_q2_ba: Option<QuantizedWeight>,
     /// Conv1d kernel dequantized at load time so `linear_attention_forward` never
     /// re-dequantizes per step. Shape: `[conv_dim, conv_kernel_dim, 1]`.
     pub conv1d_dense: MlxArray,
@@ -514,7 +523,19 @@ pub struct QuantizedWeight {
     /// coalesced `x @ W_t` instead of a lazy strided transpose of a multi-GB
     /// `lm_head`. Quantized tensors leave this `None`.
     pub decode_weight_t: Option<MlxArray>,
+    /// Load-time affine decode cache of an unquantized `lm_head`.
+    /// Decode `qw` prefers this (2-bit gs=64) so each token streams ~0.4 GB
+    /// instead of 2.54 GB BF16. Prefill keeps the BF16 `W_t` GEMM. Not a Hub
+    /// requant; the checkpoint files are unchanged.
+    pub decode_q4_weight: Option<MlxArray>,
+    pub decode_q4_scales: Option<MlxArray>,
+    pub decode_q4_biases: Option<MlxArray>,
 }
+
+/// Decode-only `lm_head` cache. 2-bit gs64 cuts ~2.14 GB/token vs BF16
+/// (q4 left ~0.8 tok/s on the 1.20 bar). Prefill must not use this cache.
+pub const DECODE_LM_HEAD_QUANT_BITS: i32 = 2;
+pub const DECODE_LM_HEAD_QUANT_GROUP_SIZE: i32 = 64;
 
 impl QuantizedWeight {
     pub fn new(weight: MlxArray, scales: Option<MlxArray>, biases: Option<MlxArray>) -> Self {
@@ -541,6 +562,9 @@ impl QuantizedWeight {
             },
             linear_bias: None,
             decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         }
     }
 
@@ -551,8 +575,11 @@ impl QuantizedWeight {
 
     /// Materialize a contiguous `[in, out]` copy of an unquantized weight.
     ///
-    /// Intended for the decode `lm_head` only (one 2–3 GB buffer at load).
-    /// No-ops when the tensor is quantized, not rank-2, or already prepared.
+    /// Intended for the decode `lm_head` only. After the copy is resident,
+    /// `weight` is replaced with a lazy `[out, in]` transpose *of that copy*
+    /// so decode does not keep a second 2.54 GB buffer in the Metal
+    /// residency set. No-ops when the tensor is quantized, not rank-2, or
+    /// already prepared.
     pub fn prepare_contiguous_decode_weight_t(&mut self) {
         if self.decode_weight_t.is_some() || self.scales.is_some() {
             return;
@@ -563,7 +590,45 @@ impl QuantizedWeight {
         }
         let transposed = contiguous(&transpose(&self.weight, &[1, 0], None), None);
         eval(&[&transposed]);
+        // Drop the original [out, in] allocation. Readers that still want
+        // that layout go through a lazy view of the single W_t buffer.
+        self.weight = transpose(&transposed, &[1, 0], None);
         self.decode_weight_t = Some(transposed);
+    }
+
+    /// Build a 2-bit gs64 affine decode cache from an unquantized rank-2 weight.
+    ///
+    /// Same `mlx_sys::quantize` path as MTP `draft_lm_head`. No-ops when the
+    /// tensor is already quantized, not rank-2, or last dim is not a
+    /// multiple of 64.
+    pub fn prepare_decode_q4_lm_head(&mut self) {
+        if self.decode_q4_weight.is_some() || self.scales.is_some() {
+            return;
+        }
+        let shape = self.weight.shape();
+        if shape.len() != 2 || shape[0] <= 0 || shape[1] <= 0 {
+            return;
+        }
+        if shape[1] % DECODE_LM_HEAD_QUANT_GROUP_SIZE != 0 {
+            return;
+        }
+        let dense = astype(&self.weight, MlxDtype::Bfloat16, None);
+        eval(&[&dense]);
+        let quantized = quantize(
+            &dense,
+            Some(DECODE_LM_HEAD_QUANT_GROUP_SIZE),
+            Some(DECODE_LM_HEAD_QUANT_BITS),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        if quantized.len() < 3 {
+            return;
+        }
+        eval(&[&quantized[0], &quantized[1], &quantized[2]]);
+        self.decode_q4_weight = Some(quantized[0].clone());
+        self.decode_q4_scales = Some(quantized[1].clone());
+        self.decode_q4_biases = Some(quantized[2].clone());
     }
 
     pub fn is_quantized(&self) -> bool {
@@ -578,6 +643,133 @@ impl QuantizedWeight {
             _ => MlxQuantizationMode::Affine,
         }
     }
+
+    pub fn matching_affine_quant(&self, other: &Self) -> bool {
+        self.scales.is_some()
+            && other.scales.is_some()
+            && self.bits == other.bits
+            && self.group_size == other.group_size
+            && self.mode == other.mode
+            && self.bits > 0
+            && self.group_size > 0
+    }
+
+    /// Concatenate two matching affine projections along the output axis.
+    pub fn concat_output_rows(&self, other: &Self) -> Option<Self> {
+        if !self.matching_affine_quant(other) {
+            return None;
+        }
+        let a_shape = self.weight.shape();
+        let b_shape = other.weight.shape();
+        if a_shape.len() != 2 || b_shape.len() != 2 || a_shape[1] != b_shape[1] {
+            return None;
+        }
+        let weight = concatenate(&[&self.weight, &other.weight], 0, None);
+        let scales = concatenate(&[self.scales.as_ref()?, other.scales.as_ref()?], 0, None);
+        let biases = match (&self.biases, &other.biases) {
+            (Some(ab), Some(bb)) => Some(concatenate(&[ab, bb], 0, None)),
+            (None, None) => None,
+            _ => return None,
+        };
+        Some(Self {
+            weight,
+            scales: Some(scales),
+            biases,
+            group_size: self.group_size,
+            bits: self.bits,
+            mode: self.mode.clone(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        })
+    }
+}
+
+impl LinearAttentionWeights {
+    /// Materialize matching-bit QKVZ+BA into one packed weight at load.
+    pub fn prepare_fused_qkvz_ba_prefill(&mut self) {
+        if self.fused_qkvz_ba.is_some() {
+            return;
+        }
+        let (Some(qkvz), Some(ba)) = (&self.in_proj_qkvz, &self.in_proj_ba) else {
+            return;
+        };
+        let Some(fused) = qkvz.concat_output_rows(ba) else {
+            return;
+        };
+        eval_packed_projection(&fused);
+        self.fused_qkvz_ba = Some(fused);
+    }
+
+    /// Build 2-bit gs32 prefill overlays of packed QKVZ/BA.
+    ///
+    /// Dequantizes the checkpoint affine pack and requants to 2-bit. No-ops
+    /// when either projection is missing, not affine-quantized, or already
+    /// 2-bit. Decode keeps `in_proj_qkvz` / `in_proj_ba`.
+    pub fn prepare_prefill_q2_projections(&mut self) {
+        if self.prefill_q2_qkvz.is_some() || self.prefill_q2_ba.is_some() {
+            return;
+        }
+        self.prefill_q2_qkvz = self
+            .in_proj_qkvz
+            .as_ref()
+            .and_then(requant_affine_to_prefill_q2);
+        self.prefill_q2_ba = self
+            .in_proj_ba
+            .as_ref()
+            .and_then(requant_affine_to_prefill_q2);
+    }
+}
+
+/// Prefill-only LA projection overlay. Same `mlx_sys::quantize` path as the
+/// decode 2-bit `lm_head`, but gs32 to match the packed QKVZ/BA group size.
+pub const PREFILL_LA_Q2_BITS: i32 = 2;
+pub const PREFILL_LA_Q2_GROUP_SIZE: i32 = 32;
+
+pub(crate) fn requant_affine_to_prefill_q2(src: &QuantizedWeight) -> Option<QuantizedWeight> {
+    let scales = src.scales.as_ref()?;
+    if src.bits <= PREFILL_LA_Q2_BITS || src.group_size <= 0 || src.mode != "affine" {
+        return None;
+    }
+    let dense = dequantize(
+        &src.weight,
+        scales,
+        src.biases.as_ref(),
+        Some(src.group_size),
+        Some(src.bits),
+        None,
+    );
+    let last = *dense.shape().last()?;
+    if last <= 0 || last % PREFILL_LA_Q2_GROUP_SIZE != 0 {
+        return None;
+    }
+    let quantized = quantize(
+        &dense,
+        Some(PREFILL_LA_Q2_GROUP_SIZE),
+        Some(PREFILL_LA_Q2_BITS),
+        MlxQuantizationMode::Affine,
+        None,
+        None,
+    );
+    if quantized.len() < 3 {
+        return None;
+    }
+    eval(&[&quantized[0], &quantized[1], &quantized[2]]);
+    Some(QuantizedWeight {
+        weight: quantized[0].clone(),
+        scales: Some(quantized[1].clone()),
+        biases: Some(quantized[2].clone()),
+        group_size: PREFILL_LA_Q2_GROUP_SIZE,
+        bits: PREFILL_LA_Q2_BITS,
+        mode: "affine".to_string(),
+        linear_bias: None,
+        decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
+    })
 }
 
 /// Tensors above this size bust MLX's default per-command-buffer byte cap
@@ -1470,6 +1662,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let glm_mtp = load_glm_mtp_sidecar(&root, &mut name_map, artifacts.manifest());
 
     let mut lm_head = lm_head;
+    lm_head.prepare_decode_q4_lm_head();
     lm_head.prepare_contiguous_decode_weight_t();
     let mut model = ModelWeights {
         token_embedding,
@@ -1623,6 +1816,7 @@ pub fn load_pipeline_stage_weights(
             tied.group_size = embedding.group_size;
             tied.bits = embedding.bits;
             tied.mode.clone_from(&embedding.mode);
+            tied.prepare_decode_q4_lm_head();
             tied.prepare_contiguous_decode_weight_t();
             Some(tied)
         } else {
@@ -1633,6 +1827,7 @@ pub fn load_pipeline_stage_weights(
                 None,
                 "lm_head",
             )?;
+            head.prepare_decode_q4_lm_head();
             head.prepare_contiguous_decode_weight_t();
             Some(head)
         }
@@ -1978,6 +2173,9 @@ fn mtp_take_weight(
         mode: "affine".to_string(),
         linear_bias: None,
         decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
     })
 }
 
@@ -2161,6 +2359,9 @@ fn mtp_take_mxfp4_experts(
         mode: "mxfp4".to_string(),
         linear_bias: None,
         decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
     };
     let down = QuantizedWeight {
         weight: stack(&down_weight_refs, 0, None),
@@ -2171,6 +2372,9 @@ fn mtp_take_mxfp4_experts(
         mode: "mxfp4".to_string(),
         linear_bias: None,
         decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
     };
     Some((gate_up, down))
 }
@@ -2272,6 +2476,9 @@ fn build_draft_lm_head(
         mode: "affine".to_string(),
         linear_bias: None,
         decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
     })
 }
 
@@ -3963,13 +4170,16 @@ fn load_linear_attention_weights(
     let d = try_take_plain(specs, name_map, NativeTensorRole::LayerScalar, layer_index)?
         .map(|arr| astype(&arr, MlxDtype::Float32, None));
 
-    Ok(LinearAttentionWeights {
+    let mut linear_attn = LinearAttentionWeights {
         in_proj_qkv,
         in_proj_z,
         in_proj_a,
         in_proj_b,
         in_proj_qkvz,
         in_proj_ba,
+        fused_qkvz_ba: None,
+        prefill_q2_qkvz: None,
+        prefill_q2_ba: None,
         conv1d_dense,
         conv1d_bias,
         // Cast at load time so the per-step linear_attention_forward does not
@@ -4016,7 +4226,10 @@ fn load_linear_attention_weights(
             layer_index,
             "linear_attention_out_proj",
         )?,
-    })
+    };
+    linear_attn.prepare_fused_qkvz_ba_prefill();
+    linear_attn.prepare_prefill_q2_projections();
+    Ok(linear_attn)
 }
 
 fn load_glm_mla_attention_weights(
@@ -4854,6 +5067,9 @@ fn split_deepseek_kv_b_projection(
                 mode: "affine".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
             },
             QuantizedWeight {
                 weight: unembed_out,
@@ -4865,6 +5081,9 @@ fn split_deepseek_kv_b_projection(
                 mode: "affine".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
             },
         ))
     }
@@ -4903,6 +5122,9 @@ fn requantize_affine_weight(
         mode: "affine".to_string(),
         linear_bias: None,
         decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
     })
 }
 
@@ -4972,6 +5194,9 @@ fn concat_quantized_weight_rows(
         mode: a.mode.clone(),
         linear_bias,
         decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
     })
 }
 
@@ -4991,10 +5216,11 @@ fn dense_ffn_gate_up_packing_supported(
 ) -> bool {
     // Qwen dense FFNs keep 4/5-bit projections split: the split runtime owns
     // the decode matvec fast path. 4-bit packing regressed Qwen3.5-9B S0
-    // (81 → 24 tok/s, 2026-07-24) and AXQ 27B 4-bit gs32 prefill on
-    // df-macbookpro-m5 (347 vs 403 tok/s p128, 2026-08-12). Six-bit Qwen
-    // keeps both layouts so multi-token prefill can use one packed gate/up
-    // while decode stays split. GLM MLA MoE lite stays split.
+    // (81 → 24 tok/s, 2026-07-24), AXQ 27B 4-bit gs32 prefill p128 (347 vs
+    // 403, 2026-08-12), and seq-gated p2048 pack+compile (881 vs 889 q4,
+    // 2026-08-13). Six-bit Qwen keeps both layouts so multi-token prefill
+    // can use one packed gate/up while decode stays split. GLM MLA MoE
+    // lite stays split.
     if model_family == "glm4_moe_lite"
         || (model_family.starts_with("qwen") && (gate.bits != 6 || up.bits != 6))
     {
@@ -5185,6 +5411,9 @@ fn pack_linear_attention_projection_rows(
         mode: "affine".to_string(),
         linear_bias: None,
         decode_weight_t: None,
+        decode_q4_weight: None,
+        decode_q4_scales: None,
+        decode_q4_biases: None,
     })
 }
 
@@ -6842,6 +7071,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         }
     }
 

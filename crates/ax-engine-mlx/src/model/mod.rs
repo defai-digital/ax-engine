@@ -1023,6 +1023,7 @@ fn forward_and_logits_mode(
             logits_mode,
         );
     }
+    families::qwen3_linear::clear_qwen_prefill_pending_ffn();
     let profile_prefill = token_ids.len() > 1 && prefill_profile_enabled();
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
 
@@ -1113,7 +1114,14 @@ fn forward_and_logits_mode(
         };
         // mlxcel residual: `pipeline_hint` after non-final layers
         // (`MLXCEL_PIPELINE_GRANULARITY` parity via AX_MLX_PIPELINE_GRANULARITY).
-        if crate::fastpath::pipeline_hint_should_fire(li, total_layers) {
+        if crate::fastpath::pipeline_hint_should_fire(li, total_layers)
+            || crate::fastpath::should_qwen_prefill_pipeline_block(
+                &cfg.model_family,
+                seq,
+                li,
+                total_layers,
+            )
+        {
             async_eval(&[&hidden]);
         }
         // Diagnostic/fairness probe: unlike the async pipeline hint above,
@@ -1385,7 +1393,14 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
             )
         };
         // mlxcel residual: `pipeline_hint` (AX_MLX_PIPELINE_GRANULARITY).
-        if crate::fastpath::pipeline_hint_should_fire(li, total_layers) {
+        if crate::fastpath::pipeline_hint_should_fire(li, total_layers)
+            || crate::fastpath::should_qwen_prefill_pipeline_block(
+                &cfg.model_family,
+                seq,
+                li,
+                total_layers,
+            )
+        {
             async_eval(&[&hidden]);
         }
         // Keep the multimodal standard path on the same opt-in blocking
@@ -1809,7 +1824,14 @@ pub fn forward_all_positions_with_post_norm_ids(
             submit_interval > 0 && li + 1 < layer_count && (li + 1) % submit_interval == 0;
         if submitted {
             async_eval(&[&hidden]);
-        } else if crate::fastpath::pipeline_hint_should_fire(li, layer_count) {
+        } else if crate::fastpath::pipeline_hint_should_fire(li, layer_count)
+            || crate::fastpath::should_qwen_prefill_pipeline_block(
+                &cfg.model_family,
+                seq,
+                li,
+                layer_count,
+            )
+        {
             // Same residual-only hint as prefill/direct layer loops. Skip when
             // the chunked-submit interval already fired this layer to avoid
             // double async_eval on the same residual.
@@ -4678,6 +4700,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         }
     }
 
@@ -4951,6 +4976,9 @@ mod tests {
                 ])),
                 in_proj_qkvz: None,
                 in_proj_ba: None,
+                fused_qkvz_ba: None,
+                prefill_q2_qkvz: None,
+                prefill_q2_ba: None,
                 conv1d_bias: None,
                 d: None,
                 conv1d_dense: zeros(
@@ -6415,6 +6443,9 @@ mod tests {
             )),
             in_proj_qkvz: None,
             in_proj_ba: None,
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
             conv1d_bias: None,
             d: None,
             conv1d_dense: array_f32(
@@ -7853,6 +7884,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         };
         let plain = QuantizedWeight {
             weight: weight.clone(),
@@ -7863,6 +7897,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
         };
 
         for embedding in [&quantized, &plain] {
