@@ -17,11 +17,7 @@ use super::super::config::ModelConfig;
 use super::norm::{rms_norm_no_scale_bshd, use_flat_qk_norm_path};
 
 /// Materialize the Qwen full-attention activation once before QKVO qmm.
-pub(crate) fn qwen_prefill_maybe_eval_attn_input(
-    x: &MlxArray,
-    model_family: &str,
-    seq: i32,
-) {
+pub(crate) fn qwen_prefill_maybe_eval_attn_input(x: &MlxArray, model_family: &str, seq: i32) {
     qwen_prefill_maybe_eval_attn_input_for(
         x,
         fastpath::qwen_prefill_eval_attn_input_enabled(),
@@ -61,6 +57,27 @@ pub(crate) fn qwen_prefill_maybe_async_sdpa_for(
 ) {
     if fastpath::should_qwen_prefill_async_sdpa_for(enabled, model_family, seq) {
         async_eval(&[attn_sdpa]);
+    }
+}
+
+/// Submit the first-KV write before residual + FFN is encoded.
+pub(crate) fn gemma4_prefill_maybe_async_first_kv(
+    k: &MlxArray,
+    v: &MlxArray,
+    model_family: &str,
+    seq: i32,
+) {
+    gemma4_prefill_maybe_async_first_kv_for(
+        k,
+        v,
+        fastpath::should_gemma4_async_first_kv_p128(model_family, seq),
+    );
+}
+
+/// Pure helper for [`gemma4_prefill_maybe_async_first_kv`].
+pub(crate) fn gemma4_prefill_maybe_async_first_kv_for(k: &MlxArray, v: &MlxArray, enabled: bool) {
+    if enabled {
+        async_eval(&[k, v]);
     }
 }
 
@@ -299,8 +316,16 @@ pub(crate) fn apply_reused_neox_rope(
         &[1, 1, 1, 1],
         None,
     );
-    let rx = subtract(&multiply(&x1, &cos_h, None), &multiply(&x2, &sin_h, None), None);
-    let ry = add(&multiply(&x2, &cos_h, None), &multiply(&x1, &sin_h, None), None);
+    let rx = subtract(
+        &multiply(&x1, &cos_h, None),
+        &multiply(&x2, &sin_h, None),
+        None,
+    );
+    let ry = add(
+        &multiply(&x2, &cos_h, None),
+        &multiply(&x1, &sin_h, None),
+        None,
+    );
     let embedded = concatenate(&[&rx, &ry], -1, None);
     if head_dim > rope_dims {
         let pass = slice(
@@ -1032,7 +1057,7 @@ pub(crate) fn full_precision_attention_with_window(
     scaled_dot_product_attention_with_mask(q_rope, cached_k, cached_v, query_scale, mask, None)
 }
 
-fn should_upcast_multi_token_sdpa_to_f32(seq: usize) -> bool {
+pub(crate) fn should_upcast_multi_token_sdpa_to_f32(seq: usize) -> bool {
     fastpath::multi_token_f32_attention_enabled()
         && seq > 1
         && !super::utils::qwen_prefill_skip_f32_sdpa_active()
@@ -1620,16 +1645,16 @@ mod tests {
     use super::{
         apply_reused_neox_rope, build_bidirectional_canvas_mask,
         build_layer_masks_with_media_ranges, full_precision_attention,
-        media_prefix_mask_array, qwen_direct_qk_norm_rope_default_family,
-        qwen_prefill_maybe_eval_attn_input_for, qwen_prefill_maybe_last_query_q_for,
-        qwen_prefill_maybe_last_token_bsh_for, qwen_prefill_maybe_last_token_flat,
-        qwen_prefill_query_seq_for, set_qwen_prefill_reuse_rope_active,
-        should_upcast_multi_token_sdpa_to_f32,
+        gemma4_prefill_maybe_async_first_kv_for, media_prefix_mask_array,
+        qwen_direct_qk_norm_rope_default_family, qwen_prefill_maybe_eval_attn_input_for,
+        qwen_prefill_maybe_last_query_q_for, qwen_prefill_maybe_last_token_bsh_for,
+        qwen_prefill_maybe_last_token_flat, qwen_prefill_query_seq_for,
+        set_qwen_prefill_reuse_rope_active, should_upcast_multi_token_sdpa_to_f32,
+    };
+    use crate::model::shared::utils::{
+        QwenPrefillSkipF32SdpaGuard, qwen_prefill_skip_f32_sdpa_active,
     };
     use crate::model::{LayerConfig, ModelConfig};
-    use crate::model::shared::utils::{
-        qwen_prefill_skip_f32_sdpa_active, QwenPrefillSkipF32SdpaGuard,
-    };
     use mlx_sys::{
         MlxArray, MlxDtype, ScaledDotProductAttentionMask, astype, eval,
         scaled_dot_product_attention_with_mask,
@@ -1646,9 +1671,7 @@ mod tests {
     fn qwen_prefill_native_offset_causal_skips_array_mask() {
         use crate::model::shared::utils::QwenPrefillNativeOffsetCausalGuard;
         assert!(
-            crate::fastpath::should_qwen_prefill_native_offset_causal_for(
-                true, "qwen3_5", 1024
-            ),
+            crate::fastpath::should_qwen_prefill_native_offset_causal_for(true, "qwen3_5", 1024),
             "shipped native-offset-causal gate must accept the p2048 chunk length"
         );
         let _g = QwenPrefillNativeOffsetCausalGuard::arm(true);
@@ -1660,11 +1683,31 @@ mod tests {
     }
 
     #[test]
+    fn gemma4_prefill_skip_unused_f32_sdpa_disables_upcast_on_contract_p128() {
+        use crate::model::shared::utils::QwenPrefillSkipF32SdpaGuard;
+        assert!(
+            crate::fastpath::should_gemma4_prefill_skip_unused_f32_sdpa_for(true, "gemma4", 128),
+            "shipped Gemma 4 skip-f32-sdpa gate must accept contract p128"
+        );
+        assert!(
+            super::should_upcast_multi_token_sdpa_to_f32(128),
+            "without the prefill guard, contract p128 still pays the default-ON f32 upcast"
+        );
+        let _g = QwenPrefillSkipF32SdpaGuard::arm(true);
+        assert!(
+            !super::should_upcast_multi_token_sdpa_to_f32(128),
+            "Gemma 4 p128 prefill must keep SDPA in the model dtype"
+        );
+        assert!(
+            !super::should_upcast_multi_token_sdpa_to_f32(1),
+            "decode seq==1 never upcasts"
+        );
+    }
+
+    #[test]
     fn qwen_prefill_skip_unused_f32_sdpa_matches_model_dtype_sdpa() {
         assert!(
-            crate::fastpath::should_qwen_prefill_skip_unused_f32_sdpa_for(
-                true, "qwen3_5", 1024
-            ),
+            crate::fastpath::should_qwen_prefill_skip_unused_f32_sdpa_for(true, "qwen3_5", 1024),
             "shipped skip-f32-sdpa gate must accept the p2048 chunk length"
         );
         let q_data = [0.0_f32, 0.0, 1.0, 0.0];
@@ -1771,6 +1814,32 @@ mod tests {
     }
 
     #[test]
+    fn gemma4_prefill_maybe_async_first_kv_submits_when_gated() {
+        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let k = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 2, 2, 4],
+            mlx_sys::MlxDtype::Float32,
+        );
+        let v = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 2, 2, 4],
+            mlx_sys::MlxDtype::Float32,
+        );
+        assert!(
+            crate::fastpath::should_gemma4_async_first_kv_p128_for(true, "gemma4", 128),
+            "shipped first-KV async submit must accept contract p128"
+        );
+        gemma4_prefill_maybe_async_first_kv_for(&k, &v, false);
+        gemma4_prefill_maybe_async_first_kv_for(&k, &v, true);
+        eval(&[&k, &v]);
+        assert_eq!(k.shape(), vec![1, 2, 2, 4]);
+        assert_eq!(v.shape(), vec![1, 2, 2, 4]);
+    }
+
+    #[test]
     fn qwen_prefill_query_seq_reads_bhsd_dim() {
         let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
         let full = MlxArray::from_raw_data(
@@ -1780,8 +1849,8 @@ mod tests {
             mlx_sys::MlxDtype::Float32,
         );
         assert_eq!(qwen_prefill_query_seq_for(&full, 99), 4);
-        let last = qwen_prefill_maybe_last_query_q_for(&full, true)
-            .expect("last-query slice must engage");
+        let last =
+            qwen_prefill_maybe_last_query_q_for(&full, true).expect("last-query slice must engage");
         eval(&[&last]);
         assert_eq!(qwen_prefill_query_seq_for(&last, 99), 1);
         assert_eq!(qwen_prefill_query_seq_for(&full, 0), 4);
@@ -1805,6 +1874,10 @@ mod tests {
         assert!(
             crate::fastpath::should_qwen_prefill_last_query_q_proj_for(true, "qwen3_5", true, 1024),
             "shipped last-query Q proj must accept the p2048 generate last layer"
+        );
+        assert!(
+            crate::fastpath::should_gemma4_prefill_last_query_p128_for(true, "gemma4", true, 128),
+            "shipped Gemma 4 last-query must accept contract p128 last layer"
         );
         assert!(
             crate::fastpath::should_qwen_prefill_skip_unused_qk_norm_for(
@@ -1833,6 +1906,10 @@ mod tests {
             crate::fastpath::should_qwen_prefill_last_query_sdpa_for(true, "qwen3_5", true, 1024),
             "shipped last-query SDPA must accept the p2048 generate last layer"
         );
+        assert!(
+            crate::fastpath::should_gemma4_prefill_last_query_p128_for(true, "gemma4", true, 128),
+            "shipped Gemma 4 last-query SDPA must accept contract p128 last layer"
+        );
     }
 
     #[test]
@@ -1854,6 +1931,10 @@ mod tests {
         assert!(
             crate::fastpath::should_qwen_prefill_last_token_o_proj_for(true, "qwen3_5", true, 1024),
             "shipped last-token o_proj must accept the p2048 generate last layer"
+        );
+        assert!(
+            crate::fastpath::should_gemma4_prefill_last_query_p128_for(true, "gemma4", true, 128),
+            "shipped Gemma 4 last-token o_proj must accept contract p128 last layer"
         );
     }
 
@@ -1901,16 +1982,7 @@ mod tests {
         );
         set_qwen_prefill_reuse_rope_active(true);
         let reused = apply_reused_neox_rope(&x, rope_dims, Some(10_000_000.0), 0, None);
-        let reference = mlx_sys::rope(
-            &x,
-            rope_dims,
-            false,
-            Some(10_000_000.0),
-            1.0,
-            0,
-            None,
-            None,
-        );
+        let reference = mlx_sys::rope(&x, rope_dims, false, Some(10_000_000.0), 1.0, 0, None, None);
         eval(&[&reused, &reference]);
         set_qwen_prefill_reuse_rope_active(false);
         assert_eq!(reused.shape(), reference.shape());

@@ -84,25 +84,23 @@ pub(crate) fn layer_forward(
     let profile_prefill_layer = seq > 1 && prefill_profile_enabled();
     let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
 
-    let fuse_la_norm =
-        fastpath::should_qwen_la_norm_qkvz_fuse(&cfg.model_family, seq as i32);
+    let fuse_la_norm = fastpath::should_qwen_la_norm_qkvz_fuse(&cfg.model_family, seq as i32);
     if fuse_la_norm {
         crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(Some((
             w.attn_norm.clone(),
             cfg.rms_norm_eps,
         )));
     }
-    let (hidden_owned, normed) =
-        if fuse_la_norm {
-            (hidden.clone(), hidden.clone())
-        } else if fastpath::should_qwen_prefill_interlayer_add_rms(&cfg.model_family, seq as i32)
-            && let Some(ffn) = take_qwen_prefill_pending_ffn()
-        {
-            apply_qwen_prefill_pending_ffn(hidden, &ffn, &w.attn_norm, cfg.rms_norm_eps)
-        } else {
-            let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
-            (hidden.clone(), normed)
-        };
+    let (hidden_owned, normed) = if fuse_la_norm {
+        (hidden.clone(), hidden.clone())
+    } else if fastpath::should_qwen_prefill_interlayer_add_rms(&cfg.model_family, seq as i32)
+        && let Some(ffn) = take_qwen_prefill_pending_ffn()
+    {
+        apply_qwen_prefill_pending_ffn(hidden, &ffn, &w.attn_norm, cfg.rms_norm_eps)
+    } else {
+        let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+        (hidden.clone(), normed)
+    };
     let hidden = &hidden_owned;
     // linear_attention_forward includes its own per-layer profiling.
     let skip_unused_la_out = fastpath::should_qwen_prefill_skip_unused_la_out(

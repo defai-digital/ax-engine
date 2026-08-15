@@ -133,6 +133,21 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    fn ax_mlx_dual_stream_affine_qmm(
+        gate_res: *mut ffi::mlx_array,
+        up_res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        gate_weight: ffi::mlx_array,
+        gate_scales: ffi::mlx_array,
+        gate_biases: ffi::mlx_array,
+        up_weight: ffi::mlx_array,
+        up_scales: ffi::mlx_array,
+        up_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_dual_affine_qmm(
         gate_res: *mut ffi::mlx_array,
         up_res: *mut ffi::mlx_array,
@@ -275,6 +290,7 @@ unsafe extern "C" {
         o_biases: ffi::mlx_array,
         group_size: libc::c_int,
         bits: libc::c_int,
+        post_norm: ffi::mlx_array,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
@@ -311,6 +327,7 @@ unsafe extern "C" {
         o_biases: ffi::mlx_array,
         group_size: libc::c_int,
         bits: libc::c_int,
+        post_norm: ffi::mlx_array,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
@@ -921,6 +938,48 @@ pub fn dual_affine_qmm(
     None
 }
 
+/// Issue gate/up affine qmm on two process-static GPU streams. No env gate:
+/// the Rust family/seq predicate is the only switch.
+#[allow(clippy::too_many_arguments)]
+pub fn dual_stream_affine_qmm(
+    x: &MlxArray,
+    gate_weight: &MlxArray,
+    gate_scales: &MlxArray,
+    gate_biases: &MlxArray,
+    up_weight: &MlxArray,
+    up_scales: &MlxArray,
+    up_biases: &MlxArray,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<(MlxArray, MlxArray)> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut gate = MlxArray::empty();
+        let mut up = MlxArray::empty();
+        let rc = ax_mlx_dual_stream_affine_qmm(
+            &mut gate.inner,
+            &mut up.inner,
+            x.inner,
+            gate_weight.inner,
+            gate_scales.inner,
+            gate_biases.inner,
+            up_weight.inner,
+            up_scales.inner,
+            up_biases.inner,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return Some((gate, up));
+        }
+    }
+    crate::error::clear_stale_error();
+    None
+}
+
 /// Like [`dual_affine_qmm`] but skips the C++ env gate and dual-stream.
 /// Qwen split-prefill uses this so the Rust family/seq flag is the only switch.
 #[allow(clippy::too_many_arguments)]
@@ -1054,13 +1113,15 @@ pub fn compiled_dual_gate_up_qmm_forced(
 /// mlxcel `compiled_gelu_approx_mlp_forward` for **split** gate/up/down affine
 /// projections. Compiles the full qmm+gelu_approx+qmm chain:
 /// - gs64/bits=4 and single-token decode: `shapeless=true` (mlxcel #680)
+/// - AXQ 4-bit (`group_size != 64`) seq=128: opt-in shape-specific compile
+///   via `AX_MLX_COMPILED_QGELU_AXQ_P128=1` (default OFF after wash)
 /// - multi-token non-4bit (flip Gemma MLP bits=8): opt-in shape-specific
 ///   compile via `AX_MLX_COMPILED_QGELU_PREFILL_SHAPED=1` (mlxcel #705 pattern;
 ///   default OFF after mbp-m5 pure wall measured ~+2% regression)
 ///
 /// Returns `None` when the quant layout is unsupported, the kill-switch
-/// `AX_MLX_COMPILED_QGELU_MLP=0` is set, or multi-token non-4bit is left at the
-/// default-off opt-in. Fail-closed → portable split path.
+/// `AX_MLX_COMPILED_QGELU_MLP=0` is set, or an opt-in shape-specific path
+/// is left unset. Fail-closed → portable split path.
 #[allow(clippy::too_many_arguments)]
 pub fn compiled_gelu_approx_split_mlp(
     x: &MlxArray,
@@ -1818,6 +1879,7 @@ pub fn fused_causal_prefill_attention(
     o_biases: Option<&MlxArray>,
     group_size: i32,
     bits: i32,
+    post_norm: Option<&MlxArray>,
     s: Option<&MlxStream>,
 ) -> Option<(MlxArray, MlxArray, MlxArray)> {
     unsafe {
@@ -1851,6 +1913,7 @@ pub fn fused_causal_prefill_attention(
             o_biases.map(|b| b.inner).unwrap_or_else(null_ffi_array),
             group_size,
             bits,
+            post_norm.map(|b| b.inner).unwrap_or_else(null_ffi_array),
             stream,
         );
         if rc == 0 {
@@ -1889,6 +1952,7 @@ pub fn fused_causal_prefill_attention_split(
     o_biases: Option<&MlxArray>,
     group_size: i32,
     bits: i32,
+    post_norm: Option<&MlxArray>,
     s: Option<&MlxStream>,
 ) -> Option<(MlxArray, MlxArray, MlxArray)> {
     unsafe {
@@ -1929,6 +1993,7 @@ pub fn fused_causal_prefill_attention_split(
             o_biases.map(|b| b.inner).unwrap_or_else(null_ffi_array),
             group_size,
             bits,
+            post_norm.map(|b| b.inner).unwrap_or_else(null_ffi_array),
             stream,
         );
         if rc == 0 {
@@ -4801,6 +4866,156 @@ mod tests {
         assert!(
             compiled.is_none(),
             "bits=8 multi-token must stay portable when PREFILL_SHAPED is unset"
+        );
+    }
+
+    #[test]
+    fn compiled_gelu_approx_split_mlp_axq_p128_gs32_unset_stays_portable() {
+        unsafe {
+            std::env::remove_var("AX_MLX_COMPILED_QGELU_AXQ_P128");
+            std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
+        }
+        let x_data: Vec<f32> = (0..128 * 64)
+            .map(|i| ((i as f32) - 4096.0) * 0.015625)
+            .collect();
+        let w_data: Vec<f32> = (0..64 * 64)
+            .map(|i| ((i as f32) - 2048.0) * 0.00025)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, 128, 64],
+            MlxDtype::Float32,
+        );
+        let w = MlxArray::from_raw_data(
+            w_data.as_ptr() as *const u8,
+            std::mem::size_of_val(w_data.as_slice()),
+            &[64, 64],
+            MlxDtype::Float32,
+        );
+        let q = quantize(
+            &w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let compiled = compiled_gelu_approx_split_mlp(
+            &x, &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], 32, 4, None,
+        );
+        assert!(
+            compiled.is_none(),
+            "AXQ gs32/bits=4 seq=128 must stay portable when COMPILED_QGELU_AXQ_P128 is unset"
+        );
+    }
+
+    #[test]
+    fn compiled_gelu_approx_split_mlp_axq_p128_gs32_matches_portable() {
+        // AXQ root 4-bit is gs=32. Contract p128 is the only seq that takes
+        // the shape-specific compile; portable dual qmm is the oracle.
+        unsafe {
+            std::env::set_var("AX_MLX_COMPILED_QGELU_AXQ_P128", "1");
+            std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
+        }
+        let hidden = 64;
+        let seq = 128;
+        let x_data: Vec<f32> = (0..seq * hidden)
+            .map(|i| ((i as f32) - 4096.0) * 0.015625)
+            .collect();
+        let w_data: Vec<f32> = (0..hidden * hidden)
+            .map(|i| ((i as f32) - 2048.0) * 0.00025)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq as i32, hidden as i32],
+            MlxDtype::Float32,
+        );
+        let w = MlxArray::from_raw_data(
+            w_data.as_ptr() as *const u8,
+            std::mem::size_of_val(w_data.as_slice()),
+            &[hidden as i32, hidden as i32],
+            MlxDtype::Float32,
+        );
+        let q = quantize(
+            &w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let compiled = compiled_gelu_approx_split_mlp(
+            &x, &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], 32, 4, None,
+        )
+        .expect("AXQ gs32/bits=4 seq=128 split MLP compile should engage");
+        let gate = quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(32), Some(4), None);
+        let up = quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(32), Some(4), None);
+        let activated = gelu_approx_mul(&gate, &up, None);
+        let portable = quantized_matmul(
+            &activated,
+            &q[0],
+            &q[1],
+            Some(&q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&compiled, &portable]);
+        assert_eq!(compiled.shape(), portable.shape());
+        let c = compiled.data_f32();
+        let p = portable.data_f32();
+        assert_eq!(c.len(), p.len());
+        for (a, b) in c.iter().zip(p.iter()) {
+            assert!(
+                (a - b).abs() < 3e-2 || (a - b).abs() / (b.abs().max(1e-6)) < 3e-2,
+                "AXQ p128 compiled split MLP must match portable: {a} vs {b}"
+            );
+        }
+        unsafe {
+            std::env::remove_var("AX_MLX_COMPILED_QGELU_AXQ_P128");
+        }
+    }
+
+    #[test]
+    fn compiled_gelu_approx_split_mlp_axq_gs32_non_p128_stays_portable() {
+        unsafe {
+            std::env::remove_var("AX_MLX_COMPILED_QGELU_AXQ_P128");
+            std::env::remove_var("AX_MLX_COMPILED_QGELU_PREFILL_SHAPED");
+        }
+        let x_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 256.0) * 0.015625).collect();
+        let w_data: Vec<f32> = (0..4096).map(|i| ((i as f32) - 2048.0) * 0.00025).collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[2, 4, 64],
+            MlxDtype::Float32,
+        );
+        let w = MlxArray::from_raw_data(
+            w_data.as_ptr() as *const u8,
+            std::mem::size_of_val(w_data.as_slice()),
+            &[64, 64],
+            MlxDtype::Float32,
+        );
+        let q = quantize(
+            &w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let compiled = compiled_gelu_approx_split_mlp(
+            &x, &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], &q[0], &q[1], &q[2], 32, 4, None,
+        );
+        assert!(
+            compiled.is_none(),
+            "AXQ gs32/bits=4 must stay portable off contract p128"
         );
     }
 

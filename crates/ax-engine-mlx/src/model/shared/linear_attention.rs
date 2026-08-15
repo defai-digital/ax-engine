@@ -1,8 +1,8 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, async_eval, concatenate, contiguous, qwen_linear_attention_inputs_packed,
-    qwen_linear_attention_inputs_packed_compiled, qwen_linear_attention_post_input,
-    qwen_linear_attention_post_input_compiled, eval, reshape, rms_norm, rms_norm_quantized_matmul,
-    silu_mul_quantized_matmul, slice, slice_last_dim, zeros,
+    MlxArray, MlxDtype, async_eval, concatenate, contiguous, eval,
+    qwen_linear_attention_inputs_packed, qwen_linear_attention_inputs_packed_compiled,
+    qwen_linear_attention_post_input, qwen_linear_attention_post_input_compiled, reshape, rms_norm,
+    rms_norm_quantized_matmul, silu_mul_quantized_matmul, slice, slice_last_dim, zeros,
 };
 use std::time::Instant;
 
@@ -695,7 +695,11 @@ pub(crate) fn qwen_prefill_maybe_async_la_outputs_for(
 
 /// Pack GatedDelta output so rms_norm_gated + out_proj see a contiguous view.
 fn qwen_prefill_maybe_contiguous_gd(gd_out: MlxArray, seq: i32) -> MlxArray {
-    qwen_prefill_maybe_contiguous_gd_for(gd_out, fastpath::qwen_prefill_contiguous_gd_enabled(), seq)
+    qwen_prefill_maybe_contiguous_gd_for(
+        gd_out,
+        fastpath::qwen_prefill_contiguous_gd_enabled(),
+        seq,
+    )
 }
 
 /// Pure helper for [`qwen_prefill_maybe_contiguous_gd`].
@@ -806,8 +810,7 @@ pub(crate) fn linear_attention_inputs(
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
     qwen_prefill_maybe_eval_la_input(x, seq);
     let x_contig;
-    let x = if fastpath::should_qwen_prefill_contiguous_la_input(&model_cfg.model_family, seq)
-    {
+    let x = if fastpath::should_qwen_prefill_contiguous_la_input(&model_cfg.model_family, seq) {
         x_contig = contiguous(x, None);
         &x_contig
     } else {

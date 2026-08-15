@@ -636,16 +636,16 @@ fn omitted_model_id_without_explicit_artifacts_keeps_qwen_default() {
 
 #[test]
 fn preset_selects_mlx_preview_defaults() {
-    let mlx_model_artifacts_dir = PathBuf::from("/tmp/gemma-4-e2b-it-4bit");
+    let mlx_model_artifacts_dir = PathBuf::from("/tmp/gemma-4-31b-it-4bit");
     let args = ServerArgs {
-        preset: Some(ServerPreset::Gemma4E2b),
+        preset: Some(ServerPreset::Gemma4_31b),
         mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
         ..base_args()
     };
 
     let actual = args.session_config().expect("session config should build");
 
-    assert_eq!(args.effective_model_id().unwrap(), "gemma4-e2b");
+    assert_eq!(args.effective_model_id().unwrap(), "gemma4-31b");
     assert_eq!(
         args.effective_support_tier(),
         PreviewSupportTier::MlxPreview
@@ -845,6 +845,10 @@ fn render_presets_lists_glm_preset() {
     let presets = render_presets();
 
     assert!(presets.contains("gemma4-12b\tmodel_id=gemma4-12b"));
+    assert!(
+        !presets.contains("gemma4-e2b\t"),
+        "E2B stays loadable from a directory but is not a catalogued preset"
+    );
     assert!(presets.contains("qwen3.5-9b\tmodel_id=qwen3.5-9b"));
     assert!(presets.contains("qwen3.6-27b\tmodel_id=qwen36-27b"));
     assert!(presets.contains("holo3-35b\tmodel_id=holo3-35b"));
@@ -884,12 +888,12 @@ fn preset_hf_cache_resolution_finds_single_valid_snapshot() {
     let root = unique_test_dir("hf-cache-single");
     let expected = write_hf_snapshot(
         &root,
-        "models--mlx-community--gemma-4-e2b-it-4bit",
+        "models--mlx-community--gemma-4-31b-it-4bit",
         "abc123",
         "gemma4",
     );
     let args = ServerArgs {
-        preset: Some(ServerPreset::Gemma4E2b),
+        preset: Some(ServerPreset::Gemma4_31b),
         resolve_model_artifacts: ModelArtifactResolution::HfCache,
         hf_cache_root: Some(root.clone()),
         ..base_args()
@@ -984,18 +988,18 @@ fn preset_hf_cache_resolution_rejects_ambiguous_snapshots() {
     let root = unique_test_dir("hf-cache-ambiguous");
     write_hf_snapshot(
         &root,
-        "models--mlx-community--gemma-4-e2b-it-4bit",
+        "models--mlx-community--gemma-4-31b-it-4bit",
         "abc123",
         "gemma4",
     );
     write_hf_snapshot(
         &root,
-        "models--mlx-community--gemma-4-e2b-it-4bit",
+        "models--mlx-community--gemma-4-31b-it-4bit",
         "def456",
         "gemma4",
     );
     let args = ServerArgs {
-        preset: Some(ServerPreset::Gemma4E2b),
+        preset: Some(ServerPreset::Gemma4_31b),
         resolve_model_artifacts: ModelArtifactResolution::HfCache,
         hf_cache_root: Some(root.clone()),
         ..base_args()
@@ -1013,7 +1017,7 @@ fn preset_hf_cache_resolution_rejects_ambiguous_snapshots() {
 fn preset_hf_cache_resolution_accepts_raw_snapshot_without_writing_manifest() {
     let root = unique_test_dir("hf-cache-no-manifest");
     let snapshot = root
-        .join("models--mlx-community--gemma-4-e2b-it-4bit")
+        .join("models--mlx-community--gemma-4-31b-it-4bit")
         .join("snapshots")
         .join("abc123");
     fs::create_dir_all(&snapshot).expect("snapshot dir should create");
@@ -1022,7 +1026,7 @@ fn preset_hf_cache_resolution_accepts_raw_snapshot_without_writing_manifest() {
     fs::write(snapshot.join("model.safetensors"), b"placeholder")
         .expect("safetensors marker should write");
     let args = ServerArgs {
-        preset: Some(ServerPreset::Gemma4E2b),
+        preset: Some(ServerPreset::Gemma4_31b),
         resolve_model_artifacts: ModelArtifactResolution::HfCache,
         hf_cache_root: Some(root.clone()),
         ..base_args()
@@ -1049,7 +1053,7 @@ fn preset_hf_cache_resolution_prefers_manifest_bearing_candidate() {
     // converted/downloaded revision: the manifest-bearing one must win
     // instead of failing with "multiple candidates".
     let raw = root
-        .join("models--mlx-community--gemma-4-e2b-it-4bit")
+        .join("models--mlx-community--gemma-4-31b-it-4bit")
         .join("snapshots")
         .join("raw999");
     fs::create_dir_all(&raw).expect("raw snapshot dir should create");
@@ -1058,12 +1062,12 @@ fn preset_hf_cache_resolution_prefers_manifest_bearing_candidate() {
         .expect("safetensors marker should write");
     let converted = write_hf_snapshot(
         &root,
-        "models--mlx-community--gemma-4-e2b-it-4bit",
+        "models--mlx-community--gemma-4-31b-it-4bit",
         "abc123",
         "gemma4",
     );
     let args = ServerArgs {
-        preset: Some(ServerPreset::Gemma4E2b),
+        preset: Some(ServerPreset::Gemma4_31b),
         resolve_model_artifacts: ModelArtifactResolution::HfCache,
         hf_cache_root: Some(root.clone()),
         ..base_args()

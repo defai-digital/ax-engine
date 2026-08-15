@@ -16,20 +16,19 @@ pub(crate) use attention::{
     KVConcatBuffer, attention_mask_array, attention_with_sinks, bidirectional_attention,
     build_layer_masks_for_forward, build_layer_masks_with_media_ranges,
     direct_qk_norm_rope_route_enabled_for_family, flatten_attention_output_bhsd,
-    full_precision_attention, full_precision_attention_with_window, prepare_value_bhsd,
-    prepare_value_bhsd_from_proj, prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_flat,
-    qk_norm_rope_bhsd_from_proj_with_route, qwen_prefill_maybe_async_sdpa,
-    qwen_prefill_maybe_eval_attn_input, qwen_prefill_maybe_last_query_q,
-    qwen_prefill_maybe_last_token_bsh, qwen_prefill_maybe_last_token_flat,
-    qwen_prefill_query_seq,
-    rope_bhsd_batch_offset_safe, set_qwen_prefill_reuse_rope_active,
+    full_precision_attention, full_precision_attention_with_window,
+    gemma4_prefill_maybe_async_first_kv, prepare_value_bhsd, prepare_value_bhsd_from_proj,
+    prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj_flat, qk_norm_rope_bhsd_from_proj_with_route,
+    qwen_prefill_maybe_async_sdpa, qwen_prefill_maybe_eval_attn_input,
+    qwen_prefill_maybe_last_query_q, qwen_prefill_maybe_last_token_bsh,
+    qwen_prefill_maybe_last_token_flat, qwen_prefill_query_seq, rope_bhsd_batch_offset_safe,
+    set_qwen_prefill_reuse_rope_active,
 };
 pub(crate) use deepseek_v4_attention::deepseek_v4_attention_forward;
 pub(crate) use hyper_connection::{hc_head, hc_post, hc_pre};
 pub(crate) use linear_attention::{
-    linear_attention_forward, linear_attention_forward_batched,
-    set_qwen_la_norm_qkvz_fuse_weights,
+    linear_attention_forward, linear_attention_forward_batched, set_qwen_la_norm_qkvz_fuse_weights,
 };
 pub(crate) use mla::glm_mla_attention_forward;
 pub(crate) use mlp::moe_router_deepseek_v4;
@@ -49,6 +48,7 @@ pub(crate) use mlp::{
 };
 pub(crate) use norm::rms_norm_opt;
 pub(super) use rope::{build_llama3_rope_freqs, build_yarn_rope_freqs};
+pub(crate) use utils::Gemma4PrefillSkipLastFfnPackedGuard;
 pub(crate) use utils::scale_hidden_pub;
 pub(crate) use utils::{
     ProjectionBatchPolicy, add_then_multiply_scalar, apply_final_logit_softcap,

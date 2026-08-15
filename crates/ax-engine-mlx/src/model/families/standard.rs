@@ -53,23 +53,23 @@ use super::super::profile::{
     profile_eval_elapsed, record_gemma4_moe_decode_layer,
 };
 use super::super::shared::{
-    KVConcatBuffer, add_then_multiply_scalar, attention_mask_array,
-    attention_output_projection_batched, attention_output_projection_with_post_norm,
-    attention_output_projection_with_post_norm_policy, bidirectional_attention,
-    direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, ffn_swiglu_batched,
-    ffn_swiglu_plus_residual, ffn_swiglu_row_exact, flatten_attention_output_bhsd,
-    flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs, full_precision_attention,
-    full_precision_attention_with_window, linear_attention_forward_batched, moe_experts_forward,
+    Gemma4PrefillSkipLastFfnPackedGuard, KVConcatBuffer, add_then_multiply_scalar,
+    attention_mask_array, attention_output_projection_batched,
+    attention_output_projection_with_post_norm, attention_output_projection_with_post_norm_policy,
+    bidirectional_attention, direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu,
+    ffn_swiglu_batched, ffn_swiglu_plus_residual, ffn_swiglu_row_exact,
+    flatten_attention_output_bhsd, flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs,
+    full_precision_attention, full_precision_attention_with_window,
+    gemma4_prefill_maybe_async_first_kv, linear_attention_forward_batched, moe_experts_forward,
     moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
     moe_router_qwen3, packed_qkv_kv_head_count, per_layer_input_gate_project,
     prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route,
-    rope_bhsd_batch_offset_safe,
     qkv_project, qkv_project_batched, qkv_project_last_query, qkv_project_pos0_exact_rest_shared,
     qkv_project_row_exact, qkv_project_with_input_norm, qw, qwen_prefill_maybe_async_sdpa,
     qwen_prefill_maybe_last_query_q, qwen_prefill_maybe_last_token_bsh,
     qwen_prefill_maybe_last_token_flat, qwen_prefill_query_seq, rms_norm_opt,
-    shape_element_count, shared_expert_forward,
+    rope_bhsd_batch_offset_safe, shape_element_count, shared_expert_forward,
 };
 use crate::attention_mask::{batched_decode_validity_mask_with_window, create_ring_sliding_mask};
 use crate::batched_kv_cache::BatchedKvCache;
@@ -85,6 +85,55 @@ use crate::weights::LayerWeights;
 
 /// Minimum top-k selection count above which the sort path is taken in Gemma4 MoE.
 const SWITCH_GLU_SORT_THRESHOLD: usize = 64;
+
+/// Last-layer residual + pre-FFN RMSNorm for last-position-only prefill.
+///
+/// When `skip_unused_prefix` is set, slice both residual inputs to the last
+/// token *before* add + RMSNorm so the discarded prefix does not pay an
+/// add. Otherwise keep the historical add-then-slice-then-rms path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn last_layer_residual_and_ffn_norm(
+    hidden: &MlxArray,
+    attn_proj: &MlxArray,
+    ffn_norm: &MlxArray,
+    per_layer_input: Option<&MlxArray>,
+    seq: usize,
+    hidden_size: usize,
+    eps: f32,
+    skip_unused_prefix: bool,
+) -> (MlxArray, MlxArray, Option<MlxArray>) {
+    let hs = hidden_size as i32;
+    let last = (seq - 1) as i32;
+    let slice_last = |x: &MlxArray, last_dim: i32| {
+        if x.shape().get(1).copied().unwrap_or(1) > 1 {
+            slice(x, &[0, last, 0], &[1, last + 1, last_dim], &[1, 1, 1], None)
+        } else {
+            x.clone()
+        }
+    };
+    let sliced_pli = per_layer_input.map(|pli| {
+        let pli_last_dim = *pli.shape().last().unwrap_or(&hs);
+        slice_last(pli, pli_last_dim)
+    });
+    if skip_unused_prefix {
+        let hidden_last = slice_last(hidden, hs);
+        let attn_last = slice_last(attn_proj, hs);
+        let (residual, normed) = add_rms_norm_pair(&hidden_last, &attn_last, ffn_norm, eps, None);
+        (residual, normed, sliced_pli)
+    } else {
+        let hidden_for_add = if attn_proj.shape().get(1).copied().unwrap_or(1) == 1
+            && hidden.shape().get(1).copied().unwrap_or(1) > 1
+        {
+            slice_last(hidden, hs)
+        } else {
+            hidden.clone()
+        };
+        let residual = add(&hidden_for_add, attn_proj, None);
+        let sliced_hidden = slice_last(&residual, hs);
+        let normed = rms_norm(&sliced_hidden, Some(ffn_norm), eps, None);
+        (sliced_hidden, normed, sliced_pli)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Post-attention shared pipeline
@@ -206,43 +255,20 @@ fn layer_shell_post_attention(
     // Common multi-token path fuses residual-add + pre-FFN RMSNorm into one
     // compiled composite (mlxcel-style; used every Gemma/Qwen dense layer).
     let (hidden, normed2, per_layer_input_owned) = if last_only_active {
-        let hidden_for_add = if attn_proj.shape().get(1).copied().unwrap_or(1) == 1
-            && hidden.shape().get(1).copied().unwrap_or(1) > 1
-        {
-            let last = (seq - 1) as i32;
-            let hs = cfg.hidden_size as i32;
-            slice(hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
-        } else {
-            hidden.clone()
-        };
-        let residual = add(&hidden_for_add, attn_proj, None);
-        let last = residual.shape().get(1).copied().unwrap_or(1) - 1;
-        let hs = cfg.hidden_size as i32;
-        let sliced_hidden = if residual.shape().get(1).copied().unwrap_or(1) > 1 {
-            slice(
-                &residual,
-                &[0, last, 0],
-                &[1, last + 1, hs],
-                &[1, 1, 1],
-                None,
-            )
-        } else {
-            residual
-        };
-        let sliced_pli = per_layer_input.map(|pli| {
-            let dims = pli.shape();
-            let pli_last_dim = *dims.last().unwrap_or(&hs);
-            let pli_last = (seq - 1) as i32;
-            slice(
-                pli,
-                &[0, pli_last, 0],
-                &[1, pli_last + 1, pli_last_dim],
-                &[1, 1, 1],
-                None,
-            )
-        });
-        let normed2 = rms_norm(&sliced_hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
-        (sliced_hidden, normed2, sliced_pli)
+        last_layer_residual_and_ffn_norm(
+            hidden,
+            attn_proj,
+            &w.ffn_norm,
+            per_layer_input,
+            seq,
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            fastpath::should_gemma4_prefill_skip_unused_last_residual(
+                &cfg.model_family,
+                true,
+                seq as i32,
+            ),
+        )
     } else {
         let (residual, normed2) =
             add_rms_norm_pair(hidden, attn_proj, &w.ffn_norm, cfg.rms_norm_eps, None);
@@ -265,6 +291,14 @@ fn layer_shell_post_attention(
     }
 
     // 17. FFN: MoE or dense.
+    let _skip_last_ffn_packed = Gemma4PrefillSkipLastFfnPackedGuard::arm(
+        last_only_active
+            && crate::fastpath::should_gemma4_prefill_skip_unused_last_ffn_packed(
+                &cfg.model_family,
+                true,
+                seq as i32,
+            ),
+    );
     let ffn_started = profile_forward_layer.then(Instant::now);
     let ffn_out = if w.router_proj.is_some() {
         if cfg.gemma4_moe_router {
@@ -889,7 +923,7 @@ fn layer_forward_internal(
     let skip_qkv_fuse = crate::fastpath::qwen_linear_mtp_exact_enabled()
         || crate::fastpath::moe_mt_bf16_identity_enabled();
     let fuse_attn_norm_qkv = fastpath::should_call_attn_norm_qkv_fuse(
-        fastpath::should_attn_norm_qkv_fuse(&cfg.model_family),
+        fastpath::should_attn_norm_qkv_fuse(&cfg.model_family, seq as i32),
         w.qkv_packed.is_some(),
         kv_source.is_some(),
         skip_qkv_fuse,
@@ -923,7 +957,9 @@ fn layer_forward_internal(
     // portable path below.
     let fused_prefill = 'fused: {
         let dbg = fastpath::prefill_time_debug_env();
-        if !fastpath::fused_prefill_attention_should_try(&cfg.model_family) || seq <= 1 {
+        if !fastpath::fused_prefill_attention_should_try_for_seq(&cfg.model_family, seq as i32)
+            || seq <= 1
+        {
             break 'fused None;
         }
         // Offset chunks (chunked prefill continuation) fuse via the two-stage
@@ -933,6 +969,12 @@ fn layer_forward_internal(
         let offset_chunk = token_offset != 0 || cache.seq_len() != 0;
         let gate_reason = if kv_source.is_some() {
             Some("kv_source")
+        } else if last_position_only_after_attention
+            && fastpath::should_gemma4_prefill_last_query_p128(&cfg.model_family, true, seq as i32)
+        {
+            // Last-layer last-query needs the portable Q/SDPA/o_proj slices;
+            // fused C++ still emits a full-seq last-layer attention.
+            Some("last_query")
         } else if mrope.is_some() {
             Some("mrope")
         } else if !offset_chunk && ring_layout.is_some() {
@@ -1169,6 +1211,13 @@ fn layer_forward_internal(
                 o_proj.biases.as_ref(),
                 packed.group_size,
                 packed.bits,
+                w.attn_post_norm.as_ref().filter(|_| {
+                    fastpath::should_gemma4_fused_prefill_fold_post_norm(
+                        &cfg.model_family,
+                        seq as i32,
+                        true,
+                    )
+                }),
                 None,
             )
         } else if let (Some(q_proj), Some(k_proj)) = (w.q_proj.as_ref(), w.k_proj.as_ref()) {
@@ -1218,6 +1267,13 @@ fn layer_forward_internal(
                 o_proj.biases.as_ref(),
                 q_proj.group_size,
                 q_proj.bits,
+                w.attn_post_norm.as_ref().filter(|_| {
+                    fastpath::should_gemma4_fused_prefill_fold_post_norm(
+                        &cfg.model_family,
+                        seq as i32,
+                        true,
+                    )
+                }),
                 None,
             )
         } else {
@@ -1246,9 +1302,17 @@ fn layer_forward_internal(
             } else {
                 None
             };
+        gemma4_prefill_maybe_async_first_kv(&k_rope, &v, &cfg.model_family, seq as i32);
         let _ =
             cache.append_with_retained_window_for_attention(layer_idx, k_rope, v, retained_window);
-        let out = if let Some(post_norm) = w.attn_post_norm.as_ref() {
+        let folded_post_norm = fastpath::should_gemma4_fused_prefill_fold_post_norm(
+            &cfg.model_family,
+            seq as i32,
+            w.attn_post_norm.is_some(),
+        );
+        let out = if folded_post_norm {
+            out
+        } else if let Some(post_norm) = w.attn_post_norm.as_ref() {
             rms_norm(&out, Some(post_norm), cfg.rms_norm_eps, None)
         } else {
             out
@@ -1360,6 +1424,10 @@ fn layer_forward_internal(
                 &cfg.model_family,
                 last_position_only_after_attention,
                 seq as i32,
+            ) || fastpath::should_gemma4_prefill_last_query_p128(
+                &cfg.model_family,
+                last_position_only_after_attention,
+                seq as i32,
             );
             let last_q_x = if last_q_proj {
                 normed
@@ -1441,7 +1509,8 @@ fn layer_forward_internal(
                 &cfg.model_family,
                 last_position_only_after_attention,
                 seq as i32,
-            ) && let Some(last_q) = qwen_prefill_maybe_last_token_bsh(&q_raw, q_seq > 1)
+            ) && let Some(last_q) =
+                qwen_prefill_maybe_last_token_bsh(&q_raw, q_seq > 1)
             {
                 (
                     last_q,
@@ -1612,6 +1681,12 @@ fn layer_forward_internal(
                     retained_window,
                 )
             };
+            match &attention_kv {
+                MlxAttentionKv::Dense { k, v } => {
+                    gemma4_prefill_maybe_async_first_kv(k, v, &cfg.model_family, seq as i32)
+                }
+                MlxAttentionKv::Paged(_) => {}
+            }
             if let Some(started) = rope_kv_started {
                 match &attention_kv {
                     MlxAttentionKv::Dense { k, v } => forward_profile_eval_elapsed(
@@ -1662,6 +1737,10 @@ fn layer_forward_internal(
             &cfg.model_family,
             last_position_only_after_attention,
             seq as i32,
+        ) || fastpath::should_gemma4_prefill_last_query_p128(
+            &cfg.model_family,
+            last_position_only_after_attention,
+            seq as i32,
         );
         let q_rope = match qwen_prefill_maybe_last_query_q(&q_rope, last_query_sdpa) {
             Some(q) => q,
@@ -1684,14 +1763,14 @@ fn layer_forward_internal(
             None
         } else {
             match ring_layout {
-                Some(ring) if ring.needs_mask(query_seq) && key_len == ring.capacity => Some(
-                    create_ring_sliding_mask(
+                Some(ring) if ring.needs_mask(query_seq) && key_len == ring.capacity => {
+                    Some(create_ring_sliding_mask(
                         query_seq,
                         ring.window,
                         ring.capacity,
                         ring.write_start,
-                    ),
-                ),
+                    ))
+                }
                 _ => attention_mask_array(query_seq, key_len, sliding_window),
             }
         };
@@ -1753,6 +1832,10 @@ fn layer_forward_internal(
         // Last-only generate prefill: o_proj is position-wise and KV is already
         // written, so slice SDPA to the last token before flatten/o_proj.
         let last_token_o_proj = fastpath::should_qwen_prefill_last_token_o_proj(
+            &cfg.model_family,
+            last_position_only_after_attention,
+            seq as i32,
+        ) || fastpath::should_gemma4_prefill_last_query_p128(
             &cfg.model_family,
             last_position_only_after_attention,
             seq as i32,
@@ -2443,4 +2526,75 @@ pub(crate) fn layer_forward_bidirectional(
         false, // profile_gemma4_moe_decode
         None,  // post_attn_started
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::last_layer_residual_and_ffn_norm;
+    use mlx_sys::{MlxArray, MlxDtype, add, eval, rms_norm, slice};
+
+    fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    #[test]
+    fn last_layer_residual_and_ffn_norm_skip_prefix_matches_add_then_slice() {
+        let seq = 4;
+        let hidden_size = 2;
+        let hidden_data: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let attn_data: Vec<f32> = (0..8).map(|i| (i as f32) * 0.25).collect();
+        let norm_data = [1.0_f32, 1.0];
+        let hidden = array_f32(&hidden_data, &[1, seq, hidden_size]);
+        let attn = array_f32(&attn_data, &[1, seq, hidden_size]);
+        let ffn_norm = array_f32(&norm_data, &[hidden_size]);
+
+        let (skip_res, skip_norm, pli) = last_layer_residual_and_ffn_norm(
+            &hidden,
+            &attn,
+            &ffn_norm,
+            None,
+            seq as usize,
+            hidden_size as usize,
+            1e-5,
+            true,
+        );
+        assert!(pli.is_none());
+
+        let full_add = add(&hidden, &attn, None);
+        let last = seq - 1;
+        let sliced = slice(
+            &full_add,
+            &[0, last, 0],
+            &[1, last + 1, hidden_size],
+            &[1, 1, 1],
+            None,
+        );
+        let sliced_norm = rms_norm(&sliced, Some(&ffn_norm), 1e-5, None);
+        eval(&[&skip_res, &skip_norm, &sliced, &sliced_norm]);
+        assert_eq!(skip_res.shape(), vec![1, 1, hidden_size]);
+        assert_eq!(skip_norm.shape(), vec![1, 1, hidden_size]);
+        let a = skip_res.data_f32();
+        let b = sliced.data_f32();
+        assert_eq!(a, b, "slice-then-add last row must match add-then-slice");
+        let na = skip_norm.data_f32();
+        let nb = sliced_norm.data_f32();
+        assert_eq!(na.len(), nb.len());
+        for (x, y) in na.iter().zip(nb.iter()) {
+            assert!(
+                (x - y).abs() < 1.0e-5,
+                "slice-then-add_rms last row must match add-then-slice-then-rms: {x} vs {y}"
+            );
+        }
+        assert!(
+            crate::fastpath::should_gemma4_prefill_skip_unused_last_residual_for(
+                true, "gemma4", true, 128
+            ),
+            "shipped skip-unused-last-residual must accept contract p128 last layer"
+        );
+    }
 }

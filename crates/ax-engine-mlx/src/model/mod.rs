@@ -427,8 +427,8 @@ pub(crate) fn embed_tokens_arr(
         let row_s = take(scales, ids, 0, None);
         let row_b = embedding.biases.as_ref().map(|b| take(b, ids, 0, None));
         // Mode-aware dequant (mxfp8 embeddings have U8 scales and no biases).
-        let dequant_dtype = shared::utils::qwen_prefill_bf16_embed_dequant_active()
-            .then_some(MlxDtype::Bfloat16);
+        let dequant_dtype =
+            shared::utils::qwen_prefill_bf16_embed_dequant_active().then_some(MlxDtype::Bfloat16);
         let flat = dequantize_with_mode(
             &row_w,
             &row_s,
@@ -1043,10 +1043,16 @@ fn forward_and_logits_mode(
         crate::fastpath::should_qwen_prefill_skip_unused_embed_clip(
             &cfg.model_family,
             token_ids.len() as i32,
+        ) || crate::fastpath::should_gemma4_prefill_skip_unused_embed_clip(
+            &cfg.model_family,
+            token_ids.len() as i32,
         ),
     );
     shared::utils::set_qwen_prefill_bf16_embed_dequant(
         crate::fastpath::should_qwen_prefill_bf16_embed_dequant(
+            &cfg.model_family,
+            token_ids.len() as i32,
+        ) || crate::fastpath::should_gemma4_prefill_bf16_embed(
             &cfg.model_family,
             token_ids.len() as i32,
         ),
@@ -1071,6 +1077,9 @@ fn forward_and_logits_mode(
         crate::fastpath::should_qwen_prefill_skip_unused_f32_sdpa(
             &cfg.model_family,
             token_ids.len() as i32,
+        ) || crate::fastpath::should_gemma4_prefill_skip_unused_f32_sdpa(
+            &cfg.model_family,
+            token_ids.len() as i32,
         ),
     );
     let _native_offset = shared::utils::QwenPrefillNativeOffsetCausalGuard::arm(
@@ -1093,9 +1102,22 @@ fn forward_and_logits_mode(
     // mask even for one query. Keep the common decode path on one borrowed
     // `None` instead of allocating a per-layer mask vec.
     let decode_mask: Option<MlxArray> = None;
-    let masks = (seq > 1 || cache.rotating_sliding_slack() > 0).then(|| {
-        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache)
-    });
+    let key_len = token_offset + seq;
+    let min_sliding_window = cfg
+        .layer_configs
+        .iter()
+        .filter_map(|lc| lc.sliding_window)
+        .min()
+        .or(cfg.global_sliding_window);
+    let skip_unused_layer_masks = crate::fastpath::should_gemma4_prefill_skip_unused_layer_masks(
+        &cfg.model_family,
+        seq as i32,
+        key_len,
+        min_sliding_window,
+        cache.rotating_sliding_slack(),
+    );
+    let masks = (!skip_unused_layer_masks && (seq > 1 || cache.rotating_sliding_slack() > 0))
+        .then(|| build_layer_masks_for_forward(cfg, weights.layers.len(), seq, key_len, cache));
     let per_layer_started = profile_prefill.then(Instant::now);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     if let (Some(started), Some(inputs)) = (per_layer_started, per_layer_inputs.as_ref()) {
@@ -1161,6 +1183,12 @@ fn forward_and_logits_mode(
         // (`MLXCEL_PIPELINE_GRANULARITY` parity via AX_MLX_PIPELINE_GRANULARITY).
         if crate::fastpath::pipeline_hint_should_fire(li, total_layers)
             || crate::fastpath::should_qwen_prefill_pipeline_block(
+                &cfg.model_family,
+                seq,
+                li,
+                total_layers,
+            )
+            || crate::fastpath::should_gemma4_prefill_pipeline_hint_p128(
                 &cfg.model_family,
                 seq,
                 li,
@@ -1440,6 +1468,12 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
         // mlxcel residual: `pipeline_hint` (AX_MLX_PIPELINE_GRANULARITY).
         if crate::fastpath::pipeline_hint_should_fire(li, total_layers)
             || crate::fastpath::should_qwen_prefill_pipeline_block(
+                &cfg.model_family,
+                seq,
+                li,
+                total_layers,
+            )
+            || crate::fastpath::should_gemma4_prefill_pipeline_hint_p128(
                 &cfg.model_family,
                 seq,
                 li,
@@ -1904,6 +1938,12 @@ pub fn forward_all_positions_with_post_norm_ids(
             async_eval(&[&hidden]);
         } else if crate::fastpath::pipeline_hint_should_fire(li, layer_count)
             || crate::fastpath::should_qwen_prefill_pipeline_block(
+                &cfg.model_family,
+                seq,
+                li,
+                layer_count,
+            )
+            || crate::fastpath::should_gemma4_prefill_pipeline_hint_p128(
                 &cfg.model_family,
                 seq,
                 li,
@@ -4809,10 +4849,72 @@ mod tests {
         assert_eq!(skipped.shape(), vec![1, 3, 2]);
         assert_eq!(clipped.data_f32(), skipped.data_f32());
         assert!(
-            crate::fastpath::should_qwen_prefill_skip_unused_embed_clip_for(
-                true, "qwen3_5", 1024
-            ),
+            crate::fastpath::should_qwen_prefill_skip_unused_embed_clip_for(true, "qwen3_5", 1024),
             "shipped skip-embed-clip gate must accept the p2048 chunk length"
+        );
+        assert!(
+            crate::fastpath::should_gemma4_prefill_skip_unused_embed_clip_for(true, "gemma4", 128),
+            "shipped Gemma 4 skip-embed-clip gate must accept contract p128"
+        );
+    }
+
+    #[test]
+    fn gemma4_prefill_skip_unused_layer_masks_matches_hoist_all_none() {
+        let mut cfg = gemma4_kv_shared_config();
+        for lc in &mut cfg.layer_configs {
+            lc.sliding_window = Some(1024);
+        }
+        let n_layers = cfg.layer_configs.len();
+        let min_window = cfg
+            .layer_configs
+            .iter()
+            .filter_map(|lc| lc.sliding_window)
+            .min();
+        assert!(
+            crate::fastpath::should_gemma4_prefill_skip_unused_layer_masks_for(
+                true, "gemma4", 128, 128, min_window, 0
+            ),
+            "shipped skip-unused-layer-masks must accept contract p128"
+        );
+        let hoisted = build_layer_masks(&cfg, n_layers, 128, 128);
+        assert_eq!(hoisted.len(), n_layers);
+        assert!(
+            hoisted.iter().all(|m| m.is_none()),
+            "p128 hoist is unused: every layer mask is already None"
+        );
+        assert!(
+            !crate::fastpath::should_gemma4_prefill_skip_unused_layer_masks_for(
+                true, "gemma4", 2048, 2048, min_window, 0
+            ),
+            "p2048 exceeds the 1024-token window and must keep the hoist"
+        );
+    }
+
+    #[test]
+    fn gemma4_prefill_pipeline_hint_p128_matches_generate_layer_loop() {
+        // Same arguments `forward_and_logits_mode` passes into the shipped
+        // per-layer `async_eval` predicate (seq, layer_idx, n_layers).
+        assert!(
+            crate::fastpath::should_gemma4_prefill_pipeline_hint_p128_for(
+                true, "gemma4", 128, 0, 48
+            ),
+            "shipped generate loop must hint after the first p128 layer"
+        );
+        assert!(
+            crate::fastpath::should_gemma4_prefill_pipeline_hint_p128_for(
+                true, "gemma4", 128, 46, 48
+            ),
+            "shipped generate loop must hint after the last non-final p128 layer"
+        );
+        assert!(
+            !crate::fastpath::should_gemma4_prefill_pipeline_hint_p128_for(
+                true, "gemma4", 128, 47, 48
+            ),
+            "shipped generate loop must not hint after the final layer"
+        );
+        assert!(
+            !crate::fastpath::pipeline_hint_should_fire(0, 48),
+            "global pipeline granularity stays off on the generate path"
         );
     }
 
@@ -4822,6 +4924,10 @@ mod tests {
         assert!(
             crate::fastpath::should_qwen_prefill_bf16_embed_dequant_for(true, "qwen3_5", 1024),
             "shipped bf16-embed-dequant gate must accept the p2048 chunk length"
+        );
+        assert!(
+            crate::fastpath::should_gemma4_prefill_bf16_embed_for(true, "gemma4", 128),
+            "shipped Gemma 4 bf16 embed must accept contract p128"
         );
         let vocab = 8;
         let hidden = 64;

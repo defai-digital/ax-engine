@@ -26,6 +26,13 @@ REPO = Path(__file__).resolve().parents[1]
 STACK = REPO / "scripts" / "bench_mlx_inference_stack.py"
 HF_HUB = Path.home() / ".cache" / "huggingface" / "hub"
 
+# Factory / host-local AXQ pack roots (complete weights, not the stub Hub cache).
+AXQ_LOCAL_ROOTS = (
+    Path("/Volumes/Ext4T/axquant/axq-canonical-v2"),
+    Path("/Volumes/Ext4T/axquant/axq-publish"),
+    Path("/Volumes/Ext4T/axquant/axq-assistant-composites-v1"),
+)
+
 WAVE1 = {
     "qwen3.5-9b": {
         "repo": "mlx-community/Qwen3.5-9B-MLX-4bit",
@@ -42,23 +49,18 @@ WAVE1 = {
         "family": "qwen3_5",
         "mtp": True,
     },
-    "gemma4-e2b": {
-        "repo": "mlx-community/gemma-4-e2b-it-4bit",
-        "family": "gemma4",
-        "mtp": False,
-    },
     "gemma4-12b": {
-        "repo": "mlx-community/gemma-4-12B-it-4bit",
+        "repo": "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-it",
         "family": "gemma4",
         "mtp": True,
     },
     "gemma4-26b": {
-        "repo": "mlx-community/gemma-4-26b-a4b-it-4bit",
+        "repo": "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit",
         "family": "gemma4",
         "mtp": True,
     },
     "gemma4-31b": {
-        "repo": "mlx-community/gemma-4-31b-it-4bit",
+        "repo": "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit",
         "family": "gemma4",
         "mtp": True,
     },
@@ -84,6 +86,16 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def pack_dir_looks_complete(path: Path) -> bool:
+    """True when a local pack has config.json and at least one large weight file."""
+    if not path.is_dir() or not (path / "config.json").is_file():
+        return False
+    return any(
+        child.is_file() and child.stat().st_size > 1_000_000
+        for child in path.glob("*.safetensors")
+    )
+
+
 def hub_snapshot(repo_id: str) -> Path | None:
     dirname = "models--" + repo_id.replace("/", "--")
     snaps = HF_HUB / dirname / "snapshots"
@@ -93,10 +105,43 @@ def hub_snapshot(repo_id: str) -> Path | None:
     if refs.is_file():
         rev = refs.read_text().strip()
         candidate = snaps / rev
-        if candidate.is_dir():
+        if pack_dir_looks_complete(candidate):
             return candidate
     kids = sorted(p for p in snaps.iterdir() if p.is_dir())
-    return kids[-1] if kids else None
+    for candidate in reversed(kids):
+        if pack_dir_looks_complete(candidate):
+            return candidate
+    return None
+
+
+def resolve_snapshot(
+    spec: dict[str, object], extra_roots: list[Path] | None = None
+) -> Path | None:
+    """Resolve a Wave-1 row to a complete local pack.
+
+    Order: explicit ``local_dir``, then ``--local-root`` / factory AXQ
+    roots (repo basename), then a complete Hugging Face hub snapshot.
+    Stub Hub trees (config-only, no weight blobs) are not accepted.
+    """
+    local = spec.get("local_dir")
+    if isinstance(local, str) and local:
+        candidate = Path(local).expanduser()
+        if pack_dir_looks_complete(candidate):
+            return candidate
+    name = str(spec.get("repo") or "").rsplit("/", 1)[-1]
+    roots: list[Path] = []
+    if extra_roots:
+        roots.extend(extra_roots)
+    roots.extend(AXQ_LOCAL_ROOTS)
+    if name:
+        for root in roots:
+            candidate = root / name
+            if pack_dir_looks_complete(candidate):
+                return candidate
+    repo = spec.get("repo")
+    if isinstance(repo, str) and repo:
+        return hub_snapshot(repo)
+    return None
 
 
 def run(cmd: list[str], log_path: Path, cwd: Path | None = None) -> int:
@@ -203,6 +248,13 @@ def main() -> int:
         default=REPO / ".internal/reference/mlxcel/target/release/mlxcel-bench-decode",
     )
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
+    parser.add_argument(
+        "--local-root",
+        action="append",
+        default=[],
+        type=Path,
+        help="Extra directory to search for AXQ pack basenames (repeatable)",
+    )
     parser.add_argument("--skip-ax", action="store_true")
     parser.add_argument("--skip-mlxcel", action="store_true")
     args = parser.parse_args()
@@ -237,7 +289,7 @@ def main() -> int:
     scoreboard: list[dict[str, object]] = []
     for model_id in selected:
         spec = WAVE1[model_id]
-        snap = hub_snapshot(spec["repo"])
+        snap = resolve_snapshot(spec, extra_roots=list(args.local_root))
         model_out = out_dir / model_id
         model_out.mkdir(parents=True, exist_ok=True)
         row: dict[str, object] = {

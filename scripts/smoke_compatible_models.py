@@ -97,8 +97,8 @@ SMOKE_MATRIX: tuple[SmokeModel, ...] = (
         tier=TIER_CERTIFIED,
     ),
     SmokeModel(
-        slug="gemma4-e2b",
-        repo_id="mlx-community/gemma-4-e2b-it-4bit",
+        slug="gemma4-e4b",
+        repo_id="mlx-community/gemma-4-e4b-it-4bit",
         family="gemma4",
         tier=TIER_CERTIFIED,
     ),

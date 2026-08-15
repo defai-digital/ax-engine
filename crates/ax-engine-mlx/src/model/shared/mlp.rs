@@ -3,12 +3,11 @@ use mlx_sys::{
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, async_eval,
     compiled_dual_gate_up_qmm, compiled_dual_gate_up_qmm_forced, compiled_gelu_approx_split_mlp,
     concatenate, contiguous, divide, dual_affine_qmm, dual_affine_qmm_forced, dual_qmm_geglu,
-    dual_qmm_swiglu, exp,
-    expand_dims, expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, log1p,
-    maximum, minimum, multiply, negative, power, quantized_matmul_rms_norm,
-    quantized_matmul_with_mode, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul,
-    silu_mul_quantized_matmul, slice, slice_last_dim, softmax, softmax_precise, sum_axis, take,
-    take_along_axis, topk_axis, zeros,
+    dual_qmm_swiglu, dual_stream_affine_qmm, exp, expand_dims, expand_dims_axes, gelu_approx_mul,
+    gelu_approx_mul_quantized_matmul, log1p, maximum, minimum, multiply, negative, power,
+    quantized_matmul_rms_norm, quantized_matmul_with_mode, reshape, rms_norm,
+    rms_norm_quantized_matmul, silu_mul, silu_mul_quantized_matmul, slice, slice_last_dim, softmax,
+    softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -16,9 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::fastpath;
-use crate::per_layer_compile::{
-    apply_layer_dense_ffn_decode, apply_layer_dense_ffn_prefill, apply_layer_dense_ffn_prefill_min,
-};
+use crate::per_layer_compile::{apply_layer_dense_ffn_decode, apply_layer_dense_ffn_prefill_min};
 use crate::weights::{LayerWeights, QuantizedWeight};
 
 use super::super::config::{GlmRouterConfig, ModelConfig};
@@ -308,7 +305,7 @@ fn qkv_project_inner(
             && projection_policy == ProjectionBatchPolicy::Shared
             && !fastpath::qwen_linear_mtp_exact_enabled()
             && !fastpath::moe_mt_bf16_identity_enabled()
-            && fastpath::should_attn_norm_qkv_fuse(&cfg.model_family)
+            && fastpath::should_attn_norm_qkv_fuse(&cfg.model_family, seq)
             && let Some(scales) = packed.scales.as_ref()
         {
             rms_norm_quantized_matmul(
@@ -2959,6 +2956,11 @@ fn ffn_swiglu_with_policy_inner(
     ) || (qwen_dense_ffn
         && fastpath::should_qwen_prefill_split_packed(&cfg.model_family, seq)
         && (has_split_gate_up || w.gate_up_packed.is_some()));
+    let use_packed = use_packed_dense_ffn_prefill(
+        prefer_split_gate_up,
+        w.gate_up_packed.is_some(),
+        super::utils::gemma4_prefill_skip_last_ffn_packed_active(),
+    );
 
     // Compiled dense FFN with packed gate_up.
     // - SwiGLU (Qwen): decode shapeless + prefill fixed-shape.
@@ -2966,7 +2968,7 @@ fn ffn_swiglu_with_policy_inner(
     //   MLX shapeless compile). Prefill uses fixed-shape compile with the
     //   Metal-backed `geglu()` helper inside the body; short prompts skip
     //   via `DENSE_FFN_PREFILL_COMPILE_MIN_LEADING`.
-    if !prefer_split_gate_up && let Some(packed) = &w.gate_up_packed {
+    if use_packed && let Some(packed) = &w.gate_up_packed {
         let packed_dim = packed
             .weight
             .shape()
@@ -3025,15 +3027,25 @@ fn ffn_swiglu_with_policy_inner(
         {
             apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
         } else if seq > 1
-            && leading_elements >= fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
+            && leading_elements
+                >= if fastpath::should_gemma4_packed_ffn_compile_p128(&cfg.model_family, seq) {
+                    fastpath::GEMMA4_PACKED_FFN_COMPILE_P128_LEADING
+                } else {
+                    fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
+                }
             && dense_ffn_prefill_compile_supported(&cfg.model_family, leading_elements)
             && compile_ok_for_quant
             && fastpath::dense_ffn_compile_prefill_enabled()
         {
-            apply_layer_dense_ffn_prefill(
+            apply_layer_dense_ffn_prefill_min(
                 cfg.compile_cache_identity,
                 layer_idx,
                 leading_elements,
+                if fastpath::should_gemma4_packed_ffn_compile_p128(&cfg.model_family, seq) {
+                    fastpath::GEMMA4_PACKED_FFN_COMPILE_P128_LEADING
+                } else {
+                    fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
+                },
                 &input_refs,
                 body,
             )
@@ -3709,14 +3721,17 @@ fn ffn_swiglu_with_policy_inner(
         }
         // mlxcel residual: `compiled_gelu_approx_mlp_forward` for split affine
         // qGELU MLP. gs64/bits=4 + single-token: shapeless compile (#680).
+        // AXQ 4-bit (gs!=64) seq=128: shape-specific compile
+        // (`AX_MLX_COMPILED_QGELU_AXQ_P128=1`, default OFF after wash).
         // Multi-token non-4bit (flip Gemma MLP bits=8): shape-specific compile
         // (#705 prefill recovery) so prefill qmm is not forced onto decode
-        // kernels. Kill-switches: AX_MLX_COMPILED_QGELU_MLP /
-        // AX_MLX_COMPILED_QGELU_PREFILL_SHAPED.
+        // kernels. Opt-in: AX_MLX_COMPILED_QGELU_AXQ_P128 /
+        // AX_MLX_COMPILED_QGELU_PREFILL_SHAPED; kill AX_MLX_COMPILED_QGELU_MLP.
         if cfg.uses_geglu
             && !profile_decode
             && !profile_prefill
             && projection_policy == ProjectionBatchPolicy::Shared
+            && !fastpath::should_gemma4_dual_stream_gate_up_p128(&cfg.model_family, seq)
             && let Some(down_w) = w.down_proj.as_ref()
             && let (Some(g_s), Some(u_s), Some(d_s)) = (
                 gate_w.scales.as_ref(),
@@ -3781,7 +3796,22 @@ fn ffn_swiglu_with_policy_inner(
             && up_w.group_size == gate_w.group_size
             && up_w.bits == gate_w.bits
         {
-            if let Some((gate, up)) = compiled_dual_gate_up_qmm(
+            if fastpath::should_gemma4_dual_stream_gate_up_p128(&cfg.model_family, seq)
+                && let Some((gate, up)) = dual_stream_affine_qmm(
+                    x,
+                    &gate_w.weight,
+                    g_s,
+                    g_b,
+                    &up_w.weight,
+                    u_s,
+                    u_b,
+                    gate_w.group_size,
+                    gate_w.bits,
+                    None,
+                )
+            {
+                (gate, up)
+            } else if let Some((gate, up)) = compiled_dual_gate_up_qmm(
                 x,
                 &gate_w.weight,
                 g_s,
@@ -3827,7 +3857,10 @@ fn ffn_swiglu_with_policy_inner(
     // Profile residual gate_up ~3.26s; mlxcel builds both qmm then activation.
     // Qwen p2048: default-ON async_eval of the pair at seq>=1024 (not dual-stream).
     qwen_prefill_maybe_async_gate_up(&gate_out, &up_out, qwen_dense_ffn, seq);
-    if seq > 1 && fastpath::async_dual_gate_up_enabled() {
+    if seq > 1
+        && (fastpath::async_dual_gate_up_enabled()
+            || fastpath::should_gemma4_async_dual_gate_up_p128(&cfg.model_family, seq))
+    {
         async_eval(&[&gate_out, &up_out]);
     }
     if (profile_decode || profile_prefill) && !gate_up_profile_recorded {
@@ -4562,6 +4595,15 @@ fn qwen_swiglu_down_fuse(
     )
 }
 
+/// Packed prefill FFN is unused on Gemma 4 last-only 1-token rows.
+pub(crate) fn use_packed_dense_ffn_prefill(
+    prefer_split: bool,
+    has_packed: bool,
+    skip_last_packed: bool,
+) -> bool {
+    !prefer_split && has_packed && !skip_last_packed
+}
+
 fn prefer_split_dense_ffn_gate_up(
     model_family: &str,
     qwen_dense_ffn: bool,
@@ -4581,7 +4623,8 @@ fn prefer_split_dense_ffn_gate_up(
     let gemma4_split_prefill = (model_family == "gemma4" || model_family == "gemma4_unified")
         && seq >= GEMMA4_SPLIT_PREFILL_MIN_SEQ
         && leading_elements >= i64::from(GEMMA4_SPLIT_PREFILL_MIN_SEQ)
-        && gemma4_split_prefill_ffn_enabled();
+        && gemma4_split_prefill_ffn_enabled()
+        && !fastpath::should_gemma4_packed_ffn_compile_p128(model_family, seq);
     has_split_gate_up
         && ((qwen_dense_ffn && seq == 1 && leading_elements == 1)
             || qwen_speculative_row_exact
@@ -6970,15 +7013,12 @@ mod tests {
             decode_q4_biases: None,
         };
         assert!(
-            qwen_prefill_maybe_dual_affine_gate_up_for(
-                false, "qwen3_5", seq, &x, &gate_w, &up_w
-            )
-            .is_none()
+            qwen_prefill_maybe_dual_affine_gate_up_for(false, "qwen3_5", seq, &x, &gate_w, &up_w)
+                .is_none()
         );
-        let (g_dual, u_dual) = qwen_prefill_maybe_dual_affine_gate_up_for(
-            true, "qwen3_5", seq, &x, &gate_w, &up_w,
-        )
-        .expect("Qwen dual-affine qmm must engage at the p2048 chunk length");
+        let (g_dual, u_dual) =
+            qwen_prefill_maybe_dual_affine_gate_up_for(true, "qwen3_5", seq, &x, &gate_w, &up_w)
+                .expect("Qwen dual-affine qmm must engage at the p2048 chunk length");
         let g_ref = qw(&x, &gate_w);
         let u_ref = qw(&x, &up_w);
         eval(&[&g_dual, &u_dual, &g_ref, &u_ref]);
@@ -7676,10 +7716,70 @@ mod tests {
         assert_eq!(fused.shape(), portable.shape());
         assert_close(fused.data_f32(), portable.data_f32(), 3.0e-2);
         assert!(fastpath::should_attn_norm_qkv_fuse_for(
-            true, false, "qwen3_5"
+            true, false, false, "qwen3_5", 128
         ));
         assert!(!fastpath::should_attn_norm_qkv_fuse_for(
-            true, false, "gemma4"
+            true, false, false, "gemma4", 512
+        ));
+        assert!(
+            fastpath::should_gemma4_attn_norm_qkv_fuse_p128_for(true, "gemma4", 128),
+            "AXQ p128 packed QKV must take the attn-norm fuse"
+        );
+    }
+
+    #[test]
+    fn gemma4_attn_norm_qkv_fuse_p128_matches_rms_then_qw_4bit_gs32() {
+        // Shipped Gemma 4 p128 fuse: same C++ rms_norm_quantized_matmul as
+        // the Qwen path, on the contract seq=128 / AXQ gs=32 layout.
+        let hidden = 64;
+        let seq = 128;
+        let x_data: Vec<f32> = (0..seq * hidden)
+            .map(|i| ((i as f32) - 4096.0) * 0.0009765625)
+            .collect();
+        let w_data: Vec<f32> = (0..96 * hidden)
+            .map(|i| ((i as f32) - 2048.0) * 0.0004)
+            .collect();
+        let x = array_f32(&x_data, &[1, seq as i32, hidden as i32]);
+        let weight = array_f32(&w_data, &[96, hidden as i32]);
+        let qw_q = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let norm_w = array_f32(&vec![1.0f32; hidden], &[hidden as i32]);
+        let fused = rms_norm_quantized_matmul(
+            &x,
+            &norm_w,
+            1e-6,
+            &qw_q[0],
+            &qw_q[1],
+            Some(&qw_q[2]),
+            32,
+            4,
+            None,
+        );
+        let normed = rms_norm(&x, Some(&norm_w), 1e-6, None);
+        let portable = quantized_matmul(
+            &normed,
+            &qw_q[0],
+            &qw_q[1],
+            Some(&qw_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        assert_close(fused.data_f32(), portable.data_f32(), 3.0e-2);
+        assert!(fastpath::should_call_attn_norm_qkv_fuse(
+            fastpath::should_attn_norm_qkv_fuse_for(false, false, true, "gemma4", 128),
+            true,
+            false,
+            false,
         ));
     }
 
@@ -8025,6 +8125,30 @@ mod tests {
         assert!(!prefer_split_dense_ffn_gate_up(
             "gemma4", false, 128, 128, false
         ));
+        assert!(
+            prefer_split_dense_ffn_gate_up("gemma4", false, 128, 128, true),
+            "default-off packed compile leaves p128 on split gate/up"
+        );
+    }
+
+    #[test]
+    fn use_packed_dense_ffn_prefill_skips_last_only_packed() {
+        assert!(
+            super::use_packed_dense_ffn_prefill(false, true, false),
+            "packed prefill stays on when last-only skip is off"
+        );
+        assert!(
+            !super::use_packed_dense_ffn_prefill(false, true, true),
+            "last-only 1-token FFN must skip unused packed prefill qmm"
+        );
+        assert!(!super::use_packed_dense_ffn_prefill(true, true, false));
+        assert!(!super::use_packed_dense_ffn_prefill(false, false, false));
+        assert!(
+            crate::fastpath::should_gemma4_prefill_skip_unused_last_ffn_packed_for(
+                true, "gemma4", true, 128
+            ),
+            "shipped skip-unused-last-ffn-packed must accept contract p128 last layer"
+        );
     }
 
     #[test]

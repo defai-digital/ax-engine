@@ -464,16 +464,16 @@ explicit:
 
 ```text
 cargo run -p ax-engine-server -- \
-  --preset gemma4-e2b \
-  --mlx-model-artifacts-dir /absolute/path/to/gemma-4-e2b-it-4bit \
+  --preset gemma4-12b \
+  --mlx-model-artifacts-dir /absolute/path/to/gemma-4-12B-it-4bit \
   --port 31418
 ```
 
 `--list-presets` prints the built-in preset names. Presets do not download
 weights and do not silently scan local caches. If the model directory is already
 available through `AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`, the explicit path flag can
-be omitted. Current native MLX built-ins are `gemma4-e2b`, `gemma4-12b`,
-`gemma4-31b`, `glm4.7-flash-4bit`, `qwen3.5-9b`, and `qwen3.6-35b`.
+be omitted. Current native MLX built-ins are `gemma4-12b`,
+`gemma4-26b`, `gemma4-31b`, `glm4.7-flash-4bit`, `qwen3.5-9b`, and `qwen3.6-35b`.
 
 The `glm4.7-flash-4bit` preset (GLM-4.7 Flash, `glm4_moe_lite`) uses the
 repo-owned native MLX graph with Flash MLA attention and sigmoid-routed MoE.
@@ -484,7 +484,7 @@ Hugging Face cache discovery is opt-in:
 
 ```text
 cargo run -p ax-engine-server -- \
-  --preset gemma4-e2b \
+  --preset gemma4-12b \
   --resolve-model-artifacts hf-cache \
   --port 31418
 ```

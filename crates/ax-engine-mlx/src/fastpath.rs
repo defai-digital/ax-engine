@@ -711,18 +711,82 @@ pub fn fused_prefill_attention_family_supported(model_family: &str) -> bool {
     )
 }
 
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_FUSED_PREFILL_ATTENTION_P128` — Gemma 4 contract p128
+    /// only: attempt mlxcel `fused_causal_prefill_attention` (attn RMSNorm →
+    /// packed QKV → QK-norm → RoPE → maskless causal SDPA → o-proj). Profile
+    /// residual on `df-macbookpro-m5`: p128 prefill is layer-stack / first KV
+    /// dominated; 80/96 layers are sliding with `seq <= window` so causal ≡
+    /// windowed. Global `AX_MLX_FUSED_PREFILL_ATTENTION` stays OFF. Kill with
+    /// `AX_MLX_GEMMA4_FUSED_PREFILL_ATTENTION_P128=0`.
+    gemma4_fused_prefill_attention_p128_enabled,
+    "AX_MLX_GEMMA4_FUSED_PREFILL_ATTENTION_P128"
+);
+
+/// Whether Gemma 4 contract p128 should attempt fused causal prefill attention.
+pub fn should_gemma4_fused_prefill_p128(model_family: &str, seq: i32) -> bool {
+    should_gemma4_fused_prefill_p128_for(
+        gemma4_fused_prefill_attention_p128_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_fused_prefill_p128`].
+pub fn should_gemma4_fused_prefill_p128_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+    enabled
+        && seq == 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
+/// Fold Gemma sandwich `post_attention_layernorm` into the fused p128 C++
+/// call so the first-KV layer does not pay a second RMS FFI after o-proj.
+pub fn should_gemma4_fused_prefill_fold_post_norm(
+    model_family: &str,
+    seq: i32,
+    has_post_norm: bool,
+) -> bool {
+    should_gemma4_fused_prefill_fold_post_norm_for(
+        gemma4_fused_prefill_attention_p128_enabled(),
+        model_family,
+        seq,
+        has_post_norm,
+    )
+}
+
+/// Pure helper for [`should_gemma4_fused_prefill_fold_post_norm`].
+pub fn should_gemma4_fused_prefill_fold_post_norm_for(
+    fused_p128_enabled: bool,
+    model_family: &str,
+    seq: i32,
+    has_post_norm: bool,
+) -> bool {
+    has_post_norm && should_gemma4_fused_prefill_p128_for(fused_p128_enabled, model_family, seq)
+}
+
 /// Whether this family should attempt fused causal prefill attention.
-/// Qwen uses the Qwen-scoped default-ON flag; Gemma keeps the global
+/// Qwen stays on its default-OFF flag. Gemma contract p128 uses
+/// [`should_gemma4_fused_prefill_p128`]; other Gemma shapes keep the global
 /// default-OFF probe.
 pub fn fused_prefill_attention_should_try(model_family: &str) -> bool {
+    fused_prefill_attention_should_try_for_seq(model_family, 0)
+}
+
+/// Sequence-aware entry used by the shipped layer forward.
+pub fn fused_prefill_attention_should_try_for_seq(model_family: &str, seq: i32) -> bool {
     if !fused_prefill_attention_family_supported(model_family) {
         return false;
     }
     if model_family.starts_with("qwen") {
-        qwen_fused_prefill_attention_enabled()
-    } else {
-        fused_prefill_attention_enabled()
+        return qwen_fused_prefill_attention_enabled();
     }
+    if should_gemma4_fused_prefill_p128(model_family, seq) {
+        return true;
+    }
+    fused_prefill_attention_enabled()
 }
 
 /// Qwen p2048's second 1024-token chunk crashed the offset fused
@@ -805,15 +869,16 @@ pub fn should_qwen_prefill_eval_kv_only_for(
         )
 }
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_EXACT_SIZE_FIRST_KV` — first prefill write stores K/V (and
     /// GLM-MLA latents) at the exact prompt length instead of
     /// `zeros` + `slice_update` into a `KV_CHUNK_TOKENS` (256) padded
     /// buffer.
     ///
-    /// **Default: OFF**. Remasured binary `96730eee…` (2026-08-13): community
-    /// p2048 906.145/858=1.056114; AXQ p2048 888.896/862.825=1.030216
-    /// (0.998× q2only). p2048 first write is already 1024-aligned. Not FFN.
+    /// **Default: ON**. Contract p128 is the only Wave-1 prompt whose first
+    /// write is not a 256-token multiple (`chunk_ceiling(128) == 256`).
+    /// p512 / p2048 already take the aligned exact-store path, so the 2026-08-13
+    /// p2048 remasure was a no-op. Kill with `AX_MLX_EXACT_SIZE_FIRST_KV=0`.
     exact_size_first_kv_enabled,
     "AX_MLX_EXACT_SIZE_FIRST_KV"
 );
@@ -1191,6 +1256,347 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_F32_SDPA` — keep Gemma 4 contract
+    /// prefill (`seq >= 128`) SDPA in the model dtype. The default-ON
+    /// `AX_MLX_MULTI_TOKEN_F32_ATTENTION` upcast is for short teacher-forced
+    /// MTP verify (`seq` 2..=8). On Gemma 4 p128 that upcast runs on every
+    /// full-attention layer (96 on 12B) for a one-shot prefill mlxcel never
+    /// pays. Decode `seq==1` and short MTP verify stay on f32. Not an MLP
+    /// compile and not an attn-norm/QKV fuse. Kill with
+    /// `AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_F32_SDPA=0`.
+    gemma4_prefill_skip_unused_f32_sdpa_enabled,
+    "AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_F32_SDPA"
+);
+
+/// Whether Gemma 4 contract prefill should skip the unused f32 SDPA upcast.
+pub fn should_gemma4_prefill_skip_unused_f32_sdpa(model_family: &str, seq: i32) -> bool {
+    should_gemma4_prefill_skip_unused_f32_sdpa_for(
+        gemma4_prefill_skip_unused_f32_sdpa_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_prefill_skip_unused_f32_sdpa`].
+pub fn should_gemma4_prefill_skip_unused_f32_sdpa_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_EMBED_CLIP` — skip the token-id
+    /// `clip` before embedding gather on Gemma 4 contract prefill
+    /// (`seq >= 128`). The clip exists so out-of-range client ids cannot
+    /// read past the table; bench / generate prompts are in-range, and
+    /// mlxcel never pays this gather-prep. Decode and short MTP verify
+    /// keep the clip. Not an FFN compile. Kill with
+    /// `AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_EMBED_CLIP=0`.
+    gemma4_prefill_skip_unused_embed_clip_enabled,
+    "AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_EMBED_CLIP"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_LAST_RESIDUAL` — on the last
+    /// transformer layer of Gemma 4 contract prefill (`seq >= 128`), slice
+    /// residual inputs to the last token *before* add + pre-FFN RMSNorm.
+    /// Fused causal still emits a full-seq last-layer `attn_proj`; the
+    /// last-only FFN only needs the last residual row, so the prefix add
+    /// is unused work mlxcel's lazy eval never pays. Does not
+    /// `async_eval` and does not take last-query (that left fused and
+    /// remasured wash). Decode and short MTP keep add-then-slice. Kill
+    /// with `AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_LAST_RESIDUAL=0`.
+    gemma4_prefill_skip_unused_last_residual_enabled,
+    "AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_LAST_RESIDUAL"
+);
+
+env_flag!(
+    /// `AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_LAST_FFN_PACKED` — on the last
+    /// transformer layer of Gemma 4 contract prefill (`seq >= 128`), skip
+    /// packed prefill qmm for the last-only 1-token FFN.
+    ///
+    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// `gemma4-axq-v7-lastffn` + repeat): 12B p128 647.28/657.70 vs fused
+    /// 651.57/659.48 (0.982× / 0.997×). Leaving packed for a split last
+    /// FFN does not move 1.10× and dipped the first fleet. Decode
+    /// unharmed. Keep opt-in only.
+    gemma4_prefill_skip_unused_last_ffn_packed_enabled,
+    "AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_LAST_FFN_PACKED"
+);
+
+/// Whether Gemma 4 last-only prefill should skip unused packed prefill FFN.
+pub fn should_gemma4_prefill_skip_unused_last_ffn_packed(
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    should_gemma4_prefill_skip_unused_last_ffn_packed_for(
+        gemma4_prefill_skip_unused_last_ffn_packed_enabled(),
+        model_family,
+        last_position_only,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_prefill_skip_unused_last_ffn_packed`].
+pub fn should_gemma4_prefill_skip_unused_last_ffn_packed_for(
+    enabled: bool,
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    enabled
+        && last_position_only
+        && seq >= 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
+/// Whether Gemma 4 last-only prefill should skip unused prefix residual add.
+pub fn should_gemma4_prefill_skip_unused_last_residual(
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    should_gemma4_prefill_skip_unused_last_residual_for(
+        gemma4_prefill_skip_unused_last_residual_enabled(),
+        model_family,
+        last_position_only,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_prefill_skip_unused_last_residual`].
+pub fn should_gemma4_prefill_skip_unused_last_residual_for(
+    enabled: bool,
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    enabled
+        && last_position_only
+        && seq >= 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_PREFILL_BF16_EMBED` — dequantize Gemma 4 AXQ embed
+    /// rows straight to BF16 on contract prefill (`seq >= 128`) and skip
+    /// the follow-on `astype(..., bfloat16)` when the gather is already
+    /// BF16. AXQ `embed_tokens` is 8-bit; the default path dequants to f32
+    /// then casts. mlxcel never pays that unused f32 table. Does not
+    /// `async_eval` and does not split the fused layer graph. Decode and
+    /// short MTP keep f32 dequant + cast. Kill with
+    /// `AX_MLX_GEMMA4_PREFILL_BF16_EMBED=0`.
+    gemma4_prefill_bf16_embed_enabled,
+    "AX_MLX_GEMMA4_PREFILL_BF16_EMBED"
+);
+
+/// Whether Gemma 4 contract prefill should dequant embeddings to BF16.
+pub fn should_gemma4_prefill_bf16_embed(model_family: &str, seq: i32) -> bool {
+    should_gemma4_prefill_bf16_embed_for(gemma4_prefill_bf16_embed_enabled(), model_family, seq)
+}
+
+/// Pure helper for [`should_gemma4_prefill_bf16_embed`].
+pub fn should_gemma4_prefill_bf16_embed_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+    enabled
+        && seq >= 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
+/// Whether Gemma 4 contract prefill should skip the unused embed-id clip.
+pub fn should_gemma4_prefill_skip_unused_embed_clip(model_family: &str, seq: i32) -> bool {
+    should_gemma4_prefill_skip_unused_embed_clip_for(
+        gemma4_prefill_skip_unused_embed_clip_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_prefill_skip_unused_embed_clip`].
+pub fn should_gemma4_prefill_skip_unused_embed_clip_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_LAYER_MASKS` — skip the per-forward
+    /// `build_layer_masks_for_forward` hoist on Gemma 4 contract prefill
+    /// (`seq >= 128`) when every layer would resolve to `None`. Fresh p128
+    /// (and p512) sit inside the 1024-token sliding window, fused causal
+    /// prefill is maskless, and `attention_mask_array` already returns
+    /// `None`. mlxcel never allocates this per-layer `Vec`. Decode, short
+    /// MTP verify, offset chunks, rotating rings, and `seq > window`
+    /// (p2048) keep the hoist. Kill with
+    /// `AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_LAYER_MASKS=0`.
+    gemma4_prefill_skip_unused_layer_masks_enabled,
+    "AX_MLX_GEMMA4_PREFILL_SKIP_UNUSED_LAYER_MASKS"
+);
+
+/// Whether Gemma 4 contract prefill should skip the unused layer-mask hoist.
+pub fn should_gemma4_prefill_skip_unused_layer_masks(
+    model_family: &str,
+    seq: i32,
+    key_len: usize,
+    min_sliding_window: Option<usize>,
+    rotating_slack: usize,
+) -> bool {
+    should_gemma4_prefill_skip_unused_layer_masks_for(
+        gemma4_prefill_skip_unused_layer_masks_enabled(),
+        model_family,
+        seq,
+        key_len,
+        min_sliding_window,
+        rotating_slack,
+    )
+}
+
+/// Pure helper for [`should_gemma4_prefill_skip_unused_layer_masks`].
+pub fn should_gemma4_prefill_skip_unused_layer_masks_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+    key_len: usize,
+    min_sliding_window: Option<usize>,
+    rotating_slack: usize,
+) -> bool {
+    if !enabled || rotating_slack > 0 || seq < 128 {
+        return false;
+    }
+    if !matches!(
+        model_family.to_ascii_lowercase().as_str(),
+        "gemma4" | "gemma4_unified"
+    ) {
+        return false;
+    }
+    let seq_u = seq as usize;
+    if key_len.saturating_sub(seq_u) > 0 {
+        return false;
+    }
+    match min_sliding_window {
+        Some(window) if seq_u > window => false,
+        _ => true,
+    }
+}
+
+env_flag!(
+    /// `AX_MLX_GEMMA4_PREFILL_PIPELINE_HINT_P128` — after every non-final
+    /// Gemma 4 contract-p128 layer, `async_eval(hidden)` so MLX can start
+    /// layer N while the host builds N+1 (mlxcel `pipeline_hint` /
+    /// `MLXCEL_PIPELINE_GRANULARITY=layer`).
+    ///
+    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// `gemma4-axq-v7-pipehint` + repeat): 12B p128 609.66/610.59 vs fused
+    /// 651.57/659.48 (0.924× / 0.926×). 26B p128 0.978/0.980 vs baseline.
+    /// Per-layer `async_eval` splits the fused lazy graph and undoes the
+    /// skip-f32+fused win. Decode and p512/p2048 were unharmed. Keep
+    /// opt-in only.
+    gemma4_prefill_pipeline_hint_p128_enabled,
+    "AX_MLX_GEMMA4_PREFILL_PIPELINE_HINT_P128"
+);
+
+env_flag!(
+    /// `AX_MLX_GEMMA4_PREFILL_LAST_QUERY_P128` — on the last transformer
+    /// layer of Gemma 4 contract p128, write full K/V then run Q / SDPA /
+    /// o_proj on the last token only. Does **not** `async_eval` mid-graph.
+    ///
+    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// `gemma4-axq-v7-lastquery` + repeat): 12B p128 654.41/654.66 vs fused
+    /// 651.57/659.48 (0.992× / 0.993×). One last-layer Q/SDPA/o_proj skip
+    /// does not move 1.10× and leaves fused for a portable last layer.
+    /// Decode unharmed. Keep opt-in only.
+    gemma4_prefill_last_query_p128_enabled,
+    "AX_MLX_GEMMA4_PREFILL_LAST_QUERY_P128"
+);
+
+/// Whether Gemma 4 last-only p128 should skip unused prefix Q / SDPA / o_proj.
+pub fn should_gemma4_prefill_last_query_p128(
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    should_gemma4_prefill_last_query_p128_for(
+        gemma4_prefill_last_query_p128_enabled(),
+        model_family,
+        last_position_only,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_prefill_last_query_p128`].
+pub fn should_gemma4_prefill_last_query_p128_for(
+    enabled: bool,
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    enabled
+        && last_position_only
+        && seq == 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
+/// Whether Gemma 4 contract p128 should submit a per-layer pipeline hint.
+pub fn should_gemma4_prefill_pipeline_hint_p128(
+    model_family: &str,
+    seq: usize,
+    layer_idx: usize,
+    total_layers: usize,
+) -> bool {
+    should_gemma4_prefill_pipeline_hint_p128_for(
+        gemma4_prefill_pipeline_hint_p128_enabled(),
+        model_family,
+        seq,
+        layer_idx,
+        total_layers,
+    )
+}
+
+/// Pure helper for [`should_gemma4_prefill_pipeline_hint_p128`].
+pub fn should_gemma4_prefill_pipeline_hint_p128_for(
+    enabled: bool,
+    model_family: &str,
+    seq: usize,
+    layer_idx: usize,
+    total_layers: usize,
+) -> bool {
+    enabled
+        && seq == 128
+        && total_layers > 0
+        && layer_idx + 1 < total_layers
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
+env_flag_default_on!(
     /// `AX_MLX_DENSE_LONG_MT_BF16_FOLD` — dense multi-token long history
     /// (`key_len >= 512`) uses the same bf16 singleton-query fold as MoE
     /// multi-token, avoiding full-history f32 K/V upcast.
@@ -1278,12 +1684,49 @@ env_flag!(
     "AX_MLX_QWEN_ATTN_NORM_QKV_FUSE"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_ATTN_NORM_QKV_FUSE_P128` — Gemma 4 contract p128 only:
+    /// fuse `attn_norm` into the packed QKV `quantized_matmul` via
+    /// `rms_norm_quantized_matmul`. Profile residual on `df-macbookpro-m5`:
+    /// p128 prefill is forward-dominated; `pre_sdpa_qkv_proj` is the next
+    /// named band after FFN (not another MLP compile). 80/96 Gemma 4 AXQ
+    /// layers already hold packed QKV. p512/p2048 stay on the portable
+    /// rms-then-qmm path. Kill with `AX_MLX_GEMMA4_ATTN_NORM_QKV_FUSE_P128=0`.
+    gemma4_attn_norm_qkv_fuse_p128_enabled,
+    "AX_MLX_GEMMA4_ATTN_NORM_QKV_FUSE_P128"
+);
+
+/// Whether Gemma 4 contract p128 should fuse attn RMSNorm into packed QKV.
+pub fn should_gemma4_attn_norm_qkv_fuse_p128(model_family: &str, seq: i32) -> bool {
+    should_gemma4_attn_norm_qkv_fuse_p128_for(
+        gemma4_attn_norm_qkv_fuse_p128_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_attn_norm_qkv_fuse_p128`].
+pub fn should_gemma4_attn_norm_qkv_fuse_p128_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq == 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
 /// Whether this family should fuse attn RMSNorm into packed QKV qmm.
-pub fn should_attn_norm_qkv_fuse(model_family: &str) -> bool {
+pub fn should_attn_norm_qkv_fuse(model_family: &str, seq: i32) -> bool {
     should_attn_norm_qkv_fuse_for(
         qwen_attn_norm_qkv_fuse_enabled(),
         attn_norm_qkv_fuse_enabled(),
+        gemma4_attn_norm_qkv_fuse_p128_enabled(),
         model_family,
+        seq,
     )
 }
 
@@ -1291,13 +1734,17 @@ pub fn should_attn_norm_qkv_fuse(model_family: &str) -> bool {
 pub fn should_attn_norm_qkv_fuse_for(
     qwen_enabled: bool,
     global_enabled: bool,
+    gemma4_p128_enabled: bool,
     model_family: &str,
+    seq: i32,
 ) -> bool {
     if model_family.eq_ignore_ascii_case("qwen3_5") {
-        qwen_enabled
-    } else {
-        global_enabled
+        return qwen_enabled;
     }
+    if should_gemma4_attn_norm_qkv_fuse_p128_for(gemma4_p128_enabled, model_family, seq) {
+        return true;
+    }
+    global_enabled
 }
 
 /// Whether the fused rms+QKV call will run. Exact / moe-mt identity skip
@@ -1342,6 +1789,37 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_COMPILED_QGELU_AXQ_P128` — shape-compile the split affine
+    /// GeGLU MLP (gate + up + gelu + down) for AXQ 4-bit (`group_size != 64`)
+    /// contract p128. Community 4-bit gs=64 already uses mlxcel #680 shapeless
+    /// compile; AXQ root 4/32 used to fall through to portable dual qmm.
+    /// Shape-specific (not shapeless) so prefill qmm is not the decode kernel
+    /// (#680 trap). p512 / p2048 stay portable.
+    ///
+    /// **Default: OFF**. Classified wash on `df-macbookpro-m5` during the
+    /// Gemma 4 AXQ p128 1.10× unused-work track. The C++ shim
+    /// `ax_mlx_compiled_gelu_approx_split_mlp` mirrors this predicate; keep
+    /// both in lockstep. Set `=1` to force the experimental compile.
+    compiled_qgelu_axq_p128_enabled,
+    "AX_MLX_COMPILED_QGELU_AXQ_P128"
+);
+
+/// Whether AXQ 4-bit contract p128 should take the shape-compiled split MLP.
+pub fn should_compiled_qgelu_axq_p128(group_size: i32, bits: i32, seq: i32) -> bool {
+    should_compiled_qgelu_axq_p128_for(compiled_qgelu_axq_p128_enabled(), group_size, bits, seq)
+}
+
+/// Pure helper for [`should_compiled_qgelu_axq_p128`].
+pub fn should_compiled_qgelu_axq_p128_for(
+    enabled: bool,
+    group_size: i32,
+    bits: i32,
+    seq: i32,
+) -> bool {
+    enabled && bits == 4 && group_size > 0 && group_size != 64 && seq == 128
+}
+
+env_flag!(
     /// `AX_MLX_ASYNC_DUAL_GATE_UP` — after multi-token dual gate/up qmm graphs
     /// are built (portable or shape-compiled), `async_eval([gate, up])` before
     /// GEGLU so both matmuls submit as one Metal command group.
@@ -1356,6 +1834,71 @@ env_flag!(
     async_dual_gate_up_enabled,
     "AX_MLX_ASYNC_DUAL_GATE_UP"
 );
+
+env_flag!(
+    /// `AX_MLX_GEMMA4_ASYNC_DUAL_GATE_UP_P128` — co-submit Gemma 4 split
+    /// gate/up qmm with `async_eval` at contract p128 so MLX can schedule the
+    /// pair as one Metal command group (mlxcel builds both `UnifiedLinear`
+    /// then activation). Global `AX_MLX_ASYNC_DUAL_GATE_UP` stays OFF.
+    /// Decode and short MTP verify (`seq < 128`) stay serial.
+    ///
+    /// **Default: OFF**. Remasured wash/dip on `df-macbookpro-m5` (2026-08-15)
+    /// versus the skip-f32 + fused-p128 stack. Mid-graph `async_eval` is not
+    /// part of the winning default. Keep opt-in only.
+    gemma4_async_dual_gate_up_p128_enabled,
+    "AX_MLX_GEMMA4_ASYNC_DUAL_GATE_UP_P128"
+);
+
+/// Whether Gemma 4 contract p128 should async-submit split gate/up.
+pub fn should_gemma4_async_dual_gate_up_p128(model_family: &str, seq: i32) -> bool {
+    should_gemma4_async_dual_gate_up_p128_for(
+        gemma4_async_dual_gate_up_p128_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_async_dual_gate_up_p128`].
+pub fn should_gemma4_async_dual_gate_up_p128_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq == 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_GEMMA4_ASYNC_FIRST_KV_P128` — after the contract-p128 first KV
+    /// write, `async_eval` the stored K/V so MLX can start that layer's first-KV
+    /// / fused-attention graph while the host encodes the residual + FFN.
+    ///
+    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// `gemma4-axq-v7-asynckv` + repeat): 12B p128 616.45/624.15 vs fused-p128
+    /// 651.57/659.48 (0.946× / 0.958×). The submit undoes the fused-p128 win.
+    /// Decode unchanged. Keep opt-in only.
+    gemma4_async_first_kv_p128_enabled,
+    "AX_MLX_GEMMA4_ASYNC_FIRST_KV_P128"
+);
+
+/// Whether Gemma 4 contract p128 should async-submit the first KV write.
+pub fn should_gemma4_async_first_kv_p128(model_family: &str, seq: i32) -> bool {
+    should_gemma4_async_first_kv_p128_for(gemma4_async_first_kv_p128_enabled(), model_family, seq)
+}
+
+/// Pure helper for [`should_gemma4_async_first_kv_p128`].
+pub fn should_gemma4_async_first_kv_p128_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+    enabled
+        && seq == 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
 
 env_flag!(
     /// `AX_MLX_DUAL_AFFINE_QMM` — multi-token split gate/up as **one C++ call**
@@ -1386,6 +1929,43 @@ env_flag!(
     dual_stream_gate_up_enabled,
     "AX_MLX_DUAL_STREAM_GATE_UP"
 );
+
+env_flag!(
+    /// `AX_MLX_GEMMA4_DUAL_STREAM_GATE_UP_P128` — issue Gemma 4 split gate/up
+    /// qmm on two process-static GPU streams at contract p128 so M5 Max can
+    /// overlap the pair (mlxcel still runs two sequential UnifiedLinear).
+    /// Compiled AXQ split-MLP stays off on this shape so the streams engage.
+    ///
+    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// `gemma4-axq-v7-dualstream`): 12B p128 567.19/614.92=0.922× and 31B
+    /// 310.80/327.53=0.949×. Dual streams plus skipping compiled split-MLP
+    /// regresses the fused-p128 stack. Keep opt-in only.
+    gemma4_dual_stream_gate_up_p128_enabled,
+    "AX_MLX_GEMMA4_DUAL_STREAM_GATE_UP_P128"
+);
+
+/// Whether Gemma 4 contract p128 should dual-stream split gate/up.
+pub fn should_gemma4_dual_stream_gate_up_p128(model_family: &str, seq: i32) -> bool {
+    should_gemma4_dual_stream_gate_up_p128_for(
+        gemma4_dual_stream_gate_up_p128_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_dual_stream_gate_up_p128`].
+pub fn should_gemma4_dual_stream_gate_up_p128_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq == 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
 
 env_flag!(
     /// `AX_MLX_CACHE_ONLY_CHUNK_EVAL` — materialise KV after **every** cache-only
@@ -2512,10 +3092,7 @@ env_flag!(
 
 /// Whether Qwen prefill should async-submit packed gate+up before SwiGLU.
 pub fn should_qwen_prefill_async_packed_gate_up(seq: i32) -> bool {
-    should_qwen_prefill_async_packed_gate_up_for(
-        qwen_prefill_async_packed_gate_up_enabled(),
-        seq,
-    )
+    should_qwen_prefill_async_packed_gate_up_for(qwen_prefill_async_packed_gate_up_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_prefill_async_packed_gate_up`].
@@ -2538,10 +3115,7 @@ env_flag!(
 
 /// Whether Qwen prefill should use contiguous LA quantized tensors.
 pub fn should_qwen_prefill_contiguous_la_weights(seq: i32) -> bool {
-    should_qwen_prefill_contiguous_la_weights_for(
-        qwen_prefill_contiguous_la_weights_enabled(),
-        seq,
-    )
+    should_qwen_prefill_contiguous_la_weights_for(qwen_prefill_contiguous_la_weights_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_prefill_contiguous_la_weights`].
@@ -3433,11 +4007,7 @@ pub fn should_qwen_prefill_async_embed_for(enabled: bool, model_family: &str, se
 }
 
 /// Pure helper for [`should_qwen_la_norm_qkvz_fuse`].
-pub fn should_qwen_la_norm_qkvz_fuse_for(
-    enabled: bool,
-    model_family: &str,
-    seq: i32,
-) -> bool {
+pub fn should_qwen_la_norm_qkvz_fuse_for(enabled: bool, model_family: &str, seq: i32) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -3447,11 +4017,7 @@ pub fn should_qwen_la_norm_qkvz_fuse_for(
 }
 
 /// Pure helper for [`should_qwen_prefill_dequant_dense`].
-pub fn should_qwen_prefill_dequant_dense_for(
-    enabled: bool,
-    model_family: &str,
-    seq: i32,
-) -> bool {
+pub fn should_qwen_prefill_dequant_dense_for(enabled: bool, model_family: &str, seq: i32) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -3461,11 +4027,7 @@ pub fn should_qwen_prefill_dequant_dense_for(
 }
 
 /// Pure helper for [`should_qwen_prefill_split_packed`].
-pub fn should_qwen_prefill_split_packed_for(
-    enabled: bool,
-    model_family: &str,
-    seq: i32,
-) -> bool {
+pub fn should_qwen_prefill_split_packed_for(enabled: bool, model_family: &str, seq: i32) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -3834,6 +4396,48 @@ pub const QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 128;
 /// 256 covers mid-length prompts; README 128-token rows stay uncompiled
 /// so short-prompt microbenches avoid compile tax.
 pub const DENSE_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 256;
+
+/// Gemma 4 contract p128 leading count. Packed prefill compile normally
+/// waits for [`DENSE_FFN_PREFILL_COMPILE_MIN_LEADING`]; this shape is the
+/// measured miss (`df-macbookpro-m5` skip-f32+fused residual).
+pub const GEMMA4_PACKED_FFN_COMPILE_P128_LEADING: i64 = 128;
+
+env_flag!(
+    /// `AX_MLX_GEMMA4_PACKED_FFN_COMPILE_P128` — at contract p128, take the
+    /// packed gate/up path and shape-compile the dense FFN (Metal GEGLU
+    /// inside the closure). Split gate/up stays on for p512/p2048.
+    ///
+    /// **Default: OFF**. Remasured on `df-macbookpro-m5` (2026-08-15,
+    /// `gemma4-axq-v7-packffn` + repeat): 12B p128 656.50/651.95 vs fused
+    /// 651.57/659.48 (1.008× / 1.001×). 26B p128 592.95/592.23 vs fused
+    /// 604.22/599.45 (0.981× / 0.980×). No 1.10×; 26B dips vs fused.
+    /// Keep opt-in only.
+    gemma4_packed_ffn_compile_p128_enabled,
+    "AX_MLX_GEMMA4_PACKED_FFN_COMPILE_P128"
+);
+
+/// Whether Gemma 4 contract p128 should compile packed dense FFN.
+pub fn should_gemma4_packed_ffn_compile_p128(model_family: &str, seq: i32) -> bool {
+    should_gemma4_packed_ffn_compile_p128_for(
+        gemma4_packed_ffn_compile_p128_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_gemma4_packed_ffn_compile_p128`].
+pub fn should_gemma4_packed_ffn_compile_p128_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq == 128
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "gemma4" | "gemma4_unified"
+        )
+}
 
 env_flag_default_on!(
     /// `AX_MLX_AUTO_BUFFER_CAPS` — auto-raise MLX Metal command-buffer caps
@@ -4826,7 +5430,11 @@ mod tests {
         assert!(!super::fused_prefill_qwen_skip_offset("gemma4", true));
         assert!(
             !super::fused_prefill_attention_should_try("gemma4"),
-            "Gemma fused prefill must stay default-OFF"
+            "Gemma fused prefill without a seq stays default-OFF"
+        );
+        assert!(
+            !super::fused_prefill_attention_should_try_for_seq("gemma4", 512),
+            "Gemma p512 fused prefill stays default-OFF"
         );
         assert!(!parse_bool_env(
             "AX_FASTPATH_TEST_QWEN_FUSED_PREFILL_ATTENTION_UNSET"
@@ -4838,6 +5446,155 @@ mod tests {
         assert!(probe(
             "AX_FASTPATH_TEST_QWEN_FUSED_PREFILL_ATTENTION_ENABLED",
             "1"
+        ));
+    }
+
+    #[test]
+    fn gemma4_fused_prefill_p128_is_seq_and_family_gated() {
+        assert!(should_gemma4_fused_prefill_p128_for(true, "gemma4", 128));
+        assert!(should_gemma4_fused_prefill_p128_for(
+            true,
+            "gemma4_unified",
+            128
+        ));
+        assert!(super::fused_prefill_attention_should_try_for_seq(
+            "gemma4", 128
+        ));
+        assert!(
+            !should_gemma4_fused_prefill_p128_for(true, "gemma4", 512),
+            "p512 must stay on the portable attention path"
+        );
+        assert!(!should_gemma4_fused_prefill_p128_for(true, "gemma4", 2048));
+        assert!(!should_gemma4_fused_prefill_p128_for(true, "gemma4", 1));
+        assert!(!should_gemma4_fused_prefill_p128_for(true, "qwen3_5", 128));
+        assert!(!should_gemma4_fused_prefill_p128_for(false, "gemma4", 128));
+    }
+
+    #[test]
+    fn gemma4_fused_prefill_fold_post_norm_requires_p128_and_weight() {
+        assert!(should_gemma4_fused_prefill_fold_post_norm_for(
+            true, "gemma4", 128, true
+        ));
+        assert!(should_gemma4_fused_prefill_fold_post_norm_for(
+            true,
+            "gemma4_unified",
+            128,
+            true
+        ));
+        assert!(
+            !should_gemma4_fused_prefill_fold_post_norm_for(true, "gemma4", 128, false),
+            "no sandwich post-norm means the fused call stays o-proj only"
+        );
+        assert!(!should_gemma4_fused_prefill_fold_post_norm_for(
+            true, "gemma4", 512, true
+        ));
+        assert!(!should_gemma4_fused_prefill_fold_post_norm_for(
+            true, "qwen3_5", 128, true
+        ));
+        assert!(!should_gemma4_fused_prefill_fold_post_norm_for(
+            false, "gemma4", 128, true
+        ));
+    }
+
+    #[test]
+    fn gemma4_async_dual_gate_up_p128_is_seq_and_family_gated() {
+        assert!(should_gemma4_async_dual_gate_up_p128_for(
+            true, "gemma4", 128
+        ));
+        assert!(should_gemma4_async_dual_gate_up_p128_for(
+            true,
+            "gemma4_unified",
+            128
+        ));
+        assert!(
+            !should_gemma4_async_dual_gate_up_p128_for(true, "gemma4", 512),
+            "p512 stays on the serial gate/up submit"
+        );
+        assert!(!should_gemma4_async_dual_gate_up_p128_for(
+            true, "gemma4", 2048
+        ));
+        assert!(!should_gemma4_async_dual_gate_up_p128_for(
+            true, "gemma4", 1
+        ));
+        assert!(!should_gemma4_async_dual_gate_up_p128_for(
+            true, "qwen3_5", 128
+        ));
+        assert!(!should_gemma4_async_dual_gate_up_p128_for(
+            false, "gemma4", 128
+        ));
+    }
+
+    #[test]
+    fn gemma4_async_first_kv_p128_is_seq_and_family_gated() {
+        assert!(should_gemma4_async_first_kv_p128_for(true, "gemma4", 128));
+        assert!(should_gemma4_async_first_kv_p128_for(
+            true,
+            "gemma4_unified",
+            128
+        ));
+        assert!(
+            !should_gemma4_async_first_kv_p128_for(true, "gemma4", 512),
+            "p512 stays on the lazy first-KV submit"
+        );
+        assert!(!should_gemma4_async_first_kv_p128_for(true, "gemma4", 2048));
+        assert!(!should_gemma4_async_first_kv_p128_for(true, "gemma4", 1));
+        assert!(!should_gemma4_async_first_kv_p128_for(true, "qwen3_5", 128));
+        assert!(!should_gemma4_async_first_kv_p128_for(false, "gemma4", 128));
+    }
+
+    #[test]
+    fn gemma4_dual_stream_gate_up_p128_is_seq_and_family_gated() {
+        assert!(should_gemma4_dual_stream_gate_up_p128_for(
+            true, "gemma4", 128
+        ));
+        assert!(should_gemma4_dual_stream_gate_up_p128_for(
+            true,
+            "gemma4_unified",
+            128
+        ));
+        assert!(
+            !should_gemma4_dual_stream_gate_up_p128_for(true, "gemma4", 512),
+            "p512 stays on the serial / compiled split-MLP path"
+        );
+        assert!(!should_gemma4_dual_stream_gate_up_p128_for(
+            true, "gemma4", 2048
+        ));
+        assert!(!should_gemma4_dual_stream_gate_up_p128_for(
+            true, "gemma4", 1
+        ));
+        assert!(!should_gemma4_dual_stream_gate_up_p128_for(
+            true, "qwen3_5", 128
+        ));
+        assert!(!should_gemma4_dual_stream_gate_up_p128_for(
+            false, "gemma4", 128
+        ));
+    }
+
+    #[test]
+    fn gemma4_packed_ffn_compile_p128_is_seq_and_family_gated() {
+        assert!(should_gemma4_packed_ffn_compile_p128_for(
+            true, "gemma4", 128
+        ));
+        assert!(should_gemma4_packed_ffn_compile_p128_for(
+            true,
+            "gemma4_unified",
+            128
+        ));
+        assert!(
+            !should_gemma4_packed_ffn_compile_p128_for(true, "gemma4", 512),
+            "p512 keeps split gate/up and the 256-leading compile floor"
+        );
+        assert!(!should_gemma4_packed_ffn_compile_p128_for(
+            true, "gemma4", 2048
+        ));
+        assert!(!should_gemma4_packed_ffn_compile_p128_for(
+            true, "gemma4", 1
+        ));
+        assert!(!should_gemma4_packed_ffn_compile_p128_for(
+            true, "qwen3_5", 128
+        ));
+        assert!(!should_gemma4_packed_ffn_compile_p128_for(
+            false, "gemma4", 128
         ));
     }
 
@@ -5025,7 +5782,9 @@ mod tests {
             true, "qwen3_5", 1024
         ));
         assert!(should_qwen_prefill_contiguous_la_input_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(
             !should_qwen_prefill_contiguous_la_input_for(true, "qwen3_5", 512),
@@ -5212,9 +5971,13 @@ mod tests {
 
     #[test]
     fn qwen_prefill_eval_attn_input_is_seq_and_family_gated() {
-        assert!(should_qwen_prefill_eval_attn_input_for(true, "qwen3_5", 1024));
         assert!(should_qwen_prefill_eval_attn_input_for(
-            true, "qwen3_next", 2048
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_eval_attn_input_for(
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(
             !should_qwen_prefill_eval_attn_input_for(true, "qwen3_5", 512),
@@ -5247,7 +6010,9 @@ mod tests {
             true, "qwen3_5", 1024
         ));
         assert!(should_qwen_prefill_contiguous_attn_weights_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(
             !should_qwen_prefill_contiguous_attn_weights_for(true, "qwen3_5", 512),
@@ -5270,7 +6035,10 @@ mod tests {
             true, "qwen3_5", true, 1024
         ));
         assert!(should_qwen_prefill_skip_unused_la_out_for(
-            true, "qwen3_next", true, 2048
+            true,
+            "qwen3_next",
+            true,
+            2048
         ));
         assert!(
             !should_qwen_prefill_skip_unused_la_out_for(true, "qwen3_5", true, 512),
@@ -5305,7 +6073,10 @@ mod tests {
             true, "qwen3_5", true, 1024
         ));
         assert!(should_qwen_prefill_last_query_q_proj_for(
-            true, "qwen3_next", true, 2048
+            true,
+            "qwen3_next",
+            true,
+            2048
         ));
         assert!(!should_qwen_prefill_last_query_q_proj_for(
             true, "qwen3_5", true, 512
@@ -5336,7 +6107,10 @@ mod tests {
             true, "qwen3_5", true, 1024
         ));
         assert!(should_qwen_prefill_skip_unused_qk_norm_for(
-            true, "qwen3_next", true, 2048
+            true,
+            "qwen3_next",
+            true,
+            2048
         ));
         assert!(!should_qwen_prefill_skip_unused_qk_norm_for(
             true, "qwen3_5", true, 512
@@ -5367,7 +6141,10 @@ mod tests {
             true, "qwen3_5", true, 1024
         ));
         assert!(should_qwen_prefill_last_query_sdpa_for(
-            true, "qwen3_next", true, 2048
+            true,
+            "qwen3_next",
+            true,
+            2048
         ));
         assert!(
             !should_qwen_prefill_last_query_sdpa_for(true, "qwen3_5", true, 512),
@@ -5390,7 +6167,10 @@ mod tests {
             true, "qwen3_5", true, 1024
         ));
         assert!(should_qwen_prefill_last_token_o_proj_for(
-            true, "qwen3_next", true, 2048
+            true,
+            "qwen3_next",
+            true,
+            2048
         ));
         assert!(
             !should_qwen_prefill_last_token_o_proj_for(true, "qwen3_5", true, 512),
@@ -5473,7 +6253,9 @@ mod tests {
     fn qwen_prefill_split_packed_is_seq_and_family_gated() {
         assert!(should_qwen_prefill_split_packed_for(true, "qwen3_5", 1024));
         assert!(should_qwen_prefill_split_packed_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(
             !should_qwen_prefill_split_packed_for(true, "qwen3_5", 512),
@@ -5481,14 +6263,18 @@ mod tests {
         );
         assert!(!should_qwen_prefill_split_packed_for(true, "qwen3_5", 1));
         assert!(!should_qwen_prefill_split_packed_for(true, "gemma4", 1024));
-        assert!(!should_qwen_prefill_split_packed_for(false, "qwen3_5", 1024));
+        assert!(!should_qwen_prefill_split_packed_for(
+            false, "qwen3_5", 1024
+        ));
     }
 
     #[test]
     fn qwen_prefill_dequant_dense_is_seq_and_family_gated() {
         assert!(should_qwen_prefill_dequant_dense_for(true, "qwen3_5", 1024));
         assert!(should_qwen_prefill_dequant_dense_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(
             !should_qwen_prefill_dequant_dense_for(true, "qwen3_5", 512),
@@ -5520,7 +6306,9 @@ mod tests {
             true, "qwen3_5", 1024
         ));
         assert!(should_qwen_prefill_skip_bf16_astype_for(
-            true, "qwen3_next", 2
+            true,
+            "qwen3_next",
+            2
         ));
         assert!(!should_qwen_prefill_skip_bf16_astype_for(
             true, "qwen3_5", 1
@@ -5559,7 +6347,9 @@ mod tests {
             true, "qwen3_5", 1024
         ));
         assert!(should_qwen_prefill_dual_affine_qmm_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(!should_qwen_prefill_dual_affine_qmm_for(
             true, "qwen3_5", 512
@@ -5578,7 +6368,9 @@ mod tests {
             true, "qwen3_5", 1024
         ));
         assert!(should_qwen_prefill_skip_unused_embed_clip_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(!should_qwen_prefill_skip_unused_embed_clip_for(
             true, "qwen3_5", 512
@@ -5597,7 +6389,9 @@ mod tests {
             true, "qwen3_5", 1024
         ));
         assert!(should_qwen_prefill_skip_unused_f32_sdpa_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
             true, "qwen3_5", 512
@@ -5611,12 +6405,316 @@ mod tests {
     }
 
     #[test]
+    fn gemma4_prefill_skip_unused_f32_sdpa_is_seq_and_family_gated() {
+        assert!(should_gemma4_prefill_skip_unused_f32_sdpa_for(
+            true, "gemma4", 128
+        ));
+        assert!(should_gemma4_prefill_skip_unused_f32_sdpa_for(
+            true,
+            "gemma4_unified",
+            128
+        ));
+        assert!(should_gemma4_prefill_skip_unused_f32_sdpa_for(
+            true, "gemma4", 512
+        ));
+        assert!(
+            !should_gemma4_prefill_skip_unused_f32_sdpa_for(true, "gemma4", 8),
+            "short MTP verify must keep f32 SDPA"
+        );
+        assert!(!should_gemma4_prefill_skip_unused_f32_sdpa_for(
+            true, "gemma4", 1
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_f32_sdpa_for(
+            true, "qwen3_5", 128
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_f32_sdpa_for(
+            false, "gemma4", 128
+        ));
+    }
+
+    #[test]
+    fn gemma4_prefill_skip_unused_embed_clip_is_seq_and_family_gated() {
+        assert!(should_gemma4_prefill_skip_unused_embed_clip_for(
+            true, "gemma4", 128
+        ));
+        assert!(should_gemma4_prefill_skip_unused_embed_clip_for(
+            true,
+            "gemma4_unified",
+            128
+        ));
+        assert!(should_gemma4_prefill_skip_unused_embed_clip_for(
+            true, "gemma4", 2048
+        ));
+        assert!(
+            !should_gemma4_prefill_skip_unused_embed_clip_for(true, "gemma4", 8),
+            "short MTP verify must keep the embed clip"
+        );
+        assert!(!should_gemma4_prefill_skip_unused_embed_clip_for(
+            true, "gemma4", 1
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_embed_clip_for(
+            true, "qwen3_5", 128
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_embed_clip_for(
+            false, "gemma4", 128
+        ));
+    }
+
+    #[test]
+    fn gemma4_prefill_bf16_embed_is_seq_and_family_gated() {
+        assert!(should_gemma4_prefill_bf16_embed_for(true, "gemma4", 128));
+        assert!(should_gemma4_prefill_bf16_embed_for(
+            true,
+            "gemma4_unified",
+            128
+        ));
+        assert!(should_gemma4_prefill_bf16_embed_for(true, "gemma4", 2048));
+        assert!(
+            !should_gemma4_prefill_bf16_embed_for(true, "gemma4", 8),
+            "short MTP verify must keep f32 embed dequant"
+        );
+        assert!(!should_gemma4_prefill_bf16_embed_for(true, "gemma4", 1));
+        assert!(!should_gemma4_prefill_bf16_embed_for(true, "qwen3_5", 128));
+        assert!(!should_gemma4_prefill_bf16_embed_for(false, "gemma4", 128));
+    }
+
+    #[test]
+    fn gemma4_prefill_skip_unused_last_residual_is_seq_last_layer_and_family_gated() {
+        assert!(
+            should_gemma4_prefill_skip_unused_last_residual_for(true, "gemma4", true, 128),
+            "shipped skip-unused-last-residual must accept contract p128 last layer"
+        );
+        assert!(should_gemma4_prefill_skip_unused_last_residual_for(
+            true,
+            "gemma4_unified",
+            true,
+            128
+        ));
+        assert!(should_gemma4_prefill_skip_unused_last_residual_for(
+            true, "gemma4", true, 2048
+        ));
+        assert!(
+            !should_gemma4_prefill_skip_unused_last_residual_for(true, "gemma4", false, 128),
+            "non-final layers keep full-seq add_rms"
+        );
+        assert!(
+            !should_gemma4_prefill_skip_unused_last_residual_for(true, "gemma4", true, 8),
+            "short MTP verify keeps add-then-slice"
+        );
+        assert!(!should_gemma4_prefill_skip_unused_last_residual_for(
+            true, "gemma4", true, 1
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_last_residual_for(
+            true, "qwen3_5", true, 128
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_last_residual_for(
+            false, "gemma4", true, 128
+        ));
+    }
+
+    #[test]
+    fn gemma4_prefill_skip_unused_last_ffn_packed_is_seq_last_layer_and_family_gated() {
+        assert!(
+            should_gemma4_prefill_skip_unused_last_ffn_packed_for(true, "gemma4", true, 128),
+            "shipped skip-unused-last-ffn-packed must accept contract p128 last layer"
+        );
+        assert!(should_gemma4_prefill_skip_unused_last_ffn_packed_for(
+            true,
+            "gemma4_unified",
+            true,
+            128
+        ));
+        assert!(should_gemma4_prefill_skip_unused_last_ffn_packed_for(
+            true, "gemma4", true, 2048
+        ));
+        assert!(
+            !should_gemma4_prefill_skip_unused_last_ffn_packed_for(true, "gemma4", false, 128),
+            "non-final layers keep packed/split prefill policy"
+        );
+        assert!(
+            !should_gemma4_prefill_skip_unused_last_ffn_packed_for(true, "gemma4", true, 8),
+            "short MTP verify keeps packed last-layer FFN"
+        );
+        assert!(!should_gemma4_prefill_skip_unused_last_ffn_packed_for(
+            true, "gemma4", true, 1
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_last_ffn_packed_for(
+            true, "qwen3_5", true, 128
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_last_ffn_packed_for(
+            false, "gemma4", true, 128
+        ));
+    }
+
+    #[test]
+    fn gemma4_prefill_skip_unused_layer_masks_is_seq_window_and_family_gated() {
+        assert!(should_gemma4_prefill_skip_unused_layer_masks_for(
+            true,
+            "gemma4",
+            128,
+            128,
+            Some(1024),
+            0
+        ));
+        assert!(should_gemma4_prefill_skip_unused_layer_masks_for(
+            true,
+            "gemma4_unified",
+            512,
+            512,
+            Some(1024),
+            0
+        ));
+        assert!(
+            should_gemma4_prefill_skip_unused_layer_masks_for(true, "gemma4", 128, 128, None, 0),
+            "full-attn offset-0 prefill is already maskless"
+        );
+        assert!(
+            !should_gemma4_prefill_skip_unused_layer_masks_for(
+                true,
+                "gemma4",
+                2048,
+                2048,
+                Some(1024),
+                0
+            ),
+            "p2048 exceeds the 1024-token window and must keep the hoist"
+        );
+        assert!(
+            !should_gemma4_prefill_skip_unused_layer_masks_for(true, "gemma4", 8, 8, Some(1024), 0),
+            "short MTP verify must keep the hoist"
+        );
+        assert!(!should_gemma4_prefill_skip_unused_layer_masks_for(
+            true,
+            "gemma4",
+            1,
+            1,
+            Some(1024),
+            0
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_layer_masks_for(
+            true,
+            "gemma4",
+            128,
+            256,
+            Some(1024),
+            0
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_layer_masks_for(
+            true,
+            "gemma4",
+            128,
+            128,
+            Some(1024),
+            4
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_layer_masks_for(
+            true,
+            "qwen3_5",
+            128,
+            128,
+            Some(1024),
+            0
+        ));
+        assert!(!should_gemma4_prefill_skip_unused_layer_masks_for(
+            false,
+            "gemma4",
+            128,
+            128,
+            Some(1024),
+            0
+        ));
+    }
+
+    #[test]
+    fn gemma4_prefill_pipeline_hint_p128_is_seq_layer_and_family_gated() {
+        assert!(
+            should_gemma4_prefill_pipeline_hint_p128_for(true, "gemma4", 128, 0, 48),
+            "shipped p128 pipeline hint must fire after non-final layers"
+        );
+        assert!(should_gemma4_prefill_pipeline_hint_p128_for(
+            true,
+            "gemma4_unified",
+            128,
+            46,
+            48
+        ));
+        assert!(
+            !should_gemma4_prefill_pipeline_hint_p128_for(true, "gemma4", 128, 47, 48),
+            "final layer stays lazy so logits eval owns the last barrier"
+        );
+        assert!(
+            !should_gemma4_prefill_pipeline_hint_p128_for(true, "gemma4", 512, 0, 48),
+            "p512 keeps full-graph fusion"
+        );
+        assert!(!should_gemma4_prefill_pipeline_hint_p128_for(
+            true, "gemma4", 2048, 0, 48
+        ));
+        assert!(
+            !should_gemma4_prefill_pipeline_hint_p128_for(true, "gemma4", 8, 0, 48),
+            "short MTP verify stays lazy"
+        );
+        assert!(!should_gemma4_prefill_pipeline_hint_p128_for(
+            true, "gemma4", 1, 0, 48
+        ));
+        assert!(!should_gemma4_prefill_pipeline_hint_p128_for(
+            true, "qwen3_5", 128, 0, 48
+        ));
+        assert!(!should_gemma4_prefill_pipeline_hint_p128_for(
+            false, "gemma4", 128, 0, 48
+        ));
+        assert!(
+            !pipeline_hint_should_fire(0, 48),
+            "global AX_MLX_PIPELINE_GRANULARITY stays off; only the Gemma p128 predicate fires"
+        );
+    }
+
+    #[test]
+    fn gemma4_prefill_last_query_p128_is_seq_last_layer_and_family_gated() {
+        assert!(
+            should_gemma4_prefill_last_query_p128_for(true, "gemma4", true, 128),
+            "shipped last-query must accept contract p128 last layer"
+        );
+        assert!(should_gemma4_prefill_last_query_p128_for(
+            true,
+            "gemma4_unified",
+            true,
+            128
+        ));
+        assert!(
+            !should_gemma4_prefill_last_query_p128_for(true, "gemma4", false, 128),
+            "non-final layers must keep full-seq fused attention"
+        );
+        assert!(
+            !should_gemma4_prefill_last_query_p128_for(true, "gemma4", true, 512),
+            "p512 last layer stays on fused full-seq"
+        );
+        assert!(!should_gemma4_prefill_last_query_p128_for(
+            true, "gemma4", true, 2048
+        ));
+        assert!(
+            !should_gemma4_prefill_last_query_p128_for(true, "gemma4", true, 8),
+            "short MTP verify keeps full-seq last-layer attention"
+        );
+        assert!(!should_gemma4_prefill_last_query_p128_for(
+            true, "gemma4", true, 1
+        ));
+        assert!(!should_gemma4_prefill_last_query_p128_for(
+            true, "qwen3_5", true, 128
+        ));
+        assert!(!should_gemma4_prefill_last_query_p128_for(
+            false, "gemma4", true, 128
+        ));
+    }
+
+    #[test]
     fn qwen_prefill_skip_unused_swiglu_compile_is_seq_and_family_gated() {
         assert!(should_qwen_prefill_skip_unused_swiglu_compile_for(
             true, "qwen3_5", 1024
         ));
         assert!(should_qwen_prefill_skip_unused_swiglu_compile_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(!should_qwen_prefill_skip_unused_swiglu_compile_for(
             true, "qwen3_5", 512
@@ -5635,7 +6733,9 @@ mod tests {
             true, "qwen3_5", 1024
         ));
         assert!(should_qwen_prefill_native_offset_causal_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(!should_qwen_prefill_native_offset_causal_for(
             true, "qwen3_5", 512
@@ -5654,7 +6754,9 @@ mod tests {
             true, "qwen3_5", 1024
         ));
         assert!(should_qwen_prefill_bf16_embed_dequant_for(
-            true, "qwen3_next", 2048
+            true,
+            "qwen3_next",
+            2048
         ));
         assert!(!should_qwen_prefill_bf16_embed_dequant_for(
             true, "qwen3_5", 512
@@ -5669,18 +6771,16 @@ mod tests {
 
     #[test]
     fn qwen_prefill_async_embed_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_async_embed_for(true, "qwen3_5", 1024));
         assert!(should_qwen_prefill_async_embed_for(
-            true, "qwen3_5", 1024
-        ));
-        assert!(should_qwen_prefill_async_embed_for(
-            true, "qwen3_next", 1024
+            true,
+            "qwen3_next",
+            1024
         ));
         assert!(!should_qwen_prefill_async_embed_for(true, "qwen3_5", 512));
         assert!(!should_qwen_prefill_async_embed_for(true, "qwen3_5", 1));
         assert!(!should_qwen_prefill_async_embed_for(true, "gemma4", 1024));
-        assert!(!should_qwen_prefill_async_embed_for(
-            false, "qwen3_5", 1024
-        ));
+        assert!(!should_qwen_prefill_async_embed_for(false, "qwen3_5", 1024));
     }
 
     #[test]
@@ -5789,17 +6889,23 @@ mod tests {
 
     #[test]
     fn qwen_attn_norm_qkv_fuse_is_family_scoped_and_opt_in() {
-        assert!(should_attn_norm_qkv_fuse_for(true, false, "qwen3_5"));
-        assert!(should_attn_norm_qkv_fuse_for(true, false, "QWEN3_5"));
+        assert!(should_attn_norm_qkv_fuse_for(
+            true, false, false, "qwen3_5", 128
+        ));
+        assert!(should_attn_norm_qkv_fuse_for(
+            true, false, false, "QWEN3_5", 2048
+        ));
         assert!(
-            !should_attn_norm_qkv_fuse_for(false, false, "qwen3_5"),
+            !should_attn_norm_qkv_fuse_for(false, false, false, "qwen3_5", 128),
             "Qwen kill-switch must disable the fuse"
         );
         assert!(
-            !should_attn_norm_qkv_fuse_for(true, false, "gemma4"),
-            "Gemma must stay on the global default-OFF flag"
+            !should_attn_norm_qkv_fuse_for(true, false, false, "gemma4", 512),
+            "Gemma p512 stays on the global default-OFF flag"
         );
-        assert!(should_attn_norm_qkv_fuse_for(false, true, "gemma4"));
+        assert!(should_attn_norm_qkv_fuse_for(
+            false, true, false, "gemma4", 512
+        ));
         assert!(should_call_attn_norm_qkv_fuse(true, true, false, false));
         assert!(
             !should_call_attn_norm_qkv_fuse(true, true, false, true),
@@ -5817,6 +6923,40 @@ mod tests {
         assert!(probe(
             "AX_FASTPATH_TEST_QWEN_ATTN_NORM_QKV_FUSE_ENABLED",
             "1"
+        ));
+    }
+
+    #[test]
+    fn gemma4_attn_norm_qkv_fuse_p128_is_seq_and_family_gated() {
+        assert!(should_gemma4_attn_norm_qkv_fuse_p128_for(
+            true, "gemma4", 128
+        ));
+        assert!(should_gemma4_attn_norm_qkv_fuse_p128_for(
+            true,
+            "gemma4_unified",
+            128
+        ));
+        assert!(should_attn_norm_qkv_fuse_for(
+            false, false, true, "gemma4", 128
+        ));
+        assert!(
+            !should_gemma4_attn_norm_qkv_fuse_p128_for(true, "gemma4", 512),
+            "p512 must stay portable so the p128 fuse cannot regress longer cells"
+        );
+        assert!(!should_gemma4_attn_norm_qkv_fuse_p128_for(
+            true, "gemma4", 2048
+        ));
+        assert!(!should_gemma4_attn_norm_qkv_fuse_p128_for(
+            true, "gemma4", 1
+        ));
+        assert!(!should_gemma4_attn_norm_qkv_fuse_p128_for(
+            true, "qwen3_5", 128
+        ));
+        assert!(!should_gemma4_attn_norm_qkv_fuse_p128_for(
+            false, "gemma4", 128
+        ));
+        assert!(!should_attn_norm_qkv_fuse_for(
+            false, false, true, "gemma4", 512
         ));
     }
 
@@ -6878,6 +8018,41 @@ mod tests {
             "append after the first write still grows in KV_CHUNK_TOKENS"
         );
         assert!(!should_exact_size_first_kv_for(false, 0));
+    }
+
+    #[test]
+    fn exact_size_first_kv_targets_unaligned_contract_p128() {
+        // The product flag only changes the first write. Of the fleet
+        // contract prompts, only 128 is not a KV_CHUNK_TOKENS multiple, so
+        // p512/p2048 already skip zeros+slice_update without the flag.
+        const CHUNK: usize = crate::kv_cache::KV_CHUNK_TOKENS;
+        assert_eq!(CHUNK, 256);
+        assert_ne!(128 % CHUNK, 0, "p128 must take the exact-size first write");
+        assert_eq!(512 % CHUNK, 0);
+        assert_eq!(2048 % CHUNK, 0);
+        assert!(
+            should_exact_size_first_kv_for(true, 0),
+            "fresh-layer first write is the only exact-size site"
+        );
+        assert!(!should_exact_size_first_kv_for(true, 128));
+    }
+
+    #[test]
+    fn compiled_qgelu_axq_p128_is_layout_and_seq_gated() {
+        assert!(should_compiled_qgelu_axq_p128_for(true, 32, 4, 128));
+        assert!(
+            !should_compiled_qgelu_axq_p128_for(true, 64, 4, 128),
+            "community gs64/bits=4 stays on the shapeless #680 path"
+        );
+        assert!(
+            !should_compiled_qgelu_axq_p128_for(true, 32, 4, 512),
+            "p512 must stay portable so the p128 compile cannot regress longer cells"
+        );
+        assert!(!should_compiled_qgelu_axq_p128_for(true, 32, 4, 2048));
+        assert!(!should_compiled_qgelu_axq_p128_for(true, 32, 4, 1));
+        assert!(!should_compiled_qgelu_axq_p128_for(true, 32, 8, 128));
+        assert!(!should_compiled_qgelu_axq_p128_for(true, 0, 4, 128));
+        assert!(!should_compiled_qgelu_axq_p128_for(false, 32, 4, 128));
     }
 
     #[test]

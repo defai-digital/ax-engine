@@ -4,8 +4,6 @@ use super::PreviewSupportTier;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ServerPreset {
-    #[value(name = "gemma4-e2b")]
-    Gemma4E2b,
     #[value(name = "gemma4-12b")]
     Gemma4_12b,
     #[value(name = "gemma4-26b")]
@@ -65,15 +63,6 @@ pub(super) struct PresetDefinition {
 impl ServerPreset {
     pub(super) fn definition(self) -> PresetDefinition {
         match self {
-            Self::Gemma4E2b => PresetDefinition {
-                preset: self,
-                label: "gemma4-e2b",
-                model_id: "gemma4-e2b",
-                aliases: &["gemma4-e2b", "gemma-4-e2b", "gemma-4-e2b-it"],
-                model_types: &["gemma4"],
-                support_tier: PreviewSupportTier::MlxPreview,
-                max_batch_tokens: 2048,
-            },
             Self::Gemma4_12b => PresetDefinition {
                 preset: self,
                 label: "gemma4-12b",
@@ -339,7 +328,6 @@ impl ServerPreset {
 
 pub fn render_presets() -> String {
     [
-        ServerPreset::Gemma4E2b,
         ServerPreset::Gemma4_12b,
         ServerPreset::Gemma4_26b,
         ServerPreset::Gemma4_31b,

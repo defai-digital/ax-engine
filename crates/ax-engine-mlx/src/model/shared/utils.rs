@@ -36,6 +36,7 @@ thread_local! {
     static QWEN_PREFILL_BF16_EMBED_DEQUANT: Cell<bool> = const { Cell::new(false) };
     static QWEN_PREFILL_NATIVE_OFFSET_CAUSAL: Cell<bool> = const { Cell::new(false) };
     static QWEN_PREFILL_SKIP_SWIGLU_COMPILE: Cell<bool> = const { Cell::new(false) };
+    static GEMMA4_PREFILL_SKIP_LAST_FFN_PACKED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Mark the current Qwen3.5 / Qwen3-Next layer so `qw` may dequant+dense.
@@ -141,13 +142,37 @@ impl Drop for QwenPrefillSkipSwigluCompileGuard {
     }
 }
 
+pub(crate) fn set_gemma4_prefill_skip_last_ffn_packed(active: bool) {
+    GEMMA4_PREFILL_SKIP_LAST_FFN_PACKED.set(active);
+}
+
+pub(crate) fn gemma4_prefill_skip_last_ffn_packed_active() -> bool {
+    GEMMA4_PREFILL_SKIP_LAST_FFN_PACKED.get()
+}
+
+pub(crate) struct Gemma4PrefillSkipLastFfnPackedGuard;
+
+impl Gemma4PrefillSkipLastFfnPackedGuard {
+    pub(crate) fn arm(active: bool) -> Self {
+        set_gemma4_prefill_skip_last_ffn_packed(active);
+        Self
+    }
+}
+
+impl Drop for Gemma4PrefillSkipLastFfnPackedGuard {
+    fn drop(&mut self) {
+        set_gemma4_prefill_skip_last_ffn_packed(false);
+    }
+}
+
 /// Skip a no-op BF16 astype when the gather is already BF16.
 pub(crate) fn qwen_prefill_maybe_skip_bf16_astype(
     x: &MlxArray,
     model_family: &str,
     seq: i32,
 ) -> MlxArray {
-    if fastpath::should_qwen_prefill_skip_bf16_astype(model_family, seq)
+    if (fastpath::should_qwen_prefill_skip_bf16_astype(model_family, seq)
+        || fastpath::should_gemma4_prefill_bf16_embed(model_family, seq))
         && x.dtype() == MlxDtype::Bfloat16
     {
         x.clone()
@@ -498,12 +523,7 @@ pub(crate) fn qwen_prefill_maybe_flat_qmm_for(
 
 /// Tile `[B,S,H]` into 512-token slices for steel qmm, then concatenate.
 fn qwen_prefill_maybe_tile_qmm(x: &MlxArray, qmm: impl Fn(&MlxArray) -> MlxArray) -> MlxArray {
-    qwen_prefill_maybe_tile_qmm_for(
-        x,
-        fastpath::qwen_prefill_tile_qmm_enabled(),
-        "qwen3_5",
-        qmm,
-    )
+    qwen_prefill_maybe_tile_qmm_for(x, fastpath::qwen_prefill_tile_qmm_enabled(), "qwen3_5", qmm)
 }
 
 /// Pure helper for [`qwen_prefill_maybe_tile_qmm`].
@@ -1827,6 +1847,14 @@ mod tests {
             fastpath::should_qwen_prefill_skip_bf16_astype_for(true, "qwen3_5", 1024),
             "shipped skip-astype gate must accept prefill seq"
         );
+        let gemma_skipped = super::qwen_prefill_maybe_skip_bf16_astype(&bf, "gemma4", 128);
+        eval(&[&gemma_skipped]);
+        assert_eq!(gemma_skipped.dtype(), MlxDtype::Bfloat16);
+        assert_eq!(gemma_skipped.shape(), forced.shape());
+        assert!(
+            fastpath::should_gemma4_prefill_bf16_embed_for(true, "gemma4", 128),
+            "shipped Gemma 4 bf16 embed must skip unused astype at p128"
+        );
     }
 
     #[test]
@@ -2042,9 +2070,8 @@ mod tests {
             fastpath::should_qwen_prefill_tile_qmm_for(true, "qwen3_5", 1024),
             "shipped tile-qmm gate must accept the p2048 chunk length"
         );
-        let skipped = super::qwen_prefill_maybe_tile_qmm_for(&x, false, "qwen3_5", |inner| {
-            inner.clone()
-        });
+        let skipped =
+            super::qwen_prefill_maybe_tile_qmm_for(&x, false, "qwen3_5", |inner| inner.clone());
         eval(&[&skipped]);
         assert_eq!(skipped.shape(), x.shape());
     }

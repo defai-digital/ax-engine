@@ -1296,6 +1296,20 @@ bool compiled_qgelu_prefill_shaped_enabled() {
           s == "ON" || s == "YES");
 }
 
+// Opt-in for AXQ 4-bit (group_size != 64) contract p128. Default OFF after
+// the Gemma 4 AXQ p128 unused-work remasure classified the path as wash.
+// Mirrors `should_compiled_qgelu_axq_p128_for` in fastpath.rs (truthy
+// 1/true/on/yes). Read each call so unit tests can toggle without restarting.
+bool compiled_qgelu_axq_p128_enabled() {
+  const char* v = std::getenv("AX_MLX_COMPILED_QGELU_AXQ_P128");
+  if (!v) {
+    return false;
+  }
+  std::string s(v);
+  return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
+          s == "ON" || s == "YES");
+}
+
 // MLX `array::shape()` is a SmallVector-like Shape, not std::vector.
 template <typename ShapeLike>
 uint64_t qgelu_activation_shape_sig(const ShapeLike& shape) {
@@ -1325,16 +1339,19 @@ extern "C" int ax_mlx_compiled_gelu_approx_split_mlp(
     int bits,
     const mlx_stream stream) {
   AX_TRY {
-    // Compile gate (mlxcel #680 + #705 residual):
+    // Compile gate (mlxcel #680 + #705 residual + AXQ p128):
     //   * gs64/bits=4: shapeless compile on every shape (prefill+decode).
     //   * single-token decode (any affine bits): shapeless compile.
+    //   * AXQ 4-bit (group_size != 64) seq=128: shape-specific compile so
+    //     prefill qmm stays on the large-matmul kernel (#680 trap).
     //   * multi-token non-4bit (notably gs64/bits=8 flip Gemma MLP):
-    //     shape-specific compile so prefill qmm stays on the large-matmul
-    //     kernel while still fusing gelu elementwise ops (#705 recovery).
-    // Kill-switches:
+    //     shape-specific compile only when PREFILL_SHAPED is on.
+    // Gates:
     //   AX_MLX_COMPILED_QGELU_MLP=0 — disable all compiled qGELU.
-    //   AX_MLX_COMPILED_QGELU_PREFILL_SHAPED=0 — disable only multi-token
-    //   non-4bit shape-specific path (falls back to portable).
+    //   AX_MLX_COMPILED_QGELU_AXQ_P128=1 — enable only AXQ p128 4-bit
+    //   (default OFF; wash on the Gemma 4 AXQ p128 track).
+    //   AX_MLX_COMPILED_QGELU_PREFILL_SHAPED=1 — enable only multi-token
+    //   non-4bit shape-specific path (default OFF).
     if (!compiled_qgelu_mlp_env_enabled()) {
       return 1;
     }
@@ -1348,14 +1365,19 @@ extern "C" int ax_mlx_compiled_gelu_approx_split_mlp(
     const auto& x_shape = aref(x).shape();
     const bool is_single_token =
         x_shape.size() >= 2 && x_shape[x_shape.size() - 2] == 1;
+    const int seq = x_shape.size() >= 2
+                        ? static_cast<int>(x_shape[x_shape.size() - 2])
+                        : 0;
     const bool legacy_4bit = (group_size == 64 && bits == 4);
+    const bool axq_p128 = bits == 4 && group_size != 64 && seq == 128 &&
+                          compiled_qgelu_axq_p128_enabled();
     bool shapeless = true;
     uint64_t shape_sig = 0;
     if (legacy_4bit || is_single_token) {
       shapeless = true;
       shape_sig = 0;
-    } else if (compiled_qgelu_prefill_shaped_enabled()) {
-      // Multi-token non-4bit prefill recovery (#705 pattern).
+    } else if (axq_p128 || compiled_qgelu_prefill_shaped_enabled()) {
+      // Shape-specific so prefill qmm is not the decode kernel.
       shapeless = false;
       shape_sig = qgelu_activation_shape_sig(x_shape);
     } else {
@@ -1684,6 +1706,53 @@ extern "C" int ax_mlx_dual_affine_qmm(
         group_size,
         bits,
         up_s);
+    aset(gate_res, std::move(gate));
+    aset(up_res, std::move(up));
+    return 0;
+  } AX_CATCH
+}
+
+// Always dual-stream: Rust family/seq gate is the only switch (Gemma 4
+// contract p128). No env check so decode / other shapes stay off unless
+// the caller takes this entry.
+extern "C" int ax_mlx_dual_stream_affine_qmm(
+    mlx_array* gate_res,
+    mlx_array* up_res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  (void)stream;
+  AX_TRY {
+    if (group_size <= 0 || bits <= 0) {
+      return 1;
+    }
+    if (!gate_biases.ctx || !up_biases.ctx) {
+      return 1;
+    }
+    auto& streams = dual_gate_up_streams();
+    auto gate = quantized_matmul_affine_impl(
+        aref(x),
+        aref(gate_weight),
+        aref(gate_scales),
+        opt_arr(gate_biases),
+        group_size,
+        bits,
+        streams.first);
+    auto up = quantized_matmul_affine_impl(
+        aref(x),
+        aref(up_weight),
+        aref(up_scales),
+        opt_arr(up_biases),
+        group_size,
+        bits,
+        streams.second);
     aset(gate_res, std::move(gate));
     aset(up_res, std::move(up));
     return 0;
@@ -2424,6 +2493,7 @@ FusedCausalPrefillOut fused_causal_prefill_attention_impl(
     std::optional<mx::array> o_biases,
     int group_size,
     int bits,
+    std::optional<mx::array> post_norm,
     mx::StreamOrDevice stream) {
   auto batch = x.shape(0);
   auto seq = x.shape(1);
@@ -2471,6 +2541,9 @@ FusedCausalPrefillOut fused_causal_prefill_attention_impl(
       mx::transpose(attn, {0, 2, 1, 3}, stream), {batch, seq, q_cols}, stream);
   auto out = quantized_matmul_affine_impl(
       attn, o_weight, o_scales, std::move(o_biases), group_size, bits, stream);
+  if (post_norm.has_value()) {
+    out = mx::fast::rms_norm(out, *post_norm, eps, stream);
+  }
 
   return {std::move(out), std::move(k), std::move(v)};
 }
@@ -2503,6 +2576,7 @@ extern "C" int ax_mlx_fused_causal_prefill_attention(
     const mlx_array o_biases,
     int group_size,
     int bits,
+    const mlx_array post_norm,
     const mlx_stream stream) {
   AX_TRY {
     auto result = fused_causal_prefill_attention_impl(
@@ -2528,6 +2602,7 @@ extern "C" int ax_mlx_fused_causal_prefill_attention(
         opt_arr(o_biases),
         group_size,
         bits,
+        opt_arr(post_norm),
         sd(stream));
     aset(out, std::move(result.out));
     aset(k_out, std::move(result.k));
@@ -2572,6 +2647,7 @@ extern "C" int ax_mlx_fused_causal_prefill_attention_split(
     const mlx_array o_biases,
     int group_size,
     int bits,
+    const mlx_array post_norm,
     const mlx_stream stream) {
   AX_TRY {
     auto s = sd(stream);
@@ -2625,6 +2701,9 @@ extern "C" int ax_mlx_fused_causal_prefill_attention_split(
     auto result = quantized_matmul_affine_impl(
         attn, aref(o_weight), aref(o_scales), opt_arr(o_biases), group_size,
         bits, s);
+    if (auto post = opt_arr(post_norm); post.has_value()) {
+      result = mx::fast::rms_norm(result, *post, eps, s);
+    }
 
     aset(out, std::move(result));
     aset(k_out, std::move(k));

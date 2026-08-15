@@ -3964,10 +3964,7 @@ mod tests {
         );
 
         let qwen38 = profile_for_model("qwen3.8-27b:axq").unwrap();
-        assert_eq!(
-            qwen38.repo_id,
-            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"
-        );
+        assert_eq!(qwen38.repo_id, "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP");
         assert_eq!(
             profile_revision(qwen38),
             Some("a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6")
