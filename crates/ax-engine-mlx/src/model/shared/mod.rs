@@ -20,7 +20,9 @@ pub(crate) use attention::{
     prepare_value_bhsd_from_proj, prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_flat,
     qk_norm_rope_bhsd_from_proj_with_route, qwen_prefill_maybe_async_sdpa,
-    qwen_prefill_maybe_eval_attn_input, qwen_prefill_maybe_last_token_flat,
+    qwen_prefill_maybe_eval_attn_input, qwen_prefill_maybe_last_query_q,
+    qwen_prefill_maybe_last_token_bsh, qwen_prefill_maybe_last_token_flat,
+    qwen_prefill_query_seq,
     rope_bhsd_batch_offset_safe, set_qwen_prefill_reuse_rope_active,
 };
 pub(crate) use deepseek_v4_attention::deepseek_v4_attention_forward;
@@ -41,8 +43,9 @@ pub(crate) use mlp::{
     moe_experts_forward, moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
     moe_router_gpt_oss, moe_router_qwen3, per_layer_input_gate_project, qkv_project,
-    qkv_project_batched, qkv_project_embed, qkv_project_pos0_exact_rest_shared,
-    qkv_project_row_exact, qkv_project_with_input_norm, shared_expert_forward,
+    qkv_project_batched, qkv_project_embed, qkv_project_last_query,
+    qkv_project_pos0_exact_rest_shared, qkv_project_row_exact, qkv_project_with_input_norm,
+    shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;
 pub(super) use rope::{build_llama3_rope_freqs, build_yarn_rope_freqs};

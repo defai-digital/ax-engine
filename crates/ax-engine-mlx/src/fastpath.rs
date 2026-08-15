@@ -2767,6 +2767,145 @@ pub fn should_qwen_prefill_last_token_o_proj(
     )
 }
 
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_LAST_QUERY_SDPA` — on last-position-only generate
+    /// prefill (`seq >= 1024`), write full K/V then run Q+SDPA on the last
+    /// query only. Implied when `AX_MLX_QWEN_PREFILL_LAST_QUERY_Q_PROJ` is
+    /// on (Q is already S=1). Not last-token o_proj (closed: slices *after*
+    /// full SDPA), not skip-unused-LA-out (last 27B layer is full-attn).
+    ///
+    /// **Default: OFF**. Remasured binary `6d4e0d38…` (2026-08-14): 3b
+    /// 1.029076 / 3d 1.054203 wash (0.997× q2only). Last-query SDPA is one
+    /// full-attn layer and does not cut compute-bound qmm.
+    qwen_prefill_last_query_sdpa_enabled,
+    "AX_MLX_QWEN_PREFILL_LAST_QUERY_SDPA"
+);
+
+/// Whether Qwen last-only prefill should SDPA the last query only.
+/// Last-token Q proj and skip-unused-QK-norm already yield S=1 Q, so those
+/// flags imply this one.
+pub fn should_qwen_prefill_last_query_sdpa(
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    should_qwen_prefill_last_query_sdpa_for(
+        qwen_prefill_last_query_sdpa_enabled()
+            || qwen_prefill_last_query_q_proj_enabled()
+            || qwen_prefill_skip_unused_qk_norm_enabled(),
+        model_family,
+        last_position_only,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_last_query_sdpa`].
+pub fn should_qwen_prefill_last_query_sdpa_for(
+    enabled: bool,
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    enabled
+        && last_position_only
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_LAST_QUERY_Q_PROJ` — on last-position-only
+    /// generate prefill (`seq >= 1024`), write full K/V then run `q_proj`
+    /// on the last token only. Not last-query SDPA (closed: still paid
+    /// full-seq Q qmm then sliced), not last-token o_proj (closed).
+    ///
+    /// **Default: OFF**. First remasure `f763ca23…` crashed p2048 (Q S=1,
+    /// SDPA used full-seq). Cleanup remasure binary `13a85878…` (2026-08-14):
+    /// no crash; 3a PASS; 3d 903.383/857.999=**1.052896 FAIL** (need 986.699);
+    /// vs q2only 0.994 wash. AXQ killed after 3d FAIL. Last-layer Q skip
+    /// does not cut compute-bound qmm.
+    qwen_prefill_last_query_q_proj_enabled,
+    "AX_MLX_QWEN_PREFILL_LAST_QUERY_Q_PROJ"
+);
+
+/// Whether Qwen last-only prefill should project Q on the last token only.
+pub fn should_qwen_prefill_last_query_q_proj(
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    should_qwen_prefill_last_query_q_proj_for(
+        qwen_prefill_last_query_q_proj_enabled(),
+        model_family,
+        last_position_only,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_last_query_q_proj`].
+pub fn should_qwen_prefill_last_query_q_proj_for(
+    enabled: bool,
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    enabled
+        && last_position_only
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_QK_NORM` — on last-position-only
+    /// generate prefill (`seq >= 1024`), slice full-seq Q to the last token
+    /// *before* QK-norm + RoPE so the discarded prefix does not pay RMSNorm.
+    /// Last-token Q proj already yields S=1 (no-op). Not last-query SDPA
+    /// (closed: still paid full-seq Q-norm then sliced), not FFN /
+    /// contiguous / compile / skip-astype.
+    ///
+    /// **Default: OFF**. Remasured binary `ece19de3…` (2026-08-14): 3a PASS;
+    /// 3d 903.798/857.999=**1.053380 FAIL** (need 986.699); vs q2only 0.995
+    /// wash. AXQ killed after 3d FAIL. Last-layer QK-norm skip does not cut
+    /// compute-bound qmm.
+    qwen_prefill_skip_unused_qk_norm_enabled,
+    "AX_MLX_QWEN_PREFILL_SKIP_UNUSED_QK_NORM"
+);
+
+/// Whether Qwen last-only prefill should skip unused prefix QK-norm.
+pub fn should_qwen_prefill_skip_unused_qk_norm(
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    should_qwen_prefill_skip_unused_qk_norm_for(
+        qwen_prefill_skip_unused_qk_norm_enabled(),
+        model_family,
+        last_position_only,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_skip_unused_qk_norm`].
+pub fn should_qwen_prefill_skip_unused_qk_norm_for(
+    enabled: bool,
+    model_family: &str,
+    last_position_only: bool,
+    seq: i32,
+) -> bool {
+    enabled
+        && last_position_only
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
 /// Pure helper for [`should_qwen_prefill_last_token_o_proj`].
 pub fn should_qwen_prefill_last_token_o_proj_for(
     enabled: bool,
@@ -2967,6 +3106,296 @@ pub fn should_qwen_prefill_skip_bf16_astype_for(
 ) -> bool {
     enabled
         && seq > 1
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_FLAT_QMM` — reshape every Qwen prefill `qw`
+    /// activation `[B,S,H] → [B*S,H]` before steel `quantized_matmul`, then
+    /// restore `[B,S,out]`. Not FFN-only flat-ffn (closed wash), not last-
+    /// layer Q/SDPA (closed crash/wash), not dequant-dense (regression).
+    /// Changes the qmm leading shape so steel can pick a 2-D GEMM kernel.
+    ///
+    /// **Default: OFF**. Remasured binary `8926e7f1…` (2026-08-14): community
+    /// p2048 903.763/857.999=1.053338 wash (0.995× q2only). Flattening every
+    /// prefill qmm to 2-D does not beat 3-D steel qmm. AXQ killed after 3d
+    /// FAIL. Helpers stay for the unit tests.
+    qwen_prefill_flat_qmm_enabled,
+    "AX_MLX_QWEN_PREFILL_FLAT_QMM"
+);
+
+/// Whether every Qwen prefill qmm should flatten to a 2-D leading dim.
+pub fn should_qwen_prefill_flat_qmm(seq: i32, rank: usize) -> bool {
+    should_qwen_prefill_flat_qmm_for(qwen_prefill_flat_qmm_enabled(), seq, rank)
+}
+
+/// Pure helper for [`should_qwen_prefill_flat_qmm`].
+pub fn should_qwen_prefill_flat_qmm_for(enabled: bool, seq: i32, rank: usize) -> bool {
+    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ && rank == 3
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_TILE_QMM` — run steel `quantized_matmul` on
+    /// 512-token slices of `[B,S,H]` at `seq >= 1024`, then concatenate.
+    /// Changes the qmm leading dim (M=512 vs M=1024). Not flatten-qmm
+    /// (closed: rank change), not chunk-1280/single-2048 (closed), not
+    /// last-layer Q/SDPA/QK-norm, not bit-width overlay.
+    ///
+    /// **Default: OFF**. Remasured binary `6bf46184…` (2026-08-14): 3a PASS
+    /// (p2048 pre 869.531/931.742=0.933231); 3d 869.531/857.999=**1.013440
+    /// FAIL** (need 986.699); vs q2only **0.957 regression**. Two M=512
+    /// steel launches lose to one M=1024. AXQ killed after 3d FAIL.
+    qwen_prefill_tile_qmm_enabled,
+    "AX_MLX_QWEN_PREFILL_TILE_QMM"
+);
+
+/// Whether Qwen prefill qmm should tile the sequence dim.
+pub fn should_qwen_prefill_tile_qmm(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_tile_qmm_for(qwen_prefill_tile_qmm_enabled(), model_family, seq)
+}
+
+/// Pure helper for [`should_qwen_prefill_tile_qmm`].
+pub fn should_qwen_prefill_tile_qmm_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+pub const QWEN_PREFILL_QMM_TILE: i32 = 512;
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_DUAL_AFFINE_QMM` — one C++ call for Qwen split
+    /// prefill gate+up steel `quantized_matmul` at `seq >= 1024`. Not
+    /// tile/flatten (closed), not compile-block (compiled dual / split FFN
+    /// compile closed), not dual-stream (regression), not dual_qmm_swiglu
+    /// (regression), not last-layer skip. Qwen never reached the existing
+    /// Gemma `uses_geglu` dual-affine branch.
+    ///
+    /// **Default: OFF**. Remasured binary `94067aea…` (2026-08-15): 3a PASS
+    /// (p2048 pre 901.800/930.594=0.969058); 3d 901.800/857.999=**1.051050
+    /// FAIL** (need 986.699); vs q2only 0.993 wash. One C++ FFI for two
+    /// steel qmms does not beat two Rust qw. AXQ killed after 3d FAIL.
+    qwen_prefill_dual_affine_qmm_enabled,
+    "AX_MLX_QWEN_PREFILL_DUAL_AFFINE_QMM"
+);
+
+/// Whether Qwen split prefill should issue gate+up as one dual-affine qmm.
+pub fn should_qwen_prefill_dual_affine_qmm(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_dual_affine_qmm_for(
+        qwen_prefill_dual_affine_qmm_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_dual_affine_qmm`].
+pub fn should_qwen_prefill_dual_affine_qmm_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_EMBED_CLIP` — skip the Metal `clip`
+    /// of token ids before embed gather on Qwen prefill (`seq >= 1024`).
+    /// Contract prompts are in-range; the clip is a safety gather for
+    /// malformed client ids. Not FFN/qmm/compile/last-layer, not
+    /// skip-astype / async-embed (closed washes).
+    ///
+    /// **Default: OFF**. Remasured binary `3ee188a3…` (2026-08-15): 3a PASS
+    /// (p2048 pre 903.379/931.044=0.970286); 3d 903.379/857.999=**1.052891
+    /// FAIL** (need 986.699); vs q2only 0.994 wash. AXQ killed after 3d
+    /// FAIL. Skipping one embed-id clip does not cut compute-bound qmm.
+    qwen_prefill_skip_unused_embed_clip_enabled,
+    "AX_MLX_QWEN_PREFILL_SKIP_UNUSED_EMBED_CLIP"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_F32_SDPA` — keep Qwen prefill SDPA
+    /// in the model dtype at `seq >= 1024`. `AX_MLX_MULTI_TOKEN_F32_ATTENTION`
+    /// is default-ON for Gemma short teacher-forced verify; on 27B prefill
+    /// it upcasts every full-attn Q/K/V to f32 (16 layers × two 1024
+    /// chunks). Decode `seq==1` and short MTP verify stay on the Gemma
+    /// exactness path. Not FFN/qmm/compile/last-layer, not skip-embed-clip.
+    ///
+    /// **Default: OFF**. Remasured binary `fbf0b12d…` (2026-08-15): 3a PASS
+    /// (p2048 pre 914.746/931.574=0.981936); 3d 914.746/857.999=**1.066139
+    /// FAIL** (need 986.699); vs q2only **1.0068** small gain, not 1.15.
+    /// AXQ killed after 3d FAIL. bf16 SDPA does not cut compute-bound qmm.
+    qwen_prefill_skip_unused_f32_sdpa_enabled,
+    "AX_MLX_QWEN_PREFILL_SKIP_UNUSED_F32_SDPA"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_BF16_EMBED_DEQUANT` — dequantize gathered
+    /// embedding rows to BF16 instead of the MLX default f32, then
+    /// `astype` to BF16. Not skip-astype (that only skips a no-op when
+    /// the gather is already BF16), not skip-embed-clip, not FFN/qmm/
+    /// compile/last-layer/f32-SDPA.
+    ///
+    /// **Default: OFF**. Remasured binary `5afde179…` (2026-08-15): 3a PASS
+    /// (p2048 pre 901.813/930.039=0.969651); 3d 901.813/857.999=**1.051065
+    /// FAIL** (need 986.699); vs q2only 0.993 wash. AXQ killed after 3d
+    /// FAIL. BF16 embed dequant does not cut compute-bound qmm.
+    qwen_prefill_bf16_embed_dequant_enabled,
+    "AX_MLX_QWEN_PREFILL_BF16_EMBED_DEQUANT"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_NATIVE_OFFSET_CAUSAL` — on Qwen prefill
+    /// `seq >= 1024`, use MLX native `mask="causal"` for the offset-1024
+    /// second chunk instead of an O(seq×key) bool array. Prior
+    /// `AX_MLX_NATIVE_OFFSET_CAUSAL` remasure (889 vs 891) ran under the
+    /// default-ON f32 SDPA upcast; this pairs with
+    /// `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_F32_SDPA`. Not FFN/qmm/compile/
+    /// last-layer, not embed-clip / bf16-dequant.
+    ///
+    /// **Default: OFF**. Remasured binary `890e5d30…` (2026-08-15) stacked
+    /// with `SKIP_UNUSED_F32_SDPA=1`: 3a PASS (p2048 pre
+    /// 915.689/930.961=0.983596); 3d 915.689/857.999=**1.067238 FAIL**
+    /// (need 986.699); vs q2only 1.008; vs f32-skip-only 1.001 wash.
+    /// AXQ killed after 3d FAIL. Native causal does not add on top of bf16
+    /// SDPA.
+    qwen_prefill_native_offset_causal_enabled,
+    "AX_MLX_QWEN_PREFILL_NATIVE_OFFSET_CAUSAL"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_SWIGLU_COMPILE` — at `seq >= 1024`,
+    /// run Qwen `silu(gate)*up` as imperative `silu_mul` instead of the
+    /// default-ON `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU` closure. Packed Qwen
+    /// prefill compile is already known slower at the 512-token boundary;
+    /// this is the shipped split-activation compile tax (mutex + try_apply
+    /// on every dense FFN layer × two 1024 chunks). Not an opt-in FFN-block
+    /// / down / dual-gate compile remasure (those closed as wash).
+    ///
+    /// **Default: OFF**.
+    qwen_prefill_skip_unused_swiglu_compile_enabled,
+    "AX_MLX_QWEN_PREFILL_SKIP_UNUSED_SWIGLU_COMPILE"
+);
+
+/// Whether Qwen prefill should skip the unused SwiGLU compile.
+pub fn should_qwen_prefill_skip_unused_swiglu_compile(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_skip_unused_swiglu_compile_for(
+        qwen_prefill_skip_unused_swiglu_compile_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_skip_unused_swiglu_compile`].
+pub fn should_qwen_prefill_skip_unused_swiglu_compile_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+/// Whether Qwen prefill should use native offset causal SDPA.
+pub fn should_qwen_prefill_native_offset_causal(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_native_offset_causal_for(
+        qwen_prefill_native_offset_causal_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_native_offset_causal`].
+pub fn should_qwen_prefill_native_offset_causal_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+/// Whether Qwen prefill should dequant embeddings directly to BF16.
+pub fn should_qwen_prefill_bf16_embed_dequant(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_bf16_embed_dequant_for(
+        qwen_prefill_bf16_embed_dequant_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_bf16_embed_dequant`].
+pub fn should_qwen_prefill_bf16_embed_dequant_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+/// Whether Qwen prefill should skip the unused f32 SDPA upcast.
+pub fn should_qwen_prefill_skip_unused_f32_sdpa(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_skip_unused_f32_sdpa_for(
+        qwen_prefill_skip_unused_f32_sdpa_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_skip_unused_f32_sdpa`].
+pub fn should_qwen_prefill_skip_unused_f32_sdpa_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && matches!(
+            model_family.to_ascii_lowercase().as_str(),
+            "qwen3_5" | "qwen3_next"
+        )
+}
+
+/// Whether Qwen prefill should skip the unused embed-id clip.
+pub fn should_qwen_prefill_skip_unused_embed_clip(model_family: &str, seq: i32) -> bool {
+    should_qwen_prefill_skip_unused_embed_clip_for(
+        qwen_prefill_skip_unused_embed_clip_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_qwen_prefill_skip_unused_embed_clip`].
+pub fn should_qwen_prefill_skip_unused_embed_clip_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
             model_family.to_ascii_lowercase().as_str(),
             "qwen3_5" | "qwen3_next"
@@ -4871,6 +5300,91 @@ mod tests {
     }
 
     #[test]
+    fn qwen_prefill_last_query_q_proj_is_seq_family_and_last_only_gated() {
+        assert!(should_qwen_prefill_last_query_q_proj_for(
+            true, "qwen3_5", true, 1024
+        ));
+        assert!(should_qwen_prefill_last_query_q_proj_for(
+            true, "qwen3_next", true, 2048
+        ));
+        assert!(!should_qwen_prefill_last_query_q_proj_for(
+            true, "qwen3_5", true, 512
+        ));
+        assert!(!should_qwen_prefill_last_query_q_proj_for(
+            true, "qwen3_5", false, 1024
+        ));
+        assert!(!should_qwen_prefill_last_query_q_proj_for(
+            true, "gemma4", true, 1024
+        ));
+        assert!(!should_qwen_prefill_last_query_q_proj_for(
+            false, "qwen3_5", true, 1024
+        ));
+        assert!(
+            should_qwen_prefill_last_query_sdpa_for(
+                should_qwen_prefill_last_query_q_proj_for(true, "qwen3_5", true, 1024),
+                "qwen3_5",
+                true,
+                1024,
+            ),
+            "last-token Q is already S=1; SDPA length must follow Q"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_skip_unused_qk_norm_is_seq_family_and_last_only_gated() {
+        assert!(should_qwen_prefill_skip_unused_qk_norm_for(
+            true, "qwen3_5", true, 1024
+        ));
+        assert!(should_qwen_prefill_skip_unused_qk_norm_for(
+            true, "qwen3_next", true, 2048
+        ));
+        assert!(!should_qwen_prefill_skip_unused_qk_norm_for(
+            true, "qwen3_5", true, 512
+        ));
+        assert!(!should_qwen_prefill_skip_unused_qk_norm_for(
+            true, "qwen3_5", false, 1024
+        ));
+        assert!(!should_qwen_prefill_skip_unused_qk_norm_for(
+            true, "gemma4", true, 1024
+        ));
+        assert!(!should_qwen_prefill_skip_unused_qk_norm_for(
+            false, "qwen3_5", true, 1024
+        ));
+        assert!(
+            should_qwen_prefill_last_query_sdpa_for(
+                should_qwen_prefill_skip_unused_qk_norm_for(true, "qwen3_5", true, 1024),
+                "qwen3_5",
+                true,
+                1024,
+            ),
+            "prefix QK-norm skip leaves S=1 Q; SDPA length must follow Q"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_last_query_sdpa_is_seq_family_and_last_only_gated() {
+        assert!(should_qwen_prefill_last_query_sdpa_for(
+            true, "qwen3_5", true, 1024
+        ));
+        assert!(should_qwen_prefill_last_query_sdpa_for(
+            true, "qwen3_next", true, 2048
+        ));
+        assert!(
+            !should_qwen_prefill_last_query_sdpa_for(true, "qwen3_5", true, 512),
+            "512-token last-query SDPA stays closed"
+        );
+        assert!(!should_qwen_prefill_last_query_sdpa_for(
+            true, "qwen3_5", false, 1024
+        ));
+        assert!(!should_qwen_prefill_last_query_sdpa_for(
+            true, "gemma4", true, 1024
+        ));
+        assert!(!should_qwen_prefill_last_query_sdpa_for(
+            false, "qwen3_5", true, 1024
+        ));
+    }
+
+    #[test]
     fn qwen_prefill_last_token_o_proj_is_seq_family_and_last_only_gated() {
         assert!(should_qwen_prefill_last_token_o_proj_for(
             true, "qwen3_5", true, 1024
@@ -5015,6 +5529,140 @@ mod tests {
             true, "gemma4", 1024
         ));
         assert!(!should_qwen_prefill_skip_bf16_astype_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_flat_qmm_is_seq_and_rank_gated() {
+        assert!(should_qwen_prefill_flat_qmm_for(true, 1024, 3));
+        assert!(should_qwen_prefill_flat_qmm_for(true, 2048, 3));
+        assert!(!should_qwen_prefill_flat_qmm_for(true, 512, 3));
+        assert!(!should_qwen_prefill_flat_qmm_for(true, 1024, 2));
+        assert!(!should_qwen_prefill_flat_qmm_for(true, 1, 3));
+        assert!(!should_qwen_prefill_flat_qmm_for(false, 1024, 3));
+    }
+
+    #[test]
+    fn qwen_prefill_tile_qmm_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_tile_qmm_for(true, "qwen3_5", 1024));
+        assert!(should_qwen_prefill_tile_qmm_for(true, "qwen3_next", 2048));
+        assert!(!should_qwen_prefill_tile_qmm_for(true, "qwen3_5", 512));
+        assert!(!should_qwen_prefill_tile_qmm_for(true, "qwen3_5", 1));
+        assert!(!should_qwen_prefill_tile_qmm_for(true, "gemma4", 1024));
+        assert!(!should_qwen_prefill_tile_qmm_for(false, "qwen3_5", 1024));
+    }
+
+    #[test]
+    fn qwen_prefill_dual_affine_qmm_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_dual_affine_qmm_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_dual_affine_qmm_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(!should_qwen_prefill_dual_affine_qmm_for(
+            true, "qwen3_5", 512
+        ));
+        assert!(!should_qwen_prefill_dual_affine_qmm_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_dual_affine_qmm_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_skip_unused_embed_clip_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_skip_unused_embed_clip_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_skip_unused_embed_clip_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(!should_qwen_prefill_skip_unused_embed_clip_for(
+            true, "qwen3_5", 512
+        ));
+        assert!(!should_qwen_prefill_skip_unused_embed_clip_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_skip_unused_embed_clip_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_skip_unused_f32_sdpa_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_skip_unused_f32_sdpa_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_skip_unused_f32_sdpa_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
+            true, "qwen3_5", 512
+        ));
+        assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_skip_unused_swiglu_compile_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_skip_unused_swiglu_compile_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_skip_unused_swiglu_compile_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(!should_qwen_prefill_skip_unused_swiglu_compile_for(
+            true, "qwen3_5", 512
+        ));
+        assert!(!should_qwen_prefill_skip_unused_swiglu_compile_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_skip_unused_swiglu_compile_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_native_offset_causal_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_native_offset_causal_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_native_offset_causal_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(!should_qwen_prefill_native_offset_causal_for(
+            true, "qwen3_5", 512
+        ));
+        assert!(!should_qwen_prefill_native_offset_causal_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_native_offset_causal_for(
+            false, "qwen3_5", 1024
+        ));
+    }
+
+    #[test]
+    fn qwen_prefill_bf16_embed_dequant_is_seq_and_family_gated() {
+        assert!(should_qwen_prefill_bf16_embed_dequant_for(
+            true, "qwen3_5", 1024
+        ));
+        assert!(should_qwen_prefill_bf16_embed_dequant_for(
+            true, "qwen3_next", 2048
+        ));
+        assert!(!should_qwen_prefill_bf16_embed_dequant_for(
+            true, "qwen3_5", 512
+        ));
+        assert!(!should_qwen_prefill_bf16_embed_dequant_for(
+            true, "gemma4", 1024
+        ));
+        assert!(!should_qwen_prefill_bf16_embed_dequant_for(
             false, "qwen3_5", 1024
         ));
     }

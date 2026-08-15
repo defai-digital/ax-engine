@@ -2,7 +2,8 @@ use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, async_eval,
     compiled_dual_gate_up_qmm, compiled_dual_gate_up_qmm_forced, compiled_gelu_approx_split_mlp,
-    concatenate, contiguous, divide, dual_affine_qmm, dual_qmm_geglu, dual_qmm_swiglu, exp,
+    concatenate, contiguous, divide, dual_affine_qmm, dual_affine_qmm_forced, dual_qmm_geglu,
+    dual_qmm_swiglu, exp,
     expand_dims, expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, log1p,
     maximum, minimum, multiply, negative, power, quantized_matmul_rms_norm,
     quantized_matmul_with_mode, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul,
@@ -101,6 +102,29 @@ pub(crate) fn qkv_project(
         false,
         ProjectionBatchPolicy::Shared,
         None,
+        None,
+    )
+}
+
+/// Like [`qkv_project`], but project Q from `last_x` (last token) while K/V
+/// stay on the full sequence. Split-path only: packed QKV cannot drop the Q
+/// slice independently and ignores `last_x`.
+pub(crate) fn qkv_project_last_query(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    last_x: &MlxArray,
+    head_dim: usize,
+) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
+    qkv_project_inner(
+        cfg,
+        w,
+        x,
+        head_dim,
+        false,
+        ProjectionBatchPolicy::Shared,
+        None,
+        Some(last_x),
     )
 }
 
@@ -120,6 +144,7 @@ pub(crate) fn qkv_project_row_exact(
         head_dim,
         false,
         ProjectionBatchPolicy::RowExact,
+        None,
         None,
     )
 }
@@ -181,6 +206,7 @@ pub(crate) fn qkv_project_with_input_norm(
         false,
         ProjectionBatchPolicy::Shared,
         input_norm.map(|n| (n, eps)),
+        None,
     )
 }
 
@@ -210,6 +236,7 @@ pub(crate) fn qkv_project_batched(
         false,
         batched_projection_policy(),
         None,
+        None,
     )
 }
 
@@ -234,6 +261,7 @@ pub(crate) fn qkv_project_embed(
         force_packed,
         ProjectionBatchPolicy::Shared,
         None,
+        None,
     )
 }
 
@@ -245,6 +273,7 @@ fn qkv_project_inner(
     force_packed: bool,
     projection_policy: ProjectionBatchPolicy,
     input_norm: Option<(&MlxArray, f32)>,
+    last_q_x: Option<&MlxArray>,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
     let batch = x.shape().first().copied().unwrap_or(1);
     let seq = x.shape().get(1).copied().unwrap_or(1);
@@ -346,7 +375,10 @@ fn qkv_project_inner(
         } else {
             w.q_proj.as_ref().unwrap()
         };
-        let q_full = qw_with_policy(x_in, q_w, projection_policy);
+        // Last-only generate: K/V stay on the full sequence; Q is the last
+        // token. Packed path above cannot drop Q independently.
+        let q_in = last_q_x.unwrap_or(x_in);
+        let q_full = qw_with_policy(q_in, q_w, projection_policy);
         let (q, gate) = if cfg.attn_output_gate {
             // attn_output_gate=true: q_proj output is [B, L, n_heads, 2*head_dim] interleaved.
             // Split by reshaping to [B, L, n_heads, 2*head_dim] and slicing last dim,
@@ -703,7 +735,9 @@ pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxA
     }
     if cfg.uses_geglu {
         geglu(gate, up)
-    } else if fastpath::prefill_ffn_compile_swiglu_enabled() {
+    } else if fastpath::prefill_ffn_compile_swiglu_enabled()
+        && !super::utils::qwen_prefill_skip_swiglu_compile_active()
+    {
         swiglu(gate, up)
     } else {
         silu_mul(gate, up, None)
@@ -3778,6 +3812,11 @@ fn ffn_swiglu_with_policy_inner(
                 let up = qw_with_policy(x, up_w, projection_policy);
                 (gate, up)
             }
+        } else if qwen_dense_ffn
+            && let Some((gate, up)) =
+                qwen_prefill_maybe_dual_affine_gate_up(&cfg.model_family, seq, x, gate_w, up_w)
+        {
+            (gate, up)
         } else {
             let gate = qw_with_policy(x, gate_w, projection_policy);
             let up = qw_with_policy(x, up_w, projection_policy);
@@ -4023,6 +4062,60 @@ fn qwen_compiled_split_prefill_gate_up(
         return None;
     }
     compiled_dual_gate_up_qmm_forced(
+        x,
+        &gate.weight,
+        g_s,
+        g_b,
+        &up.weight,
+        u_s,
+        u_b,
+        gate.group_size,
+        gate.bits,
+        None,
+    )
+}
+
+/// One C++ dual steel qmm for Qwen split prefill. Not compile (forced
+/// compiled dual stays opt-in / closed wash). C++ also reads this flag.
+fn qwen_prefill_maybe_dual_affine_gate_up(
+    model_family: &str,
+    seq: i32,
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Option<(MlxArray, MlxArray)> {
+    qwen_prefill_maybe_dual_affine_gate_up_for(
+        fastpath::qwen_prefill_dual_affine_qmm_enabled(),
+        model_family,
+        seq,
+        x,
+        gate,
+        up,
+    )
+}
+
+/// Pure helper for [`qwen_prefill_maybe_dual_affine_gate_up`].
+pub(crate) fn qwen_prefill_maybe_dual_affine_gate_up_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Option<(MlxArray, MlxArray)> {
+    if !fastpath::should_qwen_prefill_dual_affine_qmm_for(enabled, model_family, seq) {
+        return None;
+    }
+    let (g_s, u_s) = (gate.scales.as_ref()?, up.scales.as_ref()?);
+    let (g_b, u_b) = (gate.biases.as_ref()?, up.biases.as_ref()?);
+    if gate.group_size <= 0
+        || gate.bits <= 0
+        || up.group_size != gate.group_size
+        || up.bits != gate.bits
+    {
+        return None;
+    }
+    dual_affine_qmm_forced(
         x,
         &gate.weight,
         g_s,
@@ -6816,6 +6909,96 @@ mod tests {
         assert!(
             qwen_compiled_split_prefill_gate_up(&x, &w, &w).is_none(),
             "dual-qmm compile must stay default-OFF after the 890.96 vs 891 wash"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_dual_affine_gate_up_matches_two_qmm() {
+        let seq = 1024i32;
+        let hidden = 64i32;
+        let inter = 32i32;
+        let x_data: Vec<f32> = (0..seq * hidden)
+            .map(|i| ((i as f32) - 2048.0) * 0.000244140625)
+            .collect();
+        let gate_data: Vec<f32> = (0..inter * hidden)
+            .map(|i| ((i as f32) - 1024.0) * 0.0005)
+            .collect();
+        let up_data: Vec<f32> = (0..inter * hidden)
+            .map(|i| ((i as f32) - 512.0) * -0.0004)
+            .collect();
+        let x = array_f32(&x_data, &[1, seq, hidden]);
+        let gq = quantize(
+            &array_f32(&gate_data, &[inter, hidden]),
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let uq = quantize(
+            &array_f32(&up_data, &[inter, hidden]),
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let gate_w = QuantizedWeight {
+            weight: gq[0].clone(),
+            scales: Some(gq[1].clone()),
+            biases: Some(gq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let up_w = QuantizedWeight {
+            weight: uq[0].clone(),
+            scales: Some(uq[1].clone()),
+            biases: Some(uq[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        assert!(
+            qwen_prefill_maybe_dual_affine_gate_up_for(
+                false, "qwen3_5", seq, &x, &gate_w, &up_w
+            )
+            .is_none()
+        );
+        let (g_dual, u_dual) = qwen_prefill_maybe_dual_affine_gate_up_for(
+            true, "qwen3_5", seq, &x, &gate_w, &up_w,
+        )
+        .expect("Qwen dual-affine qmm must engage at the p2048 chunk length");
+        let g_ref = qw(&x, &gate_w);
+        let u_ref = qw(&x, &up_w);
+        eval(&[&g_dual, &u_dual, &g_ref, &u_ref]);
+        let a = g_dual.data_f32();
+        let b = g_ref.data_f32();
+        assert_eq!(a.len(), b.len());
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        for (l, r) in u_dual.data_f32().iter().zip(u_ref.data_f32().iter()) {
+            max_abs = max_abs.max((l - r).abs());
+        }
+        assert!(
+            max_abs < 1e-4,
+            "dual-affine qmm must match two steel qw, max_abs={max_abs}"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_dual_affine_qmm_for(true, "qwen3_5", 1024),
+            "shipped dual-affine gate must accept the p2048 chunk length"
         );
     }
 

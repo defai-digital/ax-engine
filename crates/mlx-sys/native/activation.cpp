@@ -1600,14 +1600,21 @@ extern "C" int ax_mlx_dual_qmm_geglu(
 // land on two process-static GPU streams so M5 Max can overlap independent
 // matmuls. GEGLU on the caller's stream inherits MLX cross-stream deps.
 namespace {
-bool dual_affine_qmm_env_enabled() {
-  const char* v = std::getenv("AX_MLX_DUAL_AFFINE_QMM");
+bool env_flag_truthy(const char* name) {
+  const char* v = std::getenv(name);
   if (!v) {
     return false;
   }
   std::string s(v);
   return (s == "1" || s == "true" || s == "on" || s == "yes" || s == "TRUE" ||
           s == "ON" || s == "YES");
+}
+
+bool dual_affine_qmm_env_enabled() {
+  // Gemma host-FFI opt-in, or Qwen 27B split-prefill (never used
+  // `uses_geglu` so it never reached this C++ entry).
+  return env_flag_truthy("AX_MLX_DUAL_AFFINE_QMM")
+      || env_flag_truthy("AX_MLX_QWEN_PREFILL_DUAL_AFFINE_QMM");
 }
 
 bool dual_stream_gate_up_env_enabled() {
@@ -1677,6 +1684,51 @@ extern "C" int ax_mlx_dual_affine_qmm(
         group_size,
         bits,
         up_s);
+    aset(gate_res, std::move(gate));
+    aset(up_res, std::move(up));
+    return 0;
+  } AX_CATCH
+}
+
+// Same two steel qmms on the caller's stream, no env gate and no dual-stream.
+// Qwen split-prefill uses this so the Rust family/seq flag is the only switch.
+extern "C" int ax_mlx_dual_affine_qmm_forced(
+    mlx_array* gate_res,
+    mlx_array* up_res,
+    const mlx_array x,
+    const mlx_array gate_weight,
+    const mlx_array gate_scales,
+    const mlx_array gate_biases,
+    const mlx_array up_weight,
+    const mlx_array up_scales,
+    const mlx_array up_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  AX_TRY {
+    if (group_size <= 0 || bits <= 0) {
+      return 1;
+    }
+    if (!gate_biases.ctx || !up_biases.ctx) {
+      return 1;
+    }
+    mx::StreamOrDevice s = sd(stream);
+    auto gate = quantized_matmul_affine_impl(
+        aref(x),
+        aref(gate_weight),
+        aref(gate_scales),
+        opt_arr(gate_biases),
+        group_size,
+        bits,
+        s);
+    auto up = quantized_matmul_affine_impl(
+        aref(x),
+        aref(up_weight),
+        aref(up_scales),
+        opt_arr(up_biases),
+        group_size,
+        bits,
+        s);
     aset(gate_res, std::move(gate));
     aset(up_res, std::move(up));
     return 0;

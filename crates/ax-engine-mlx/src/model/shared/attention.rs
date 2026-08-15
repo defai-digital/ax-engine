@@ -536,6 +536,95 @@ pub(crate) fn prepare_value_bhsd(
     transpose(&v, &[0, 2, 1, 3], None)
 }
 
+/// Slice BHSD Q `[B, H, S, D]` to the last query so last-only generate
+/// prefill can SDPA at S=1 after full K/V append.
+pub(crate) fn qwen_prefill_maybe_last_query_q(
+    q_rope: &MlxArray,
+    last_query: bool,
+) -> Option<MlxArray> {
+    qwen_prefill_maybe_last_query_q_for(q_rope, last_query)
+}
+
+/// Pure helper for [`qwen_prefill_maybe_last_query_q`].
+pub(crate) fn qwen_prefill_maybe_last_query_q_for(
+    q_rope: &MlxArray,
+    last_query: bool,
+) -> Option<MlxArray> {
+    if !last_query {
+        return None;
+    }
+    let shape = q_rope.shape();
+    if shape.len() != 4 {
+        return None;
+    }
+    let seq = shape[2];
+    if seq <= 1 {
+        return None;
+    }
+    let last = seq - 1;
+    let sliced = slice(
+        q_rope,
+        &[0, 0, last, 0],
+        &[shape[0], shape[1], last + 1, shape[3]],
+        &[1, 1, 1, 1],
+        None,
+    );
+    Some(contiguous(&sliced, None))
+}
+
+/// BHSD query length. Last-token Q proj can shrink Q independently of the
+/// last-query-SDPA flag; SDPA must use this, not the full-seq `seq`.
+pub(crate) fn qwen_prefill_query_seq(q_rope: &MlxArray, fallback: usize) -> usize {
+    qwen_prefill_query_seq_for(q_rope, fallback)
+}
+
+/// Pure helper for [`qwen_prefill_query_seq`].
+pub(crate) fn qwen_prefill_query_seq_for(q_rope: &MlxArray, fallback: usize) -> usize {
+    q_rope
+        .shape()
+        .get(2)
+        .copied()
+        .filter(|&seq| seq > 0)
+        .map(|seq| seq as usize)
+        .unwrap_or(fallback)
+}
+
+/// Slice `[B, S, H]` activation to the last token so last-only generate
+/// can `q_proj` at S=1 after full K/V are written from the full sequence.
+pub(crate) fn qwen_prefill_maybe_last_token_bsh(
+    x: &MlxArray,
+    last_token: bool,
+) -> Option<MlxArray> {
+    qwen_prefill_maybe_last_token_bsh_for(x, last_token)
+}
+
+/// Pure helper for [`qwen_prefill_maybe_last_token_bsh`].
+pub(crate) fn qwen_prefill_maybe_last_token_bsh_for(
+    x: &MlxArray,
+    last_token: bool,
+) -> Option<MlxArray> {
+    if !last_token {
+        return None;
+    }
+    let shape = x.shape();
+    if shape.len() != 3 {
+        return None;
+    }
+    let seq = shape[1];
+    if seq <= 1 {
+        return None;
+    }
+    let last = seq - 1;
+    let sliced = slice(
+        x,
+        &[0, last, 0],
+        &[shape[0], last + 1, shape[2]],
+        &[1, 1, 1],
+        None,
+    );
+    Some(contiguous(&sliced, None))
+}
+
 /// Slice flattened `[B, S, H]` attention output to the last token so
 /// last-only generate prefill can o_proj at S=1. KV append has already
 /// happened. Operates after flatten so the last row is contiguous.
@@ -617,7 +706,9 @@ pub(crate) fn attention_mask_array(
     // Steel kernels apply `qL_off = key_len - seq_len`, matching
     // `create_causal_mask(seq, offset, None)` without the O(seq×key) array.
     if offset > 0 && seq_len > 1 {
-        if crate::fastpath::native_offset_causal_enabled() {
+        if crate::fastpath::native_offset_causal_enabled()
+            || super::utils::qwen_prefill_native_offset_causal_active()
+        {
             return None;
         }
         return Some(create_causal_mask(seq_len, offset, None));
@@ -860,8 +951,9 @@ pub(crate) fn full_precision_attention_with_window(
     }
     // Keep seq==1 on bf16: enabling f32 for pure-direct regressed formal
     // 12B6 general exactness. Multi-token (seq > 1) uses f32 below (or the
-    // dense long bf16 fold above when eligible).
-    if fastpath::multi_token_f32_attention_enabled() && seq > 1 {
+    // dense long bf16 fold above when eligible). Qwen 27B prefill can skip
+    // this Gemma-verify upcast via `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_F32_SDPA`.
+    if should_upcast_multi_token_sdpa_to_f32(seq) {
         let q_dtype = q_rope.dtype();
         let q = if q_dtype != MlxDtype::Float32 {
             astype(q_rope, MlxDtype::Float32, None)
@@ -938,6 +1030,12 @@ pub(crate) fn full_precision_attention_with_window(
         return out;
     }
     scaled_dot_product_attention_with_mask(q_rope, cached_k, cached_v, query_scale, mask, None)
+}
+
+fn should_upcast_multi_token_sdpa_to_f32(seq: usize) -> bool {
+    fastpath::multi_token_f32_attention_enabled()
+        && seq > 1
+        && !super::utils::qwen_prefill_skip_f32_sdpa_active()
 }
 
 /// Attention with per-head learned sinks (GPT-OSS).
@@ -1520,19 +1618,106 @@ fn media_prefix_mask_array(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_bidirectional_canvas_mask, build_layer_masks_with_media_ranges,
+        apply_reused_neox_rope, build_bidirectional_canvas_mask,
+        build_layer_masks_with_media_ranges, full_precision_attention,
         media_prefix_mask_array, qwen_direct_qk_norm_rope_default_family,
-        apply_reused_neox_rope, qwen_prefill_maybe_eval_attn_input_for,
-        qwen_prefill_maybe_last_token_flat, set_qwen_prefill_reuse_rope_active,
+        qwen_prefill_maybe_eval_attn_input_for, qwen_prefill_maybe_last_query_q_for,
+        qwen_prefill_maybe_last_token_bsh_for, qwen_prefill_maybe_last_token_flat,
+        qwen_prefill_query_seq_for, set_qwen_prefill_reuse_rope_active,
+        should_upcast_multi_token_sdpa_to_f32,
     };
     use crate::model::{LayerConfig, ModelConfig};
-    use mlx_sys::{MlxArray, eval};
+    use crate::model::shared::utils::{
+        qwen_prefill_skip_f32_sdpa_active, QwenPrefillSkipF32SdpaGuard,
+    };
+    use mlx_sys::{
+        MlxArray, MlxDtype, ScaledDotProductAttentionMask, astype, eval,
+        scaled_dot_product_attention_with_mask,
+    };
 
     fn mask_data(mask: &MlxArray) -> Vec<u8> {
         eval(&[mask]);
         let len = mask.nbytes();
         let ptr = mask.data_raw();
         unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }
+    }
+
+    #[test]
+    fn qwen_prefill_native_offset_causal_skips_array_mask() {
+        use crate::model::shared::utils::QwenPrefillNativeOffsetCausalGuard;
+        assert!(
+            crate::fastpath::should_qwen_prefill_native_offset_causal_for(
+                true, "qwen3_5", 1024
+            ),
+            "shipped native-offset-causal gate must accept the p2048 chunk length"
+        );
+        let _g = QwenPrefillNativeOffsetCausalGuard::arm(true);
+        let mask = super::attention_mask_array(1024, 2048, None);
+        assert!(
+            mask.is_none(),
+            "offset-1024 Qwen prefill must use native causal, not an O(seq×key) array"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_skip_unused_f32_sdpa_matches_model_dtype_sdpa() {
+        assert!(
+            crate::fastpath::should_qwen_prefill_skip_unused_f32_sdpa_for(
+                true, "qwen3_5", 1024
+            ),
+            "shipped skip-f32-sdpa gate must accept the p2048 chunk length"
+        );
+        let q_data = [0.0_f32, 0.0, 1.0, 0.0];
+        let k_data = [0.0_f32, 0.0, 1.0, 0.0];
+        let v_data = [1.0_f32, 3.0, 5.0, 7.0];
+        let q_f32 = MlxArray::from_raw_data(
+            q_data.as_ptr().cast(),
+            std::mem::size_of_val(&q_data),
+            &[1, 1, 2, 2],
+            MlxDtype::Float32,
+        );
+        let k_f32 = MlxArray::from_raw_data(
+            k_data.as_ptr().cast(),
+            std::mem::size_of_val(&k_data),
+            &[1, 1, 2, 2],
+            MlxDtype::Float32,
+        );
+        let v_f32 = MlxArray::from_raw_data(
+            v_data.as_ptr().cast(),
+            std::mem::size_of_val(&v_data),
+            &[1, 1, 2, 2],
+            MlxDtype::Float32,
+        );
+        let q = astype(&q_f32, MlxDtype::Bfloat16, None);
+        let k = astype(&k_f32, MlxDtype::Bfloat16, None);
+        let v = astype(&v_f32, MlxDtype::Bfloat16, None);
+        let _skip = QwenPrefillSkipF32SdpaGuard::arm(true);
+        assert!(qwen_prefill_skip_f32_sdpa_active());
+        assert!(!should_upcast_multi_token_sdpa_to_f32(1024));
+        let skipped = full_precision_attention(&q, &k, &v, 1.0, 2, &None);
+        let native = scaled_dot_product_attention_with_mask(
+            &q,
+            &k,
+            &v,
+            1.0,
+            ScaledDotProductAttentionMask::Causal,
+            None,
+        );
+        eval(&[&skipped, &native]);
+        assert_eq!(skipped.shape(), native.shape());
+        assert_eq!(skipped.dtype(), MlxDtype::Bfloat16);
+        let skipped_f32 = astype(&skipped, MlxDtype::Float32, None);
+        let native_f32 = astype(&native, MlxDtype::Float32, None);
+        eval(&[&skipped_f32, &native_f32]);
+        let left = skipped_f32.data_f32();
+        let right = native_f32.data_f32();
+        assert_eq!(left.len(), right.len());
+        for (a, b) in left.iter().zip(right.iter()) {
+            assert!(
+                (a - b).abs() < 1.0e-5,
+                "skip-f32-sdpa must match model-dtype causal SDPA: {a} vs {b}"
+            );
+        }
     }
 
     #[test]
@@ -1583,6 +1768,71 @@ mod tests {
         super::qwen_prefill_maybe_async_sdpa_for(&sdpa, false, "qwen3_5", 1024);
         super::qwen_prefill_maybe_async_sdpa_for(&sdpa, true, "gemma4", 1024);
         super::qwen_prefill_maybe_async_sdpa_for(&sdpa, true, "qwen3_5", 512);
+    }
+
+    #[test]
+    fn qwen_prefill_query_seq_reads_bhsd_dim() {
+        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let full = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 2, 4, 2],
+            mlx_sys::MlxDtype::Float32,
+        );
+        assert_eq!(qwen_prefill_query_seq_for(&full, 99), 4);
+        let last = qwen_prefill_maybe_last_query_q_for(&full, true)
+            .expect("last-query slice must engage");
+        eval(&[&last]);
+        assert_eq!(qwen_prefill_query_seq_for(&last, 99), 1);
+        assert_eq!(qwen_prefill_query_seq_for(&full, 0), 4);
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_last_token_bsh_slices_when_set() {
+        let data: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let x = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 4, 2],
+            mlx_sys::MlxDtype::Float32,
+        );
+        let sliced = qwen_prefill_maybe_last_token_bsh_for(&x, true)
+            .expect("last-token BSH slice must engage at S=4");
+        eval(&[&sliced]);
+        assert_eq!(sliced.shape(), vec![1, 1, 2]);
+        assert_eq!(sliced.data_f32(), vec![6.0, 7.0]);
+        assert!(qwen_prefill_maybe_last_token_bsh_for(&x, false).is_none());
+        assert!(
+            crate::fastpath::should_qwen_prefill_last_query_q_proj_for(true, "qwen3_5", true, 1024),
+            "shipped last-query Q proj must accept the p2048 generate last layer"
+        );
+        assert!(
+            crate::fastpath::should_qwen_prefill_skip_unused_qk_norm_for(
+                true, "qwen3_5", true, 1024
+            ),
+            "shipped skip-unused-QK-norm must accept the p2048 generate last layer"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_last_query_q_slices_bhsd_when_set() {
+        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let q = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 2, 4, 2],
+            mlx_sys::MlxDtype::Float32,
+        );
+        let sliced = qwen_prefill_maybe_last_query_q_for(&q, true)
+            .expect("last-query slice must engage at S=4");
+        eval(&[&sliced]);
+        assert_eq!(sliced.shape(), vec![1, 2, 1, 2]);
+        assert_eq!(sliced.data_f32(), vec![6.0, 7.0, 14.0, 15.0]);
+        assert!(qwen_prefill_maybe_last_query_q_for(&q, false).is_none());
+        assert!(
+            crate::fastpath::should_qwen_prefill_last_query_sdpa_for(true, "qwen3_5", true, 1024),
+            "shipped last-query SDPA must accept the p2048 generate last layer"
+        );
     }
 
     #[test]

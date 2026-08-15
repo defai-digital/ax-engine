@@ -65,9 +65,10 @@ use super::super::shared::{
     moe_router_qwen3, packed_qkv_kv_head_count, per_layer_input_gate_project,
     prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route,
     rope_bhsd_batch_offset_safe,
-    qkv_project, qkv_project_batched, qkv_project_pos0_exact_rest_shared, qkv_project_row_exact,
-    qkv_project_with_input_norm, qw, qwen_prefill_maybe_async_sdpa,
-    qwen_prefill_maybe_last_token_flat, rms_norm_opt,
+    qkv_project, qkv_project_batched, qkv_project_last_query, qkv_project_pos0_exact_rest_shared,
+    qkv_project_row_exact, qkv_project_with_input_norm, qw, qwen_prefill_maybe_async_sdpa,
+    qwen_prefill_maybe_last_query_q, qwen_prefill_maybe_last_token_bsh,
+    qwen_prefill_maybe_last_token_flat, qwen_prefill_query_seq, rms_norm_opt,
     shape_element_count, shared_expert_forward,
 };
 use crate::attention_mask::{batched_decode_validity_mask_with_window, create_ring_sliding_mask};
@@ -1355,6 +1356,18 @@ fn layer_forward_internal(
             // MoE multi-token (smokef99/104): pos0 RowExact + rest Shared QKV.
             // Formal exact at w≈1.016 (smokef99); full Shared breaks exactness.
             let moe_mt_exact = crate::fastpath::moe_mt_bf16_identity_enabled();
+            let last_q_proj = fastpath::should_qwen_prefill_last_query_q_proj(
+                &cfg.model_family,
+                last_position_only_after_attention,
+                seq as i32,
+            );
+            let last_q_x = if last_q_proj {
+                normed
+                    .as_ref()
+                    .and_then(|x| qwen_prefill_maybe_last_token_bsh(x, true))
+            } else {
+                None
+            };
             let (q_raw, k_raw, v_raw, attn_gate_raw) = if fuse_attn_norm_qkv && !skip_qkv_fuse {
                 qkv_project_with_input_norm(
                     cfg,
@@ -1389,6 +1402,16 @@ fn layer_forward_internal(
                         head_dim,
                     )
                 }
+            } else if let Some(ref last_x) = last_q_x {
+                qkv_project_last_query(
+                    cfg,
+                    w,
+                    normed
+                        .as_ref()
+                        .expect("portable path materializes attn_norm"),
+                    last_x,
+                    head_dim,
+                )
             } else {
                 qkv_project(
                     cfg,
@@ -1402,6 +1425,32 @@ fn layer_forward_internal(
             let kv_heads = (k_raw.shape()[2] as usize)
                 .checked_div(head_dim)
                 .expect("k projection output must divide by head_dim");
+            // Packed QKV ignores last_x and keeps full-seq Q; split last-query
+            // shrinks Q to S=1. RoPE offset follows the actual Q length.
+            let q_seq = q_raw
+                .shape()
+                .get(1)
+                .copied()
+                .filter(|&s| s > 0)
+                .map(|s| s as usize)
+                .unwrap_or(seq);
+            let q_offset = token_offset.saturating_add(seq.saturating_sub(q_seq));
+            // Packed / last-query-SDPA-only still has full-seq Q after qkv.
+            // Slice before QK-norm so unused prefix tokens skip RMSNorm+RoPE.
+            let (q_raw, q_seq, q_offset) = if fastpath::should_qwen_prefill_skip_unused_qk_norm(
+                &cfg.model_family,
+                last_position_only_after_attention,
+                seq as i32,
+            ) && let Some(last_q) = qwen_prefill_maybe_last_token_bsh(&q_raw, q_seq > 1)
+            {
+                (
+                    last_q,
+                    1usize,
+                    token_offset.saturating_add(seq.saturating_sub(1)),
+                )
+            } else {
+                (q_raw, q_seq, q_offset)
+            };
             if let Some(started) = qkv_proj_started {
                 let mut refs: Vec<&MlxArray> = vec![&q_raw, &k_raw, &v_raw];
                 if let Some(g) = attn_gate_raw.as_ref() {
@@ -1447,11 +1496,11 @@ fn layer_forward_internal(
                     w.q_norm.as_ref(),
                     cfg.n_heads,
                     head_dim,
-                    seq,
+                    q_seq,
                     cfg.rms_norm_eps,
                     rope_dims,
                     rope_base,
-                    token_offset,
+                    q_offset,
                     rope_freqs_ref,
                     use_direct_q_rope,
                 );
@@ -1485,7 +1534,7 @@ fn layer_forward_internal(
                     w.q_norm.as_ref(),
                     cfg.n_heads,
                     head_dim,
-                    seq,
+                    q_seq,
                     cfg.rms_norm_eps,
                 );
                 let k = qk_norm_bhsd_from_proj(
@@ -1517,7 +1566,7 @@ fn layer_forward_internal(
                             &q,
                             rope_dims as i32,
                             rope_base,
-                            token_offset as i32,
+                            q_offset as i32,
                             rope_freqs_ref,
                         ),
                         rope_bhsd_batch_offset_safe(
@@ -1607,23 +1656,43 @@ fn layer_forward_internal(
                 &refs,
             );
         }
-        // 8. SDPA.
+        // 8. SDPA. Last-only generate: KV is already written, so the last
+        // query is enough. Full-seq shared masks are invalid at Q=1.
+        let last_query_sdpa = fastpath::should_qwen_prefill_last_query_sdpa(
+            &cfg.model_family,
+            last_position_only_after_attention,
+            seq as i32,
+        );
+        let q_rope = match qwen_prefill_maybe_last_query_q(&q_rope, last_query_sdpa) {
+            Some(q) => q,
+            None => q_rope,
+        };
+        // Query length is Q's BHSD dim 2. Last-token Q proj implies this
+        // last-query-SDPA flag; packed QKV still keeps full-seq Q and slices
+        // here. Never pass the full-seq `seq` to SDPA (`f763ca23…` crash).
+        let query_seq = qwen_prefill_query_seq(&q_rope, seq);
         let key_len = attention_kv.key_len();
         // Prefer a hoisted/shared mask only when its last dim matches the
         // post-append key length (ring capacity when rotating). Rebuild
         // locally on mismatch so mask and K cannot disagree.
-        let shared_usable = shared_mask.is_some_and(|m| match m.as_ref() {
-            Some(mask) => mask.shape().last().is_some_and(|&k| k as usize == key_len),
-            None => true,
-        });
+        let shared_usable = query_seq == seq
+            && shared_mask.is_some_and(|m| match m.as_ref() {
+                Some(mask) => mask.shape().last().is_some_and(|&k| k as usize == key_len),
+                None => true,
+            });
         let local_mask: Option<MlxArray> = if shared_usable {
             None
         } else {
             match ring_layout {
-                Some(ring) if ring.needs_mask(seq) && key_len == ring.capacity => Some(
-                    create_ring_sliding_mask(seq, ring.window, ring.capacity, ring.write_start),
+                Some(ring) if ring.needs_mask(query_seq) && key_len == ring.capacity => Some(
+                    create_ring_sliding_mask(
+                        query_seq,
+                        ring.window,
+                        ring.capacity,
+                        ring.write_start,
+                    ),
                 ),
-                _ => attention_mask_array(seq, key_len, sliding_window),
+                _ => attention_mask_array(query_seq, key_len, sliding_window),
             }
         };
         let none_mask: Option<MlxArray> = None;
@@ -1639,13 +1708,13 @@ fn layer_forward_internal(
                 &k,
                 &v,
                 cfg.query_scale,
-                seq,
+                query_seq,
                 mask_opt,
                 sliding_window.filter(|_| ring_layout.is_none()),
                 ring_layout,
             ),
             MlxAttentionKv::Paged(view) => {
-                if seq == 1
+                if query_seq == 1
                     && mask_opt.is_none()
                     && let Some(output) = paged_decode_attention(&q_rope, &view, cfg.query_scale)
                 {
@@ -1659,7 +1728,7 @@ fn layer_forward_internal(
                         &k,
                         &v,
                         cfg.query_scale,
-                        seq,
+                        query_seq,
                         mask_opt,
                         sliding_window.filter(|_| ring_layout.is_none()),
                         ring_layout,
@@ -1676,7 +1745,7 @@ fn layer_forward_internal(
                 &[&attn_sdpa],
             );
         }
-        qwen_prefill_maybe_async_sdpa(&attn_sdpa, &cfg.model_family, seq as i32);
+        qwen_prefill_maybe_async_sdpa(&attn_sdpa, &cfg.model_family, query_seq as i32);
         post_attn_started = profile_forward_layer.then(Instant::now);
         let output_proj_started = profile_forward_layer.then(Instant::now);
 
@@ -1688,7 +1757,7 @@ fn layer_forward_internal(
             last_position_only_after_attention,
             seq as i32,
         );
-        let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
+        let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, query_seq, cfg.n_heads, head_dim);
         let attn_flat = qwen_prefill_maybe_last_token_flat(&attn_flat, last_token_o_proj);
         // RowExact o_proj under moe_mt (smokef99 exact). Shared o_proj broke
         // formal identity (smokef100).

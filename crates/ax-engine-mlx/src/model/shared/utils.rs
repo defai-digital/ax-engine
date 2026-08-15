@@ -31,11 +31,114 @@ thread_local! {
     static QWEN_PREFILL_DEQUANT_DENSE_FAMILY: Cell<bool> = const { Cell::new(false) };
     static PREFILL_DEQUANT_DENSE_T: RefCell<HashMap<usize, MlxArray>> =
         RefCell::new(HashMap::new());
+    static QWEN_PREFILL_SKIP_EMBED_CLIP: Cell<bool> = const { Cell::new(false) };
+    static QWEN_PREFILL_SKIP_F32_SDPA: Cell<bool> = const { Cell::new(false) };
+    static QWEN_PREFILL_BF16_EMBED_DEQUANT: Cell<bool> = const { Cell::new(false) };
+    static QWEN_PREFILL_NATIVE_OFFSET_CAUSAL: Cell<bool> = const { Cell::new(false) };
+    static QWEN_PREFILL_SKIP_SWIGLU_COMPILE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Mark the current Qwen3.5 / Qwen3-Next layer so `qw` may dequant+dense.
 pub(crate) fn set_qwen_prefill_dequant_dense_family(active: bool) {
     QWEN_PREFILL_DEQUANT_DENSE_FAMILY.set(active);
+}
+
+/// Enable skipping the unused embed-id `clip` for this Qwen prefill forward.
+pub(crate) fn set_qwen_prefill_skip_embed_clip(active: bool) {
+    QWEN_PREFILL_SKIP_EMBED_CLIP.set(active);
+}
+
+/// Whether [`set_qwen_prefill_skip_embed_clip`] is set for this forward.
+pub(crate) fn qwen_prefill_skip_embed_clip_active() -> bool {
+    QWEN_PREFILL_SKIP_EMBED_CLIP.get()
+}
+
+/// Enable skipping the unused f32 SDPA upcast for this Qwen prefill forward.
+pub(crate) fn set_qwen_prefill_skip_f32_sdpa(active: bool) {
+    QWEN_PREFILL_SKIP_F32_SDPA.set(active);
+}
+
+/// Whether [`set_qwen_prefill_skip_f32_sdpa`] is set for this forward.
+pub(crate) fn qwen_prefill_skip_f32_sdpa_active() -> bool {
+    QWEN_PREFILL_SKIP_F32_SDPA.get()
+}
+
+/// Arms [`set_qwen_prefill_skip_f32_sdpa`] for the rest of this forward.
+pub(crate) struct QwenPrefillSkipF32SdpaGuard;
+
+impl QwenPrefillSkipF32SdpaGuard {
+    pub(crate) fn arm(active: bool) -> Self {
+        set_qwen_prefill_skip_f32_sdpa(active);
+        Self
+    }
+}
+
+impl Drop for QwenPrefillSkipF32SdpaGuard {
+    fn drop(&mut self) {
+        set_qwen_prefill_skip_f32_sdpa(false);
+    }
+}
+
+/// Enable BF16 embedding dequant for this Qwen prefill forward.
+pub(crate) fn set_qwen_prefill_bf16_embed_dequant(active: bool) {
+    QWEN_PREFILL_BF16_EMBED_DEQUANT.set(active);
+}
+
+/// Whether [`set_qwen_prefill_bf16_embed_dequant`] is set for this forward.
+pub(crate) fn qwen_prefill_bf16_embed_dequant_active() -> bool {
+    QWEN_PREFILL_BF16_EMBED_DEQUANT.get()
+}
+
+/// Enable native offset-causal SDPA for this Qwen prefill forward.
+pub(crate) fn set_qwen_prefill_native_offset_causal(active: bool) {
+    QWEN_PREFILL_NATIVE_OFFSET_CAUSAL.set(active);
+}
+
+/// Whether [`set_qwen_prefill_native_offset_causal`] is set for this forward.
+pub(crate) fn qwen_prefill_native_offset_causal_active() -> bool {
+    QWEN_PREFILL_NATIVE_OFFSET_CAUSAL.get()
+}
+
+/// Arms [`set_qwen_prefill_native_offset_causal`] for the rest of this forward.
+pub(crate) struct QwenPrefillNativeOffsetCausalGuard;
+
+impl QwenPrefillNativeOffsetCausalGuard {
+    pub(crate) fn arm(active: bool) -> Self {
+        set_qwen_prefill_native_offset_causal(active);
+        Self
+    }
+}
+
+impl Drop for QwenPrefillNativeOffsetCausalGuard {
+    fn drop(&mut self) {
+        set_qwen_prefill_native_offset_causal(false);
+    }
+}
+
+/// Enable skipping unused SwiGLU compile for this Qwen prefill forward.
+pub(crate) fn set_qwen_prefill_skip_swiglu_compile(active: bool) {
+    QWEN_PREFILL_SKIP_SWIGLU_COMPILE.set(active);
+}
+
+/// Whether [`set_qwen_prefill_skip_swiglu_compile`] is set for this forward.
+pub(crate) fn qwen_prefill_skip_swiglu_compile_active() -> bool {
+    QWEN_PREFILL_SKIP_SWIGLU_COMPILE.get()
+}
+
+/// Arms [`set_qwen_prefill_skip_swiglu_compile`] for the rest of this forward.
+pub(crate) struct QwenPrefillSkipSwigluCompileGuard;
+
+impl QwenPrefillSkipSwigluCompileGuard {
+    pub(crate) fn arm(active: bool) -> Self {
+        set_qwen_prefill_skip_swiglu_compile(active);
+        Self
+    }
+}
+
+impl Drop for QwenPrefillSkipSwigluCompileGuard {
+    fn drop(&mut self) {
+        set_qwen_prefill_skip_swiglu_compile(false);
+    }
 }
 
 /// Skip a no-op BF16 astype when the gather is already BF16.
@@ -366,6 +469,79 @@ pub(crate) fn packed_qkv_kv_head_count(
     (kv_head_count > 0).then_some(kv_head_count)
 }
 
+/// Flatten `[B,S,H]` to `[B*S,H]` for steel qmm when the flat-qmm flag is on.
+fn qwen_prefill_maybe_flat_qmm(x: &MlxArray, qmm: impl FnOnce(&MlxArray) -> MlxArray) -> MlxArray {
+    qwen_prefill_maybe_flat_qmm_for(x, fastpath::qwen_prefill_flat_qmm_enabled(), qmm)
+}
+
+/// Pure helper for [`qwen_prefill_maybe_flat_qmm`].
+pub(crate) fn qwen_prefill_maybe_flat_qmm_for(
+    x: &MlxArray,
+    enabled: bool,
+    qmm: impl FnOnce(&MlxArray) -> MlxArray,
+) -> MlxArray {
+    let shape = x.shape();
+    let seq = match shape.len() {
+        3 => shape[1],
+        _ => 0,
+    };
+    if !fastpath::should_qwen_prefill_flat_qmm_for(enabled, seq, shape.len()) {
+        return qmm(x);
+    }
+    let batch = shape[0];
+    let hidden = shape[2];
+    let flat = reshape(x, &[batch * seq, hidden], None);
+    let out = qmm(&flat);
+    let out_last = *out.shape().last().unwrap_or(&hidden);
+    reshape(&out, &[batch, seq, out_last], None)
+}
+
+/// Tile `[B,S,H]` into 512-token slices for steel qmm, then concatenate.
+fn qwen_prefill_maybe_tile_qmm(x: &MlxArray, qmm: impl Fn(&MlxArray) -> MlxArray) -> MlxArray {
+    qwen_prefill_maybe_tile_qmm_for(
+        x,
+        fastpath::qwen_prefill_tile_qmm_enabled(),
+        "qwen3_5",
+        qmm,
+    )
+}
+
+/// Pure helper for [`qwen_prefill_maybe_tile_qmm`].
+pub(crate) fn qwen_prefill_maybe_tile_qmm_for(
+    x: &MlxArray,
+    enabled: bool,
+    model_family: &str,
+    qmm: impl Fn(&MlxArray) -> MlxArray,
+) -> MlxArray {
+    let shape = x.shape();
+    if shape.len() != 3 {
+        return qmm(x);
+    }
+    let seq = shape[1];
+    if !fastpath::should_qwen_prefill_tile_qmm_for(enabled, model_family, seq) {
+        return qmm(x);
+    }
+    let tile = fastpath::QWEN_PREFILL_QMM_TILE;
+    if seq <= tile {
+        return qmm(x);
+    }
+    let batch = shape[0];
+    let hidden = shape[2];
+    let mut parts: Vec<MlxArray> = Vec::new();
+    let mut start = 0i32;
+    while start < seq {
+        let end = (start + tile).min(seq);
+        let chunk = contiguous(
+            &slice(x, &[0, start, 0], &[batch, end, hidden], &[1, 1, 1], None),
+            None,
+        );
+        parts.push(qmm(&chunk));
+        start = end;
+    }
+    let refs: Vec<&MlxArray> = parts.iter().collect();
+    concatenate(&refs, 1, None)
+}
+
 pub(crate) fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     qw_with_policy(x, qw, ProjectionBatchPolicy::Shared)
 }
@@ -503,17 +679,21 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
             mlx_sys::MlxQuantizationMode::Affine => qw.biases.as_ref(),
             _ => None,
         };
-        mlx_sys::quantized_matmul_with_mode(
-            x,
-            &qw.weight,
-            scales,
-            quant_biases,
-            true,
-            Some(qw.group_size),
-            Some(qw.bits),
-            mode,
-            None,
-        )
+        qwen_prefill_maybe_tile_qmm(x, |tiled| {
+            qwen_prefill_maybe_flat_qmm(tiled, |flat| {
+                mlx_sys::quantized_matmul_with_mode(
+                    flat,
+                    &qw.weight,
+                    scales,
+                    quant_biases,
+                    true,
+                    Some(qw.group_size),
+                    Some(qw.bits),
+                    mode,
+                    None,
+                )
+            })
+        })
     } else if decode_lm_head_quant_cache_eligible(x)
         && let (Some(q_w), Some(q_s), Some(q_b)) = (
             qw.decode_q4_weight.as_ref(),
@@ -1731,6 +1911,142 @@ mod tests {
             decode_qmm.data_f32(),
             "seq=1 must stay on steel qmm"
         );
+    }
+
+    #[test]
+    fn qwen_prefill_maybe_flat_qmm_matches_3d_quantized_matmul() {
+        let input_dim = 32i32;
+        let output_dim = 64i32;
+        let seq = 1024i32;
+        let weight_data: Vec<f32> = (0..input_dim * output_dim)
+            .map(|index| ((index % 63) as f32 - 31.0) * 0.015625)
+            .collect();
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
+        let quantized = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let input_data: Vec<f32> = (0..seq * input_dim)
+            .map(|index| ((index % 17) as f32 - 8.0) * 0.03125)
+            .collect();
+        let x = array_f32(&input_data, &[1, seq, input_dim]);
+        let qmm_3d = mlx_sys::quantized_matmul_with_mode(
+            &x,
+            &quantized[0],
+            &quantized[1],
+            Some(&quantized[2]),
+            true,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+        );
+        let qmm_flat = super::qwen_prefill_maybe_flat_qmm_for(&x, true, |flat| {
+            mlx_sys::quantized_matmul_with_mode(
+                flat,
+                &quantized[0],
+                &quantized[1],
+                Some(&quantized[2]),
+                true,
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Affine,
+                None,
+            )
+        });
+        eval(&[&qmm_3d, &qmm_flat]);
+        assert_eq!(qmm_flat.shape(), vec![1, seq, output_dim]);
+        let a = qmm_3d.data_f32();
+        let b = qmm_flat.data_f32();
+        assert_eq!(a.len(), b.len());
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1e-4,
+            "flat 2-D qmm must match 3-D steel qmm, max_abs={max_abs}"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_flat_qmm_for(true, 1024, 3),
+            "shipped flat-qmm gate must accept the p2048 chunk length"
+        );
+        let skipped = super::qwen_prefill_maybe_flat_qmm_for(&x, false, |inner| inner.clone());
+        eval(&[&skipped]);
+        assert_eq!(skipped.shape(), x.shape());
+    }
+
+    #[test]
+    fn qwen_prefill_tile_qmm_matches_oneshot() {
+        let input_dim = 32i32;
+        let output_dim = 64i32;
+        let seq = 1024i32;
+        let weight_data: Vec<f32> = (0..input_dim * output_dim)
+            .map(|index| ((index % 63) as f32 - 31.0) * 0.015625)
+            .collect();
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
+        let quantized = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let input_data: Vec<f32> = (0..seq * input_dim)
+            .map(|index| ((index % 17) as f32 - 8.0) * 0.03125)
+            .collect();
+        let x = array_f32(&input_data, &[1, seq, input_dim]);
+        let oneshot = mlx_sys::quantized_matmul_with_mode(
+            &x,
+            &quantized[0],
+            &quantized[1],
+            Some(&quantized[2]),
+            true,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+        );
+        let tiled = super::qwen_prefill_maybe_tile_qmm_for(&x, true, "qwen3_5", |chunk| {
+            mlx_sys::quantized_matmul_with_mode(
+                chunk,
+                &quantized[0],
+                &quantized[1],
+                Some(&quantized[2]),
+                true,
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Affine,
+                None,
+            )
+        });
+        eval(&[&oneshot, &tiled]);
+        assert_eq!(tiled.shape(), vec![1, seq, output_dim]);
+        let a = oneshot.data_f32();
+        let b = tiled.data_f32();
+        assert_eq!(a.len(), b.len());
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1e-4,
+            "tiled qmm must match oneshot steel qmm, max_abs={max_abs}"
+        );
+        assert!(
+            fastpath::should_qwen_prefill_tile_qmm_for(true, "qwen3_5", 1024),
+            "shipped tile-qmm gate must accept the p2048 chunk length"
+        );
+        let skipped = super::qwen_prefill_maybe_tile_qmm_for(&x, false, "qwen3_5", |inner| {
+            inner.clone()
+        });
+        eval(&[&skipped]);
+        assert_eq!(skipped.shape(), x.shape());
     }
 
     #[test]

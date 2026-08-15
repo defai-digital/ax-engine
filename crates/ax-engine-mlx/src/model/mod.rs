@@ -410,7 +410,9 @@ pub(crate) fn embed_tokens_arr(
     // POST /v1/embeddings or /v1/generate request) would otherwise read
     // arbitrary GPU memory past the weight buffer instead of erroring.
     let clamped_ids_storage;
-    let ids = if embedding.weight.shape().first().copied().unwrap_or(0) > 0 {
+    let ids = if embedding.weight.shape().first().copied().unwrap_or(0) > 0
+        && !shared::utils::qwen_prefill_skip_embed_clip_active()
+    {
         let vocab_rows = embedding.weight.shape()[0];
         let min_id = shared::utils::scalar_like(0.0, MlxDtype::Uint32);
         let max_id = shared::utils::scalar_like((vocab_rows - 1) as f32, MlxDtype::Uint32);
@@ -425,6 +427,8 @@ pub(crate) fn embed_tokens_arr(
         let row_s = take(scales, ids, 0, None);
         let row_b = embedding.biases.as_ref().map(|b| take(b, ids, 0, None));
         // Mode-aware dequant (mxfp8 embeddings have U8 scales and no biases).
+        let dequant_dtype = shared::utils::qwen_prefill_bf16_embed_dequant_active()
+            .then_some(MlxDtype::Bfloat16);
         let flat = dequantize_with_mode(
             &row_w,
             &row_s,
@@ -433,7 +437,7 @@ pub(crate) fn embed_tokens_arr(
             Some(embedding.bits),
             embedding.mlx_quantization_mode(),
             None,
-            None,
+            dequant_dtype,
             None,
         );
         reshape(&flat, &[1, seq, hidden_size as i32], None)
@@ -1035,7 +1039,21 @@ fn forward_and_logits_mode(
         &[token_ids.len() as i32],
         MlxDtype::Uint32,
     );
+    shared::utils::set_qwen_prefill_skip_embed_clip(
+        crate::fastpath::should_qwen_prefill_skip_unused_embed_clip(
+            &cfg.model_family,
+            token_ids.len() as i32,
+        ),
+    );
+    shared::utils::set_qwen_prefill_bf16_embed_dequant(
+        crate::fastpath::should_qwen_prefill_bf16_embed_dequant(
+            &cfg.model_family,
+            token_ids.len() as i32,
+        ),
+    );
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
+    shared::utils::set_qwen_prefill_skip_embed_clip(false);
+    shared::utils::set_qwen_prefill_bf16_embed_dequant(false);
     hidden = shared::utils::qwen_prefill_maybe_skip_bf16_astype(
         &hidden,
         &cfg.model_family,
@@ -1048,6 +1066,24 @@ fn forward_and_logits_mode(
         &hidden,
         &cfg.model_family,
         token_ids.len() as i32,
+    );
+    let _skip_f32_sdpa = shared::utils::QwenPrefillSkipF32SdpaGuard::arm(
+        crate::fastpath::should_qwen_prefill_skip_unused_f32_sdpa(
+            &cfg.model_family,
+            token_ids.len() as i32,
+        ),
+    );
+    let _native_offset = shared::utils::QwenPrefillNativeOffsetCausalGuard::arm(
+        crate::fastpath::should_qwen_prefill_native_offset_causal(
+            &cfg.model_family,
+            token_ids.len() as i32,
+        ),
+    );
+    let _skip_swiglu = shared::utils::QwenPrefillSkipSwigluCompileGuard::arm(
+        crate::fastpath::should_qwen_prefill_skip_unused_swiglu_compile(
+            &cfg.model_family,
+            token_ids.len() as i32,
+        ),
     );
 
     let seq = token_ids.len();
@@ -4755,6 +4791,95 @@ mod tests {
     }
 
     #[test]
+    fn qwen_prefill_skip_unused_embed_clip_matches_in_range_ids() {
+        let embedding = dense_weight_from_data(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[3, 2]);
+        let token_ids = [0_u32, 2, 1];
+        let ids = MlxArray::from_raw_data(
+            token_ids.as_ptr().cast(),
+            std::mem::size_of_val(&token_ids),
+            &[3],
+            MlxDtype::Uint32,
+        );
+        let clipped = embed_tokens_arr(&ids, &embedding, 2);
+        shared::utils::set_qwen_prefill_skip_embed_clip(true);
+        let skipped = embed_tokens_arr(&ids, &embedding, 2);
+        shared::utils::set_qwen_prefill_skip_embed_clip(false);
+        eval(&[&clipped, &skipped]);
+        assert_eq!(clipped.shape(), vec![1, 3, 2]);
+        assert_eq!(skipped.shape(), vec![1, 3, 2]);
+        assert_eq!(clipped.data_f32(), skipped.data_f32());
+        assert!(
+            crate::fastpath::should_qwen_prefill_skip_unused_embed_clip_for(
+                true, "qwen3_5", 1024
+            ),
+            "shipped skip-embed-clip gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn qwen_prefill_bf16_embed_dequant_matches_f32_dequant_cast() {
+        use mlx_sys::{MlxQuantizationMode, quantize};
+        assert!(
+            crate::fastpath::should_qwen_prefill_bf16_embed_dequant_for(true, "qwen3_5", 1024),
+            "shipped bf16-embed-dequant gate must accept the p2048 chunk length"
+        );
+        let vocab = 8;
+        let hidden = 64;
+        let table: Vec<f32> = (0..(vocab * hidden))
+            .map(|i| ((i % 17) as f32 - 8.0) * 0.125)
+            .collect();
+        let weight = array_f32(&table, &[vocab as i32, hidden as i32]);
+        let q = quantize(
+            &weight,
+            Some(64),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let embedding = QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 64,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let token_ids = [0_u32, 3, 7, 1];
+        let ids = MlxArray::from_raw_data(
+            token_ids.as_ptr().cast(),
+            std::mem::size_of_val(&token_ids),
+            &[4],
+            MlxDtype::Uint32,
+        );
+        let f32_path = embed_tokens_arr(&ids, &embedding, hidden);
+        let f32_bf16 = astype(&f32_path, MlxDtype::Bfloat16, None);
+        shared::utils::set_qwen_prefill_bf16_embed_dequant(true);
+        let bf16_path = embed_tokens_arr(&ids, &embedding, hidden);
+        shared::utils::set_qwen_prefill_bf16_embed_dequant(false);
+        eval(&[&f32_bf16, &bf16_path]);
+        assert_eq!(bf16_path.dtype(), MlxDtype::Bfloat16);
+        assert_eq!(bf16_path.shape(), vec![1, 4, hidden as i32]);
+        let left = astype(&f32_bf16, MlxDtype::Float32, None);
+        let right = astype(&bf16_path, MlxDtype::Float32, None);
+        eval(&[&left, &right]);
+        let a = left.data_f32();
+        let b = right.data_f32();
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert!(
+                (x - y).abs() < 2.0e-2,
+                "bf16 embed dequant must match f32-dequant+cast: {x} vs {y}"
+            );
+        }
+    }
+
+    #[test]
     fn qwen_embedding_attention_keeps_causal_lm_semantics() {
         let q_data = [0.0_f32, 0.0];
         let k_data = [0.0_f32, 0.0];
@@ -5451,6 +5576,40 @@ mod tests {
         assert!(gate.is_none());
         assert_eq!(k.shape(), vec![1, 2, 4]);
         assert_eq!(v.shape(), vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn qkv_project_last_query_skips_full_q_and_matches_last_token() {
+        let mut cfg = cfg(false);
+        cfg.n_heads = 2;
+        cfg.n_kv_heads = 1;
+        cfg.hidden_size = 2;
+        cfg.head_dim = 2;
+        let mut weights = empty_layer_weights(2);
+        // q: [n_heads * head_dim, hidden] = [4, 2]
+        // k/v: [n_kv_heads * head_dim, hidden] = [2, 2]
+        weights.q_proj = Some(dense_weight_from_data(
+            &[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+            &[4, 2],
+        ));
+        weights.k_proj = Some(dense_weight_from_data(&[1.0, 0.0, 0.0, 1.0], &[2, 2]));
+        weights.v_proj = Some(dense_weight_from_data(&[2.0, 0.0, 0.0, 2.0], &[2, 2]));
+
+        let x_data: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let x = array_f32(&x_data, &[1, 4, 2]);
+        let last = qwen_prefill_maybe_last_token_bsh(&x, true)
+            .expect("last-token BSH slice must engage at S=4");
+
+        let (q_full, k_full, v_full, _) = qkv_project(&cfg, &weights, &x, 2);
+        let (q_last, k_skip, v_skip, _) = qkv_project_last_query(&cfg, &weights, &x, &last, 2);
+        let (q_ref, _, _, _) = qkv_project(&cfg, &weights, &last, 2);
+        eval(&[&q_full, &k_full, &v_full, &q_last, &k_skip, &v_skip, &q_ref]);
+
+        assert_eq!(q_full.shape(), vec![1, 4, 4]);
+        assert_eq!(q_last.shape(), vec![1, 1, 4]);
+        assert_eq!(q_last.data_f32(), q_ref.data_f32());
+        assert_eq!(k_skip.data_f32(), k_full.data_f32());
+        assert_eq!(v_skip.data_f32(), v_full.data_f32());
     }
 
     #[test]
