@@ -184,11 +184,17 @@ fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
         "qwen3.6-35b".to_string()
     } else if path_label.contains("qwen3-6-27b") || path_label.contains("qwen36-27b") {
         "qwen3.6-27b".to_string()
+    } else if path_label.contains("qwen3-8-27b")
+        || path_label.contains("qwen38-27b")
+        || path_label.contains("qwen3-8")
+        || path_label.contains("qwen38")
+    {
+        "qwen3.8-27b".to_string()
     } else if path_label.contains("qwen3-5-9b") || path_label.contains("qwen35-9b") {
         "qwen3.5-9b".to_string()
     } else if matches!(
         model_type,
-        "qwen3_5_moe" | "qwen3_5_text" | "qwen3_next" | "qwen3_6" | "qwen3.6"
+        "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5_text" | "qwen3_next" | "qwen3_6" | "qwen3.6"
     ) {
         "qwen3.6".to_string()
     } else if matches!(model_type, "qwen3_5" | "qwen3.5") {

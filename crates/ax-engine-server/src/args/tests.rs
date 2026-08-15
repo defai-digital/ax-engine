@@ -554,6 +554,16 @@ fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
             "qwen3.6-27b-mtp",
         ),
         (
+            "models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+            "qwen3_5_moe_text",
+            "qwen3.8-27b-mtp",
+        ),
+        (
+            "models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-4bit",
+            "qwen3_5_moe",
+            "qwen3.8-27b",
+        ),
+        (
             "models--mlx-community--Qwen3-VL-8B-Thinking-4bit",
             "qwen3_vl",
             "qwen3-vl-8b-thinking",

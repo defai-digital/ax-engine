@@ -50,7 +50,7 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
     ),
     ModelProfile(
         label="gemma4-12b-6bit",
-        preset=None,
+        preset="gemma4-12b",
         repo_id="mlx-community/gemma-4-12B-it-6bit",
         aliases=("gemma4-12b-6bit", "gemma-4-12b-6bit", "gemma-4-12b-it-6bit"),
     ),
@@ -110,7 +110,7 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
     ),
     ModelProfile(
         label="qwen3.6-27b-5bit",
-        preset=None,
+        preset="qwen3.6-27b",
         repo_id="mlx-community/Qwen3.6-27B-5bit",
         aliases=(
             "qwen3.6-27b-5bit",
@@ -120,7 +120,7 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
     ),
     ModelProfile(
         label="qwen3.6-27b-6bit",
-        preset=None,
+        preset="qwen3.6-27b",
         repo_id="mlx-community/Qwen3.6-27B-6bit",
         aliases=(
             "qwen3.6-27b-6bit",
@@ -130,7 +130,7 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
     ),
     ModelProfile(
         label="qwen3.6-27b-8bit",
-        preset=None,
+        preset="qwen3.6-27b",
         repo_id="mlx-community/Qwen3.6-27B-8bit",
         aliases=(
             "qwen3.6-27b-8bit",
@@ -328,54 +328,65 @@ AUTOMATOSX_MODEL_PROFILES = (
     _automatosx_profile(
         "ax-gemma4-12b-6bit",
         "AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
+        preset="gemma4-12b",
     ),
     _automatosx_profile(
         "ax-gemma4-12b-4bit",
         "AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP",
         ("ax-gemma4-12b-qat-4bit",),
+        preset="gemma4-12b",
     ),
     _automatosx_profile(
         "ax-gemma4-12b",
         "AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
         ("ax-gemma-4-12b", "ax-gemma4-12b-qat-optiq-4bit"),
+        preset="gemma4-12b",
     ),
     _automatosx_profile(
         "ax-gemma4-26b-6bit",
         "AX-Gemma-4-26B-A4B-IT-MLX-6bit-Assistant-MTP",
+        preset="gemma4-26b",
     ),
     _automatosx_profile(
         "ax-gemma4-26b",
         "AX-Gemma-4-26B-A4B-IT-MLX-OptiQ-4bit-Assistant-MTP",
         ("ax-gemma-4-26b", "ax-gemma4-26b-optiq-4bit"),
+        preset="gemma4-26b",
     ),
     _automatosx_profile(
         "ax-gemma4-26b-4bit",
         "AX-Gemma-4-26B-A4B-IT-MLX-QAT-4bit-Assistant-MTP",
         ("ax-gemma4-26b-qat-4bit",),
+        preset="gemma4-26b",
     ),
     _automatosx_profile(
         "ax-gemma4-31b-6bit",
         "AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP",
+        preset="gemma4-31b",
     ),
     _automatosx_profile(
         "ax-gemma4-31b",
         "AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP",
         ("ax-gemma-4-31b", "ax-gemma4-31b-optiq-4bit"),
+        preset="gemma4-31b",
     ),
     _automatosx_profile(
         "ax-gemma4-31b-4bit",
         "AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP",
         ("ax-gemma4-31b-qat-4bit",),
+        preset="gemma4-31b",
     ),
     _automatosx_profile(
         "ax-qwen3-coder-next",
         "AX-Qwen3-Coder-Next-MLX-4bit",
         ("ax-qwen3-coder", "ax-qwen3-coder-next-4bit"),
+        preset="qwen3-coder-next",
     ),
     _automatosx_profile(
         "ax-qwen3-coder-next-6bit",
         "AX-Qwen3-Coder-Next-MLX-6bit",
         ("ax-qwen3-coder-6bit",),
+        preset="qwen3-coder-next",
     ),
     _automatosx_profile(
         "ax-qwen3-embedding-0.6b",
@@ -396,26 +407,31 @@ AUTOMATOSX_MODEL_PROFILES = (
         "ax-qwen3.5-9b-4bit",
         "AX-Qwen3.5-9B-MLX-4bit-MTP",
         ("ax-qwen35-9b-4bit",),
+        preset="qwen3.5-9b",
     ),
     _automatosx_profile(
         "ax-qwen3.5-9b-6bit",
         "AX-Qwen3.5-9B-MLX-6bit-MTP",
         ("ax-qwen35-9b-6bit",),
+        preset="qwen3.5-9b",
     ),
     _automatosx_profile(
         "ax-qwen3.5-9b",
         "AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
         ("ax-qwen35-9b", "ax-qwen3.5-9b-optiq-4bit"),
+        preset="qwen3.5-9b",
     ),
     _automatosx_profile(
         "ax-qwen3.6-27b-4bit",
         "AX-Qwen3.6-27B-MLX-4bit-MTP",
         ("ax-qwen36-27b-4bit", "qwen3.6-27b:uniform-4bit"),
+        preset="qwen3.6-27b",
     ),
     _automatosx_profile(
         "ax-qwen3.6-27b-6bit",
         "AX-Qwen3.6-27B-MLX-6bit-MTP",
         ("ax-qwen36-27b-6bit", "qwen3.6-27b:uniform-6bit"),
+        preset="qwen3.6-27b",
     ),
     _automatosx_profile(
         "ax-qwen3.6-27b",
@@ -425,6 +441,7 @@ AUTOMATOSX_MODEL_PROFILES = (
             "ax-qwen3.6-27b-optiq-4bit",
             "qwen3.6-27b:optiq-4bit",
         ),
+        preset="qwen3.6-27b",
     ),
     _automatosx_profile(
         "ax-qwen3.6-27b-axq-6bit",
@@ -435,11 +452,13 @@ AUTOMATOSX_MODEL_PROFILES = (
             "qwen3.6-27b:axq",
             "qwen3.6-27b:axq-6bit",
         ),
+        preset="qwen3.6-27b",
     ),
     _automatosx_profile(
         "ax-qwen3.6-27b-axq-4bit",
         "AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
         ("ax-qwen36-27b-axq-4bit", "qwen3.6-27b:axq-4bit"),
+        preset="qwen3.6-27b",
     ),
     _automatosx_profile(
         "ax-qwen3.8-27b-axq-6bit",
@@ -463,16 +482,19 @@ AUTOMATOSX_MODEL_PROFILES = (
         "ax-qwen3.6-35b-4bit",
         "AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
         ("ax-qwen36-35b-4bit",),
+        preset="qwen3.6-35b",
     ),
     _automatosx_profile(
         "ax-qwen3.6-35b-6bit",
         "AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
         ("ax-qwen36-35b-6bit",),
+        preset="qwen3.6-35b",
     ),
     _automatosx_profile(
         "ax-qwen3.6-35b",
         "AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
         ("ax-qwen36-35b", "ax-qwen3.6-35b-a3b", "ax-qwen3.6-35b-optiq-4bit"),
+        preset="qwen3.6-35b",
     ),
     # Qwen3-VL 30B-A3B Instruct AXQ packs: vision MoE, no MTP. Explicit
     # candidates — not Tier-1 certified; pin revisions until gates pass.

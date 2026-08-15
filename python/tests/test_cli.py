@@ -211,6 +211,12 @@ class AxEngineCliTests(unittest.TestCase):
             ("ornith-35b:axq", "ornith-35b"),
             ("ax-holo3-35b", "holo3-35b"),
             ("ax-ornith-35b", "ornith-35b"),
+            ("ax-gemma4-12b", "gemma4-12b"),
+            ("ax-gemma4-26b", "gemma4-26b"),
+            ("ax-gemma4-31b", "gemma4-31b"),
+            ("qwen3.6-27b:axq", "qwen3.6-27b"),
+            ("ax-qwen3.6-35b", "qwen3.6-35b"),
+            ("ax-qwen3.5-9b", "qwen3.5-9b"),
         ):
             profile = _cli._profile_for_model(alias)
             self.assertIsNotNone(profile, alias)
@@ -1046,7 +1052,7 @@ class AxEngineCliTests(unittest.TestCase):
             "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
         )
         self.assertEqual(payload["alias"], "ax-qwen3.6-35b")
-        self.assertNotIn("preset", payload)
+        self.assertEqual(payload["preset"], "qwen3.6-35b")
 
     def test_download_qwen36_27b_bit_alias_uses_automatosx_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1090,7 +1096,7 @@ class AxEngineCliTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["repo_id"], "AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP")
         self.assertEqual(payload["alias"], "ax-qwen3.6-27b-6bit")
-        self.assertNotIn("preset", payload)
+        self.assertEqual(payload["preset"], "qwen3.6-27b")
 
     def test_download_diffusiongemma_alias_uses_automatosx_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1184,7 +1190,7 @@ class AxEngineCliTests(unittest.TestCase):
                 "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
             )
             self.assertEqual(payload["alias"], "ax-gemma4-12b")
-            self.assertNotIn("preset", payload)
+            self.assertEqual(payload["preset"], "gemma4-12b")
 
             with mock.patch.dict(
                 os.environ,
@@ -1199,7 +1205,7 @@ class AxEngineCliTests(unittest.TestCase):
                 "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
             )
             self.assertEqual(payload["alias"], "ax-gemma4-12b-6bit")
-            self.assertNotIn("preset", payload)
+            self.assertEqual(payload["preset"], "gemma4-12b")
 
     def test_serve_auto_download_uses_ready_artifacts_without_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1254,7 +1260,9 @@ class AxEngineCliTests(unittest.TestCase):
                 self.capture_main(["serve", "ax-qwen3.6-35b"])
 
             argv = execvp.call_args.args[1]
-            self.assertNotIn("--preset", argv)
+            self.assertIn("--preset", argv)
+            preset_index = argv.index("--preset") + 1
+            self.assertEqual(argv[preset_index], "qwen3.6-35b")
             path_index = argv.index("--mlx-model-artifacts-dir") + 1
             self.assertEqual(argv[path_index], str(model_dir.resolve()))
 

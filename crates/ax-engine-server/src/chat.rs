@@ -368,6 +368,9 @@ pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
         || m.contains("3.6")
         || m.contains("3_6")
         || m.contains("qwen36")
+        || m.contains("3.8")
+        || m.contains("3_8")
+        || m.contains("qwen38")
     {
         return true;
     }
@@ -1793,6 +1796,8 @@ mod tests {
             "AX-Ornith-1.0-35B-MLX-AXQ-4bit",
             "Ornith-1.0-397B-FP8",
             "holo3-35b",
+            "qwen3.8-27b",
+            "AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
         ] {
             assert!(is_qwen_thinking_model(model_id), "{model_id}");
         }
