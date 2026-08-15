@@ -2,9 +2,9 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Paused 2026-08-14; §6(b) 1.20 and §6(d) 1.15 still unmet |
+| Status | CLOSED 2026-08-15 — §6(b) 1.20 and §6(d) 1.15 **UNMET** under fixed-pack constraints. Not a PASS. |
 | Owner | AX Engine maintainers |
-| Last updated | 2026-08-14 (branch `perf/qwen-prefill-decode`; last remasure async-embed `a3d8e261…` 3b 1.029260 / 3d 1.054017 FAIL; flag stays OFF) |
+| Last updated | 2026-08-15 (branch `perf/qwen-prefill-decode`; honest freeze 3a PASS / 3b 1.032679 FAIL / 3c PASS / 3d 1.058916 FAIL; experimental high-water 915.689 default-OFF) |
 | Formal host | `df-macbookpro-m5` (Apple M5 Max) |
 | Product position | Restore Qwen 3.6 27B **prefill** and **decode** to peer-competitive rates vs **mlxcel** (`.internal/reference/mlxcel`) on both community 4-bit and AXQ 6-bit, in **direct** and **MTP** |
 | Related | ADR-003 dispatch-bound decode; ADR-020 Qwen36 linear MTP Tier 2; `docs/performance/decode-gap.md`; `.internal/reports/prefill-regression-investigation-2026-07-28.md` |
@@ -12,10 +12,19 @@
 
 ## 1. Decision summary
 
-On formal host `df-macbookpro-m5`, AX Engine's Qwen 3.6 27B path is currently
-**much slower than other engines** on **prefill** and **decode**. This package
-freezes a same-host measurement contract, then lands the smallest runtime fix
-that recovers both phases for:
+**Campaign closed 2026-08-15 as exhausted, not as a pass.** Codex Sol Max
+and QoderCLI Qwen 3.8 Max independently chose CLOSE. Shipped standing
+scoreboard is 3a **PASS** / 3b **FAIL 1.032679** / 3c **PASS** / 3d
+**FAIL 1.058916**. Community experimental high-water 915.689
+(`SKIP_UNUSED_F32_SDPA` + `NATIVE_OFFSET_CAUSAL`) stays **default-OFF**
+until a four-lane remasure that includes AXQ. Do not claim 1.20, “close
+enough,” or completion. Reopen only for a constraint change or new M5
+evidence of a materially faster qmm primitive. See §11.
+
+On formal host `df-macbookpro-m5`, AX Engine's Qwen 3.6 27B path was
+**much slower than other engines** on **prefill** and **decode**. This
+package froze a same-host measurement contract, then iterated runtime
+residuals for:
 
 | Lane | Checkpoint | Alias | Mode |
 | --- | --- | --- | --- |
@@ -355,6 +364,9 @@ no 3b/3d cell can still move to the bar.
 
 ## 10. Standing freeze (2026-08-14)
 
+Superseded as the campaign close by §11 (2026-08-15). The numbers
+below remain the shipped four-lane scoreboard.
+
 Production path kept: 2-bit decode-only `lm_head` + BF16 `W_t`
 prefill + 1024 TG + packed C++ qw. Every later 27B experiment
 flag is default-OFF.
@@ -414,3 +426,53 @@ FFN-f32 remasure (binary `128d9a6c…`): community p2048
 Regression. Flag restored to opt-in. MTP killed. Bar stays
 unrounded 1.20. Not committed. F32 FFN activations make the
 steel qmm slower at M=1024.
+
+## 11. Honest close (2026-08-15)
+
+**CLOSED — §6(b) and §6(d) UNMET under fixed-pack constraints.**
+Not a PASS. Not “close enough.” Reviewers: Codex Sol Max and
+QoderCLI Qwen 3.8 Max (both CLOSE).
+
+Shipped standing path (unchanged, default-ON):
+
+- 2-bit decode-only `lm_head` (gs64)
+- BF16 `W_t` prefill
+- 1024-token GatedDelta TG / two 1024 prefill chunks
+- packed C++ `qw` when packed weights exist
+- `skip_cache_only`
+
+Shipped four-lane + MTP scoreboard, unrounded (same as §10):
+
+| ID | Result | Unrounded |
+| --- | --- | --- |
+| 3a | **PASS** | community direct vs mlx_lm at p128/p512/p2048 |
+| 3b | **FAIL 1.032679** | AXQ p2048 891.022 / 862.825 (need 1035.390). Decode 33.950 / 28.385 = 1.196 |
+| 3c | **PASS** | community MTP 54.7 / mtplx 60.1 = 0.910; AXQ MTP ≥ AXQ direct |
+| 3d | **FAIL 1.058916** | community p2048 908.549 / 857.999 (need 986.699) |
+
+Community-only experimental high-water, **default-OFF**, not shipped:
+
+| Residual | Community p2048 | 3d | vs standing 908.549 |
+| --- | ---: | ---: | ---: |
+| `SKIP_UNUSED_F32_SDPA` (`fbf0b12d…`) | 914.746 | 1.066139 | 1.007 |
+| `SKIP_UNUSED_F32_SDPA` + `NATIVE_OFFSET_CAUSAL` (`890e5d30…`) | **915.689** | **1.067238** | 1.008 |
+
+915.689 / 857.999 = 1.067238 still misses 986.699 by 71.010 tok/s.
+Do **not** flip those flags default-ON without a four-lane remasure
+that includes AXQ. Decode 1.196 is also below the unrounded 1.20
+else-bar.
+
+Every later 27B experiment hook stays `env_flag!` default-OFF,
+including unremeasured `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_SWIGLU_COMPILE`
+(compile-class; cannot cover the 71 tok/s / 161 ms 3d hole).
+
+Cause: compute-bound qmm union ≈ 1.89 s vs 1.978 s 3b budget
+(need −320 ms prefill; realistic leftover ≈ 40 ms). Same-host
+mlxcel community p2048 ≈ 891 is behind standing AX ≈ 908–916.
+Reaching the bar needs requant, a new Hub pack, an AXQ revision
+change, or a faster 4-bit qmm — all forbidden or already closed.
+
+Reopen only for a constraint change or new `df-macbookpro-m5`
+evidence of a materially faster qmm primitive. Do not reopen the
+closed fuse / compile / flatten / contiguous / async / tile /
+bit-width / last-layer list without that evidence.
