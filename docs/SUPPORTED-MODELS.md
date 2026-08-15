@@ -287,22 +287,24 @@ raw repo id form:
 manifest included)**
 
 The bare `ax-*` alias selects the flagship OptiQ (Qwen/Gemma 4-bit) or DWQ
-(embeddings) build; `-4bit` / `-6bit` variants select the plain quants. These
-aliases promise the exact AutomatosX repo, so serve them through the
-idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
+(embeddings) build; `-4bit` / `-6bit` variants select the plain quants. AXQ
+is never implicit on those families: use `<family>:axq` (6-bit) or
+`<family>:axq-4bit`. These aliases promise the exact AutomatosX repo, so
+serve them through the idempotent resolution flow:
+`ax-engine serve ax-qwen3.6-27b`.
 
 | Alias | Repo |
 | --- | --- |
 | `ax-qwen3.5-9b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.5-9B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3.6-27b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-27B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3.8-27b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-{4,6}bit-MTP` (candidate; production-size 27B) |
-| `ax-qwen3.6-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
+| `ax-qwen3.6-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` (OptiQ flagship; AXQ is `:axq`) |
 | `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-a3b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-{4,6}bit` (candidate; no MTP) |
 | `ax-holo3-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE text path; vision BF16 sidecar; **Tier 1 certified**, no MTP) |
 | `ax-ornith-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE coding agent; vision BF16 sidecar; **development** AXQ, no MTP) |
-| `ax-gemma4-12b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-12B-IT-MLX-{QAT-OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
-| `ax-gemma4-26b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
-| `ax-gemma4-31b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-31B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
+| `ax-gemma4-12b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-12B-IT-MLX-{QAT-OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` (OptiQ/QAT flagship; AXQ is `:axq`) |
+| `ax-gemma4-26b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` (OptiQ/QAT flagship; AXQ is `:axq`) |
+| `ax-gemma4-31b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-31B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` (OptiQ/QAT flagship; AXQ is `:axq`) |
 | `ax-qwen3-coder-next`[`-6bit`] | `AutomatosX/AX-Qwen3-Coder-Next-MLX-{4,6}bit` |
 | `ax-diffusiongemma-26b` | `AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit` |
 | `ax-embeddinggemma-300m` | `AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit` |
@@ -318,6 +320,14 @@ idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 | `qwen3.6-27b:axq-4bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP` | `6182ccbc41c7397ff90670f740c6d9eacfa4b09f` | Candidate; compact fallback |
 | `qwen3.8-27b:axq`, `qwen3.8-27b:axq-6bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6` | Candidate; production-size Qwen 3.8 27B AXQ 6-bit MTP |
 | `qwen3.8-27b:axq-4bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP` | `7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e` | Candidate; compact 4-bit MTP sibling |
+| `qwen3.6-35b:axq`, `qwen3.6-35b:axq-6bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP` | `6a4c220734f81112555ee8783d91e0065c54301c` | Candidate; 35B-A3B AXQ 6-bit MTP |
+| `qwen3.6-35b:axq-4bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP` | `952031cbfbb9cf31414a57eeb681c34dc08ec1e9` | Candidate; compact 4-bit MTP sibling |
+| `gemma4-12b:axq`, `gemma4-12b:axq-6bit` | `AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP` | `7ad79df2b0c272431f3e927b133b7dc3d70872f4` | Candidate; checkpoint Tier 1; MTP Tier 2 not certified |
+| `gemma4-12b:axq-4bit` | `AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP` | `d2a6ac9d59655f0b86a57a64ed85616d0a10e27e` | Candidate; compact 4-bit sibling |
+| `gemma4-26b:axq`, `gemma4-26b:axq-6bit` | `AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP` | `940a60b13e7298140c85d3762492dde6733f8a57` | Candidate; checkpoint Tier 1; MTP Tier 2 not certified |
+| `gemma4-26b:axq-4bit` | `AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP` | `490b1183ce4505e79334423547422204fb9144d0` | Candidate; compact 4-bit sibling |
+| `gemma4-31b:axq`, `gemma4-31b:axq-6bit` | `AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP` | `7b11bd5179d71a74200fe56075cba5c21212fe6a` | Candidate; checkpoint Tier 1; MTP Tier 2 not certified |
+| `gemma4-31b:axq-4bit` | `AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP` | `fdd851347f487c565b067c0593fdb5ac7a3057a2` | Candidate; compact 4-bit sibling |
 | `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `700ec2c305f5f80e4d7c841c5aec80b050b949c6` | Candidate; vision MoE Instruct; preferred quality |
 | `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `1f4c21a0c9d4347294d3f082928fdfd854284383` | Candidate; vision MoE Instruct; compact fallback |
 | `holo3-35b:axq`, `holo3-35b:axq-6bit` | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit` | `e6cc340b04bfcec57544e462ec756e48dd248cf9` | Tier 1 certified; Qwen3.5-class 35B-A3B GUI-agent text path; no MTP |
@@ -325,11 +335,13 @@ idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 | `ornith-35b:axq`, `ornith-35b:axq-6bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit` | `37361076641d7b7487d1b5ce1b68243ffbdbffe0` | Candidate; Qwen3.5-class 35B-A3B coding agent; no MTP |
 | `ornith-35b`, `ornith-35b:axq-4bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit` | `d7416c665cd8ae6e5fbebc3f17bd547b78cf11fc` | Candidate; compact 4-bit sibling |
 
-The unqualified `:axq` selector intentionally means 6-bit. The bare
-`qwen3.6-27b` alias remains `mlx-community/Qwen3.6-27B-4bit`, while
-`ax-qwen3.6-27b` remains the AutomatosX OptiQ pack. Qwen3-VL 30B AXQ packs
-have no MTP sidecar; promotion requires the quality, runtime, memory,
-provenance, and published-evidence checks in the
+The unqualified `:axq` selector intentionally means 6-bit. Bare family
+aliases (`qwen3.6-27b`, `gemma4-12b`) stay mlx-community, and `ax-<family>`
+stays the AutomatosX OptiQ/QAT flagship whenever that sibling exists. Do not
+silently retarget `ax-gemma4-12b` or `ax-qwen3.6-35b` at AXQ. AXQ-only
+families (Holo3, Ornith, Qwen 3.8, Qwen3-VL) may use `ax-<family>` as the
+AXQ pack. Qwen3-VL 30B AXQ packs have no MTP sidecar; promotion requires the
+quality, runtime, memory, provenance, and published-evidence checks in the
 [Qwen 3.6 27B AXQ certification record](model-certifications/qwen3.6-27b-axq.md)
 (same gate pattern for VL packs until a dedicated VL record lands).
 

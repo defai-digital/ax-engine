@@ -51,6 +51,30 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP" => {
             Some("a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6")
         }
+        "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP" => {
+            Some("952031cbfbb9cf31414a57eeb681c34dc08ec1e9")
+        }
+        "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP" => {
+            Some("6a4c220734f81112555ee8783d91e0065c54301c")
+        }
+        "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP" => {
+            Some("d2a6ac9d59655f0b86a57a64ed85616d0a10e27e")
+        }
+        "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP" => {
+            Some("7ad79df2b0c272431f3e927b133b7dc3d70872f4")
+        }
+        "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP" => {
+            Some("490b1183ce4505e79334423547422204fb9144d0")
+        }
+        "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP" => {
+            Some("940a60b13e7298140c85d3762492dde6733f8a57")
+        }
+        "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP" => {
+            Some("fdd851347f487c565b067c0593fdb5ac7a3057a2")
+        }
+        "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP" => {
+            Some("7b11bd5179d71a74200fe56075cba5c21212fe6a")
+        }
         _ => None,
     }
 }
@@ -376,6 +400,32 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         downloadable: true,
         approx_size_bytes: Some(30_778_381_769),
     },
+    ModelProfile {
+        label: "ax-qwen3.6-35b-axq-6bit",
+        preset: Some("qwen3.6-35b"),
+        repo_id: "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
+        aliases: &[
+            "ax-qwen3.6-35b-axq-6bit",
+            "ax-qwen3.6-35b-axq",
+            "ax-qwen36-35b-axq-6bit",
+            "qwen3.6-35b:axq",
+            "qwen3.6-35b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(51_365_810_695),
+    },
+    ModelProfile {
+        label: "ax-qwen3.6-35b-axq-4bit",
+        preset: Some("qwen3.6-35b"),
+        repo_id: "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
+        aliases: &[
+            "ax-qwen3.6-35b-axq-4bit",
+            "ax-qwen36-35b-axq-4bit",
+            "qwen3.6-35b:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(43_636_169_195),
+    },
     // Qwen3-VL 30B-A3B Instruct AXQ packs: vision MoE (`qwen3_vl_moe`), no MTP.
     // Explicit candidates — development evidence packs, not Tier-1 certified.
     ModelProfile {
@@ -493,6 +543,69 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         aliases: &["ax-gemma4-31b-6bit"],
         downloadable: true,
         approx_size_bytes: Some(27_091_575_156),
+    },
+    ModelProfile {
+        label: "ax-gemma4-12b-axq-6bit",
+        preset: Some("gemma4-12b"),
+        repo_id: "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
+        aliases: &[
+            "ax-gemma4-12b-axq-6bit",
+            "ax-gemma4-12b-axq",
+            "gemma4-12b:axq",
+            "gemma4-12b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(18_347_801_283),
+    },
+    ModelProfile {
+        label: "ax-gemma4-12b-axq-4bit",
+        preset: Some("gemma4-12b"),
+        repo_id: "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
+        aliases: &["ax-gemma4-12b-axq-4bit", "gemma4-12b:axq-4bit"],
+        downloadable: true,
+        approx_size_bytes: Some(14_938_093_658),
+    },
+    ModelProfile {
+        label: "ax-gemma4-26b-axq-6bit",
+        preset: Some("gemma4-26b"),
+        repo_id: "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
+        aliases: &[
+            "ax-gemma4-26b-axq-6bit",
+            "ax-gemma4-26b-axq",
+            "gemma4-26b:axq",
+            "gemma4-26b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(20_226_370_940),
+    },
+    ModelProfile {
+        label: "ax-gemma4-26b-axq-4bit",
+        preset: Some("gemma4-26b"),
+        repo_id: "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",
+        aliases: &["ax-gemma4-26b-axq-4bit", "gemma4-26b:axq-4bit"],
+        downloadable: true,
+        approx_size_bytes: Some(16_074_761_316),
+    },
+    ModelProfile {
+        label: "ax-gemma4-31b-axq-6bit",
+        preset: Some("gemma4-31b"),
+        repo_id: "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
+        aliases: &[
+            "ax-gemma4-31b-axq-6bit",
+            "ax-gemma4-31b-axq",
+            "gemma4-31b:axq",
+            "gemma4-31b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(24_426_134_101),
+    },
+    ModelProfile {
+        label: "ax-gemma4-31b-axq-4bit",
+        preset: Some("gemma4-31b"),
+        repo_id: "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP",
+        aliases: &["ax-gemma4-31b-axq-4bit", "gemma4-31b:axq-4bit"],
+        downloadable: true,
+        approx_size_bytes: Some(19_450_776_368),
     },
     ModelProfile {
         label: "ax-qwen3-coder-next",
@@ -3724,7 +3837,7 @@ mod tests {
         assert!(!value.to_string().contains('\n'));
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 31] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 39] = [
         "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
         "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
         "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
@@ -3753,9 +3866,17 @@ mod tests {
         "AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
+        "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
+        "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+        "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
+        "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
+        "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",
+        "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
+        "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP",
+        "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
     ];
 
     #[test]
@@ -3778,7 +3899,7 @@ mod tests {
                 .iter()
                 .filter(|target| target["mtp_included"] == true)
                 .count(),
-            20
+            30
         );
     }
 
@@ -3995,6 +4116,29 @@ mod tests {
         let default = profile_for_model("qwen3.6-27b").unwrap();
         assert_eq!(default.repo_id, "mlx-community/Qwen3.6-27B-4bit");
         assert_eq!(profile_certification(default), None);
+
+        let qwen35 = profile_for_model("qwen3.6-35b:axq").unwrap();
+        assert_eq!(
+            qwen35.repo_id,
+            "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP"
+        );
+        assert_eq!(
+            profile_revision(qwen35),
+            Some("6a4c220734f81112555ee8783d91e0065c54301c")
+        );
+        let gemma12 = profile_for_model("gemma4-12b:axq").unwrap();
+        assert_eq!(
+            gemma12.repo_id,
+            "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP"
+        );
+        assert_eq!(
+            profile_for_model("ax-qwen3.6-35b").unwrap().repo_id,
+            "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP"
+        );
+        assert_eq!(
+            profile_for_model("ax-gemma4-12b").unwrap().repo_id,
+            "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP"
+        );
     }
 
     #[test]

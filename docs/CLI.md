@@ -57,13 +57,15 @@ certification is still open:
 qwen3.6-27b:axq          # pinned AXQ 6-bit candidate
 qwen3.6-27b:axq-6bit     # same checkpoint, explicit precision
 qwen3.6-27b:axq-4bit     # smaller AXQ candidate
+qwen3.6-35b:axq          # pinned 35B-A3B AXQ 6-bit
+gemma4-12b:axq           # pinned Gemma 4 12B AXQ 6-bit
 holo3-35b:axq            # pinned Holo3 AXQ 6-bit (Tier 1 certified)
-ornith-35b:axq           # pinned Ornith 1.0 AXQ 6-bit (development)
+ornith-35b:axq           # pinned Ornith 1.0 AXQ 6-bit
 ```
 
-The bare `qwen3.6-27b` serve alias retains its current mlx-community 4-bit
-meaning, and `ax-qwen3.6-27b` retains its AutomatosX OptiQ meaning. This avoids
-silently changing existing deployments before AXQ promotion. See the
+`:axq` is the AXQ selector. Bare `qwen3.6-27b` / `gemma4-12b` stay
+mlx-community, and `ax-qwen3.6-27b` / `ax-qwen3.6-35b` / `ax-gemma4-12b`
+stay AutomatosX OptiQ/QAT. Do not retarget those defaults at AXQ. See the
 [AXQ certification record](model-certifications/qwen3.6-27b-axq.md).
 
 Use `download` when you want model acquisition as a separate step. Managed
@@ -81,7 +83,9 @@ ax-engine download ax-qwen3.6-27b-6bit
 ax-engine download qwen3.6-27b:axq
 ax-engine download qwen3.6-27b:axq-4bit
 ax-engine download ax-qwen3.6-35b
+ax-engine download qwen3.6-35b:axq
 ax-engine download ax-gemma4-12b
+ax-engine download gemma4-12b:axq
 ax-engine download ax-gemma4-26b
 ax-engine download ax-gemma4-31b
 ax-engine download ax-qwen3-coder-next

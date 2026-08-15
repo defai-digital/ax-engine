@@ -314,6 +314,16 @@ def _automatosx_profile(
 # https://huggingface.co/AutomatosX/models (refreshed for Qwen3-VL 30B AXQ
 # packs). MTP repositories are complete snapshots; downloading them never
 # invokes the legacy MTP packager.
+#
+# Alias grammar (do not silently promote defaults):
+#   <family>                 community / historical default
+#   ax-<family>              AutomatosX flagship (OptiQ/QAT when that sibling exists)
+#   ax-<family>-4bit/-6bit   AutomatosX uniform quants
+#   <family>:axq             pinned AXQ 6-bit
+#   <family>:axq-4bit        pinned AXQ 4-bit
+#   ax-<family>-axq          same as :axq (download-list friendly)
+# AXQ-only families (Holo3, Ornith, Qwen 3.8, Qwen3-VL) may use ax-<family>
+# as the AXQ pack because there is no OptiQ sibling to preserve.
 AUTOMATOSX_MODEL_PROFILES = (
     _automatosx_profile(
         "ax-diffusiongemma-26b",
@@ -374,6 +384,43 @@ AUTOMATOSX_MODEL_PROFILES = (
         "ax-gemma4-31b-4bit",
         "AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP",
         ("ax-gemma4-31b-qat-4bit",),
+        preset="gemma4-31b",
+    ),
+    # AXQ is an explicit selector. Bare ax-gemma4-* stays OptiQ/QAT.
+    _automatosx_profile(
+        "ax-gemma4-12b-axq-6bit",
+        "AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
+        ("ax-gemma4-12b-axq", "gemma4-12b:axq", "gemma4-12b:axq-6bit"),
+        preset="gemma4-12b",
+    ),
+    _automatosx_profile(
+        "ax-gemma4-12b-axq-4bit",
+        "AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
+        ("gemma4-12b:axq-4bit",),
+        preset="gemma4-12b",
+    ),
+    _automatosx_profile(
+        "ax-gemma4-26b-axq-6bit",
+        "AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
+        ("ax-gemma4-26b-axq", "gemma4-26b:axq", "gemma4-26b:axq-6bit"),
+        preset="gemma4-26b",
+    ),
+    _automatosx_profile(
+        "ax-gemma4-26b-axq-4bit",
+        "AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",
+        ("gemma4-26b:axq-4bit",),
+        preset="gemma4-26b",
+    ),
+    _automatosx_profile(
+        "ax-gemma4-31b-axq-6bit",
+        "AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
+        ("ax-gemma4-31b-axq", "gemma4-31b:axq", "gemma4-31b:axq-6bit"),
+        preset="gemma4-31b",
+    ),
+    _automatosx_profile(
+        "ax-gemma4-31b-axq-4bit",
+        "AX-gemma-4-31b-MLX-AXQ-4bit-MTP",
+        ("gemma4-31b:axq-4bit",),
         preset="gemma4-31b",
     ),
     _automatosx_profile(
@@ -496,6 +543,23 @@ AUTOMATOSX_MODEL_PROFILES = (
         ("ax-qwen36-35b", "ax-qwen3.6-35b-a3b", "ax-qwen3.6-35b-optiq-4bit"),
         preset="qwen3.6-35b",
     ),
+    _automatosx_profile(
+        "ax-qwen3.6-35b-axq-6bit",
+        "AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
+        (
+            "ax-qwen3.6-35b-axq",
+            "ax-qwen36-35b-axq-6bit",
+            "qwen3.6-35b:axq",
+            "qwen3.6-35b:axq-6bit",
+        ),
+        preset="qwen3.6-35b",
+    ),
+    _automatosx_profile(
+        "ax-qwen3.6-35b-axq-4bit",
+        "AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
+        ("ax-qwen36-35b-axq-4bit", "qwen3.6-35b:axq-4bit"),
+        preset="qwen3.6-35b",
+    ),
     # Qwen3-VL 30B-A3B Instruct AXQ packs: vision MoE, no MTP. Explicit
     # candidates — not Tier-1 certified; pin revisions until gates pass.
     _automatosx_profile(
@@ -608,6 +672,30 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit": (
         "37361076641d7b7487d1b5ce1b68243ffbdbffe0"
     ),
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP": (
+        "952031cbfbb9cf31414a57eeb681c34dc08ec1e9"
+    ),
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP": (
+        "6a4c220734f81112555ee8783d91e0065c54301c"
+    ),
+    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP": (
+        "d2a6ac9d59655f0b86a57a64ed85616d0a10e27e"
+    ),
+    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP": (
+        "7ad79df2b0c272431f3e927b133b7dc3d70872f4"
+    ),
+    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP": (
+        "490b1183ce4505e79334423547422204fb9144d0"
+    ),
+    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP": (
+        "940a60b13e7298140c85d3762492dde6733f8a57"
+    ),
+    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP": (
+        "fdd851347f487c565b067c0593fdb5ac7a3057a2"
+    ),
+    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP": (
+        "7b11bd5179d71a74200fe56075cba5c21212fe6a"
+    ),
 }
 
 # Holo3 AXQ packs are Tier 1 certified product snapshots; pin the revision
@@ -621,6 +709,14 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
 }
 
 

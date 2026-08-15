@@ -54,7 +54,15 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
     "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
@@ -81,7 +89,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 41)
+        self.assertEqual(len(targets), 49)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-"))
@@ -167,6 +175,36 @@ class AxEngineCliTests(unittest.TestCase):
                 "d7416c665cd8ae6e5fbebc3f17bd547b78cf11fc",
                 "candidate",
             ),
+            "qwen3.6-35b:axq": (
+                "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
+                "6a4c220734f81112555ee8783d91e0065c54301c",
+                "candidate",
+            ),
+            "qwen3.6-35b:axq-4bit": (
+                "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
+                "952031cbfbb9cf31414a57eeb681c34dc08ec1e9",
+                "candidate",
+            ),
+            "gemma4-12b:axq": (
+                "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
+                "7ad79df2b0c272431f3e927b133b7dc3d70872f4",
+                "candidate",
+            ),
+            "gemma4-12b:axq-4bit": (
+                "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
+                "d2a6ac9d59655f0b86a57a64ed85616d0a10e27e",
+                "candidate",
+            ),
+            "gemma4-26b:axq": (
+                "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
+                "940a60b13e7298140c85d3762492dde6733f8a57",
+                "candidate",
+            ),
+            "gemma4-31b:axq": (
+                "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
+                "7b11bd5179d71a74200fe56075cba5c21212fe6a",
+                "candidate",
+            ),
         }
         for alias, (repo_id, revision, certification) in cases.items():
             with self.subTest(alias=alias):
@@ -182,6 +220,20 @@ class AxEngineCliTests(unittest.TestCase):
         assert default_profile is not None
         self.assertEqual(default_profile.repo_id, "mlx-community/Qwen3.6-27B-4bit")
         self.assertIsNone(_cli._profile_certification(default_profile))
+        ax_qwen35 = _cli._profile_for_model("ax-qwen3.6-35b")
+        self.assertIsNotNone(ax_qwen35)
+        assert ax_qwen35 is not None
+        self.assertEqual(
+            ax_qwen35.repo_id,
+            "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+        )
+        ax_gemma12 = _cli._profile_for_model("ax-gemma4-12b")
+        self.assertIsNotNone(ax_gemma12)
+        assert ax_gemma12 is not None
+        self.assertEqual(
+            ax_gemma12.repo_id,
+            "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
+        )
 
         holo3_default = _cli._profile_for_model("holo3-35b")
         self.assertIsNotNone(holo3_default)
@@ -215,8 +267,10 @@ class AxEngineCliTests(unittest.TestCase):
             ("ax-gemma4-26b", "gemma4-26b"),
             ("ax-gemma4-31b", "gemma4-31b"),
             ("qwen3.6-27b:axq", "qwen3.6-27b"),
+            ("qwen3.6-35b:axq", "qwen3.6-35b"),
             ("ax-qwen3.6-35b", "qwen3.6-35b"),
             ("ax-qwen3.5-9b", "qwen3.5-9b"),
+            ("gemma4-12b:axq", "gemma4-12b"),
         ):
             profile = _cli._profile_for_model(alias)
             self.assertIsNotNone(profile, alias)
@@ -1443,7 +1497,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 22)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 30)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.
