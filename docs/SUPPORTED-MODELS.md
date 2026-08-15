@@ -299,13 +299,15 @@ serve them through the idempotent resolution flow:
 | `ax-qwen3.6-27b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-27B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3.8-27b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-{4,6}bit-MTP` (candidate; production-size 27B) |
 | `ax-qwen3.6-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` (OptiQ flagship; AXQ is `:axq`) |
-| `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-a3b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-{4,6}bit` (candidate; no MTP) |
+| `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-a3b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-{4,6}bit` (**Tier 1 certified**, no MTP) |
+| `ax-qwen3-vl-8b`[`-4bit`] | `AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-{4,6}bit` (development AXQ, no MTP) |
 | `ax-holo3-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE text path; vision BF16 sidecar; **Tier 1 certified**, no MTP) |
 | `ax-ornith-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE coding agent; vision BF16 sidecar; **development** AXQ, no MTP) |
+| `ax-muse-glimmer-30b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-{4bit,6bit}` (Meta dense 30B image-text agent; ATEM chat; vision BF16-preserved; **development** AXQ, no MTP) |
 | `ax-gemma4-12b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-12B-IT-MLX-{QAT-OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` (OptiQ/QAT flagship; AXQ is `:axq`) |
 | `ax-gemma4-26b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` (OptiQ/QAT flagship; AXQ is `:axq`) |
 | `ax-gemma4-31b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-31B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` (OptiQ/QAT flagship; AXQ is `:axq`) |
-| `ax-qwen3-coder-next`[`-6bit`] | `AutomatosX/AX-Qwen3-Coder-Next-MLX-{4,6}bit` |
+| `ax-qwen3-coder-next`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-Coder-Next-MLX-{OptiQ-4bit,4bit,6bit}` (OptiQ flagship; AXQ is `:axq`) |
 | `ax-diffusiongemma-26b` | `AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit` |
 | `ax-embeddinggemma-300m` | `AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit` |
 | `ax-qwen3-embedding-0.6b` | `AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit` |
@@ -328,19 +330,35 @@ serve them through the idempotent resolution flow:
 | `gemma4-26b:axq-4bit` | `AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP` | `490b1183ce4505e79334423547422204fb9144d0` | Candidate; compact 4-bit sibling |
 | `gemma4-31b:axq`, `gemma4-31b:axq-6bit` | `AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP` | `7b11bd5179d71a74200fe56075cba5c21212fe6a` | Candidate; checkpoint Tier 1; MTP Tier 2 not certified |
 | `gemma4-31b:axq-4bit` | `AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP` | `fdd851347f487c565b067c0593fdb5ac7a3057a2` | Candidate; compact 4-bit sibling |
-| `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `700ec2c305f5f80e4d7c841c5aec80b050b949c6` | Candidate; vision MoE Instruct; preferred quality |
-| `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `1f4c21a0c9d4347294d3f082928fdfd854284383` | Candidate; vision MoE Instruct; compact fallback |
+| `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `b48b626d9b00e45d6200aa3c15e40cc47d83b7e7` | Tier 1 certified; vision MoE Instruct; preferred quality |
+| `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `e932be1b8ab79f5410f607de7eb7312756325fce` | Tier 1 certified; compact 4-bit sibling |
+| `qwen3-vl-8b:axq`, `ax-qwen3-vl-8b` | `AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit` | `e52d06296bf133b248a6572561c4f2e150dc3429` | Candidate; dense VL Instruct |
+| `qwen3.8-27b:axq`, `ax-qwen3.8-27b` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `3e290738e96972307c6aeb9934ab170ca0eae1c1` | Tier 1 checkpoint; MTP Tier 2 not certified |
+| `qwen3.8-27b:axq-8bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP` | `4037b7242a4de8deaf71247a685538591cad160a` | Tier 1 checkpoint; MTP Tier 2 not certified |
+| `qwen3.8-27b:axq-mxfp4` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` | `b2c5354f779e430d0c1733143db848a72b71c16e` | Tier 1 checkpoint; MTP Tier 2 not certified |
+| `qwen3-coder-next:axq` | `AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit` | `29e7bcf5e6ef2471cc3587783713e3631e98b50c` | Tier 1 certified |
+| `gpt-oss-20b:axq` | `AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit` | `14aee3b601240c5075fc4c84fb6f088400aeeba5` | Tier 1 certified; bare `gpt-oss-20b` stays mlx-community MXFP4-Q4 |
+| `gpt-oss-120b:axq` | `AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit` | `306f5a9858cadd8e0a6b01201d37ad2d24ddcdd7` | Tier 1 certified |
+| `ministral-3-8b:axq` | `AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit` | `93d9991a3636c6c46cb92e711d11f1be5de96b6a` | Candidate; `ax-ministral-3-8b` is OptiQ 2512 |
+| `mistral-small:axq` | `AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit` | `f00654783b3e3b2a020a712161eb1ac7861da348` | Candidate |
+| `nemotron-3-nano:axq` | `AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit` | `a4dcc84b9b7318cc206f2b17dbc1555883cf67fd` | Candidate; `nemotron_h` text path |
+| `devstral-small:axq` | `AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit` | `04be51a3173b94e0a0d859be871cfb7a749405d2` | Candidate; `ax-devstral-small` is 2512 OptiQ |
 | `holo3-35b:axq`, `holo3-35b:axq-6bit` | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit` | `e6cc340b04bfcec57544e462ec756e48dd248cf9` | Tier 1 certified; Qwen3.5-class 35B-A3B GUI-agent text path; no MTP |
 | `holo3-35b`, `holo3-35b:axq-4bit` | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit` | `7b2256130cd55ea6b7489817a9a00c46e9874403` | Tier 1 certified; compact 4-bit sibling |
-| `ornith-35b:axq`, `ornith-35b:axq-6bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit` | `37361076641d7b7487d1b5ce1b68243ffbdbffe0` | Candidate; Qwen3.5-class 35B-A3B coding agent; no MTP |
-| `ornith-35b`, `ornith-35b:axq-4bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit` | `d7416c665cd8ae6e5fbebc3f17bd547b78cf11fc` | Candidate; compact 4-bit sibling |
+| `ornith-35b:axq`, `ornith-35b:axq-6bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit` | `41015da430ae62802d9357b0ef31bf46c2b13b58` | Tier 1 certified; Qwen3.5-class 35B-A3B coding agent; no MTP |
+| `ornith-35b`, `ornith-35b:axq-4bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit` | `9ff7a33b034a7e72cdc32a531ed8dd0d07e35116` | Tier 1 certified; compact 4-bit sibling |
+| `muse-glimmer-30b:axq`, `muse-glimmer-30b:axq-6bit` | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit` | `367745bd05b77bf82188f3799677e4beba543e8d` | Candidate; dense image-text agent; ATEM; no MTP |
+| `muse-glimmer-30b`, `muse-glimmer-30b:axq-4bit` | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit` | `bcfb0b748fc44487c1657fb6ae190592d515398b` | Candidate; compact 4-bit sibling |
 
 The unqualified `:axq` selector intentionally means 6-bit. Bare family
 aliases (`qwen3.6-27b`, `gemma4-12b`) stay mlx-community, and `ax-<family>`
 stays the AutomatosX OptiQ/QAT flagship whenever that sibling exists. Do not
 silently retarget `ax-gemma4-12b` or `ax-qwen3.6-35b` at AXQ. AXQ-only
-families (Holo3, Ornith, Qwen 3.8, Qwen3-VL) may use `ax-<family>` as the
-AXQ pack. Qwen3-VL 30B AXQ packs have no MTP sidecar; promotion requires the
+families (Holo3, Ornith, Qwen 3.8, Qwen3-VL, Muse-Glimmer) may use
+`ax-<family>` as the AXQ pack. Muse-Glimmer convert/chat identity is
+first-class; native decode stays fail-closed until gated attention and
+centered RMSNorm land on the MLX runner. Qwen3-VL 30B AXQ packs have no
+MTP sidecar; promotion requires the
 quality, runtime, memory, provenance, and published-evidence checks in the
 [Qwen 3.6 27B AXQ certification record](model-certifications/qwen3.6-27b-axq.md)
 (same gate pattern for VL packs until a dedicated VL record lands).

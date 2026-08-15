@@ -599,6 +599,41 @@ fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
             "ornith-35b",
         ),
         (
+            "models--AutomatosX--AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+            "muse_glimmer",
+            "muse-glimmer-30b",
+        ),
+        (
+            "models--AutomatosX--AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
+            "muse_glimmer",
+            "muse-glimmer-30b",
+        ),
+        (
+            "models--AutomatosX--AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit",
+            "nemotron_h",
+            "nemotron-3-nano",
+        ),
+        (
+            "models--AutomatosX--AX-Ministral-3-14B-Instruct-2512-MLX-OptiQ-4bit",
+            "mistral3",
+            "ministral-3-14b",
+        ),
+        (
+            "models--AutomatosX--AX-gpt-oss-120b-MLX-AXQ-6bit",
+            "gpt_oss",
+            "gpt-oss-120b",
+        ),
+        (
+            "models--AutomatosX--AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit",
+            "qwen3",
+            "qwen3-nemotron-32b-genrm",
+        ),
+        (
+            "models--AutomatosX--AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
+            "unlimited-ocr",
+            "unlimited-ocr",
+        ),
+        (
             "models--AutomatosX--AX-EmbeddingGemma-300M-MLX-8bit",
             "gemma3_text",
             "embeddinggemma-300m",
@@ -863,6 +898,32 @@ fn ornith_35b_preset_selects_mlx_preview_defaults() {
 }
 
 #[test]
+fn muse_glimmer_30b_preset_selects_mlx_preview_defaults() {
+    let mlx_model_artifacts_dir = PathBuf::from("/tmp/AX-Muse-Glimmer-30B-MLX-AXQ-4bit");
+    let args = ServerArgs {
+        preset: Some(ServerPreset::MuseGlimmer30b),
+        mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(args.effective_model_id().unwrap(), "muse-glimmer-30b");
+    assert_eq!(
+        args.effective_support_tier(),
+        PreviewSupportTier::MlxPreview
+    );
+    assert_eq!(
+        actual.resolved_backend.selected_backend,
+        SelectedBackend::Mlx
+    );
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(mlx_model_artifacts_dir.as_path())
+    );
+}
+
+#[test]
 fn glm_preset_selects_native_mlx_by_default() {
     // GLM 4.7 Flash is a direct-support model: the preset selects the native
     // MLX tier by default. Delegation requires an explicit delegated tier.
@@ -894,6 +955,11 @@ fn render_presets_lists_glm_preset() {
     assert!(presets.contains("qwen3.6-27b\tmodel_id=qwen36-27b"));
     assert!(presets.contains("holo3-35b\tmodel_id=holo3-35b"));
     assert!(presets.contains("ornith-35b\tmodel_id=ornith-35b"));
+    assert!(presets.contains("muse-glimmer-30b\tmodel_id=muse-glimmer-30b"));
+    assert!(presets.contains("qwen3.8-27b\tmodel_id=qwen3.8-27b"));
+    assert!(presets.contains("qwen3-vl-30b\tmodel_id=qwen3-vl-30b-a3b"));
+    assert!(presets.contains("nemotron-3-nano\tmodel_id=nemotron-3-nano"));
+    assert!(presets.contains("ministral-3-8b\tmodel_id=ministral-3-8b"));
     assert!(presets.contains("qwen3-coder-next\tmodel_id=qwen3-coder-next"));
     assert!(presets.contains("glm4.7-flash-4bit\tmodel_id=glm4_moe_lite"));
     assert!(presets.contains("llama3.3-70b\tmodel_id=llama3.3-70b"));

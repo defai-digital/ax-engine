@@ -61,6 +61,7 @@ qwen3.6-35b:axq          # pinned 35B-A3B AXQ 6-bit
 gemma4-12b:axq           # pinned Gemma 4 12B AXQ 6-bit
 holo3-35b:axq            # pinned Holo3 AXQ 6-bit (Tier 1 certified)
 ornith-35b:axq           # pinned Ornith 1.0 AXQ 6-bit
+muse-glimmer-30b:axq     # pinned Muse-Glimmer 30B AXQ 6-bit (development)
 ```
 
 `:axq` is the AXQ selector. Bare `qwen3.6-27b` / `gemma4-12b` stay
@@ -88,6 +89,12 @@ ax-engine download ax-gemma4-12b
 ax-engine download gemma4-12b:axq
 ax-engine download ax-gemma4-26b
 ax-engine download ax-gemma4-31b
+ax-engine download muse-glimmer-30b
+ax-engine download muse-glimmer-30b:axq
+ax-engine download gpt-oss-20b:axq
+ax-engine download qwen3-coder-next:axq
+ax-engine download ax-ministral-3-8b
+ax-engine download nemotron-3-nano:axq
 ax-engine download ax-qwen3-coder-next
 ax-engine download ax-embeddinggemma-300m
 ax-engine download ax-qwen3-embedding-4b

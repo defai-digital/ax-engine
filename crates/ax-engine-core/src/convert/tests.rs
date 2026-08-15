@@ -4568,6 +4568,68 @@ fn rejects_unsupported_model_type() {
 }
 
 #[test]
+fn converts_muse_glimmer_text_config_and_layer_types() {
+    let dir = unique_test_dir("muse_glimmer");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "muse_glimmer",
+            "architectures": ["MuseGlimmerForConditionalGeneration"],
+            "vocab_size": 202048,
+            "text_config": {
+                "model_type": "muse_glimmer_text",
+                "hidden_size": 6656,
+                "intermediate_size": 19968,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 2,
+                "head_dim": 128,
+                "num_hidden_layers": 4,
+                "vocab_size": 202048,
+                "sliding_window": 2048,
+                "final_logit_softcapping": 20.0,
+                "layer_types": [
+                    "sliding_attention",
+                    "sliding_attention",
+                    "sliding_attention",
+                    "full_attention"
+                ]
+            }
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[
+            (
+                "language_model.model.embed_tokens.weight",
+                "BF16",
+                &[202048, 6656],
+            ),
+            ("language_model.model.norm.weight", "BF16", &[6656]),
+            ("language_model.lm_head.weight", "BF16", &[202048, 6656]),
+        ],
+    );
+
+    let manifest = convert_hf_model_dir(&dir).expect("muse_glimmer conversion should succeed");
+    assert_eq!(manifest.model_family, "muse_glimmer");
+    assert_eq!(manifest.layer_count, 4);
+    assert_eq!(manifest.hidden_size, 6656);
+    assert_eq!(manifest.sliding_window_size, Some(2048));
+    assert_eq!(manifest.final_logit_softcapping, Some(20.0));
+    assert_eq!(
+        manifest.layer_types,
+        vec![
+            "sliding_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "full_attention"
+        ]
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn diffusion_gemma_canvas_size_zero_is_rejected() {
     // A malformed manifest with canvas_size=0 must not pass through
     // to NativeDiffusionConfig.canvas_size as Some(0). Regression

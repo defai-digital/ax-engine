@@ -122,7 +122,13 @@ pub(crate) fn uses_text_config(model_type: &str) -> bool {
             | "unlimited-ocr"
             | "unlimited_ocr"
             | "deepseekocr"
+            | "muse_glimmer"
+            | "muse_glimmer_text"
     )
+}
+
+pub(crate) fn is_muse_glimmer_model_type(model_type: &str) -> bool {
+    matches!(model_type, "muse_glimmer" | "muse_glimmer_text")
 }
 
 /// Unlimited-OCR / DeepSeek-OCR multimodal MoE language tower.
@@ -838,6 +844,7 @@ pub(crate) fn parse_layer_types(
     let is_nemotron = is_nemotron_h(model_type);
     if !is_gemma4_text_model_type(model_type)
         && !is_embeddinggemma_model_type(model_type)
+        && !is_muse_glimmer_model_type(model_type)
         && !is_gpt_oss
         && !is_nemotron
     {

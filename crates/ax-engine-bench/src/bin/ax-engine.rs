@@ -40,16 +40,16 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
             Some("8c37715c7b5f5ebca00eda6f73be47116a3e4ebc")
         }
         "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit" => {
-            Some("1f4c21a0c9d4347294d3f082928fdfd854284383")
+            Some("e932be1b8ab79f5410f607de7eb7312756325fce")
         }
         "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit" => {
-            Some("700ec2c305f5f80e4d7c841c5aec80b050b949c6")
+            Some("b48b626d9b00e45d6200aa3c15e40cc47d83b7e7")
         }
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP" => {
             Some("7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e")
         }
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP" => {
-            Some("a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6")
+            Some("3e290738e96972307c6aeb9934ab170ca0eae1c1")
         }
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP" => {
             Some("952031cbfbb9cf31414a57eeb681c34dc08ec1e9")
@@ -75,12 +75,142 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP" => {
             Some("7b11bd5179d71a74200fe56075cba5c21212fe6a")
         }
+        "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit" => {
+            Some("bcfb0b748fc44487c1657fb6ae190592d515398b")
+        }
+        "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit" => {
+            Some("367745bd05b77bf82188f3799677e4beba543e8d")
+        }
+        "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit" => {
+            Some("323a48f2a821f7d0349466095b1b84562d11c9a0")
+        }
+        "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit" => {
+            Some("e52d06296bf133b248a6572561c4f2e150dc3429")
+        }
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit" => {
+            Some("6df63e00b1fa952bffd3b4ad5ecd182f9d48a8a4")
+        }
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit" => {
+            Some("1a54b325bef89b056f8ee9a882452419cceb018e")
+        }
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit" => {
+            Some("36f9d25c4b1ea2282774b9acf84fdad0241a8a54")
+        }
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP" => {
+            Some("4037b7242a4de8deaf71247a685538591cad160a")
+        }
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4" => {
+            Some("4797708af95b9d5cca343d0a4671511fc2765e1a")
+        }
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP" => {
+            Some("b2c5354f779e430d0c1733143db848a72b71c16e")
+        }
+        "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit" => {
+            Some("a524f97c81ec82be3eead17aabcf652450d33842")
+        }
+        "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit" => {
+            Some("29e7bcf5e6ef2471cc3587783713e3631e98b50c")
+        }
+        "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit" => {
+            Some("20f2d2bd0b1055f8ab990e82fa0fc784a9de4c89")
+        }
+        "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit" => {
+            Some("14aee3b601240c5075fc4c84fb6f088400aeeba5")
+        }
+        "AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit" => {
+            Some("306f5a9858cadd8e0a6b01201d37ad2d24ddcdd7")
+        }
+        "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit" => {
+            Some("7b2256130cd55ea6b7489817a9a00c46e9874403")
+        }
+        "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit" => {
+            Some("e6cc340b04bfcec57544e462ec756e48dd248cf9")
+        }
+        "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit" => {
+            Some("9ff7a33b034a7e72cdc32a531ed8dd0d07e35116")
+        }
+        "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit" => {
+            Some("41015da430ae62802d9357b0ef31bf46c2b13b58")
+        }
+        "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit" => {
+            Some("93d9991a3636c6c46cb92e711d11f1be5de96b6a")
+        }
+        "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-4bit" => {
+            Some("669dda7a7d78e2fa167d6dae70128f8cf2fe778b")
+        }
+        "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-6bit" => {
+            Some("74cc761a1f6f3e2d0e8bbb4d3d8c15cd17ef221a")
+        }
+        "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-4bit" => {
+            Some("91c20bd52f6c16b6b7e6f6e60b0a859ddd1ad8b0")
+        }
+        "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit" => {
+            Some("f00654783b3e3b2a020a712161eb1ac7861da348")
+        }
+        "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit" => {
+            Some("cb2db117e80571afa466644e91ec39bd528ccf7f")
+        }
+        "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit" => {
+            Some("a4dcc84b9b7318cc206f2b17dbc1555883cf67fd")
+        }
+        "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-4bit" => {
+            Some("e021a6ed572d6d2a99fad028707f09a6b524d7f2")
+        }
+        "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit" => {
+            Some("5608f0c197a7ffcd3366894cce7eb9918b24c8c1")
+        }
+        "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit" => {
+            Some("17e0ce81a7d6aeb6729a0c84b92340e26fbe1a6d")
+        }
+        "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit" => {
+            Some("04be51a3173b94e0a0d859be871cfb7a749405d2")
+        }
+        "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8" => {
+            Some("4d928dce639633f1138113d733dd11c120da87c9")
+        }
+        "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit" => {
+            Some("1c3fb2a006883d88ee0b84a831b480e4a9dc97c6")
+        }
+        "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit" => {
+            Some("d6de0453b22af8bbbcfebbd43326ccea6ed35e64")
+        }
         _ => None,
     }
 }
 
 fn profile_certification(profile: ModelProfile) -> Option<&'static str> {
-    profile_revision(profile).map(|_| "candidate")
+    match profile.repo_id {
+        "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP"
+        | "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP"
+        | "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit"
+        | "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP"
+        | "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit"
+        | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP"
+        | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP"
+        | "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP"
+        | "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP"
+        | "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP"
+        | "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP"
+        | "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP"
+        | "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP"
+        | "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit"
+        | "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-6bit"
+        | "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit"
+        | "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit"
+        | "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit"
+        | "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit"
+        | "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit" => Some("candidate"),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -460,6 +590,45 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         downloadable: true,
         approx_size_bytes: Some(18_891_118_762),
     },
+    // Muse-Glimmer 30B AXQ: dense image-text agent, no MTP, development only.
+    ModelProfile {
+        label: "ax-muse-glimmer-30b-6bit",
+        preset: Some("muse-glimmer-30b"),
+        repo_id: "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-muse-glimmer-30b-6bit",
+            "ax-muse-glimmer-6bit",
+            "ax-muse-glimmer-30b-axq-6bit",
+            "ax-muse-glimmer-30b-axq",
+            "muse-glimmer-30b:axq",
+            "muse-glimmer-30b:axq-6bit",
+            "muse-glimmer:axq",
+            "muse-glimmer:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(30_708_269_056),
+    },
+    ModelProfile {
+        label: "ax-muse-glimmer-30b",
+        preset: Some("muse-glimmer-30b"),
+        repo_id: "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+        aliases: &[
+            "ax-muse-glimmer-30b",
+            "ax-muse-glimmer",
+            "ax-glimmer-30b",
+            "ax-muse-glimmer-30b-4bit",
+            "ax-muse-glimmer-4bit",
+            "ax-muse-glimmer-30b-axq-4bit",
+            "muse-glimmer-30b",
+            "muse-glimmer",
+            "muse-glimmer-30b-4bit",
+            "muse-glimmer-30b:axq-4bit",
+            "muse-glimmer:axq-4bit",
+            "glimmer-30b",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(22_174_758_085),
+    },
     ModelProfile {
         label: "ax-gemma4-12b",
         preset: None,
@@ -609,13 +778,22 @@ const MODEL_PROFILES: &[ModelProfile] = &[
     },
     ModelProfile {
         label: "ax-qwen3-coder-next",
-        preset: None,
-        repo_id: "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
+        preset: Some("qwen3-coder-next"),
+        repo_id: "AutomatosX/AX-Qwen3-Coder-Next-MLX-OptiQ-4bit",
         aliases: &[
             "ax-qwen3-coder-next",
             "ax-qwen3-coder",
-            "ax-qwen3-coder-next-4bit",
+            "ax-qwen3-coder-next-optiq-4bit",
+            "qwen3-coder-next:optiq-4bit",
         ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3-coder-next-4bit",
+        preset: Some("qwen3-coder-next"),
+        repo_id: "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
+        aliases: &["ax-qwen3-coder-next-4bit", "ax-qwen3-coder-4bit"],
         downloadable: true,
         approx_size_bytes: Some(44_855_983_937),
     },
@@ -630,9 +808,20 @@ const MODEL_PROFILES: &[ModelProfile] = &[
     ModelProfile {
         label: "ax-diffusiongemma-26b",
         preset: None,
-        repo_id: "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+        repo_id: "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-OptiQ-4bit",
         aliases: &[
             "ax-diffusiongemma-26b",
+            "ax-diffusiongemma",
+            "ax-diffusiongemma-26b-optiq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-diffusiongemma-26b-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+        aliases: &[
             "ax-diffusiongemma-26b-4bit",
             "ax-diffusiongemma-26b-a4b-it-4bit",
         ],
@@ -789,6 +978,437 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         downloadable: true,
         // Prefer 128 GB+ hosts; experts stay MXFP4-packed at runtime.
         approx_size_bytes: Some(62_358_100_309),
+    },
+    // Gap-fill AutomatosX packs (except DeepSeek): GPT-OSS, VL-8B, Coder AXQ,
+    // Ministral-3, Mistral Small, Nemotron, Devstral, Qwen 3.8 extras, OCR, ASR.
+    ModelProfile {
+        label: "ax-devstral-small",
+        preset: Some("devstral-small"),
+        repo_id: "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
+        aliases: &[
+            "ax-devstral-small",
+            "ax-devstral",
+            "ax-devstral-small-2",
+            "ax-devstral-small-optiq-4bit",
+            "devstral-small-2",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-devstral-small-axq-4bit",
+        preset: Some("devstral-small"),
+        repo_id: "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
+        aliases: &["ax-devstral-small-axq-4bit", "devstral-small:axq-4bit"],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-devstral-small-axq-6bit",
+        preset: Some("devstral-small"),
+        repo_id: "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-devstral-small-axq-6bit",
+            "ax-devstral-small-axq",
+            "devstral-small:axq",
+            "devstral-small:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "holo3-35b",
+        preset: Some("holo3-35b"),
+        repo_id: "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+        aliases: &[
+            "holo3-35b",
+            "holo3-35b-a3b",
+            "holo3",
+            "holo3-35b-4bit",
+            "holo3-35b-a3b-4bit",
+            "ax-holo3-35b",
+            "ax-holo3",
+            "holo3-35b:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "holo3-35b-6bit",
+        preset: Some("holo3-35b"),
+        repo_id: "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+        aliases: &[
+            "holo3-35b-6bit",
+            "holo3-35b-a3b-6bit",
+            "ax-holo3-35b-6bit",
+            "holo3-35b:axq",
+            "holo3-35b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-ministral-3-14b-axq-4bit",
+        preset: Some("ministral-3-14b"),
+        repo_id: "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-4bit",
+        aliases: &["ax-ministral-3-14b-axq-4bit", "ministral-3-14b:axq-4bit"],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-ministral-3-14b-axq-6bit",
+        preset: Some("ministral-3-14b"),
+        repo_id: "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-ministral-3-14b-axq-6bit",
+            "ax-ministral-3-14b-axq",
+            "ministral-3-14b:axq",
+            "ministral-3-14b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-ministral-3-14b",
+        preset: Some("ministral-3-14b"),
+        repo_id: "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-OptiQ-4bit",
+        aliases: &[
+            "ax-ministral-3-14b",
+            "ax-ministral-3-14b-optiq-4bit",
+            "ministral-3-14b",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-ministral-3-8b-axq-6bit",
+        preset: Some("ministral-3-8b"),
+        repo_id: "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-ministral-3-8b-axq-6bit",
+            "ax-ministral-3-8b-axq",
+            "ministral-3-8b:axq",
+            "ministral-3-8b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-ministral-3-8b",
+        preset: Some("ministral-3-8b"),
+        repo_id: "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-OptiQ-4bit",
+        aliases: &[
+            "ax-ministral-3-8b",
+            "ax-ministral-3-8b-optiq-4bit",
+            "ministral-3-8b",
+            "ministral-3",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-mistral-small-axq-4bit",
+        preset: Some("mistral-small"),
+        repo_id: "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-4bit",
+        aliases: &[
+            "ax-mistral-small-axq-4bit",
+            "mistral-small:axq-4bit",
+            "ax-mistral-small-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-mistral-small",
+        preset: Some("mistral-small"),
+        repo_id: "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-mistral-small",
+            "ax-mistral-small-24b",
+            "ax-mistral-small-axq",
+            "mistral-small:axq",
+            "mistral-small:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-nemotron-3-nano",
+        preset: Some("nemotron-3-nano"),
+        repo_id: "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit",
+        aliases: &[
+            "ax-nemotron-3-nano",
+            "ax-nemotron-3-nano-30b",
+            "nemotron-3-nano",
+            "nemotron-3-nano-30b",
+            "nemotron-3-nano:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-nemotron-3-nano-6bit",
+        preset: Some("nemotron-3-nano"),
+        repo_id: "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-nemotron-3-nano-6bit",
+            "ax-nemotron-3-nano-axq",
+            "nemotron-3-nano:axq",
+            "nemotron-3-nano:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ornith-35b",
+        preset: Some("ornith-35b"),
+        repo_id: "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+        aliases: &[
+            "ornith-35b",
+            "ornith",
+            "ornith-1.0-35b",
+            "ornith-1.0",
+            "ornith-35b-4bit",
+            "ornith-1.0-35b-4bit",
+            "ax-ornith-35b",
+            "ax-ornith",
+            "ornith-35b:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ornith-35b-6bit",
+        preset: Some("ornith-35b"),
+        repo_id: "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+        aliases: &[
+            "ornith-35b-6bit",
+            "ornith-1.0-35b-6bit",
+            "ax-ornith-35b-6bit",
+            "ornith-35b:axq",
+            "ornith-35b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3-asr-1.7b",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
+        aliases: &[
+            "ax-qwen3-asr-1.7b",
+            "ax-qwen3-asr",
+            "qwen3-asr-1.7b",
+            "qwen3-asr",
+            "qwen3-asr-1.7b:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3-asr-1.7b-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-qwen3-asr-1.7b-6bit",
+            "qwen3-asr-1.7b:axq",
+            "qwen3-asr-1.7b:axq-6bit",
+            "qwen3-asr:axq",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3-coder-next-axq-4bit",
+        preset: Some("qwen3-coder-next"),
+        repo_id: "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit",
+        aliases: &[
+            "ax-qwen3-coder-next-axq-4bit",
+            "ax-qwen3-coder-axq-4bit",
+            "qwen3-coder-next:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3-coder-next-axq-6bit",
+        preset: Some("qwen3-coder-next"),
+        repo_id: "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-qwen3-coder-next-axq-6bit",
+            "ax-qwen3-coder-next-axq",
+            "ax-qwen3-coder-axq",
+            "qwen3-coder-next:axq",
+            "qwen3-coder-next:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3-nemotron-32b-genrm",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-4bit",
+        aliases: &[
+            "ax-qwen3-nemotron-32b-genrm",
+            "ax-qwen3-nemotron-genrm",
+            "qwen3-nemotron-32b-genrm",
+            "qwen3-nemotron-32b-genrm:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3-nemotron-32b-genrm-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-qwen3-nemotron-32b-genrm-6bit",
+            "qwen3-nemotron-32b-genrm:axq",
+            "qwen3-nemotron-32b-genrm:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3-vl-8b-4bit",
+        preset: Some("qwen3-vl-8b"),
+        repo_id: "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit",
+        aliases: &[
+            "ax-qwen3-vl-8b-4bit",
+            "ax-qwen3-vl-8b-axq-4bit",
+            "qwen3-vl-8b:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3-vl-8b",
+        preset: Some("qwen3-vl-8b"),
+        repo_id: "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-qwen3-vl-8b",
+            "ax-qwen3-vl-8b-axq",
+            "ax-qwen3-vl-8b-6bit",
+            "qwen3-vl-8b:axq",
+            "qwen3-vl-8b:axq-6bit",
+            "qwen3-vl-8b-instruct:axq",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-27b-axq-4bit-base",
+        preset: Some("qwen3.8-27b"),
+        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit",
+        aliases: &[
+            "ax-qwen3.8-27b-axq-4bit-base",
+            "qwen3.8-27b:axq-4bit-base",
+            "ax-qwen3.8-27b-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-27b-axq-6bit-base",
+        preset: Some("qwen3.8-27b"),
+        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-qwen3.8-27b-axq-6bit-base",
+            "qwen3.8-27b:axq-6bit-base",
+            "ax-qwen3.8-27b-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-27b-axq-8bit-base",
+        preset: Some("qwen3.8-27b"),
+        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit",
+        aliases: &["ax-qwen3.8-27b-axq-8bit-base", "qwen3.8-27b:axq-8bit-base"],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-27b-axq-8bit",
+        preset: Some("qwen3.8-27b"),
+        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
+        aliases: &[
+            "ax-qwen3.8-27b-axq-8bit",
+            "qwen3.8-27b:axq-8bit",
+            "ax-qwen3.8-27b-8bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-27b-axq-mxfp4-base",
+        preset: Some("qwen3.8-27b"),
+        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
+        aliases: &[
+            "ax-qwen3.8-27b-axq-mxfp4-base",
+            "qwen3.8-27b:axq-mxfp4-base",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-27b-axq-mxfp4",
+        preset: Some("qwen3.8-27b"),
+        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+        aliases: &[
+            "ax-qwen3.8-27b-axq-mxfp4",
+            "qwen3.8-27b:axq-mxfp4",
+            "ax-qwen3.8-27b-mxfp4",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-unlimited-ocr",
+        preset: None,
+        repo_id: "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
+        aliases: &[
+            "ax-unlimited-ocr",
+            "ax-unlimited-ocr-3b",
+            "unlimited-ocr",
+            "unlimited-ocr-3b",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-gpt-oss-120b-axq-6bit",
+        preset: Some("gpt-oss-120b"),
+        repo_id: "AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-gpt-oss-120b-axq-6bit",
+            "ax-gpt-oss-120b-axq",
+            "gpt-oss-120b:axq",
+            "gpt-oss-120b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-gpt-oss-20b-axq-4bit",
+        preset: Some("gpt-oss-20b"),
+        repo_id: "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit",
+        aliases: &["ax-gpt-oss-20b-axq-4bit", "gpt-oss-20b:axq-4bit"],
+        downloadable: true,
+        approx_size_bytes: None,
+    },
+    ModelProfile {
+        label: "ax-gpt-oss-20b-axq-6bit",
+        preset: Some("gpt-oss-20b"),
+        repo_id: "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit",
+        aliases: &[
+            "ax-gpt-oss-20b-axq-6bit",
+            "ax-gpt-oss-20b-axq",
+            "gpt-oss-20b:axq",
+            "gpt-oss-20b:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: None,
     },
 ];
 
@@ -3837,8 +4457,12 @@ mod tests {
         assert!(!value.to_string().contains('\n'));
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 39] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 77] = [
+        "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
+        "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
+        "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
         "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+        "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-OptiQ-4bit",
         "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
         "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
         "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP",
@@ -3849,13 +4473,37 @@ mod tests {
         "AutomatosX/AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP",
         "AutomatosX/AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP",
         "AutomatosX/AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP",
+        "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+        "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+        "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-4bit",
+        "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-6bit",
+        "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-OptiQ-4bit",
+        "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit",
+        "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-OptiQ-4bit",
+        "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-4bit",
+        "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit",
+        "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+        "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
+        "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit",
+        "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit",
+        "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+        "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+        "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
+        "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
         "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
         "AutomatosX/AX-Qwen3-Coder-Next-MLX-6bit",
+        "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit",
+        "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit",
+        "AutomatosX/AX-Qwen3-Coder-Next-MLX-OptiQ-4bit",
         "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
         "AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ",
         "AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
+        "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-4bit",
+        "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit",
         "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
         "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
+        "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit",
+        "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit",
         "AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP",
         "AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP",
         "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
@@ -3869,14 +4517,24 @@ mod tests {
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit",
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit",
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit",
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
         "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
         "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",
         "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP",
         "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
+        "AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit",
+        "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit",
+        "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit",
     ];
 
     #[test]
@@ -3899,7 +4557,7 @@ mod tests {
                 .iter()
                 .filter(|target| target["mtp_included"] == true)
                 .count(),
-            30
+            32
         );
     }
 
@@ -4088,8 +4746,9 @@ mod tests {
         assert_eq!(qwen38.repo_id, "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP");
         assert_eq!(
             profile_revision(qwen38),
-            Some("a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6")
+            Some("3e290738e96972307c6aeb9934ab170ca0eae1c1")
         );
+        assert_eq!(profile_certification(qwen38), None);
 
         let vl_six = profile_for_model("qwen3-vl-30b-a3b:axq").unwrap();
         assert_eq!(
@@ -4098,9 +4757,9 @@ mod tests {
         );
         assert_eq!(
             profile_revision(vl_six),
-            Some("700ec2c305f5f80e4d7c841c5aec80b050b949c6")
+            Some("b48b626d9b00e45d6200aa3c15e40cc47d83b7e7")
         );
-        assert_eq!(profile_certification(vl_six), Some("candidate"));
+        assert_eq!(profile_certification(vl_six), None);
 
         let vl_four = profile_for_model("ax-qwen3-vl-30b-4bit").unwrap();
         assert_eq!(
@@ -4109,9 +4768,26 @@ mod tests {
         );
         assert_eq!(
             profile_revision(vl_four),
-            Some("1f4c21a0c9d4347294d3f082928fdfd854284383")
+            Some("e932be1b8ab79f5410f607de7eb7312756325fce")
         );
-        assert_eq!(profile_certification(vl_four), Some("candidate"));
+        assert_eq!(profile_certification(vl_four), None);
+
+        assert_eq!(
+            profile_for_model("gpt-oss-20b:axq").unwrap().repo_id,
+            "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit"
+        );
+        assert_eq!(
+            profile_for_model("ax-qwen3-coder-next").unwrap().repo_id,
+            "AutomatosX/AX-Qwen3-Coder-Next-MLX-OptiQ-4bit"
+        );
+        assert_eq!(
+            profile_for_model("qwen3-coder-next:axq").unwrap().repo_id,
+            "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit"
+        );
+        assert_eq!(
+            profile_for_model("nemotron-3-nano:axq").unwrap().repo_id,
+            "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit"
+        );
 
         let default = profile_for_model("qwen3.6-27b").unwrap();
         assert_eq!(default.repo_id, "mlx-community/Qwen3.6-27B-4bit");
@@ -4138,6 +4814,27 @@ mod tests {
         assert_eq!(
             profile_for_model("ax-gemma4-12b").unwrap().repo_id,
             "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP"
+        );
+
+        let muse_six = profile_for_model("muse-glimmer-30b:axq").unwrap();
+        assert_eq!(
+            muse_six.repo_id,
+            "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit"
+        );
+        assert_eq!(
+            profile_revision(muse_six),
+            Some("367745bd05b77bf82188f3799677e4beba543e8d")
+        );
+        assert_eq!(profile_certification(muse_six), Some("candidate"));
+        assert_eq!(muse_six.preset, Some("muse-glimmer-30b"));
+        let muse_default = profile_for_model("muse-glimmer-30b").unwrap();
+        assert_eq!(
+            muse_default.repo_id,
+            "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit"
+        );
+        assert_eq!(
+            profile_for_model("ax-muse-glimmer-30b").unwrap().repo_id,
+            "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit"
         );
     }
 

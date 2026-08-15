@@ -67,6 +67,8 @@ pub(crate) enum ChatPromptTemplate {
     MinistralInstruct,
     /// OpenAI Harmony format used by GPT-OSS (`<|start|>…<|message|>…<|end|>`).
     GptOssHarmony,
+    /// Meta Muse-Glimmer ATEM (`<|start|>…<|message|>…<|eot|>`, `to=self` reasoning).
+    MuseGlimmerAtem,
     /// DeepSeek V3/R1/V4: `<｜User｜>` / `<｜Assistant｜>` with think-block framing.
     DeepSeekChat,
     Unsupported(ChatUnsupportedFamily),
@@ -146,6 +148,8 @@ impl ChatPromptTemplate {
             || normalized.contains("gptoss")
         {
             Self::GptOssHarmony
+        } else if is_muse_glimmer_model(model_id) {
+            Self::MuseGlimmerAtem
         } else if normalized.contains("nemotron") {
             // Nemotron 3 Nano hub chat_template.jinja is ChatML + <think> (Qwen-like).
             Self::QwenChatMl
@@ -352,6 +356,21 @@ pub(crate) fn is_ornith_model(model_id: &str) -> bool {
     model_id.to_ascii_lowercase().contains("ornith")
 }
 
+pub(crate) fn is_muse_glimmer_model(model_id: &str) -> bool {
+    let m = model_id.to_ascii_lowercase();
+    m.contains("muse-glimmer") || m.contains("muse_glimmer") || m.contains("museglimmer")
+}
+
+const MUSE_GLIMMER_BOS: &str = "<|begin_of_text|>";
+const MUSE_GLIMMER_EOT: &str = "<|eot|>";
+const MUSE_GLIMMER_DEFAULT_SYSTEM: &str = "\
+You are a helpful AI assistant.
+Knowledge cutoff: 2026-01-04.
+
+Reasoning strength: high.
+
+# Valid recipients: \"self\", \"user\".";
+
 pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
     // Named 35B-A3B fine-tunes keep product ids (holo3 / ornith) but use the
     // same Qwen3.5/3.6 thinking contract as the official MoE packs.
@@ -412,6 +431,13 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
         // with <|end|> then starts another role (hallucinated multi-turn).
         ChatPromptTemplate::GptOssHarmony => {
             vec!["<|return|>".to_string(), "<|end|><|start|>".to_string()]
+        }
+        ChatPromptTemplate::MuseGlimmerAtem => {
+            vec![
+                "<|eot|>".to_string(),
+                "<|end_of_text|>".to_string(),
+                "<|end|>".to_string(),
+            ]
         }
         ChatPromptTemplate::DeepSeekChat => {
             vec![DEEPSEEK_EOS.to_string(), DEEPSEEK_USER.to_string()]
@@ -515,6 +541,7 @@ fn render_prompt_internal(
             prompt.push_str("<|end|>");
         }
         ChatPromptTemplate::DeepSeekChat => prompt.push_str(DEEPSEEK_BOS),
+        ChatPromptTemplate::MuseGlimmerAtem => prompt.push_str(MUSE_GLIMMER_BOS),
         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
         ChatPromptTemplate::Unsupported(family) => {
             return Err(format!(
@@ -522,6 +549,15 @@ fn render_prompt_internal(
                 family = family.label()
             ));
         }
+    }
+    if matches!(template, ChatPromptTemplate::MuseGlimmerAtem)
+        && !messages
+            .iter()
+            .any(|(role, _)| normalize_role(role).is_ok_and(|r| r == "system"))
+    {
+        prompt.push_str("<|start|>system<|message|>");
+        prompt.push_str(MUSE_GLIMMER_DEFAULT_SYSTEM);
+        prompt.push_str(MUSE_GLIMMER_EOT);
     }
     let mut mistral_system: Option<&str> = None;
     let mut ministral_system: Option<&str> = None;
@@ -728,6 +764,36 @@ fn render_prompt_internal(
                     _ => {}
                 }
             }
+            ChatPromptTemplate::MuseGlimmerAtem => match role {
+                "system" => {
+                    prompt.push_str("<|start|>system<|message|>");
+                    prompt.push_str(content);
+                    if !content.to_ascii_lowercase().contains("reasoning strength") {
+                        prompt.push_str("\n\nReasoning strength: high.");
+                    }
+                    if !content.contains("Valid recipients") {
+                        prompt.push_str("\n\n# Valid recipients: \"self\", \"user\".");
+                    }
+                    prompt.push_str(MUSE_GLIMMER_EOT);
+                }
+                "user" => {
+                    prompt.push_str("<|start|>user<|message|>");
+                    prompt.push_str(content);
+                    prompt.push_str(MUSE_GLIMMER_EOT);
+                }
+                "assistant" => {
+                    prompt.push_str("<|start|>assistant to=user<|message|>");
+                    prompt.push_str(content);
+                    prompt.push_str(MUSE_GLIMMER_EOT);
+                }
+                "tool" | "function" => {
+                    prompt.push_str("<|start|>tool<|message|><tool_output>\n");
+                    prompt.push_str(content);
+                    prompt.push_str("\n</tool_output>");
+                    prompt.push_str(MUSE_GLIMMER_EOT);
+                }
+                _ => {}
+            },
             ChatPromptTemplate::DeepSeekChat => {
                 if matches!(role, "tool" | "function") {
                     if !deepseek_tool_response_open {
@@ -830,6 +896,12 @@ fn render_prompt_internal(
             } else {
                 DEEPSEEK_THINK_CLOSE
             });
+        }
+        ChatPromptTemplate::MuseGlimmerAtem => {
+            prompt.push_str("<|start|>assistant");
+            if thinking_enabled {
+                prompt.push_str(" to=self<|message|>");
+            }
         }
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
         ChatPromptTemplate::Unsupported(_) => {
@@ -1607,6 +1679,14 @@ mod tests {
             ChatPromptTemplate::QwenChatMl
         );
         assert_eq!(
+            ChatPromptTemplate::for_model_id("muse-glimmer-30b"),
+            ChatPromptTemplate::MuseGlimmerAtem
+        );
+        assert_eq!(
+            ChatPromptTemplate::for_model_id("AX-Muse-Glimmer-30B-MLX-AXQ-4bit"),
+            ChatPromptTemplate::MuseGlimmerAtem
+        );
+        assert_eq!(
             ChatPromptTemplate::for_model_id("glm4.7-flash-4bit"),
             ChatPromptTemplate::Glm47
         );
@@ -1622,6 +1702,24 @@ mod tests {
             ),
             ChatPromptTemplate::QwenChatMl
         );
+    }
+
+    #[test]
+    fn muse_glimmer_atem_renders_default_system_and_generation() {
+        let prompt = render_prompt(
+            "muse-glimmer-30b",
+            &[("user".to_string(), "hello".to_string())],
+        )
+        .expect("muse glimmer prompt");
+        assert!(prompt.starts_with("<|begin_of_text|>"), "{prompt}");
+        assert!(prompt.contains("Knowledge cutoff: 2026-01-04."), "{prompt}");
+        assert!(
+            prompt.contains("<|start|>user<|message|>hello<|eot|>"),
+            "{prompt}"
+        );
+        assert!(prompt.ends_with("<|start|>assistant"), "{prompt}");
+        let stops = default_stop_sequences(ChatPromptTemplate::MuseGlimmerAtem);
+        assert!(stops.contains(&"<|eot|>".to_string()));
     }
 
     #[test]

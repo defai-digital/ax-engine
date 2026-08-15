@@ -220,6 +220,15 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         support_tier: ModelSupportTier::Compatible,
     },
     ArchitectureRegistration {
+        family_label: "muse_glimmer",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "Muse-Glimmer dense SWA + gated attention; convert recognized; native decode incubating (not on Gemma SWA allowlist)",
+        support_tier: ModelSupportTier::Experimental,
+    },
+    ArchitectureRegistration {
         family_label: "diffusion_gemma",
         mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::BlockDiffusion,
@@ -480,6 +489,11 @@ mod tests {
         assert!(!diff.dense_batched_decode_candidate);
         assert_eq!(diff.default_generation, GenerationKind::BlockDiffusion);
         assert_eq!(diff.layer_forward_route, LayerForwardRoute::Standard);
+
+        let muse = lookup_architecture("muse_glimmer").expect("muse_glimmer registered");
+        assert!(!muse.dense_batched_decode_candidate);
+        assert_eq!(muse.support_tier, ModelSupportTier::Experimental);
+        assert_eq!(muse.layer_forward_route, LayerForwardRoute::Standard);
     }
 
     #[test]

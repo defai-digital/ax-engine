@@ -1561,6 +1561,7 @@ fn ollama_template_hint(live: &LiveState) -> String {
         ChatPromptTemplate::MistralInstruct => "mistral".to_string(),
         ChatPromptTemplate::MinistralInstruct => "ministral".to_string(),
         ChatPromptTemplate::GptOssHarmony => "gpt-oss-harmony".to_string(),
+        ChatPromptTemplate::MuseGlimmerAtem => "muse-glimmer-atem".to_string(),
         ChatPromptTemplate::DeepSeekChat => "deepseek".to_string(),
         ChatPromptTemplate::Unsupported(family) => family.label().to_string(),
         ChatPromptTemplate::PlainRolePrefix => "plain".to_string(),

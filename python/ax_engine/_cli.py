@@ -195,6 +195,24 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
             "ornith-1.0-35b-6bit",
         ),
     ),
+    # Muse-Glimmer-30B: Meta dense image-text agent (ATEM chat). AXQ-only family.
+    ModelProfile(
+        label="muse-glimmer-30b",
+        preset="muse-glimmer-30b",
+        repo_id="AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+        aliases=(
+            "muse-glimmer-30b",
+            "muse-glimmer",
+            "muse-glimmer-30b-4bit",
+            "glimmer-30b",
+        ),
+    ),
+    ModelProfile(
+        label="muse-glimmer-30b-6bit",
+        preset="muse-glimmer-30b",
+        repo_id="AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
+        aliases=("muse-glimmer-30b-6bit", "muse-glimmer-6bit"),
+    ),
     # --- Secondary: research / enterprise Llama (standard graph) ---
     ModelProfile(
         label="llama3.1-8b",
@@ -322,13 +340,23 @@ def _automatosx_profile(
 #   <family>:axq             pinned AXQ 6-bit
 #   <family>:axq-4bit        pinned AXQ 4-bit
 #   ax-<family>-axq          same as :axq (download-list friendly)
-# AXQ-only families (Holo3, Ornith, Qwen 3.8, Qwen3-VL) may use ax-<family>
-# as the AXQ pack because there is no OptiQ sibling to preserve.
+# AXQ-only families (Holo3, Ornith, Qwen 3.8, Qwen3-VL, Muse-Glimmer,
+# Nemotron Nano, Mistral Small AXQ, GPT-OSS AXQ when selected via :axq)
+# may use ax-<family> as the AXQ pack when there is no OptiQ sibling.
 AUTOMATOSX_MODEL_PROFILES = (
     _automatosx_profile(
         "ax-diffusiongemma-26b",
+        "AX-DiffusionGemma-26B-A4B-IT-MLX-OptiQ-4bit",
+        (
+            "ax-diffusiongemma",
+            "ax-diffusiongemma-26b-optiq-4bit",
+            "ax-diffusiongemma-26b-a4b-it-optiq-4bit",
+        ),
+    ),
+    _automatosx_profile(
+        "ax-diffusiongemma-26b-4bit",
         "AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
-        ("ax-diffusiongemma-26b-4bit", "ax-diffusiongemma-26b-a4b-it-4bit"),
+        ("ax-diffusiongemma-26b-a4b-it-4bit",),
     ),
     _automatosx_profile(
         "ax-embeddinggemma-300m",
@@ -425,14 +453,41 @@ AUTOMATOSX_MODEL_PROFILES = (
     ),
     _automatosx_profile(
         "ax-qwen3-coder-next",
+        "AX-Qwen3-Coder-Next-MLX-OptiQ-4bit",
+        (
+            "ax-qwen3-coder",
+            "ax-qwen3-coder-next-optiq-4bit",
+            "qwen3-coder-next:optiq-4bit",
+        ),
+        preset="qwen3-coder-next",
+    ),
+    _automatosx_profile(
+        "ax-qwen3-coder-next-4bit",
         "AX-Qwen3-Coder-Next-MLX-4bit",
-        ("ax-qwen3-coder", "ax-qwen3-coder-next-4bit"),
+        ("ax-qwen3-coder-4bit",),
         preset="qwen3-coder-next",
     ),
     _automatosx_profile(
         "ax-qwen3-coder-next-6bit",
         "AX-Qwen3-Coder-Next-MLX-6bit",
         ("ax-qwen3-coder-6bit",),
+        preset="qwen3-coder-next",
+    ),
+    _automatosx_profile(
+        "ax-qwen3-coder-next-axq-6bit",
+        "AX-Qwen3-Coder-Next-MLX-AXQ-6bit",
+        (
+            "ax-qwen3-coder-next-axq",
+            "ax-qwen3-coder-axq",
+            "qwen3-coder-next:axq",
+            "qwen3-coder-next:axq-6bit",
+        ),
+        preset="qwen3-coder-next",
+    ),
+    _automatosx_profile(
+        "ax-qwen3-coder-next-axq-4bit",
+        "AX-Qwen3-Coder-Next-MLX-AXQ-4bit",
+        ("ax-qwen3-coder-axq-4bit", "qwen3-coder-next:axq-4bit"),
         preset="qwen3-coder-next",
     ),
     _automatosx_profile(
@@ -508,14 +563,20 @@ AUTOMATOSX_MODEL_PROFILES = (
         preset="qwen3.6-27b",
     ),
     _automatosx_profile(
+        "ax-qwen3.8-27b",
+        "AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+        ("ax-qwen38-27b", "ax-qwen3.8-27b-axq", "ax-qwen3.8"),
+        preset="qwen3.8-27b",
+    ),
+    _automatosx_profile(
         "ax-qwen3.8-27b-axq-6bit",
         "AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
         (
-            "ax-qwen3.8-27b-axq",
             "ax-qwen38-27b-axq-6bit",
             "qwen3.8-27b:axq",
             "qwen3.8-27b:axq-6bit",
         ),
+        preset="qwen3.8-27b",
     ),
     _automatosx_profile(
         "ax-qwen3.8-27b-axq-4bit",
@@ -524,6 +585,43 @@ AUTOMATOSX_MODEL_PROFILES = (
             "ax-qwen38-27b-axq-4bit",
             "qwen3.8-27b:axq-4bit",
         ),
+        preset="qwen3.8-27b",
+    ),
+    _automatosx_profile(
+        "ax-qwen3.8-27b-axq-6bit-base",
+        "AX-Qwen3.8-27B-MLX-AXQ-6bit",
+        ("qwen3.8-27b:axq-6bit-base", "ax-qwen3.8-27b-6bit"),
+        preset="qwen3.8-27b",
+    ),
+    _automatosx_profile(
+        "ax-qwen3.8-27b-axq-4bit-base",
+        "AX-Qwen3.8-27B-MLX-AXQ-4bit",
+        ("qwen3.8-27b:axq-4bit-base", "ax-qwen3.8-27b-4bit"),
+        preset="qwen3.8-27b",
+    ),
+    _automatosx_profile(
+        "ax-qwen3.8-27b-axq-8bit",
+        "AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
+        ("qwen3.8-27b:axq-8bit", "ax-qwen3.8-27b-8bit"),
+        preset="qwen3.8-27b",
+    ),
+    _automatosx_profile(
+        "ax-qwen3.8-27b-axq-8bit-base",
+        "AX-Qwen3.8-27B-MLX-AXQ-8bit",
+        ("qwen3.8-27b:axq-8bit-base",),
+        preset="qwen3.8-27b",
+    ),
+    _automatosx_profile(
+        "ax-qwen3.8-27b-axq-mxfp4",
+        "AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+        ("qwen3.8-27b:axq-mxfp4", "ax-qwen3.8-27b-mxfp4"),
+        preset="qwen3.8-27b",
+    ),
+    _automatosx_profile(
+        "ax-qwen3.8-27b-axq-mxfp4-base",
+        "AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
+        ("qwen3.8-27b:axq-mxfp4-base",),
+        preset="qwen3.8-27b",
     ),
     _automatosx_profile(
         "ax-qwen3.6-35b-4bit",
@@ -560,8 +658,7 @@ AUTOMATOSX_MODEL_PROFILES = (
         ("ax-qwen36-35b-axq-4bit", "qwen3.6-35b:axq-4bit"),
         preset="qwen3.6-35b",
     ),
-    # Qwen3-VL 30B-A3B Instruct AXQ packs: vision MoE, no MTP. Explicit
-    # candidates — not Tier-1 certified; pin revisions until gates pass.
+    # Qwen3-VL 30B-A3B Instruct AXQ: Hub Checkpoint Tier 1. No MTP.
     _automatosx_profile(
         "ax-qwen3-vl-30b-a3b-axq-6bit",
         "AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
@@ -575,6 +672,7 @@ AUTOMATOSX_MODEL_PROFILES = (
             "qwen3-vl-30b-a3b:axq",
             "qwen3-vl-30b-a3b:axq-6bit",
         ),
+        preset="qwen3-vl-30b",
     ),
     _automatosx_profile(
         "ax-qwen3-vl-30b-a3b-axq-4bit",
@@ -585,6 +683,26 @@ AUTOMATOSX_MODEL_PROFILES = (
             "ax-qwen3-vl-30b-a3b-4bit",
             "qwen3-vl-30b-a3b:axq-4bit",
         ),
+        preset="qwen3-vl-30b",
+    ),
+    # Qwen3-VL 8B Instruct AXQ: dense VL, development / not certified.
+    _automatosx_profile(
+        "ax-qwen3-vl-8b",
+        "AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit",
+        (
+            "ax-qwen3-vl-8b-axq",
+            "ax-qwen3-vl-8b-6bit",
+            "qwen3-vl-8b:axq",
+            "qwen3-vl-8b:axq-6bit",
+            "qwen3-vl-8b-instruct:axq",
+        ),
+        preset="qwen3-vl-8b",
+    ),
+    _automatosx_profile(
+        "ax-qwen3-vl-8b-4bit",
+        "AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit",
+        ("ax-qwen3-vl-8b-axq-4bit", "qwen3-vl-8b:axq-4bit"),
+        preset="qwen3-vl-8b",
     ),
     _automatosx_profile(
         "ax-holo3-35b-4bit",
@@ -610,7 +728,7 @@ AUTOMATOSX_MODEL_PROFILES = (
         preset="holo3-35b",
     ),
     # Ornith 1.0 35B AXQ packs: Qwen3.5-class 35B-A3B MoE, no MTP.
-    # Development / not certified — pin revisions like other AXQ candidates.
+    # Hub Checkpoint Tier 1; pin the revision but do not label as candidate.
     _automatosx_profile(
         "ax-ornith-35b-4bit",
         "AX-Ornith-1.0-35B-MLX-AXQ-4bit",
@@ -634,6 +752,222 @@ AUTOMATOSX_MODEL_PROFILES = (
         ("ax-ornith", "ax-ornith-1.0-35b", "ax-ornith-1.0"),
         preset="ornith-35b",
     ),
+    # Muse-Glimmer 30B AXQ packs: dense image-text agent, no MTP.
+    # Development / not certified — pin revisions like other AXQ candidates.
+    _automatosx_profile(
+        "ax-muse-glimmer-30b-4bit",
+        "AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+        (
+            "ax-muse-glimmer-4bit",
+            "ax-muse-glimmer-30b-axq-4bit",
+            "muse-glimmer-30b:axq-4bit",
+            "muse-glimmer:axq-4bit",
+        ),
+        preset="muse-glimmer-30b",
+    ),
+    _automatosx_profile(
+        "ax-muse-glimmer-30b-6bit",
+        "AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
+        (
+            "ax-muse-glimmer-6bit",
+            "ax-muse-glimmer-30b-axq-6bit",
+            "ax-muse-glimmer-30b-axq",
+            "muse-glimmer-30b:axq",
+            "muse-glimmer-30b:axq-6bit",
+            "muse-glimmer:axq",
+            "muse-glimmer:axq-6bit",
+        ),
+        preset="muse-glimmer-30b",
+    ),
+    _automatosx_profile(
+        "ax-muse-glimmer-30b",
+        "AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+        ("ax-muse-glimmer", "ax-glimmer-30b"),
+        preset="muse-glimmer-30b",
+    ),
+    # GPT-OSS AXQ: keep mlx-community MXFP4-Q4 as the family default.
+    _automatosx_profile(
+        "ax-gpt-oss-20b-axq-6bit",
+        "AX-gpt-oss-20b-MLX-AXQ-6bit",
+        (
+            "ax-gpt-oss-20b-axq",
+            "gpt-oss-20b:axq",
+            "gpt-oss-20b:axq-6bit",
+        ),
+        preset="gpt-oss-20b",
+    ),
+    _automatosx_profile(
+        "ax-gpt-oss-20b-axq-4bit",
+        "AX-gpt-oss-20b-MLX-AXQ-4bit",
+        ("gpt-oss-20b:axq-4bit",),
+        preset="gpt-oss-20b",
+    ),
+    _automatosx_profile(
+        "ax-gpt-oss-120b-axq-6bit",
+        "AX-gpt-oss-120b-MLX-AXQ-6bit",
+        (
+            "ax-gpt-oss-120b-axq",
+            "gpt-oss-120b:axq",
+            "gpt-oss-120b:axq-6bit",
+        ),
+        preset="gpt-oss-120b",
+    ),
+    # Ministral 3 (2512): do not retarget historical ministral-8b (2410).
+    _automatosx_profile(
+        "ax-ministral-3-8b",
+        "AX-Ministral-3-8B-Instruct-2512-MLX-OptiQ-4bit",
+        (
+            "ax-ministral-3-8b-optiq-4bit",
+            "ministral-3-8b",
+            "ministral-3",
+        ),
+        preset="ministral-3-8b",
+    ),
+    _automatosx_profile(
+        "ax-ministral-3-8b-axq-6bit",
+        "AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit",
+        (
+            "ax-ministral-3-8b-axq",
+            "ministral-3-8b:axq",
+            "ministral-3-8b:axq-6bit",
+        ),
+        preset="ministral-3-8b",
+    ),
+    _automatosx_profile(
+        "ax-ministral-3-14b",
+        "AX-Ministral-3-14B-Instruct-2512-MLX-OptiQ-4bit",
+        ("ax-ministral-3-14b-optiq-4bit", "ministral-3-14b"),
+        preset="ministral-3-14b",
+    ),
+    _automatosx_profile(
+        "ax-ministral-3-14b-axq-6bit",
+        "AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-6bit",
+        (
+            "ax-ministral-3-14b-axq",
+            "ministral-3-14b:axq",
+            "ministral-3-14b:axq-6bit",
+        ),
+        preset="ministral-3-14b",
+    ),
+    _automatosx_profile(
+        "ax-ministral-3-14b-axq-4bit",
+        "AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-4bit",
+        ("ministral-3-14b:axq-4bit",),
+        preset="ministral-3-14b",
+    ),
+    # Mistral Small AXQ-only AutomatosX sibling. Bare mistral-small stays mlx-community.
+    _automatosx_profile(
+        "ax-mistral-small",
+        "AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit",
+        (
+            "ax-mistral-small-24b",
+            "ax-mistral-small-axq",
+            "mistral-small:axq",
+            "mistral-small:axq-6bit",
+        ),
+        preset="mistral-small",
+    ),
+    _automatosx_profile(
+        "ax-mistral-small-axq-4bit",
+        "AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-4bit",
+        ("mistral-small:axq-4bit", "ax-mistral-small-4bit"),
+        preset="mistral-small",
+    ),
+    # Nemotron 3 Nano 30B-A3B AXQ-only (text-path nemotron_h).
+    _automatosx_profile(
+        "ax-nemotron-3-nano",
+        "AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit",
+        (
+            "ax-nemotron-3-nano-30b",
+            "nemotron-3-nano",
+            "nemotron-3-nano-30b",
+            "nemotron-3-nano:axq-4bit",
+        ),
+        preset="nemotron-3-nano",
+    ),
+    _automatosx_profile(
+        "ax-nemotron-3-nano-6bit",
+        "AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit",
+        (
+            "ax-nemotron-3-nano-axq",
+            "nemotron-3-nano:axq",
+            "nemotron-3-nano:axq-6bit",
+        ),
+        preset="nemotron-3-nano",
+    ),
+    # Qwen3-Nemotron 32B GenRM Principle: qwen3 judge workload.
+    _automatosx_profile(
+        "ax-qwen3-nemotron-32b-genrm",
+        "AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-4bit",
+        (
+            "ax-qwen3-nemotron-genrm",
+            "qwen3-nemotron-32b-genrm",
+            "qwen3-nemotron-32b-genrm:axq-4bit",
+        ),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-nemotron-32b-genrm-6bit",
+        "AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit",
+        (
+            "qwen3-nemotron-32b-genrm:axq",
+            "qwen3-nemotron-32b-genrm:axq-6bit",
+        ),
+    ),
+    # Devstral: 2512 OptiQ is the AutomatosX flagship; 2505 AXQ is :axq.
+    # Bare devstral-small stays mlx-community 2505.
+    _automatosx_profile(
+        "ax-devstral-small",
+        "AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
+        (
+            "ax-devstral",
+            "ax-devstral-small-2",
+            "ax-devstral-small-optiq-4bit",
+            "devstral-small-2",
+        ),
+        preset="devstral-small",
+    ),
+    _automatosx_profile(
+        "ax-devstral-small-axq-6bit",
+        "AX-Devstral-Small-2505-MLX-AXQ-6bit",
+        (
+            "ax-devstral-small-axq",
+            "devstral-small:axq",
+            "devstral-small:axq-6bit",
+        ),
+        preset="devstral-small",
+    ),
+    _automatosx_profile(
+        "ax-devstral-small-axq-4bit",
+        "AX-Devstral-Small-2505-MLX-AXQ-4bit",
+        ("devstral-small:axq-4bit",),
+        preset="devstral-small",
+    ),
+    _automatosx_profile(
+        "ax-unlimited-ocr",
+        "AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
+        (
+            "ax-unlimited-ocr-3b",
+            "unlimited-ocr",
+            "unlimited-ocr-3b",
+        ),
+    ),
+    # Qwen3-ASR: catalog/download only; model_type=qwen3_asr is not a native
+    # decode family yet.
+    _automatosx_profile(
+        "ax-qwen3-asr-1.7b",
+        "AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
+        (
+            "ax-qwen3-asr",
+            "qwen3-asr-1.7b",
+            "qwen3-asr",
+            "qwen3-asr-1.7b:axq-4bit",
+        ),
+    ),
+    _automatosx_profile(
+        "ax-qwen3-asr-1.7b-6bit",
+        "AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
+        ("qwen3-asr-1.7b:axq", "qwen3-asr-1.7b:axq-6bit", "qwen3-asr:axq"),
+    ),
 )
 
 MODEL_PROFILES = (*MODEL_PROFILES, *AUTOMATOSX_MODEL_PROFILES)
@@ -649,16 +983,97 @@ _PINNED_PROFILE_REVISIONS = {
         "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"
     ),
     "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit": (
-        "1f4c21a0c9d4347294d3f082928fdfd854284383"
+        "e932be1b8ab79f5410f607de7eb7312756325fce"
     ),
     "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit": (
-        "700ec2c305f5f80e4d7c841c5aec80b050b949c6"
+        "b48b626d9b00e45d6200aa3c15e40cc47d83b7e7"
+    ),
+    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit": (
+        "323a48f2a821f7d0349466095b1b84562d11c9a0"
+    ),
+    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit": (
+        "e52d06296bf133b248a6572561c4f2e150dc3429"
     ),
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP": (
         "7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e"
     ),
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP": (
-        "a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6"
+        "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+    ),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit": (
+        "6df63e00b1fa952bffd3b4ad5ecd182f9d48a8a4"
+    ),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit": (
+        "1a54b325bef89b056f8ee9a882452419cceb018e"
+    ),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit": (
+        "36f9d25c4b1ea2282774b9acf84fdad0241a8a54"
+    ),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP": (
+        "4037b7242a4de8deaf71247a685538591cad160a"
+    ),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4": (
+        "4797708af95b9d5cca343d0a4671511fc2765e1a"
+    ),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP": (
+        "b2c5354f779e430d0c1733143db848a72b71c16e"
+    ),
+    "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit": (
+        "a524f97c81ec82be3eead17aabcf652450d33842"
+    ),
+    "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit": (
+        "29e7bcf5e6ef2471cc3587783713e3631e98b50c"
+    ),
+    "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit": (
+        "20f2d2bd0b1055f8ab990e82fa0fc784a9de4c89"
+    ),
+    "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit": (
+        "14aee3b601240c5075fc4c84fb6f088400aeeba5"
+    ),
+    "AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit": (
+        "306f5a9858cadd8e0a6b01201d37ad2d24ddcdd7"
+    ),
+    "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit": (
+        "93d9991a3636c6c46cb92e711d11f1be5de96b6a"
+    ),
+    "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-4bit": (
+        "669dda7a7d78e2fa167d6dae70128f8cf2fe778b"
+    ),
+    "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-6bit": (
+        "74cc761a1f6f3e2d0e8bbb4d3d8c15cd17ef221a"
+    ),
+    "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-4bit": (
+        "91c20bd52f6c16b6b7e6f6e60b0a859ddd1ad8b0"
+    ),
+    "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit": (
+        "f00654783b3e3b2a020a712161eb1ac7861da348"
+    ),
+    "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit": (
+        "cb2db117e80571afa466644e91ec39bd528ccf7f"
+    ),
+    "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit": (
+        "a4dcc84b9b7318cc206f2b17dbc1555883cf67fd"
+    ),
+    "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-4bit": (
+        "e021a6ed572d6d2a99fad028707f09a6b524d7f2"
+    ),
+    "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit": (
+        "5608f0c197a7ffcd3366894cce7eb9918b24c8c1"
+    ),
+    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit": (
+        "17e0ce81a7d6aeb6729a0c84b92340e26fbe1a6d"
+    ),
+    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit": (
+        "04be51a3173b94e0a0d859be871cfb7a749405d2"
+    ),
+    "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8": (
+        "4d928dce639633f1138113d733dd11c120da87c9"
+    ),
+    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit": (
+        "1c3fb2a006883d88ee0b84a831b480e4a9dc97c6"
+    ),
+    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit": (
+        "d6de0453b22af8bbbcfebbd43326ccea6ed35e64"
     ),
     "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit": (
         "7b2256130cd55ea6b7489817a9a00c46e9874403"
@@ -667,10 +1082,16 @@ _PINNED_PROFILE_REVISIONS = {
         "e6cc340b04bfcec57544e462ec756e48dd248cf9"
     ),
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit": (
-        "d7416c665cd8ae6e5fbebc3f17bd547b78cf11fc"
+        "9ff7a33b034a7e72cdc32a531ed8dd0d07e35116"
     ),
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit": (
-        "37361076641d7b7487d1b5ce1b68243ffbdbffe0"
+        "41015da430ae62802d9357b0ef31bf46c2b13b58"
+    ),
+    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit": (
+        "bcfb0b748fc44487c1657fb6ae190592d515398b"
+    ),
+    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit": (
+        "367745bd05b77bf82188f3799677e4beba543e8d"
     ),
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP": (
         "952031cbfbb9cf31414a57eeb681c34dc08ec1e9"
@@ -698,17 +1119,18 @@ _PINNED_PROFILE_REVISIONS = {
     ),
 }
 
-# Holo3 AXQ packs are Tier 1 certified product snapshots; pin the revision
-# but do not label them as candidates. Ornith stays an explicit candidate.
+# Hub Checkpoint Tier 1 packs are pinned but not labeled candidate
+# (Holo3, Ornith, Qwen3-VL 30B, Coder-Next AXQ, GPT-OSS AXQ, Qwen 3.8
+# 6/8/MXFP4). Development AXQ stays in this set.
 _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
-    "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
-    "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
-    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
@@ -717,6 +1139,19 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit",
+    "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-4bit",
+    "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-6bit",
+    "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-4bit",
+    "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit",
+    "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit",
+    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
+    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
 }
 
 

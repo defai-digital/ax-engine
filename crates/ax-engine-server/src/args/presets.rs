@@ -30,8 +30,35 @@ pub enum ServerPreset {
     /// Same native `qwen3_5` graph as Holo3 / Qwen 3.6 35B; vision BF16-sidecar.
     #[value(name = "ornith-35b", alias = "ornith-1.0-35b", alias = "ornith")]
     Ornith35b,
+    /// Meta Muse-Glimmer-30B image-text agent (dense `muse_glimmer` VLM).
+    /// AXQ-only family; product default is the compact 4-bit pack. Native
+    /// decode is incubating (gated attention + centered RMSNorm + ATEM).
+    #[value(
+        name = "muse-glimmer-30b",
+        alias = "muse-glimmer",
+        alias = "glimmer-30b"
+    )]
+    MuseGlimmer30b,
     #[value(name = "qwen3-coder-next", alias = "qwen3-coder")]
     Qwen3CoderNext,
+    #[value(name = "qwen3.8-27b", alias = "qwen38-27b", alias = "qwen3.8")]
+    Qwen38_27b,
+    #[value(name = "qwen3-vl-30b", alias = "qwen3-vl-30b-a3b")]
+    Qwen3Vl30b,
+    #[value(name = "qwen3-vl-8b", alias = "qwen3-vl-8b-instruct")]
+    Qwen3Vl8b,
+    /// NVIDIA Nemotron 3 Nano 30B-A3B (`nemotron_h` text path).
+    #[value(
+        name = "nemotron-3-nano",
+        alias = "nemotron-3-nano-30b",
+        alias = "nemotron"
+    )]
+    Nemotron3Nano,
+    /// Ministral 3 8B Instruct 2512 (mistral3). Distinct from historical 2410.
+    #[value(name = "ministral-3-8b", alias = "ministral-3")]
+    Ministral3_8b,
+    #[value(name = "ministral-3-14b")]
+    Ministral3_14b,
     // Secondary: research / enterprise Llama
     #[value(name = "llama3.1-8b", alias = "llama31-8b")]
     Llama31_8b,
@@ -211,6 +238,25 @@ impl ServerPreset {
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
+            // Muse-Glimmer-30B: Meta dense image-text agent. Product id stays
+            // muse-glimmer-30b so Hub/catalog rows are not mislabeled as Gemma.
+            // Convert recognizes model_type=muse_glimmer; native decode is not
+            // yet on the standard Gemma SWA path (gated attention + ATEM).
+            Self::MuseGlimmer30b => PresetDefinition {
+                preset: self,
+                label: "muse-glimmer-30b",
+                model_id: "muse-glimmer-30b",
+                aliases: &[
+                    "muse-glimmer-30b",
+                    "muse-glimmer",
+                    "glimmer-30b",
+                    "ax-muse-glimmer-30b",
+                    "ax-muse-glimmer",
+                ],
+                model_types: &["muse_glimmer", "muse_glimmer_text"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
             // Qwen3-Coder-Next direct-support preset: hybrid GatedDeltaNet
             // linear attention + sparse MoE on the qwen3_next family (same
             // repo-owned graph as Qwen 3.6), coder chat template.
@@ -226,6 +272,76 @@ impl ServerPreset {
                     "ax-qwen3-coder-next",
                 ],
                 model_types: &["qwen3_next"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Qwen38_27b => PresetDefinition {
+                preset: self,
+                label: "qwen3.8-27b",
+                model_id: "qwen3.8-27b",
+                aliases: &[
+                    "qwen3.8-27b",
+                    "qwen38-27b",
+                    "qwen3.8",
+                    "ax-qwen3.8-27b",
+                    "ax-qwen38-27b",
+                ],
+                model_types: &["qwen3_5", "qwen3.5", "qwen3_5_moe", "qwen3_5_moe_text"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Qwen3Vl30b => PresetDefinition {
+                preset: self,
+                label: "qwen3-vl-30b",
+                model_id: "qwen3-vl-30b-a3b",
+                aliases: &[
+                    "qwen3-vl-30b",
+                    "qwen3-vl-30b-a3b",
+                    "ax-qwen3-vl-30b",
+                    "ax-qwen3-vl-30b-a3b",
+                ],
+                model_types: &["qwen3_vl_moe", "qwen3-vl-moe", "qwen3_vl"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Qwen3Vl8b => PresetDefinition {
+                preset: self,
+                label: "qwen3-vl-8b",
+                model_id: "qwen3-vl-8b",
+                aliases: &["qwen3-vl-8b", "qwen3-vl-8b-instruct", "ax-qwen3-vl-8b"],
+                model_types: &["qwen3_vl", "qwen3-vl"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Nemotron3Nano => PresetDefinition {
+                preset: self,
+                label: "nemotron-3-nano",
+                model_id: "nemotron-3-nano",
+                aliases: &[
+                    "nemotron-3-nano",
+                    "nemotron-3-nano-30b",
+                    "nemotron",
+                    "ax-nemotron-3-nano",
+                ],
+                model_types: &["nemotron_h", "nemotron_h_nano_omni"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Ministral3_8b => PresetDefinition {
+                preset: self,
+                label: "ministral-3-8b",
+                model_id: "ministral-3-8b",
+                aliases: &["ministral-3-8b", "ministral-3", "ax-ministral-3-8b"],
+                model_types: &["mistral3", "mistral"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Ministral3_14b => PresetDefinition {
+                preset: self,
+                label: "ministral-3-14b",
+                model_id: "ministral-3-14b",
+                aliases: &["ministral-3-14b", "ax-ministral-3-14b"],
+                model_types: &["mistral3", "mistral"],
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
@@ -361,7 +477,14 @@ pub fn render_presets() -> String {
         ServerPreset::Qwen36_35b,
         ServerPreset::Holo3_35b,
         ServerPreset::Ornith35b,
+        ServerPreset::MuseGlimmer30b,
         ServerPreset::Qwen3CoderNext,
+        ServerPreset::Qwen38_27b,
+        ServerPreset::Qwen3Vl30b,
+        ServerPreset::Qwen3Vl8b,
+        ServerPreset::Nemotron3Nano,
+        ServerPreset::Ministral3_8b,
+        ServerPreset::Ministral3_14b,
         ServerPreset::Llama31_8b,
         ServerPreset::Llama33_70b,
         ServerPreset::Llama4Scout,

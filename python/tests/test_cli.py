@@ -26,7 +26,11 @@ from ax_engine import _cli  # noqa: E402, I001
 
 
 EXPECTED_AUTOMATOSX_REPOS = {
+    "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
+    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
+    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
     "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+    "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-OptiQ-4bit",
     "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
     "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
     "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-4bit-Assistant-MTP",
@@ -37,13 +41,37 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Gemma-4-31B-IT-MLX-6bit-Assistant-MTP",
     "AutomatosX/AX-Gemma-4-31B-IT-MLX-OptiQ-4bit-Assistant-MTP",
     "AutomatosX/AX-Gemma-4-31B-IT-MLX-QAT-4bit-Assistant-MTP",
+    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-4bit",
+    "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-6bit",
+    "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-OptiQ-4bit",
+    "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit",
+    "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-OptiQ-4bit",
+    "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-4bit",
+    "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit",
+    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
     "AutomatosX/AX-Qwen3-Coder-Next-MLX-6bit",
+    "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3-Coder-Next-MLX-OptiQ-4bit",
     "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit",
     "AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ",
     "AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ",
+    "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
     "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP",
     "AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP",
     "AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP",
@@ -57,18 +85,24 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+    "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
-    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
-    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
-    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
-    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit",
+    "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit",
+    "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit",
 }
 
 
@@ -89,10 +123,10 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 49)
+        self.assertEqual(len(targets), 87)
         self.assertTrue(
             all(
-                target["alias"].startswith(("ax-", "holo3-", "ornith-"))
+                target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
                 for target in targets
             )
         )
@@ -132,17 +166,67 @@ class AxEngineCliTests(unittest.TestCase):
             ),
             "qwen3-vl-30b-a3b:axq": (
                 "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
-                "700ec2c305f5f80e4d7c841c5aec80b050b949c6",
-                "candidate",
+                "b48b626d9b00e45d6200aa3c15e40cc47d83b7e7",
+                None,
             ),
             "qwen3-vl-30b-a3b:axq-4bit": (
                 "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
-                "1f4c21a0c9d4347294d3f082928fdfd854284383",
+                "e932be1b8ab79f5410f607de7eb7312756325fce",
+                None,
+            ),
+            "qwen3-vl-8b:axq": (
+                "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit",
+                "e52d06296bf133b248a6572561c4f2e150dc3429",
                 "candidate",
             ),
             "qwen3.8-27b:axq": (
                 "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-                "a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6",
+                "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+                None,
+            ),
+            "qwen3.8-27b:axq-8bit": (
+                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
+                "4037b7242a4de8deaf71247a685538591cad160a",
+                None,
+            ),
+            "qwen3.8-27b:axq-mxfp4": (
+                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+                "b2c5354f779e430d0c1733143db848a72b71c16e",
+                None,
+            ),
+            "gpt-oss-20b:axq": (
+                "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit",
+                "14aee3b601240c5075fc4c84fb6f088400aeeba5",
+                None,
+            ),
+            "gpt-oss-120b:axq": (
+                "AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit",
+                "306f5a9858cadd8e0a6b01201d37ad2d24ddcdd7",
+                None,
+            ),
+            "qwen3-coder-next:axq": (
+                "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit",
+                "29e7bcf5e6ef2471cc3587783713e3631e98b50c",
+                None,
+            ),
+            "ministral-3-8b:axq": (
+                "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit",
+                "93d9991a3636c6c46cb92e711d11f1be5de96b6a",
+                "candidate",
+            ),
+            "mistral-small:axq": (
+                "AutomatosX/AX-Mistral-Small-3.1-24B-Instruct-2503-MLX-AXQ-6bit",
+                "f00654783b3e3b2a020a712161eb1ac7861da348",
+                "candidate",
+            ),
+            "nemotron-3-nano:axq": (
+                "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit",
+                "a4dcc84b9b7318cc206f2b17dbc1555883cf67fd",
+                "candidate",
+            ),
+            "devstral-small:axq": (
+                "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
+                "04be51a3173b94e0a0d859be871cfb7a749405d2",
                 "candidate",
             ),
             "qwen3.8-27b:axq-4bit": (
@@ -152,8 +236,8 @@ class AxEngineCliTests(unittest.TestCase):
             ),
             "ax-qwen3-vl-30b": (
                 "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
-                "700ec2c305f5f80e4d7c841c5aec80b050b949c6",
-                "candidate",
+                "b48b626d9b00e45d6200aa3c15e40cc47d83b7e7",
+                None,
             ),
             "holo3-35b:axq": (
                 "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
@@ -167,12 +251,22 @@ class AxEngineCliTests(unittest.TestCase):
             ),
             "ornith-35b:axq": (
                 "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
-                "37361076641d7b7487d1b5ce1b68243ffbdbffe0",
-                "candidate",
+                "41015da430ae62802d9357b0ef31bf46c2b13b58",
+                None,
             ),
             "ornith-35b:axq-4bit": (
                 "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
-                "d7416c665cd8ae6e5fbebc3f17bd547b78cf11fc",
+                "9ff7a33b034a7e72cdc32a531ed8dd0d07e35116",
+                None,
+            ),
+            "muse-glimmer-30b:axq": (
+                "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
+                "367745bd05b77bf82188f3799677e4beba543e8d",
+                "candidate",
+            ),
+            "muse-glimmer-30b:axq-4bit": (
+                "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+                "bcfb0b748fc44487c1657fb6ae190592d515398b",
                 "candidate",
             ),
             "qwen3.6-35b:axq": (
@@ -234,6 +328,22 @@ class AxEngineCliTests(unittest.TestCase):
             ax_gemma12.repo_id,
             "AutomatosX/AX-Gemma-4-12B-IT-MLX-QAT-OptiQ-4bit-Assistant-MTP",
         )
+        self.assertEqual(
+            _cli._profile_for_model("ax-qwen3-coder-next").repo_id,
+            "AutomatosX/AX-Qwen3-Coder-Next-MLX-OptiQ-4bit",
+        )
+        self.assertEqual(
+            _cli._profile_for_model("ax-devstral-small").repo_id,
+            "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
+        )
+        self.assertEqual(
+            _cli._profile_for_model("gpt-oss-20b").repo_id,
+            "mlx-community/gpt-oss-20b-MXFP4-Q4",
+        )
+        self.assertEqual(
+            _cli._profile_for_model("ministral-8b").repo_id,
+            "mlx-community/Ministral-8B-Instruct-2410-4bit",
+        )
 
         holo3_default = _cli._profile_for_model("holo3-35b")
         self.assertIsNotNone(holo3_default)
@@ -255,14 +365,26 @@ class AxEngineCliTests(unittest.TestCase):
             ornith_default.repo_id,
             "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
         )
-        self.assertEqual(_cli._profile_certification(ornith_default), "candidate")
+        self.assertIsNone(_cli._profile_certification(ornith_default))
         self.assertEqual(holo3_default.preset, "holo3-35b")
         self.assertEqual(ornith_default.preset, "ornith-35b")
+
+        muse_default = _cli._profile_for_model("muse-glimmer-30b")
+        self.assertIsNotNone(muse_default)
+        assert muse_default is not None
+        self.assertEqual(
+            muse_default.repo_id,
+            "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+        )
+        self.assertEqual(_cli._profile_certification(muse_default), "candidate")
+        self.assertEqual(muse_default.preset, "muse-glimmer-30b")
         for alias, preset in (
             ("holo3-35b:axq", "holo3-35b"),
             ("ornith-35b:axq", "ornith-35b"),
+            ("muse-glimmer-30b:axq", "muse-glimmer-30b"),
             ("ax-holo3-35b", "holo3-35b"),
             ("ax-ornith-35b", "ornith-35b"),
+            ("ax-muse-glimmer-30b", "muse-glimmer-30b"),
             ("ax-gemma4-12b", "gemma4-12b"),
             ("ax-gemma4-26b", "gemma4-26b"),
             ("ax-gemma4-31b", "gemma4-31b"),
@@ -271,6 +393,14 @@ class AxEngineCliTests(unittest.TestCase):
             ("ax-qwen3.6-35b", "qwen3.6-35b"),
             ("ax-qwen3.5-9b", "qwen3.5-9b"),
             ("gemma4-12b:axq", "gemma4-12b"),
+            ("gpt-oss-20b:axq", "gpt-oss-20b"),
+            ("ax-qwen3-coder-next", "qwen3-coder-next"),
+            ("qwen3-coder-next:axq", "qwen3-coder-next"),
+            ("ax-ministral-3-8b", "ministral-3-8b"),
+            ("nemotron-3-nano:axq", "nemotron-3-nano"),
+            ("ax-qwen3.8-27b", "qwen3.8-27b"),
+            ("ax-qwen3-vl-8b", "qwen3-vl-8b"),
+            ("ax-qwen3-vl-30b", "qwen3-vl-30b"),
         ):
             profile = _cli._profile_for_model(alias)
             self.assertIsNotNone(profile, alias)
@@ -1194,7 +1324,7 @@ class AxEngineCliTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(
             payload["repo_id"],
-            "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
+            "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-OptiQ-4bit",
         )
         self.assertEqual(payload["alias"], "ax-diffusiongemma-26b")
         self.assertNotIn("preset", payload)
@@ -1497,7 +1627,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 30)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 33)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.

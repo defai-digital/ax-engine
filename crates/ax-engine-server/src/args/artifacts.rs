@@ -142,6 +142,11 @@ pub(crate) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String
         // EmbeddingGemma ships HF model_type `gemma3_text`; the only product
         // artifact on this family is the 300M embedding model.
         "gemma3_text" | "embeddinggemma" => Some("embeddinggemma-300m".to_string()),
+        "muse_glimmer" | "muse_glimmer_text" => Some("muse-glimmer-30b".to_string()),
+        "nemotron_h" | "nemotron_h_nano_omni" => Some("nemotron-3-nano".to_string()),
+        "unlimited-ocr" | "unlimited_ocr" | "deepseekocr" => Some("unlimited-ocr".to_string()),
+        "mistral3" | "mistral" | "ministral3" => Some(infer_mistral_model_id(&path_label)),
+        "gpt_oss" => Some(infer_gpt_oss_model_id(&path_label)),
         value if value.starts_with("qwen3") => Some(infer_qwen_model_id(&path_label, value)),
         _ => None,
     })
@@ -178,6 +183,10 @@ fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
         "qwen3-embedding-4b".to_string()
     } else if path_label.contains("qwen3-embedding-8b") {
         "qwen3-embedding-8b".to_string()
+    } else if path_label.contains("qwen3-nemotron") || path_label.contains("genrm") {
+        "qwen3-nemotron-32b-genrm".to_string()
+    } else if path_label.contains("qwen3-asr") {
+        "qwen3-asr-1.7b".to_string()
     } else if path_label.contains("qwen3-coder-next") {
         "qwen3-coder-next".to_string()
     } else if path_label.contains("qwen3-6-35b") || path_label.contains("qwen36-35b") {
@@ -222,6 +231,36 @@ fn infer_qwen3_vl_model_id(path_label: &str) -> String {
         model_id.push_str("-instruct");
     }
     model_id
+}
+
+fn infer_mistral_model_id(path_label: &str) -> String {
+    if path_label.contains("ministral-3-14b") || path_label.contains("ministral-3-14") {
+        "ministral-3-14b".to_string()
+    } else if path_label.contains("ministral-3-8b")
+        || path_label.contains("ministral-3-8")
+        || path_label.contains("ministral-3")
+    {
+        "ministral-3-8b".to_string()
+    } else if path_label.contains("devstral-small-2") || path_label.contains("devstral-small-2-24b")
+    {
+        "devstral-small".to_string()
+    } else if path_label.contains("devstral") {
+        "devstral-small".to_string()
+    } else if path_label.contains("mistral-small") {
+        "mistral-small".to_string()
+    } else if path_label.contains("ministral") {
+        "ministral-8b".to_string()
+    } else {
+        "mistral-small".to_string()
+    }
+}
+
+fn infer_gpt_oss_model_id(path_label: &str) -> String {
+    if path_label.contains("120b") {
+        "gpt-oss-120b".to_string()
+    } else {
+        "gpt-oss-20b".to_string()
+    }
 }
 
 fn hf_cache_candidate_dirs(root: &Path, preset: &PresetDefinition) -> Vec<PathBuf> {
