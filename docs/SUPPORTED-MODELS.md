@@ -315,7 +315,7 @@ idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 | --- | --- | --- | --- |
 | `qwen3.6-27b:axq`, `qwen3.6-27b:axq-6bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP` | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` | Candidate; preferred quality/default candidate |
 | `qwen3.6-27b:axq-4bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP` | `6182ccbc41c7397ff90670f740c6d9eacfa4b09f` | Candidate; compact fallback |
-| `qwen3.8-27b:axq`, `qwen3.8-27b:axq-6bit`, `qwen3.8-26b:axq` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6` | Candidate; production-size Qwen 3.8 27B AXQ 6-bit MTP |
+| `qwen3.8-27b:axq`, `qwen3.8-27b:axq-6bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6` | Candidate; production-size Qwen 3.8 27B AXQ 6-bit MTP |
 | `qwen3.8-27b:axq-4bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP` | `7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e` | Candidate; compact 4-bit MTP sibling |
 | `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `700ec2c305f5f80e4d7c841c5aec80b050b949c6` | Candidate; vision MoE Instruct; preferred quality |
 | `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `1f4c21a0c9d4347294d3f082928fdfd854284383` | Candidate; vision MoE Instruct; compact fallback |

@@ -330,7 +330,6 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ax-qwen38-27b-axq-6bit",
             "qwen3.8-27b:axq",
             "qwen3.8-27b:axq-6bit",
-            "qwen3.8-26b:axq",
         ],
         downloadable: true,
         approx_size_bytes: Some(20_856_327_059),
@@ -343,7 +342,6 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ax-qwen3.8-27b-axq-4bit",
             "ax-qwen38-27b-axq-4bit",
             "qwen3.8-27b:axq-4bit",
-            "qwen3.8-26b:axq-4bit",
         ],
         downloadable: true,
         approx_size_bytes: Some(25_080_915_804),
@@ -3973,10 +3971,6 @@ mod tests {
         assert_eq!(
             profile_revision(qwen38),
             Some("a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6")
-        );
-        assert_eq!(
-            profile_for_model("qwen3.8-26b:axq").unwrap().repo_id,
-            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"
         );
 
         let vl_six = profile_for_model("qwen3-vl-30b-a3b:axq").unwrap();

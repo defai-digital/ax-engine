@@ -420,7 +420,6 @@ AUTOMATOSX_MODEL_PROFILES = (
             "ax-qwen38-27b-axq-6bit",
             "qwen3.8-27b:axq",
             "qwen3.8-27b:axq-6bit",
-            "qwen3.8-26b:axq",
         ),
     ),
     _automatosx_profile(
@@ -429,7 +428,6 @@ AUTOMATOSX_MODEL_PROFILES = (
         (
             "ax-qwen38-27b-axq-4bit",
             "qwen3.8-27b:axq-4bit",
-            "qwen3.8-26b:axq-4bit",
         ),
     ),
     _automatosx_profile(

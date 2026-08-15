@@ -130,10 +130,6 @@ class AxEngineCliTests(unittest.TestCase):
                 "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
                 "a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6",
             ),
-            "qwen3.8-26b:axq": (
-                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-                "a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6",
-            ),
             "qwen3.8-27b:axq-4bit": (
                 "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
                 "7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run Qwen 3.8 27B AXQ MTP + direct benches on a remote Apple Silicon host.
 #
-# The published pack is AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP (27B, not 26B).
+# The published pack is AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP.
 # Default host is df-macbookpro-m4. The script exits 75 when the host is
 # unreachable or already running a bench so a wrapper can retry later.
 set -euo pipefail
