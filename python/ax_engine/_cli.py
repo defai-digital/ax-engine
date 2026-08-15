@@ -172,6 +172,29 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
             "holo3-35b-a3b-6bit",
         ),
     ),
+    # Ornith-1.0-35B: Qwen3.5-class 35B-A3B MoE coding agent (text path native).
+    ModelProfile(
+        label="ornith-35b",
+        preset="ornith-35b",
+        repo_id="AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+        aliases=(
+            "ornith-35b",
+            "ornith",
+            "ornith-1.0-35b",
+            "ornith-1.0",
+            "ornith-35b-4bit",
+            "ornith-1.0-35b-4bit",
+        ),
+    ),
+    ModelProfile(
+        label="ornith-35b-6bit",
+        preset="ornith-35b",
+        repo_id="AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+        aliases=(
+            "ornith-35b-6bit",
+            "ornith-1.0-35b-6bit",
+        ),
+    ),
     # --- Secondary: research / enterprise Llama (standard graph) ---
     ModelProfile(
         label="llama3.1-8b",
@@ -271,11 +294,17 @@ MODEL_PROFILES: tuple[ModelProfile, ...] = (
 )
 
 
-def _automatosx_profile(label: str, repo_name: str, aliases: tuple[str, ...] = ()) -> ModelProfile:
+def _automatosx_profile(
+    label: str,
+    repo_name: str,
+    aliases: tuple[str, ...] = (),
+    *,
+    preset: str | None = None,
+) -> ModelProfile:
     """Build one exact-repository alias from the curated AutomatosX catalog."""
     return ModelProfile(
         label=label,
-        preset=None,
+        preset=preset,
         repo_id=f"AutomatosX/{repo_name}",
         aliases=(label, *aliases),
     )
@@ -474,17 +503,50 @@ AUTOMATOSX_MODEL_PROFILES = (
     _automatosx_profile(
         "ax-holo3-35b-4bit",
         "AX-Holo3-35B-A3B-MLX-AXQ-4bit",
-        ("ax-holo3-35b-a3b-4bit", "ax-holo3-4bit"),
+        ("ax-holo3-35b-a3b-4bit", "ax-holo3-4bit", "holo3-35b:axq-4bit"),
+        preset="holo3-35b",
     ),
     _automatosx_profile(
         "ax-holo3-35b-6bit",
         "AX-Holo3-35B-A3B-MLX-AXQ-6bit",
-        ("ax-holo3-35b-a3b-6bit", "ax-holo3-6bit"),
+        (
+            "ax-holo3-35b-a3b-6bit",
+            "ax-holo3-6bit",
+            "holo3-35b:axq",
+            "holo3-35b:axq-6bit",
+        ),
+        preset="holo3-35b",
     ),
     _automatosx_profile(
         "ax-holo3-35b",
         "AX-Holo3-35B-A3B-MLX-AXQ-4bit",
         ("ax-holo3", "ax-holo3-35b-a3b"),
+        preset="holo3-35b",
+    ),
+    # Ornith 1.0 35B AXQ packs: Qwen3.5-class 35B-A3B MoE, no MTP.
+    # Development / not certified — pin revisions like other AXQ candidates.
+    _automatosx_profile(
+        "ax-ornith-35b-4bit",
+        "AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+        ("ax-ornith-4bit", "ax-ornith-1.0-35b-4bit", "ornith-35b:axq-4bit"),
+        preset="ornith-35b",
+    ),
+    _automatosx_profile(
+        "ax-ornith-35b-6bit",
+        "AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+        (
+            "ax-ornith-6bit",
+            "ax-ornith-1.0-35b-6bit",
+            "ornith-35b:axq",
+            "ornith-35b:axq-6bit",
+        ),
+        preset="ornith-35b",
+    ),
+    _automatosx_profile(
+        "ax-ornith-35b",
+        "AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+        ("ax-ornith", "ax-ornith-1.0-35b", "ax-ornith-1.0"),
+        preset="ornith-35b",
     ),
 )
 
@@ -512,6 +574,31 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP": (
         "a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6"
     ),
+    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit": (
+        "7b2256130cd55ea6b7489817a9a00c46e9874403"
+    ),
+    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit": (
+        "e6cc340b04bfcec57544e462ec756e48dd248cf9"
+    ),
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit": (
+        "d7416c665cd8ae6e5fbebc3f17bd547b78cf11fc"
+    ),
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit": (
+        "37361076641d7b7487d1b5ce1b68243ffbdbffe0"
+    ),
+}
+
+# Holo3 AXQ packs are Tier 1 certified product snapshots; pin the revision
+# but do not label them as candidates. Ornith stays an explicit candidate.
+_CANDIDATE_PROFILE_REPOS = {
+    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
 }
 
 
@@ -520,7 +607,7 @@ def _profile_revision(profile: ModelProfile) -> str | None:
 
 
 def _profile_certification(profile: ModelProfile) -> str | None:
-    if profile.repo_id in _PINNED_PROFILE_REVISIONS:
+    if profile.repo_id in _CANDIDATE_PROFILE_REPOS:
         return "candidate"
     return None
 

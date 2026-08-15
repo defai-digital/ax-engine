@@ -57,6 +57,8 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
     "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
     "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
 }
@@ -79,10 +81,10 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 36)
+        self.assertEqual(len(targets), 41)
         self.assertTrue(
             all(
-                target["alias"].startswith(("ax-", "holo3-"))
+                target["alias"].startswith(("ax-", "holo3-", "ornith-"))
                 for target in targets
             )
         )
@@ -113,46 +115,107 @@ class AxEngineCliTests(unittest.TestCase):
             "qwen3.6-27b:axq": (
                 "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
                 "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc",
+                "candidate",
             ),
             "qwen3.6-27b:axq-4bit": (
                 "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
                 "6182ccbc41c7397ff90670f740c6d9eacfa4b09f",
+                "candidate",
             ),
             "qwen3-vl-30b-a3b:axq": (
                 "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
                 "700ec2c305f5f80e4d7c841c5aec80b050b949c6",
+                "candidate",
             ),
             "qwen3-vl-30b-a3b:axq-4bit": (
                 "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
                 "1f4c21a0c9d4347294d3f082928fdfd854284383",
+                "candidate",
             ),
             "qwen3.8-27b:axq": (
                 "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
                 "a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6",
+                "candidate",
             ),
             "qwen3.8-27b:axq-4bit": (
                 "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
                 "7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e",
+                "candidate",
             ),
             "ax-qwen3-vl-30b": (
                 "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
                 "700ec2c305f5f80e4d7c841c5aec80b050b949c6",
+                "candidate",
+            ),
+            "holo3-35b:axq": (
+                "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+                "e6cc340b04bfcec57544e462ec756e48dd248cf9",
+                None,
+            ),
+            "holo3-35b:axq-4bit": (
+                "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+                "7b2256130cd55ea6b7489817a9a00c46e9874403",
+                None,
+            ),
+            "ornith-35b:axq": (
+                "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+                "37361076641d7b7487d1b5ce1b68243ffbdbffe0",
+                "candidate",
+            ),
+            "ornith-35b:axq-4bit": (
+                "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+                "d7416c665cd8ae6e5fbebc3f17bd547b78cf11fc",
+                "candidate",
             ),
         }
-        for alias, (repo_id, revision) in cases.items():
+        for alias, (repo_id, revision, certification) in cases.items():
             with self.subTest(alias=alias):
                 resolved_repo, profile, resolved_revision = _cli._download_repo_id(alias)
                 self.assertEqual(resolved_repo, repo_id)
                 self.assertEqual(resolved_revision, revision)
                 self.assertIsNotNone(profile)
                 assert profile is not None
-                self.assertEqual(_cli._profile_certification(profile), "candidate")
+                self.assertEqual(_cli._profile_certification(profile), certification)
 
         default_profile = _cli._profile_for_model("qwen3.6-27b")
         self.assertIsNotNone(default_profile)
         assert default_profile is not None
         self.assertEqual(default_profile.repo_id, "mlx-community/Qwen3.6-27B-4bit")
         self.assertIsNone(_cli._profile_certification(default_profile))
+
+        holo3_default = _cli._profile_for_model("holo3-35b")
+        self.assertIsNotNone(holo3_default)
+        assert holo3_default is not None
+        self.assertEqual(
+            holo3_default.repo_id,
+            "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+        )
+        self.assertEqual(
+            _cli._profile_revision(holo3_default),
+            "7b2256130cd55ea6b7489817a9a00c46e9874403",
+        )
+        self.assertIsNone(_cli._profile_certification(holo3_default))
+
+        ornith_default = _cli._profile_for_model("ornith-35b")
+        self.assertIsNotNone(ornith_default)
+        assert ornith_default is not None
+        self.assertEqual(
+            ornith_default.repo_id,
+            "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
+        )
+        self.assertEqual(_cli._profile_certification(ornith_default), "candidate")
+        self.assertEqual(holo3_default.preset, "holo3-35b")
+        self.assertEqual(ornith_default.preset, "ornith-35b")
+        for alias, preset in (
+            ("holo3-35b:axq", "holo3-35b"),
+            ("ornith-35b:axq", "ornith-35b"),
+            ("ax-holo3-35b", "holo3-35b"),
+            ("ax-ornith-35b", "ornith-35b"),
+        ):
+            profile = _cli._profile_for_model(alias)
+            self.assertIsNotNone(profile, alias)
+            assert profile is not None
+            self.assertEqual(profile.preset, preset, alias)
 
     def test_mxfp4_repo_quant_bits(self) -> None:
         profile = _cli._profile_for_model("gpt-oss-20b")

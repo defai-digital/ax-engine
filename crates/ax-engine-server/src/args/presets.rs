@@ -26,6 +26,10 @@ pub enum ServerPreset {
     /// Same native `qwen3_5` graph as Qwen 3.6 35B; vision tower BF16-sidecar.
     #[value(name = "holo3-35b", alias = "holo3-35b-a3b", alias = "holo3")]
     Holo3_35b,
+    /// DeepReinforce Ornith-1.0-35B coding agent (Qwen3.5-class 35B-A3B MoE).
+    /// Same native `qwen3_5` graph as Holo3 / Qwen 3.6 35B; vision BF16-sidecar.
+    #[value(name = "ornith-35b", alias = "ornith-1.0-35b", alias = "ornith")]
+    Ornith35b,
     #[value(name = "qwen3-coder-next", alias = "qwen3-coder")]
     Qwen3CoderNext,
     // Secondary: research / enterprise Llama
@@ -187,6 +191,26 @@ impl ServerPreset {
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
+            // Ornith-1.0-35B: Qwen3.5-class 35B-A3B MoE coding fine-tune.
+            // Language path uses the same native qwen3_5 MoE runner as Holo3;
+            // product id stays ornith-35b so Hub/catalog rows are not
+            // mislabeled as the official Qwen 3.6 certificate family.
+            Self::Ornith35b => PresetDefinition {
+                preset: self,
+                label: "ornith-35b",
+                model_id: "ornith-35b",
+                aliases: &[
+                    "ornith-35b",
+                    "ornith",
+                    "ornith-1.0-35b",
+                    "ornith-1.0",
+                    "ax-ornith-35b",
+                    "ax-ornith-1.0-35b",
+                ],
+                model_types: &["qwen3_5_moe", "qwen3_5", "qwen3_next", "qwen3_6", "qwen3.6"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
             // Qwen3-Coder-Next direct-support preset: hybrid GatedDeltaNet
             // linear attention + sparse MoE on the qwen3_next family (same
             // repo-owned graph as Qwen 3.6), coder chat template.
@@ -336,6 +360,7 @@ pub fn render_presets() -> String {
         ServerPreset::Qwen36_27b,
         ServerPreset::Qwen36_35b,
         ServerPreset::Holo3_35b,
+        ServerPreset::Ornith35b,
         ServerPreset::Qwen3CoderNext,
         ServerPreset::Llama31_8b,
         ServerPreset::Llama33_70b,

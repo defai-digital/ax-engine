@@ -57,6 +57,8 @@ certification is still open:
 qwen3.6-27b:axq          # pinned AXQ 6-bit candidate
 qwen3.6-27b:axq-6bit     # same checkpoint, explicit precision
 qwen3.6-27b:axq-4bit     # smaller AXQ candidate
+holo3-35b:axq            # pinned Holo3 AXQ 6-bit (Tier 1 certified)
+ornith-35b:axq           # pinned Ornith 1.0 AXQ 6-bit (development)
 ```
 
 The bare `qwen3.6-27b` serve alias retains its current mlx-community 4-bit

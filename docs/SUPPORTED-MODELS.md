@@ -298,7 +298,8 @@ idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 | `ax-qwen3.8-27b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-{4,6}bit-MTP` (candidate; production-size 27B) |
 | `ax-qwen3.6-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-a3b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-{4,6}bit` (candidate; no MTP) |
-| `ax-holo3-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE text path; vision BF16 sidecar; **development** AXQ) |
+| `ax-holo3-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE text path; vision BF16 sidecar; **Tier 1 certified**, no MTP) |
+| `ax-ornith-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE coding agent; vision BF16 sidecar; **development** AXQ, no MTP) |
 | `ax-gemma4-12b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-12B-IT-MLX-{QAT-OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
 | `ax-gemma4-26b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
 | `ax-gemma4-31b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-31B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` |
@@ -319,6 +320,10 @@ idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 | `qwen3.8-27b:axq-4bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP` | `7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e` | Candidate; compact 4-bit MTP sibling |
 | `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `700ec2c305f5f80e4d7c841c5aec80b050b949c6` | Candidate; vision MoE Instruct; preferred quality |
 | `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `1f4c21a0c9d4347294d3f082928fdfd854284383` | Candidate; vision MoE Instruct; compact fallback |
+| `holo3-35b:axq`, `holo3-35b:axq-6bit` | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit` | `e6cc340b04bfcec57544e462ec756e48dd248cf9` | Tier 1 certified; Qwen3.5-class 35B-A3B GUI-agent text path; no MTP |
+| `holo3-35b`, `holo3-35b:axq-4bit` | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit` | `7b2256130cd55ea6b7489817a9a00c46e9874403` | Tier 1 certified; compact 4-bit sibling |
+| `ornith-35b:axq`, `ornith-35b:axq-6bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit` | `37361076641d7b7487d1b5ce1b68243ffbdbffe0` | Candidate; Qwen3.5-class 35B-A3B coding agent; no MTP |
+| `ornith-35b`, `ornith-35b:axq-4bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit` | `d7416c665cd8ae6e5fbebc3f17bd547b78cf11fc` | Candidate; compact 4-bit sibling |
 
 The unqualified `:axq` selector intentionally means 6-bit. The bare
 `qwen3.6-27b` alias remains `mlx-community/Qwen3.6-27B-4bit`, while

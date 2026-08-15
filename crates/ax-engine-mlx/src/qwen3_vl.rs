@@ -700,7 +700,14 @@ fn parse_qwen_vision_config(
         })
         .filter(|items| items.len() == 3)
         .unwrap_or_else(|| {
-            if config.get("model_type").and_then(Value::as_str) == Some("qwen3_5") {
+            // Holo3 / Ornith / official Qwen 3.5 MoE packs use model_type
+            // `qwen3_5_moe` (not bare `qwen3_5`). Their default MRoPE split is
+            // the Qwen 3.5 [11, 11, 10] layout; the VL [24, 20, 20] fallback
+            // is only for Qwen3-VL-class checkpoints.
+            if matches!(
+                config.get("model_type").and_then(Value::as_str),
+                Some("qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5_text")
+            ) {
                 vec![11, 11, 10]
             } else {
                 vec![24, 20, 20]
@@ -1344,6 +1351,58 @@ mod tests {
             matches!(err, Qwen3VlError::InvalidGeometry(msg) if msg.contains("patch buffer length")),
             "short patch buffer must fail closed before from_raw_data"
         );
+    }
+
+    #[test]
+    fn qwen35_moe_aliases_default_to_qwen35_mrope_section() {
+        // Holo3 / Ornith ship model_type=qwen3_5_moe and may omit mrope_section
+        // on older snapshots. They must not inherit the Qwen3-VL [24, 20, 20]
+        // fallback used for qwen3_vl*.
+        for model_type in [
+            "qwen3_5",
+            "qwen3.5",
+            "qwen3_5_moe",
+            "qwen3_5_moe_text",
+            "qwen3_5_text",
+        ] {
+            let config = json!({
+                "model_type": model_type,
+                "text_config": {},
+                "vision_config": {
+                    "depth": 1,
+                    "hidden_size": 2,
+                    "intermediate_size": 4,
+                    "out_hidden_size": 2,
+                    "num_heads": 1,
+                    "in_channels": 3,
+                    "patch_size": 2,
+                    "temporal_patch_size": 2,
+                    "spatial_merge_size": 1,
+                    "num_position_embeddings": 4
+                }
+            });
+            let (_, section) = parse_qwen_vision_config(&config).expect(model_type);
+            assert_eq!(section, vec![11, 11, 10], "{model_type}");
+        }
+
+        let vl = json!({
+            "model_type": "qwen3_vl",
+            "text_config": {},
+            "vision_config": {
+                "depth": 1,
+                "hidden_size": 2,
+                "intermediate_size": 4,
+                "out_hidden_size": 2,
+                "num_heads": 1,
+                "in_channels": 3,
+                "patch_size": 2,
+                "temporal_patch_size": 2,
+                "spatial_merge_size": 1,
+                "num_position_embeddings": 4
+            }
+        });
+        let (_, section) = parse_qwen_vision_config(&vl).expect("qwen3_vl");
+        assert_eq!(section, vec![24, 20, 20]);
     }
 
     #[test]
