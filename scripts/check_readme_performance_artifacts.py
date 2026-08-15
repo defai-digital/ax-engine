@@ -31,6 +31,8 @@ ARTIFACT_LABELS = {
     ),
     "qwen3_6-35b-a3b-4bit": ("Qwen 3.6 35B A3B", "4-bit"),
     "qwen3_6-35b-a3b-6bit": ("Qwen 3.6 35B A3B", "6-bit"),
+    "qwen3_8-27b-axq-4bit": ("Qwen 3.8 27B AXQ", "4-bit"),
+    "qwen3_8-27b-axq-6bit": ("Qwen 3.8 27B AXQ", "6-bit"),
     "qwen3-coder-next-4bit": ("Qwen Coder Next", "4-bit"),
     "glm-4.7-flash-4bit": ("GLM 4.7 Flash", "4-bit"),
 }

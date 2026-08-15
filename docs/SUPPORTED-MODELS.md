@@ -141,7 +141,7 @@ manifest and fails closed when required tower tensors are absent.
 | P0 | Qwen3-VL dense / MoE (`qwen3_vl`, `qwen3_vl_moe`) | Image, multi-image, video | OpenAI chat and `/v1/generate` | Conv3D temporal patches, factorized position interpolation, complete vision blocks and merger, DeepStack injection, and multimodal RoPE; dense 4B image path smoke-tested on Apple M3 |
 | P0 | Visual Qwen3.5 (`qwen3_5` with `vision_tower.*`) | Image, multi-image, video | OpenAI chat and `/v1/generate` | Shares the Qwen visual stack with the Qwen3.5 gated-delta text backbone; text-only Qwen3.5 manifests do not advertise media; 4B image path smoke-tested on Apple M3 |
 | P0 | MiniCPM-V 4.6 (`minicpmv4_6`) | Image, multi-image | OpenAI chat and `/v1/generate` | Dynamic SigLIP grid, 27-layer tower, layer-6 `VitMerger`, final pixel-shuffle merger, and version-specific placeholder expansion; OCR smoke-tested on Apple M3 |
-| P1 | Standard Gemma 4 E2B/E4B/26B/31B (`gemma4` with `vision_tower.*` + `embed_vision.*`) | Image, multi-image, video | OpenAI chat and `/v1/generate` | Full bidirectional ViT, clipped linears where configured, 2-D RoPE, 3×3 spatial pooling, checkpoint `std_bias`/`std_scale`, and pre-projection RMSNorm; E2B image and video paths smoke-tested with the real 4-bit checkpoint on Apple M3 Max; E-series Conformer audio remains unsupported |
+| P1 | Standard Gemma 4 E4B/26B/31B (`gemma4` with `vision_tower.*` + `embed_vision.*`) | Image, multi-image, video | OpenAI chat and `/v1/generate` | Full bidirectional ViT, clipped linears where configured, 2-D RoPE, 3×3 spatial pooling, checkpoint `std_bias`/`std_scale`, and pre-projection RMSNorm; catalogued E4B/26B/31B image and video paths. E2B still loads from an explicit directory but is not catalogued. E-series Conformer audio remains unsupported |
 | P1 | NVIDIA Nemotron 3 Nano Omni 30B-A3B (`nemotron_h` with media tensors) | Image, audio, ordered image+audio | OpenAI chat and `/v1/generate` | RADIO vision, connector MLP, Parakeet/Conformer audio, exact STFT framing, and mixed-media spans; image, JFK audio, and combined prompts smoke-tested on Apple M3 |
 | P1 | Unlimited-OCR (`unlimited_ocr`) | Image | Processed native runtime input through the Python image-request helper | SAM+CLIP dual vision and DeepSeek MoE language graph. Protected-prefix R-SWA keeps the entire image/text prefill and rotates only generated-token KV |
 | P2 | Gemma 4 unified 12B (`gemma4` manifest with unified media roles) | Image, audio, video | OpenAI chat and `/v1/generate` | Encoder-free image/audio connector and sampled video frames; capability discovery requires the unified media roles |
@@ -248,7 +248,7 @@ Raw `mlx-community` repo IDs are also accepted:
 ```text
 ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
 ax-engine download mlx-community/Qwen3-Coder-Next-6bit --json
-ax-engine download mlx-community/gemma-4-e2b-it-4bit --json
+ax-engine download mlx-community/gemma-4-12B-it-4bit --json
 ax-engine download mlx-community/gpt-oss-20b-MXFP4-Q4 --json
 ```
 
@@ -277,7 +277,6 @@ raw repo id form:
 | --- | --- |
 | `qwen36-35b` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
 | `qwen36-27b`, `qwen36-27b-6bit` | `mlx-community/Qwen3.6-27B-{4,6}bit` |
-| `gemma4-e2b`, `gemma4-e2b-6bit` | `mlx-community/gemma-4-e2b-it-{4,6}bit` |
 | `gemma4-12b`, `gemma4-12b-6bit` | `mlx-community/gemma-4-12B-it-{4,6}bit` |
 | `gemma4-26b` | `mlx-community/gemma-4-26b-a4b-it-4bit` |
 | `gemma4-31b` | `mlx-community/gemma-4-31b-it-4bit` |
@@ -296,6 +295,7 @@ idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 | --- | --- |
 | `ax-qwen3.5-9b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.5-9B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3.6-27b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-27B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
+| `ax-qwen3.8-27b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-{4,6}bit-MTP` (candidate; production-size 27B) |
 | `ax-qwen3.6-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-a3b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-{4,6}bit` (candidate; no MTP) |
 | `ax-holo3-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE text path; vision BF16 sidecar; **development** AXQ) |
@@ -315,6 +315,8 @@ idempotent resolution flow: `ax-engine serve ax-qwen3.6-27b`.
 | --- | --- | --- | --- |
 | `qwen3.6-27b:axq`, `qwen3.6-27b:axq-6bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP` | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` | Candidate; preferred quality/default candidate |
 | `qwen3.6-27b:axq-4bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP` | `6182ccbc41c7397ff90670f740c6d9eacfa4b09f` | Candidate; compact fallback |
+| `qwen3.8-27b:axq`, `qwen3.8-27b:axq-6bit`, `qwen3.8-26b:axq` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6` | Candidate; production-size Qwen 3.8 27B AXQ 6-bit MTP |
+| `qwen3.8-27b:axq-4bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP` | `7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e` | Candidate; compact 4-bit MTP sibling |
 | `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `700ec2c305f5f80e4d7c841c5aec80b050b949c6` | Candidate; vision MoE Instruct; preferred quality |
 | `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `1f4c21a0c9d4347294d3f082928fdfd854284383` | Candidate; vision MoE Instruct; compact fallback |
 
@@ -471,7 +473,7 @@ Current direct-support LLM families:
 | Family | Direct model IDs | Current scope | Notes |
 | --- | --- | --- | --- |
 | Gemma 4 unified | `gemma-4-12b-it` | Repo-owned MLX runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging; processed image/audio/video on server routes only when the manifest contains all required media roles | Unified 12B connector; sliding-window + full attention; K=V full-attention layers; logit softcapping |
-| Standard Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned text plus manifest-authoritative image/video runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters | Per-layer embedding, dense, and MoE variants; full ViT + projection when both standard media prefixes are present; Conformer audio is not yet native |
+| Standard Gemma 4 | `gemma-4-e4b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned text plus manifest-authoritative image/video runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters | Per-layer embedding, dense, and MoE variants; full ViT + projection when both standard media prefixes are present; Conformer audio is not yet native. E2B still loads from an explicit model directory but is not a catalogued alias. |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` / `qwen3.5-9b` preset; visual checkpoints with `vision_tower.*` | Repo-owned MLX runtime; MLX affine 4-bit and OptiQ mixed 4/8-bit weights; image/video when the tower is present | GatedDeltaNet linear attention + dense SwiGLU FFN; `attn_output_gate` per-head interleaving; visual variants reuse the Qwen3-VL tower |
 | Qwen3-VL | Dense and MoE `qwen3_vl*` MLX checkpoints | Repo-owned image/video chat runtime | Conv3D patch embed, full vision stack and merger, DeepStack, multimodal RoPE |

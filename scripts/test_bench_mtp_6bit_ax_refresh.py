@@ -575,7 +575,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
             updated,
         )
         self.assertIn(
-            "Across 15 target/suite rows: 14 MTP wins, 0 ties, and 1 loss; "
+            "Across 18 target/suite rows: 17 MTP wins, 0 ties, and 1 loss; "
             "MTP/direct ratios span 0.80x-2.00x.",
             updated,
         )

@@ -43,30 +43,6 @@ class ModelProfile:
 
 MODEL_PROFILES: tuple[ModelProfile, ...] = (
     ModelProfile(
-        label="gemma4-e2b",
-        preset="gemma4-e2b",
-        repo_id="mlx-community/gemma-4-e2b-it-4bit",
-        aliases=("gemma4-e2b", "gemma-4-e2b", "gemma-4-e2b-it", "gemma4-e2b-4bit"),
-    ),
-    ModelProfile(
-        label="gemma4-e2b-5bit",
-        preset=None,
-        repo_id="mlx-community/gemma-4-e2b-it-5bit",
-        aliases=("gemma4-e2b-5bit", "gemma-4-e2b-5bit", "gemma-4-e2b-it-5bit"),
-    ),
-    ModelProfile(
-        label="gemma4-e2b-6bit",
-        preset=None,
-        repo_id="mlx-community/gemma-4-e2b-it-6bit",
-        aliases=("gemma4-e2b-6bit", "gemma-4-e2b-6bit", "gemma-4-e2b-it-6bit"),
-    ),
-    ModelProfile(
-        label="gemma4-e2b-8bit",
-        preset=None,
-        repo_id="mlx-community/gemma-4-e2b-it-8bit",
-        aliases=("gemma4-e2b-8bit", "gemma-4-e2b-8bit", "gemma-4-e2b-it-8bit"),
-    ),
-    ModelProfile(
         label="gemma4-12b",
         preset="gemma4-12b",
         repo_id="mlx-community/gemma-4-12B-it-4bit",
@@ -437,6 +413,26 @@ AUTOMATOSX_MODEL_PROFILES = (
         ("ax-qwen36-27b-axq-4bit", "qwen3.6-27b:axq-4bit"),
     ),
     _automatosx_profile(
+        "ax-qwen3.8-27b-axq-6bit",
+        "AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+        (
+            "ax-qwen3.8-27b-axq",
+            "ax-qwen38-27b-axq-6bit",
+            "qwen3.8-27b:axq",
+            "qwen3.8-27b:axq-6bit",
+            "qwen3.8-26b:axq",
+        ),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.8-27b-axq-4bit",
+        "AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+        (
+            "ax-qwen38-27b-axq-4bit",
+            "qwen3.8-27b:axq-4bit",
+            "qwen3.8-26b:axq-4bit",
+        ),
+    ),
+    _automatosx_profile(
         "ax-qwen3.6-35b-4bit",
         "AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
         ("ax-qwen36-35b-4bit",),
@@ -511,6 +507,12 @@ _PINNED_PROFILE_REVISIONS = {
     ),
     "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit": (
         "700ec2c305f5f80e4d7c841c5aec80b050b949c6"
+    ),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP": (
+        "7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e"
+    ),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP": (
+        "a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6"
     ),
 }
 

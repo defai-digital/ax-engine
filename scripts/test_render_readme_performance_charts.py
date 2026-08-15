@@ -47,7 +47,10 @@ class ReadmePerformanceChartTests(unittest.TestCase):
     @staticmethod
     def exact_mtp_chart_summary() -> dict[str, object]:
         rows = []
+        published = set(charts.MTP_6BIT_EXACT_TARGET_IDS)
         for target in mtp_refresh.SUPPORTED_TARGETS:
+            if target.key not in published:
+                continue
             for suite in mtp_refresh.DEFAULT_SUITES:
                 rows.append(
                     {

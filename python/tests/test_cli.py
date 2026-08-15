@@ -55,6 +55,10 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
 }
 
 
@@ -75,8 +79,13 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 29)
-        self.assertTrue(all(target["alias"].startswith("ax-") for target in targets))
+        self.assertEqual(len(targets), 36)
+        self.assertTrue(
+            all(
+                target["alias"].startswith(("ax-", "holo3-"))
+                for target in targets
+            )
+        )
         self.assertTrue(
             all(not target["repo_id"].startswith("mlx-community/") for target in targets)
         )
@@ -116,6 +125,18 @@ class AxEngineCliTests(unittest.TestCase):
             "qwen3-vl-30b-a3b:axq-4bit": (
                 "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit",
                 "1f4c21a0c9d4347294d3f082928fdfd854284383",
+            ),
+            "qwen3.8-27b:axq": (
+                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+                "a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6",
+            ),
+            "qwen3.8-26b:axq": (
+                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+                "a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6",
+            ),
+            "qwen3.8-27b:axq-4bit": (
+                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+                "7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e",
             ),
             "ax-qwen3-vl-30b": (
                 "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
@@ -1355,7 +1376,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 20)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 22)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.

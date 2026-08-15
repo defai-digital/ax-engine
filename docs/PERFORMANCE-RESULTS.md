@@ -87,6 +87,7 @@ separately in [Getting a Model](GETTING-STARTED.md#getting-a-model).
 | --- | --- | --- |
 | `gemma-4-12b-4bit` | `mlx-community/gemma-4-12B-it-4bit` | Quick-start Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-4bit` |
 | `qwen3.6-27b-6bit` | `mlx-community/Qwen3.6-27B-6bit` | Qwen fused sidecar from `Qwen/Qwen3.6-27B` |
+| `qwen3.8-27b-axq-6bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | Serve-ready AutomatosX AXQ 6-bit MTP pack; no extra `download-mtp` conversion |
 | `qwen3.6-35b-a3b` | `mlx-community/Qwen3.6-35B-A3B-6bit` | Qwen fused sidecar from `Qwen/Qwen3.6-35B-A3B` |
 | `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
 | `gemma-4-26b` | `mlx-community/gemma-4-26b-a4b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-26b-a4b-it-assistant` |
@@ -128,6 +129,7 @@ See [Supported Models](SUPPORTED-MODELS.md#mtp-downloads) and the
 | --- | --- | --- |
 | `qwen3.6-27b-4bit` | prepared Qwen fused sidecar | Qwen fused sidecar MTP |
 | `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | Qwen fused sidecar MTP |
+| `qwen3.8-27b-axq-6bit` | `ax-engine download qwen3.8-27b:axq` | Same-package AXQ 6-bit MTP vs direct |
 | `qwen3.6-35b-a3b-4bit` | prepared Qwen fused sidecar | Qwen fused sidecar MTP |
 | `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
 | `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
@@ -490,9 +492,7 @@ performance claims.
 
 The box-and-whisker charts use the fresh separate-run AX and `mlx_lm`
 snapshots. They summarize the peer-compatible Gemma model/quant rows or Qwen
-rows across 128 / 512 / 2,048 prompt depths. They are cross-run distribution
-diagnostics, not exact per-model deltas or a same-session peer benchmark; the
-exact AX values are in the table below.
+rows across 128 / 512 / 2,048 prompt depths. They are cross-run distribution diagnostics, not exact per-model deltas or a same-session peer benchmark; the exact AX values are in the table below.
 
 **Gemma 4:**
 

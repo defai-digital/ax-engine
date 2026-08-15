@@ -213,6 +213,34 @@
         {"repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "Qwen3.6-35B-A3B-UD-Q6_K.gguf"}
       ],
       "status": "candidate"
+    },
+    {
+      "slug": "qwen3_8-27b-axq-4bit",
+      "mlx_lm_peer_required": false,
+      "readme_direct_table": true,
+      "readme_model": "Qwen 3.8 27B AXQ",
+      "readme_quant": "4-bit",
+      "mlx_local_dir": ".internal/models/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+      "mlx_repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+      "hf_arch": "Qwen3_5ForConditionalGeneration",
+      "prompt_source_note": "AXQ 4-bit MTP pack. mlx_lm peer is optional; same-package AX direct and MTP use this AutomatosX snapshot. No llama.cpp GGUF peer is required.",
+      "gguf_quant_target": null,
+      "gguf_candidates": [],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_8-27b-axq-6bit",
+      "mlx_lm_peer_required": false,
+      "readme_direct_table": true,
+      "readme_model": "Qwen 3.8 27B AXQ",
+      "readme_quant": "6-bit",
+      "mlx_local_dir": ".internal/models/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+      "mlx_repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+      "hf_arch": "Qwen3_5ForConditionalGeneration",
+      "prompt_source_note": "AXQ 6-bit MTP pack, pinned to the checkpoint Tier 1 revision. mlx_lm peer is optional; same-package AX direct and MTP use this AutomatosX snapshot. No llama.cpp GGUF peer is required.",
+      "gguf_quant_target": null,
+      "gguf_candidates": [],
+      "status": "candidate"
     }
   ]
 }

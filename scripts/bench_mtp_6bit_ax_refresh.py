@@ -119,6 +119,19 @@ SUPPORTED_TARGETS = (
         mtp_depth=3,
     ),
     Target(
+        key="qwen3.8-27b-axq-6bit",
+        label="Qwen3.8 27B AXQ",
+        mode="Qwen fused sidecar",
+        model_dir=_resolve_mtp_model_dir(
+            "/Volumes/Ext4T/models/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6",
+            str(
+                Path.home()
+                / ".cache/huggingface/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6"
+            ),
+        ),
+        mtp_depth=1,
+    ),
+    Target(
         key="qwen3.6-35b-a3b",
         label="Qwen3.6 35B-A3B",
         mode="Qwen fused sidecar",

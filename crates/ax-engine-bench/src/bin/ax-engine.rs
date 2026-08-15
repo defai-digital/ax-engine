@@ -45,6 +45,12 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit" => {
             Some("700ec2c305f5f80e4d7c841c5aec80b050b949c6")
         }
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP" => {
+            Some("7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e")
+        }
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP" => {
+            Some("a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6")
+        }
         _ => None,
     }
 }
@@ -80,43 +86,6 @@ struct MtpDownloadTarget {
 }
 
 const MODEL_PROFILES: &[ModelProfile] = &[
-    ModelProfile {
-        label: "gemma4-e2b",
-        preset: Some("gemma4-e2b"),
-        repo_id: "mlx-community/gemma-4-e2b-it-4bit",
-        aliases: &[
-            "gemma4-e2b",
-            "gemma-4-e2b",
-            "gemma-4-e2b-it",
-            "gemma4-e2b-4bit",
-        ],
-        downloadable: true,
-        approx_size_bytes: Some(3_583_088_661),
-    },
-    ModelProfile {
-        label: "gemma4-e2b-5bit",
-        preset: None,
-        repo_id: "mlx-community/gemma-4-e2b-it-5bit",
-        aliases: &["gemma4-e2b-5bit", "gemma-4-e2b-5bit", "gemma-4-e2b-it-5bit"],
-        downloadable: true,
-        approx_size_bytes: Some(4_162_066_564),
-    },
-    ModelProfile {
-        label: "gemma4-e2b-6bit",
-        preset: None,
-        repo_id: "mlx-community/gemma-4-e2b-it-6bit",
-        aliases: &["gemma4-e2b-6bit", "gemma-4-e2b-6bit", "gemma-4-e2b-it-6bit"],
-        downloadable: true,
-        approx_size_bytes: Some(4_741_044_371),
-    },
-    ModelProfile {
-        label: "gemma4-e2b-8bit",
-        preset: None,
-        repo_id: "mlx-community/gemma-4-e2b-it-8bit",
-        aliases: &["gemma4-e2b-8bit", "gemma-4-e2b-8bit", "gemma-4-e2b-it-8bit"],
-        downloadable: true,
-        approx_size_bytes: Some(5_899_036_930),
-    },
     ModelProfile {
         label: "gemma4-12b",
         preset: Some("gemma4-12b"),
@@ -350,6 +319,34 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         ],
         downloadable: true,
         approx_size_bytes: Some(19_399_395_845),
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-27b-axq-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+        aliases: &[
+            "ax-qwen3.8-27b-axq-6bit",
+            "ax-qwen3.8-27b-axq",
+            "ax-qwen38-27b-axq-6bit",
+            "qwen3.8-27b:axq",
+            "qwen3.8-27b:axq-6bit",
+            "qwen3.8-26b:axq",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(20_856_327_059),
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-27b-axq-4bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+        aliases: &[
+            "ax-qwen3.8-27b-axq-4bit",
+            "ax-qwen38-27b-axq-4bit",
+            "qwen3.8-27b:axq-4bit",
+            "qwen3.8-26b:axq-4bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(25_080_915_804),
     },
     ModelProfile {
         label: "ax-qwen3.6-35b",
@@ -776,24 +773,8 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             max_depth: 1,
         },
     },
-    // WS-P2: E2B/E4B assistant-MTP packaging publication paths.
-    MtpDownloadTarget {
-        label: "gemma-4-e2b",
-        repo_id: "mlx-community/gemma-4-E2B-it-4bit",
-        aliases: &[
-            "gemma-4-e2b",
-            "gemma4-e2b",
-            "gemma-4-e2b-it",
-            "gemma-4-e2b-4bit",
-            "gemma4-e2b-4bit",
-        ],
-        kind: MtpDownloadKind::GemmaAssistant {
-            assistant_repo_id: "mlx-community/gemma-4-E2B-it-assistant-4bit",
-            target_model_id: "gemma-4-e2b-it",
-            assistant_model_id: "gemma-4-e2b-it-assistant",
-            max_depth: 2,
-        },
-    },
+    // WS-P2: E4B assistant-MTP packaging publication path. E2B still loads
+    // from an explicit directory but is not a catalogued download alias.
     MtpDownloadTarget {
         label: "gemma-4-e4b",
         repo_id: "mlx-community/gemma-4-E4B-it-4bit",
@@ -3745,7 +3726,7 @@ mod tests {
         assert!(!value.to_string().contains('\n'));
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 29] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 31] = [
         "AutomatosX/AX-DiffusionGemma-26B-A4B-IT-MLX-4bit",
         "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
         "AutomatosX/AX-Gemma-4-12B-IT-MLX-6bit-Assistant-MTP",
@@ -3775,6 +3756,8 @@ mod tests {
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
     ];
 
     #[test]
@@ -3853,10 +3836,10 @@ mod tests {
         // Legacy mlx-community aliases are `downloadable` even though the
         // curated catalog only surfaces AutomatosX packs; the download gate
         // must accept them (and any explicit HF repo id).
-        let profile = profile_for_model("gemma4-e2b").expect("alias should resolve");
-        let (repo, resolved, rev) = download_repo_id("gemma4-e2b", Some(profile)).unwrap();
-        assert_eq!(repo, "mlx-community/gemma-4-e2b-it-4bit");
-        assert_eq!(resolved.map(|profile| profile.label), Some("gemma4-e2b"));
+        let profile = profile_for_model("gemma4-12b").expect("alias should resolve");
+        let (repo, resolved, rev) = download_repo_id("gemma4-12b", Some(profile)).unwrap();
+        assert_eq!(repo, "mlx-community/gemma-4-12B-it-4bit");
+        assert_eq!(resolved.map(|profile| profile.label), Some("gemma4-12b"));
         assert_eq!(rev, None);
     }
 
@@ -3982,6 +3965,20 @@ mod tests {
             Some("6182ccbc41c7397ff90670f740c6d9eacfa4b09f")
         );
 
+        let qwen38 = profile_for_model("qwen3.8-27b:axq").unwrap();
+        assert_eq!(
+            qwen38.repo_id,
+            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"
+        );
+        assert_eq!(
+            profile_revision(qwen38),
+            Some("a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6")
+        );
+        assert_eq!(
+            profile_for_model("qwen3.8-26b:axq").unwrap().repo_id,
+            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"
+        );
+
         let vl_six = profile_for_model("qwen3-vl-30b-a3b:axq").unwrap();
         assert_eq!(
             vl_six.repo_id,
@@ -4067,9 +4064,7 @@ mod tests {
         let coder = mtp_download_target_for_model("qwen3-coder-next").unwrap();
         assert_eq!(coder.label, "qwen3-coder-next");
         assert!(matches!(coder.kind, MtpDownloadKind::QwenSidecar { .. }));
-        let e2b = mtp_download_target_for_model("gemma-4-e2b").unwrap();
-        assert_eq!(e2b.label, "gemma-4-e2b");
-        assert!(matches!(e2b.kind, MtpDownloadKind::GemmaAssistant { .. }));
+        assert!(mtp_download_target_for_model("gemma-4-e2b").is_none());
         let e4b = mtp_download_target_for_model("gemma4-e4b").unwrap();
         assert_eq!(e4b.label, "gemma-4-e4b");
     }
