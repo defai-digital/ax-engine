@@ -99,14 +99,13 @@ The best current split is:
 
 | Question | Best artifact | Engines | Notes |
 |---|---|---|---|
-| Cold long-prompt prefill and derived TTFT | `ax.long_context_comparison.v1` | AX, `mlx_lm`, optional `llama.cpp Metal` | AX and `mlx_lm` must share prompt-token hashes. `llama.cpp` is shape-compatible external GGUF evidence only. |
-| Decode cost at existing depth | `ax.long_context_decode_at_depth.v1` | AX, `mlx_lm`, optional `llama.cpp Metal` | Needed because decode can slow as each token reads more KV. `llama.cpp` rows are admitted only with explicit `llama-bench n_depth` evidence. |
+| Cold long-prompt prefill and derived TTFT | `ax.long_context_comparison.v1` | AX, `mlx_lm` | AX and `mlx_lm` must share prompt-token hashes. Historical llama.cpp Metal rows remain in older artifacts only. |
+| Decode cost at existing depth | `ax.long_context_decode_at_depth.v1` | AX, `mlx_lm` | Needed because decode can slow as each token reads more KV. |
 | Long-running session reuse | `ax.kv_multiturn_chat_evidence.v1` | AX first, then server references | Measures whether repeated conversation turns avoid full accumulated-context prefill. |
 | Online long-prompt serving | `ax.mlx_concurrent_prefill.v1` and `ax.serving_benchmark.v1` | AX server, `llama-server`, optional vLLM reference | Must report TTFT/TPOT/E2E percentiles, queue delay, cache hits, failures, and concurrency/request-rate policy. |
 
 The first implemented cross-engine gate is the cold long-prefill comparison
-artifact. Generate an inference-stack run with long prompt lengths and the
-optional llama.cpp Metal row:
+artifact. Generate an inference-stack run with long prompt lengths:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
@@ -114,10 +113,6 @@ python3 scripts/bench_mlx_inference_stack.py \
   --prompt-tokens 1024,2048,4096,8192,16384 \
   --generation-tokens 1 \
   --repetitions 5 \
-  --llama-cpp-bench /path/to/llama-bench \
-  --llama-cpp-gguf /path/to/model.gguf \
-  --llama-cpp-decode-at-depth \
-  --llama-cpp-extra-args "-fa 1" \
   --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-source.json
 ```
 
@@ -126,23 +121,21 @@ Then build, validate, and render the comparison artifact:
 ```text
 python3 scripts/build_long_context_comparison_artifact.py \
   benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-source.json \
-  --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json \
-  --require-llama-cpp
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json
 
 python3 scripts/check_long_context_comparison_artifact.py \
-  --require-llama-cpp \
   benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json
 
 python3 scripts/render_long_context_comparison_report.py \
-  --require-llama-cpp \
   benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json \
   --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.md
 ```
 
 This gate deliberately does not prove prefix-cache reuse, decode-at-depth, or
 continuous batching. It answers only: for the same long prompt shape, how do
-AX and `mlx_lm` compare on prompt-hash-parity cold prefill, and where does the
-shape-compatible `llama.cpp Metal` GGUF baseline sit?
+AX and `mlx_lm` compare on prompt-hash-parity cold prefill. Historical
+artifacts may still carry optional llama.cpp Metal rows; new stack runs do
+not emit them.
 
 For decode-at-depth, build a separate artifact from the completed long-context
 source or comparison artifact:
@@ -160,11 +153,9 @@ python3 scripts/render_long_context_decode_at_depth_report.py \
   --output benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.md
 ```
 
-Use `--require-llama-cpp` only when the source has `llama.cpp Metal` rows with
-explicit `llama-bench n_depth` evidence. The current shape-compatible
-`llama.cpp` `pp`/`tg` rows are intentionally not enough for that claim. Add
-`--llama-cpp-decode-at-depth` to the inference-stack run to capture
-`-p 0 -n <generation> -d <prompt>` depth rows.
+Use `--require-llama-cpp` only when validating a historical source that already
+has `llama.cpp Metal` rows with explicit `llama-bench n_depth` evidence. New
+`bench_mlx_inference_stack.py` runs no longer emit those rows.
 
 ## How To Read Telemetry
 
@@ -189,8 +180,8 @@ Before making broader public claims, the project should add:
 
 - a multi-model cold-prefill scaling campaign at 1k/2k/4k/8k/16k where the host
   can support it, rendered through `ax.long_context_comparison.v1`
-- real multi-model decode-at-depth artifacts with `--llama-cpp-decode-at-depth`
-  enabled so `--require-llama-cpp` can pass for representative reports
+- real multi-model decode-at-depth artifacts for AX and `mlx_lm` so
+  representative reports can pass without historical llama.cpp rows
 - long-session latency artifacts for GLM MLA after its physical snapshot path
   is fixed or deliberately documented as recompute-only
 - server-path 2/4/8-request long-prefill artifacts that show whether overlap is

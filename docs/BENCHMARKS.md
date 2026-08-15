@@ -19,9 +19,10 @@ Full session-mode tables and charts live in
 ingest scale, DiffusionGemma, and archives stay in docs (linked from the
 README). The public snapshot is a provenance-tracked composite, not one
 same-session run: serving peer rows, S1 multi-model, `mlx_lm` reference rows,
-AX direct overlays, the llama.cpp Metal sweep, AX 6-bit MTP package rows,
+AX direct overlays, AX 6-bit MTP package rows,
 Qwen3.6 peer MTP rows, and embedding ingest-scale rows are each labeled by
-session mode and host. Older result sets, including n-gram overlay runs, remain
+session mode and host. Older result sets, including n-gram overlay runs and
+historical llama.cpp Metal sweeps, remain
 diagnostic history and should not be described as the current public results
 table unless that page is rolled back to those artifacts.
 
@@ -101,29 +102,11 @@ cargo build --release -p ax-engine-server
 These are separate dated snapshots, not a paired engine delta. The results
 page must say so explicitly and point its `readme-mlx-lm-direct-snapshot` and
 `readme-ax-direct-snapshot` markers at the two complete publication matrices.
-
-Refresh the shape-compatible llama.cpp Metal sweep separately:
-
-```bash
-RUN_DATE=2026-08-07
-LLAMA_BUILD=b10050
-LLAMA_ROOT=benchmarks/results/inference/llama-cpp-metal/${RUN_DATE}-llama-cpp-${LLAMA_BUILD}-m5max
-
-.venv/bin/python scripts/bench_llama_cpp_metal_sweep.py \
-  --output-root "$LLAMA_ROOT" \
-  --cache-only \
-  --keep-gguf \
-  --llama-cpp-flash-attn \
-  --llama-cpp-decode-at-depth \
-  --prompt-tokens 128,512,2048 \
-  --generation-tokens 128 \
-  --repetitions 5 \
-  --cooldown 15
-
-.venv/bin/python scripts/update_readme_inject_llama_cpp.py \
-  --sweep "$LLAMA_ROOT/sweep_results.json" \
-  --readme docs/PERFORMANCE-RESULTS.md
-```
+Do not add llama.cpp rows to the current direct snapshot, tables, or charts.
+Historical llama.cpp Metal artifacts remain under
+`benchmarks/results/inference/llama-cpp-metal/` and can still be reproduced
+with `scripts/bench_llama_cpp_metal_sweep.py` if an archive table needs a
+refresh.
 
 Refresh exact same-package MTP and the cross-engine Qwen3.6 peer campaign as
 separate sessions:
@@ -618,9 +601,9 @@ rather than a single-model result. By default it can require Gemma/Qwen/GLM
 coverage and one host identity, so mixed-host evidence must be labeled
 explicitly with `--allow-mixed-host`.
 
-When a long-prefill run also includes the optional `llama.cpp Metal` row, build
-the separate cross-engine artifact instead of extending the MLX parity scaling
-artifact:
+When a historical long-prefill artifact also includes an optional
+`llama.cpp Metal` row, build the separate cross-engine artifact instead of
+extending the MLX parity scaling artifact:
 
 ```text
 python3 scripts/build_long_context_comparison_artifact.py \
@@ -661,12 +644,9 @@ python3 scripts/render_long_context_decode_at_depth_report.py \
 
 Saved artifacts use schema `ax.long_context_decode_at_depth.v1`. They compare
 decode throughput after a context depth already exists. AX and `mlx_lm` rows
-must share prompt hashes. `llama.cpp Metal` rows are admitted only when the
-source row carries explicit `llama-bench n_depth` evidence; ordinary
-shape-compatible `pp`/`tg` rows are not depth-aware enough for this claim. Add
-`--llama-cpp-decode-at-depth` to `bench_mlx_inference_stack.py` to capture the
-extra `llama-bench -p 0 -n <generation> -d <prompt>` pass needed for
-`--require-llama-cpp` decode-at-depth reports.
+must share prompt hashes. Historical `llama.cpp Metal` rows are admitted only
+when the source row already carries explicit `llama-bench n_depth` evidence.
+New `bench_mlx_inference_stack.py` runs no longer emit llama.cpp rows.
 
 Online long-prompt serving claims use `ax.serving_benchmark.v1`, not the
 fixed-shape inference-stack artifacts. Validate them with:

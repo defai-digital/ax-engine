@@ -228,7 +228,6 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         self.assertTrue(
             all(row["engine"] == "mlx_lm" for row in reference["rows"])
         )
-        llama_cpp_build = charts.find_llama_cpp_build(readme)
         gemma_decode_spec = next(
             spec
             for spec in charts.CHARTS
@@ -237,30 +236,22 @@ class ReadmePerformanceChartTests(unittest.TestCase):
         boxplot = charts.render_family_chart(
             gemma_decode_spec,
             charts.collect_family_values(
-                reference["rows"]
-                + chart_rows
-                + charts.load_llama_rows_from_readme(readme),
+                reference["rows"] + chart_rows,
                 gemma_decode_spec,
                 ax_engine_version=str(snapshot["engine_version"]),
-                llama_cpp_build=llama_cpp_build,
             ),
             ax_engine_version=str(snapshot["engine_version"]),
             snapshot_date=str(snapshot["date"]),
             mlx_lm_version=str(reference["version"]),
             mlx_lm_snapshot_date=str(reference["date"]),
-            llama_cpp_build=llama_cpp_build,
         )
         self.assertIn("AX Engine v6.13.3", boxplot)
         self.assertIn("mlx-lm 0.31.3", boxplot)
-        llama_label = (
-            f"llama.cpp {llama_cpp_build}"
-            if llama_cpp_build is not None
-            else "llama.cpp Metal"
-        )
         self.assertIn(
-            f"mlx-lm 0.31.3 (2026-08-07) · {llama_label} · separate runs",
+            "mlx-lm 0.31.3 (2026-08-07) · separate runs",
             boxplot,
         )
+        self.assertNotIn("llama.cpp", boxplot)
         self.assertNotIn("retained mlx-lm", boxplot)
         self.assertIn("cross-run distribution", boxplot)
 
@@ -396,99 +387,45 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             chart = (
                 output_dir / "perf-gemma4-decode-box-whisker.svg"
             ).read_text()
-            build = charts.find_llama_cpp_build(
-                charts.REPO_ROOT / "docs/PERFORMANCE-RESULTS.md"
-            )
-            llama_label = (
-                f"llama.cpp {build}" if build is not None else "llama.cpp Metal"
-            )
             self.assertIn(
-                f"mlx-lm 0.31.3 (2026-08-07) · {llama_label} · separate runs",
+                "mlx-lm 0.31.3 (2026-08-07) · separate runs",
                 chart,
             )
+            self.assertNotIn("llama.cpp", chart)
             self.assertNotIn("retained mlx-lm", chart)
 
-    def test_llama_cpp_chart_label_comes_from_result_marker(self) -> None:
-        with tempfile.TemporaryDirectory() as root_name:
-            readme = Path(root_name) / "README.md"
-            readme.write_text(
-                "<!-- readme-llama-cpp-build: b10050 -->\n",
-                encoding="utf-8",
+    def test_direct_chart_series_exclude_llama_cpp(self) -> None:
+        spec = next(
+            item
+            for item in charts.CHARTS
+            if item.family == "gemma4" and item.metric == "decode"
+        )
+        labels = {
+            engine: label
+            for engine, label, _color, _dot in charts.series_for_chart(
+                spec,
+                mlx_lm_version="0.31.4",
             )
-            spec = next(
-                item
-                for item in charts.CHARTS
-                if item.family == "gemma4" and item.metric == "decode"
-            )
+        }
 
-            build = charts.find_llama_cpp_build(readme)
-            labels = {
-                engine: label
-                for engine, label, _color, _dot in charts.series_for_chart(
-                    spec,
-                    mlx_lm_version="0.31.4",
-                    llama_cpp_build=build,
-                )
-            }
-
-            self.assertEqual(build, "b10050")
-            self.assertEqual(labels["mlx_lm"], "mlx-lm 0.31.4")
-            self.assertEqual(labels["llama_cpp_metal"], "llama.cpp b10050")
-            self.assertIn(
-                "retained llama.cpp b10050",
-                charts.direct_versions_footnote(
-                    "6.13.2", llama_cpp_build=build
-                ),
-            )
-            self.assertEqual(
-                charts.direct_versions_footnote(
-                    "6.13.3",
-                    snapshot_date="2026-08-07",
-                    mlx_lm_version="0.31.3",
-                    mlx_lm_snapshot_date="2026-08-07",
-                    llama_cpp_build=build,
-                ),
-                (
-                    "AX v6.13.3 (2026-08-07) · mlx-lm 0.31.3 "
-                    "(2026-08-07) · llama.cpp b10050 · separate runs"
-                ),
-            )
-
-            readme.write_text(
-                "<!-- readme-llama-cpp-build: b10050 -->\n"
-                "<!-- readme-llama-cpp-build: malformed -->\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(charts.ChartError, "exactly one"):
-                charts.find_llama_cpp_build(readme)
-
-    def test_infer_llama_results_dir_uses_inference_artifact_root(self) -> None:
-        with tempfile.TemporaryDirectory() as root_name:
-            repo_root = Path(root_name)
-            run_dir = (
-                repo_root
-                / "benchmarks"
-                / "results"
-                / "inference"
-                / "llama-cpp-metal"
-                / "2026-08-07-refresh"
-            )
-            run_dir.mkdir(parents=True)
-            (run_dir / "sweep_results.json").write_text(
-                json.dumps(
-                    {
-                        "readme_llama_cpp_publication_candidate": True,
-                        "llama_cpp_publication_matrix": {
-                            "publication_candidate": True,
-                        },
-                    }
-                )
-                + "\n"
-            )
-
-            inferred = charts.infer_llama_results_dir(repo_root)
-
-            self.assertEqual(inferred, run_dir.resolve())
+        self.assertEqual(labels["mlx_lm"], "mlx-lm 0.31.4")
+        self.assertNotIn("llama_cpp_metal", labels)
+        self.assertEqual(
+            charts.direct_versions_footnote(
+                "6.13.3",
+                snapshot_date="2026-08-07",
+                mlx_lm_version="0.31.3",
+                mlx_lm_snapshot_date="2026-08-07",
+            ),
+            (
+                "AX v6.13.3 (2026-08-07) · mlx-lm 0.31.3 "
+                "(2026-08-07) · separate runs"
+            ),
+        )
+        self.assertNotIn(
+            "llama.cpp",
+            charts.direct_versions_footnote("6.13.2"),
+        )
 
     def test_gemma4_12b_decode_uses_llama_matched_depth(self) -> None:
         row = {

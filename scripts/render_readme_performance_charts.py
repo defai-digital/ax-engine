@@ -62,7 +62,6 @@ PROMPT_TOKENS = (128, 512, 2048)
 AX_ENGINE_CHART_LABEL = f"AX Engine v{AX_ENGINE_VERSION}"
 
 SERIES = [
-    ("llama_cpp_metal", "llama.cpp Metal", "#f97316", "#c2410c"),
     ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
     ("ax_engine_mlx", AX_ENGINE_CHART_LABEL, "#2eaf5f", "#176c37"),
     ("ax_engine_mlx_ngram_accel", f"AX+ngram v{AX_ENGINE_VERSION}", "#137a3d", "#0b4f28"),
@@ -75,24 +74,17 @@ def direct_versions_footnote(
     snapshot_date: str | None = None,
     mlx_lm_version: str | None = None,
     mlx_lm_snapshot_date: str | None = None,
-    llama_cpp_build: str | None = None,
 ) -> str:
     date_label = snapshot_date or "current"
-    llama_label = (
-        f"llama.cpp {llama_cpp_build}"
-        if llama_cpp_build is not None
-        else "llama.cpp Metal"
-    )
     if mlx_lm_version is not None:
         mlx_lm_date_label = mlx_lm_snapshot_date or "current"
         return (
             f"AX v{engine_version} ({date_label}) · "
-            f"mlx-lm {mlx_lm_version} ({mlx_lm_date_label}) · "
-            f"{llama_label} · separate runs"
+            f"mlx-lm {mlx_lm_version} ({mlx_lm_date_label}) · separate runs"
         )
     return (
         f"AX Engine v{engine_version} snapshot ({date_label}) · retained "
-        f"mlx-lm 0.31.3 · retained {llama_label} · cross-run distribution"
+        f"mlx-lm 0.31.3 · cross-run distribution"
     )
 
 FAMILY_SLUGS: dict[str, list[str]] = {
@@ -216,7 +208,7 @@ class EmbeddingModelBoxGroup:
 
 
 BOX_CHART_SUBTITLE = (
-    "Separate AX / mlx-lm snapshots + llama.cpp shape reference | "
+    "Separate AX / mlx-lm snapshots | "
     "cross-run distribution; use exact tables for per-model values."
 )
 CHARTS: tuple[ChartSpec, ...] = (
@@ -227,7 +219,7 @@ CHARTS: tuple[ChartSpec, ...] = (
         direction_label="Higher is better",
         output_slug="gemma4-prefill",
         metric="prefill",
-        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        series_engines=("mlx_lm", "ax_engine_mlx"),
         family="gemma4",
     ),
     ChartSpec(
@@ -237,7 +229,7 @@ CHARTS: tuple[ChartSpec, ...] = (
         direction_label="Higher is better",
         output_slug="gemma4-decode",
         metric="decode",
-        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        series_engines=("mlx_lm", "ax_engine_mlx"),
         family="gemma4",
     ),
     ChartSpec(
@@ -247,7 +239,7 @@ CHARTS: tuple[ChartSpec, ...] = (
         direction_label="Lower is better",
         output_slug="gemma4-ttft",
         metric="ttft",
-        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        series_engines=("mlx_lm", "ax_engine_mlx"),
         family="gemma4",
     ),
     ChartSpec(
@@ -257,7 +249,7 @@ CHARTS: tuple[ChartSpec, ...] = (
         direction_label="Higher is better",
         output_slug="qwen-prefill",
         metric="prefill",
-        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        series_engines=("mlx_lm", "ax_engine_mlx"),
         family="qwen",
     ),
     ChartSpec(
@@ -267,7 +259,7 @@ CHARTS: tuple[ChartSpec, ...] = (
         direction_label="Higher is better",
         output_slug="qwen-decode",
         metric="decode",
-        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        series_engines=("mlx_lm", "ax_engine_mlx"),
         family="qwen",
     ),
     ChartSpec(
@@ -277,7 +269,7 @@ CHARTS: tuple[ChartSpec, ...] = (
         direction_label="Lower is better",
         output_slug="qwen-ttft",
         metric="ttft",
-        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+        series_engines=("mlx_lm", "ax_engine_mlx"),
         family="qwen",
     ),
 )
@@ -631,44 +623,11 @@ def merge_chart_row(
         rows[key] = row
 
 
-def load_llama_rows_from_readme(readme: Path) -> list[dict[str, Any]]:
-    rows: dict[tuple[str, int], dict[str, Any]] = {}
-    table_specs = [
-        ("#### Prefill throughput", "prefill", "prefill_tok_s"),
-        ("#### Decode throughput", "decode", "decode_tok_s"),
-        ("#### Time to first token", "ttft", "ttft_ms"),
-    ]
-    text = readme.read_text()
-    for heading_prefix, table_name, metric_key in table_specs:
-        for metric in readme_artifacts.parse_readme_table(
-            text,
-            heading_prefix=heading_prefix,
-            table_name=table_name,
-            column_map={"llama.cpp metal*": "llama_cpp_metal"},
-        ):
-            slug = LABEL_TO_SLUG.get((metric.model, metric.quantization))
-            if slug is None:
-                continue
-            key = (slug, metric.prompt_tokens)
-            row = rows.setdefault(
-                key,
-                {
-                    "_slug": slug,
-                    "engine": "llama_cpp_metal",
-                    "prompt_tokens": metric.prompt_tokens,
-                    "generation_tokens": metric.generation_tokens or 128,
-                },
-            )
-            row[metric_key] = {"median": metric.displayed_value}
-    return list(rows.values())
-
-
 def series_for_chart(
     spec: ChartSpec,
     *,
     ax_engine_version: str | None = None,
     mlx_lm_version: str | None = None,
-    llama_cpp_build: str | None = None,
 ) -> list[tuple[str, str, str, str]]:
     version = ax_engine_version or AX_ENGINE_VERSION
     series_by_engine = {}
@@ -679,8 +638,6 @@ def series_for_chart(
             label = f"AX+ngram v{version}"
         elif engine == "mlx_lm" and mlx_lm_version is not None:
             label = f"mlx-lm {mlx_lm_version}"
-        elif engine == "llama_cpp_metal" and llama_cpp_build is not None:
-            label = f"llama.cpp {llama_cpp_build}"
         series_by_engine[engine] = (engine, label, color, dot_color)
     missing = [
         engine for engine in spec.series_engines if engine not in series_by_engine
@@ -690,45 +647,6 @@ def series_for_chart(
             f"{spec.metric} chart references unknown series: {', '.join(missing)}"
         )
     return [series_by_engine[engine] for engine in spec.series_engines]
-
-
-def infer_llama_results_dir(repo_root: Path) -> Path:
-    root = (
-        repo_root
-        / "benchmarks"
-        / "results"
-        / "inference"
-        / "llama-cpp-metal"
-    )
-    if not root.exists():
-        raise ChartError(
-            f"could not infer llama.cpp Metal artifact directory; {root} does not exist"
-        )
-    candidates = [
-        path
-        for path in root.iterdir()
-        if path.is_dir() and (path / "sweep_results.json").exists()
-    ]
-    if not candidates:
-        raise ChartError(
-            f"could not infer llama.cpp Metal artifact directory; no sweep_results.json under {root}"
-        )
-    complete: list[Path] = []
-    for path in candidates:
-        try:
-            sweep = json.loads((path / "sweep_results.json").read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        matrix = sweep.get("llama_cpp_publication_matrix")
-        if (
-            sweep.get("readme_llama_cpp_publication_candidate") is True
-            and isinstance(matrix, dict)
-            and matrix.get("publication_candidate") is True
-        ):
-            complete.append(path)
-    if complete:
-        return max(complete, key=lambda path: path.name).resolve()
-    return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
 
 
 def nice_axis_ceiling(value: float) -> float:
@@ -787,18 +705,6 @@ def find_mlx_lm_direct_snapshot(readme: Path) -> Path | None:
     if path_value.startswith("benchmarks/"):
         return (REPO_ROOT / path_value).resolve()
     return relative
-
-
-def find_llama_cpp_build(readme: Path) -> str | None:
-    """Return the measured llama.cpp build label declared by the result page."""
-    text = readme.read_text(encoding="utf-8")
-    marker = "readme-llama-cpp-build:"
-    if marker not in text:
-        return None
-    matches = re.findall(r"readme-llama-cpp-build:\s*(b\d+)", text)
-    if text.count(marker) != 1 or len(matches) != 1:
-        raise ChartError("README must declare exactly one valid llama.cpp build marker")
-    return matches[0]
 
 
 def require_publication_matrix(
@@ -1166,7 +1072,6 @@ def collect_family_values(
     *,
     ax_engine_version: str | None = None,
     mlx_lm_version: str | None = None,
-    llama_cpp_build: str | None = None,
 ) -> list[EngineGroupStats]:
     family_slugs = set(FAMILY_SLUGS[spec.family])
     family_rows = [r for r in rows if r.get("_slug") in family_slugs]
@@ -1177,7 +1082,6 @@ def collect_family_values(
         spec,
         ax_engine_version=ax_engine_version,
         mlx_lm_version=mlx_lm_version,
-        llama_cpp_build=llama_cpp_build,
     ):
         context_stats_list: list[EngineContextStats] = []
         for prompt_tokens in PROMPT_TOKENS:
@@ -1195,9 +1099,8 @@ def collect_family_values(
                 elif spec.metric == "ttft":
                     # Use the pre-computed ttft_ms median for all engines.
                     # bench_mlx_inference_stack.py already derives correct
-                    # per-trial TTFTs for mlx_lm/llama_cpp via
-                    # attach_derived_ttft_ms, so no special-case inversion
-                    # is needed here.
+                    # per-trial TTFTs for mlx_lm via attach_derived_ttft_ms,
+                    # so no special-case inversion is needed here.
                     values.append(metric_median(row, "ttft_ms"))
                 else:
                     raise ChartError(f"unknown metric: {spec.metric}")
@@ -1233,7 +1136,6 @@ def render_family_chart(
     snapshot_date: str | None = None,
     mlx_lm_version: str | None = None,
     mlx_lm_snapshot_date: str | None = None,
-    llama_cpp_build: str | None = None,
 ) -> str:
     all_maxima = [cs.stats.maximum for eg in engine_groups for cs in eg.context_stats]
     axis_max = nice_axis_ceiling(max(all_maxima) * 1.05)
@@ -1282,7 +1184,6 @@ def render_family_chart(
         snapshot_date=snapshot_date,
         mlx_lm_version=mlx_lm_version,
         mlx_lm_snapshot_date=mlx_lm_snapshot_date,
-        llama_cpp_build=llama_cpp_build,
     )
 
     lines = [
@@ -3580,15 +3481,6 @@ def main() -> int:
         help="Benchmark artifact directory. Defaults to the README artifact directory.",
     )
     parser.add_argument(
-        "--llama-results-dir",
-        type=Path,
-        help=(
-            "Optional llama.cpp Metal artifact directory. When omitted, use "
-            "the llama.cpp cells and build marker already injected into the "
-            "performance results page."
-        ),
-    )
-    parser.add_argument(
         "--readme", type=Path, default=Path("docs/PERFORMANCE-RESULTS.md")
     )
     parser.add_argument(
@@ -3610,7 +3502,6 @@ def main() -> int:
     )
     args = parser.parse_args()
     repo_root = readme_artifacts.repo_root_for(args.readme)
-    llama_cpp_build = find_llama_cpp_build(args.readme)
 
     if args.only_ax_direct_snapshot:
         snapshot_path = find_ax_direct_snapshot(args.readme)
@@ -3621,14 +3512,11 @@ def main() -> int:
         if reference_path is None:
             raise ChartError("README does not declare an mlx-lm direct snapshot")
         reference = load_mlx_lm_direct_snapshot(reference_path)
-        llama_rows = load_llama_rows_from_readme(args.readme)
         args.output_dir.mkdir(parents=True, exist_ok=True)
         mismatches = []
         for spec in CHARTS:
-            rows = (
-                reference["rows"]
-                + ax_direct_snapshot_chart_rows(snapshot, spec.metric)
-                + llama_rows
+            rows = reference["rows"] + ax_direct_snapshot_chart_rows(
+                snapshot, spec.metric
             )
             output_path = args.output_dir / chart_output_name(spec)
             content = render_family_chart(
@@ -3638,13 +3526,11 @@ def main() -> int:
                     spec,
                     ax_engine_version=str(snapshot["engine_version"]),
                     mlx_lm_version=str(reference["version"]),
-                    llama_cpp_build=llama_cpp_build,
                 ),
                 ax_engine_version=str(snapshot["engine_version"]),
                 snapshot_date=str(snapshot.get("date")),
                 mlx_lm_version=str(reference["version"]),
                 mlx_lm_snapshot_date=str(reference.get("date")),
-                llama_cpp_build=llama_cpp_build,
             )
             if not write_chart(output_path, content, args.check):
                 mismatches.append(output_path)
@@ -3661,11 +3547,6 @@ def main() -> int:
 
     readme_slugs = readme_model_slugs(args.readme)
     results_dir = args.results_dir or infer_results_dir_from_readme(args.readme)
-    llama_rows = (
-        load_rows(args.llama_results_dir, readme_slugs, required=True)
-        if args.llama_results_dir
-        else load_llama_rows_from_readme(args.readme)
-    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     mismatches: list[Path] = []
@@ -3787,7 +3668,7 @@ def main() -> int:
                 benchmark_rows = mlx_lm_direct_snapshot[
                     "rows"
                 ] + ax_direct_snapshot_chart_rows(ax_direct_snapshot, spec.metric)
-        rows = benchmark_rows + llama_rows
+        rows = benchmark_rows
         snapshot_version = (
             str(ax_direct_snapshot["engine_version"])
             if not args.results_dir and ax_direct_snapshot is not None
@@ -3813,7 +3694,6 @@ def main() -> int:
             spec,
             ax_engine_version=snapshot_version,
             mlx_lm_version=mlx_lm_version,
-            llama_cpp_build=llama_cpp_build,
         )
         output_path = args.output_dir / chart_output_name(spec)
         content = render_family_chart(
@@ -3823,7 +3703,6 @@ def main() -> int:
             snapshot_date=snapshot_date,
             mlx_lm_version=mlx_lm_version,
             mlx_lm_snapshot_date=mlx_lm_snapshot_date,
-            llama_cpp_build=llama_cpp_build,
         )
         if not write_chart(output_path, content, args.check):
             mismatches.append(output_path)
@@ -3868,10 +3747,7 @@ def main() -> int:
             if args.results_dir
             else f"README composite sources in {args.readme}"
         )
-        print(
-            f"Rendered README performance charts from {benchmark_source} "
-            f"and {'README llama.cpp cells' if args.llama_results_dir is None else args.llama_results_dir}"
-        )
+        print(f"Rendered README performance charts from {benchmark_source}")
     return 0
 
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # One-shot driver for the dedicated Gemma 4 12B (gemma4_unified) benchmark.
 #
-# Produces the two artifact trees that back the README "Gemma 4 12B" section:
-#   1. Direct decode/prefill/TTFT, AX-native vs llama.cpp Metal (2-way; mlx_lm
-#      cannot load gemma4_unified so it is necessarily absent).
+# Produces the two artifact trees that back the retained Gemma 4 12B case study:
+#   1. Direct decode/prefill/TTFT on the AX-native MLX route (mlx_lm cannot
+#      load gemma4_unified). Historical llama.cpp Metal comparison rows stay
+#      in the checked-in artifacts; this driver no longer reruns llama.cpp.
 #   2. Assistant-MTP and assistant MTP+n-gram decode, same methodology as the
 #      published 26B/31B run (1000 tokens, 5 reps, 10s/5s cooldowns).
 #
@@ -13,8 +14,6 @@ cd "$(dirname "$0")/.."
 
 DATE=2026-06-09
 PY=python3
-LLAMA_BENCH=/opt/homebrew/bin/llama-bench
-GGUF=$(ls "$HOME"/.cache/huggingface/hub/models--unsloth--gemma-4-12b-it-GGUF/snapshots/*/gemma-4-12b-it-Q4_K_M.gguf | head -1)
 # AX-ready base snapshot (the one carrying model-manifest.json).
 BASE_DIR=$(dirname "$(ls "$HOME"/.cache/huggingface/hub/models--mlx-community--gemma-4-12B-it-4bit/snapshots/*/model-manifest.json | head -1)")
 
@@ -49,10 +48,9 @@ if [ ! -f "$FFN4_MTP_DIR/model-manifest.json" ]; then
     --max-depth 2
 fi
 
-echo "===== GGUF: $GGUF"
 echo "===== BASE_DIR: $BASE_DIR"
 
-# Record llama.cpp GGUF provenance next to the direct artifact.
+# Record the historical llama.cpp GGUF provenance next to the direct artifact.
 cat > "$DIRECT_DIR/llama_cpp_gguf_provenance.json" <<JSON
 {
   "schema": "ax.gemma4_12b_llama_cpp_provenance.v1",
@@ -70,14 +68,10 @@ cat > "$DIRECT_DIR/llama_cpp_gguf_provenance.json" <<JSON
 }
 JSON
 
-echo "===== Phase 1/2: direct decode (AX native vs llama.cpp Metal) ====="
-# Fairness corrections vs the prior run:
-#   1. AX uses the fair-quant 4-bit-FFN artifact ($FFN4_DIR), comparable in bits
-#      to the Q4_K_M GGUF (the upstream 8-bit-FFN snapshot handicapped AX).
-#   2. --llama-cpp-decode-at-depth measures llama.cpp decode at the SAME context
-#      depth AX decodes at (after the prompt prefill). Plain llama-bench `tg`
-#      reports decode from an EMPTY context (depth 0), llama.cpp's best case,
-#      which flatters it relative to AX's prompt-context decode.
+echo "===== Phase 1/2: direct decode (AX native) ====="
+# AX uses the fair-quant 4-bit-FFN artifact ($FFN4_DIR). Historical llama.cpp
+# Metal rows remain in the checked-in case-study artifacts and are not rerun
+# by this driver.
 $PY scripts/bench_mlx_inference_stack.py \
   --model gemma-4-12b-it-ffn4 --model-dir "$FFN4_DIR" \
   --prompt-tokens 128,512,2048 \
@@ -85,8 +79,6 @@ $PY scripts/bench_mlx_inference_stack.py \
   --repetitions 5 \
   --cooldown 15 \
   --ax-direct --skip-mlx-lm --no-build-ax-engine \
-  --llama-cpp-bench "$LLAMA_BENCH" --llama-cpp-gguf "$GGUF" \
-  --llama-cpp-decode-at-depth \
   --output "$DIRECT_DIR/gemma-4-12b-it-4bit.json"
 
 echo "===== Phase 2/2: same-artifact direct/MTP/MTP+n-gram ablation ====="

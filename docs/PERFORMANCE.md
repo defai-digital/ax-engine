@@ -18,7 +18,7 @@ Public results are split by session mode in
 | Session mode | Current public source |
 | --- | --- |
 | MTP generation | AX 6-bit MTP package acceleration (exact sampled MTP) plus Qwen3.6 peer MTP decode rows; see [results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation) |
-| Direct generation | v6.13.3 AX-only direct snapshot plus fresh separate-run `mlx_lm` 0.31.3 and llama.cpp b10050 references; see [results: Direct](PERFORMANCE-RESULTS.md#session-mode-direct-generation) |
+| Direct generation | v6.13.3 AX-only direct snapshot plus a fresh separate-run `mlx_lm` 0.31.3 reference; see [results: Direct](PERFORMANCE-RESULTS.md#session-mode-direct-generation) |
 | Embeddings | Qwen3-Embedding paired ingest-scale and EmbeddingGemma scale rows; see [results: Embeddings](PERFORMANCE-RESULTS.md#session-mode-embeddings) |
 
 These rows are a provenance-tracked composite, not one same-session benchmark.
@@ -356,9 +356,9 @@ the required Gemma/Qwen/GLM family coverage when requested, rejects mixed-host
 campaigns unless explicitly allowed, and renders the campaign summary table
 from already validated per-model artifacts.
 
-When the run also includes the optional `llama.cpp Metal` row, keep that row in
-a separate long-context comparison artifact instead of merging it into the
-prompt-hash-parity MLX scaling artifact:
+When a historical run also includes an optional `llama.cpp Metal` row, keep
+that row in a separate long-context comparison artifact instead of merging it
+into the prompt-hash-parity MLX scaling artifact:
 
 ```text
 python3 scripts/build_long_context_comparison_artifact.py \
@@ -391,12 +391,9 @@ python3 scripts/render_long_context_decode_at_depth_report.py \
   --output benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.md
 ```
 
-Use `--require-llama-cpp` only for sources with explicit `llama-bench n_depth`
-evidence. The existing shape-compatible `llama.cpp Metal` `pp`/`tg` rows remain
-valid external context for cold prefill, but they are not depth-aware decode
-evidence. Capture depth-aware rows with `bench_mlx_inference_stack.py
---llama-cpp-decode-at-depth`, which runs an additional
-`llama-bench -p 0 -n <generation> -d <prompt>` pass for each prompt length.
+Use `--require-llama-cpp` only for historical sources with explicit
+`llama-bench n_depth` evidence. New `bench_mlx_inference_stack.py` runs
+compare AX against `mlx_lm` only and do not emit llama.cpp rows.
 
 The P2 cold-vs-warm startup artifact gate is also executable for saved startup
 artifacts:

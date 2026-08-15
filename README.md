@@ -4,7 +4,7 @@ AX Engine is a **Mac-first** LLM inference runtime for Apple Silicon. Install
 with Homebrew, download a curated model, and serve OpenAI-compatible endpoints
 locally — with a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP,
 multi-model serving with exact-prompt prefix reuse, and peer-backed benchmarks
-against `mlx-lm`, llama.cpp, MTPLX, and lightning-mlx.
+against `mlx-lm`, MTPLX, and lightning-mlx.
 
 NVIDIA/CUDA fleet serving lives in
 [AX Serving](https://github.com/defai-digital/ax-serving). AX Engine remains the
@@ -38,8 +38,7 @@ headroom. For multi-model serving, longer contexts, and larger packs
   (2026-08-06, M5 Max) — see [Performance](#performance)
 - **Strong direct decode on Apple Silicon** — the fresh v6.13.3 snapshot wins
   **30/30** comparable decode cells against a separate-run `mlx_lm` 0.31.3
-  reference (**+4.6%** geometric mean); fresh llama.cpp Metal rows keep the
-  three-runtime charts current
+  reference (**+4.6%** geometric mean)
 - **Multi-model on one process** — keep a scoped set of Qwen 3.5/3.6,
   Qwen3-Coder-Next, Gemma 4, and embedding models resident (`load_mode=add`),
   route by request `model` (chat + embeddings together), with fair Metal turn
@@ -199,7 +198,7 @@ only modalities whose required tower tensors are present in
 | Model family | Inputs | Native API surface | Current scope |
 | --- | --- | --- | --- |
 | Qwen3-VL; visual Qwen3.5; Qwen 3.6 | Image, video | Chat/generate | Conv3D visual patches, full ViT/merger, MRoPE, multi-image/video ordering; Qwen 3.6 27B image/video smoke-tested on M3 Max |
-| Standard Gemma 4 E2B/E4B/26B/31B | Image, video | Chat/generate | Full bidirectional ViT, 2-D RoPE, spatial pooling, checkpoint standardization, and vision projection; E2B image/video smoke-tested on M3 Max; Conformer audio is not yet native |
+| Standard Gemma 4 E4B/26B/31B | Image, video | Chat/generate | Full bidirectional ViT, 2-D RoPE, spatial pooling, checkpoint standardization, and vision projection; catalogued sizes are E4B/26B/31B. E2B still loads from an explicit directory. Conformer audio is not yet native |
 | Gemma 4 unified 12B | Image, audio, video | Chat/generate | Encoder-free image/audio connector and sampled per-frame video path; requires the unified connector roles |
 | MiniCPM-V 4.6 | One or more images | Chat/generate | Dynamic SigLIP grid, mid-tower merger, OCR/document prompts |
 | Nemotron 3 Nano Omni | Image, audio, or both | Chat/generate | RADIO vision plus Parakeet audio with ordered mixed-media spans |
@@ -319,7 +318,7 @@ serving, MTP, direct, or embedding rows, and do not mix **M3 Max** vs
 | **Single-client serving** | AX Engine · peer MLX serving engine **0.4.3** | **8/8** decode wins · MoE **~21–24%** faster · GM decode **+12.9%** | M5 Max · 2026-08-06 · AX **6.13.1** |
 | **Multi-model (S1)** | AX one process · multi-process peer MLX server | **All locked gates** · thr **5.03×** | M5 Max · 2026-08-06 |
 | **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | Exact 6-bit MTP: **14/15 wins**, **1.68× GM**; peer: AX trails MTPLX, beats lightning-mlx **2/3** | M5 Max · 2026-08-06/07 |
-| **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) · [llama.cpp](https://github.com/ggml-org/llama.cpp) Metal | AX **30/30** decode wins vs separate-run mlx-lm · **+4.6% GM** | M5 Max · 2026-08-07 · separate runs |
+| **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) | AX **30/30** decode wins vs separate-run mlx-lm · **+4.6% GM** | M5 Max · 2026-08-07 · separate runs |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Qwen **18/18** wins, **+1.56% GM**; EmbeddingGemma **6/6**, **+7.99% GM** | M5 Max · 2026-08-07 · same-session paired |
 
 Full tables, charts, and methodology:
@@ -407,7 +406,7 @@ geometric mean (near parity to modestly faster), while EmbeddingGemma wins all
 six shapes with **+7.99%** geometric mean throughput.
 
 Non-speculative decode/prefill/TTFT (Gemma 4 and Qwen 3.6 box plots from fresh
-separate-run AX, `mlx_lm`, and llama.cpp **b10050** Metal snapshots), embedding ingest scale,
+separate-run AX and `mlx_lm` snapshots), embedding ingest scale,
 DiffusionGemma, and historical composites live under **docs** so this README
 stays on the numbers that decide “is AX faster for me?”:
 
@@ -426,8 +425,6 @@ stays on the numbers that decide “is AX faster for me?”:
   that matches how you run the engine.
 - **Prefill** / **TTFT** are cold-prompt cost; AX does **not** claim a
   matrix-wide prefill lead on every retained historical direct overlay.
-- `llama.cpp` rows are shape-compatible GGUF Metal references, not prompt-hash
-  parity with MLX artifacts.
 
 ## SDKs
 

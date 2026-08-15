@@ -43,14 +43,13 @@ denominator.
 | Multi-model S1 | AX Engine · multi-process peer MLX server **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
 | 6-bit exact sampled-MTP comparison | AX Engine **v6.13.1** AX-only | Apple **M5 Max** 128 GB | 2026-08-06 |
 | Qwen3.6 MTP peer (MTPLX / lightning-mlx) | AX **6.13.3** · MTPLX **2.1.0** · lightning-mlx **0.6.10** | Apple **M5 Max** 128 GB | 2026-08-07 |
-| Direct generation snapshot | AX Engine **v6.13.3** AX-only · separate-run `mlx-lm` **0.31.3** · separate-run `llama.cpp` **b10050** | Apple **M5 Max** 128 GB | 2026-08-07 |
+| Direct generation snapshot | AX Engine **v6.13.3** AX-only · separate-run `mlx-lm` **0.31.3** | Apple **M5 Max** 128 GB | 2026-08-07 |
 | Embeddings | AX Engine **6.13.4** · same-session `mlx-lm` / `mlx-embeddings` paired v3 | Apple **M5 Max** 128 GB | 2026-08-07 |
 | [Dense batched-decode ceiling](performance/batched-decode-ceiling.md) | AX Engine **6.13.5** · Shared / RowExact paired microbenchmark | Apple **M5 Max** 128 GB | 2026-08-07 |
 
-The current AX, `mlx_lm`, and shape-compatible llama.cpp direct snapshots were
-all refreshed on the same M5 Max, but in separate serialized runs. Their
-cross-run comparison is useful for directional diagnosis, not a claim of
-paired-session variance control.
+The current AX and `mlx_lm` direct snapshots were refreshed on the same M5 Max,
+but in separate serialized runs. Their cross-run comparison is useful for
+directional diagnosis, not a claim of paired-session variance control.
 Do not mix absolute tok/s across hosts (M3 Max vs M5 Max) or across session
 modes.
 
@@ -64,7 +63,7 @@ share a same-artifact denominator.
 | Multi-model serving (S1) | One AX process, two models, exact-prompt prefix reuse vs multi-process peer | Throughput ratio, TTFT/gap p95 ratios, error count | Single-model serving rows |
 | Single-client serving | Streaming OpenAI chat against one model per process | Client decode / effective prefill / TTFT vs peer server | Offline MTP and direct harness rows |
 | MTP generation | Speculative generation with a draft/MTP package plus target verification | MTP decode tok/s, speedup over same-package direct, accept rate | Direct-mode peer rows and embedding ingest rows |
-| Direct generation | Non-speculative autoregressive generation through AX, mlx-lm, or llama.cpp routes | Decode tok/s, prefill tok/s, TTFT | MTP speedup rows; diffusion rows call out their own non-AR metric |
+| Direct generation | Non-speculative autoregressive generation through AX or mlx-lm routes | Decode tok/s, prefill tok/s, TTFT | MTP speedup rows; diffusion rows call out their own non-AR metric |
 | Embeddings | Encoder-style embedding throughput and ingest scale | Chunks/s, tokens/s, latency at batch/chunk settings | Text generation decode/prefill/TTFT |
 
 ### Session Mode: MTP Generation
@@ -458,13 +457,7 @@ shared-KV geometry.
 | --- | --- | --- |
 | 2026-08-07 AX v6.13.3 snapshot | 12/12 models, 36/36 cells, zero failures | Exact current AX values and snapshot-to-snapshot change |
 | 2026-08-07 `mlx_lm` 0.31.3 snapshot | 10/10 loadable models, 30/30 cells, zero failures | Separate-run directional reference, not a paired peer campaign |
-| 2026-08-07 llama.cpp b10050 Metal snapshot | 12/12 models, 36/36 cells, zero failures | Separate-run, shape-compatible runtime reference |
 | 2026-07-11 v6.8.2 composite | Gemma 4 and Qwen 3.6, mixed historical sessions | Archived row-level evidence below; not current-head performance |
-
-Relative to the previous b9910 llama.cpp reference, b10050 raises its 36-cell
-geometric means by **6.3% for matched-depth decode** and **1.6% for prefill**
-while lowering TTFT by **1.6%**; matched-depth decode improves in 29/36 cells.
-That is a llama.cpp reference refresh, not an AX Engine change.
 
 #### v6.13.3 AX-only direct snapshot (2026-08-07 mbp-m5)
 
@@ -495,27 +488,27 @@ prefill geometric mean is **10.6% lower** and its TTFT geometric mean is
 **11.9% higher**. Those are cross-run observations, not paired-session
 performance claims.
 
-The box-and-whisker charts use the fresh separate-run AX, `mlx_lm`, and
-llama.cpp b10050 Metal snapshots. They summarize the peer-compatible Gemma
-model/quant rows or Qwen rows across 128 / 512 / 2,048 prompt depths. They are
-cross-run distribution diagnostics, not exact per-model deltas or a
-same-session peer benchmark; the exact AX values are in the table below.
+The box-and-whisker charts use the fresh separate-run AX and `mlx_lm`
+snapshots. They summarize the peer-compatible Gemma model/quant rows or Qwen
+rows across 128 / 512 / 2,048 prompt depths. They are cross-run distribution
+diagnostics, not exact per-model deltas or a same-session peer benchmark; the
+exact AX values are in the table below.
 
 **Gemma 4:**
 
-<img width="100%" src="assets/perf-gemma4-decode-box-whisker.svg" alt="Gemma 4 direct decode box plot comparing separate-run AX Engine v6.13.3, mlx-lm, and llama.cpp b10050 snapshots">
+<img width="100%" src="assets/perf-gemma4-decode-box-whisker.svg" alt="Gemma 4 direct decode box plot comparing separate-run AX Engine v6.13.3 and mlx-lm snapshots">
 
-<img width="100%" src="assets/perf-gemma4-prefill-box-whisker.svg" alt="Gemma 4 direct prefill box plot comparing separate-run AX Engine v6.13.3, mlx-lm, and llama.cpp b10050 snapshots">
+<img width="100%" src="assets/perf-gemma4-prefill-box-whisker.svg" alt="Gemma 4 direct prefill box plot comparing separate-run AX Engine v6.13.3 and mlx-lm snapshots">
 
-<img width="100%" src="assets/perf-gemma4-ttft-box-whisker.svg" alt="Gemma 4 direct TTFT box plot comparing separate-run AX Engine v6.13.3, mlx-lm, and llama.cpp b10050 snapshots">
+<img width="100%" src="assets/perf-gemma4-ttft-box-whisker.svg" alt="Gemma 4 direct TTFT box plot comparing separate-run AX Engine v6.13.3 and mlx-lm snapshots">
 
 **Qwen 3.6:**
 
-<img width="100%" src="assets/perf-qwen-decode-box-whisker.svg" alt="Qwen 3.6 direct decode box plot comparing separate-run AX Engine v6.13.3, mlx-lm, and llama.cpp b10050 snapshots">
+<img width="100%" src="assets/perf-qwen-decode-box-whisker.svg" alt="Qwen 3.6 direct decode box plot comparing separate-run AX Engine v6.13.3 and mlx-lm snapshots">
 
-<img width="100%" src="assets/perf-qwen-prefill-box-whisker.svg" alt="Qwen 3.6 direct prefill box plot comparing separate-run AX Engine v6.13.3, mlx-lm, and llama.cpp b10050 snapshots">
+<img width="100%" src="assets/perf-qwen-prefill-box-whisker.svg" alt="Qwen 3.6 direct prefill box plot comparing separate-run AX Engine v6.13.3 and mlx-lm snapshots">
 
-<img width="100%" src="assets/perf-qwen-ttft-box-whisker.svg" alt="Qwen 3.6 direct TTFT box plot comparing separate-run AX Engine v6.13.3, mlx-lm, and llama.cpp b10050 snapshots">
+<img width="100%" src="assets/perf-qwen-ttft-box-whisker.svg" alt="Qwen 3.6 direct TTFT box plot comparing separate-run AX Engine v6.13.3 and mlx-lm snapshots">
 
 | Model | Quant | Decode 128 | Decode 512 | Decode 2K | Prefill 128 | Prefill 512 | Prefill 2K | TTFT 128 | TTFT 512 | TTFT 2K |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -770,9 +763,9 @@ TTFT lead is claimed.
 
 The six family box-and-whisker charts above are current-snapshot charts, not
 visualizations of this archive. They use the v6.13.3 AX matrix and the fresh
-separate-run `mlx_lm` matrix; the chart itself labels its llama.cpp source.
-The historical tables below remain an audit trail only. Use the current exact
-table above for a model-specific reading, and do not infer prompt-hash-parity
+separate-run `mlx_lm` matrix. The historical tables below remain an audit trail
+only, including retained llama.cpp Metal columns. Use the current exact table
+above for a model-specific reading, and do not infer prompt-hash-parity
 deltas from a family-level box median.
 
 > **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest Unsloth GGUF quant (4→Q4_K_M, 6→Q6_K), with explicit UD-* Unsloth Dynamic rows only when no standard root-level K-quant is published. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
