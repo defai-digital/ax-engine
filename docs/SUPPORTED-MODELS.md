@@ -322,7 +322,7 @@ serve them through the idempotent resolution flow:
 | --- | --- | --- | --- |
 | `qwen3.6-27b:axq`, `qwen3.6-27b:axq-6bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP` | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` | Candidate; preferred quality/default candidate |
 | `qwen3.6-27b:axq-4bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP` | `6182ccbc41c7397ff90670f740c6d9eacfa4b09f` | Candidate; compact fallback |
-| `qwen3.8-27b:axq`, `qwen3.8-27b:axq-6bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6` | Candidate; production-size Qwen 3.8 27B AXQ 6-bit MTP |
+| `qwen3.8-27b:axq`, `qwen3.8-27b:axq-6bit`, `ax-qwen3.8-27b` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `3e290738e96972307c6aeb9934ab170ca0eae1c1` | Tier 1 checkpoint; MTP Tier 2 not certified |
 | `qwen3.8-27b:axq-4bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP` | `7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e` | Candidate; compact 4-bit MTP sibling |
 | `qwen3.6-35b:axq`, `qwen3.6-35b:axq-6bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP` | `6a4c220734f81112555ee8783d91e0065c54301c` | Candidate; 35B-A3B AXQ 6-bit MTP |
 | `qwen3.6-35b:axq-4bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP` | `952031cbfbb9cf31414a57eeb681c34dc08ec1e9` | Candidate; compact 4-bit MTP sibling |
@@ -335,7 +335,6 @@ serve them through the idempotent resolution flow:
 | `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `b48b626d9b00e45d6200aa3c15e40cc47d83b7e7` | Tier 1 certified; vision MoE Instruct; preferred quality |
 | `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `e932be1b8ab79f5410f607de7eb7312756325fce` | Tier 1 certified; compact 4-bit sibling |
 | `qwen3-vl-8b:axq`, `ax-qwen3-vl-8b` | `AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit` | `e52d06296bf133b248a6572561c4f2e150dc3429` | Candidate; dense VL Instruct |
-| `qwen3.8-27b:axq`, `ax-qwen3.8-27b` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `3e290738e96972307c6aeb9934ab170ca0eae1c1` | Tier 1 checkpoint; MTP Tier 2 not certified |
 | `qwen3.8-27b:axq-8bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP` | `4037b7242a4de8deaf71247a685538591cad160a` | Tier 1 checkpoint; MTP Tier 2 not certified |
 | `qwen3.8-27b:axq-mxfp4` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` | `b2c5354f779e430d0c1733143db848a72b71c16e` | Tier 1 checkpoint; MTP Tier 2 not certified |
 | `qwen3-coder-next:axq` | `AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit` | `29e7bcf5e6ef2471cc3587783713e3631e98b50c` | Tier 1 certified |
