@@ -11,6 +11,7 @@ Usage (operator / post-publish):
     python3 scripts/check_github_release_parity.py
     python3 scripts/check_github_release_parity.py --repo defai-digital/ax-engine
     python3 scripts/check_github_release_parity.py --strict   # also fail on drafts
+    python3 scripts/check_github_release_parity.py --allow-orphan v6.12.1
 
 Exit codes:
   0  every matching tag has a non-draft release (or only allowed exceptions)
@@ -26,8 +27,8 @@ import pathlib
 import re
 import subprocess
 import sys
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Sequence
 
 DEFAULT_REPO = "defai-digital/ax-engine"
 # Annotated / lightweight version tags only (matches publisher contract).
@@ -46,6 +47,7 @@ class ParityReport:
     tags: tuple[str, ...]
     releases: tuple[ReleaseInfo, ...]
     orphan_tags: tuple[str, ...]
+    allowed_orphan_tags: tuple[str, ...]
     draft_tags: tuple[str, ...]
     published_without_tag: tuple[str, ...]
 
@@ -61,12 +63,17 @@ def is_version_tag(name: str) -> bool:
 def compute_parity(
     tags: Iterable[str],
     releases: Iterable[ReleaseInfo],
+    *,
+    allowed_orphans: Iterable[str] = (),
 ) -> ParityReport:
     version_tags = tuple(sorted({t for t in tags if is_version_tag(t)}, key=_version_key))
     release_list = tuple(releases)
     by_tag = {r.tag_name: r for r in release_list}
 
-    orphan = tuple(t for t in version_tags if t not in by_tag)
+    allowed = set(allowed_orphans)
+    all_orphans = tuple(t for t in version_tags if t not in by_tag)
+    orphan = tuple(t for t in all_orphans if t not in allowed)
+    allowed_orphan = tuple(t for t in all_orphans if t in allowed)
     drafts = tuple(
         sorted(
             (r.tag_name for r in release_list if r.is_draft and is_version_tag(r.tag_name)),
@@ -89,6 +96,7 @@ def compute_parity(
         tags=version_tags,
         releases=release_list,
         orphan_tags=orphan,
+        allowed_orphan_tags=allowed_orphan,
         draft_tags=drafts,
         published_without_tag=published_without_tag,
     )
@@ -206,6 +214,11 @@ def format_report(report: ParityReport, *, strict_drafts: bool) -> str:
     else:
         lines.append("orphan tags: none")
 
+    if report.allowed_orphan_tags:
+        lines.append("allowed historical orphan tags:")
+        for tag in report.allowed_orphan_tags:
+            lines.append(f"  - {tag}")
+
     if report.draft_tags:
         label = "stuck drafts" if strict_drafts else "draft releases (warn)"
         lines.append(f"{label}:")
@@ -251,6 +264,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="fail when any draft release exists (default: warn only)",
     )
     parser.add_argument(
+        "--allow-orphan",
+        action="append",
+        default=[],
+        metavar="TAG",
+        help=(
+            "allow one exact historical orphan tag (repeatable); all other "
+            "orphan tags still fail"
+        ),
+    )
+    parser.add_argument(
         "--tags-file",
         default=None,
         help="offline: path to git ls-remote --tags style output",
@@ -280,7 +303,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    report = compute_parity(tags, releases)
+    invalid_allowed = sorted({tag for tag in args.allow_orphan if not is_version_tag(tag)})
+    if invalid_allowed:
+        print(
+            "error: --allow-orphan requires version tags: " + ", ".join(invalid_allowed),
+            file=sys.stderr,
+        )
+        return 2
+
+    report = compute_parity(tags, releases, allowed_orphans=args.allow_orphan)
     sys.stdout.write(format_report(report, strict_drafts=args.strict))
 
     if report.orphan_tags:

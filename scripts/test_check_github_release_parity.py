@@ -72,6 +72,16 @@ class ParityTests(unittest.TestCase):
         )
         self.assertEqual(report.published_without_tag, ("v1.1",))
 
+    def test_exact_allowed_orphan_does_not_hide_other_orphans(self) -> None:
+        report = parity.compute_parity(
+            ["v1.0", "v1.1", "v1.2"],
+            [parity.ReleaseInfo("v1.0", is_draft=False, is_prerelease=False)],
+            allowed_orphans=["v1.1"],
+        )
+        self.assertEqual(report.allowed_orphan_tags, ("v1.1",))
+        self.assertEqual(report.orphan_tags, ("v1.2",))
+        self.assertFalse(report.ok)
+
 
 class CliTests(unittest.TestCase):
     def test_offline_cli_fails_on_orphans(self) -> None:
@@ -106,6 +116,40 @@ class CliTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(code, 1)
+
+    def test_offline_cli_accepts_only_the_named_historical_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tags = root / "tags.txt"
+            tags.write_text(
+                "abc\trefs/tags/v1.0\n" "def\trefs/tags/v1.1\n",
+                encoding="utf-8",
+            )
+            releases = root / "releases.json"
+            releases.write_text(
+                json.dumps(
+                    [
+                        {
+                            "tagName": "v1.0",
+                            "isDraft": False,
+                            "isPrerelease": False,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            code = parity.main(
+                [
+                    "--tags-file",
+                    str(tags),
+                    "--releases-file",
+                    str(releases),
+                    "--strict",
+                    "--allow-orphan",
+                    "v1.1",
+                ]
+            )
+            self.assertEqual(code, 0)
 
     def test_offline_cli_strict_drafts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
