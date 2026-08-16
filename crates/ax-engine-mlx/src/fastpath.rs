@@ -543,6 +543,16 @@ pub fn qwen_linear_mtp_exact_enabled() -> bool {
 }
 
 env_flag!(
+    /// `AX_MLX_INVARIANT_MXFP4_QMV_FAST` — S=2 exact verify uses the
+    /// microbatch MXFP4 `fp_qmv_fast` clone (weights loaded once, per-row
+    /// arithmetic matches isolated MLX S=1). Default OFF: factory `--full`
+    /// on Qwen3.8-27B MXFP4 diverged on agent-coding and ran general-long
+    /// at ~0.84× vs MLX's own M=2 path.
+    invariant_mxfp4_qmv_fast_enabled,
+    "AX_MLX_INVARIANT_MXFP4_QMV_FAST"
+);
+
+env_flag!(
     /// `AX_MLX_MTP_ASYNC_DRAFT` — schedule the greedy zero-gate MTP draft
     /// with `async_eval` and defer host token extraction to the start of the
     /// next decode cycle, overlapping the draft head's GPU forward with
@@ -7427,6 +7437,21 @@ mod tests {
             "0"
         ));
         assert!(probe("AX_FASTPATH_TEST_QWEN_LINEAR_MTP_EXACT_ENABLED", "1"));
+    }
+
+    #[test]
+    fn invariant_mxfp4_qmv_fast_is_opt_in() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_INVARIANT_MXFP4_QMV_FAST_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_INVARIANT_MXFP4_QMV_FAST_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_INVARIANT_MXFP4_QMV_FAST_ENABLED",
+            "1"
+        ));
     }
 
     #[test]

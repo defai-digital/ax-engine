@@ -252,7 +252,89 @@ fn cached_prefill_dequant_weight_t(qw: &QuantizedWeight) -> Option<MlxArray> {
 }
 
 static INVARIANT_AFFINE_QMV_FAST_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static INVARIANT_MXFP4_QMV_FAST_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static INVARIANT_DENSE_PROJECTION_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+/// Microbatch form of MLX 0.32's MXFP4 `fp_qmv_fast`.
+///
+/// Same lane assignment, 512-wide K blocks, `qdot` nibble order, e8m0 scale,
+/// and `simd_sum` as the singleton kernel. Packed weights and scales load once
+/// and reuse across `Leading` input rows so S=2 verify amortizes the weight
+/// read without changing any row's arithmetic versus S=1 `fp_qmv_fast`.
+const INVARIANT_MXFP4_QMV_FAST_KERNEL_SOURCE: &str = r#"
+    constexpr uint PacksPerThread = 2;
+    constexpr uint PackFactor = 8;
+    constexpr uint BytesPerPack = 4;
+    constexpr uint ValuesPerThread = PackFactor * PacksPerThread;
+    constexpr uint BytesPerThread = BytesPerPack * PacksPerThread;
+    constexpr uint BlockSize = ValuesPerThread * 32;
+
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    uint out_row = threadgroup_position_in_grid.y * 8 + simd_group * 4;
+
+    float result[Leading][4];
+    for (uint token = 0; token < (uint)Leading; ++token) {
+        for (uint row = 0; row < 4; ++row) {
+            result[token][row] = 0.0f;
+        }
+    }
+
+    const device uchar* weight_bytes = reinterpret_cast<const device uchar*>(weight);
+    for (uint k = 0; k < (uint)InputDim; k += BlockSize) {
+        float x_values[Leading][16];
+        for (uint token = 0; token < (uint)Leading; ++token) {
+            const device InputT* x_row =
+                x + token * (uint)InputDim + k + lane * ValuesPerThread;
+            for (uint i = 0; i < ValuesPerThread; ++i) {
+                x_values[token][i] = static_cast<float>(x_row[i]);
+            }
+        }
+
+        for (uint row = 0; row < 4; ++row) {
+            uint current_row = out_row + row;
+            uint group = k / (uint)GroupSize +
+                lane / ((uint)GroupSize / ValuesPerThread);
+            uint sidecar_index = current_row * (uint)GroupCount + group;
+            uchar scale_bits = scales[sidecar_index];
+            uint scale_u32 = scale_bits == 0 ? 0x400000u : (uint(scale_bits) << 23);
+            float scale = as_type<float>(scale_u32);
+            const device uchar* packed_src =
+                weight_bytes + current_row * (uint)PackedCols * 4 +
+                k / 2 + lane * BytesPerThread;
+            const device ushort* packed16 =
+                reinterpret_cast<const device ushort*>(packed_src);
+
+            for (uint token = 0; token < (uint)Leading; ++token) {
+                float accum = 0.0f;
+                for (uint i = 0; i < (ValuesPerThread / 4); ++i) {
+                    ushort pack = packed16[i];
+                    for (uint n = 0; n < 4; ++n) {
+                        uint nibble = (pack >> (n * 4)) & 0xfu;
+                        half mag = as_type<half>(ushort((nibble & 7u) << 9));
+                        mag *= 16384.0h;
+                        float deq = static_cast<float>(mag);
+                        if (nibble & 8u) {
+                            deq = -deq;
+                        }
+                        accum += x_values[token][4 * i + n] * deq;
+                    }
+                }
+                result[token][row] += scale * accum;
+            }
+        }
+    }
+
+    for (uint token = 0; token < (uint)Leading; ++token) {
+        for (uint row = 0; row < 4; ++row) {
+            float total = simd_sum(result[token][row]);
+            if (lane == 0) {
+                out[token * (uint)OutDim + out_row + row] =
+                    static_cast<OutT>(total);
+            }
+        }
+    }
+"#;
 
 /// Microbatch form of MLX 0.32's affine `qmv_fast` reduction.
 ///
@@ -958,7 +1040,129 @@ fn slice_trailing_cols(x: &MlxArray, start: i32, end: i32) -> MlxArray {
     contiguous(&slice(x, &starts, &ends, &strides, None), None)
 }
 
+fn invariant_mxfp4_qmv_fast_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option<MlxArray> {
+    if !matches!(
+        qw.mlx_quantization_mode(),
+        mlx_sys::MlxQuantizationMode::Mxfp4
+    ) || qw.bits != 4
+        || qw.group_size != 32
+        || qw.biases.is_some()
+    {
+        return None;
+    }
+    if !matches!(
+        x.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let x_shape = x.shape();
+    let input_dim = *x_shape.last()?;
+    if input_dim <= 0 || x_shape.len() < 2 {
+        return None;
+    }
+    let leading = x_shape[..x_shape.len() - 1]
+        .iter()
+        .try_fold(1_i32, |product, dimension| product.checked_mul(*dimension))?;
+    if !(1..=4).contains(&leading) {
+        return None;
+    }
+    let weight_shape = qw.weight.shape();
+    if weight_shape.len() != 2 {
+        return None;
+    }
+    let out_dim = weight_shape[0];
+    if out_dim <= 0 || out_dim % 8 != 0 || input_dim % 512 != 0 {
+        return None;
+    }
+    let packed_cols = input_dim / 8;
+    if weight_shape[1] != packed_cols {
+        return None;
+    }
+    let scales = qw.scales.as_ref()?;
+    let group_count = input_dim / 32;
+    if scales.shape() != vec![out_dim, group_count] {
+        return None;
+    }
+
+    // Production activations after residual/concat are often non-contiguous.
+    // The kernel addresses x as packed [Leading, InputDim].
+    let x_contig = contiguous(x, None);
+    let mut out_shape = x_shape;
+    *out_shape.last_mut()? = out_dim;
+    let kernel = INVARIANT_MXFP4_QMV_FAST_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_invariant_mxfp4_qmv_fast_v1",
+            &["x", "weight", "scales"],
+            &["out"],
+            INVARIANT_MXFP4_QMV_FAST_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    kernel
+        .try_apply_with_template(
+            &[&x_contig, &qw.weight, scales],
+            &[KernelOutputSpec {
+                shape: out_shape,
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "InputT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "Leading",
+                    value: leading,
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "InputDim",
+                    value: input_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupSize",
+                    value: 32,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupCount",
+                    value: group_count,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackedCols",
+                    value: packed_cols,
+                },
+            ],
+            (32, (out_dim / 8).saturating_mul(2), 1),
+            (32, 2, 1),
+            None,
+        )
+        .ok()?
+        .pop()
+}
+
 fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option<MlxArray> {
+    // S=1 stays on MLX `fp_qmv_fast` so MTP-off and exact singleton steps
+    // share one kernel. S=2 verify uses the microbatch that matches that
+    // singleton arithmetic while reading weights once.
+    let verify_leading = x.shape()[..x.shape().len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i32, |product, dimension| product.checked_mul(*dimension))
+        .unwrap_or(0);
+    if verify_leading == 2
+        && fastpath::invariant_mxfp4_qmv_fast_enabled()
+        && let Some(out) = invariant_mxfp4_qmv_fast_impl(x, qw)
+    {
+        return Some(out);
+    }
     if !matches!(
         x.dtype(),
         MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
@@ -2522,6 +2726,184 @@ mod tests {
             max_abs < 1.0e-5,
             "flattened exact MXFP4 S=2 qmm must match 3-D, max_abs={max_abs}"
         );
+    }
+
+    fn mxfp4_quantized_weight(output_dim: i32, input_dim: i32) -> QuantizedWeight {
+        let weight_data: Vec<f32> = (0..(input_dim * output_dim) as usize)
+            .map(|index| ((index % 97) as f32 - 48.0) * 0.01171875)
+            .collect();
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
+        let quantized = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        assert_eq!(quantized.len(), 2, "mxfp4 quant returns [packed, scales]");
+        QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(quantized[1].clone()),
+            biases: None,
+            group_size: 32,
+            bits: 4,
+            mode: "mxfp4".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        }
+    }
+
+    fn max_abs_f32(left: &MlxArray, right: &MlxArray) -> f32 {
+        let a = astype(left, MlxDtype::Float32, None);
+        let b = astype(right, MlxDtype::Float32, None);
+        eval(&[&a, &b]);
+        a.data_f32()
+            .iter()
+            .zip(b.data_f32().iter())
+            .map(|(l, r)| (l - r).abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    #[test]
+    fn invariant_mxfp4_qmv_fast_matches_mlx_singleton() {
+        let input_dim = 512i32;
+        let output_dim = 32i32;
+        let weight = mxfp4_quantized_weight(output_dim, input_dim);
+        let input_data: Vec<f32> = (0..input_dim as usize)
+            .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
+            .collect();
+        let x = astype(
+            &array_f32(&input_data, &[1, 1, input_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let metal = super::invariant_mxfp4_qmv_fast_impl(&x, &weight)
+            .expect("512-wide MXFP4 qmv_fast must engage");
+        let mlx = mlx_sys::quantized_matmul_with_mode(
+            &x,
+            &weight.weight,
+            weight.scales.as_ref().unwrap(),
+            None,
+            true,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+        );
+        eval(&[&metal, &mlx]);
+        assert_eq!(metal.shape(), mlx.shape());
+        let max_abs = max_abs_f32(&metal, &mlx);
+        assert!(
+            max_abs == 0.0,
+            "MXFP4 qmv_fast microbatch must match MLX S=1 fp_qmv_fast, max_abs={max_abs}"
+        );
+    }
+
+    #[test]
+    fn invariant_mxfp4_qmv_fast_s2_rows_match_singleton() {
+        let input_dim = 512i32;
+        let output_dim = 32i32;
+        let seq = 2i32;
+        let weight = mxfp4_quantized_weight(output_dim, input_dim);
+        let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
+            .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
+            .collect();
+        let x = astype(
+            &array_f32(&input_data, &[1, seq, input_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let metal = super::invariant_mxfp4_qmv_fast_impl(&x, &weight)
+            .expect("S=2 MXFP4 qmv_fast must engage");
+        eval(&[&metal]);
+        for t in 0..seq {
+            let start = (t * input_dim) as usize;
+            let single = astype(
+                &array_f32(
+                    &input_data[start..start + input_dim as usize],
+                    &[1, 1, input_dim],
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            let expected = mlx_sys::quantized_matmul_with_mode(
+                &single,
+                &weight.weight,
+                weight.scales.as_ref().unwrap(),
+                None,
+                true,
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Mxfp4,
+                None,
+            );
+            let actual = contiguous(
+                &slice(
+                    &metal,
+                    &[0, t, 0],
+                    &[1, t + 1, output_dim],
+                    &[1, 1, 1],
+                    None,
+                ),
+                None,
+            );
+            eval(&[&actual, &expected]);
+            let max_abs = max_abs_f32(&actual, &expected);
+            assert!(
+                max_abs == 0.0,
+                "MXFP4 S=2 row {t} must match MLX singleton, max_abs={max_abs}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_qw_mxfp4_qmv_fast_s2_matches_singleton() {
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let input_dim = 512i32;
+        let output_dim = 32i32;
+        let seq = 2i32;
+        let weight = mxfp4_quantized_weight(output_dim, input_dim);
+        let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
+            .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
+            .collect();
+        let x = astype(
+            &array_f32(&input_data, &[1, seq, input_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let batched = qw(&x, &weight);
+        for t in 0..seq {
+            let start = (t * input_dim) as usize;
+            let single = astype(
+                &array_f32(
+                    &input_data[start..start + input_dim as usize],
+                    &[1, 1, input_dim],
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            let expected = qw(&single, &weight);
+            let actual = contiguous(
+                &slice(
+                    &batched,
+                    &[0, t, 0],
+                    &[1, t + 1, output_dim],
+                    &[1, 1, 1],
+                    None,
+                ),
+                None,
+            );
+            eval(&[&actual, &expected]);
+            let max_abs = max_abs_f32(&actual, &expected);
+            assert!(
+                max_abs == 0.0,
+                "exact qw() MXFP4 S=2 row {t} must match singleton, max_abs={max_abs}"
+            );
+        }
     }
 
     #[test]
