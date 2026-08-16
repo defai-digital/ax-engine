@@ -1019,8 +1019,14 @@ pub(crate) fn linear_attention_inputs(
             && fastpath::qwen_linear_mtp_exact_enabled()
             && (2..=4).contains(&seq)
             && qkvz_w.matching_mxfp4_quant(ba_w)
-            && let Some(outputs) =
-                linear_attention_inputs_fused_qmm(cfg, x, qkvz_w, ba_w, w.fused_qkvz_ba.as_ref())
+            && let Some(outputs) = linear_attention_inputs_fused_qmm(
+                model_cfg.compile_cache_identity,
+                cfg,
+                x,
+                qkvz_w,
+                ba_w,
+                w.fused_qkvz_ba.as_ref(),
+            )
         {
             return outputs;
         }
@@ -1037,8 +1043,14 @@ pub(crate) fn linear_attention_inputs(
             && !fastpath::qwen_linear_mtp_exact_enabled()
             && !profile_enabled
             && should_fuse_qkvz_ba_qmm(qkvz_w, ba_w, seq)
-            && let Some(outputs) =
-                linear_attention_inputs_fused_qmm(cfg, x, qkvz_w, ba_w, w.fused_qkvz_ba.as_ref())
+            && let Some(outputs) = linear_attention_inputs_fused_qmm(
+                model_cfg.compile_cache_identity,
+                cfg,
+                x,
+                qkvz_w,
+                ba_w,
+                w.fused_qkvz_ba.as_ref(),
+            )
         {
             return outputs;
         }
@@ -1400,6 +1412,7 @@ fn split_packed_qkvz_ba_projection(
 }
 
 fn linear_attention_inputs_fused_qmm(
+    model_identity: u64,
     cfg: &LinearAttentionConfig,
     x: &MlxArray,
     qkvz_w: &QuantizedWeight,
@@ -1414,7 +1427,9 @@ fn linear_attention_inputs_fused_qmm(
     let fused = load_fused.or(owned.as_ref())?;
     let batch = x.shape().first().copied().unwrap_or(1);
     let seq = x.shape().get(1).copied()?;
-    if let Some(compiled) = compiled_fused_qkvz_ba_qmm_unpack(cfg, x, fused, batch, seq) {
+    if let Some(compiled) =
+        compiled_fused_qkvz_ba_qmm_unpack(model_identity, cfg, x, fused, batch, seq)
+    {
         return Some(compiled);
     }
     let x = apply_bound_exact_attn_norm(x);
@@ -1426,9 +1441,14 @@ fn linear_attention_inputs_fused_qmm(
     }
     let mixed_qkvz = slice_last_dim(&mixed, 0, qkvz_out, None);
     let mixed_ba = slice_last_dim(&mixed, qkvz_out, qkvz_out + ba_out, None);
-    if let Some(compiled) =
-        compiled_split_packed_qkvz_ba_projection(cfg, &mixed_qkvz, &mixed_ba, batch, seq)
-    {
+    if let Some(compiled) = compiled_split_packed_qkvz_ba_projection(
+        model_identity,
+        cfg,
+        &mixed_qkvz,
+        &mixed_ba,
+        batch,
+        seq,
+    ) {
         return Some(compiled);
     }
     Some(split_packed_qkvz_ba_projection(
@@ -1441,12 +1461,13 @@ fn linear_attention_inputs_fused_qmm(
 }
 
 /// Compile identity for exact S=2..=4 fused QKVZ+BA qmm + unpack.
-/// One graph is shared across every linear-attention layer (same shapes).
+/// One graph is shared across every linear-attention layer in one model.
 const EXACT_LA_FUSED_QMM_UNPACK_COMPILE_ID: u64 = 0x5155_4D4D_554E_5032;
 /// Distinct cache key when `attn_norm` is compiled into the same closure.
 const EXACT_LA_RMS_QMM_UNPACK_COMPILE_ID: u64 = 0x5155_524D_5351_4D32;
 
 fn compiled_fused_qkvz_ba_qmm_unpack(
+    model_identity: u64,
     cfg: &LinearAttentionConfig,
     x: &MlxArray,
     fused: &QuantizedWeight,
@@ -1482,7 +1503,7 @@ fn compiled_fused_qkvz_ba_qmm_unpack(
     };
     let input_refs: Vec<&MlxArray> = input_store.iter().collect();
     crate::per_layer_compile::apply_layer_dense_ffn_prefill_min(
-        compile_id,
+        model_identity ^ compile_id,
         SHARED_VERIFY_COMPILE_LAYER,
         leading,
         2,
@@ -1528,7 +1549,7 @@ fn compiled_fused_qkvz_ba_qmm_unpack(
 }
 
 /// Compile identity for the exact S=2..=4 QKVZ/BA unpack glue. One graph
-/// is shared across every linear-attention layer (same shapes).
+/// is shared across every linear-attention layer in one model.
 const EXACT_LA_UNPACK_COMPILE_ID: u64 = 0x5155_4E50_4143_4B32;
 
 /// Shape-compile the reshape/slice/concat unpack after fused QKVZ+BA qmm.
@@ -1537,6 +1558,7 @@ const EXACT_LA_UNPACK_COMPILE_ID: u64 = 0x5155_4E50_4143_4B32;
 /// not touch the portable RMS+SiLU gate. Falls back to the imperative unpack
 /// when exact MTP is off or compile fails.
 fn compiled_split_packed_qkvz_ba_projection(
+    model_identity: u64,
     cfg: &LinearAttentionConfig,
     mixed_qkvz: &MlxArray,
     mixed_ba: &MlxArray,
@@ -1550,7 +1572,7 @@ fn compiled_split_packed_qkvz_ba_projection(
     let cfg = cfg.clone();
     let inputs = [mixed_qkvz, mixed_ba];
     crate::per_layer_compile::apply_layer_dense_ffn_prefill_min(
-        EXACT_LA_UNPACK_COMPILE_ID,
+        model_identity ^ EXACT_LA_UNPACK_COMPILE_ID,
         SHARED_VERIFY_COMPILE_LAYER,
         leading,
         2,
@@ -1733,6 +1755,8 @@ pub(crate) fn try_linear_attention_whole_layer_metal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_COMPILE_IDENTITY: u64 = 0x5445_5354_4C41_4348;
 
     #[test]
     fn qwen_five_bit_full_gate_policy_keeps_only_early_layers() {
@@ -2500,6 +2524,17 @@ mod tests {
             compile_quant_contract_salt(&[&mxfp4_qw, &mxfp4_qw]),
             compile_quant_contract_salt(&[&mislabeled, &mislabeled])
         );
+        let mut with_linear_bias = mxfp4_qw.clone();
+        with_linear_bias.linear_bias = Some(mlx_sys::zeros(&[2], MlxDtype::Float32, None));
+        assert_ne!(
+            mxfp4_qw.compile_contract_word(),
+            with_linear_bias.compile_contract_word(),
+            "dense linear-bias presence changes the compiled input layout"
+        );
+        assert_ne!(
+            compile_quant_contract_salt(&[&mxfp4_qw]),
+            compile_quant_contract_salt(&[&with_linear_bias])
+        );
     }
 
     #[test]
@@ -2619,9 +2654,15 @@ mod tests {
             MlxDtype::Float32,
         );
         let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
-        let compiled =
-            compiled_split_packed_qkvz_ba_projection(&cfg, &mixed_qkvz, &mixed_ba, 1, seq)
-                .expect("exact S=2 unpack compile must engage");
+        let compiled = compiled_split_packed_qkvz_ba_projection(
+            TEST_COMPILE_IDENTITY,
+            &cfg,
+            &mixed_qkvz,
+            &mixed_ba,
+            1,
+            seq,
+        )
+        .expect("exact S=2 unpack compile must engage");
         let imperative = split_packed_qkvz_ba_projection(&cfg, &mixed_qkvz, &mixed_ba, 1, seq);
         eval(&[
             &compiled.0,
@@ -2655,8 +2696,15 @@ mod tests {
         }
         let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
         assert!(
-            compiled_split_packed_qkvz_ba_projection(&cfg, &mixed_qkvz, &mixed_ba, 1, seq)
-                .is_none(),
+            compiled_split_packed_qkvz_ba_projection(
+                TEST_COMPILE_IDENTITY,
+                &cfg,
+                &mixed_qkvz,
+                &mixed_ba,
+                1,
+                seq,
+            )
+            .is_none(),
             "unpack compile must stay off when exact MTP is scoped off"
         );
     }
@@ -2729,12 +2777,20 @@ mod tests {
         );
         let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
         set_qwen_la_exact_attn_norm(Some((norm_w.clone(), 1e-6)));
-        let compiled = linear_attention_inputs_fused_qmm(&cfg, &x, &qkvz, &ba, None)
-            .expect("exact S=2 rms+qmm+unpack compile must engage");
+        let compiled =
+            linear_attention_inputs_fused_qmm(TEST_COMPILE_IDENTITY, &cfg, &x, &qkvz, &ba, None)
+                .expect("exact S=2 rms+qmm+unpack compile must engage");
         set_qwen_la_exact_attn_norm(None);
         let normed = rms_norm(&x, Some(&norm_w), 1e-6, None);
-        let imperative = linear_attention_inputs_fused_qmm(&cfg, &normed, &qkvz, &ba, None)
-            .expect("exact S=2 qmm+unpack compile must engage");
+        let imperative = linear_attention_inputs_fused_qmm(
+            TEST_COMPILE_IDENTITY,
+            &cfg,
+            &normed,
+            &qkvz,
+            &ba,
+            None,
+        )
+        .expect("exact S=2 qmm+unpack compile must engage");
         eval(&[
             &compiled.0,
             &compiled.1,
@@ -2837,12 +2893,20 @@ mod tests {
         );
         let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
         set_qwen_la_exact_attn_norm(Some((norm_w.clone(), 1e-6)));
-        let got = linear_attention_inputs_fused_qmm(&cfg, &x, &qkvz, &ba, None)
-            .expect("fallback fused qmm must still run");
+        let got =
+            linear_attention_inputs_fused_qmm(TEST_COMPILE_IDENTITY, &cfg, &x, &qkvz, &ba, None)
+                .expect("fallback fused qmm must still run");
         set_qwen_la_exact_attn_norm(None);
         let normed = rms_norm(&x, Some(&norm_w), 1e-6, None);
-        let want = linear_attention_inputs_fused_qmm(&cfg, &normed, &qkvz, &ba, None)
-            .expect("normed fused qmm");
+        let want = linear_attention_inputs_fused_qmm(
+            TEST_COMPILE_IDENTITY,
+            &cfg,
+            &normed,
+            &qkvz,
+            &ba,
+            None,
+        )
+        .expect("normed fused qmm");
         eval(&[
             &got.0, &got.1, &got.2, &got.3, &want.0, &want.1, &want.2, &want.3,
         ]);
@@ -2987,6 +3051,7 @@ mod tests {
             "load-time matching-bit concat must populate fused_qkvz_ba"
         );
         let (fused_qkv, fused_z, fused_a, fused_b) = linear_attention_inputs_fused_qmm(
+            TEST_COMPILE_IDENTITY,
             &cfg,
             &x,
             &qkvz_w,

@@ -729,11 +729,12 @@ impl QuantizedWeight {
         })
     }
 
-    /// One word of bits / group size / resolved mode / bias presence.
+    /// One word of bits / group size / resolved mode / explicit-input layout.
     ///
     /// Compiled S=2 verify graphs take weights as explicit inputs, so layers
     /// that share this contract can reuse one closure. Distinct contracts must
-    /// not share: `bits`/`group_size`/`mode` are captured in the traced qmm.
+    /// not share: `bits`/`group_size`/`mode` are captured in the traced qmm,
+    /// while optional tensor presence changes the positional input schema.
     pub fn compile_contract_word(&self) -> u64 {
         let mode = match self.mlx_quantization_mode() {
             MlxQuantizationMode::Affine => 0u64,
@@ -743,8 +744,10 @@ impl QuantizedWeight {
         };
         let bits = (self.bits as u32 as u64) & 0xff;
         let gs = (self.group_size as u32 as u64) & 0xffff;
-        let bias = u64::from(self.biases.is_some());
-        bits | (gs << 8) | (mode << 24) | (bias << 28)
+        let scales = u64::from(self.scales.is_some());
+        let group_bias = u64::from(self.biases.is_some());
+        let linear_bias = u64::from(self.linear_bias.is_some());
+        bits | (gs << 8) | (mode << 24) | (scales << 28) | (group_bias << 29) | (linear_bias << 30)
     }
 }
 
