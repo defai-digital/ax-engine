@@ -32,7 +32,10 @@ use crate::linear_attention_ops::{
     linear_attention_decode_post_input_metal, normalize_linear_attention_qk,
     rms_norm_gated_with_full_gate_policy, slice_seq_row_4d, split_linear_attention_qkv,
 };
-use crate::weights::{LayerWeights, LinearAttentionWeights, QuantizedWeight};
+use crate::weights::{
+    LayerWeights, LinearAttentionWeights, QuantizedWeight, SHARED_VERIFY_COMPILE_LAYER,
+    compile_quant_contract_salt,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -1461,16 +1464,17 @@ fn compiled_fused_qkvz_ba_qmm_unpack(
     let bits = fused.bits;
     let mode = fused.mode.clone();
     let attn_norm = qwen_la_exact_attn_norm();
+    let quant_salt = compile_quant_contract_salt(&[fused]);
     let (compile_id, input_store, fold_rms, rms_eps) = if let Some((norm_w, eps)) = attn_norm {
         (
-            EXACT_LA_RMS_QMM_UNPACK_COMPILE_ID,
+            EXACT_LA_RMS_QMM_UNPACK_COMPILE_ID ^ quant_salt,
             vec![x.clone(), norm_w, fused.weight.clone(), scales.clone()],
             true,
             eps,
         )
     } else {
         (
-            EXACT_LA_FUSED_QMM_UNPACK_COMPILE_ID,
+            EXACT_LA_FUSED_QMM_UNPACK_COMPILE_ID ^ quant_salt,
             vec![x.clone(), fused.weight.clone(), scales.clone()],
             false,
             0.0,
@@ -1479,7 +1483,7 @@ fn compiled_fused_qkvz_ba_qmm_unpack(
     let input_refs: Vec<&MlxArray> = input_store.iter().collect();
     crate::per_layer_compile::apply_layer_dense_ffn_prefill_min(
         compile_id,
-        0,
+        SHARED_VERIFY_COMPILE_LAYER,
         leading,
         2,
         &input_refs,
@@ -1547,7 +1551,7 @@ fn compiled_split_packed_qkvz_ba_projection(
     let inputs = [mixed_qkvz, mixed_ba];
     crate::per_layer_compile::apply_layer_dense_ffn_prefill_min(
         EXACT_LA_UNPACK_COMPILE_ID,
-        0,
+        SHARED_VERIFY_COMPILE_LAYER,
         leading,
         2,
         &inputs,
@@ -2483,6 +2487,19 @@ mod tests {
             mislabeled.mlx_quantization_mode(),
             mlx_sys::MlxQuantizationMode::Mxfp4
         ));
+        assert_ne!(
+            affine_qw.compile_contract_word(),
+            mxfp4_qw.compile_contract_word()
+        );
+        assert_eq!(
+            mxfp4_qw.compile_contract_word(),
+            mislabeled.compile_contract_word(),
+            "mislabeled affine 4/32 no-bias must share the MXFP4 compile contract"
+        );
+        assert_eq!(
+            compile_quant_contract_salt(&[&mxfp4_qw, &mxfp4_qw]),
+            compile_quant_contract_salt(&[&mislabeled, &mislabeled])
+        );
     }
 
     #[test]

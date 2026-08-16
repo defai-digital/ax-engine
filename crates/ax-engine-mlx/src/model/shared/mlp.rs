@@ -16,7 +16,9 @@ use std::time::Instant;
 
 use crate::fastpath;
 use crate::per_layer_compile::{apply_layer_dense_ffn_decode, apply_layer_dense_ffn_prefill_min};
-use crate::weights::{LayerWeights, QuantizedWeight};
+use crate::weights::{
+    LayerWeights, QuantizedWeight, SHARED_VERIFY_COMPILE_LAYER, compile_quant_contract_salt,
+};
 
 use super::super::config::{GlmRouterConfig, ModelConfig};
 use super::super::profile::{
@@ -4297,7 +4299,7 @@ pub(crate) fn qwen_compiled_split_verify_ffn_plus_residual(
     w: &LayerWeights,
     hidden: &MlxArray,
     attn_proj: &MlxArray,
-    layer_idx: usize,
+    _layer_idx: usize,
 ) -> Option<MlxArray> {
     if !fastpath::qwen_linear_mtp_exact_enabled() || cfg.uses_geglu {
         return None;
@@ -4343,8 +4345,10 @@ pub(crate) fn qwen_compiled_split_verify_ffn_plus_residual(
         vec![add(&residual, &ffn, None)]
     };
     apply_layer_dense_ffn_prefill_min(
-        cfg.compile_cache_identity ^ VERIFY_FFN_RESIDUAL_COMPILE_SALT,
-        layer_idx,
+        cfg.compile_cache_identity
+            ^ VERIFY_FFN_RESIDUAL_COMPILE_SALT
+            ^ compile_quant_contract_salt(&[gate, up, down]),
+        SHARED_VERIFY_COMPILE_LAYER,
         leading_elements,
         2,
         &input_refs,
@@ -4558,7 +4562,7 @@ pub(crate) fn qwen_compiled_split_verify_fa_o_proj_ffn(
     w: &LayerWeights,
     hidden: &MlxArray,
     attn_sdpa: &MlxArray,
-    layer_idx: usize,
+    _layer_idx: usize,
     query_seq: usize,
     n_heads: usize,
     head_dim: usize,
@@ -4634,8 +4638,10 @@ pub(crate) fn qwen_compiled_split_verify_fa_o_proj_ffn(
         vec![add(&residual, &ffn, None)]
     };
     apply_layer_dense_ffn_prefill_min(
-        cfg.compile_cache_identity ^ VERIFY_FA_O_PROJ_FFN_COMPILE_SALT,
-        layer_idx,
+        cfg.compile_cache_identity
+            ^ VERIFY_FA_O_PROJ_FFN_COMPILE_SALT
+            ^ compile_quant_contract_salt(&[o_proj, gate, up, down]),
+        SHARED_VERIFY_COMPILE_LAYER,
         leading_elements,
         2,
         &input_refs,
@@ -6465,6 +6471,18 @@ impl QuantInputSlot {
         }
     }
 
+    /// Resolve the compile-time mode tag from the runtime quant contract so
+    /// mislabeled affine 4/32 (no group bias) is stored as MXFP4, matching
+    /// [`QuantizedWeight::mlx_quantization_mode`].
+    fn mode_tag_from_quant(q: &QuantizedWeight) -> u8 {
+        match q.mlx_quantization_mode() {
+            mlx_sys::MlxQuantizationMode::Mxfp4 => Self::mode_tag("mxfp4"),
+            mlx_sys::MlxQuantizationMode::Mxfp8 => Self::mode_tag("mxfp8"),
+            mlx_sys::MlxQuantizationMode::Nvfp4 => Self::mode_tag("nvfp4"),
+            mlx_sys::MlxQuantizationMode::Affine => Self::mode_tag("affine"),
+        }
+    }
+
     fn mode_str(tag: u8) -> &'static str {
         match tag {
             1 => "mxfp4",
@@ -6531,7 +6549,7 @@ fn push_quant_inputs(
         linear_bias,
         group_size: q.group_size,
         bits: q.bits,
-        mode_tag: QuantInputSlot::mode_tag(&q.mode),
+        mode_tag: QuantInputSlot::mode_tag_from_quant(q),
     })
 }
 

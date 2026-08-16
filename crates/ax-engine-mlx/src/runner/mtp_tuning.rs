@@ -386,14 +386,34 @@ pub(super) fn mtp_ngram_min_context_len_for_exact(exact: bool, configured: usize
 /// 21/41 → 24/38. Two visible periods are enough to draft the continuation
 /// at depth 1 without replacing MTP on non-loop text.
 pub(super) fn short_cycle_next_token(recent: &[u32]) -> Option<u32> {
+    // Period-1: four identical tokens (EOS / pad loops). Two or three
+    // repeats is too common in natural text to draft from.
+    if recent.len() >= 4 {
+        let last = recent[recent.len() - 1];
+        if recent[recent.len() - 4..].iter().all(|&tok| tok == last) {
+            return Some(last);
+        }
+    }
     for period in [3_usize, 2] {
         let need = period.saturating_mul(2);
-        if recent.len() < need {
-            continue;
+        if recent.len() >= need {
+            let tail = &recent[recent.len() - need..];
+            if tail[..period] == tail[period..] {
+                return Some(tail[0]);
+            }
         }
-        let tail = &recent[recent.len() - need..];
-        if tail[..period] == tail[period..] {
-            return Some(tail[0]);
+        // One visible period plus the first token of the next (`[P][P[0]]`)
+        // is enough to draft `P[1]` at depth 1. Two full periods still win
+        // when present so the existing factory loop keeps drafting `P[0]`.
+        let prefix_need = period.saturating_add(1);
+        if recent.len() >= prefix_need {
+            let window = &recent[recent.len() - prefix_need..];
+            let pattern = &window[..period];
+            // All-equal `[a,a]` / `[a,a,a]` is period-1; the four-token
+            // rule above owns that so a triple repeat does not draft.
+            if window[period] == pattern[0] && pattern.iter().any(|&tok| tok != pattern[0]) {
+                return Some(pattern[1]);
+            }
         }
     }
     None
@@ -718,7 +738,27 @@ mod tests {
         assert_eq!(
             super::short_cycle_next_token(&[248045, 248046, 198]),
             None,
-            "one period is not enough"
+            "one period without a confirming prefix is not enough"
+        );
+        assert_eq!(
+            super::short_cycle_next_token(&[248045, 248046, 198, 248045]),
+            Some(248046),
+            "one period plus the first token of the next drafts P[1]"
+        );
+        assert_eq!(
+            super::short_cycle_next_token(&[248045, 248046, 198, 248045, 248046]),
+            Some(198)
+        );
+        assert_eq!(super::short_cycle_next_token(&[1, 2, 1]), Some(2));
+        assert_eq!(
+            super::short_cycle_next_token(&[7, 7, 7, 7]),
+            Some(7),
+            "four identical tokens is a period-1 loop"
+        );
+        assert_eq!(
+            super::short_cycle_next_token(&[7, 7, 7]),
+            None,
+            "three identical tokens is too weak"
         );
         assert_eq!(
             super::short_cycle_next_token_from_parts(

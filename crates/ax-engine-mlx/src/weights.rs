@@ -728,7 +728,40 @@ impl QuantizedWeight {
             decode_q4_biases: None,
         })
     }
+
+    /// One word of bits / group size / resolved mode / bias presence.
+    ///
+    /// Compiled S=2 verify graphs take weights as explicit inputs, so layers
+    /// that share this contract can reuse one closure. Distinct contracts must
+    /// not share: `bits`/`group_size`/`mode` are captured in the traced qmm.
+    pub fn compile_contract_word(&self) -> u64 {
+        let mode = match self.mlx_quantization_mode() {
+            MlxQuantizationMode::Affine => 0u64,
+            MlxQuantizationMode::Mxfp4 => 1,
+            MlxQuantizationMode::Mxfp8 => 2,
+            MlxQuantizationMode::Nvfp4 => 3,
+        };
+        let bits = (self.bits as u32 as u64) & 0xff;
+        let gs = (self.group_size as u32 as u64) & 0xffff;
+        let bias = u64::from(self.biases.is_some());
+        bits | (gs << 8) | (mode << 24) | (bias << 28)
+    }
 }
+
+/// Fold several quant contracts into a compile-cache salt.
+pub fn compile_quant_contract_salt(weights: &[&QuantizedWeight]) -> u64 {
+    let mut h = 0x9E37_79B9_7F4A_7C15;
+    for w in weights {
+        h ^= w.compile_contract_word();
+        h = h.rotate_left(13);
+        h = h.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    }
+    h
+}
+
+/// Shared layer slot for identity-safe verify compiles whose weights are
+/// function inputs. Pair with [`compile_quant_contract_salt`] on the compile id.
+pub const SHARED_VERIFY_COMPILE_LAYER: usize = 0;
 
 impl LinearAttentionWeights {
     /// Materialize matching-bit QKVZ+BA into one packed weight at load.
