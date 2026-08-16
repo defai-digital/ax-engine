@@ -22,13 +22,13 @@
     "eval": 1
   },
   "crates/ax-engine-mlx/src/linear_attention_ops.rs": {
-    "try_eval": 2
+    "try_eval": 3
   },
   "crates/ax-engine-mlx/src/model/families/standard.rs": {
     "eval": 2
   },
   "crates/ax-engine-mlx/src/model/mod.rs": {
-    "async_eval": 5,
+    "async_eval": 4,
     "eval": 8
   },
   "crates/ax-engine-mlx/src/model/profile.rs": {

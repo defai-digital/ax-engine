@@ -4385,9 +4385,7 @@ pub(crate) fn qwen_compiled_split_verify_la_gate_o_proj(
         return None;
     }
     let linear = w.linear_attn.as_ref()?;
-    if linear.out_proj.scales.is_none() {
-        return None;
-    }
+    linear.out_proj.scales.as_ref()?;
     let gd_shape = gd_out.shape();
     if gd_shape.len() < 2 || gd_shape.get(1).copied() != Some(seq) {
         return None;
@@ -4801,9 +4799,7 @@ pub(crate) fn qwen_compiled_split_verify_o_proj_ffn_plus_residual(
         return None;
     }
     let out_proj = &w.linear_attn.as_ref()?.out_proj;
-    if out_proj.scales.is_none() {
-        return None;
-    }
+    out_proj.scales.as_ref()?;
     let gate = w.gate_proj.as_ref()?;
     let up = w.up_proj.as_ref()?;
     let down = w.down_proj.as_ref()?;
@@ -4814,7 +4810,7 @@ pub(crate) fn qwen_compiled_split_verify_o_proj_ffn_plus_residual(
         hidden,
         gated,
         &w.ffn_norm,
-        &out_proj,
+        out_proj,
         gate,
         up,
         down,
@@ -4848,6 +4844,7 @@ pub(crate) fn qwen_compiled_split_verify_o_proj_ffn_plus_residual(
     .and_then(|r| r.into_iter().next())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn qwen_compiled_split_prefill_ffn(
     model_identity: u64,
     layer_idx: usize,

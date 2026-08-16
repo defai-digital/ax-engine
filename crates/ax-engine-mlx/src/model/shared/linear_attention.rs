@@ -221,6 +221,7 @@ pub(crate) fn linear_attention_forward_pre_gate(
     (gd, z)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn linear_attention_forward_inner(
     cfg: &ModelConfig,
     w: &LayerWeights,
