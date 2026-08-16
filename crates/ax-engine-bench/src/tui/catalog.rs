@@ -159,6 +159,20 @@ pub(super) fn is_embedding_family_key(key: &str) -> bool {
     key.to_ascii_lowercase().contains("embedding")
 }
 
+/// Whether a catalog family can back the first-run text chat experience.
+///
+/// Quick Start must not select a smaller task-specific pack (ASR, OCR,
+/// embeddings, diffusion, or a reward model) merely because its download is
+/// smaller than the smallest general chat model.
+pub(super) fn is_chat_family_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    !is_embedding_family_key(&key)
+        && !key.contains("diffusiongemma")
+        && !key.contains("asr")
+        && !key.contains("ocr")
+        && !key.contains("genrm")
+}
+
 /// Friendly display name for a catalog family key.
 pub(super) fn family_display_name(key: &str) -> String {
     match key {

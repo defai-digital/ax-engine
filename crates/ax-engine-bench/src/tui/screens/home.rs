@@ -78,9 +78,7 @@ impl App {
     pub(crate) fn quick_start_target(&self) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize, u64, RamFit)> = None;
         for (fi, family) in self.families.iter().enumerate() {
-            if catalog::is_embedding_family_key(&family.key)
-                || family.key.to_ascii_lowercase().contains("diffusiongemma")
-            {
+            if !catalog::is_chat_family_key(&family.key) {
                 continue;
             }
             for (vi, variant) in family.variants.iter().enumerate() {
