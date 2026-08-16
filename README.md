@@ -118,16 +118,17 @@ ax-engine tui
   >
 </p>
 
-**Option B — serve an MTP-ready snapshot**, then request from another terminal.
-The command reuses the exact cached snapshot when present and downloads it
-otherwise:
+**Option B — serve Qwen 3.8 27B AXQ 6-bit MTP**, then request from another
+terminal. `qwen3.8-27b:axq` is the pinned AutomatosX 6-bit MTP pack (same
+checkpoint as `ax-qwen3.8-27b`). The command reuses the cached snapshot when
+present and downloads it otherwise. Listen defaults to `127.0.0.1:31418`:
 
 ```bash
-ax-engine serve ax-gemma4-12b --port 31418
+ax-engine serve qwen3.8-27b:axq
 
 curl http://127.0.0.1:31418/v1/chat/completions \
   -H 'content-type: application/json' \
-  -d '{"model":"gemma-4-12b-it","messages":[{"role":"user","content":"Say hello in one sentence."}],"max_tokens":64}'
+  -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"Say hello in one sentence."}],"max_tokens":64}'
 ```
 
 **Option C — coding model** (resolve + serve):
@@ -145,9 +146,9 @@ Python wheel, source builds, and troubleshooting:
 
 `ax-engine download --list` and the TUI expose the curated public
 [AutomatosX model collection](https://huggingface.co/AutomatosX/models?sort=alphabetical)
-only — not every community MLX weight. Qwen 3.5, Qwen 3.6, and Gemma 4 variants
-published there (plain 4-bit/6-bit, QAT, OptiQ where available) are first-class
-serve targets. Other native families (for example **GLM 4.7 Flash**, Nemotron
+only — not every community MLX weight. Qwen 3.8 27B AXQ (6-bit MTP default),
+Qwen 3.6, Qwen 3.5, and Gemma 4 variants published there (plain 4-bit/6-bit,
+QAT, OptiQ, AXQ where available) are first-class serve targets. Other native families (for example **GLM 4.7 Flash**, Nemotron
 Omni, Unlimited-OCR, Whisper, MiniCPM-V) use the repo-owned runtime via serve
 aliases, presets, or manual model directories; they are not all AutomatosX-managed
 packages. Full matrix:
@@ -156,18 +157,17 @@ packages. Full matrix:
 **Qwen 3.8 Super-class (2.4T) is experimental only, not a production target.**
 Those packs can technically load through the SSD expert-stream path
 (`--stream-experts`, default `auto`), but local inference is too slow even at
-2-bit to recommend or certify. **Expect AX Engine v7.0.0 to support Qwen 3.8
-27B** as the production-size family. Until then, prefer Qwen 3.6 for local
-serving.
+2-bit to recommend or certify. **Start local serving on Qwen 3.8 27B AXQ
+6-bit MTP** (`qwen3.8-27b:axq`).
 
 **Recommended starting packages** (serve-ready, match published benches):
 
 | Goal | Alias / family | Why |
 | --- | --- | --- |
+| Default dense chat + MTP | `qwen3.8-27b:axq` (pinned AXQ 6-bit MTP) | Production-size Qwen 3.8 27B; AutomatosX AXQ 6-bit with MTP sidecar |
 | Fastest MoE chat + MTP | `ax-qwen3.6-35b-a3b` (4-bit or 6-bit MTP) | Strongest serving and MTP peer decode rows |
-| Dense chat + MTP | `ax-qwen3.6-27b` (6-bit MTP preferred) | High same-package MTP speedup; solid serving |
-| AXQ evaluation candidate | `qwen3.6-27b:axq` (pinned 6-bit) | Flagship AXQ candidate; explicit until its checkpoint certification gates pass |
-| Qwen 3.8 dense AXQ + MTP | `qwen3.8-27b:axq` (pinned 6-bit MTP) | Production-size Qwen 3.8 27B AXQ pack; queued for the next MTP and direct campaign |
+| Dense chat + MTP (3.6) | `ax-qwen3.6-27b` (6-bit MTP preferred) | High same-package MTP speedup; solid serving |
+| AXQ evaluation candidate | `qwen3.6-27b:axq` (pinned 6-bit) | Qwen 3.6 27B AXQ candidate; explicit until its checkpoint certification gates pass |
 | Vision MoE Instruct AXQ | `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-4bit` | Qwen3-VL 30B-A3B Instruct AXQ packs; candidate, no MTP |
 | Holo3 GUI-agent AXQ | `holo3-35b` / `holo3-35b:axq` | Qwen3.5-class 35B-A3B MoE; Tier 1 certified text path; no MTP |
 | Ornith coding AXQ | `ornith-35b` / `ornith-35b:axq` | Qwen3.5-class 35B-A3B MoE coding agent; Tier 1 AXQ; no MTP |
@@ -186,7 +186,7 @@ the standard flow; do **not** run `download-mtp` afterward.
 | --- | --- | --- |
 | Qwen 3.5 9B | Chat / agent | [`AX-Qwen3.5-9B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP)<br>[`AX-Qwen3.5-9B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP)<br>[`AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP) |
 | Qwen 3.6 27B | Chat / agent / multimodal | [`AX-Qwen3.6-27B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP)<br>[`AX-Qwen3.6-27B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP)<br>[`AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP)<br>AXQ candidates: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP) |
-| Qwen 3.8 27B | Chat / agent / multimodal | AXQ candidates: [`AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP) / [`AXQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP) |
+| Qwen 3.8 27B | Chat / agent / multimodal | Default serve: [`AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP) via `qwen3.8-27b:axq`. Also [`AXQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP), 8-bit, and MXFP4 |
 | Qwen 3.6 35B-A3B | Chat / agent / multimodal | [`AX-Qwen3.6-35B-A3B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP)<br>[`AX-Qwen3.6-35B-A3B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP)<br>[`AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP) |
 | Qwen3-VL 30B-A3B Instruct | Vision chat (image/video) | AXQ candidates: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit) (no MTP) |
 | Holo3 35B-A3B | GUI agent (text path) | Certified AXQ: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit) (no MTP) |
@@ -229,8 +229,8 @@ The default Hugging Face cache layout is
 `ax-*` aliases shown by `ax-engine download --list`; for example:
 
 ```bash
-ax-engine serve ax-qwen3.6-27b --port 31418
-ax-engine serve qwen3.6-27b:axq --offline --port 31418  # require pinned AXQ cache
+ax-engine serve qwen3.8-27b:axq
+ax-engine serve qwen3.8-27b:axq --offline  # require the pinned 6-bit MTP cache
 ```
 
 Aliases, hardware sizing, and legacy MTP packaging targets:

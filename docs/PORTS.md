@@ -21,9 +21,9 @@ Constants in code:
 
 ```bash
 # Same as omitting --port: default is 31418
-ax-engine serve ax-gemma4-12b
+ax-engine serve qwen3.8-27b:axq
 # or explicit:
-ax-engine serve ax-gemma4-12b --host 127.0.0.1 --port 31418
+ax-engine serve qwen3.8-27b:axq --host 127.0.0.1 --port 31418
 
 curl -sS http://127.0.0.1:31418/v1/runtime
 curl -sS http://127.0.0.1:31418/v1/models
