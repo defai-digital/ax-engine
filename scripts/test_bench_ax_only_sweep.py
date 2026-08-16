@@ -162,14 +162,14 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         self.assertIn("140 extra tensors", row["prompt_source_note"])
         self.assertIn("AX manifest is present", row["prompt_source_note"])
 
-    def test_default_manifest_defines_twelve_readme_and_ten_peer_rows(self) -> None:
+    def test_default_manifest_defines_sixteen_inventory_fourteen_readme_rows(self) -> None:
         manifest = json.loads(sweep.DEFAULT_MANIFEST.read_text())
         rows = sweep.filter_manifest_rows(manifest["rows"], None)
         readme_rows = sweep.readme_manifest_rows(rows)
         peer_rows = sweep.mlx_lm_peer_comparable_rows(readme_rows)
 
-        self.assertEqual(len(rows), 14)
-        self.assertEqual(len(readme_rows), 12)
+        self.assertEqual(len(rows), 16)
+        self.assertEqual(len(readme_rows), 14)
         self.assertEqual(len(peer_rows), 10)
         self.assertEqual(
             {
@@ -185,7 +185,12 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                 for row in readme_rows
                 if row.get("mlx_lm_peer_required") is False
             },
-            {"gemma-4-e2b-it-6bit", "gemma-4-e4b-it-6bit"},
+            {
+                "gemma-4-e2b-it-6bit",
+                "gemma-4-e4b-it-6bit",
+                "qwen3_8-27b-axq-4bit",
+                "qwen3_8-27b-axq-6bit",
+            },
         )
 
     def test_select_sweep_rows_defaults_to_readme_scope(self) -> None:

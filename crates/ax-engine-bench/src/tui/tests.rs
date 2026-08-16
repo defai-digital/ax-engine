@@ -1349,9 +1349,14 @@ fn filter_narrows_family_list_and_drill_in_maps_back() {
     app.filter = "gemma4-12b".to_string();
     app.clamp_family_idx_to_filter();
     let indices = app.filtered_family_indices();
-    assert_eq!(indices.len(), 1);
-    assert_eq!(app.families[indices[0]].key, "ax-gemma4-12b");
-    assert_eq!(app.family_idx, indices[0]);
+    let keys: Vec<&str> = indices
+        .iter()
+        .map(|&i| app.families[i].key.as_str())
+        .collect();
+    assert_eq!(indices.len(), 2);
+    assert!(keys.contains(&"ax-gemma4-12b"));
+    assert!(keys.contains(&"ax-gemma4-12b-axq"));
+    assert!(indices.contains(&app.family_idx));
 
     let text = render(&app);
     assert!(text.contains("filter: gemma4-12b"));
@@ -1360,6 +1365,7 @@ fn filter_narrows_family_list_and_drill_in_maps_back() {
         "non-matching family should be hidden"
     );
 
+    app.family_idx = family_index(&app, "ax-gemma4-12b");
     app.on_key_models(KeyCode::Enter);
     assert_eq!(app.stage, WizardStage::Precision);
     assert_eq!(app.families[app.family_idx].key, "ax-gemma4-12b");

@@ -787,7 +787,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3-coder-next:optiq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(55139958332),
     },
     ModelProfile {
         label: "ax-qwen3-coder-next-4bit",
@@ -815,7 +815,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ax-diffusiongemma-26b-optiq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(17852322931),
     },
     ModelProfile {
         label: "ax-diffusiongemma-26b-4bit",
@@ -993,7 +993,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "devstral-small-2",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(17672202750),
     },
     ModelProfile {
         label: "ax-devstral-small-axq-4bit",
@@ -1001,7 +1001,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
         aliases: &["ax-devstral-small-axq-4bit", "devstral-small:axq-4bit"],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(14602976481),
     },
     ModelProfile {
         label: "ax-devstral-small-axq-6bit",
@@ -1014,7 +1014,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "devstral-small:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(17696941586),
     },
     ModelProfile {
         label: "holo3-35b",
@@ -1031,7 +1031,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "holo3-35b:axq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(24884006585),
     },
     ModelProfile {
         label: "holo3-35b-6bit",
@@ -1045,7 +1045,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "holo3-35b:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(30769108800),
     },
     ModelProfile {
         label: "ax-ministral-3-14b-axq-4bit",
@@ -1053,7 +1053,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "AutomatosX/AX-Ministral-3-14B-Instruct-2512-MLX-AXQ-4bit",
         aliases: &["ax-ministral-3-14b-axq-4bit", "ministral-3-14b:axq-4bit"],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(9796902900),
     },
     ModelProfile {
         label: "ax-ministral-3-14b-axq-6bit",
@@ -1066,7 +1066,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ministral-3-14b:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(10476534273),
     },
     ModelProfile {
         label: "ax-ministral-3-14b",
@@ -1078,7 +1078,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ministral-3-14b",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(10623200972),
     },
     ModelProfile {
         label: "ax-ministral-3-8b-axq-6bit",
@@ -1091,7 +1091,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ministral-3-8b:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(6706317552),
     },
     ModelProfile {
         label: "ax-ministral-3-8b",
@@ -1104,7 +1104,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ministral-3",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(7139470696),
     },
     ModelProfile {
         label: "ax-mistral-small-axq-4bit",
@@ -1116,7 +1116,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ax-mistral-small-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(15475259414),
     },
     ModelProfile {
         label: "ax-mistral-small",
@@ -1130,7 +1130,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "mistral-small:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(18026258863),
     },
     ModelProfile {
         label: "ax-nemotron-3-nano",
@@ -1144,7 +1144,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "nemotron-3-nano:axq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(18968834209),
     },
     ModelProfile {
         label: "ax-nemotron-3-nano-6bit",
@@ -1157,7 +1157,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "nemotron-3-nano:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(23669907947),
     },
     ModelProfile {
         label: "ornith-35b",
@@ -1175,7 +1175,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ornith-35b:axq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(21437078089),
     },
     ModelProfile {
         label: "ornith-35b-6bit",
@@ -1189,7 +1189,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ornith-35b:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(26352107653),
     },
     ModelProfile {
         label: "ax-qwen3-asr-1.7b",
@@ -1203,7 +1203,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3-asr-1.7b:axq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(1765662877),
     },
     ModelProfile {
         label: "ax-qwen3-asr-1.7b-6bit",
@@ -1216,7 +1216,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3-asr:axq",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(2132544013),
     },
     ModelProfile {
         label: "ax-qwen3-coder-next-axq-4bit",
@@ -1228,7 +1228,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3-coder-next:axq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(47885901311),
     },
     ModelProfile {
         label: "ax-qwen3-coder-next-axq-6bit",
@@ -1242,7 +1242,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3-coder-next:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(59850809730),
     },
     ModelProfile {
         label: "ax-qwen3-nemotron-32b-genrm",
@@ -1255,7 +1255,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3-nemotron-32b-genrm:axq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(19956676570),
     },
     ModelProfile {
         label: "ax-qwen3-nemotron-32b-genrm-6bit",
@@ -1267,7 +1267,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3-nemotron-32b-genrm:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(24584520018),
     },
     ModelProfile {
         label: "ax-qwen3-vl-8b-4bit",
@@ -1279,7 +1279,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3-vl-8b:axq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(6985011416),
     },
     ModelProfile {
         label: "ax-qwen3-vl-8b",
@@ -1294,7 +1294,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3-vl-8b-instruct:axq",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(8782284430),
     },
     ModelProfile {
         label: "ax-qwen3.8-27b-axq-4bit-base",
@@ -1306,7 +1306,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ax-qwen3.8-27b-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(17347922966),
     },
     ModelProfile {
         label: "ax-qwen3.8-27b-axq-6bit-base",
@@ -1318,7 +1318,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ax-qwen3.8-27b-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(20539844328),
     },
     ModelProfile {
         label: "ax-qwen3.8-27b-axq-8bit-base",
@@ -1326,7 +1326,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit",
         aliases: &["ax-qwen3.8-27b-axq-8bit-base", "qwen3.8-27b:axq-8bit-base"],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(27379005741),
     },
     ModelProfile {
         label: "ax-qwen3.8-27b-axq-8bit",
@@ -1338,7 +1338,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ax-qwen3.8-27b-8bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(30372618029),
     },
     ModelProfile {
         label: "ax-qwen3.8-27b-axq-mxfp4-base",
@@ -1349,7 +1349,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3.8-27b:axq-mxfp4-base",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(16586849399),
     },
     ModelProfile {
         label: "ax-qwen3.8-27b-axq-mxfp4",
@@ -1361,7 +1361,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "ax-qwen3.8-27b-mxfp4",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(17436265609),
     },
     ModelProfile {
         label: "ax-unlimited-ocr",
@@ -1374,7 +1374,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "unlimited-ocr-3b",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(3856472307),
     },
     ModelProfile {
         label: "ax-gpt-oss-120b-axq-6bit",
@@ -1387,7 +1387,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "gpt-oss-120b:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(96075600563),
     },
     ModelProfile {
         label: "ax-gpt-oss-20b-axq-4bit",
@@ -1395,7 +1395,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit",
         aliases: &["ax-gpt-oss-20b-axq-4bit", "gpt-oss-20b:axq-4bit"],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(13244904684),
     },
     ModelProfile {
         label: "ax-gpt-oss-20b-axq-6bit",
@@ -1408,7 +1408,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "gpt-oss-20b:axq-6bit",
         ],
         downloadable: true,
-        approx_size_bytes: None,
+        approx_size_bytes: Some(15714732576),
     },
 ];
 

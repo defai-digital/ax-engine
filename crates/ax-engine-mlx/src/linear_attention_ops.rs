@@ -943,7 +943,7 @@ fn try_compiled_gated_delta_oneshot(
     );
     let cache = GATED_DELTA_PREFILL_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache.lock().ok()?;
-    if !guard.contains_key(&key) {
+    let slot = guard.entry(key).or_insert_with(|| {
         let y_shape_c = y_shape.clone();
         let state_shape_c = state_shape.clone();
         let body = move |inputs: &MlxVectorArray| {
@@ -1005,10 +1005,9 @@ fn try_compiled_gated_delta_oneshot(
                 None,
             )
         };
-        let compiled = MlxClosure::new_dyn(body).compile(false).ok();
-        guard.insert(key, compiled);
-    }
-    let closure = guard.get(&key)?.as_ref()?;
+        MlxClosure::new_dyn(body).compile(false).ok()
+    });
+    let closure = slot.as_ref()?;
     let outputs = closure
         .try_apply(&[q, k, v, a_log, a_raw, dt_bias, b_raw, state, seq_i32])
         .ok()?;
@@ -2148,8 +2147,8 @@ mod tests {
         let (got_y, got_state) =
             gated_delta_prefill_tiled(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state, TILE);
         mlx_sys::eval(&[&got_y, &got_state, &want_y, &want_state]);
-        assert_close("y", got_y.data_f32(), &want_y.data_f32(), 1e-5);
-        assert_close("state", got_state.data_f32(), &want_state.data_f32(), 1e-5);
+        assert_close("y", got_y.data_f32(), want_y.data_f32(), 1e-5);
+        assert_close("state", got_state.data_f32(), want_state.data_f32(), 1e-5);
     }
 
     #[test]
@@ -2191,8 +2190,8 @@ mod tests {
             &q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state, TILE,
         );
         mlx_sys::eval(&[&got_y, &got_state, &want_y, &want_state]);
-        assert_close("y", got_y.data_f32(), &want_y.data_f32(), 1e-5);
-        assert_close("state", got_state.data_f32(), &want_state.data_f32(), 1e-5);
+        assert_close("y", got_y.data_f32(), want_y.data_f32(), 1e-5);
+        assert_close("state", got_state.data_f32(), want_state.data_f32(), 1e-5);
         assert!(
             fastpath::should_qwen_gd_prefill_chunkwise_for(true, 1024),
             "shipped chunkwise gate must accept the p2048 chunk length"

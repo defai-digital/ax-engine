@@ -262,6 +262,7 @@ pub(crate) fn qkv_project_embed(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn qkv_project_inner(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -4165,6 +4166,7 @@ pub(crate) fn qwen_prefill_maybe_dual_affine_gate_up_for(
 /// Shape-compiled Qwen split FFN for **prefill** (gate + up + SwiGLU + down).
 /// Packed Qwen prefill compile stays forbidden; this is the unused split
 /// `mx.compile` analog for contract shapes (leading ≥ 128).
+#[allow(clippy::too_many_arguments)]
 fn qwen_compiled_split_prefill_ffn(
     model_identity: u64,
     layer_idx: usize,
@@ -4227,6 +4229,22 @@ fn qwen_compiled_prefill_down_qmm(
     hidden: &MlxArray,
     down: &QuantizedWeight,
 ) -> Option<MlxArray> {
+    qwen_compiled_prefill_down_qmm_for(
+        fastpath::qwen_prefill_down_compile_enabled(),
+        model_identity,
+        layer_idx,
+        hidden,
+        down,
+    )
+}
+
+fn qwen_compiled_prefill_down_qmm_for(
+    enabled: bool,
+    model_identity: u64,
+    layer_idx: usize,
+    hidden: &MlxArray,
+    down: &QuantizedWeight,
+) -> Option<MlxArray> {
     let shape = hidden.shape();
     if shape.len() < 2 || shape[shape.len() - 2] <= 1 {
         return None;
@@ -4234,7 +4252,7 @@ fn qwen_compiled_prefill_down_qmm(
     let leading: i64 = shape[..shape.len() - 1]
         .iter()
         .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
-    if !fastpath::should_qwen_prefill_down_compile(shape[shape.len() - 2], leading) {
+    if !fastpath::should_qwen_prefill_down_compile_for(enabled, shape[shape.len() - 2], leading) {
         return None;
     }
     let scales = down.scales.as_ref()?;
@@ -6961,7 +6979,7 @@ mod tests {
         let hidden = 64i32;
         let inter = 32i32;
         let x_data: Vec<f32> = (0..seq * hidden)
-            .map(|i| ((i as f32) - 2048.0) * 0.000244140625)
+            .map(|i| ((i as f32) - 2048.0) * 0.000_244_140_63)
             .collect();
         let gate_data: Vec<f32> = (0..inter * hidden)
             .map(|i| ((i as f32) - 1024.0) * 0.0005)
@@ -7046,7 +7064,7 @@ mod tests {
     fn qwen_compiled_split_prefill_ffn_matches_two_qmm_4bit_gs32() {
         // Contract p128 leading=128. AXQ language FFN is 4-bit gs32.
         let x_data: Vec<f32> = (0..128 * 64)
-            .map(|i| ((i as f32) - 4096.0) * 0.000244140625)
+            .map(|i| ((i as f32) - 4096.0) * 0.000_244_140_63)
             .collect();
         let gate_data: Vec<f32> = (0..32 * 64)
             .map(|i| ((i as f32) - 1024.0) * 0.0005)
@@ -7199,16 +7217,22 @@ mod tests {
             decode_q4_scales: None,
             decode_q4_biases: None,
         };
-        let compiled = qwen_compiled_prefill_down_qmm(0x444F_574E_5052_4546, 3, &hidden, &down)
-            .expect("down-only prefill compile should engage at leading=128");
+        let compiled =
+            qwen_compiled_prefill_down_qmm_for(true, 0x444F_574E_5052_4546, 3, &hidden, &down)
+                .expect("down-only prefill compile should engage at leading=128");
         let portable = qw(&hidden, &down);
         eval(&[&compiled, &portable]);
         assert_eq!(compiled.shape(), portable.shape());
         assert_close(compiled.data_f32(), portable.data_f32(), 3.0e-2);
         let decode = array_f32(&hidden_data[..32], &[1, 1, 32]);
         assert!(
-            qwen_compiled_prefill_down_qmm(0x444F_574E_5052_4546, 3, &decode, &down).is_none(),
+            qwen_compiled_prefill_down_qmm_for(true, 0x444F_574E_5052_4546, 3, &decode, &down)
+                .is_none(),
             "down-only prefill compile must reject decode seq==1"
+        );
+        assert!(
+            qwen_compiled_prefill_down_qmm(0x444F_574E_5052_4546, 3, &hidden, &down).is_none(),
+            "default-off compile flag must keep the imperative down qmm"
         );
     }
 

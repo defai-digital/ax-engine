@@ -79,8 +79,10 @@ pub(crate) fn qw_rms_norm_qmm(
     }
 }
 
+type InitialRecurrentZerosCache = Option<((i32, i32, i32), MlxArray)>;
+
 thread_local! {
-    static INITIAL_RECURRENT_ZEROS: RefCell<Option<((i32, i32, i32), MlxArray)>> =
+    static INITIAL_RECURRENT_ZEROS: RefCell<InitialRecurrentZerosCache> =
         const { RefCell::new(None) };
     static PREFILL_LA_CONTIG_W: RefCell<HashMap<usize, QuantizedWeight>> =
         RefCell::new(HashMap::new());

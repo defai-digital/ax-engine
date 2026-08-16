@@ -175,7 +175,7 @@ mod tests {
             | "glm4_moe_lite" | "gpt_oss" | "deepseek_v3" | "deepseek_v32" => {
                 ModelSupportTier::Certified
             }
-            "diffusion_gemma" | "deepseek_v4" => ModelSupportTier::Experimental,
+            "diffusion_gemma" | "deepseek_v4" | "muse_glimmer" => ModelSupportTier::Experimental,
             _ => ModelSupportTier::Compatible,
         }
     }
@@ -227,6 +227,10 @@ mod tests {
     fn experimental_gate_covers_diffusion_family() {
         assert_eq!(
             support_tier_for_family("diffusion_gemma"),
+            ModelSupportTier::Experimental
+        );
+        assert_eq!(
+            support_tier_for_family("muse_glimmer"),
             ModelSupportTier::Experimental
         );
     }

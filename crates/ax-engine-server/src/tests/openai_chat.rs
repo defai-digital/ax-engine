@@ -1,13 +1,13 @@
 use crate::chat;
 use crate::openai::chat_requests::{
-    ChatPromptRenderOptions, render_openai_chat_prompt, render_openai_chat_prompt_with_options,
-    render_openai_chat_prompt_with_tools,
+    ChatPromptRenderOptions, chat_template_kwargs_for_model_id, render_openai_chat_prompt,
+    render_openai_chat_prompt_with_options, render_openai_chat_prompt_with_tools,
 };
 use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
     build_openai_chat_request_offloading_media, build_openai_llama_cpp_chat_request,
-    build_openai_mlx_lm_chat_request, chat_template_kwargs_for_model_id,
-    delegated_chat_template_kwargs, openai_chat_prompt_render_options, openai_chat_stop_sequences,
+    build_openai_mlx_lm_chat_request, delegated_chat_template_kwargs,
+    openai_chat_prompt_render_options, openai_chat_stop_sequences,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;

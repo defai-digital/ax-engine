@@ -220,7 +220,11 @@ pub(crate) fn verify_submit_interval_for_build(
     layer_count: usize,
     configured: usize,
 ) -> usize {
-    if seq <= 1 || configured == 0 || configured >= layer_count {
+    // Depth-1 Qwen linear verify is S=2..4. Mid-loop async_eval of `hidden`
+    // is a win on long prefill-shaped graphs (35B-A3B interval 8) and pure
+    // overhead on the short teacher-forced step when stacked on
+    // AX_MLX_PIPELINE_GRANULARITY=layer.
+    if seq <= 4 || configured == 0 || configured >= layer_count {
         return 0;
     }
     configured
@@ -1496,10 +1500,7 @@ pub fn should_gemma4_prefill_skip_unused_layer_masks_for(
     if key_len.saturating_sub(seq_u) > 0 {
         return false;
     }
-    match min_sliding_window {
-        Some(window) if seq_u > window => false,
-        _ => true,
-    }
+    !matches!(min_sliding_window, Some(window) if seq_u > window)
 }
 
 env_flag!(
@@ -4808,7 +4809,10 @@ pub fn should_keep_lazy_intermediate_qwen_prefill_for(
     is_final_chunk: bool,
     total_tokens: usize,
 ) -> bool {
-    enabled && !is_final_chunk && skip_cache_only_split_for_family(model_family, total_tokens)
+    enabled
+        && !is_final_chunk
+        && model_family.eq_ignore_ascii_case("qwen3_5")
+        && skip_cache_only_split_for_family(model_family, total_tokens)
 }
 
 /// Family-aware variant of [`scale_prefill_chunk_for_remaining`].
@@ -7689,7 +7693,8 @@ mod tests {
         // already double-buffers; splitting it would only add submits.
         assert_eq!(verify_submit_interval_for_build(1, 40, 8), 0);
         // A speculative verify build splits at the configured interval.
-        assert_eq!(verify_submit_interval_for_build(2, 40, 8), 8);
+        assert_eq!(verify_submit_interval_for_build(2, 40, 8), 0);
+        assert_eq!(verify_submit_interval_for_build(4, 40, 8), 0);
         assert_eq!(verify_submit_interval_for_build(5, 40, 4), 4);
         // An interval that cannot produce a submit before the caller's own
         // terminating eval is pure overhead, so it is refused.

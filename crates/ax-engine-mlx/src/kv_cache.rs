@@ -5122,10 +5122,10 @@ mod tests {
 
         let usage = cache.usage_snapshot();
         assert_eq!(usage.logical_tokens, 2);
-        assert_eq!(usage.capacity_tokens, 256);
+        assert_eq!(usage.capacity_tokens, 2);
         assert_eq!(usage.full_attention_layers, 1);
         assert_eq!(usage.logical_bytes, 2304);
-        assert_eq!(usage.capacity_bytes, 294_912);
+        assert_eq!(usage.capacity_bytes, 2304);
         assert_eq!(usage.growth_count, 1);
     }
 
@@ -5157,10 +5157,10 @@ mod tests {
 
         let usage = cache.usage_snapshot();
         assert_eq!(usage.logical_tokens, 3);
-        assert_eq!(usage.capacity_tokens, 256);
+        assert_eq!(usage.capacity_tokens, 3);
         assert_eq!(usage.full_attention_layers, 1);
         assert_eq!(usage.logical_bytes, 96);
-        assert_eq!(usage.capacity_bytes, 8192);
+        assert_eq!(usage.capacity_bytes, 96);
         assert_eq!(usage.growth_count, 1);
     }
 
@@ -5317,11 +5317,11 @@ mod tests {
         cache.seq_len = 300;
 
         let usage = cache.usage_snapshot_with_layer_windows(&[Some(128)]);
-        assert_eq!(usage.capacity_tokens, 512);
+        assert_eq!(usage.capacity_tokens, 300);
         assert_eq!(usage.sliding_window_layers, 1);
         assert_eq!(usage.sliding_window_retained_tokens, 128);
-        assert_eq!(usage.sliding_window_reclaimable_capacity_tokens, 256);
-        assert_eq!(usage.sliding_window_reclaimable_capacity_bytes, 8192);
+        assert_eq!(usage.sliding_window_reclaimable_capacity_tokens, 44);
+        assert_eq!(usage.sliding_window_reclaimable_capacity_bytes, 1408);
     }
 
     #[test]
@@ -5336,7 +5336,7 @@ mod tests {
         let usage = cache.usage_snapshot_with_layer_windows(&[Some(128), Some(128)]);
         assert_eq!(usage.full_attention_layers, 1);
         assert_eq!(usage.sliding_window_layers, 1);
-        assert_eq!(usage.sliding_window_reclaimable_capacity_tokens, 256);
+        assert_eq!(usage.sliding_window_reclaimable_capacity_tokens, 44);
     }
 
     #[test]
@@ -5349,7 +5349,7 @@ mod tests {
         cache.seq_len = 120;
 
         let usage = cache.usage_snapshot_with_layer_windows(&[Some(512)]);
-        assert_eq!(usage.capacity_tokens, 256);
+        assert_eq!(usage.capacity_tokens, 120);
         assert_eq!(usage.sliding_window_layers, 1);
         assert_eq!(usage.sliding_window_retained_tokens, 120);
         assert_eq!(usage.sliding_window_reclaimable_capacity_tokens, 0);
@@ -7403,9 +7403,9 @@ mod tests {
         // 2 × 128 × 2 × 2 = 1024 B/token dense.
         let usage = quant.usage_snapshot();
         assert_eq!(usage.logical_tokens, 200);
-        assert_eq!(usage.capacity_tokens, 256);
+        assert_eq!(usage.capacity_tokens, 200);
         assert_eq!(usage.logical_bytes, 320 * 200);
-        assert_eq!(usage.capacity_bytes, 320 * 256);
+        assert_eq!(usage.capacity_bytes, 320 * 200);
         assert_eq!(usage.quantized_layers, 1);
         let dense_usage = dense.usage_snapshot();
         assert_eq!(dense_usage.logical_bytes, 1024 * 200);

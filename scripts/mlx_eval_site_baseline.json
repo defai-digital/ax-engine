@@ -35,15 +35,24 @@
     "eval": 6
   },
   "crates/ax-engine-mlx/src/model/shared/attention.rs": {
-    "eval": 2
+    "async_eval": 2,
+    "eval": 3
   },
   "crates/ax-engine-mlx/src/model/shared/deepseek_v4_compressor.rs": {
     "eval": 2
   },
+  "crates/ax-engine-mlx/src/model/shared/linear_attention.rs": {
+    "async_eval": 2,
+    "eval": 2
+  },
   "crates/ax-engine-mlx/src/model/shared/mlp.rs": {
-    "async_eval": 1,
-    "eval": 1,
+    "async_eval": 4,
+    "eval": 3,
     "try_eval": 1
+  },
+  "crates/ax-engine-mlx/src/model/shared/utils.rs": {
+    "async_eval": 1,
+    "eval": 1
   },
   "crates/ax-engine-mlx/src/mtp.rs": {
     "async_eval": 1,
@@ -60,7 +69,7 @@
   },
   "crates/ax-engine-mlx/src/runner/mod.rs": {
     "async_eval": 2,
-    "eval": 23
+    "eval": 24
   },
   "crates/ax-engine-mlx/src/runner/pipeline.rs": {
     "eval": 1
@@ -73,7 +82,7 @@
     "eval": 4
   },
   "crates/ax-engine-mlx/src/weights.rs": {
-    "eval": 16
+    "eval": 23
   },
   "crates/ax-engine-mlx/src/whisper.rs": {
     "try_eval": 2

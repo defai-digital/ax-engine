@@ -32,8 +32,10 @@ use crate::openai::chat_requests::{
     render_qwen3_vl_chat_with_media,
 };
 pub(crate) use crate::openai::chat_requests::{
-    chat_template_kwargs_for_model_id, delegated_chat_template_kwargs, openai_chat_stop_sequences,
+    delegated_chat_template_kwargs, openai_chat_stop_sequences,
 };
+#[cfg(test)]
+pub(crate) use crate::openai::chat_requests::chat_template_kwargs_for_model_id;
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
 use crate::tasks::run_blocking_http_task;

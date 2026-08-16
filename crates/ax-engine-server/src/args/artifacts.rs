@@ -241,10 +241,10 @@ fn infer_mistral_model_id(path_label: &str) -> String {
         || path_label.contains("ministral-3")
     {
         "ministral-3-8b".to_string()
-    } else if path_label.contains("devstral-small-2") || path_label.contains("devstral-small-2-24b")
+    } else if path_label.contains("devstral-small-2")
+        || path_label.contains("devstral-small-2-24b")
+        || path_label.contains("devstral")
     {
-        "devstral-small".to_string()
-    } else if path_label.contains("devstral") {
         "devstral-small".to_string()
     } else if path_label.contains("mistral-small") {
         "mistral-small".to_string()

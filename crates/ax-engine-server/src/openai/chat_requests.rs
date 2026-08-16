@@ -990,7 +990,7 @@ pub(crate) fn delegated_chat_template_kwargs(
             kwargs.insert("preserve_thinking".to_string(), json!(preserve_thinking));
         }
     }
-    (!kwargs.is_empty()).then(|| Value::Object(kwargs))
+    (!kwargs.is_empty()).then_some(Value::Object(kwargs))
 }
 
 pub(crate) fn openai_chat_stop_sequences(

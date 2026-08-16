@@ -1977,7 +1977,7 @@ mod tests {
         let x = MlxArray::from_raw_data(
             data.as_ptr() as *const u8,
             std::mem::size_of_val(data.as_slice()),
-            &[1, heads as i32, seq as i32, head_dim as i32],
+            &[1, heads, seq, head_dim],
             mlx_sys::MlxDtype::Float32,
         );
         set_qwen_prefill_reuse_rope_active(true);
