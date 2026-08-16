@@ -521,6 +521,31 @@ pub(crate) fn qwen_prefill_maybe_flat_qmm_for(
     reshape(&out, &[batch, seq, out_last], None)
 }
 
+/// Exact MXFP4 verify is S=2..=4 `[1,S,H]`. Flatten to `[S,H]` so MLX's
+/// mxfp4 qmm uses the 2-D M=S path instead of a 3-D leading dim of 1.
+/// Singleton decode stays `[1,1,H]` and does not enter this reshape.
+fn exact_mxfp4_short_qmm(
+    x: &MlxArray,
+    mode: mlx_sys::MlxQuantizationMode,
+    qmm: impl FnOnce(&MlxArray) -> MlxArray,
+) -> MlxArray {
+    let shape = x.shape();
+    if !fastpath::qwen_linear_mtp_exact_enabled()
+        || !matches!(mode, mlx_sys::MlxQuantizationMode::Mxfp4)
+        || shape.len() != 3
+        || shape[0] != 1
+        || !(2..=4).contains(&shape[1])
+    {
+        return qmm(x);
+    }
+    let seq = shape[1];
+    let hidden = shape[2];
+    let flat = reshape(x, &[seq, hidden], None);
+    let out = qmm(&flat);
+    let out_last = *out.shape().last().unwrap_or(&hidden);
+    reshape(&out, &[1, seq, out_last], None)
+}
+
 /// Tile `[B,S,H]` into 512-token slices for steel qmm, then concatenate.
 fn qwen_prefill_maybe_tile_qmm(x: &MlxArray, qmm: impl Fn(&MlxArray) -> MlxArray) -> MlxArray {
     qwen_prefill_maybe_tile_qmm_for(x, fastpath::qwen_prefill_tile_qmm_enabled(), "qwen3_5", qmm)
@@ -713,17 +738,19 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
         };
         qwen_prefill_maybe_tile_qmm(x, |tiled| {
             qwen_prefill_maybe_flat_qmm(tiled, |flat| {
-                mlx_sys::quantized_matmul_with_mode(
-                    flat,
-                    &qw.weight,
-                    scales,
-                    quant_biases,
-                    true,
-                    Some(qw.group_size),
-                    Some(qw.bits),
-                    mode,
-                    None,
-                )
+                exact_mxfp4_short_qmm(flat, mode, |row_major| {
+                    mlx_sys::quantized_matmul_with_mode(
+                        row_major,
+                        &qw.weight,
+                        scales,
+                        quant_biases,
+                        true,
+                        Some(qw.group_size),
+                        Some(qw.bits),
+                        mode,
+                        None,
+                    )
+                })
             })
         })
     } else if decode_lm_head_quant_cache_eligible(x)
@@ -2420,6 +2447,81 @@ mod tests {
                 "MXFP4 exact S>1 Shared qw must match singleton row {t}, max_abs={max_abs}"
             );
         }
+    }
+
+    #[test]
+    fn exact_mxfp4_short_qmm_flatten_matches_3d() {
+        let input_dim = 64i32;
+        let output_dim = 32i32;
+        let seq = 2i32;
+        let weight_data: Vec<f32> = (0..input_dim * output_dim)
+            .map(|index| ((index % 97) as f32 - 48.0) * 0.01171875)
+            .collect();
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
+        let quantized = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
+            .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
+            .collect();
+        let x = array_f32(&input_data, &[1, seq, input_dim]);
+        let qmm_3d = mlx_sys::quantized_matmul_with_mode(
+            &x,
+            &quantized[0],
+            &quantized[1],
+            None,
+            true,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+        );
+        let qmm_flat = super::exact_mxfp4_short_qmm(&x, MlxQuantizationMode::Mxfp4, |flat| {
+            mlx_sys::quantized_matmul_with_mode(
+                flat,
+                &quantized[0],
+                &quantized[1],
+                None,
+                true,
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Mxfp4,
+                None,
+            )
+        });
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let qmm_flat_exact = super::exact_mxfp4_short_qmm(&x, MlxQuantizationMode::Mxfp4, |flat| {
+            mlx_sys::quantized_matmul_with_mode(
+                flat,
+                &quantized[0],
+                &quantized[1],
+                None,
+                true,
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Mxfp4,
+                None,
+            )
+        });
+        eval(&[&qmm_3d, &qmm_flat, &qmm_flat_exact]);
+        assert_eq!(qmm_flat.shape(), qmm_3d.shape());
+        assert_eq!(qmm_flat.data_f32(), qmm_3d.data_f32());
+        assert_eq!(qmm_flat_exact.shape(), qmm_3d.shape());
+        let mut max_abs = 0.0f32;
+        let a = qmm_3d.data_f32();
+        let b = qmm_flat_exact.data_f32();
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "flattened exact MXFP4 S=2 qmm must match 3-D, max_abs={max_abs}"
+        );
     }
 
     #[test]

@@ -457,29 +457,81 @@ pub(crate) fn gated_delta_kernel_with_prefix_checkpoint(
         batch, 1,
         "lazy gated-delta checkpoint currently supports decode batch 1 only"
     );
-    // The decode kernel's pointer arithmetic deliberately addresses the first
-    // sequence row and its output spec fixes T=1. The speculative verifier's
-    // q/k/v/a/b tensors are contiguous, so passing the full T>1 buffers avoids
-    // five slice+contiguous materialisations per linear-attention layer while
-    // preserving exactly the same row-0 arithmetic.
-    let (_, checkpoint) = gated_delta_decode_kernel(
-        q,
-        k,
-        v,
-        a_log,
-        a_raw,
-        dt_bias,
-        b_raw,
-        state,
-        batch,
-        num_key_heads,
-        key_head_dim,
-        num_value_heads,
-        value_head_dim,
-        state.shape(),
-    );
-    let (output, final_state) = gated_delta_kernel(q, k, v, a_log, a_raw, dt_bias, b_raw, state);
-    (output, final_state, checkpoint)
+    // Depth-1/2/3 exact verify is T=2..=4. Two (or a few) decode kernels match
+    // singleton production GD and emit the prefix checkpoint as the state after
+    // row 0. The previous path launched that decode *and* the 512-capacity
+    // prefill oneshot, paying a redundant T=2 recurrent update on every step.
+    let seq = q_shape[1];
+    let state_shape = state.shape();
+    let decode_row = |q_t: &MlxArray,
+                      k_t: &MlxArray,
+                      v_t: &MlxArray,
+                      a_t: &MlxArray,
+                      b_t: &MlxArray,
+                      state_t: &MlxArray| {
+        gated_delta_decode_kernel(
+            q_t,
+            k_t,
+            v_t,
+            a_log,
+            a_t,
+            dt_bias,
+            b_t,
+            state_t,
+            batch,
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            state_shape.clone(),
+        )
+    };
+    // Row 0: the decode kernel reads only the first sequence row, so the full
+    // T>1 buffers avoid five slice+contiguous ops on the committed token.
+    let (y0, checkpoint) = decode_row(q, k, v, a_raw, b_raw, state);
+    let mut ys = Vec::with_capacity(seq as usize);
+    ys.push(y0);
+    let mut state_cur = checkpoint.clone();
+    for t in 1..seq {
+        let q_t = slice_seq_row_4d(q, t);
+        let k_t = slice_seq_row_4d(k, t);
+        let v_t = slice_seq_row_4d(v, t);
+        let a_t = slice_seq_row_3d(a_raw, t);
+        let b_t = slice_seq_row_3d(b_raw, t);
+        let (y_t, next_state) = decode_row(&q_t, &k_t, &v_t, &a_t, &b_t, &state_cur);
+        ys.push(y_t);
+        state_cur = next_state;
+    }
+    let refs: Vec<&MlxArray> = ys.iter().collect();
+    (concatenate(&refs, 1, None), state_cur, checkpoint)
+}
+
+fn slice_seq_row_4d(x: &MlxArray, t: i32) -> MlxArray {
+    let shape = x.shape();
+    contiguous(
+        &slice(
+            x,
+            &[0, t, 0, 0],
+            &[shape[0], t + 1, shape[2], shape[3]],
+            &[1, 1, 1, 1],
+            None,
+        ),
+        None,
+    )
+}
+
+fn slice_seq_row_3d(x: &MlxArray, t: i32) -> MlxArray {
+    let shape = x.shape();
+    contiguous(
+        &slice(
+            x,
+            &[0, t, 0],
+            &[shape[0], t + 1, shape[2]],
+            &[1, 1, 1],
+            None,
+        ),
+        None,
+    )
 }
 
 /// Run GatedDelta as sequential `tile`-length TG kernels, carrying state.
@@ -2478,6 +2530,55 @@ mod tests {
             &expected_checkpoint,
             1e-6,
         );
+    }
+
+    #[test]
+    fn gated_delta_prefix_checkpoint_output_matches_sequential_singletons() {
+        const SEQ: i32 = 2;
+        const KEY_HEAD_DIM: i32 = 32;
+        const VALUE_HEAD_DIM: i32 = 4;
+        let q_data: Vec<f32> = (0..(SEQ * KEY_HEAD_DIM) as usize)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..(SEQ * KEY_HEAD_DIM) as usize)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data = vec![0.10, -0.05, 0.07, 0.03, -0.02, 0.04, 0.08, -0.06];
+        let a_log = f32_array(&[-0.2], &[1]);
+        let a_raw = f32_array(&[0.1, -0.15], &[1, SEQ, 1]);
+        let dt_bias = f32_array(&[0.05], &[1]);
+        let b_raw = f32_array(&[0.25, -0.1], &[1, SEQ, 1]);
+        let q = f32_array(&q_data, &[1, SEQ, 1, KEY_HEAD_DIM]);
+        let k = f32_array(&k_data, &[1, SEQ, 1, KEY_HEAD_DIM]);
+        let v = f32_array(&v_data, &[1, SEQ, 1, VALUE_HEAD_DIM]);
+        let state = f32_array(
+            &(0..(VALUE_HEAD_DIM * KEY_HEAD_DIM) as usize)
+                .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+                .collect::<Vec<_>>(),
+            &[1, 1, VALUE_HEAD_DIM, KEY_HEAD_DIM],
+        );
+
+        let (y_ck, final_ck, prefix_ck) = gated_delta_kernel_with_prefix_checkpoint(
+            &q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state, 1,
+        );
+
+        let q0 = slice_seq_row_4d(&q, 0);
+        let k0 = slice_seq_row_4d(&k, 0);
+        let v0 = slice_seq_row_4d(&v, 0);
+        let a0 = slice_seq_row_3d(&a_raw, 0);
+        let b0 = slice_seq_row_3d(&b_raw, 0);
+        let (y0, state1) = gated_delta_kernel(&q0, &k0, &v0, &a_log, &a0, &dt_bias, &b0, &state);
+        let q1 = slice_seq_row_4d(&q, 1);
+        let k1 = slice_seq_row_4d(&k, 1);
+        let v1 = slice_seq_row_4d(&v, 1);
+        let a1 = slice_seq_row_3d(&a_raw, 1);
+        let b1 = slice_seq_row_3d(&b_raw, 1);
+        let (y1, state2) = gated_delta_kernel(&q1, &k1, &v1, &a_log, &a1, &dt_bias, &b1, &state1);
+        let expected_y = concatenate(&[&y0, &y1], 1, None);
+        mlx_sys::eval(&[&y_ck, &final_ck, &prefix_ck, &expected_y, &state2, &state1]);
+        assert_eq!(prefix_ck.data_f32(), state1.data_f32());
+        assert_eq!(final_ck.data_f32(), state2.data_f32());
+        assert_eq!(y_ck.data_f32(), expected_y.data_f32());
     }
 
     #[test]
