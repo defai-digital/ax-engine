@@ -1236,10 +1236,79 @@ pub fn rms_norm_gated_with_full_gate_policy(
     if let Some(gated) = rms_norm_gate_metal(&normed, gate, hidden_states.dtype()) {
         return gated;
     }
+    if skip_rms_norm_gate_metal_for_exact_verify()
+        && let Some(gated) = try_compiled_portable_rms_norm_gated(hidden_states, gate, weight, eps)
+    {
+        return gated;
+    }
+    portable_rms_norm_gated(hidden_states, gate, weight, eps)
+}
+
+/// Uncompiled exact-identity RMSNorm + f32 SiLU*norm graph.
+///
+/// Metal fused/elementwise gates are not sequence-equivalent under exact
+/// MTP-on. This is the matching portable chain; compile only fuses it.
+fn portable_rms_norm_gated(
+    hidden_states: &MlxArray,
+    gate: &MlxArray,
+    weight: &MlxArray,
+    eps: f32,
+) -> MlxArray {
+    let normed = rms_norm(hidden_states, Some(weight), eps, None);
     let gate_f32 = astype(gate, MlxDtype::Float32, None);
     let normed_f32 = astype(&normed, MlxDtype::Float32, None);
     let gated = multiply(&mlx_sys::ops::silu(&gate_f32, None), &normed_f32, None);
     astype(&gated, hidden_states.dtype(), None)
+}
+
+type PortableRmsGateCompileKey = (
+    Vec<i32>,
+    MlxDtype,
+    MlxDtype,
+    Vec<i32>,
+    MlxDtype,
+    u32,
+    ThreadId,
+);
+type PortableRmsGateCompileCache = Mutex<HashMap<PortableRmsGateCompileKey, Option<MlxClosure>>>;
+static PORTABLE_RMS_GATE_COMPILE_CACHE: OnceLock<PortableRmsGateCompileCache> = OnceLock::new();
+
+fn try_compiled_portable_rms_norm_gated(
+    hidden_states: &MlxArray,
+    gate: &MlxArray,
+    weight: &MlxArray,
+    eps: f32,
+) -> Option<MlxArray> {
+    if hidden_states.shape() != gate.shape() {
+        return None;
+    }
+    let key = (
+        hidden_states.shape(),
+        hidden_states.dtype(),
+        gate.dtype(),
+        weight.shape(),
+        weight.dtype(),
+        eps.to_bits(),
+        std::thread::current().id(),
+    );
+    let cache = PORTABLE_RMS_GATE_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().ok()?;
+    let slot = guard.entry(key).or_insert_with(|| {
+        MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+            let hidden = inputs.get(0);
+            let gate = inputs.get(1);
+            let weight = inputs.get(2);
+            vec![portable_rms_norm_gated(&hidden, &gate, &weight, eps)]
+        })
+        .compile(false)
+        .ok()
+    });
+    let closure = slot.as_ref()?;
+    let mut outputs = closure.try_apply(&[hidden_states, gate, weight]).ok()?;
+    if outputs.len() != 1 {
+        return None;
+    }
+    outputs.pop()
 }
 
 fn skip_rms_norm_gate_metal_for_exact_verify() -> bool {
@@ -2777,5 +2846,57 @@ mod tests {
         }
         let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
         assert!(super::skip_rms_norm_gate_metal_for_exact_verify());
+    }
+
+    #[test]
+    fn compiled_portable_rms_norm_gated_matches_uncompiled() {
+        let hidden_data: Vec<f32> = (0..16)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.125)
+            .collect();
+        let gate_data: Vec<f32> = (0..16).map(|idx| ((idx % 5) as f32 - 2.0) * 0.25).collect();
+        let weight_data = vec![0.8_f32, 1.0, 1.2, 1.4];
+        let hidden = astype(
+            &f32_array(&hidden_data, &[1, 2, 2, 4]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let gate = astype(
+            &f32_array(&gate_data, &[1, 2, 2, 4]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let weight = astype(&f32_array(&weight_data, &[4]), MlxDtype::Bfloat16, None);
+        let uncompiled = super::portable_rms_norm_gated(&hidden, &gate, &weight, 1e-6);
+        let compiled = super::try_compiled_portable_rms_norm_gated(&hidden, &gate, &weight, 1e-6)
+            .expect("exact portable RMS+SiLU must compile");
+        let uncompiled = astype(&uncompiled, MlxDtype::Float32, None);
+        let compiled = astype(&compiled, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&uncompiled, &compiled]);
+        let a = uncompiled.data_f32();
+        let b = compiled.data_f32();
+        let max_abs = a
+            .iter()
+            .zip(b.iter())
+            .map(|(l, r)| (l - r).abs())
+            .fold(0.0_f32, f32::max);
+        assert_eq!(
+            max_abs, 0.0,
+            "compiled portable RMS+SiLU must be bit-exact vs uncompiled, max_abs={max_abs}"
+        );
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let via_policy =
+            super::rms_norm_gated_with_full_gate_policy(&hidden, &gate, &weight, 1e-6, true);
+        let via_policy = astype(&via_policy, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&via_policy]);
+        let c = via_policy.data_f32();
+        let policy_abs = a
+            .iter()
+            .zip(c.iter())
+            .map(|(l, r)| (l - r).abs())
+            .fold(0.0_f32, f32::max);
+        assert_eq!(
+            policy_abs, 0.0,
+            "exact policy path must stay on the portable graph, max_abs={policy_abs}"
+        );
     }
 }
