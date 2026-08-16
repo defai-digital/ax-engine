@@ -364,7 +364,11 @@ impl MlxArray {
     /// recorded reason; a null with no error is an empty buffer.
     pub fn data_raw(&self) -> *const u8 {
         unsafe {
-            ensure_error_handler();
+            // A null pointer is a valid representation for an empty buffer,
+            // so this accessor cannot use nullness alone to distinguish an
+            // MLX failure. Start with a clean capture window to avoid
+            // attributing an older, already-handled error to this read.
+            prepare_error_capture();
             let ptr = ffi::mlx_array_data_uint8(self.inner);
             if ptr.is_null()
                 && let Some(msg) = take_last_error()
@@ -823,6 +827,33 @@ mod tests {
         let empty = crate::ops::slice(&source, &[0], &[0], &[1], None);
         eval(&[&empty]);
         assert_eq!(empty.data_f32(), &[] as &[f32]);
+    }
+
+    #[test]
+    fn empty_raw_read_does_not_consume_a_stale_error_as_its_own() {
+        prepare_shim_error();
+        let empty = MlxArray::from_f32_slice(&[]);
+        eval(&[&empty]);
+
+        let values = [1_u32];
+        let wrong_dtype = MlxArray::from_raw_data(
+            values.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(&values),
+            &[1],
+            MlxDtype::Uint32,
+        );
+        eval(&[&wrong_dtype]);
+        let ptr = unsafe { ffi::mlx_array_data_float32(wrong_dtype.inner) };
+        assert!(
+            ptr.is_null(),
+            "wrong-dtype probe must populate the error slot"
+        );
+
+        let _ = empty.data_raw();
+        assert!(
+            take_last_error().is_none(),
+            "a successful empty read must not leave or consume a stale failure"
+        );
     }
 
     #[test]

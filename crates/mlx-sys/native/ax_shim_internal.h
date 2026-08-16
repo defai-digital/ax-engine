@@ -122,9 +122,9 @@ inline void* make_handle(Args&&... args) {
 
 /// Free a tagged handle, verifying the magic tag before destructing.
 /// Reports (but does not throw on) tag mismatches — free functions
-/// should not throw across the C ABI. Poison the magic first so a
-/// double-free is reported as a type mismatch instead of running ~T()
-/// twice on the same object.
+/// should not throw across the C ABI. Poison the magic before running the
+/// destructor so a re-entrant free cannot run ~T() twice while the handle is
+/// still allocated.
 template<uint32_t Magic, typename T>
 inline void typed_delete(void* ctx) {
   if (!ctx) return;
