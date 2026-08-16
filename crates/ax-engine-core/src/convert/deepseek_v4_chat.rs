@@ -3,8 +3,7 @@
 //! Flash-0731 ships no `chat_template.jinja`. mlx-lm convert then emits a
 //! tokenizer without one, so generate sees a raw user string. This file is
 //! the official single-turn *chat* (non-thinking) path:
-//!
-//!     BOS + User + text + Assistant + `</think>`
+//! BOS + User + text + Assistant + THINK_END.
 //!
 //! AX-owned. Not copied from mlx-optiq.
 
