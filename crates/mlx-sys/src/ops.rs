@@ -4930,13 +4930,13 @@ mod tests {
         let x = MlxArray::from_raw_data(
             x_data.as_ptr() as *const u8,
             std::mem::size_of_val(x_data.as_slice()),
-            &[1, seq as i32, hidden as i32],
+            &[1, seq, hidden],
             MlxDtype::Float32,
         );
         let w = MlxArray::from_raw_data(
             w_data.as_ptr() as *const u8,
             std::mem::size_of_val(w_data.as_slice()),
-            &[hidden as i32, hidden as i32],
+            &[hidden, hidden],
             MlxDtype::Float32,
         );
         let q = quantize(

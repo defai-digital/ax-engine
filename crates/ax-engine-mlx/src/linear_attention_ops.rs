@@ -2792,5 +2792,4 @@ mod tests {
         let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
         assert!(super::skip_rms_norm_gate_metal_for_exact_verify());
     }
-
 }

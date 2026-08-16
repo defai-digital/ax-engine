@@ -582,10 +582,10 @@ pub(crate) fn qw_with_policy(
     }
     // Outside an invariant scope, RowExact stays on per-row MLX so it matches
     // an ordinary pure-direct singleton.
-    if policy == ProjectionBatchPolicy::RowExact {
-        if let Some(row_exact) = qw_row_exact_mlx(x, qw) {
-            return row_exact;
-        }
+    if policy == ProjectionBatchPolicy::RowExact
+        && let Some(row_exact) = qw_row_exact_mlx(x, qw)
+    {
+        return row_exact;
     }
     // Shared (default): invariant when exact profile scopes it. MXFP4
     // quantized_matmul is already singleton-exact at S=2, so a batched
