@@ -69,7 +69,8 @@ pub(crate) enum ChatPromptTemplate {
     GptOssHarmony,
     /// Meta Muse-Glimmer ATEM (`<|start|>…<|message|>…<|eot|>`, `to=self` reasoning).
     MuseGlimmerAtem,
-    /// DeepSeek V3/R1/V4: `<｜User｜>` / `<｜Assistant｜>` with think-block framing.
+    /// DeepSeek V3/R1: `<｜User｜>` / `<｜Assistant｜>` with think-block framing.
+    /// V4 Flash uses the official `chat_template.jinja` (see `is_deepseek_v4_model`).
     DeepSeekChat,
     Unsupported(ChatUnsupportedFamily),
     PlainRolePrefix,
@@ -171,6 +172,13 @@ pub(crate) fn is_diffusion_gemma(model_id: &str) -> bool {
 
 pub(crate) fn is_deepseek_model(model_id: &str) -> bool {
     model_id.to_ascii_lowercase().contains("deepseek")
+}
+
+/// DeepSeek V4 Flash packs must use the official encoding_dsv4 Jinja, not the
+/// V3 `<｜System｜>` + history-`Assistant` renderer.
+pub(crate) fn is_deepseek_v4_model(model_id: &str) -> bool {
+    let normalized = model_id.to_ascii_lowercase();
+    is_deepseek_model(model_id) && (normalized.contains("v4") || normalized.contains("flash"))
 }
 
 /// DeepSeek reasoning checkpoints (R1 and its distills/derivatives) enter
@@ -795,6 +803,7 @@ fn render_prompt_internal(
                 _ => {}
             },
             ChatPromptTemplate::DeepSeekChat => {
+                let v4 = is_deepseek_v4_model(model_id);
                 if matches!(role, "tool" | "function") {
                     if !deepseek_tool_response_open {
                         prompt.push_str(DEEPSEEK_USER);
@@ -810,7 +819,11 @@ fn render_prompt_internal(
                     }
                     match role {
                         "system" => {
-                            prompt.push_str(DEEPSEEK_SYSTEM);
+                            // Official V4 jinja emits system content with no
+                            // `<｜System｜>` token (encoding_dsv4.py).
+                            if !v4 {
+                                prompt.push_str(DEEPSEEK_SYSTEM);
+                            }
                             prompt.push_str(content);
                         }
                         "user" | "principle" => {
@@ -818,13 +831,21 @@ fn render_prompt_internal(
                             prompt.push_str(content);
                         }
                         "assistant" => {
-                            prompt.push_str(DEEPSEEK_ASSISTANT);
-                            // Pair-path history has no reasoning_content; the
-                            // bare close marker matches the official renderer's
-                            // reasoning-drop rule for turns before the last user.
-                            prompt.push_str("</think>");
-                            prompt.push_str(content);
-                            prompt.push_str(DEEPSEEK_EOS);
+                            if v4 {
+                                // Official V4 jinja: prior assistant turns are
+                                // `{content}{EOS}` only. Assistant+</think> is
+                                // the generation suffix, not history.
+                                prompt.push_str(content);
+                                prompt.push_str(DEEPSEEK_EOS);
+                            } else {
+                                prompt.push_str(DEEPSEEK_ASSISTANT);
+                                // Pair-path history has no reasoning_content; the
+                                // bare close marker matches the official renderer's
+                                // reasoning-drop rule for turns before the last user.
+                                prompt.push_str("</think>");
+                                prompt.push_str(content);
+                                prompt.push_str(DEEPSEEK_EOS);
+                            }
                         }
                         _ => {}
                     }
@@ -1390,6 +1411,57 @@ mod tests {
         assert!(!is_deepseek_thinking_model(
             "AutomatosX/AX-DeepSeek-V4-Flash-MLX-AXQ-2bit"
         ));
+        assert!(is_deepseek_v4_model("deepseek-ai/DeepSeek-V4-Flash"));
+        assert!(is_deepseek_v4_model(
+            "AX-DeepSeek-V4-Flash-0731-MLX-AXQ-4bit-g128"
+        ));
+        assert!(!is_deepseek_v4_model("deepseek-ai/DeepSeek-V3"));
+    }
+
+    #[test]
+    fn deepseek_v4_matches_official_chat_template_jinja() {
+        // Official encoding_dsv4 / chat_template.jinja (non-thinking):
+        // BOS + [system raw] + User+text + [assistant content+EOS]* + Assistant+</think>
+        let user_only = vec![("user".to_string(), "Say hello.".to_string())];
+        let rendered =
+            render_prompt_with_qwen_thinking("deepseek-ai/DeepSeek-V4-Flash", &user_only, false)
+                .expect("v4 render");
+        assert_eq!(
+            rendered,
+            "<｜begin▁of▁sentence｜><｜User｜>Say hello.<｜Assistant｜></think>"
+        );
+
+        let with_system = vec![
+            ("system".to_string(), "be brief".to_string()),
+            ("user".to_string(), "hi".to_string()),
+        ];
+        let rendered = render_prompt_with_qwen_thinking(
+            "AX-DeepSeek-V4-Flash-0731-MLX-AXQ-4bit-g128",
+            &with_system,
+            false,
+        )
+        .expect("v4 system render");
+        assert_eq!(
+            rendered,
+            "<｜begin▁of▁sentence｜>be brief<｜User｜>hi<｜Assistant｜></think>"
+        );
+        assert!(
+            !rendered.contains("<｜System｜>"),
+            "V4 jinja must not emit the V3 System token"
+        );
+
+        let multi = vec![
+            ("user".to_string(), "hi".to_string()),
+            ("assistant".to_string(), "hello".to_string()),
+            ("user".to_string(), "again".to_string()),
+        ];
+        let rendered =
+            render_prompt_with_qwen_thinking("deepseek-ai/DeepSeek-V4-Flash", &multi, false)
+                .expect("v4 multi render");
+        assert_eq!(
+            rendered,
+            "<｜begin▁of▁sentence｜><｜User｜>hihello<｜end▁of▁sentence｜><｜User｜>again<｜Assistant｜></think>"
+        );
     }
 
     #[test]
