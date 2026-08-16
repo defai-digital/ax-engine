@@ -31,7 +31,7 @@ Or use the repository root example targets directly.
 ### Version
 
 The package version is kept in lockstep with `Cargo.toml` and the other SDKs
-by the CI "Verify version consistency" check. The current version is `7.0.1`.
+by the CI "Verify version consistency" check. The current version is `7.0.2`.
 
 ## Quick Start
 
