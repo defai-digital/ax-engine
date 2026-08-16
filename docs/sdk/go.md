@@ -1,6 +1,6 @@
 # Go SDK
 
-`sdk/go/axengine` is the Go HTTP client for AX Engine v6.
+`sdk/go/axengine` is the Go HTTP client for AX Engine.
 
 It is intentionally thin:
 

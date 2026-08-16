@@ -403,7 +403,7 @@ To inspect the workload-contract CLI:
 ax-engine-bench help
 ```
 
-To inspect whether the local machine is inside the supported M2 Max-or-newer AX
+To inspect whether the local machine is inside the supported M2-or-newer AX
 runtime contract:
 
 ```text

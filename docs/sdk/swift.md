@@ -1,6 +1,6 @@
 # Swift SDK
 
-`sdk/swift/` is the native Swift client for AX Engine v6, distributed as a
+`sdk/swift/` is the native Swift client for AX Engine, distributed as a
 Swift Package.
 
 It is intentionally thin:

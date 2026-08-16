@@ -4,7 +4,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 version.workspace = true
-description = "Preview Python bindings for AX Engine v6"
+description = "Preview Python bindings for AX Engine"
 build = "build.rs"
 
 [lib]

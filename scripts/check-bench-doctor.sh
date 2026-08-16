@@ -15,10 +15,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tomllib
 from pathlib import Path
 
 
 repo = Path.cwd()
+workspace_version = tomllib.loads((repo / "Cargo.toml").read_text())["workspace"]["package"][
+    "version"
+]
 
 doctor_json = subprocess.check_output(
     ["cargo", "run", "-p", "ax-engine-bench", "--bin", "ax-engine-bench", "--", "doctor", "--json"],
@@ -70,7 +74,7 @@ doctor_text = subprocess.check_output(
     text=True,
 )
 
-assert "AX Engine v6 doctor" in doctor_text
+assert f"AX Engine v{workspace_version} doctor" in doctor_text
 assert f"Status: {expected_status_label}" in doctor_text
 assert "Summary:" in doctor_text
 assert "Workflow:" in doctor_text

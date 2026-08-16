@@ -3932,7 +3932,7 @@ fn render_doctor_report_includes_status_and_issue_sections() {
 
     let text = render_doctor_report(&report);
 
-    assert!(text.contains("AX Engine v6 doctor"));
+    assert!(text.contains(&format!("AX Engine v{} doctor", env!("CARGO_PKG_VERSION"))));
     assert!(text.contains("Status: not ready"));
     assert!(text.contains("Summary:"));
     assert!(text.contains("  - Host: Apple M3 Max (macos/aarch64)"));

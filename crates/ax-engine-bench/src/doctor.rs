@@ -645,7 +645,7 @@ fn doctor_issues(
                 .unwrap_or_else(|| "unknown Apple Silicon".to_string())
         };
         issues.push(format!(
-            "AX Engine MLX Metal runtime requires macOS/aarch64 on Apple M2 Max or newer with 32 GB RAM minimum; detected {detected_host}"
+            "AX Engine MLX Metal runtime requires macOS/aarch64 on Apple M2 or newer; detected {detected_host}"
         ));
     }
 
@@ -1773,7 +1773,7 @@ fn render_advice_group(
 
 pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
     let mut lines = vec![
-        "AX Engine v6 doctor".to_string(),
+        format!("AX Engine v{} doctor", env!("CARGO_PKG_VERSION")),
         format!("Status: {}", report.status.human_label()),
         format!("Schema: {}", report.schema_version),
         String::new(),

@@ -1,6 +1,6 @@
 # Ruby SDK
 
-`sdk/ruby/` is the Ruby SDK for AX Engine v6, packaged as the `ax-engine-sdk` gem.
+`sdk/ruby/` is the Ruby SDK for AX Engine, packaged as the `ax-engine-sdk` gem.
 
 It is intentionally thin:
 

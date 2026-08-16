@@ -1,5 +1,6 @@
 pub(crate) fn usage() -> String {
-    let text = r#"AX Engine v6 benchmark CLI
+    let text = format!(
+        r#"AX Engine v{} benchmark CLI
 
 Usage:
   ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--multimodal-inputs-json <json> | --multimodal-inputs-file <path>] [--max-output-tokens <n>] [--ignore-eos] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
@@ -15,9 +16,11 @@ Usage:
   ax-engine-bench generate-manifest [--force] [--json] [--validate] -- <model-dir>
   ax-engine-bench metal-build [--manifest <path>] [--output-dir <path>]
   ax-engine-bench serving-stress --workload <name> [--mlx-model-artifacts-dir <path>] [--model-id <id>] [--prefill-tokens <n>] [--decode-tokens <n>] [--concurrent-short-requests <n>] [--short-prefix-tokens <n>] [--seed <n>] [--output-path <path>] [--json]
-"#;
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
 
-    text.to_string()
+    text
 }
 
 pub(crate) fn generate_manifest_usage() -> String {

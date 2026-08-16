@@ -149,7 +149,7 @@ port (`18080`). Full map (Engine, AX Serving, delegated peers):
 
 ## Where is the serving roadmap?
 
-AX Engine v6 is the current serving-oriented runtime line. The active serving
+AX Engine v7 is the current serving-oriented runtime line. The active serving
 roadmap and evidence gates live in
 [Roadmap](ROADMAP.md).
 
@@ -256,8 +256,10 @@ production support. Those packs can convert and serve through
 `--stream-experts` (default `auto`), including 2-bit SSD expert streaming, but
 local decode is still too slow to recommend or certify.
 
-**Expect AX Engine v7.0.0 to support Qwen 3.8 27B.** Until that release,
-prefer Qwen 3.6 for local serving. See [Supported Models](SUPPORTED-MODELS.md).
+AX Engine v7.0.0 adds the production-size Qwen 3.8 27B catalog and serve path.
+Start with the pinned `qwen3.8-27b:axq` 6-bit MTP pack. Its checkpoint path is
+Tier 1; MTP Tier 2 performance certification remains pending. See
+[Supported Models](SUPPORTED-MODELS.md).
 
 ## Which runtime path should I choose first?
 
