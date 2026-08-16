@@ -639,6 +639,7 @@ pub fn write_manifest(
         source,
     })?;
     temp_guard.disarm();
+    ensure_deepseek_v4_chat_template(model_dir)?;
     Ok(())
 }
 
@@ -756,8 +757,10 @@ mod tensor_mapping;
 #[cfg(test)]
 mod tests;
 
+mod deepseek_v4_chat;
 mod deepseek_v4_quantized;
 
+pub use deepseek_v4_chat::{DEEPSEEK_V4_CHAT_TEMPLATE, ensure_deepseek_v4_chat_template};
 pub(crate) use deepseek_v4_quantized::*;
 pub(crate) use hf_config::*;
 pub(crate) use model_family::*;
