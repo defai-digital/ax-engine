@@ -8,9 +8,10 @@ use super::deepseek_v4_quantized::{
     e8m0_to_f32, f32_to_bf16_bits, fp8_e4m3_to_f32, fp8_e5m2_to_f32, stack_mxfp4_experts,
 };
 use super::{
-    AUTO_GENERATED_MANIFEST_NOTE, ConvertError, DroppedTensorLedger, MANIFEST_TEMP_FILE_PREFIX,
-    NativeTensorDataType, NativeTensorRole, compute_attention_value_from_key_layers,
-    compute_kv_shared_sources, config_quantization, convert_hf_model_dir, deepseek_v4_config,
+    AUTO_GENERATED_MANIFEST_NOTE, ConvertError, DEEPSEEK_V4_CHAT_TEMPLATE, DroppedTensorLedger,
+    MANIFEST_TEMP_FILE_PREFIX, NativeTensorDataType, NativeTensorRole,
+    compute_attention_value_from_key_layers, compute_kv_shared_sources, config_quantization,
+    convert_hf_model_dir, deepseek_v4_config, ensure_deepseek_v4_chat_template,
     ensure_manifest_for_hf_model_dir, llama4_no_rope_layer_interval, match_tensor,
     model_family_for_type, moe_config, parse_layer_types, parse_rope_params, parse_rope_scaling,
     tensor_name_looks_like_media_role, tensor_quantization_override,
@@ -4223,7 +4224,26 @@ fn deepseek_v4_axq_manifest_passes_loader_validation() {
     write_manifest(&dir, &manifest).expect("write should succeed");
     crate::model::NativeModelArtifacts::from_dir(&dir)
         .expect("AXQ DeepSeek V4 manifest should pass loader validation");
+    let jinja = fs::read_to_string(dir.join("chat_template.jinja"))
+        .expect("DeepSeek V4 convert should write official chat Jinja");
+    assert_eq!(jinja, DEEPSEEK_V4_CHAT_TEMPLATE);
+    assert!(jinja.contains("<｜User｜>"));
+    assert!(jinja.contains("</think>"));
 
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn ensure_deepseek_v4_chat_template_leaves_existing_file() {
+    let dir = unique_test_dir("deepseek_v4_existing_jinja");
+    write_config(&dir, deepseek_v4_config_json());
+    fs::write(dir.join("chat_template.jinja"), "kept-official").expect("seed jinja");
+    let path = ensure_deepseek_v4_chat_template(&dir).expect("ensure");
+    assert_eq!(path.unwrap(), dir.join("chat_template.jinja"));
+    assert_eq!(
+        fs::read_to_string(dir.join("chat_template.jinja")).expect("read"),
+        "kept-official"
+    );
     let _ = fs::remove_dir_all(dir);
 }
 
