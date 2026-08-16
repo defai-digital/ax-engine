@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <new>
 #include <optional>
@@ -121,7 +122,9 @@ inline void* make_handle(Args&&... args) {
 
 /// Free a tagged handle, verifying the magic tag before destructing.
 /// Reports (but does not throw on) tag mismatches — free functions
-/// should not throw across the C ABI.
+/// should not throw across the C ABI. Poison the magic first so a
+/// double-free is reported as a type mismatch instead of running ~T()
+/// twice on the same object.
 template<uint32_t Magic, typename T>
 inline void typed_delete(void* ctx) {
   if (!ctx) return;
@@ -130,6 +133,7 @@ inline void typed_delete(void* ctx) {
     ax_set_error("handle type mismatch in free: wrong magic number");
     return;
   }
+  h->magic = 0;
   h->obj.~T();
   ::operator delete(h);
 }
@@ -209,9 +213,16 @@ inline std::string safe_str(const char* s) {
 /// matrices, [B,S,H,D] tensors, grouped-attention [B,G,H,S,D]) a stack-
 /// allocated std::array avoids a heap round-trip on every reshape /
 /// transpose / slice.
+///
+/// A null pointer with n==0 is a scalar (empty shape). A null pointer with
+/// n>0 used to be silently collapsed to a scalar, producing the wrong
+/// array instead of a caught error.
 inline mx::Shape make_shape(const int* p, size_t n) {
-  if (n == 0 || !p) {
+  if (n == 0) {
     return mx::Shape{};
+  }
+  if (!p) {
+    throw std::runtime_error("shape pointer is null for a non-empty shape");
   }
   if (n <= 8) {
     std::array<int, 8> buf{};
@@ -225,8 +236,11 @@ inline mx::Shape make_shape(const int* p, size_t n) {
 /// optimisation for ≤ 8 elements.  Avoids a heap alloc for the common
 /// transpose / expand-dims axes that are 1–4 elements.
 inline std::vector<int> make_small_vec(const int* p, size_t n) {
-  if (n == 0 || !p) {
+  if (n == 0) {
     return std::vector<int>{};
+  }
+  if (!p) {
+    throw std::runtime_error("axes pointer is null for a non-empty axis list");
   }
   if (n <= 8) {
     std::array<int, 8> buf{};
@@ -237,14 +251,37 @@ inline std::vector<int> make_small_vec(const int* p, size_t n) {
 }
 
 /// Build an mx::Strides (SmallVector<int64_t>) from a raw int64 pointer +
-/// count.  Mirrors make_shape's null guard: constructing a SmallVector from
-/// a null iterator is undefined behaviour, so we return an empty strides
-/// vector instead, letting the downstream MLX API surface a caught exception.
+/// count.  A null pointer with n==0 is empty strides; n>0 with a null
+/// pointer is an error (do not silently build empty strides).
 inline mx::Strides make_strides(const int64_t* p, size_t n) {
-  if (n == 0 || !p) {
+  if (n == 0) {
     return mx::Strides{};
   }
+  if (!p) {
+    throw std::runtime_error("strides pointer is null for a non-empty stride list");
+  }
   return mx::Strides(p, p + n);
+}
+
+/// Number of elements implied by `shape`. Empty rank is a scalar (1).
+/// Rejects negative dims and overflow so callers do not wrap into a short
+/// read of the host buffer.
+inline size_t ax_shape_nelem(const mx::Shape& shape) {
+  size_t n = 1;
+  for (auto dim : shape) {
+    if (dim < 0) {
+      throw std::runtime_error("shape dimension must be non-negative");
+    }
+    if (dim == 0) {
+      return 0;
+    }
+    auto udim = static_cast<size_t>(dim);
+    if (n > std::numeric_limits<size_t>::max() / udim) {
+      throw std::runtime_error("shape element count overflows");
+    }
+    n *= udim;
+  }
+  return n;
 }
 
 /* ================================================================

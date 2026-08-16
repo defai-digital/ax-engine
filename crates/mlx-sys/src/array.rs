@@ -357,10 +357,21 @@ impl Drop for MlxArray {
 
 impl MlxArray {
     /// Return raw byte pointer to evaluated CPU data.
+    ///
+    /// A null pointer with a recorded shim error used to leave the error in
+    /// the thread-local slot (so a later `dtype()` on a genuine Bool array
+    /// could panic) and handed callers an unchecked null. Surface the
+    /// recorded reason; a null with no error is an empty buffer.
     pub fn data_raw(&self) -> *const u8 {
         unsafe {
             ensure_error_handler();
-            ffi::mlx_array_data_uint8(self.inner)
+            let ptr = ffi::mlx_array_data_uint8(self.inner);
+            if ptr.is_null()
+                && let Some(msg) = take_last_error()
+            {
+                panic!("mlx_array_data_uint8 failed: {msg}");
+            }
+            ptr
         }
     }
 }
@@ -447,6 +458,8 @@ impl MlxDtype {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::take_last_error;
+    use crate::ffi;
     use crate::ops::astype;
     use crate::transforms::eval;
     use std::sync::Arc;
@@ -686,5 +699,165 @@ mod tests {
         let b = a.clone();
         eval(&[&a, &b]);
         assert_eq!(a.data_f32(), b.data_f32());
+    }
+
+    fn prepare_shim_error() {
+        crate::error::install_recoverable_error_handler();
+        let _ = take_last_error();
+    }
+
+    #[test]
+    fn new_data_null_buffer_for_nonempty_shape_fails() {
+        prepare_shim_error();
+        let shape = [4i32];
+        let arr = unsafe {
+            ffi::mlx_array_new_data(
+                std::ptr::null(),
+                shape.as_ptr(),
+                1,
+                ffi::mlx_dtype_::MLX_FLOAT32,
+            )
+        };
+        assert!(
+            arr.ctx.is_null(),
+            "null host data for a 4-element array must not produce a handle"
+        );
+        let msg = take_last_error().unwrap_or_default();
+        assert!(
+            msg.contains("data pointer is null"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn new_data_null_shape_with_positive_rank_fails() {
+        prepare_shim_error();
+        let value = 1.0f32;
+        let arr = unsafe {
+            ffi::mlx_array_new_data(
+                &value as *const f32 as *const _,
+                std::ptr::null(),
+                3,
+                ffi::mlx_dtype_::MLX_FLOAT32,
+            )
+        };
+        assert!(
+            arr.ctx.is_null(),
+            "null shape pointer with dim=3 used to silently become a scalar"
+        );
+        let msg = take_last_error().unwrap_or_default();
+        assert!(
+            msg.contains("shape pointer is null"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn new_data_negative_dim_fails() {
+        prepare_shim_error();
+        let value = 1.0f32;
+        let shape = [1i32];
+        let arr = unsafe {
+            ffi::mlx_array_new_data(
+                &value as *const f32 as *const _,
+                shape.as_ptr(),
+                -1,
+                ffi::mlx_dtype_::MLX_FLOAT32,
+            )
+        };
+        assert!(arr.ctx.is_null(), "negative dim must not wrap into size_t");
+        let msg = take_last_error().unwrap_or_default();
+        assert!(
+            msg.contains("dim must be non-negative"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn new_data_managed_payload_null_dtor_does_not_crash_on_drop() {
+        prepare_shim_error();
+        let vals = [1.0f32, 2.0, 3.0, 4.0];
+        let shape = [4i32];
+        let arr = unsafe {
+            ffi::mlx_array_new_data_managed_payload(
+                vals.as_ptr() as *mut _,
+                shape.as_ptr(),
+                1,
+                ffi::mlx_dtype_::MLX_FLOAT32,
+                std::ptr::null_mut(),
+                None,
+            )
+        };
+        assert!(
+            !arr.ctx.is_null(),
+            "{}",
+            take_last_error().unwrap_or_default()
+        );
+        let wrapped = unsafe { MlxArray::from_raw(arr) };
+        eval(&[&wrapped]);
+        assert_eq!(wrapped.data_f32(), &[1.0, 2.0, 3.0, 4.0]);
+        drop(wrapped);
+    }
+
+    #[test]
+    fn data_float32_rejects_wrong_dtype() {
+        prepare_shim_error();
+        let vals: Vec<u32> = vec![1, 2, 3, 4];
+        let a = MlxArray::from_raw_data(
+            vals.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals[..]),
+            &[4],
+            MlxDtype::Uint32,
+        );
+        eval(&[&a]);
+        let ptr = unsafe { ffi::mlx_array_data_float32(a.inner) };
+        assert!(ptr.is_null(), "float32 reader must reject uint32 data");
+        let msg = take_last_error().unwrap_or_default();
+        assert!(msg.contains("dtype mismatch"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn empty_sliced_view_is_readable() {
+        prepare_shim_error();
+        let source = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0, 4.0]);
+        let empty = crate::ops::slice(&source, &[0], &[0], &[1], None);
+        eval(&[&empty]);
+        assert_eq!(empty.data_f32(), &[] as &[f32]);
+    }
+
+    #[test]
+    fn invalid_device_type_fails() {
+        prepare_shim_error();
+        let dev = unsafe { ffi::mlx_device_new_type(99, 0) };
+        assert!(dev.ctx.is_null(), "unknown device type must not become GPU");
+        let msg = take_last_error().unwrap_or_default();
+        assert!(
+            msg.contains("invalid mlx_device_type"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn reshape_null_shape_with_positive_rank_fails() {
+        prepare_shim_error();
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0, 4.0]);
+        let mut out = ffi::mlx_array {
+            ctx: std::ptr::null_mut(),
+        };
+        let rc = unsafe {
+            ffi::mlx_reshape(
+                &mut out,
+                a.inner,
+                std::ptr::null(),
+                2,
+                crate::stream::default_gpu_raw(),
+            )
+        };
+        assert_ne!(rc, 0);
+        let msg = take_last_error().unwrap_or_default();
+        assert!(
+            msg.contains("shape pointer is null"),
+            "unexpected error: {msg}"
+        );
     }
 }

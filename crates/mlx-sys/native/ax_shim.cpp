@@ -60,8 +60,12 @@ extern "C" void mlx_set_error_handler(
     mlx_error_handler_func handler, void* data, void (*dtor)(void*)) {
   std::lock_guard<std::mutex> lock(ax_error_handler_mutex);
   ax_error_handler = handler;
-  if (dtor) {
-    ax_error_handler_data = std::shared_ptr<void>(data, dtor);
+  // Keep `data` even when the caller has no destructor (static userdata
+  // is the common mlx-c pattern). Dropping it used to invoke the handler
+  // with a null pointer.
+  if (data || dtor) {
+    ax_error_handler_data = std::shared_ptr<void>(
+        data, dtor ? dtor : [](void*) {});
   } else {
     ax_error_handler_data = nullptr;
   }
@@ -122,12 +126,14 @@ inline mx::Dtype to_dtype(mlx_dtype d) {
 }
 
 inline mx::array make_array(const void* data, mx::Shape shape, mx::Dtype dtype) {
+  const size_t count = ax_shape_nelem(shape);
+  if (count > 0 && !data) {
+    throw std::runtime_error("mlx_array_new_data: data pointer is null for a non-empty array");
+  }
   switch (dtype.val()) {
     case mx::Dtype::Val::bool_: {
       // Reading arbitrary bytes through `const bool*` is UB for byte values
       // other than 0/1; normalize into a materialized 0/1 buffer first.
-      size_t count = 1;
-      for (auto dim : shape) count *= static_cast<size_t>(dim);
       std::vector<uint8_t> normalized(count);
       const uint8_t* raw = static_cast<const uint8_t*>(data);
       for (size_t i = 0; i < count; ++i) normalized[i] = raw[i] ? 1 : 0;
@@ -212,7 +218,12 @@ extern "C" int mlx_array_free(mlx_array a) { typed_delete<AX_MAGIC_ARRAY, mx::ar
 
 extern "C" mlx_array mlx_array_new_data(
     const void* data, const int* shape, int dim, mlx_dtype dtype) {
-  AX_TRY { return mlx_array{make_handle<AX_MAGIC_ARRAY, mx::array>(make_array(data, make_shape(shape, dim), to_dtype(dtype)))};
+  AX_TRY {
+    if (dim < 0) {
+      throw std::runtime_error("mlx_array_new_data: dim must be non-negative");
+    }
+    return mlx_array{make_handle<AX_MAGIC_ARRAY, mx::array>(
+        make_array(data, make_shape(shape, static_cast<size_t>(dim)), to_dtype(dtype)))};
   } AX_CATCH_NULL
 }
 
@@ -220,15 +231,27 @@ extern "C" mlx_array mlx_array_new_data_managed_payload(
     void* data, const int* shape, int dim, mlx_dtype dtype,
     void* payload, void (*dtor)(void*)) {
   AX_TRY {
+    if (dim < 0) {
+      throw std::runtime_error(
+          "mlx_array_new_data_managed_payload: dim must be non-negative");
+    }
     auto cpp_dtype = to_dtype(dtype);
-    auto cpp_shape = make_shape(shape, dim);
+    auto cpp_shape = make_shape(shape, static_cast<size_t>(dim));
+    if (ax_shape_nelem(cpp_shape) > 0 && !data) {
+      throw std::runtime_error(
+          "mlx_array_new_data_managed_payload: data pointer is null for a non-empty array");
+    }
     // The deleter receives the caller's lifetime `payload` handle, NOT the
     // `data` pointer. This is intentional: `data` may be an interior pointer
     // into `payload`'s allocation (e.g. an mmap offset into an Arc<Mmap>).
     // The shared_ptr's void* argument is unused; the captured payload is the
-    // resource the caller asked us to release.
-    auto cpp_deleter = [dtor, payload](void*) { dtor(payload); };
-    return mlx_array{make_handle<AX_MAGIC_ARRAY, mx::array>(data, std::move(cpp_shape), cpp_dtype, cpp_deleter)};
+    // resource the caller asked us to release. A null dtor is a no-op so
+    // array teardown does not call a null function pointer.
+    std::function<void(void*)> cpp_deleter = dtor
+        ? std::function<void(void*)>([dtor, payload](void*) { dtor(payload); })
+        : std::function<void(void*)>([](void*) {});
+    return mlx_array{make_handle<AX_MAGIC_ARRAY, mx::array>(
+        data, std::move(cpp_shape), cpp_dtype, cpp_deleter)};
   } AX_CATCH_NULL
 }
 
@@ -278,6 +301,9 @@ static inline void ax_require_evaled(const mx::array& arr, const char* api) {
 // readable even though its axis-0 stride makes the row_contiguous flag
 // false. Non-unit axes must still carry dense row-major strides.
 static bool ax_effectively_row_contiguous(const mx::array& arr) {
+  // No elements means no order to get wrong (including empty views whose
+  // stored strides would fail the dense-row check).
+  if (arr.size() == 0) return true;
   if (arr.flags().row_contiguous) return true;
   int64_t expected = 1;
   for (int i = static_cast<int>(arr.ndim()) - 1; i >= 0; --i) {
@@ -299,6 +325,13 @@ static void ax_require_row_contiguous(const mx::array& arr, const char* api) {
   }
 }
 
+static void ax_require_dtype(
+    const mx::array& arr, mx::Dtype expected, const char* api) {
+  if (arr.dtype() != expected) {
+    throw std::runtime_error(std::string(api) + ": dtype mismatch");
+  }
+}
+
 extern "C" int ax_shim_array_is_evaled(const mlx_array a) {
   AX_TRY { return aref(a).is_available() ? 1 : 0; }
   catch (const std::exception&) { ax_set_current_error(); return -1; }
@@ -307,9 +340,11 @@ extern "C" int ax_shim_array_is_evaled(const mlx_array a) {
 
 extern "C" const float* mlx_array_data_float32(const mlx_array a) {
   AX_TRY {
-    ax_require_evaled(aref(a), "mlx_array_data_float32");
-    ax_require_row_contiguous(aref(a), "mlx_array_data_float32");
-    return aref(a).data<float>();
+    const auto& arr = aref(a);
+    ax_require_evaled(arr, "mlx_array_data_float32");
+    ax_require_row_contiguous(arr, "mlx_array_data_float32");
+    ax_require_dtype(arr, mx::float32, "mlx_array_data_float32");
+    return arr.data<float>();
   }
   catch (const std::exception&) { ax_set_current_error(); return nullptr; }
   catch (...) { ax_set_current_error(); return nullptr; }
@@ -325,9 +360,11 @@ extern "C" const uint8_t* mlx_array_data_uint8(const mlx_array a) {
 }
 extern "C" const uint32_t* mlx_array_data_uint32(const mlx_array a) {
   AX_TRY {
-    ax_require_evaled(aref(a), "mlx_array_data_uint32");
-    ax_require_row_contiguous(aref(a), "mlx_array_data_uint32");
-    return aref(a).data<uint32_t>();
+    const auto& arr = aref(a);
+    ax_require_evaled(arr, "mlx_array_data_uint32");
+    ax_require_row_contiguous(arr, "mlx_array_data_uint32");
+    ax_require_dtype(arr, mx::uint32, "mlx_array_data_uint32");
+    return arr.data<uint32_t>();
   }
   catch (const std::exception&) { ax_set_current_error(); return nullptr; }
   catch (...) { ax_set_current_error(); return nullptr; }
@@ -362,7 +399,14 @@ extern "C" mlx_stream mlx_default_gpu_stream_new(void) {
  * ================================================================ */
 extern "C" mlx_device mlx_device_new_type(mlx_device_type t, int idx) {
   AX_TRY {
-    auto dt = (t == MLX_CPU) ? mx::Device::DeviceType::cpu : mx::Device::DeviceType::gpu;
+    mx::Device::DeviceType dt;
+    if (t == MLX_CPU) {
+      dt = mx::Device::DeviceType::cpu;
+    } else if (t == MLX_GPU) {
+      dt = mx::Device::DeviceType::gpu;
+    } else {
+      throw std::runtime_error("invalid mlx_device_type");
+    }
     return mlx_device{make_handle<AX_MAGIC_DEVICE, mx::Device>(dt, idx)};
   } AX_CATCH_NULL
 }
@@ -371,6 +415,7 @@ extern "C" int mlx_device_free(mlx_device d) { typed_delete<AX_MAGIC_DEVICE, mx:
 extern "C" mlx_device_info mlx_device_info_new(void) { return mlx_device_info{nullptr}; }
 extern "C" int mlx_device_info_get(mlx_device_info* info, mlx_device dev) {
   AX_TRY {
+    if (!info) throw std::runtime_error("expected a non-null mlx_device_info output");
     auto& d = dref(dev);
     const auto& props = mx::device_info(d);
     device_info_t m;
@@ -397,6 +442,7 @@ extern "C" int mlx_device_info_get(mlx_device_info* info, mlx_device dev) {
 extern "C" int mlx_device_info_free(mlx_device_info i) { typed_delete<AX_MAGIC_DEVICE_INFO, device_info_t>(i.ctx); return 0; }
 extern "C" int mlx_device_info_get_size(size_t* val, mlx_device_info info, const char* key) {
   AX_TRY {
+    if (!val) throw std::runtime_error("expected a non-null size_t output");
     auto& m = diref(info);
     auto it = m.find(key);
     if (it == m.end()) return 2;
@@ -406,6 +452,7 @@ extern "C" int mlx_device_info_get_size(size_t* val, mlx_device_info info, const
 }
 extern "C" int mlx_device_info_get_string(const char** val, mlx_device_info info, const char* key) {
   AX_TRY {
+    if (!val) throw std::runtime_error("expected a non-null string output");
     auto& m = diref(info);
     auto it = m.find(key);
     if (it == m.end()) return 2;
@@ -624,7 +671,9 @@ extern "C" mlx_fast_metal_kernel mlx_fast_metal_kernel_new(
     const char* source, const char* header, bool erc, bool atomic) {
   AX_TRY {
     return mlx_fast_metal_kernel{make_handle<AX_MAGIC_METAL_KERN, metal_kern_cpp>(
-      mx::fast::metal_kernel(name, vsref(inp), vsref(out), source, header, erc, atomic))};
+      mx::fast::metal_kernel(
+          safe_str(name), vsref(inp), vsref(out),
+          safe_str(source), safe_str(header), erc, atomic))};
   } AX_CATCH_NULL
 }
 extern "C" void mlx_fast_metal_kernel_free(mlx_fast_metal_kernel k) {
@@ -647,6 +696,8 @@ extern "C" int mlx_fast_metal_kernel_apply(mlx_vector_array* out, mlx_fast_metal
 extern "C" int mlx_load_safetensors(mlx_map_string_to_array* r0, mlx_map_string_to_string* r1,
     const char* file, const mlx_stream s) {
   AX_TRY {
+    if (!r0) throw std::runtime_error("expected a non-null tensor-map output");
+    if (!r1) throw std::runtime_error("expected a non-null metadata-map output");
     auto result = mx::load_safetensors(safe_str(file), sd(s));
     auto& tensors = result.first;
     auto& metadata = result.second;
@@ -687,7 +738,10 @@ extern "C" int mlx_map_string_to_array_iterator_next(
   // that failed to load (the most useful diagnostic for a blocked model).
   const char* current_key = nullptr;
   AX_TRY {
+    if (!key) throw std::runtime_error("expected a non-null key output");
+    if (!val) throw std::runtime_error("expected a non-null value output");
     auto& mi = unwrap_ref<AX_MAGIC_ITER_SA, ax_map_iter>(it.ctx, "mlx_map_string_to_array_iterator");
+    if (!mi.map) throw std::runtime_error("iterator is not bound to a map");
     if (mi.iter == mi.map->end()) return 1;
     current_key = mi.iter->first.c_str();
     *key = current_key;
@@ -736,6 +790,7 @@ extern "C" mlx_closure mlx_closure_new_func_payload(
     int (*fun)(mlx_vector_array*, const mlx_vector_array, void*),
     void* payload, void (*dtor)(void*)) {
   AX_TRY {
+    if (!fun) throw std::runtime_error("closure callback is null");
     auto payload_holder = dtor
       ? std::shared_ptr<void>(payload, dtor)
       : std::shared_ptr<void>(payload, [](void*) {});
@@ -766,6 +821,7 @@ extern "C" int mlx_closure_free(mlx_closure c) { typed_delete<AX_MAGIC_CLOSURE, 
 
 extern "C" int mlx_compile(mlx_closure* r, const mlx_closure fun, bool shapeless) {
   AX_TRY {
+    if (!r) throw std::runtime_error("expected a non-null mlx_closure output");
     auto compiled = mx::compile(cref(fun), shapeless);
     auto* p = unwrap<AX_MAGIC_CLOSURE, closure_fn>(r->ctx);
     if (p) *p = std::move(compiled);
@@ -780,19 +836,37 @@ extern "C" int mlx_compile(mlx_closure* r, const mlx_closure fun, bool shapeless
 extern "C" int mlx_clear_cache(void) {
   AX_TRY { mx::clear_cache(); return 0; } AX_CATCH }
 extern "C" int mlx_set_wired_limit(size_t* r, size_t limit) {
-  AX_TRY { *r = mx::set_wired_limit(limit); return 0; } AX_CATCH }
+  AX_TRY {
+    if (!r) throw std::runtime_error("expected a non-null size_t output");
+    *r = mx::set_wired_limit(limit); return 0;
+  } AX_CATCH }
 extern "C" int mlx_get_active_memory(size_t* r) {
-  AX_TRY { *r = mx::get_active_memory(); return 0; } AX_CATCH }
+  AX_TRY {
+    if (!r) throw std::runtime_error("expected a non-null size_t output");
+    *r = mx::get_active_memory(); return 0;
+  } AX_CATCH }
 extern "C" int mlx_set_memory_limit(size_t* r, size_t limit) {
-  AX_TRY { *r = mx::set_memory_limit(limit); return 0; } AX_CATCH }
+  AX_TRY {
+    if (!r) throw std::runtime_error("expected a non-null size_t output");
+    *r = mx::set_memory_limit(limit); return 0;
+  } AX_CATCH }
 extern "C" int mlx_set_cache_limit(size_t* r, size_t limit) {
-  AX_TRY { *r = mx::set_cache_limit(limit); return 0; } AX_CATCH }
+  AX_TRY {
+    if (!r) throw std::runtime_error("expected a non-null size_t output");
+    *r = mx::set_cache_limit(limit); return 0;
+  } AX_CATCH }
 extern "C" int mlx_get_peak_memory(size_t* r) {
-  AX_TRY { *r = mx::get_peak_memory(); return 0; } AX_CATCH }
+  AX_TRY {
+    if (!r) throw std::runtime_error("expected a non-null size_t output");
+    *r = mx::get_peak_memory(); return 0;
+  } AX_CATCH }
 extern "C" int mlx_reset_peak_memory(void) {
   AX_TRY { mx::reset_peak_memory(); return 0; } AX_CATCH }
 extern "C" int mlx_get_cache_memory(size_t* r) {
-  AX_TRY { *r = mx::get_cache_memory(); return 0; } AX_CATCH }
+  AX_TRY {
+    if (!r) throw std::runtime_error("expected a non-null size_t output");
+    *r = mx::get_cache_memory(); return 0;
+  } AX_CATCH }
 
 /* ================================================================
  * Transforms
