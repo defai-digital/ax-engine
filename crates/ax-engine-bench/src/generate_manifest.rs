@@ -27,7 +27,7 @@ pub(crate) fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> 
         GenerateManifestStatus::Written
     };
     // Flash-0731 / AXQ packs often have no chat_template.jinja. Fill the
-    // official DeepSeek-V4 chat encoding so serve and mlx-lm do not see a
+    // canonical DeepSeek-V4 chat encoding so serve and mlx-lm do not see a
     // raw user string. Existing non-empty templates are left alone.
     ax_engine_core::convert::ensure_deepseek_v4_chat_template(&model_dir)
         .map_err(|e| CliError::Runtime(format!("error writing DeepSeek V4 chat template: {e}")))?;

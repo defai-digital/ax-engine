@@ -1,43 +1,26 @@
-//! Official DeepSeek-V4 chat-mode Jinja (source `encoding/encoding_dsv4.py`).
+//! DeepSeek-V4 Jinja equivalent to the canonical `encoding/encoding_dsv4.py`.
 //!
 //! Flash-0731 ships no `chat_template.jinja`. mlx-lm convert then emits a
-//! tokenizer without one, so generate sees a raw user string. This file is
-//! the official single-turn *chat* (non-thinking) path:
-//! BOS + User + text + Assistant + THINK_END.
-//!
-//! AX-owned. Not copied from mlx-optiq.
+//! tokenizer without one, so standard chat-template consumers see a raw user
+//! string. The vendored template is pinned to a Hugging Face staff proposal
+//! that implements the canonical encoder, including thinking, tools, tool
+//! results, response formats, and multi-turn history. See the adjacent
+//! `deepseek_v4_chat_template.LICENSE.txt` for its MIT license.
+//! Source: <https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/blob/014a5cfe6d1349d3d1096b2f8c15faaaa11819d5/chat_template.jinja>.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::ConvertError;
 
-pub const DEEPSEEK_V4_CHAT_TEMPLATE: &str = "\
-{%- set bos = '<｜begin▁of▁sentence｜>' -%}
-{%- set user_sp = '<｜User｜>' -%}
-{%- set asst_sp = '<｜Assistant｜>' -%}
-{%- if enable_thinking is not defined -%}
-    {%- set enable_thinking = false -%}
-{%- endif -%}
-{{- bos -}}
-{%- for message in messages -%}
-    {%- if message['role'] == 'system' -%}
-        {{- message['content'] -}}
-    {%- elif message['role'] == 'user' -%}
-        {{- user_sp + message['content'] -}}
-    {%- elif message['role'] == 'assistant' -%}
-        {{- message['content'] + '<｜end▁of▁sentence｜>' -}}
-    {%- endif -%}
-{%- endfor -%}
-{%- if add_generation_prompt -%}
-    {{- asst_sp -}}
-    {%- if enable_thinking -%}
-        {{- '<think>' -}}
-    {%- else -%}
-        {{- '</think>' -}}
-    {%- endif -%}
-{%- endif -%}
-";
+/// Hugging Face revision containing the DeepSeek-V4 Jinja proposal.
+pub const DEEPSEEK_V4_CHAT_TEMPLATE_REVISION: &str = "014a5cfe6d1349d3d1096b2f8c15faaaa11819d5";
+
+/// SHA-256 of the vendored template at [`DEEPSEEK_V4_CHAT_TEMPLATE_REVISION`].
+pub const DEEPSEEK_V4_CHAT_TEMPLATE_SHA256: &str =
+    "c3f06ef01ca187c2a14151ab7464e4060a11380c4d082b4c8bcbf266ad932274";
+
+pub const DEEPSEEK_V4_CHAT_TEMPLATE: &str = include_str!("deepseek_v4_chat_template.jinja");
 
 fn dir_is_deepseek_v4(model_dir: &Path) -> bool {
     if let Ok(text) = fs::read_to_string(model_dir.join("model-manifest.json")) {
@@ -59,15 +42,18 @@ fn dir_is_deepseek_v4(model_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Write official V4 chat Jinja when the pack is DeepSeek V4 and has none.
+/// Write the canonical-equivalent V4 chat Jinja when a DeepSeek V4 pack has none.
 pub fn ensure_deepseek_v4_chat_template(model_dir: &Path) -> Result<Option<PathBuf>, ConvertError> {
     if !dir_is_deepseek_v4(model_dir) {
         return Ok(None);
     }
     let path = model_dir.join("chat_template.jinja");
     if path.is_file() {
-        let len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
-        if len > 0 {
+        let existing = fs::read_to_string(&path).map_err(|source| ConvertError::ReadFile {
+            path: path.clone(),
+            source,
+        })?;
+        if !existing.trim().is_empty() {
             return Ok(Some(path));
         }
     }

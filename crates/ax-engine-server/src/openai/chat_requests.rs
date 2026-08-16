@@ -251,11 +251,12 @@ pub(crate) fn render_openai_chat_prompt_with_options(
         .map_err(chat_error_response)
 }
 
-/// DeepSeek V3/R1 chat renderer (ds4 reference parity): assistant history
+/// DeepSeek V3/R1/V4 chat renderer (ds4 reference parity): assistant history
 /// keeps `<think>reasoning</think>` only for turns after the last user message or
 /// when the conversation uses tools; earlier turns drop reasoning. Tool
-/// schemas are rendered as a leading DSML tool-contract system message
-/// (ds4 reference parity); tool *results* ride the pair path's escaping rules.
+/// schemas are rendered in a DSML tool-contract system message; for V4 the
+/// contract is attached to the first system message, matching its Jinja.
+/// Tool *results* ride the pair path's escaping rules.
 fn render_deepseek_openai_chat_prompt(
     model_id: &str,
     messages: &[OpenAiChatMessage],
@@ -266,6 +267,7 @@ fn render_deepseek_openai_chat_prompt(
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
     }
+    let v4 = chat::is_deepseek_v4_model(model_id);
     let thinking = options.enable_thinking;
     let tool_context = tools.map(openai_value_is_present).unwrap_or(false)
         || messages.iter().any(|message| {
@@ -278,52 +280,141 @@ fn render_deepseek_openai_chat_prompt(
     for (index, message) in messages.iter().enumerate() {
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
         let content = render_openai_chat_content(message.content.as_ref())?;
-        if role == "assistant" && thinking {
-            let keep_reasoning = tool_context || last_user_idx.is_some_and(|last| index > last);
-            let reasoning = keep_reasoning
-                .then_some(message.reasoning_content.as_deref())
-                .flatten()
-                .map(str::trim)
-                .filter(|reasoning| !reasoning.is_empty());
+        if role == "assistant" {
             let mut full = String::new();
-            if let Some(reasoning) = reasoning {
+            let keep_reasoning =
+                thinking && (tool_context || last_user_idx.is_some_and(|last| index > last));
+            if keep_reasoning {
                 full.push_str(chat::DEEPSEEK_THINK_OPEN);
-                full.push_str(reasoning);
+                if let Some(reasoning) = message.reasoning_content.as_deref() {
+                    full.push_str(reasoning);
+                }
                 full.push_str(chat::DEEPSEEK_THINK_CLOSE);
             }
             full.push_str(&content);
+            if let Some(tool_calls) = message.tool_calls.as_ref()
+                && let Some(rendered) = render_deepseek_dsml_tool_calls(tool_calls)
+            {
+                full.push_str(&rendered);
+            }
             pairs.push((role.to_string(), full));
         } else {
             pairs.push((role.to_string(), content));
         }
     }
-    if let Some(contract) = render_deepseek_dsml_tool_contract(tools, tool_choice) {
-        pairs.insert(0, ("system".to_string(), contract));
+    if let Some(contract) = render_deepseek_dsml_tool_contract(tools, tool_choice, v4) {
+        if v4 && let Some((_, content)) = pairs.iter_mut().find(|(role, _)| role == "system") {
+            content.push_str(&contract);
+        } else {
+            pairs.insert(0, ("system".to_string(), contract));
+        }
     }
     chat::render_prompt_with_qwen_thinking(model_id, &pairs, thinking).map_err(chat_error_response)
 }
 
-/// DeepSeek DSML tool instructions (ds4_agent.c parity): the exact stanza
-/// shape the model must emit, plus the rule that tool calls belong outside
-/// thinking blocks. Fullwidth bars are U+FF5C escapes so the source stays
-/// byte-exact.
+/// DeepSeek V3/R1 DSML tool instructions retained for prompt compatibility.
 const DEEPSEEK_DSML_TOOL_INSTRUCTIONS: &str = "You have access to native DSML tools. Invoke tools by writing exactly this shape:\n\n<\u{FF5C}DSML\u{FF5C}tool_calls>\n<\u{FF5C}DSML\u{FF5C}invoke name=\"$TOOL_NAME\">\n<\u{FF5C}DSML\u{FF5C}parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</\u{FF5C}DSML\u{FF5C}parameter>\n</\u{FF5C}DSML\u{FF5C}invoke>\n</\u{FF5C}DSML\u{FF5C}tool_calls>\n\nTool calls are not allowed inside <think> tags; finish thinking before emitting DSML.\n\nString parameters use raw text and string=\"true\". Numbers and booleans use JSON text and string=\"false\".";
+
+/// DeepSeek V4's canonical DSML tool instructions. Fullwidth bars are U+FF5C.
+const DEEPSEEK_V4_DSML_TOOL_INSTRUCTIONS: &str = r#"## Tools
+
+You have access to a set of tools to help answer the user's question. You can invoke tools by writing a "<｜DSML｜tool_calls>" block like the following:
+
+<｜DSML｜tool_calls>
+<｜DSML｜invoke name="$TOOL_NAME">
+<｜DSML｜parameter name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE</｜DSML｜parameter>
+...
+</｜DSML｜invoke>
+<｜DSML｜invoke name="$TOOL_NAME2">
+...
+</｜DSML｜invoke>
+</｜DSML｜tool_calls>
+
+String parameters should be specified as is and set `string="true"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string="false"`.
+
+If thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.
+
+Otherwise, output directly after </think> with tool calls or final response.
+
+### Available Tool Schemas
+
+"#;
 
 fn render_deepseek_dsml_tool_contract(
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
+    v4: bool,
 ) -> Option<String> {
     let tools = tools.filter(|tools| openai_value_is_present(tools))?;
     if tool_choice.is_some_and(openai_tool_choice_disables_tools) {
         return None;
     }
-    let mut contract = DEEPSEEK_DSML_TOOL_INSTRUCTIONS.to_string();
-    contract.push_str("\n\n### Available Tool Schemas\n");
-    for line in render_json_tool_lines(tools) {
-        contract.push_str(&line);
-        contract.push('\n');
+    if !v4 {
+        let mut contract = DEEPSEEK_DSML_TOOL_INSTRUCTIONS.to_string();
+        contract.push_str("\n\n### Available Tool Schemas\n");
+        for line in render_json_tool_lines(tools) {
+            contract.push_str(&line);
+            contract.push('\n');
+        }
+        return Some(contract);
     }
+    let mut contract = String::from("\n\n");
+    contract.push_str(DEEPSEEK_V4_DSML_TOOL_INSTRUCTIONS);
+    let schemas = openai_tool_items(tools)
+        .into_iter()
+        .filter_map(openai_tool_function)
+        .map(|function| jinja_json(&Value::Object(function.clone())))
+        .collect::<Vec<_>>();
+    contract.push_str(&schemas.join("\n"));
+    contract.push_str(
+        "\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n",
+    );
     Some(contract)
+}
+
+/// Render OpenAI assistant tool-call history as DeepSeek V4 DSML.
+fn render_deepseek_dsml_tool_calls(tool_calls: &Value) -> Option<String> {
+    let calls = openai_tool_items(tool_calls)
+        .into_iter()
+        .filter_map(render_deepseek_dsml_tool_call)
+        .collect::<Vec<_>>();
+    if calls.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\n\n<｜DSML｜tool_calls>\n{}\n</｜DSML｜tool_calls>",
+        calls.join("\n")
+    ))
+}
+
+fn render_deepseek_dsml_tool_call(tool_call: &Value) -> Option<String> {
+    let function = tool_call.get("function").unwrap_or(tool_call).as_object()?;
+    let name = function.get("name")?.as_str()?;
+    let arguments = normalize_tool_arguments(function.get("arguments"));
+    let mut parameters = Vec::new();
+    if let Some(arguments) = arguments.as_object() {
+        for (key, value) in arguments {
+            let (value, is_string) = match value {
+                Value::String(value) => (value.clone(), true),
+                value => (jinja_json(value), false),
+            };
+            parameters.push(format!(
+                "<｜DSML｜parameter name=\"{key}\" string=\"{is_string}\">{value}</｜DSML｜parameter>"
+            ));
+        }
+    } else {
+        let (value, is_string) = match arguments {
+            Value::String(value) => (value, true),
+            value => (jinja_json(&value), false),
+        };
+        parameters.push(format!(
+            "<｜DSML｜parameter name=\"arguments\" string=\"{is_string}\">{value}</｜DSML｜parameter>"
+        ));
+    }
+    Some(format!(
+        "<｜DSML｜invoke name=\"{name}\">\n{}\n</｜DSML｜invoke>",
+        parameters.join("\n")
+    ))
 }
 
 /// Render an OpenAI chat request for the GLM 4.x family, including native GLM
@@ -4756,22 +4847,27 @@ mod deepseek_dsml_contract_tests {
 
     #[test]
     fn contract_renders_instructions_and_schemas() {
-        let contract =
-            render_deepseek_dsml_tool_contract(Some(&sample_tools()), None).expect("contract");
-        assert!(contract.contains("native DSML tools"));
+        let contract = render_deepseek_dsml_tool_contract(Some(&sample_tools()), None, true)
+            .expect("contract");
+        assert!(contract.contains("## Tools"));
+        assert!(contract.contains("You have access to a set of tools"));
         assert!(contract.contains('\u{FF5C}'));
         assert!(contract.contains("### Available Tool Schemas"));
-        assert!(contract.contains("\"name\":\"bash\""));
+        assert!(contract.contains("\"name\": \"bash\""));
+        assert!(contract.contains("You MUST strictly follow"));
     }
 
     #[test]
     fn contract_absent_without_tools_or_when_disabled() {
-        assert!(render_deepseek_dsml_tool_contract(None, None).is_none());
-        assert!(render_deepseek_dsml_tool_contract(Some(&serde_json::json!([])), None).is_none());
+        assert!(render_deepseek_dsml_tool_contract(None, None, false).is_none());
+        assert!(
+            render_deepseek_dsml_tool_contract(Some(&serde_json::json!([])), None, false).is_none()
+        );
         assert!(
             render_deepseek_dsml_tool_contract(
                 Some(&sample_tools()),
-                Some(&serde_json::json!("none"))
+                Some(&serde_json::json!("none")),
+                false,
             )
             .is_none()
         );
@@ -4798,5 +4894,88 @@ mod deepseek_dsml_contract_tests {
         let user_marker = "<\u{FF5C}User\u{FF5C}>";
         let first_user = prompt.find(user_marker).expect("user framing");
         assert!(first_system < first_user);
+    }
+
+    #[test]
+    fn v4_contract_attaches_after_existing_system_content() {
+        let messages: Vec<OpenAiChatMessage> = vec![
+            serde_json::from_value(serde_json::json!({
+                "role": "system",
+                "content": "Be exact."
+            }))
+            .expect("system message"),
+            serde_json::from_value(serde_json::json!({"role": "user", "content": "Hello"}))
+                .expect("user message"),
+        ];
+        let prompt = render_deepseek_openai_chat_prompt(
+            "deepseek-ai/DeepSeek-V4-Flash",
+            &messages,
+            Some(&sample_tools()),
+            None,
+            ChatPromptRenderOptions::default(),
+        )
+        .expect("render");
+        assert!(prompt.starts_with("<｜begin▁of▁sentence｜>Be exact.\n\n## Tools"));
+        assert!(!prompt.contains("<｜System｜>"));
+        assert!(prompt.contains("You MUST strictly follow"));
+        assert!(prompt.ends_with("<｜User｜>Hello<｜Assistant｜></think>"));
+    }
+
+    #[test]
+    fn v4_renders_assistant_tool_calls_and_results_as_dsml() {
+        let messages: Vec<OpenAiChatMessage> = vec![
+            serde_json::from_value(serde_json::json!({
+                "role": "user",
+                "content": "Weather in Toronto?"
+            }))
+            .expect("user message"),
+            serde_json::from_value(serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "I should check.",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "weather",
+                        "arguments": "{\"city\":\"Toronto\",\"days\":2}"
+                    }
+                }]
+            }))
+            .expect("assistant message"),
+            serde_json::from_value(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "Sunny"
+            }))
+            .expect("tool message"),
+        ];
+        let prompt = render_deepseek_openai_chat_prompt(
+            "deepseek-ai/DeepSeek-V4-Flash",
+            &messages,
+            Some(&sample_tools()),
+            None,
+            ChatPromptRenderOptions {
+                enable_thinking: true,
+                preserve_thinking: false,
+            },
+        )
+        .expect("render");
+
+        assert!(prompt.contains(
+            "<｜User｜>Weather in Toronto?<｜Assistant｜><think>I should check.</think>"
+        ));
+        assert!(prompt.contains("<｜DSML｜invoke name=\"weather\">"));
+        assert!(prompt.contains(
+            "<｜DSML｜parameter name=\"city\" string=\"true\">Toronto</｜DSML｜parameter>"
+        ));
+        assert!(
+            prompt.contains(
+                "<｜DSML｜parameter name=\"days\" string=\"false\">2</｜DSML｜parameter>"
+            )
+        );
+        assert!(prompt.contains(
+            "</｜DSML｜tool_calls><｜end▁of▁sentence｜><｜User｜><tool_result>Sunny</tool_result><｜Assistant｜><think>"
+        ));
     }
 }

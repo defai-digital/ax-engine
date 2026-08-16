@@ -760,7 +760,10 @@ mod tests;
 mod deepseek_v4_chat;
 mod deepseek_v4_quantized;
 
-pub use deepseek_v4_chat::{DEEPSEEK_V4_CHAT_TEMPLATE, ensure_deepseek_v4_chat_template};
+pub use deepseek_v4_chat::{
+    DEEPSEEK_V4_CHAT_TEMPLATE, DEEPSEEK_V4_CHAT_TEMPLATE_REVISION,
+    DEEPSEEK_V4_CHAT_TEMPLATE_SHA256, ensure_deepseek_v4_chat_template,
+};
 pub(crate) use deepseek_v4_quantized::*;
 pub(crate) use hf_config::*;
 pub(crate) use model_family::*;

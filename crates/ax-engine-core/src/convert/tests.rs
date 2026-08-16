@@ -3,12 +3,15 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest as _, Sha256};
+
 use super::deepseek_v4_quantized::{
     BlockScaleBytes, DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE, dequantize_fp8_block_scales,
     e8m0_to_f32, f32_to_bf16_bits, fp8_e4m3_to_f32, fp8_e5m2_to_f32, stack_mxfp4_experts,
 };
 use super::{
-    AUTO_GENERATED_MANIFEST_NOTE, ConvertError, DEEPSEEK_V4_CHAT_TEMPLATE, DroppedTensorLedger,
+    AUTO_GENERATED_MANIFEST_NOTE, ConvertError, DEEPSEEK_V4_CHAT_TEMPLATE,
+    DEEPSEEK_V4_CHAT_TEMPLATE_REVISION, DEEPSEEK_V4_CHAT_TEMPLATE_SHA256, DroppedTensorLedger,
     MANIFEST_TEMP_FILE_PREFIX, NativeTensorDataType, NativeTensorRole,
     compute_attention_value_from_key_layers, compute_kv_shared_sources, config_quantization,
     convert_hf_model_dir, deepseek_v4_config, ensure_deepseek_v4_chat_template,
@@ -4225,10 +4228,19 @@ fn deepseek_v4_axq_manifest_passes_loader_validation() {
     crate::model::NativeModelArtifacts::from_dir(&dir)
         .expect("AXQ DeepSeek V4 manifest should pass loader validation");
     let jinja = fs::read_to_string(dir.join("chat_template.jinja"))
-        .expect("DeepSeek V4 convert should write official chat Jinja");
+        .expect("DeepSeek V4 convert should write canonical-equivalent chat Jinja");
     assert_eq!(jinja, DEEPSEEK_V4_CHAT_TEMPLATE);
-    assert!(jinja.contains("<｜User｜>"));
-    assert!(jinja.contains("</think>"));
+    let digest = Sha256::digest(jinja.as_bytes());
+    assert_eq!(format!("{digest:x}"), DEEPSEEK_V4_CHAT_TEMPLATE_SHA256);
+    assert_eq!(
+        DEEPSEEK_V4_CHAT_TEMPLATE_REVISION,
+        "014a5cfe6d1349d3d1096b2f8c15faaaa11819d5"
+    );
+    assert!(jinja.contains("macro render_tools_block"));
+    assert!(jinja.contains("<｜DSML｜tool_calls>"));
+    assert!(jinja.contains("msg.role == \"latest_reminder\""));
+    assert!(jinja.contains("msg.response_format is defined"));
+    assert!(jinja.contains("thinking_mode = \"thinking\""));
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -4244,6 +4256,34 @@ fn ensure_deepseek_v4_chat_template_leaves_existing_file() {
         fs::read_to_string(dir.join("chat_template.jinja")).expect("read"),
         "kept-official"
     );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn ensure_deepseek_v4_chat_template_replaces_empty_file() {
+    let dir = unique_test_dir("deepseek_v4_empty_jinja");
+    write_config(&dir, deepseek_v4_config_json());
+    fs::write(dir.join("chat_template.jinja"), " \n\t").expect("seed blank jinja");
+
+    let path = ensure_deepseek_v4_chat_template(&dir).expect("ensure");
+
+    assert_eq!(path.unwrap(), dir.join("chat_template.jinja"));
+    assert_eq!(
+        fs::read_to_string(dir.join("chat_template.jinja")).expect("read"),
+        DEEPSEEK_V4_CHAT_TEMPLATE
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn ensure_deepseek_v4_chat_template_ignores_other_families() {
+    let dir = unique_test_dir("non_deepseek_v4_jinja");
+    write_config(&dir, serde_json::json!({ "model_type": "deepseek_v3" }));
+
+    let path = ensure_deepseek_v4_chat_template(&dir).expect("ensure");
+
+    assert!(path.is_none());
+    assert!(!dir.join("chat_template.jinja").exists());
     let _ = fs::remove_dir_all(dir);
 }
 

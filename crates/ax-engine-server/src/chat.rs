@@ -70,7 +70,7 @@ pub(crate) enum ChatPromptTemplate {
     /// Meta Muse-Glimmer ATEM (`<|start|>…<|message|>…<|eot|>`, `to=self` reasoning).
     MuseGlimmerAtem,
     /// DeepSeek V3/R1: `<｜User｜>` / `<｜Assistant｜>` with think-block framing.
-    /// V4 Flash uses the official `chat_template.jinja` (see `is_deepseek_v4_model`).
+    /// V4 Flash uses the canonical-equivalent Jinja path (see `is_deepseek_v4_model`).
     DeepSeekChat,
     Unsupported(ChatUnsupportedFamily),
     PlainRolePrefix,
@@ -174,7 +174,7 @@ pub(crate) fn is_deepseek_model(model_id: &str) -> bool {
     model_id.to_ascii_lowercase().contains("deepseek")
 }
 
-/// DeepSeek V4 Flash packs must use the official encoding_dsv4 Jinja, not the
+/// DeepSeek V4 Flash packs must use the canonical encoding_dsv4 framing, not the
 /// V3 `<｜System｜>` + history-`Assistant` renderer.
 pub(crate) fn is_deepseek_v4_model(model_id: &str) -> bool {
     let normalized = model_id.to_ascii_lowercase();
@@ -197,6 +197,27 @@ pub(crate) fn is_deepseek_thinking_model(model_id: &str) -> bool {
 /// not terminate the tool-result block early.
 fn escape_deepseek_tool_result(content: &str) -> String {
     content.replace("</tool_result>", "&lt;/tool_result>")
+}
+
+/// Emit the V4 Assistant/thinking prefix owned by a user turn when the next
+/// history row is an assistant. A preserved reasoning row already starts with
+/// `<think>`; dropped/non-thinking rows need the canonical empty close marker.
+fn append_deepseek_v4_history_transition(
+    prompt: &mut String,
+    messages: &[(String, String)],
+    user_index: usize,
+) -> Result<(), String> {
+    let Some((role, content)) = messages.get(user_index + 1) else {
+        return Ok(());
+    };
+    if normalize_role(role)? != "assistant" {
+        return Ok(());
+    }
+    prompt.push_str(DEEPSEEK_ASSISTANT);
+    if !content.starts_with(DEEPSEEK_THINK_OPEN) {
+        prompt.push_str(DEEPSEEK_THINK_CLOSE);
+    }
+    Ok(())
 }
 
 pub(crate) fn normalize_role(role: &str) -> Result<&'static str, String> {
@@ -808,18 +829,35 @@ fn render_prompt_internal(
                     if !deepseek_tool_response_open {
                         prompt.push_str(DEEPSEEK_USER);
                         deepseek_tool_response_open = true;
+                    } else if v4 {
+                        prompt.push_str("\n\n");
                     }
                     prompt.push_str("<tool_result>");
                     prompt.push_str(&escape_deepseek_tool_result(content));
                     prompt.push_str("</tool_result>");
                 } else {
                     if deepseek_tool_response_open {
-                        prompt.push_str(DEEPSEEK_EOS);
+                        if v4 && matches!(role, "user" | "principle") {
+                            // V4 merges a user message following tool results
+                            // into the same user content-block sequence.
+                            prompt.push_str("\n\n");
+                            prompt.push_str(content);
+                            deepseek_tool_response_open = false;
+                            append_deepseek_v4_history_transition(
+                                &mut prompt,
+                                messages,
+                                msg_index,
+                            )?;
+                            continue;
+                        }
+                        if !v4 {
+                            prompt.push_str(DEEPSEEK_EOS);
+                        }
                         deepseek_tool_response_open = false;
                     }
                     match role {
                         "system" => {
-                            // Official V4 jinja emits system content with no
+                            // Canonical V4 encoding emits system content with no
                             // `<｜System｜>` token (encoding_dsv4.py).
                             if !v4 {
                                 prompt.push_str(DEEPSEEK_SYSTEM);
@@ -829,12 +867,18 @@ fn render_prompt_internal(
                         "user" | "principle" => {
                             prompt.push_str(DEEPSEEK_USER);
                             prompt.push_str(content);
+                            if v4 {
+                                append_deepseek_v4_history_transition(
+                                    &mut prompt,
+                                    messages,
+                                    msg_index,
+                                )?;
+                            }
                         }
                         "assistant" => {
                             if v4 {
-                                // Official V4 jinja: prior assistant turns are
-                                // `{content}{EOS}` only. Assistant+</think> is
-                                // the generation suffix, not history.
+                                // V4's Assistant/thinking transition is emitted
+                                // by the preceding user turn.
                                 prompt.push_str(content);
                                 prompt.push_str(DEEPSEEK_EOS);
                             } else {
@@ -866,7 +910,9 @@ fn render_prompt_internal(
         prompt.push_str("<|im_end|>\n");
     }
     if deepseek_tool_response_open {
-        prompt.push_str(DEEPSEEK_EOS);
+        if !is_deepseek_v4_model(model_id) {
+            prompt.push_str(DEEPSEEK_EOS);
+        }
     }
     // System-only chats still need the system block emitted before generation.
     if matches!(template, ChatPromptTemplate::MistralInstruct) {
@@ -911,12 +957,19 @@ fn render_prompt_internal(
             prompt.push_str("<|start|>assistant<|channel|>final<|message|>")
         }
         ChatPromptTemplate::DeepSeekChat => {
-            prompt.push_str(DEEPSEEK_ASSISTANT);
-            prompt.push_str(if thinking_enabled {
-                DEEPSEEK_THINK_OPEN
-            } else {
-                DEEPSEEK_THINK_CLOSE
-            });
+            let v4 = is_deepseek_v4_model(model_id);
+            let last_role_can_generate = messages
+                .last()
+                .and_then(|(role, _)| normalize_role(role).ok())
+                .is_some_and(|role| matches!(role, "user" | "principle" | "tool" | "function"));
+            if !v4 || last_role_can_generate {
+                prompt.push_str(DEEPSEEK_ASSISTANT);
+                prompt.push_str(if thinking_enabled {
+                    DEEPSEEK_THINK_OPEN
+                } else {
+                    DEEPSEEK_THINK_CLOSE
+                });
+            }
         }
         ChatPromptTemplate::MuseGlimmerAtem => {
             prompt.push_str("<|start|>assistant");
@@ -1419,9 +1472,10 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_v4_matches_official_chat_template_jinja() {
-        // Official encoding_dsv4 / chat_template.jinja (non-thinking):
-        // BOS + [system raw] + User+text + [assistant content+EOS]* + Assistant+</think>
+    fn deepseek_v4_matches_canonical_chat_template_jinja() {
+        // Canonical encoding_dsv4 / equivalent Jinja (non-thinking):
+        // BOS + [system raw] + User+text + Assistant+</think> +
+        // [assistant content+EOS]* + Assistant+</think>.
         let user_only = vec![("user".to_string(), "Say hello.".to_string())];
         let rendered =
             render_prompt_with_qwen_thinking("deepseek-ai/DeepSeek-V4-Flash", &user_only, false)
@@ -1460,7 +1514,7 @@ mod tests {
                 .expect("v4 multi render");
         assert_eq!(
             rendered,
-            "<｜begin▁of▁sentence｜><｜User｜>hihello<｜end▁of▁sentence｜><｜User｜>again<｜Assistant｜></think>"
+            "<｜begin▁of▁sentence｜><｜User｜>hi<｜Assistant｜></think>hello<｜end▁of▁sentence｜><｜User｜>again<｜Assistant｜></think>"
         );
     }
 
