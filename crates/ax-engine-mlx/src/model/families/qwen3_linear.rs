@@ -9,7 +9,8 @@ use super::super::profile::{
 use super::super::shared::{
     ffn_swiglu, ffn_swiglu_plus_residual, flatten_compiled_moe_inputs, linear_attention_forward,
     moe_experts_forward, moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared,
-    moe_router_qwen3, rms_norm_opt, shared_expert_forward,
+    moe_router_qwen3, qwen_compiled_split_verify_ffn_plus_residual, rms_norm_opt,
+    shared_expert_forward,
 };
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
@@ -85,13 +86,23 @@ pub(crate) fn layer_forward(
     let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
 
     let fuse_la_norm = fastpath::should_qwen_la_norm_qkvz_fuse(&cfg.model_family, seq as i32);
+    // Exact S=2..=4: skip the outer attn RMS so it compiles into the pre-Metal
+    // fused QKVZ+BA qmm+unpack closure. Not the portable output gate.
+    let fold_exact_attn_norm = !fuse_la_norm
+        && fastpath::qwen_linear_mtp_exact_enabled()
+        && (2..=4).contains(&(seq as i32));
     if fuse_la_norm {
         crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(Some((
             w.attn_norm.clone(),
             cfg.rms_norm_eps,
         )));
+    } else if fold_exact_attn_norm {
+        crate::model::shared::set_qwen_la_exact_attn_norm(Some((
+            w.attn_norm.clone(),
+            cfg.rms_norm_eps,
+        )));
     }
-    let (hidden_owned, normed) = if fuse_la_norm {
+    let (hidden_owned, normed) = if fuse_la_norm || fold_exact_attn_norm {
         (hidden.clone(), hidden.clone())
     } else if fastpath::should_qwen_prefill_interlayer_add_rms(&cfg.model_family, seq as i32)
         && let Some(ffn) = take_qwen_prefill_pending_ffn()
@@ -124,6 +135,8 @@ pub(crate) fn layer_forward(
     );
     if fuse_la_norm {
         crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(None);
+    } else if fold_exact_attn_norm {
+        crate::model::shared::set_qwen_la_exact_attn_norm(None);
     }
 
     let residual_norm_started = profile_forward_layer.then(Instant::now);
@@ -151,6 +164,34 @@ pub(crate) fn layer_forward(
     // to the last position is safe and avoids redundant compute on preceding
     // positions whose output will be discarded by the post-loop slice.
     let last_only_active = last_position_only && seq > 1;
+    let should_defer_this_ffn = w.router_proj.is_none()
+        && fastpath::should_defer_qwen_prefill_ffn_residual(
+            &cfg.model_family,
+            seq as i32,
+            layer_idx,
+            cfg.is_linear_attention_layer(layer_idx.saturating_add(1)),
+            skip_post_attention_ffn,
+        );
+    // Exact S=2..=4: one compiled residual-add + pre-FFN RMS + FFN + residual.
+    // Portable attention RMS+SiLU stays outside. Compiling out_proj into this
+    // closure (bbcc72ad) reproduced factory `f4b5490d` and is unhooked.
+    // Last-only / deferred FFN keep the split path.
+    if !last_only_active
+        && !should_defer_this_ffn
+        && let Some(out) =
+            qwen_compiled_split_verify_ffn_plus_residual(cfg, w, hidden, &attn_proj, layer_idx)
+    {
+        if let Some(started) = residual_norm_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttnResidualNorm,
+                started,
+                &[&out],
+            );
+        }
+        return out;
+    }
     let (hidden, normed2) = qwen_linear_attn_residual_ffn_norm(
         hidden,
         &attn_proj,
@@ -167,15 +208,6 @@ pub(crate) fn layer_forward(
             &[&normed2],
         );
     }
-
-    let should_defer_this_ffn = w.router_proj.is_none()
-        && fastpath::should_defer_qwen_prefill_ffn_residual(
-            &cfg.model_family,
-            seq as i32,
-            layer_idx,
-            cfg.is_linear_attention_layer(layer_idx.saturating_add(1)),
-            skip_post_attention_ffn,
-        );
 
     let ffn_started = profile_forward_layer.then(Instant::now);
     let out = if w.router_proj.is_some() {

@@ -4,8 +4,8 @@ use std::thread::ThreadId;
 
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
-    MlxVectorArray, astype, concatenate, contiguous, conv1d, multiply, reshape, rms_norm, slice,
-    slice_last_dim, zeros,
+    MlxVectorArray, astype, concatenate, contiguous, conv1d, multiply, reshape, rms_norm,
+    rms_norm_silu_mul_normed, silu_mul, slice, slice_last_dim, zeros,
 };
 #[cfg(test)]
 use mlx_sys::{add, exp, less, log1p, negative, sigmoid, where_cond};
@@ -24,6 +24,7 @@ pub struct LinearAttentionQkv {
 static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GATED_DELTA_PREFILL_STREAMING_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GATED_DELTA_DECODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static GATED_DELTA_DECODE_SEQ_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static DECODE_POST_INPUT_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static RMS_NORM_GATE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static RMS_NORM_FULL_GATE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -138,6 +139,34 @@ pub fn warm_gated_delta_decode_kernels(cfg: &LinearAttentionConfig) -> Result<()
     mlx_sys::try_eval(&[&y, &new_state])
         .map_err(|error| format!("gated-delta decode warm-up failed: {error}"))?;
 
+    // Depth-1 exact verify is T=2. Compile the sequential-decode
+    // specialization so the first factory step is not a kernel JIT.
+    let q2 = zeros(&[1, 2, key_heads, key_dim], MlxDtype::Float32, None);
+    let k2 = zeros(&[1, 2, key_heads, key_dim], MlxDtype::Float32, None);
+    let v2 = zeros(&[1, 2, value_heads, value_dim], MlxDtype::Float32, None);
+    let a2 = zeros(&[1, 2, value_heads], MlxDtype::Float32, None);
+    let b2 = zeros(&[1, 2, value_heads], MlxDtype::Float32, None);
+    if let Some((y2, state2, ck2)) = gated_delta_decode_seq_kernel(
+        &q2,
+        &k2,
+        &v2,
+        &a_log,
+        &a2,
+        &dt_bias,
+        &b2,
+        &state,
+        1,
+        2,
+        key_heads,
+        key_dim,
+        value_heads,
+        value_dim,
+        &state.shape(),
+    ) {
+        mlx_sys::try_eval(&[&y2, &state2, &ck2])
+            .map_err(|error| format!("gated-delta decode-seq warm-up failed: {error}"))?;
+    }
+
     // The per-token conv1d + tail update is the other custom path a
     // decode step touches every token.
     let qkv = zeros(&[1, 1, cfg.conv_dim() as i32], MlxDtype::Float32, None);
@@ -196,7 +225,7 @@ pub fn linear_attention_decode_post_input_metal(
     q_scale: f32,
     k_scale: f32,
     eps: f32,
-) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray, MlxArray)> {
     let qkv_shape = qkv.shape();
     if qkv_shape.len() != 3 {
         return None;
@@ -238,7 +267,7 @@ pub fn linear_attention_decode_post_input_metal(
 
     let kernel = DECODE_POST_INPUT_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen_linear_attention_decode_post_input_v2",
+            "ax_qwen_linear_attention_decode_post_input_v3",
             &[
                 "qkv",
                 "conv_weight",
@@ -247,7 +276,7 @@ pub fn linear_attention_decode_post_input_metal(
                 "k_scale",
                 "eps",
             ],
-            &["q", "k", "v", "new_conv_state"],
+            &["q", "k", "v", "new_conv_state", "prefix_conv_state"],
             DECODE_POST_INPUT_KERNEL_SOURCE,
             "",
             true,
@@ -278,6 +307,10 @@ pub fn linear_attention_decode_post_input_metal(
             },
             KernelOutputSpec {
                 shape: vec![batch, seq, cfg.num_value_heads as i32, head_dim],
+                dtype: qkv.dtype(),
+            },
+            KernelOutputSpec {
+                shape: vec![batch, tail_len, conv_dim],
                 dtype: qkv.dtype(),
             },
             KernelOutputSpec {
@@ -318,6 +351,7 @@ pub fn linear_attention_decode_post_input_metal(
 
     let mut outputs = outputs.into_iter();
     Some((
+        outputs.next()?,
         outputs.next()?,
         outputs.next()?,
         outputs.next()?,
@@ -457,12 +491,33 @@ pub(crate) fn gated_delta_kernel_with_prefix_checkpoint(
         batch, 1,
         "lazy gated-delta checkpoint currently supports decode batch 1 only"
     );
-    // Depth-1/2/3 exact verify is T=2..=4. Two (or a few) decode kernels match
-    // singleton production GD and emit the prefix checkpoint as the state after
-    // row 0. The previous path launched that decode *and* the 512-capacity
-    // prefill oneshot, paying a redundant T=2 recurrent update on every step.
+    // Depth-1/2/3 exact verify is T=2..=4. One sequential-decode kernel
+    // runs the same per-token math as singleton `qwen35_gated_delta_decode_v1`
+    // (and writes the row-0 checkpoint) so S=2 is one dispatch instead of
+    // two decode launches plus five slice+contiguous copies + concat.
     let seq = q_shape[1];
     let state_shape = state.shape();
+    if (2..=4).contains(&seq)
+        && let Some((y, state_out, checkpoint)) = gated_delta_decode_seq_kernel(
+            q,
+            k,
+            v,
+            a_log,
+            a_raw,
+            dt_bias,
+            b_raw,
+            state,
+            batch,
+            seq,
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            &state_shape,
+        )
+    {
+        return (y, state_out, checkpoint);
+    }
     let decode_row = |q_t: &MlxArray,
                       k_t: &MlxArray,
                       v_t: &MlxArray,
@@ -506,7 +561,7 @@ pub(crate) fn gated_delta_kernel_with_prefix_checkpoint(
     (concatenate(&refs, 1, None), state_cur, checkpoint)
 }
 
-fn slice_seq_row_4d(x: &MlxArray, t: i32) -> MlxArray {
+pub(crate) fn slice_seq_row_4d(x: &MlxArray, t: i32) -> MlxArray {
     let shape = x.shape();
     contiguous(
         &slice(
@@ -1260,6 +1315,112 @@ fn gated_delta_decode_kernel(
     )
 }
 
+/// Sequential T=2..=4 decode: same per-token math as
+/// [`gated_delta_decode_kernel`], one dispatch, checkpoint after row 0.
+#[allow(clippy::too_many_arguments)]
+fn gated_delta_decode_seq_kernel(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    state: &MlxArray,
+    batch: i32,
+    seq: i32,
+    num_key_heads: i32,
+    key_head_dim: i32,
+    num_value_heads: i32,
+    value_head_dim: i32,
+    state_shape: &[i32],
+) -> Option<(MlxArray, MlxArray, MlxArray)> {
+    if !(2..=4).contains(&seq) {
+        return None;
+    }
+    if key_head_dim <= 0 || key_head_dim % 32 != 0 {
+        return None;
+    }
+    if num_key_heads <= 0 || num_value_heads % num_key_heads != 0 {
+        return None;
+    }
+
+    let q_c = contiguous(q, None);
+    let k_c = contiguous(k, None);
+    let v_c = contiguous(v, None);
+    let a_c = contiguous(a_raw, None);
+    let b_c = contiguous(b_raw, None);
+    let state_c = contiguous(state, None);
+    let kernel = GATED_DELTA_DECODE_SEQ_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "qwen35_gated_delta_decode_seq_v1",
+            &[
+                "q", "k", "v", "a_log", "a_raw", "dt_bias", "b_raw", "state_in",
+            ],
+            &["y", "state_out", "checkpoint"],
+            GATED_DELTA_DECODE_SEQ_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[&q_c, &k_c, &v_c, a_log, &a_c, dt_bias, &b_c, &state_c],
+            &[
+                KernelOutputSpec {
+                    shape: vec![batch, seq, num_value_heads, value_head_dim],
+                    dtype: q.dtype(),
+                },
+                KernelOutputSpec {
+                    shape: state_shape.to_vec(),
+                    dtype: state.dtype(),
+                },
+                KernelOutputSpec {
+                    shape: state_shape.to_vec(),
+                    dtype: state.dtype(),
+                },
+            ],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "InT",
+                    dtype: q.dtype(),
+                },
+                KernelTemplateArg::Dtype {
+                    name: "StT",
+                    dtype: state.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "Dk",
+                    value: key_head_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "Dv",
+                    value: value_head_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "Hk",
+                    value: num_key_heads,
+                },
+                KernelTemplateArg::Int {
+                    name: "Hv",
+                    value: num_value_heads,
+                },
+                KernelTemplateArg::Int {
+                    name: "SeqLen",
+                    value: seq,
+                },
+            ],
+            (32, value_head_dim, batch * num_value_heads),
+            (32, 4, 1),
+            None,
+        )
+        .ok()?;
+    let checkpoint = outputs.pop()?;
+    let state_out = outputs.pop()?;
+    let y = outputs.pop()?;
+    Some((y, state_out, checkpoint))
+}
+
 /// Qwen3Next/Qwen3.5 gated RMSNorm: `silu(gate.float32) * rms_norm(x).float32`.
 #[cfg(test)]
 fn rms_norm_gated(
@@ -1278,8 +1439,14 @@ pub fn rms_norm_gated_with_full_gate_policy(
     eps: f32,
     allow_full_gate_metal: bool,
 ) -> MlxArray {
+    let exact = skip_rms_norm_gate_metal_for_exact_verify();
+    if exact {
+        // Factory `dced27d4`: fused Metal on early exact S=2 layers
+        // (allow=true) → ON `f4b5490d`. Exact stays portable.
+        let _ = allow_full_gate_metal;
+        return rms_norm_silu_mul_normed(hidden_states, gate, weight, eps, None);
+    }
     if allow_full_gate_metal
-        && !skip_rms_norm_gate_metal_for_exact_verify()
         && let Some(gated) = rms_norm_full_gate_metal(hidden_states, gate, weight, eps)
     {
         return gated;
@@ -1288,13 +1455,14 @@ pub fn rms_norm_gated_with_full_gate_policy(
     if let Some(gated) = rms_norm_gate_metal(&normed, gate, hidden_states.dtype()) {
         return gated;
     }
-    portable_rms_norm_gated(hidden_states, gate, weight, eps)
+    portable_silu_mul_normed(&normed, gate, hidden_states.dtype())
 }
 
 /// Uncompiled exact-identity RMSNorm + f32 SiLU*norm graph.
 ///
 /// Metal fused/elementwise gates are not sequence-equivalent under exact
 /// MTP-on. This is the matching portable chain; compile only fuses it.
+#[cfg(test)]
 fn portable_rms_norm_gated(
     hidden_states: &MlxArray,
     gate: &MlxArray,
@@ -1302,15 +1470,71 @@ fn portable_rms_norm_gated(
     eps: f32,
 ) -> MlxArray {
     let normed = rms_norm(hidden_states, Some(weight), eps, None);
+    portable_silu_mul_normed(&normed, gate, hidden_states.dtype())
+}
+
+/// `silu(gate.float32) * normed.float32` then cast back. `silu_mul` is
+/// bit-exact vs `silu`+`multiply` on f32 (mlx-sys unit).
+fn portable_silu_mul_normed(
+    normed: &MlxArray,
+    gate: &MlxArray,
+    output_dtype: MlxDtype,
+) -> MlxArray {
     let gate_f32 = astype(gate, MlxDtype::Float32, None);
-    let normed_f32 = astype(&normed, MlxDtype::Float32, None);
-    let gated = multiply(&mlx_sys::ops::silu(&gate_f32, None), &normed_f32, None);
-    astype(&gated, hidden_states.dtype(), None)
+    let normed_f32 = astype(normed, MlxDtype::Float32, None);
+    let gated = silu_mul(&gate_f32, &normed_f32, None);
+    astype(&gated, output_dtype, None)
+}
+
+#[cfg(test)]
+type SiluMulNormedCompileKey = (Vec<i32>, MlxDtype, MlxDtype, MlxDtype, ThreadId);
+#[cfg(test)]
+type SiluMulNormedCompileCache = Mutex<HashMap<SiluMulNormedCompileKey, Option<MlxClosure>>>;
+#[cfg(test)]
+static SILU_MUL_NORMED_COMPILE_CACHE: OnceLock<SiluMulNormedCompileCache> = OnceLock::new();
+
+#[cfg(test)]
+fn try_compiled_silu_mul_normed(
+    normed: &MlxArray,
+    gate: &MlxArray,
+    output_dtype: MlxDtype,
+) -> Option<MlxArray> {
+    if normed.shape() != gate.shape() {
+        return None;
+    }
+    let seq = normed.shape().get(1).copied().unwrap_or(0);
+    if !(2..=4).contains(&seq) {
+        return None;
+    }
+    let key = (
+        normed.shape(),
+        normed.dtype(),
+        gate.dtype(),
+        output_dtype,
+        std::thread::current().id(),
+    );
+    let cache = SILU_MUL_NORMED_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().ok()?;
+    let slot = guard.entry(key).or_insert_with(|| {
+        MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+            let normed = inputs.get(0);
+            let gate = inputs.get(1);
+            vec![portable_silu_mul_normed(&normed, &gate, output_dtype)]
+        })
+        .compile(false)
+        .ok()
+    });
+    let closure = slot.as_ref()?;
+    let mut outputs = closure.try_apply(&[normed, gate]).ok()?;
+    if outputs.len() != 1 {
+        return None;
+    }
+    outputs.pop()
 }
 
 fn skip_rms_norm_gate_metal_for_exact_verify() -> bool {
-    // Factory MXFP4: Metal gate on MTP-on (S=1 or S=2) flips token 41 vs
-    // MTP-off. Portable silu*norm for the whole exact request matches.
+    // Factory MXFP4: any Metal gate on MTP-on (fused or elementwise) flips
+    // token 41 (`f4b5490d`) vs MTP-off. Portable silu*norm matches.
     fastpath::qwen_linear_mtp_exact_enabled()
 }
 
@@ -1489,7 +1713,8 @@ const RMS_NORM_GATE_KERNEL_SOURCE: &str = r#"
 
     float gate_v = static_cast<float>(gate[idx]);
     float normed_v = static_cast<float>(normed[idx]);
-    // gate_v / (1 + exp(-gate_v)) = gate_v * sigmoid(gate_v) = silu(gate_v)
+    // Keep the historical Metal silu (`x/(1+exp(-x))`). Changing it to
+    // `x*sigmoid(x)` flips MTP-off trial-2 to `f4b5490d`.
     float activated = gate_v / (1.0f + exp(-gate_v));
     out[idx] = static_cast<T>(activated * normed_v);
 "#;
@@ -1520,7 +1745,6 @@ const RMS_NORM_FULL_GATE_KERNEL_SOURCE: &str = r#"
         float inv_rms = rsqrt(squares[0] / static_cast<float>(HeadDim) + eps[0]);
         float normed = x * inv_rms * static_cast<float>(weight[lane]);
         float gate_v = static_cast<float>(gate[base + lane]);
-        // gate_v / (1 + exp(-gate_v)) = gate_v * sigmoid(gate_v) = silu(gate_v)
         float activated = gate_v / (1.0f + exp(-gate_v));
         out[base + lane] = static_cast<T>(activated * normed);
     }
@@ -1554,6 +1778,7 @@ const DECODE_POST_INPUT_KERNEL_SOURCE: &str = r#"
     auto qkv_b = qkv + batch_idx * Seq * ConvDim;
     auto state_b = conv_state + batch_idx * TailLen * ConvDim;
     auto new_state_b = new_conv_state + batch_idx * TailLen * ConvDim;
+    auto prefix_state_b = prefix_conv_state + batch_idx * TailLen * ConvDim;
 
     float tail[ConvKernelDim];
     for (int t = 0; t < TailLen; ++t) {
@@ -1604,6 +1829,13 @@ const DECODE_POST_INPUT_KERNEL_SOURCE: &str = r#"
       }
       if (TailLen > 0) {
         tail[TailLen - 1] = static_cast<float>(qkv_t[channel]);
+      }
+      // After token 0 the rolling tail is the conv checkpoint used by
+      // exact MTP adopt (committed token only).
+      if (token == 0) {
+        for (int t = 0; t < TailLen; ++t) {
+          prefix_state_b[t * ConvDim + channel] = static_cast<T>(tail[t]);
+        }
       }
     }
 
@@ -1861,6 +2093,81 @@ const GATED_DELTA_DECODE_KERNEL_SOURCE: &str = r#"
     out = simd_sum(out);
     if (thread_index_in_simdgroup == 0) {
       y[dv_idx] = static_cast<InT>(out);
+    }
+
+    for (int i = 0; i < n_per_t; ++i) {
+      o_state[s_base + i] = static_cast<StT>(state[i]);
+    }
+"#;
+
+/// Same per-token body as `qwen35_gated_delta_decode_v1`, looped over
+/// `SeqLen` (2..=4) with T-aware strides. Checkpoint is state after t=0.
+const GATED_DELTA_DECODE_SEQ_KERNEL_SOURCE: &str = r#"
+    auto n = thread_position_in_grid.z;
+    auto b_idx = n / Hv;
+    auto hv_idx = n % Hv;
+    auto hk_idx = hv_idx / (Hv / Hk);
+    constexpr int n_per_t = Dk / 32;
+
+    auto dk_idx = thread_position_in_threadgroup.x;
+    auto dv_idx = thread_position_in_grid.y;
+    const int s_base = n_per_t * dk_idx;
+
+    auto i_state = state_in + (n * Dv + dv_idx) * Dk;
+    auto o_state = state_out + (n * Dv + dv_idx) * Dk;
+    auto ck_state = checkpoint + (n * Dv + dv_idx) * Dk;
+
+    float state[n_per_t];
+    for (int i = 0; i < n_per_t; ++i) {
+      state[i] = static_cast<float>(i_state[s_base + i]);
+    }
+
+    threadgroup float g_t;
+    threadgroup float beta_t;
+
+    for (int t = 0; t < SeqLen; ++t) {
+      if (thread_index_in_threadgroup == 0) {
+        const float exp_a_log = exp(static_cast<float>(a_log[hv_idx]));
+        const float dt_bias_v = static_cast<float>(dt_bias[hv_idx]);
+        float a_plus_dt =
+            static_cast<float>(a_raw[(b_idx * SeqLen + t) * Hv + hv_idx]) + dt_bias_v;
+        float sp = a_plus_dt > 20.0f ? a_plus_dt : log1p(exp(a_plus_dt));
+        g_t = exp(-exp_a_log * sp);
+        float b_val = static_cast<float>(b_raw[(b_idx * SeqLen + t) * Hv + hv_idx]);
+        beta_t = static_cast<float>(static_cast<InT>(1.0f / (1.0f + exp(-b_val))));
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+
+      auto q_ = q + ((b_idx * SeqLen + t) * Hk + hk_idx) * Dk;
+      auto k_ = k + ((b_idx * SeqLen + t) * Hk + hk_idx) * Dk;
+      auto v_ = v + ((b_idx * SeqLen + t) * Hv + hv_idx) * Dv;
+      auto y_ = y + ((b_idx * SeqLen + t) * Hv + hv_idx) * Dv;
+      const float v_t = static_cast<float>(v_[dv_idx]);
+
+      float kv_mem = 0.0f;
+      for (int i = 0; i < n_per_t; ++i) {
+        state[i] = state[i] * g_t;
+        kv_mem += state[i] * static_cast<float>(k_[s_base + i]);
+      }
+      kv_mem = simd_sum(kv_mem);
+
+      const float delta = (v_t - kv_mem) * beta_t;
+
+      float out = 0.0f;
+      for (int i = 0; i < n_per_t; ++i) {
+        state[i] = state[i] + static_cast<float>(k_[s_base + i]) * delta;
+        out += state[i] * static_cast<float>(q_[s_base + i]);
+      }
+      out = simd_sum(out);
+      if (thread_index_in_simdgroup == 0) {
+        y_[dv_idx] = static_cast<InT>(out);
+      }
+
+      if (t == 0) {
+        for (int i = 0; i < n_per_t; ++i) {
+          ck_state[s_base + i] = static_cast<StT>(state[i]);
+        }
+      }
     }
 
     for (int i = 0; i < n_per_t; ++i) {
@@ -2582,6 +2889,79 @@ mod tests {
     }
 
     #[test]
+    fn gated_delta_decode_seq_bf16_matches_sequential_singletons() {
+        const SEQ: i32 = 2;
+        const KEY_HEAD_DIM: i32 = 32;
+        const VALUE_HEAD_DIM: i32 = 4;
+        let q_data: Vec<f32> = (0..(SEQ * 2 * KEY_HEAD_DIM) as usize)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..(SEQ * 2 * KEY_HEAD_DIM) as usize)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data: Vec<f32> = (0..(SEQ * 2 * VALUE_HEAD_DIM) as usize)
+            .map(|idx| ((idx % 9) as f32 - 4.0) * 0.04)
+            .collect();
+        let q = astype(
+            &f32_array(&q_data, &[1, SEQ, 2, KEY_HEAD_DIM]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let k = astype(
+            &f32_array(&k_data, &[1, SEQ, 2, KEY_HEAD_DIM]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let v = astype(
+            &f32_array(&v_data, &[1, SEQ, 2, VALUE_HEAD_DIM]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let a_log = f32_array(&[-0.2, -0.15], &[2]);
+        let a_raw = astype(
+            &f32_array(&[0.1, -0.15, 0.05, 0.2], &[1, SEQ, 2]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let dt_bias = f32_array(&[0.05, -0.02], &[2]);
+        let b_raw = astype(
+            &f32_array(&[0.25, -0.1, 0.3, -0.05], &[1, SEQ, 2]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let state = f32_array(
+            &(0..(2 * VALUE_HEAD_DIM * KEY_HEAD_DIM) as usize)
+                .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+                .collect::<Vec<_>>(),
+            &[1, 2, VALUE_HEAD_DIM, KEY_HEAD_DIM],
+        );
+
+        let (y_ck, final_ck, prefix_ck) = gated_delta_kernel_with_prefix_checkpoint(
+            &q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state, 1,
+        );
+        let q0 = slice_seq_row_4d(&q, 0);
+        let k0 = slice_seq_row_4d(&k, 0);
+        let v0 = slice_seq_row_4d(&v, 0);
+        let a0 = slice_seq_row_3d(&a_raw, 0);
+        let b0 = slice_seq_row_3d(&b_raw, 0);
+        let (y0, state1) = gated_delta_kernel(&q0, &k0, &v0, &a_log, &a0, &dt_bias, &b0, &state);
+        let q1 = slice_seq_row_4d(&q, 1);
+        let k1 = slice_seq_row_4d(&k, 1);
+        let v1 = slice_seq_row_4d(&v, 1);
+        let a1 = slice_seq_row_3d(&a_raw, 1);
+        let b1 = slice_seq_row_3d(&b_raw, 1);
+        let (y1, state2) = gated_delta_kernel(&q1, &k1, &v1, &a_log, &a1, &dt_bias, &b1, &state1);
+        let expected_y = concatenate(&[&y0, &y1], 1, None);
+        mlx_sys::eval(&[&y_ck, &final_ck, &prefix_ck, &expected_y, &state2, &state1]);
+        let y_a = astype(&y_ck, MlxDtype::Float32, None);
+        let y_b = astype(&expected_y, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&y_a, &y_b]);
+        assert_eq!(prefix_ck.data_f32(), state1.data_f32());
+        assert_eq!(final_ck.data_f32(), state2.data_f32());
+        assert_eq!(y_a.data_f32(), y_b.data_f32());
+    }
+
+    #[test]
     fn normalize_linear_attention_qk_preserves_reference_shapes() {
         let (q_scale, k_scale) = linear_attention_qk_scale(32);
         let cfg = LinearAttentionConfig {
@@ -2641,7 +3021,7 @@ mod tests {
             let split = split_linear_attention_qkv(&cfg, &conv_out);
             let (portable_q, portable_k) =
                 normalize_linear_attention_qk(&cfg, &split.q, &split.k, 1e-6);
-            let (metal_q, metal_k, metal_v, metal_state) =
+            let (metal_q, metal_k, metal_v, metal_state, _prefix) =
                 linear_attention_decode_post_input_metal(
                     &cfg,
                     &qkv,
@@ -2730,10 +3110,11 @@ mod tests {
         let split = split_linear_attention_qkv(&cfg, &conv_out);
         let (portable_q, portable_k) =
             normalize_linear_attention_qk(&cfg, &split.q, &split.k, 1e-6);
-        let (metal_q, metal_k, metal_v, metal_state) = linear_attention_decode_post_input_metal(
-            &cfg, &qkv, &weight, None, q_scale, k_scale, 1e-6,
-        )
-        .expect("prefill post-input Metal path should accept seq=8 cold start");
+        let (metal_q, metal_k, metal_v, metal_state, _prefix) =
+            linear_attention_decode_post_input_metal(
+                &cfg, &qkv, &weight, None, q_scale, k_scale, 1e-6,
+            )
+            .expect("prefill post-input Metal path should accept seq=8 cold start");
         let portable_q = mlx_sys::contiguous(&portable_q, None);
         let portable_k = mlx_sys::contiguous(&portable_k, None);
         let portable_v = mlx_sys::contiguous(&split.v, None);
@@ -2776,6 +3157,65 @@ mod tests {
             portable_state.data_f32(),
             1e-6,
         );
+    }
+
+    #[test]
+    fn decode_post_input_metal_prefix_conv_matches_first_token_tail() {
+        let (q_scale, k_scale) = linear_attention_qk_scale(32);
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 2,
+            num_key_heads: 1,
+            key_head_dim: 32,
+            value_head_dim: 32,
+            conv_kernel_dim: 4,
+            q_scale,
+            k_scale,
+        };
+        let conv_dim = cfg.conv_dim();
+        let seq = 2i32;
+        let qkv_data: Vec<f32> = (0..(seq as usize) * conv_dim)
+            .map(|idx| ((idx % 17) as f32 - 8.0) * 0.01)
+            .collect();
+        let state_data: Vec<f32> = (0..3 * conv_dim)
+            .map(|idx| ((idx % 11) as f32 - 5.0) * 0.02)
+            .collect();
+        let weight_data: Vec<f32> = (0..conv_dim * cfg.conv_kernel_dim)
+            .map(|idx| ((idx % 9) as f32 - 4.0) * 0.03)
+            .collect();
+        let qkv = f32_array(&qkv_data, &[1, seq, conv_dim as i32]);
+        let state = f32_array(&state_data, &[1, 3, conv_dim as i32]);
+        let weight = f32_array(
+            &weight_data,
+            &[conv_dim as i32, cfg.conv_kernel_dim as i32, 1],
+        );
+        let (_q, _k, _v, _new_state, prefix) = linear_attention_decode_post_input_metal(
+            &cfg,
+            &qkv,
+            &weight,
+            Some(&state),
+            q_scale,
+            k_scale,
+            1e-6,
+        )
+        .expect("post-input Metal must emit prefix conv");
+        let cached_tail = contiguous(
+            &slice(
+                &state,
+                &[0, 1, 0],
+                &[1, 3, conv_dim as i32],
+                &[1, 1, 1],
+                None,
+            ),
+            None,
+        );
+        let first = contiguous(
+            &slice(&qkv, &[0, 0, 0], &[1, 1, conv_dim as i32], &[1, 1, 1], None),
+            None,
+        );
+        let expected = concatenate(&[&cached_tail, &first], 1, None);
+        mlx_sys::eval(&[&prefix, &expected]);
+        assert_eq!(prefix.data_f32(), expected.data_f32());
     }
 
     #[test]
@@ -2885,6 +3325,195 @@ mod tests {
     }
 
     #[test]
+    fn rms_norm_gate_metal_is_bit_exact_vs_portable_silu_mul() {
+        let normed_data: Vec<f32> = (0..256)
+            .map(|idx| ((idx % 17) as f32 - 8.0) * 0.03125)
+            .collect();
+        let gate_data: Vec<f32> = (0..256)
+            .map(|idx| ((idx % 13) as f32 - 6.0) * 0.0625)
+            .collect();
+        let normed = astype(
+            &f32_array(&normed_data, &[1, 2, 2, 64]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let gate = astype(
+            &f32_array(&gate_data, &[1, 2, 2, 64]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let portable =
+            super::portable_rms_norm_gated(&normed, &gate, &ones(&[64], MlxDtype::Bfloat16), 1e-6);
+        // Compare only the silu*norm step: Metal gate on already-normed input
+        // versus portable's silu*mul (portable also re-applies rms).
+        let direct = astype(
+            &multiply(
+                &mlx_sys::ops::silu(&astype(&gate, MlxDtype::Float32, None), None),
+                &astype(&normed, MlxDtype::Float32, None),
+                None,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let metal = rms_norm_gate_metal_impl(&normed, &gate, MlxDtype::Bfloat16)
+            .expect("elementwise gate Metal");
+        mlx_sys::eval(&[&direct, &metal, &portable]);
+        let a = astype(&metal, MlxDtype::Float32, None);
+        let b = astype(&direct, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&a, &b]);
+        let mut max_abs = 0.0f32;
+        for (l, r) in a.data_f32().iter().zip(b.data_f32().iter()) {
+            max_abs = max_abs.max((l - r).abs());
+        }
+        eprintln!("elementwise Metal vs portable silu*mul max_abs={max_abs}");
+        assert_eq!(
+            a.data_f32(),
+            b.data_f32(),
+            "elementwise Metal silu*mul must be bit-exact vs MLX portable, max_abs={max_abs}"
+        );
+        let _ = portable;
+    }
+
+    fn max_abs_f32(a: &MlxArray, b: &MlxArray) -> f32 {
+        let a = astype(a, MlxDtype::Float32, None);
+        let b = astype(b, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&a, &b]);
+        a.data_f32()
+            .iter()
+            .zip(b.data_f32().iter())
+            .fold(0.0f32, |m, (l, r)| m.max((l - r).abs()))
+    }
+
+    /// Qwen3.8-27B LA gate is `[1, S, Hv=48, Dv=128]` bf16. Factory Metal-on-exact
+    /// flips trial-2 to `f4b5490d`; this reproduces Metal S=2 vs two Metal S=1
+    /// and vs the portable rms+silu chain on that shape (plus a wide range).
+    #[test]
+    fn rms_norm_gate_metal_s2_27b_matches_s1_rows_and_portable() {
+        const HV: i32 = 48;
+        const DV: i32 = 128;
+        let n = (2 * HV * DV) as usize;
+        let hidden_data: Vec<f32> = (0..n)
+            .map(|i| {
+                let wave = ((i % 97) as f32 - 48.0) * 0.0625;
+                let spike = if i % 111 == 0 { 12.0 } else { 0.0 };
+                wave + spike
+            })
+            .collect();
+        let gate_data: Vec<f32> = (0..n)
+            .map(|i| {
+                let wave = ((i % 89) as f32 - 44.0) * 0.078125;
+                let spike = if i % 107 == 0 { -15.0 } else { 0.0 };
+                wave + spike
+            })
+            .collect();
+        let weight_data: Vec<f32> = (0..DV as usize).map(|i| 0.5 + (i as f32) * 0.004).collect();
+        let hidden = astype(
+            &f32_array(&hidden_data, &[1, 2, HV, DV]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let gate = astype(
+            &f32_array(&gate_data, &[1, 2, HV, DV]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let weight = astype(&f32_array(&weight_data, &[DV]), MlxDtype::Bfloat16, None);
+
+        let metal_s2 = rms_norm_full_gate_metal_impl(&hidden, &gate, &weight, 1e-6)
+            .expect("full-gate Metal S=2 27B shape");
+        let h0 = super::slice_seq_row_4d(&hidden, 0);
+        let h1 = super::slice_seq_row_4d(&hidden, 1);
+        let g0 = super::slice_seq_row_4d(&gate, 0);
+        let g1 = super::slice_seq_row_4d(&gate, 1);
+        let m0 = rms_norm_full_gate_metal_impl(&h0, &g0, &weight, 1e-6)
+            .expect("full-gate Metal S=1 row0");
+        let m1 = rms_norm_full_gate_metal_impl(&h1, &g1, &weight, 1e-6)
+            .expect("full-gate Metal S=1 row1");
+        let metal_s1s = concatenate(&[&m0, &m1], 1, None);
+        let portable = super::portable_rms_norm_gated(&hidden, &gate, &weight, 1e-6);
+        mlx_sys::eval(&[&metal_s2, &metal_s1s, &portable]);
+
+        let vs_s1 = max_abs_f32(&metal_s2, &metal_s1s);
+        let vs_port = max_abs_f32(&metal_s2, &portable);
+        let s1_vs_port = max_abs_f32(&metal_s1s, &portable);
+        eprintln!(
+            "full-gate 27B [1,2,48,128] bf16: MetalS2 vs 2xMetalS1 max_abs={vs_s1} \
+             MetalS2 vs portable max_abs={vs_port} 2xMetalS1 vs portable max_abs={s1_vs_port}"
+        );
+
+        let normed = rms_norm(&hidden, Some(&weight), 1e-6, None);
+        let elem_s2 = rms_norm_gate_metal_impl(&normed, &gate, MlxDtype::Bfloat16)
+            .expect("elementwise Metal S=2");
+        let n0 = super::slice_seq_row_4d(&normed, 0);
+        let n1 = super::slice_seq_row_4d(&normed, 1);
+        let e0 = rms_norm_gate_metal_impl(&n0, &g0, MlxDtype::Bfloat16).expect("elem S=1 r0");
+        let e1 = rms_norm_gate_metal_impl(&n1, &g1, MlxDtype::Bfloat16).expect("elem S=1 r1");
+        let elem_s1s = concatenate(&[&e0, &e1], 1, None);
+        let elem_port = super::portable_silu_mul_normed(&normed, &gate, MlxDtype::Bfloat16);
+        mlx_sys::eval(&[&elem_s2, &elem_s1s, &elem_port]);
+        let evs_s1 = max_abs_f32(&elem_s2, &elem_s1s);
+        let evs_port = max_abs_f32(&elem_s2, &elem_port);
+        eprintln!(
+            "elementwise 27B [1,2,48,128] bf16: MetalS2 vs 2xMetalS1 max_abs={evs_s1} \
+             MetalS2 vs portable max_abs={evs_port}"
+        );
+
+        assert_eq!(
+            vs_s1, 0.0,
+            "full-gate Metal S=2 must match two Metal S=1 rows, max_abs={vs_s1}"
+        );
+        assert_eq!(
+            evs_s1, 0.0,
+            "elementwise Metal S=2 must match two Metal S=1 rows, max_abs={evs_s1}"
+        );
+        assert_eq!(
+            evs_port, 0.0,
+            "elementwise Metal must match portable silu*mul on 27B S=2, max_abs={evs_port}"
+        );
+        assert!(
+            vs_port > 0.0,
+            "full-gate Metal RMS must stay observably off mx.fast.rms_norm on 27B S=2 \
+             (repro of factory Metal-vs-portable); got max_abs={vs_port}"
+        );
+
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let later = rms_norm_gated_with_full_gate_policy(&hidden, &gate, &weight, 1e-6, false);
+        let early = rms_norm_gated_with_full_gate_policy(&hidden, &gate, &weight, 1e-6, true);
+        mlx_sys::eval(&[&later, &early, &portable]);
+        assert_eq!(
+            max_abs_f32(&later, &portable),
+            0.0,
+            "exact S=2 later-layer (allow=false) must stay portable"
+        );
+        assert_eq!(
+            max_abs_f32(&early, &portable),
+            0.0,
+            "exact S=2 early-layer Metal unhooked after factory f4b5490d; stay portable"
+        );
+        let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let s1_hidden = super::slice_seq_row_4d(&hidden, 0);
+        let s1_gate = super::slice_seq_row_4d(&gate, 0);
+        let s1_exact = {
+            let _ex = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+            rms_norm_gated_with_full_gate_policy(&s1_hidden, &s1_gate, &weight, 1e-6, true)
+        };
+        let s1_port = super::portable_rms_norm_gated(&s1_hidden, &s1_gate, &weight, 1e-6);
+        assert_eq!(
+            max_abs_f32(&s1_exact, &s1_port),
+            0.0,
+            "exact S=1 must stay portable (MTP-off unchanged)"
+        );
+    }
+
+    fn ones(shape: &[i32], dtype: MlxDtype) -> MlxArray {
+        astype(
+            &f32_array(&vec![1.0; shape.iter().product::<i32>() as usize], shape),
+            dtype,
+            None,
+        )
+    }
+
+    #[test]
     fn exact_profile_skips_rms_norm_gate_metal() {
         {
             let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
@@ -2892,5 +3521,106 @@ mod tests {
         }
         let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
         assert!(super::skip_rms_norm_gate_metal_for_exact_verify());
+    }
+
+    #[test]
+    fn exact_portable_gate_matches_silu_multiply_chain() {
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let hidden_data: Vec<f32> = (0..256)
+            .map(|idx| ((idx % 17) as f32 - 8.0) * 0.03125)
+            .collect();
+        let gate_data: Vec<f32> = (0..256)
+            .map(|idx| ((idx % 13) as f32 - 6.0) * 0.0625)
+            .collect();
+        let hidden = astype(
+            &f32_array(&hidden_data, &[1, 2, 2, 64]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let gate = astype(
+            &f32_array(&gate_data, &[1, 2, 2, 64]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let weight = astype(&f32_array(&vec![1.0; 64], &[64]), MlxDtype::Bfloat16, None);
+        let shipped = rms_norm_gated_with_full_gate_policy(&hidden, &gate, &weight, 1e-6, false);
+        let normed = rms_norm(&hidden, Some(&weight), 1e-6, None);
+        let reference = astype(
+            &multiply(
+                &mlx_sys::ops::silu(&astype(&gate, MlxDtype::Float32, None), None),
+                &astype(&normed, MlxDtype::Float32, None),
+                None,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        mlx_sys::eval(&[&shipped, &reference]);
+        let a = astype(&shipped, MlxDtype::Float32, None);
+        let b = astype(&reference, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&a, &b]);
+        assert_eq!(
+            a.data_f32(),
+            b.data_f32(),
+            "exact portable gate (one rms + silu_mul) must match silu*multiply"
+        );
+    }
+
+    #[test]
+    fn compiled_silu_mul_normed_s2_matches_uncompiled_and_s1_row() {
+        let hidden_data: Vec<f32> = (0..256)
+            .map(|idx| ((idx % 17) as f32 - 8.0) * 0.03125)
+            .collect();
+        let gate_data: Vec<f32> = (0..256)
+            .map(|idx| ((idx % 13) as f32 - 6.0) * 0.0625)
+            .collect();
+        let hidden = astype(
+            &f32_array(&hidden_data, &[1, 2, 2, 64]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let gate = astype(
+            &f32_array(&gate_data, &[1, 2, 2, 64]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let weight = astype(&f32_array(&vec![1.0; 64], &[64]), MlxDtype::Bfloat16, None);
+        let normed = rms_norm(&hidden, Some(&weight), 1e-6, None);
+        let uncompiled = super::portable_silu_mul_normed(&normed, &gate, MlxDtype::Bfloat16);
+        let compiled = super::try_compiled_silu_mul_normed(&normed, &gate, MlxDtype::Bfloat16)
+            .expect("exact S=2 pointwise silu*norm must compile");
+        mlx_sys::eval(&[&uncompiled, &compiled]);
+        let a = astype(&compiled, MlxDtype::Float32, None);
+        let b = astype(&uncompiled, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&a, &b]);
+        assert_eq!(
+            a.data_f32(),
+            b.data_f32(),
+            "compiled pointwise silu*norm must be bit-exact vs uncompiled"
+        );
+
+        let h1 = slice(&hidden, &[0, 0, 0, 0], &[1, 1, 2, 64], &[1, 1, 1, 1], None);
+        let g1 = slice(&gate, &[0, 0, 0, 0], &[1, 1, 2, 64], &[1, 1, 1, 1], None);
+        let n1 = rms_norm(&h1, Some(&weight), 1e-6, None);
+        let s1 = super::portable_silu_mul_normed(&n1, &g1, MlxDtype::Bfloat16);
+        let s2_row0 = slice(
+            &compiled,
+            &[0, 0, 0, 0],
+            &[1, 1, 2, 64],
+            &[1, 1, 1, 1],
+            None,
+        );
+        mlx_sys::eval(&[&s1, &s2_row0]);
+        let r1 = astype(&s1, MlxDtype::Float32, None);
+        let r2 = astype(&s2_row0, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&r1, &r2]);
+        assert_eq!(
+            r1.data_f32(),
+            r2.data_f32(),
+            "compiled S=2 row0 must match uncompiled S=1"
+        );
+        assert!(
+            super::try_compiled_silu_mul_normed(&n1, &g1, MlxDtype::Bfloat16).is_none(),
+            "S=1 must stay uncompiled so MTP-off decode fusion is unchanged"
+        );
     }
 }

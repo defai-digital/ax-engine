@@ -1903,11 +1903,19 @@ pub fn forward_all_positions_with_post_norm_ids(
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, ids_1d, &hidden);
     let layer_count = weights.layers.len();
     // Chunked submit (`AX_MLX_MTP_VERIFY_SUBMIT_LAYERS`, default off).
+    // Exact S=2..=4 still uses per-layer PIPELINE hints: using the
+    // configured interval *instead* (`bf56ee6b` graphcut) lost overlap
+    // (verify_forward 2.907s vs 2.819s) and washed at general-long 1.036×.
+    // Last-layer + prefix submits stay on: factory ffnres left verify_eval
+    // at ~8.3 ms/step because the terminal full-attn layer and prefix
+    // checkpoints were never handed to GPU until the caller's blocking eval.
     let submit_interval = crate::fastpath::verify_submit_interval_for_build(
         seq,
         layer_count,
         crate::fastpath::mtp_verify_submit_layer_interval(),
     );
+    let exact_short_verify =
+        crate::fastpath::qwen_linear_mtp_exact_enabled() && (2..=4).contains(&seq);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward(
@@ -1934,9 +1942,9 @@ pub fn forward_all_positions_with_post_norm_ids(
         // backpressure on MoE, which is the opposite of the overlap goal.
         let submitted =
             submit_interval > 0 && li + 1 < layer_count && (li + 1) % submit_interval == 0;
-        if submitted {
-            async_eval(&[&hidden]);
-        } else if crate::fastpath::pipeline_hint_should_fire(li, layer_count)
+        let last_layer = li + 1 == layer_count;
+        let fire = submitted
+            || crate::fastpath::pipeline_hint_should_fire(li, layer_count)
             || crate::fastpath::should_qwen_prefill_pipeline_block(
                 &cfg.model_family,
                 seq,
@@ -1949,10 +1957,12 @@ pub fn forward_all_positions_with_post_norm_ids(
                 li,
                 layer_count,
             )
-        {
-            // Same residual-only hint as prefill/direct layer loops. Skip when
-            // the chunked-submit interval already fired this layer to avoid
-            // double async_eval on the same residual.
+            || (exact_short_verify && last_layer);
+        if fire {
+            // Prefix checkpoints stay off this submit: factory trial-2 with
+            // `async_eval(hidden, prefix_*)` became `f4b5490d` (the Metal-on-
+            // exact fail hash). Residual-only last-layer + tail submits keep
+            // the 39a36e3f path.
             async_eval(&[&hidden]);
         }
     }
@@ -1966,7 +1976,7 @@ pub fn forward_all_positions_with_post_norm_ids(
     // When chunked submit is active, also kick the lm_head/norm tail so GPU
     // work continues while the caller builds argmax + cache-ref eval targets.
     // Exactness-preserving: only schedules already-built arrays.
-    if submit_interval > 0 {
+    if submit_interval > 0 || exact_short_verify {
         async_eval(&[&logits_out, &normed]);
     }
     (logits_out, normed)
@@ -7667,6 +7677,23 @@ mod tests {
         let mask = attention_mask_array(2, 5, None).expect("cached prefill needs offset mask");
 
         assert_eq!(mask.shape(), vec![2, 5]);
+    }
+
+    #[test]
+    fn exact_verify_uses_native_offset_causal_for_full_attention() {
+        {
+            let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+            assert!(attention_mask_array(2, 5, None).is_some());
+        }
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        assert!(
+            attention_mask_array(2, 5, None).is_none(),
+            "exact S=2 full-attn must use native causal, not a 2×key bool array"
+        );
+        assert!(
+            attention_mask_array(2, 5, Some(4)).is_some(),
+            "sliding-window layers still need an explicit mask"
+        );
     }
 
     #[test]

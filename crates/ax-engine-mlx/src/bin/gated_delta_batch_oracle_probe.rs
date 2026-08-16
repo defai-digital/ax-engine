@@ -253,7 +253,7 @@ fn run() -> Result<ExitCode, String> {
             cfg.rms_norm_eps,
         );
         match fused_b {
-            Some((qb, kb, vb, nsb)) if pick_no == 0 => {
+            Some((qb, kb, vb, nsb, _prefix)) if pick_no == 0 => {
                 let singles: Option<Vec<Vec<MlxArray>>> = (0..b)
                     .map(|r| {
                         linear_attention_decode_post_input_metal(
@@ -265,7 +265,7 @@ fn run() -> Result<ExitCode, String> {
                             lin.k_scale,
                             cfg.rms_norm_eps,
                         )
-                        .map(|(q, k, v, ns)| vec![q, k, v, ns])
+                        .map(|(q, k, v, ns, _p)| vec![q, k, v, ns])
                     })
                     .collect();
                 if let Some(singles) = singles {

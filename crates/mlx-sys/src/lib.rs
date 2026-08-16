@@ -79,10 +79,11 @@ pub use ops::{
     quantize, quantized_matmul, quantized_matmul_rms_norm, quantized_matmul_with_mode,
     qwen_linear_attention_inputs_packed, qwen_linear_attention_inputs_packed_compiled,
     qwen_linear_attention_post_input, qwen_linear_attention_post_input_compiled,
-    random_categorical, repeat, repeat_axis, reshape, rms_norm_quantized_matmul, sigmoid, silu_mul,
-    silu_mul_quantized_matmul, sin, slice, slice_last_dim, slice_update, softmax, softmax_precise,
-    split, stack, stop_gradient, subtract, sum_axis, swiglu_oai, take, take_along_axis, tanh,
-    to_fp8, topk, topk_axis, transpose, unflatten, view, where_cond, zeros,
+    random_categorical, repeat, repeat_axis, reshape, rms_norm_quantized_matmul,
+    rms_norm_silu_mul_normed, sigmoid, silu_mul, silu_mul_quantized_matmul, sin, slice,
+    slice_last_dim, slice_update, softmax, softmax_precise, split, stack, stop_gradient, subtract,
+    sum_axis, swiglu_oai, take, take_along_axis, tanh, to_fp8, topk, topk_axis, transpose,
+    unflatten, view, where_cond, zeros,
 };
 pub use stream::MlxStream;
 pub use transforms::{

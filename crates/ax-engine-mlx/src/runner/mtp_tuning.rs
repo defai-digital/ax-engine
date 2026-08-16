@@ -313,13 +313,110 @@ pub(super) fn mtp_model_acceptance_mode_from_env() -> MtpModelAcceptanceMode {
 }
 
 pub(super) fn mtp_disable_ngram_stacking_from_env() -> bool {
-    static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        !matches!(
-            std::env::var("AX_MLX_MTP_DISABLE_NGRAM_STACKING").as_deref(),
-            Ok("0") | Ok("false") | Ok("FALSE") | Ok("no") | Ok("NO")
-        )
-    })
+    !matches!(
+        mtp_ngram_stacking_env(),
+        MtpNgramStackingEnv::ExplicitlyEnabled
+    )
+}
+
+/// Parsed `AX_MLX_MTP_DISABLE_NGRAM_STACKING` so unset can be distinguished
+/// from an explicit `=1` (isolated MTP benches).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MtpNgramStackingEnv {
+    Unset,
+    ExplicitlyDisabled,
+    ExplicitlyEnabled,
+}
+
+pub(super) fn mtp_ngram_stacking_env() -> MtpNgramStackingEnv {
+    static CACHED: OnceLock<MtpNgramStackingEnv> = OnceLock::new();
+    *CACHED.get_or_init(
+        || match std::env::var("AX_MLX_MTP_DISABLE_NGRAM_STACKING") {
+            Err(_) => MtpNgramStackingEnv::Unset,
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "0" | "false" | "no" => MtpNgramStackingEnv::ExplicitlyEnabled,
+                _ => MtpNgramStackingEnv::ExplicitlyDisabled,
+            },
+        },
+    )
+}
+
+/// Whether `run_mtp_decode` may put n-gram tokens in front of the MTP head.
+///
+/// Unset keeps historical pure-MTP benches. Official Qwen38 `--full` leaves
+/// the var unset and sets `AX_MLX_QWEN_LINEAR_MTP_EXACT=1`; general-long
+/// ignore_eos then loops special tokens that n-gram can accept and MTP
+/// cannot (~51%). Explicit `=1` still forces isolated MTP.
+pub(super) fn mtp_ngram_stacking_allowed(
+    env: MtpNgramStackingEnv,
+    qwen_linear_mtp_exact: bool,
+) -> bool {
+    match env {
+        MtpNgramStackingEnv::ExplicitlyEnabled => true,
+        MtpNgramStackingEnv::ExplicitlyDisabled => false,
+        MtpNgramStackingEnv::Unset => qwen_linear_mtp_exact,
+    }
+}
+
+/// Cap stacked n-gram length to the MTP adaptive depth.
+///
+/// Factory `944fa8a7` allowed `DEFAULT_DRAFT_LEN` (4) on exact S=2 and
+/// general-long fell to 1.00× (S=5 verify). Official Qwen38 depth is 1.
+pub(super) fn mtp_ngram_stack_len(requested: usize, adaptive_mtp_depth: usize) -> usize {
+    requested.min(adaptive_mtp_depth.max(1))
+}
+
+/// Exact Qwen38 general-long ignore_eos loops after ~one 3-token cycle.
+/// Default stacked `min_support=3` only fired near the tail (`fa6e1e79`
+/// 23/39). Cap at 2 when the operator did not raise the env.
+pub(super) fn mtp_ngram_min_support_for_exact(exact: bool, configured: u32) -> u32 {
+    if exact { configured.min(2) } else { configured }
+}
+
+/// Exact ignore_eos loops are a 3-token cycle; allowing bigrams (context 2)
+/// lets n-gram fire as soon as `198 → 248045` has been seen twice.
+pub(super) fn mtp_ngram_min_context_len_for_exact(exact: bool, configured: usize) -> usize {
+    if exact { configured.min(2) } else { configured }
+}
+
+/// Next token of a period-2 or period-3 suffix that already repeated twice.
+///
+/// Factory general-long ignore_eos emits `248045,248046,198` after the short
+/// answer. Table n-gram at min_support=2 / conf=0.85 only raised accept
+/// 21/41 → 24/38. Two visible periods are enough to draft the continuation
+/// at depth 1 without replacing MTP on non-loop text.
+pub(super) fn short_cycle_next_token(recent: &[u32]) -> Option<u32> {
+    for period in [3_usize, 2] {
+        let need = period.saturating_mul(2);
+        if recent.len() < need {
+            continue;
+        }
+        let tail = &recent[recent.len() - need..];
+        if tail[..period] == tail[period..] {
+            return Some(tail[0]);
+        }
+    }
+    None
+}
+
+/// `history` is prior committed output; `extra` is this step's newly
+/// accepted tokens (not yet pushed onto `generated_tokens`).
+pub(super) fn short_cycle_next_token_from_parts(history: &[u32], extra: &[u32]) -> Option<u32> {
+    let take_h = history.len().min(8);
+    let mut buf = [0u32; 16];
+    let mut n = 0usize;
+    for &tok in &history[history.len() - take_h..] {
+        buf[n] = tok;
+        n += 1;
+    }
+    for &tok in extra {
+        if n >= buf.len() {
+            break;
+        }
+        buf[n] = tok;
+        n += 1;
+    }
+    short_cycle_next_token(&buf[..n])
 }
 
 /// **Default: OFF** (explicit opt-in via `AX_MLX_MTP_OPTIMISTIC=1`).
@@ -553,4 +650,88 @@ pub(super) fn adaptive_ngram_saturation_threshold(mtp_depth: usize) -> f32 {
                 .map(|v| v.clamp(0.0, 2.0))
         })
         .unwrap_or(if mtp_depth >= 3 { 0.97 } else { 0.98 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MtpNgramStackingEnv, mtp_ngram_stacking_allowed};
+
+    #[test]
+    fn exact_qwen_linear_mtp_stacks_ngram_when_env_unset() {
+        assert!(
+            mtp_ngram_stacking_allowed(MtpNgramStackingEnv::Unset, true),
+            "official Qwen38 exact --full leaves DISABLE_NGRAM_STACKING unset"
+        );
+        assert!(
+            !mtp_ngram_stacking_allowed(MtpNgramStackingEnv::Unset, false),
+            "non-exact unset keeps historical pure-MTP benches"
+        );
+        assert!(!mtp_ngram_stacking_allowed(
+            MtpNgramStackingEnv::ExplicitlyDisabled,
+            true
+        ));
+        assert!(mtp_ngram_stacking_allowed(
+            MtpNgramStackingEnv::ExplicitlyEnabled,
+            false
+        ));
+    }
+
+    #[test]
+    fn exact_ngram_stack_len_never_exceeds_mtp_depth() {
+        assert_eq!(super::mtp_ngram_stack_len(4, 1), 1);
+        assert_eq!(super::mtp_ngram_stack_len(4, 3), 3);
+        assert_eq!(super::mtp_ngram_stack_len(1, 1), 1);
+        assert_eq!(super::mtp_ngram_stack_len(0, 1), 0);
+    }
+
+    #[test]
+    fn exact_ngram_min_support_caps_default_at_two() {
+        assert_eq!(super::mtp_ngram_min_support_for_exact(true, 3), 2);
+        assert_eq!(super::mtp_ngram_min_support_for_exact(true, 1), 1);
+        assert_eq!(super::mtp_ngram_min_support_for_exact(false, 3), 3);
+    }
+
+    #[test]
+    fn exact_ngram_min_context_caps_default_at_two() {
+        assert_eq!(super::mtp_ngram_min_context_len_for_exact(true, 3), 2);
+        assert_eq!(super::mtp_ngram_min_context_len_for_exact(false, 3), 3);
+    }
+
+    #[test]
+    fn short_cycle_next_token_drafts_factory_general_long_loop() {
+        // Measured trial-1/2 prefixes from gateffi general-long MTP-on.
+        assert_eq!(
+            super::short_cycle_next_token(&[
+                271, 84068, 248044, 248045, 248046, 198, 248045, 248046, 198
+            ]),
+            Some(248045)
+        );
+        assert_eq!(
+            super::short_cycle_next_token(&[
+                271, 39, 30763, 46, 248044, 248045, 248045, 248046, 198, 248045, 248046, 198
+            ]),
+            Some(248045)
+        );
+        assert_eq!(super::short_cycle_next_token(&[1, 2, 1, 2]), Some(1));
+        assert_eq!(super::short_cycle_next_token(&[1, 2, 3, 1, 2, 3]), Some(1));
+        assert_eq!(super::short_cycle_next_token(&[1, 2, 3, 4, 5]), None);
+        assert_eq!(
+            super::short_cycle_next_token(&[248045, 248046, 198]),
+            None,
+            "one period is not enough"
+        );
+        assert_eq!(
+            super::short_cycle_next_token_from_parts(
+                &[271, 84068, 248044, 248045, 248046, 198, 248045],
+                &[248046, 198]
+            ),
+            Some(248045),
+            "must see the loop across generated_tokens + this-step result"
+        );
+        assert_eq!(
+            super::short_cycle_next_token(&[248046, 198]),
+            None,
+            "this-step result alone is too short (the factory bug)"
+        );
+    }
 }

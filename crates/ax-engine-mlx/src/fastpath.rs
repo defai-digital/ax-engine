@@ -230,6 +230,44 @@ pub(crate) fn verify_submit_interval_for_build(
     configured
 }
 
+/// Default mid-loop submit stride for exact S=2..=4 verify when
+/// `AX_MLX_MTP_VERIFY_SUBMIT_LAYERS` is unset.
+///
+/// Skipping every layer-boundary hint (`pipelinenohint`) left the GPU idle
+/// during the 64-layer encode. Per-layer `PIPELINE=layer` on this short
+/// graph is the other extreme. Four layers is the middle: MLX can fuse a
+/// small chunk while host encode of the next chunk overlaps GPU.
+///
+/// Measured `bf56ee6b` used interval 8 instead of per-layer hints and
+/// washed (verify_forward 2.907s vs 2.819s). Production stays on per-layer
+/// PIPELINE; this helper remains for the unit contract.
+#[cfg(test)]
+pub(crate) const EXACT_SHORT_VERIFY_SUBMIT_DEFAULT: usize = 4;
+
+/// Submit interval for exact Qwen linear MTP verify (`seq` 2..=4).
+///
+/// Official `AX_MLX_MTP_VERIFY_SUBMIT_LAYERS=8` is ignored by
+/// [`verify_submit_interval_for_build`] on these lengths because it used to
+/// *stack* on `PIPELINE=layer`. This helper uses the configured interval
+/// *instead of* per-layer hints. Unset configured falls back to
+/// [`EXACT_SHORT_VERIFY_SUBMIT_DEFAULT`].
+#[cfg(test)]
+pub(crate) fn exact_short_verify_submit_interval(
+    seq: usize,
+    layer_count: usize,
+    configured: usize,
+) -> usize {
+    if !(2..=4).contains(&seq) || layer_count == 0 {
+        return 0;
+    }
+    let n = if configured == 0 {
+        EXACT_SHORT_VERIFY_SUBMIT_DEFAULT
+    } else {
+        configured
+    };
+    if n >= layer_count { 0 } else { n }
+}
+
 /// `AX_MLX_BATCHED_PREFILL_ROWS` — cap on rows per batched prefill cohort.
 /// Default 8; `0` disables the cap.
 pub fn batched_prefill_max_rows() -> u32 {
@@ -540,6 +578,19 @@ pub fn qwen_linear_mtp_exact_enabled() -> bool {
             .get()
             .unwrap_or_else(|| qwen_linear_mtp_exact_env_override().unwrap_or(false))
     })
+}
+
+/// Exact S=2..=4 verify: `async_eval` kernel-boundary tensors (fused QKVZ+BA
+/// projections, GatedDelta, FA SDPA) so their GPU work overlaps host encode
+/// of the still-lazy portable RMS+SiLU gate + o_proj.
+///
+/// Factory `69522a58` kept trial-2 `39a36e3f` but `--full` washed/regressed
+/// (verify work moved forward→eval; general-long 1.038→1.023). Unhooked.
+/// Does not eval `hidden`, residual, or the portable gate output — those
+/// grouping changes reproduced factory trial-2 `f4b5490d`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn should_exact_verify_async_kernel_boundary(seq: i32) -> bool {
+    qwen_linear_mtp_exact_enabled() && (2..=4).contains(&seq)
 }
 
 env_flag!(
@@ -5283,6 +5334,24 @@ mod tests {
         assert_eq!(qwen_linear_mtp_exact_enabled(), baseline);
     }
 
+    #[test]
+    fn exact_verify_async_kernel_boundary_is_s2_to_s4_only() {
+        let baseline = qwen_linear_mtp_exact_enabled();
+        {
+            let _exact = scoped_qwen_linear_mtp_exact(true);
+            assert!(!should_exact_verify_async_kernel_boundary(1));
+            assert!(should_exact_verify_async_kernel_boundary(2));
+            assert!(should_exact_verify_async_kernel_boundary(3));
+            assert!(should_exact_verify_async_kernel_boundary(4));
+            assert!(!should_exact_verify_async_kernel_boundary(5));
+        }
+        {
+            let _off = scoped_qwen_linear_mtp_exact(false);
+            assert!(!should_exact_verify_async_kernel_boundary(2));
+        }
+        assert_eq!(qwen_linear_mtp_exact_enabled(), baseline);
+    }
+
     fn probe_default_on(name: &str, value: &str) -> bool {
         // SAFETY: each test owns a disjoint set of env-var names. Remove
         // before asserting so a failing assert does not leak the var.
@@ -7725,6 +7794,22 @@ mod tests {
         // terminating eval is pure overhead, so it is refused.
         assert_eq!(verify_submit_interval_for_build(2, 40, 40), 0);
         assert_eq!(verify_submit_interval_for_build(2, 40, 64), 0);
+    }
+
+    #[test]
+    fn exact_short_verify_uses_configured_interval_instead_of_zero() {
+        // Official harness sets VERIFY_SUBMIT_LAYERS=8; honor it as the
+        // sole mid-loop stride (not stacked on PIPELINE=layer).
+        assert_eq!(exact_short_verify_submit_interval(2, 64, 8), 8);
+        assert_eq!(exact_short_verify_submit_interval(4, 64, 8), 8);
+        assert_eq!(
+            exact_short_verify_submit_interval(2, 64, 0),
+            EXACT_SHORT_VERIFY_SUBMIT_DEFAULT
+        );
+        assert_eq!(exact_short_verify_submit_interval(1, 64, 8), 0);
+        assert_eq!(exact_short_verify_submit_interval(5, 64, 8), 0);
+        assert_eq!(exact_short_verify_submit_interval(2, 8, 8), 0);
+        assert_eq!(exact_short_verify_submit_interval(2, 0, 8), 0);
     }
 
     #[test]

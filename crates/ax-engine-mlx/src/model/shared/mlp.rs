@@ -1,13 +1,13 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
-    MlxVectorArray, add, argpartition_axis, argsort_axis, astype, async_eval,
+    MlxVectorArray, add, add_rms_norm_pair, argpartition_axis, argsort_axis, astype, async_eval,
     compiled_dual_gate_up_qmm, compiled_dual_gate_up_qmm_forced, compiled_gelu_approx_split_mlp,
     concatenate, contiguous, divide, dual_affine_qmm, dual_affine_qmm_forced, dual_qmm_geglu,
     dual_qmm_swiglu, dual_stream_affine_qmm, exp, expand_dims, expand_dims_axes, gelu_approx_mul,
     gelu_approx_mul_quantized_matmul, log1p, maximum, minimum, multiply, negative, power,
     quantized_matmul_rms_norm, quantized_matmul_with_mode, reshape, rms_norm,
     rms_norm_quantized_matmul, silu_mul, silu_mul_quantized_matmul, slice, slice_last_dim, softmax,
-    softmax_precise, sum_axis, take, take_along_axis, topk_axis, zeros,
+    softmax_precise, sum_axis, take, take_along_axis, topk_axis, transpose, zeros,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -3706,6 +3706,29 @@ fn ffn_swiglu_with_policy_inner(
                 return result;
             }
         }
+        // Exact Qwen linear MTP verify is S=2..=4. Decode compile covers S=1
+        // only; without a leading=2 graph the verify FFN is re-encoded every
+        // layer every step. Same split body as decode/prefill compile.
+        if qwen_dense_ffn
+            && crate::fastpath::qwen_linear_mtp_exact_enabled()
+            && (2..=4).contains(&leading_elements)
+            && !profile_decode
+            && !profile_prefill
+            && projection_policy == ProjectionBatchPolicy::Shared
+            && let Some(ffn_out) = qwen_compiled_split_verify_ffn(
+                cfg.compile_cache_identity,
+                layer_idx,
+                x,
+                gate_w,
+                up_w,
+                w.down_proj.as_ref(),
+                post_norm,
+                cfg.rms_norm_eps,
+                projection_policy,
+            )
+        {
+            return ffn_out;
+        }
         // Qwen split **prefill** compile (seq>1): same graph as decode compile
         // (gate + up + SwiGLU + down), shape-specific so qmm stays on the
         // multi-token kernel. Packed Qwen prefill compile stays forbidden.
@@ -4179,6 +4202,652 @@ pub(crate) fn qwen_prefill_maybe_dual_affine_gate_up_for(
 /// Packed Qwen prefill compile stays forbidden; this is the unused split
 /// `mx.compile` analog for contract shapes (leading ≥ 128).
 #[allow(clippy::too_many_arguments)]
+fn qwen_compiled_split_verify_ffn(
+    model_identity: u64,
+    layer_idx: usize,
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+    down: Option<&QuantizedWeight>,
+    post_norm: Option<&MlxArray>,
+    rms_norm_eps: f32,
+    projection_policy: ProjectionBatchPolicy,
+) -> Option<MlxArray> {
+    let x_shape = x.shape();
+    if x_shape.len() < 2 {
+        return None;
+    }
+    let leading_elements: i64 = x_shape[..x_shape.len() - 1]
+        .iter()
+        .try_fold(1_i64, |acc, dim| acc.checked_mul(i64::from(*dim)))?;
+    if !(2..=4).contains(&leading_elements) {
+        return None;
+    }
+    let down = down?;
+    if gate.scales.is_none() || up.scales.is_none() || down.scales.is_none() {
+        return None;
+    }
+    let (inputs, schema) = flatten_split_dense_ffn_inputs(x, gate, up, down, post_norm)?;
+    let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+    let body = move |inputs: &MlxVectorArray| {
+        let x = inputs.get(0);
+        let (gate_qw, up_qw, down_qw, post_norm_w) = schema.rebuild(inputs);
+        let gate = qw_with_policy(&x, &gate_qw, projection_policy);
+        let up = qw_with_policy(&x, &up_qw, projection_policy);
+        let hidden = silu_mul(&gate, &up, None);
+        let out = qw_with_policy(&hidden, &down_qw, projection_policy);
+        if let Some(norm_w) = post_norm_w {
+            vec![rms_norm(&out, Some(&norm_w), rms_norm_eps, None)]
+        } else {
+            vec![out]
+        }
+    };
+    crate::per_layer_compile::apply_layer_dense_ffn_prefill_min(
+        model_identity,
+        layer_idx,
+        leading_elements,
+        2,
+        &input_refs,
+        body,
+    )
+    .and_then(|r| r.into_iter().next())
+}
+
+/// Distinct compile-cache salt so residual+FFN graphs never share a key
+/// with the FFN-only S=2 verify compile.
+const VERIFY_FFN_RESIDUAL_COMPILE_SALT: u64 = 0x5245_5349_4446_464E;
+
+#[derive(Clone, Copy)]
+struct CompiledSplitVerifyResidualSchema {
+    gate: QuantInputSlot,
+    up: QuantInputSlot,
+    down: QuantInputSlot,
+}
+
+fn flatten_split_verify_ffn_residual_inputs(
+    hidden: &MlxArray,
+    attn_proj: &MlxArray,
+    ffn_norm: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+    down: &QuantizedWeight,
+) -> Option<(Vec<MlxArray>, CompiledSplitVerifyResidualSchema)> {
+    let mut inputs = vec![hidden.clone(), attn_proj.clone(), ffn_norm.clone()];
+    let gate_slot = push_quant_inputs(&mut inputs, Some(gate))?;
+    let up_slot = push_quant_inputs(&mut inputs, Some(up))?;
+    let down_slot = push_quant_inputs(&mut inputs, Some(down))?;
+    Some((
+        inputs,
+        CompiledSplitVerifyResidualSchema {
+            gate: gate_slot,
+            up: up_slot,
+            down: down_slot,
+        },
+    ))
+}
+
+/// Shape-compile `add_rms_norm(hidden, attn) → split FFN → add residual`
+/// for exact S=2..=4 verify.
+///
+/// The portable RMS+SiLU *attention* gate stays outside this closure.
+/// Falls back to the imperative residual+FFN path on compile miss.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn qwen_compiled_split_verify_ffn_plus_residual(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    attn_proj: &MlxArray,
+    layer_idx: usize,
+) -> Option<MlxArray> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() || cfg.uses_geglu {
+        return None;
+    }
+    if !cfg.model_family.starts_with("qwen") {
+        return None;
+    }
+    if w.router_proj.is_some() || w.ffn_post_norm.is_some() {
+        return None;
+    }
+    let shape = hidden.shape();
+    if shape.len() < 2 || attn_proj.shape() != shape {
+        return None;
+    }
+    let leading_elements: i64 = shape[..shape.len() - 1]
+        .iter()
+        .try_fold(1_i64, |acc, dim| acc.checked_mul(i64::from(*dim)))?;
+    if !(2..=4).contains(&leading_elements) {
+        return None;
+    }
+    let gate = w.gate_proj.as_ref()?;
+    let up = w.up_proj.as_ref()?;
+    let down = w.down_proj.as_ref()?;
+    if gate.scales.is_none() || up.scales.is_none() || down.scales.is_none() {
+        return None;
+    }
+    let (inputs, schema) =
+        flatten_split_verify_ffn_residual_inputs(hidden, attn_proj, &w.ffn_norm, gate, up, down)?;
+    let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+    let eps = cfg.rms_norm_eps;
+    let body = move |inputs: &MlxVectorArray| {
+        let hidden = inputs.get(0);
+        let attn = inputs.get(1);
+        let ffn_norm = inputs.get(2);
+        let (residual, normed) = add_rms_norm_pair(&hidden, &attn, &ffn_norm, eps, None);
+        let gate_qw = schema.gate.rebuild(inputs);
+        let up_qw = schema.up.rebuild(inputs);
+        let down_qw = schema.down.rebuild(inputs);
+        let gate = qw_with_policy(&normed, &gate_qw, ProjectionBatchPolicy::Shared);
+        let up = qw_with_policy(&normed, &up_qw, ProjectionBatchPolicy::Shared);
+        let act = silu_mul(&gate, &up, None);
+        let ffn = qw_with_policy(&act, &down_qw, ProjectionBatchPolicy::Shared);
+        vec![add(&residual, &ffn, None)]
+    };
+    apply_layer_dense_ffn_prefill_min(
+        cfg.compile_cache_identity ^ VERIFY_FFN_RESIDUAL_COMPILE_SALT,
+        layer_idx,
+        leading_elements,
+        2,
+        &input_refs,
+        body,
+    )
+    .and_then(|r| r.into_iter().next())
+}
+
+const VERIFY_LA_GATE_O_PROJ_COMPILE_SALT: u64 = 0x4C41_4741_5445_4F50;
+
+#[derive(Clone, Copy)]
+struct CompiledSplitVerifyLaGateOProjSchema {
+    o_proj: QuantInputSlot,
+}
+
+/// Shape-compile portable `rms+silu_mul+reshape → o_proj` for exact S=2..=4
+/// linear-attention verify. Factory `4d2a9a40` ON=`f4b5490d`; unhooked.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn qwen_compiled_split_verify_la_gate_o_proj(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    gd_out: &MlxArray,
+    z: &MlxArray,
+    layer_idx: usize,
+    seq: i32,
+    value_dim: i32,
+) -> Option<MlxArray> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() || cfg.uses_geglu {
+        return None;
+    }
+    if !cfg.model_family.starts_with("qwen") {
+        return None;
+    }
+    if !(2..=4).contains(&seq) {
+        return None;
+    }
+    if gd_out.shape() != z.shape() {
+        return None;
+    }
+    let linear = w.linear_attn.as_ref()?;
+    if linear.out_proj.scales.is_none() {
+        return None;
+    }
+    let gd_shape = gd_out.shape();
+    if gd_shape.len() < 2 || gd_shape.get(1).copied() != Some(seq) {
+        return None;
+    }
+    let dtype = gd_out.dtype();
+    let batch = gd_shape[0];
+    let mut inputs = vec![gd_out.clone(), z.clone(), linear.norm.clone()];
+    let o_slot = push_quant_inputs(&mut inputs, Some(&linear.out_proj))?;
+    let schema = CompiledSplitVerifyLaGateOProjSchema { o_proj: o_slot };
+    let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+    let eps = cfg.rms_norm_eps;
+    apply_layer_dense_ffn_prefill_min(
+        cfg.compile_cache_identity ^ VERIFY_LA_GATE_O_PROJ_COMPILE_SALT,
+        layer_idx,
+        i64::from(seq),
+        2,
+        &input_refs,
+        move |inputs: &MlxVectorArray| {
+            let gd = inputs.get(0);
+            let z = inputs.get(1);
+            let la_norm = inputs.get(2);
+            let normed = rms_norm(&gd, Some(&la_norm), eps, None);
+            let gate_f32 = astype(&z, MlxDtype::Float32, None);
+            let normed_f32 = astype(&normed, MlxDtype::Float32, None);
+            let gated = silu_mul(&gate_f32, &normed_f32, None);
+            let gated = astype(&gated, dtype, None);
+            let flat = reshape(&gated, &[batch, seq, value_dim], None);
+            let o_proj = schema.o_proj.rebuild(inputs);
+            vec![qw_with_policy(
+                &flat,
+                &o_proj,
+                ProjectionBatchPolicy::Shared,
+            )]
+        },
+    )
+    .and_then(|r| r.into_iter().next())
+}
+
+const VERIFY_LA_GATE_O_PROJ_FFN_COMPILE_SALT: u64 = 0x4C41_474F_4646_4E32;
+
+#[derive(Clone, Copy)]
+struct CompiledSplitVerifyLaGateOProjFfnSchema {
+    o_proj: QuantInputSlot,
+    gate: QuantInputSlot,
+    up: QuantInputSlot,
+    down: QuantInputSlot,
+}
+
+/// Shape-compile portable gate + o_proj + residual + FFN as **one** exact
+/// S=2..=4 closure so `hidden` and the gate graph eval together.
+/// Split compiles (gate outside, or gate+o_proj then FFN) were `f4b5490d`.
+/// Factory `19bc8f95` ON=`f4b5490d`; unhooked.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn qwen_compiled_split_verify_la_gate_o_proj_ffn(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    gd_out: &MlxArray,
+    z: &MlxArray,
+    layer_idx: usize,
+    seq: i32,
+    value_dim: i32,
+) -> Option<MlxArray> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() || cfg.uses_geglu {
+        return None;
+    }
+    if !cfg.model_family.starts_with("qwen") {
+        return None;
+    }
+    if w.router_proj.is_some() || w.ffn_post_norm.is_some() {
+        return None;
+    }
+    if !(2..=4).contains(&seq) {
+        return None;
+    }
+    if gd_out.shape() != z.shape() || gd_out.shape().get(1).copied() != Some(seq) {
+        return None;
+    }
+    let linear = w.linear_attn.as_ref()?;
+    let gate = w.gate_proj.as_ref()?;
+    let up = w.up_proj.as_ref()?;
+    let down = w.down_proj.as_ref()?;
+    if linear.out_proj.scales.is_none()
+        || gate.scales.is_none()
+        || up.scales.is_none()
+        || down.scales.is_none()
+    {
+        return None;
+    }
+    let dtype = gd_out.dtype();
+    let batch = gd_out.shape()[0];
+    let mut inputs = vec![
+        hidden.clone(),
+        gd_out.clone(),
+        z.clone(),
+        linear.norm.clone(),
+        w.ffn_norm.clone(),
+    ];
+    let o_slot = push_quant_inputs(&mut inputs, Some(&linear.out_proj))?;
+    let gate_slot = push_quant_inputs(&mut inputs, Some(gate))?;
+    let up_slot = push_quant_inputs(&mut inputs, Some(up))?;
+    let down_slot = push_quant_inputs(&mut inputs, Some(down))?;
+    let schema = CompiledSplitVerifyLaGateOProjFfnSchema {
+        o_proj: o_slot,
+        gate: gate_slot,
+        up: up_slot,
+        down: down_slot,
+    };
+    let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+    let eps = cfg.rms_norm_eps;
+    apply_layer_dense_ffn_prefill_min(
+        cfg.compile_cache_identity ^ VERIFY_LA_GATE_O_PROJ_FFN_COMPILE_SALT,
+        layer_idx,
+        i64::from(seq),
+        2,
+        &input_refs,
+        move |inputs: &MlxVectorArray| {
+            let hidden = inputs.get(0);
+            let gd = inputs.get(1);
+            let z = inputs.get(2);
+            let la_norm = inputs.get(3);
+            let ffn_norm = inputs.get(4);
+            let normed = rms_norm(&gd, Some(&la_norm), eps, None);
+            let gated = astype(
+                &silu_mul(
+                    &astype(&z, MlxDtype::Float32, None),
+                    &astype(&normed, MlxDtype::Float32, None),
+                    None,
+                ),
+                dtype,
+                None,
+            );
+            let flat = reshape(&gated, &[batch, seq, value_dim], None);
+            let o_proj = schema.o_proj.rebuild(inputs);
+            let attn = qw_with_policy(&flat, &o_proj, ProjectionBatchPolicy::Shared);
+            let (residual, normed) = add_rms_norm_pair(&hidden, &attn, &ffn_norm, eps, None);
+            let gate_qw = schema.gate.rebuild(inputs);
+            let up_qw = schema.up.rebuild(inputs);
+            let down_qw = schema.down.rebuild(inputs);
+            let g = qw_with_policy(&normed, &gate_qw, ProjectionBatchPolicy::Shared);
+            let u = qw_with_policy(&normed, &up_qw, ProjectionBatchPolicy::Shared);
+            let act = silu_mul(&g, &u, None);
+            let ffn = qw_with_policy(&act, &down_qw, ProjectionBatchPolicy::Shared);
+            vec![add(&residual, &ffn, None)]
+        },
+    )
+    .and_then(|r| r.into_iter().next())
+}
+
+const VERIFY_FA_O_PROJ_FFN_COMPILE_SALT: u64 = 0x4641_4F50_4646_4E32;
+
+#[derive(Clone, Copy)]
+struct CompiledSplitVerifyFaOProjFfnSchema {
+    o_proj: QuantInputSlot,
+    gate: QuantInputSlot,
+    up: QuantInputSlot,
+    down: QuantInputSlot,
+}
+
+/// Shape-compile `flatten(SDPA) → o_proj → add_rms_norm → split FFN → add`
+/// for exact S=2..=4 **full-attention** verify.
+///
+/// SDPA is the graph-break. This is not the linear-attention portable
+/// RMS+SiLU gate, and not the unhooked LA-out_proj compile that became
+/// `f4b5490d`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn qwen_compiled_split_verify_fa_o_proj_ffn(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    attn_sdpa: &MlxArray,
+    layer_idx: usize,
+    query_seq: usize,
+    n_heads: usize,
+    head_dim: usize,
+) -> Option<MlxArray> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() || cfg.uses_geglu {
+        return None;
+    }
+    if !cfg.model_family.starts_with("qwen") {
+        return None;
+    }
+    if w.router_proj.is_some() || w.ffn_post_norm.is_some() || w.attn_post_norm.is_some() {
+        return None;
+    }
+    if !(2..=4).contains(&(query_seq as i32)) {
+        return None;
+    }
+    let hidden_shape = hidden.shape();
+    if hidden_shape.len() < 2 {
+        return None;
+    }
+    let leading_elements: i64 = hidden_shape[..hidden_shape.len() - 1]
+        .iter()
+        .try_fold(1_i64, |acc, dim| acc.checked_mul(i64::from(*dim)))?;
+    if leading_elements != i64::from(query_seq as i32) {
+        return None;
+    }
+    let o_proj = w.o_proj.as_ref()?;
+    let gate = w.gate_proj.as_ref()?;
+    let up = w.up_proj.as_ref()?;
+    let down = w.down_proj.as_ref()?;
+    if o_proj.scales.is_none()
+        || gate.scales.is_none()
+        || up.scales.is_none()
+        || down.scales.is_none()
+    {
+        return None;
+    }
+    let mut inputs = vec![hidden.clone(), attn_sdpa.clone(), w.ffn_norm.clone()];
+    let o_slot = push_quant_inputs(&mut inputs, Some(o_proj))?;
+    let gate_slot = push_quant_inputs(&mut inputs, Some(gate))?;
+    let up_slot = push_quant_inputs(&mut inputs, Some(up))?;
+    let down_slot = push_quant_inputs(&mut inputs, Some(down))?;
+    let schema = CompiledSplitVerifyFaOProjFfnSchema {
+        o_proj: o_slot,
+        gate: gate_slot,
+        up: up_slot,
+        down: down_slot,
+    };
+    let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+    let eps = cfg.rms_norm_eps;
+    let batch = hidden_shape[0];
+    let seq_i = query_seq as i32;
+    let n_heads_i = n_heads as i32;
+    let head_dim_i = head_dim as i32;
+    let body = move |inputs: &MlxVectorArray| {
+        let hidden = inputs.get(0);
+        let attn_sdpa = inputs.get(1);
+        let ffn_norm = inputs.get(2);
+        let flat = {
+            let transposed = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
+            reshape(&transposed, &[batch, seq_i, n_heads_i * head_dim_i], None)
+        };
+        let o_proj = schema.o_proj.rebuild(inputs);
+        let attn = qw_with_policy(&flat, &o_proj, ProjectionBatchPolicy::Shared);
+        let (residual, normed) = add_rms_norm_pair(&hidden, &attn, &ffn_norm, eps, None);
+        let gate_qw = schema.gate.rebuild(inputs);
+        let up_qw = schema.up.rebuild(inputs);
+        let down_qw = schema.down.rebuild(inputs);
+        let gate = qw_with_policy(&normed, &gate_qw, ProjectionBatchPolicy::Shared);
+        let up = qw_with_policy(&normed, &up_qw, ProjectionBatchPolicy::Shared);
+        let act = silu_mul(&gate, &up, None);
+        let ffn = qw_with_policy(&act, &down_qw, ProjectionBatchPolicy::Shared);
+        vec![add(&residual, &ffn, None)]
+    };
+    apply_layer_dense_ffn_prefill_min(
+        cfg.compile_cache_identity ^ VERIFY_FA_O_PROJ_FFN_COMPILE_SALT,
+        layer_idx,
+        leading_elements,
+        2,
+        &input_refs,
+        body,
+    )
+    .and_then(|r| r.into_iter().next())
+}
+
+const VERIFY_FA_ATTN_NORM_QKV_COMPILE_SALT: u64 = 0x4641_514B_5652_4D53;
+
+#[derive(Clone, Copy)]
+struct CompiledSplitVerifyFaAttnNormQkvSchema {
+    q: QuantInputSlot,
+    k: QuantInputSlot,
+    v: QuantInputSlot,
+}
+
+/// Shape-compile `rms_norm → Q/K/V qw` for exact S=2..=4 full-attention
+/// verify. Factory `--full` `4419b1fe` kept identity but regressed
+/// general-long 1.038 → 1.025; unhooked from `standard.rs`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn qwen_compiled_split_verify_fa_attn_norm_qkv(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    layer_idx: usize,
+    seq: usize,
+) -> Option<(MlxArray, MlxArray, MlxArray)> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() {
+        return None;
+    }
+    if !cfg.model_family.starts_with("qwen") || cfg.attn_output_gate {
+        return None;
+    }
+    if !(2..=4).contains(&(seq as i32)) {
+        return None;
+    }
+    if w.qkv_packed.is_some() {
+        return None;
+    }
+    let hidden_shape = hidden.shape();
+    if hidden_shape.len() < 2 {
+        return None;
+    }
+    let leading_elements: i64 = hidden_shape[..hidden_shape.len() - 1]
+        .iter()
+        .try_fold(1_i64, |acc, dim| acc.checked_mul(i64::from(*dim)))?;
+    if leading_elements != i64::from(seq as i32) {
+        return None;
+    }
+    let q_proj = w.q_proj.as_ref()?;
+    let k_proj = w.k_proj.as_ref()?;
+    let v_proj = w.v_proj.as_ref()?;
+    if q_proj.scales.is_none() || k_proj.scales.is_none() || v_proj.scales.is_none() {
+        return None;
+    }
+    let mut inputs = vec![hidden.clone(), w.attn_norm.clone()];
+    let q_slot = push_quant_inputs(&mut inputs, Some(q_proj))?;
+    let k_slot = push_quant_inputs(&mut inputs, Some(k_proj))?;
+    let v_slot = push_quant_inputs(&mut inputs, Some(v_proj))?;
+    let schema = CompiledSplitVerifyFaAttnNormQkvSchema {
+        q: q_slot,
+        k: k_slot,
+        v: v_slot,
+    };
+    let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+    let eps = cfg.rms_norm_eps;
+    let outs = apply_layer_dense_ffn_prefill_min(
+        cfg.compile_cache_identity ^ VERIFY_FA_ATTN_NORM_QKV_COMPILE_SALT,
+        layer_idx,
+        leading_elements,
+        2,
+        &input_refs,
+        move |inputs: &MlxVectorArray| {
+            let hidden = inputs.get(0);
+            let attn_norm = inputs.get(1);
+            let normed = rms_norm(&hidden, Some(&attn_norm), eps, None);
+            let q_qw = schema.q.rebuild(inputs);
+            let k_qw = schema.k.rebuild(inputs);
+            let v_qw = schema.v.rebuild(inputs);
+            let q = qw_with_policy(&normed, &q_qw, ProjectionBatchPolicy::Shared);
+            let k = qw_with_policy(&normed, &k_qw, ProjectionBatchPolicy::Shared);
+            let v = qw_with_policy(&normed, &v_qw, ProjectionBatchPolicy::Shared);
+            vec![q, k, v]
+        },
+    )?;
+    if outs.len() != 3 {
+        return None;
+    }
+    Some((outs[0].clone(), outs[1].clone(), outs[2].clone()))
+}
+
+#[cfg(test)]
+const VERIFY_O_PROJ_FFN_COMPILE_SALT: u64 = 0x4F50_524F_4A46_464E;
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct CompiledSplitVerifyOProjFfnSchema {
+    out_proj: QuantInputSlot,
+    gate: QuantInputSlot,
+    up: QuantInputSlot,
+    down: QuantInputSlot,
+}
+
+#[cfg(test)]
+fn flatten_split_verify_o_proj_ffn_inputs(
+    hidden: &MlxArray,
+    gated: &MlxArray,
+    ffn_norm: &MlxArray,
+    out_proj: &QuantizedWeight,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+    down: &QuantizedWeight,
+) -> Option<(Vec<MlxArray>, CompiledSplitVerifyOProjFfnSchema)> {
+    let mut inputs = vec![hidden.clone(), gated.clone(), ffn_norm.clone()];
+    let out_slot = push_quant_inputs(&mut inputs, Some(out_proj))?;
+    let gate_slot = push_quant_inputs(&mut inputs, Some(gate))?;
+    let up_slot = push_quant_inputs(&mut inputs, Some(up))?;
+    let down_slot = push_quant_inputs(&mut inputs, Some(down))?;
+    Some((
+        inputs,
+        CompiledSplitVerifyOProjFfnSchema {
+            out_proj: out_slot,
+            gate: gate_slot,
+            up: up_slot,
+            down: down_slot,
+        },
+    ))
+}
+
+/// Shape-compile `out_proj(gated) → add_rms_norm → split FFN → add residual`
+/// for exact S=2..=4 linear-attention verify.
+///
+/// `gated` is the portable RMS+SiLU output (`[1, seq, value_dim]`). That gate
+/// stays outside the closure.
+#[cfg(test)]
+pub(crate) fn qwen_compiled_split_verify_o_proj_ffn_plus_residual(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    gated: &MlxArray,
+    layer_idx: usize,
+) -> Option<MlxArray> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() || cfg.uses_geglu {
+        return None;
+    }
+    if !cfg.model_family.starts_with("qwen") {
+        return None;
+    }
+    if w.router_proj.is_some() || w.ffn_post_norm.is_some() {
+        return None;
+    }
+    let hidden_shape = hidden.shape();
+    if hidden_shape.len() < 2 {
+        return None;
+    }
+    let leading_elements: i64 = hidden_shape[..hidden_shape.len() - 1]
+        .iter()
+        .try_fold(1_i64, |acc, dim| acc.checked_mul(i64::from(*dim)))?;
+    if !(2..=4).contains(&leading_elements) {
+        return None;
+    }
+    let out_proj = &w.linear_attn.as_ref()?.out_proj;
+    if out_proj.scales.is_none() {
+        return None;
+    }
+    let gate = w.gate_proj.as_ref()?;
+    let up = w.up_proj.as_ref()?;
+    let down = w.down_proj.as_ref()?;
+    if gate.scales.is_none() || up.scales.is_none() || down.scales.is_none() {
+        return None;
+    }
+    let (inputs, schema) = flatten_split_verify_o_proj_ffn_inputs(
+        hidden,
+        gated,
+        &w.ffn_norm,
+        &out_proj,
+        gate,
+        up,
+        down,
+    )?;
+    let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+    let eps = cfg.rms_norm_eps;
+    let body = move |inputs: &MlxVectorArray| {
+        let hidden = inputs.get(0);
+        let gated = inputs.get(1);
+        let ffn_norm = inputs.get(2);
+        let out_proj = schema.out_proj.rebuild(inputs);
+        let attn = qw_with_policy(&gated, &out_proj, ProjectionBatchPolicy::Shared);
+        let (residual, normed) = add_rms_norm_pair(&hidden, &attn, &ffn_norm, eps, None);
+        let gate_qw = schema.gate.rebuild(inputs);
+        let up_qw = schema.up.rebuild(inputs);
+        let down_qw = schema.down.rebuild(inputs);
+        let gate = qw_with_policy(&normed, &gate_qw, ProjectionBatchPolicy::Shared);
+        let up = qw_with_policy(&normed, &up_qw, ProjectionBatchPolicy::Shared);
+        let act = silu_mul(&gate, &up, None);
+        let ffn = qw_with_policy(&act, &down_qw, ProjectionBatchPolicy::Shared);
+        vec![add(&residual, &ffn, None)]
+    };
+    apply_layer_dense_ffn_prefill_min(
+        cfg.compile_cache_identity ^ VERIFY_O_PROJ_FFN_COMPILE_SALT,
+        layer_idx,
+        leading_elements,
+        2,
+        &input_refs,
+        body,
+    )
+    .and_then(|r| r.into_iter().next())
+}
+
 fn qwen_compiled_split_prefill_ffn(
     model_identity: u64,
     layer_idx: usize,
@@ -7195,6 +7864,681 @@ mod tests {
             )
             .is_none(),
             "split FFN prefill compile must reject decode seq==1"
+        );
+    }
+
+    #[test]
+    fn qwen_compiled_split_verify_ffn_mxfp4_s2_matches_imperative() {
+        let seq = 2i32;
+        let hidden = 64i32;
+        let intermediate = 32i32;
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 32.0) * 0.015625)
+            .collect();
+        let gate_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 16.0) * 0.01)
+            .collect();
+        let up_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 8.0) * -0.008)
+            .collect();
+        let down_data: Vec<f32> = (0..(hidden * intermediate) as usize)
+            .map(|i| ((i as f32) - 12.0) * 0.006)
+            .collect();
+        let x = array_f32(&x_data, &[1, seq, hidden]);
+        let qmx = |w: &MlxArray| {
+            let q = quantize(w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+            assert_eq!(q.len(), 2);
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let gate = qmx(&array_f32(&gate_data, &[intermediate, hidden]));
+        let up = qmx(&array_f32(&up_data, &[intermediate, hidden]));
+        let down = qmx(&array_f32(&down_data, &[hidden, intermediate]));
+        let compiled = qwen_compiled_split_verify_ffn(
+            0x5652_4659_4d58_5034,
+            0,
+            &x,
+            &gate,
+            &up,
+            Some(&down),
+            None,
+            1e-6,
+            ProjectionBatchPolicy::Shared,
+        )
+        .expect("exact S=2 MXFP4 split FFN compile must engage");
+        let g = qw(&x, &gate);
+        let u = qw(&x, &up);
+        let hidden_act = silu_mul(&g, &u, None);
+        let portable = qw(&hidden_act, &down);
+        eval(&[&compiled, &portable]);
+        assert_eq!(compiled.shape(), portable.shape());
+        let a = compiled.data_f32();
+        let b = portable.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "compiled exact S=2 MXFP4 FFN must match imperative, max_abs={max_abs}"
+        );
+    }
+
+    #[test]
+    fn qwen_compiled_split_verify_ffn_plus_residual_s2_matches_imperative() {
+        let seq = 2i32;
+        let hidden = 64i32;
+        let intermediate = 32i32;
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 32.0) * 0.015625)
+            .collect();
+        let attn_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 8.0) * -0.0078125)
+            .collect();
+        let norm_data: Vec<f32> = (0..hidden as usize)
+            .map(|i| 0.75 + (i as f32) * 0.004)
+            .collect();
+        let gate_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 16.0) * 0.01)
+            .collect();
+        let up_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 8.0) * -0.008)
+            .collect();
+        let down_data: Vec<f32> = (0..(hidden * intermediate) as usize)
+            .map(|i| ((i as f32) - 12.0) * 0.006)
+            .collect();
+        let hidden_x = array_f32(&x_data, &[1, seq, hidden]);
+        let attn = array_f32(&attn_data, &[1, seq, hidden]);
+        let ffn_norm = array_f32(&norm_data, &[hidden]);
+        let qmx = |w: &MlxArray| {
+            let q = quantize(w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let mut cfg = v4_test_config(1, 1);
+        cfg.model_family = "qwen3_5".to_string();
+        cfg.compile_cache_identity = 0x5245_5349_4446_464E;
+        let dummy = array_f32(&[0.0], &[1]);
+        let mut w = v4_layer_weights(dummy, &hidden_x);
+        w.router_proj = None;
+        w.ffn_norm = ffn_norm.clone();
+        w.gate_proj = Some(qmx(&array_f32(&gate_data, &[intermediate, hidden])));
+        w.up_proj = Some(qmx(&array_f32(&up_data, &[intermediate, hidden])));
+        w.down_proj = Some(qmx(&array_f32(&down_data, &[hidden, intermediate])));
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let compiled = qwen_compiled_split_verify_ffn_plus_residual(&cfg, &w, &hidden_x, &attn, 0)
+            .expect("exact S=2 residual+FFN compile must engage");
+        let (residual, normed) = add_rms_norm_pair(&hidden_x, &attn, &ffn_norm, 1e-6, None);
+        let g = qw(&normed, w.gate_proj.as_ref().unwrap());
+        let u = qw(&normed, w.up_proj.as_ref().unwrap());
+        let act = silu_mul(&g, &u, None);
+        let ffn = qw(&act, w.down_proj.as_ref().unwrap());
+        let portable = add(&residual, &ffn, None);
+        eval(&[&compiled, &portable]);
+        assert_eq!(compiled.shape(), portable.shape());
+        let a = compiled.data_f32();
+        let b = portable.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "compiled residual+FFN must match add_rms+ffn+add, max_abs={max_abs}"
+        );
+        let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        assert!(
+            qwen_compiled_split_verify_ffn_plus_residual(&cfg, &w, &hidden_x, &attn, 0).is_none(),
+            "residual+FFN compile must stay off when exact MTP is scoped off"
+        );
+    }
+
+    #[test]
+    fn qwen_compiled_split_verify_o_proj_ffn_plus_residual_s2_matches_imperative() {
+        let seq = 2i32;
+        let hidden = 64i32;
+        let value_dim = 64i32;
+        let intermediate = 32i32;
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 32.0) * 0.015625)
+            .collect();
+        let gated_data: Vec<f32> = (0..(seq * value_dim) as usize)
+            .map(|i| ((i as f32) - 6.0) * 0.03125)
+            .collect();
+        let o_data: Vec<f32> = (0..(hidden * value_dim) as usize)
+            .map(|i| ((i as f32) - 20.0) * 0.004)
+            .collect();
+        let norm_data: Vec<f32> = (0..hidden as usize)
+            .map(|i| 0.75 + (i as f32) * 0.004)
+            .collect();
+        let gate_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 16.0) * 0.01)
+            .collect();
+        let up_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 8.0) * -0.008)
+            .collect();
+        let down_data: Vec<f32> = (0..(hidden * intermediate) as usize)
+            .map(|i| ((i as f32) - 12.0) * 0.006)
+            .collect();
+        let hidden_x = array_f32(&x_data, &[1, seq, hidden]);
+        let gated = array_f32(&gated_data, &[1, seq, value_dim]);
+        let ffn_norm = array_f32(&norm_data, &[hidden]);
+        let qmx = |w: &MlxArray| {
+            let q = quantize(w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let mut cfg = v4_test_config(1, 1);
+        cfg.model_family = "qwen3_5".to_string();
+        cfg.compile_cache_identity = 0x4F50_524F_4A46_464E;
+        let dummy = array_f32(&[0.0], &[1]);
+        let mut w = v4_layer_weights(dummy.clone(), &hidden_x);
+        w.router_proj = None;
+        w.ffn_norm = ffn_norm.clone();
+        w.gate_proj = Some(qmx(&array_f32(&gate_data, &[intermediate, hidden])));
+        w.up_proj = Some(qmx(&array_f32(&up_data, &[intermediate, hidden])));
+        w.down_proj = Some(qmx(&array_f32(&down_data, &[hidden, intermediate])));
+        let out_proj = qmx(&array_f32(&o_data, &[hidden, value_dim]));
+        w.linear_attn = Some(crate::weights::LinearAttentionWeights {
+            in_proj_qkv: None,
+            in_proj_z: None,
+            in_proj_a: None,
+            in_proj_b: None,
+            in_proj_qkvz: None,
+            in_proj_ba: None,
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
+            conv1d_dense: dummy.clone(),
+            conv1d_bias: None,
+            dt_bias: dummy.clone(),
+            a_log: dummy,
+            d: None,
+            norm: ffn_norm.clone(),
+            out_proj,
+        });
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let compiled =
+            qwen_compiled_split_verify_o_proj_ffn_plus_residual(&cfg, &w, &hidden_x, &gated, 0)
+                .expect("exact S=2 o_proj+residual+FFN compile must engage");
+        let attn = qw(&gated, &w.linear_attn.as_ref().unwrap().out_proj);
+        let (residual, normed) = add_rms_norm_pair(&hidden_x, &attn, &ffn_norm, 1e-6, None);
+        let g = qw(&normed, w.gate_proj.as_ref().unwrap());
+        let u = qw(&normed, w.up_proj.as_ref().unwrap());
+        let act = silu_mul(&g, &u, None);
+        let ffn = qw(&act, w.down_proj.as_ref().unwrap());
+        let portable = add(&residual, &ffn, None);
+        eval(&[&compiled, &portable]);
+        assert_eq!(compiled.shape(), portable.shape());
+        let a = compiled.data_f32();
+        let b = portable.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "compiled o_proj+residual+FFN must match qw+add_rms+ffn+add, max_abs={max_abs}"
+        );
+        let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        assert!(
+            qwen_compiled_split_verify_o_proj_ffn_plus_residual(&cfg, &w, &hidden_x, &gated, 0)
+                .is_none(),
+            "o_proj+FFN compile must stay off when exact MTP is scoped off"
+        );
+    }
+
+    #[test]
+    fn qwen_compiled_split_verify_fa_o_proj_ffn_s2_matches_imperative() {
+        let seq = 2i32;
+        let n_heads = 2usize;
+        let head_dim = 32usize;
+        let value_dim = (n_heads * head_dim) as i32;
+        let hidden = 64i32;
+        let intermediate = 32i32;
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 32.0) * 0.015625)
+            .collect();
+        let sdpa_data: Vec<f32> = (0..(n_heads * seq as usize * head_dim))
+            .map(|i| ((i as f32) - 10.0) * 0.0234375)
+            .collect();
+        let o_data: Vec<f32> = (0..(hidden * value_dim) as usize)
+            .map(|i| ((i as f32) - 20.0) * 0.004)
+            .collect();
+        let norm_data: Vec<f32> = (0..hidden as usize)
+            .map(|i| 0.75 + (i as f32) * 0.004)
+            .collect();
+        let gate_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 16.0) * 0.01)
+            .collect();
+        let up_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 8.0) * -0.008)
+            .collect();
+        let down_data: Vec<f32> = (0..(hidden * intermediate) as usize)
+            .map(|i| ((i as f32) - 12.0) * 0.006)
+            .collect();
+        let hidden_x = array_f32(&x_data, &[1, seq, hidden]);
+        let attn_sdpa = array_f32(&sdpa_data, &[1, n_heads as i32, seq, head_dim as i32]);
+        let ffn_norm = array_f32(&norm_data, &[hidden]);
+        let qmx = |w: &MlxArray| {
+            let q = quantize(w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let mut cfg = v4_test_config(1, 1);
+        cfg.model_family = "qwen3_5".to_string();
+        cfg.compile_cache_identity = 0x4641_4F50_4646_4E32;
+        cfg.n_heads = n_heads;
+        cfg.head_dim = head_dim;
+        let dummy = array_f32(&[0.0], &[1]);
+        let mut w = v4_layer_weights(dummy, &hidden_x);
+        w.router_proj = None;
+        w.ffn_norm = ffn_norm.clone();
+        w.o_proj = Some(qmx(&array_f32(&o_data, &[hidden, value_dim])));
+        w.gate_proj = Some(qmx(&array_f32(&gate_data, &[intermediate, hidden])));
+        w.up_proj = Some(qmx(&array_f32(&up_data, &[intermediate, hidden])));
+        w.down_proj = Some(qmx(&array_f32(&down_data, &[hidden, intermediate])));
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let compiled = qwen_compiled_split_verify_fa_o_proj_ffn(
+            &cfg,
+            &w,
+            &hidden_x,
+            &attn_sdpa,
+            0,
+            seq as usize,
+            n_heads,
+            head_dim,
+        )
+        .expect("exact S=2 FA flatten+o_proj+FFN compile must engage");
+        let transposed = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
+        let flat = reshape(&transposed, &[1, seq, value_dim], None);
+        let attn = qw(&flat, w.o_proj.as_ref().unwrap());
+        let (residual, normed) = add_rms_norm_pair(&hidden_x, &attn, &ffn_norm, 1e-6, None);
+        let g = qw(&normed, w.gate_proj.as_ref().unwrap());
+        let u = qw(&normed, w.up_proj.as_ref().unwrap());
+        let act = silu_mul(&g, &u, None);
+        let ffn = qw(&act, w.down_proj.as_ref().unwrap());
+        let portable = add(&residual, &ffn, None);
+        eval(&[&compiled, &portable]);
+        assert_eq!(compiled.shape(), portable.shape());
+        let a = compiled.data_f32();
+        let b = portable.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "compiled FA flatten+o_proj+FFN must match transpose+qw+add_rms+ffn, max_abs={max_abs}"
+        );
+        let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        assert!(
+            qwen_compiled_split_verify_fa_o_proj_ffn(
+                &cfg,
+                &w,
+                &hidden_x,
+                &attn_sdpa,
+                0,
+                seq as usize,
+                n_heads,
+                head_dim,
+            )
+            .is_none(),
+            "FA o_proj+FFN compile must stay off when exact MTP is scoped off"
+        );
+    }
+
+    #[test]
+    fn qwen_compiled_split_verify_la_gate_o_proj_s2_matches_imperative() {
+        let seq = 2i32;
+        let hv = 2i32;
+        let dv = 32i32;
+        let value_dim = hv * dv;
+        let n = (seq * hv * dv) as usize;
+        let gd_data: Vec<f32> = (0..n).map(|i| ((i as f32) - 16.0) * 0.03125).collect();
+        let z_data: Vec<f32> = (0..n).map(|i| ((i as f32) - 8.0) * 0.015625).collect();
+        let norm_data: Vec<f32> = (0..dv as usize)
+            .map(|i| 0.75 + (i as f32) * 0.004)
+            .collect();
+        let o_data: Vec<f32> = (0..(value_dim * value_dim) as usize)
+            .map(|i| ((i as f32) - 20.0) * 0.004)
+            .collect();
+        let gd = astype(
+            &array_f32(&gd_data, &[1, seq, hv, dv]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let z = astype(
+            &array_f32(&z_data, &[1, seq, hv, dv]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let la_norm = astype(&array_f32(&norm_data, &[dv]), MlxDtype::Bfloat16, None);
+        let qmx = |w: &MlxArray| {
+            let q = quantize(w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let mut cfg = v4_test_config(1, 1);
+        cfg.model_family = "qwen3_5".to_string();
+        cfg.compile_cache_identity = 0x4C41_4741_5445_4F50;
+        let dummy = array_f32(&[0.0], &[1]);
+        let mut w = v4_layer_weights(dummy.clone(), &array_f32(&[0.0; 2], &[1, 2]));
+        w.router_proj = None;
+        let out_proj = qmx(&array_f32(&o_data, &[value_dim, value_dim]));
+        w.linear_attn = Some(crate::weights::LinearAttentionWeights {
+            in_proj_qkv: None,
+            in_proj_z: None,
+            in_proj_a: None,
+            in_proj_b: None,
+            in_proj_qkvz: None,
+            in_proj_ba: None,
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
+            conv1d_dense: dummy.clone(),
+            conv1d_bias: None,
+            dt_bias: dummy.clone(),
+            a_log: dummy,
+            d: None,
+            norm: la_norm.clone(),
+            out_proj: out_proj.clone(),
+        });
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let compiled =
+            qwen_compiled_split_verify_la_gate_o_proj(&cfg, &w, &gd, &z, 0, seq, value_dim)
+                .expect("exact S=2 LA gate+o_proj compile must engage");
+        let normed = rms_norm(&gd, Some(&la_norm), 1e-6, None);
+        let gated = astype(
+            &silu_mul(
+                &astype(&z, MlxDtype::Float32, None),
+                &astype(&normed, MlxDtype::Float32, None),
+                None,
+            ),
+            gd.dtype(),
+            None,
+        );
+        let flat = reshape(&gated, &[1, seq, value_dim], None);
+        let portable = qw(&flat, &out_proj);
+        eval(&[&compiled, &portable]);
+        let a = astype(&compiled, MlxDtype::Float32, None);
+        let b = astype(&portable, MlxDtype::Float32, None);
+        eval(&[&a, &b]);
+        let mut max_abs = 0.0f32;
+        for (l, r) in a.data_f32().iter().zip(b.data_f32().iter()) {
+            max_abs = max_abs.max((l - r).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "compiled LA gate+o_proj must match rms+silu+reshape+qw, max_abs={max_abs}"
+        );
+        let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        assert!(
+            qwen_compiled_split_verify_la_gate_o_proj(&cfg, &w, &gd, &z, 0, seq, value_dim)
+                .is_none(),
+            "LA gate+o_proj compile must stay off when exact MTP is scoped off"
+        );
+    }
+
+    #[test]
+    fn qwen_compiled_split_verify_la_gate_o_proj_ffn_s2_matches_imperative() {
+        let seq = 2i32;
+        let hv = 2i32;
+        let dv = 32i32;
+        let value_dim = hv * dv;
+        let hidden = 64i32;
+        let intermediate = 32i32;
+        let n = (seq * hv * dv) as usize;
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 32.0) * 0.015625)
+            .collect();
+        let gd_data: Vec<f32> = (0..n).map(|i| ((i as f32) - 16.0) * 0.03125).collect();
+        let z_data: Vec<f32> = (0..n).map(|i| ((i as f32) - 8.0) * 0.015625).collect();
+        let la_norm_data: Vec<f32> = (0..dv as usize)
+            .map(|i| 0.75 + (i as f32) * 0.004)
+            .collect();
+        let ffn_norm_data: Vec<f32> = (0..hidden as usize)
+            .map(|i| 0.8 + (i as f32) * 0.003)
+            .collect();
+        let o_data: Vec<f32> = (0..(hidden * value_dim) as usize)
+            .map(|i| ((i as f32) - 20.0) * 0.004)
+            .collect();
+        let gate_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 16.0) * 0.01)
+            .collect();
+        let up_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i as f32) - 8.0) * -0.008)
+            .collect();
+        let down_data: Vec<f32> = (0..(hidden * intermediate) as usize)
+            .map(|i| ((i as f32) - 12.0) * 0.006)
+            .collect();
+        let hidden_x = array_f32(&x_data, &[1, seq, hidden]);
+        let gd = astype(
+            &array_f32(&gd_data, &[1, seq, hv, dv]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let z = astype(
+            &array_f32(&z_data, &[1, seq, hv, dv]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let la_norm = astype(&array_f32(&la_norm_data, &[dv]), MlxDtype::Bfloat16, None);
+        let ffn_norm = array_f32(&ffn_norm_data, &[hidden]);
+        let qmx = |w: &MlxArray| {
+            let q = quantize(w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let mut cfg = v4_test_config(1, 1);
+        cfg.model_family = "qwen3_5".to_string();
+        cfg.compile_cache_identity = 0x4C41_474F_4646_4E32;
+        let dummy = array_f32(&[0.0], &[1]);
+        let mut w = v4_layer_weights(dummy.clone(), &hidden_x);
+        w.router_proj = None;
+        w.ffn_norm = ffn_norm.clone();
+        w.gate_proj = Some(qmx(&array_f32(&gate_data, &[intermediate, hidden])));
+        w.up_proj = Some(qmx(&array_f32(&up_data, &[intermediate, hidden])));
+        w.down_proj = Some(qmx(&array_f32(&down_data, &[hidden, intermediate])));
+        let out_proj = qmx(&array_f32(&o_data, &[hidden, value_dim]));
+        w.linear_attn = Some(crate::weights::LinearAttentionWeights {
+            in_proj_qkv: None,
+            in_proj_z: None,
+            in_proj_a: None,
+            in_proj_b: None,
+            in_proj_qkvz: None,
+            in_proj_ba: None,
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
+            conv1d_dense: dummy.clone(),
+            conv1d_bias: None,
+            dt_bias: dummy.clone(),
+            a_log: dummy,
+            d: None,
+            norm: la_norm.clone(),
+            out_proj: out_proj.clone(),
+        });
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let compiled = qwen_compiled_split_verify_la_gate_o_proj_ffn(
+            &cfg, &w, &hidden_x, &gd, &z, 0, seq, value_dim,
+        )
+        .expect("exact S=2 LA gate+o_proj+FFN compile must engage");
+        let normed = rms_norm(&gd, Some(&la_norm), 1e-6, None);
+        let gated = astype(
+            &silu_mul(
+                &astype(&z, MlxDtype::Float32, None),
+                &astype(&normed, MlxDtype::Float32, None),
+                None,
+            ),
+            gd.dtype(),
+            None,
+        );
+        let flat = reshape(&gated, &[1, seq, value_dim], None);
+        let attn = qw(&flat, &out_proj);
+        let (residual, normed) = add_rms_norm_pair(&hidden_x, &attn, &ffn_norm, 1e-6, None);
+        let g = qw(&normed, w.gate_proj.as_ref().unwrap());
+        let u = qw(&normed, w.up_proj.as_ref().unwrap());
+        let act = silu_mul(&g, &u, None);
+        let ffn = qw(&act, w.down_proj.as_ref().unwrap());
+        let portable = add(&residual, &ffn, None);
+        eval(&[&compiled, &portable]);
+        let a = astype(&compiled, MlxDtype::Float32, None);
+        let b = astype(&portable, MlxDtype::Float32, None);
+        eval(&[&a, &b]);
+        let mut max_abs = 0.0f32;
+        for (l, r) in a.data_f32().iter().zip(b.data_f32().iter()) {
+            max_abs = max_abs.max((l - r).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "compiled LA gate+o_proj+FFN must match imperative, max_abs={max_abs}"
+        );
+    }
+
+    #[test]
+    fn qwen_compiled_split_verify_fa_attn_norm_qkv_s2_matches_imperative() {
+        let seq = 2i32;
+        let hidden = 64i32;
+        let q_out = 64i32;
+        let kv_out = 32i32;
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 32.0) * 0.015625)
+            .collect();
+        let norm_data: Vec<f32> = (0..hidden as usize)
+            .map(|i| 0.75 + (i as f32) * 0.004)
+            .collect();
+        let q_data: Vec<f32> = (0..(q_out * hidden) as usize)
+            .map(|i| ((i as f32) - 10.0) * 0.004)
+            .collect();
+        let k_data: Vec<f32> = (0..(kv_out * hidden) as usize)
+            .map(|i| ((i as f32) - 6.0) * 0.005)
+            .collect();
+        let v_data: Vec<f32> = (0..(kv_out * hidden) as usize)
+            .map(|i| ((i as f32) - 4.0) * -0.003)
+            .collect();
+        let hidden_x = array_f32(&x_data, &[1, seq, hidden]);
+        let attn_norm = array_f32(&norm_data, &[hidden]);
+        let qmx = |w: &MlxArray| {
+            let q = quantize(w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let mut cfg = v4_test_config(1, 1);
+        cfg.model_family = "qwen3_5".to_string();
+        cfg.compile_cache_identity = 0x4641_514B_5652_4D53;
+        cfg.attn_output_gate = false;
+        let dummy = array_f32(&[0.0], &[1]);
+        let mut w = v4_layer_weights(dummy, &hidden_x);
+        w.router_proj = None;
+        w.attn_norm = attn_norm.clone();
+        w.q_proj = Some(qmx(&array_f32(&q_data, &[q_out, hidden])));
+        w.k_proj = Some(qmx(&array_f32(&k_data, &[kv_out, hidden])));
+        w.v_proj = Some(qmx(&array_f32(&v_data, &[kv_out, hidden])));
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let (cq, ck, cv) =
+            qwen_compiled_split_verify_fa_attn_norm_qkv(&cfg, &w, &hidden_x, 0, seq as usize)
+                .expect("exact S=2 FA attn_norm+QKV compile must engage");
+        let normed = rms_norm(&hidden_x, Some(&attn_norm), 1e-6, None);
+        let pq = qw(&normed, w.q_proj.as_ref().unwrap());
+        let pk = qw(&normed, w.k_proj.as_ref().unwrap());
+        let pv = qw(&normed, w.v_proj.as_ref().unwrap());
+        eval(&[&cq, &ck, &cv, &pq, &pk, &pv]);
+        let max_abs = |a: &MlxArray, b: &MlxArray| {
+            a.data_f32()
+                .iter()
+                .zip(b.data_f32().iter())
+                .fold(0.0f32, |m, (l, r)| m.max((l - r).abs()))
+        };
+        assert!(
+            max_abs(&cq, &pq) < 1.0e-5 && max_abs(&ck, &pk) < 1.0e-5 && max_abs(&cv, &pv) < 1.0e-5,
+            "compiled FA attn_norm+QKV must match rms+qw, q={} k={} v={}",
+            max_abs(&cq, &pq),
+            max_abs(&ck, &pk),
+            max_abs(&cv, &pv)
+        );
+        let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        assert!(
+            qwen_compiled_split_verify_fa_attn_norm_qkv(&cfg, &w, &hidden_x, 0, seq as usize)
+                .is_none(),
+            "FA attn_norm+QKV compile must stay off when exact MTP is scoped off"
         );
     }
 

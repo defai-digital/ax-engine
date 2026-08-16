@@ -238,6 +238,15 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    fn ax_mlx_rms_norm_silu_mul_normed(
+        res: *mut ffi::mlx_array,
+        hidden: ffi::mlx_array,
+        gate: ffi::mlx_array,
+        norm_weight: ffi::mlx_array,
+        eps: libc::c_float,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_quantized_matmul_rms_norm(
         res: *mut ffi::mlx_array,
         x: ffi::mlx_array,
@@ -1732,6 +1741,43 @@ pub fn add_rms_norm_pair(
     let residual = add(x, y, s);
     let normed = crate::fast::rms_norm(&residual, Some(norm_weight), eps, s);
     (residual, normed)
+}
+
+/// `astype(silu_mul(astype(gate, f32), astype(rms_norm(hidden), f32)), hidden.dtype)`.
+///
+/// One C++ FFI that builds the same five MLX ops as the exact portable
+/// linear-attention RMS+SiLU gate. Not `mx::compile` and not Metal.
+pub fn rms_norm_silu_mul_normed(
+    hidden: &MlxArray,
+    gate: &MlxArray,
+    norm_weight: &MlxArray,
+    eps: f32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_rms_norm_silu_mul_normed(
+            &mut res.inner,
+            hidden.inner,
+            gate.inner,
+            norm_weight.inner,
+            eps,
+            stream,
+        );
+        if rc == 0 {
+            crate::op_count::bump();
+            return res;
+        }
+    }
+    crate::error::clear_stale_error();
+    let normed = crate::fast::rms_norm(hidden, Some(norm_weight), eps, s);
+    let gated = silu_mul(
+        &astype(gate, MlxDtype::Float32, s),
+        &astype(&normed, MlxDtype::Float32, s),
+        s,
+    );
+    astype(&gated, hidden.dtype(), s)
 }
 
 /// Compute `rms_norm(quantized_matmul(x, weight, ...), norm_weight, eps)` in one C++ call.
@@ -3456,6 +3502,71 @@ mod tests {
             direct_f32.data_f32().to_vec(),
             portable_f32.data_f32().to_vec(),
             "direct C++ SwiGLU activation shim must preserve silu(gate) * x math"
+        );
+    }
+
+    #[test]
+    fn rms_norm_silu_mul_normed_matches_five_op_chain() {
+        let hidden_data: Vec<f32> = (0..256).map(|i| ((i as f32) - 32.0) * 0.015625).collect();
+        let gate_data: Vec<f32> = (0..256).map(|i| ((i as f32) - 16.0) * 0.03125).collect();
+        let weight_data: Vec<f32> = (0..64).map(|i| 0.75 + (i as f32) * 0.004).collect();
+        let hidden = astype(
+            &MlxArray::from_raw_data(
+                hidden_data.as_ptr() as *const u8,
+                std::mem::size_of_val(hidden_data.as_slice()),
+                &[1, 2, 2, 64],
+                MlxDtype::Float32,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let gate = astype(
+            &MlxArray::from_raw_data(
+                gate_data.as_ptr() as *const u8,
+                std::mem::size_of_val(gate_data.as_slice()),
+                &[1, 2, 2, 64],
+                MlxDtype::Float32,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let weight = astype(
+            &MlxArray::from_raw_data(
+                weight_data.as_ptr() as *const u8,
+                std::mem::size_of_val(weight_data.as_slice()),
+                &[64],
+                MlxDtype::Float32,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let prev = crate::op_count::op_count_snapshot();
+        let direct = rms_norm_silu_mul_normed(&hidden, &gate, &weight, 1e-6, None);
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "portable-gate C++ composite should count as one Rust FFI dispatch"
+        );
+        let normed = crate::fast::rms_norm(&hidden, Some(&weight), 1e-6, None);
+        let portable = astype(
+            &silu_mul(
+                &astype(&gate, MlxDtype::Float32, None),
+                &astype(&normed, MlxDtype::Float32, None),
+                None,
+            ),
+            hidden.dtype(),
+            None,
+        );
+        eval(&[&direct, &portable]);
+        assert_eq!(direct.shape(), portable.shape());
+        assert_eq!(direct.dtype(), portable.dtype());
+        let a = astype(&direct, MlxDtype::Float32, None);
+        let b = astype(&portable, MlxDtype::Float32, None);
+        eval(&[&a, &b]);
+        assert_eq!(
+            a.data_f32().to_vec(),
+            b.data_f32().to_vec(),
+            "C++ rms+silu_mul composite must match the five-op portable gate"
         );
     }
 

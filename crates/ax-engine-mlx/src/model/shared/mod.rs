@@ -28,7 +28,8 @@ pub(crate) use attention::{
 pub(crate) use deepseek_v4_attention::deepseek_v4_attention_forward;
 pub(crate) use hyper_connection::{hc_head, hc_post, hc_pre};
 pub(crate) use linear_attention::{
-    linear_attention_forward, linear_attention_forward_batched, set_qwen_la_norm_qkvz_fuse_weights,
+    linear_attention_forward, linear_attention_forward_batched, set_qwen_la_exact_attn_norm,
+    set_qwen_la_norm_qkvz_fuse_weights,
 };
 pub(crate) use mla::glm_mla_attention_forward;
 pub(crate) use mlp::moe_router_deepseek_v4;
@@ -44,6 +45,7 @@ pub(crate) use mlp::{
     moe_router_gpt_oss, moe_router_qwen3, per_layer_input_gate_project, qkv_project,
     qkv_project_batched, qkv_project_embed, qkv_project_last_query,
     qkv_project_pos0_exact_rest_shared, qkv_project_row_exact, qkv_project_with_input_norm,
+    qwen_compiled_split_verify_fa_o_proj_ffn, qwen_compiled_split_verify_ffn_plus_residual,
     shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;

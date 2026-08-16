@@ -4617,6 +4617,16 @@ impl MlxKVCache {
         self.linear_prefix_capture_after
     }
 
+    /// Transient prefix checkpoint for one linear-attention layer, if captured.
+    #[allow(dead_code)]
+    pub(crate) fn linear_prefix_refs(&self, layer: usize) -> Option<(&MlxArray, &MlxArray)> {
+        let state = self.linear_layers.get(layer)?;
+        Some((
+            state.prefix_conv_state.as_ref()?,
+            state.prefix_recurrent_state.as_ref()?,
+        ))
+    }
+
     /// Store the transient state requested by [`Self::begin_linear_prefix_capture`].
     pub(crate) fn set_linear_prefix_checkpoint(
         &mut self,
@@ -5057,8 +5067,14 @@ mod tests {
         cache.set_linear_prefix_checkpoint(0, shaped(3.0, &[1, 2, 3]), shaped(4.0, &[1, 2, 2, 2]));
         cache.set_linear_state(0, shaped(5.0, &[1, 2, 3]), shaped(6.0, &[1, 2, 2, 2]));
 
+        assert!(cache.linear_prefix_refs(0).is_some());
+        assert!(cache.linear_prefix_refs(1).is_none());
         assert!(cache.restore_linear_prefix_checkpoint());
         assert_eq!(cache.linear_prefix_capture_after(), None);
+        assert!(
+            cache.linear_prefix_refs(0).is_none(),
+            "restore consumes the transient prefix refs"
+        );
         let (conv, recurrent) = cache.linear_state(0);
         let conv = conv.expect("restored conv state");
         let recurrent = recurrent.expect("restored recurrent state");

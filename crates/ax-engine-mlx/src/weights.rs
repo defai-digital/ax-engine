@@ -683,9 +683,23 @@ impl QuantizedWeight {
             && self.group_size > 0
     }
 
-    /// Concatenate two matching affine projections along the output axis.
+    /// Matching MXFP4 pair (scales, no group biases, same gs/bits).
+    pub fn matching_mxfp4_quant(&self, other: &Self) -> bool {
+        matches!(self.mlx_quantization_mode(), MlxQuantizationMode::Mxfp4)
+            && matches!(other.mlx_quantization_mode(), MlxQuantizationMode::Mxfp4)
+            && self.bits == other.bits
+            && self.group_size == other.group_size
+            && self.scales.is_some()
+            && other.scales.is_some()
+            && self.biases.is_none()
+            && other.biases.is_none()
+            && self.bits > 0
+            && self.group_size > 0
+    }
+
+    /// Concatenate two matching affine or MXFP4 projections along the output axis.
     pub fn concat_output_rows(&self, other: &Self) -> Option<Self> {
-        if !self.matching_affine_quant(other) {
+        if !self.matching_affine_quant(other) && !self.matching_mxfp4_quant(other) {
             return None;
         }
         let a_shape = self.weight.shape();

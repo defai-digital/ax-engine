@@ -9941,14 +9941,20 @@ impl MlxRunner {
                 .unwrap_or(draft_log_prob_temperature_for_new_drafts);
             let mtp_post_think_guarded =
                 self.cfg.think_start_token_id.is_some() && !think_state_after_result;
-            // Pure-MTP override: when AX_MLX_MTP_DISABLE_NGRAM_STACKING=1, skip the
-            // ADR-008 n-gram-first draft branch entirely so the benchmark measures
-            // MTP acceptance in isolation.  The MTP verify loop, head forward, and
-            // telemetry are unchanged; only this draft-source branch is gated.
-            let mut ngram_max = if self.disable_mtp_ngram_stacking {
+            // Pure-MTP override: explicit AX_MLX_MTP_DISABLE_NGRAM_STACKING=1
+            // still skips n-gram. Unset + exact Qwen linear MTP allows
+            // stacking — official Qwen38 --full leaves the var unset and
+            // general-long ignore_eos is a special-token loop n-gram can hit.
+            let mut ngram_max = if !mtp_ngram_stacking_allowed(
+                mtp_ngram_stacking_env(),
+                crate::fastpath::qwen_linear_mtp_exact_enabled(),
+            ) {
                 0
             } else {
-                adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean())
+                mtp_ngram_stack_len(
+                    adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean()),
+                    state.mtp_adaptive_max_depth,
+                )
             };
             let safety_decision = if ngram_max > 0 {
                 mtp_ngram_speculative_safety_decision(ctx, mtp_post_think_guarded)
@@ -10078,7 +10084,11 @@ impl MlxRunner {
             let ngram_policy = NgramDraftPolicy {
                 variant: mtp_ngram_policy_variant(),
                 max_len: ngram_max,
-                min_support: mtp_ngram_min_support().max(if mtp_post_think_guarded {
+                min_support: mtp_ngram_min_support_for_exact(
+                    crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                    mtp_ngram_min_support(),
+                )
+                .max(if mtp_post_think_guarded {
                     POST_THINK_MIN_NGRAM_SUPPORT
                 } else {
                     1
@@ -10086,7 +10096,10 @@ impl MlxRunner {
                 confidence_threshold: mtp_ngram_confidence_threshold(),
                 adaptive_match_len: true,
                 bypass_prompt_min_support: true,
-                min_context_len: mtp_ngram_min_context_len(),
+                min_context_len: mtp_ngram_min_context_len_for_exact(
+                    crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                    mtp_ngram_min_context_len(),
+                ),
             };
             let ngram_outcome = if ngram_max > 0 {
                 let ngram_lookup_started = Instant::now();
@@ -10103,7 +10116,26 @@ impl MlxRunner {
                     requested_max_len: 0,
                 }
             };
-            if ngram_max > 0 {
+            let cycle_tok = if mtp_ngram_stacking_allowed(
+                mtp_ngram_stacking_env(),
+                crate::fastpath::qwen_linear_mtp_exact_enabled(),
+            ) {
+                // `result` is only this step; the loop lives in generated_tokens.
+                short_cycle_next_token_from_parts(&state.generated_tokens, &result)
+            } else {
+                None
+            };
+            let ngram_outcome = if let Some(tok) = cycle_tok {
+                NgramDraftOutcome {
+                    draft: vec![tok],
+                    confidence: vec![1.0],
+                    rejection: None,
+                    requested_max_len: 1,
+                }
+            } else {
+                ngram_outcome
+            };
+            if ngram_max > 0 || cycle_tok.is_some() {
                 state
                     .mtp_telemetry
                     .record_ngram_attempt(ngram_outcome.rejection);

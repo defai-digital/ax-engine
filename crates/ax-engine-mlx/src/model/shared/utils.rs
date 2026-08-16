@@ -603,17 +603,16 @@ pub(crate) fn qwen_prefill_maybe_flat_qmm_for(
     reshape(&out, &[batch, seq, out_last], None)
 }
 
-/// Exact MXFP4 verify is S=2..=4 `[1,S,H]`. Flatten to `[S,H]` so MLX's
-/// mxfp4 qmm uses the 2-D M=S path instead of a 3-D leading dim of 1.
-/// Singleton decode stays `[1,1,H]` and does not enter this reshape.
+/// Exact verify is S=2..=4 `[1,S,H]`. Flatten to `[S,H]` so MLX qmm uses
+/// the 2-D M=S path instead of a 3-D leading dim of 1. Covers MXFP4
+/// attn/MLP and the affine 8-bit lm_head. Singleton decode stays `[1,1,H]`.
 fn exact_mxfp4_short_qmm(
     x: &MlxArray,
-    mode: mlx_sys::MlxQuantizationMode,
+    _mode: mlx_sys::MlxQuantizationMode,
     qmm: impl FnOnce(&MlxArray) -> MlxArray,
 ) -> MlxArray {
     let shape = x.shape();
     if !fastpath::qwen_linear_mtp_exact_enabled()
-        || !matches!(mode, mlx_sys::MlxQuantizationMode::Mxfp4)
         || shape.len() != 3
         || shape[0] != 1
         || !(2..=4).contains(&shape[1])
@@ -2725,6 +2724,71 @@ mod tests {
         assert!(
             max_abs < 1.0e-5,
             "flattened exact MXFP4 S=2 qmm must match 3-D, max_abs={max_abs}"
+        );
+    }
+
+    #[test]
+    fn exact_affine_s2_qmm_flatten_matches_3d() {
+        let input_dim = 64i32;
+        let output_dim = 32i32;
+        let seq = 2i32;
+        let weight_data: Vec<f32> = (0..input_dim * output_dim)
+            .map(|index| ((index % 97) as f32 - 48.0) * 0.01171875)
+            .collect();
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
+        let quantized = quantize(
+            &weight,
+            Some(32),
+            Some(8),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(
+            quantized.len(),
+            3,
+            "affine 8-bit returns [w, scales, biases]"
+        );
+        let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
+            .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
+            .collect();
+        let x = array_f32(&input_data, &[1, seq, input_dim]);
+        let qmm_3d = mlx_sys::quantized_matmul_with_mode(
+            &x,
+            &quantized[0],
+            &quantized[1],
+            Some(&quantized[2]),
+            true,
+            Some(32),
+            Some(8),
+            MlxQuantizationMode::Affine,
+            None,
+        );
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let qmm_flat = super::exact_mxfp4_short_qmm(&x, MlxQuantizationMode::Affine, |flat| {
+            mlx_sys::quantized_matmul_with_mode(
+                flat,
+                &quantized[0],
+                &quantized[1],
+                Some(&quantized[2]),
+                true,
+                Some(32),
+                Some(8),
+                MlxQuantizationMode::Affine,
+                None,
+            )
+        });
+        eval(&[&qmm_3d, &qmm_flat]);
+        assert_eq!(qmm_flat.shape(), qmm_3d.shape());
+        let a = qmm_3d.data_f32();
+        let b = qmm_flat.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "flattened exact affine S=2 qmm must match 3-D, max_abs={max_abs}"
         );
     }
 

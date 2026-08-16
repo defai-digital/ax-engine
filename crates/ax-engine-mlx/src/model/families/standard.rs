@@ -66,10 +66,11 @@ use super::super::shared::{
     moe_router_qwen3, packed_qkv_kv_head_count, per_layer_input_gate_project,
     prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route,
     qkv_project, qkv_project_batched, qkv_project_last_query, qkv_project_pos0_exact_rest_shared,
-    qkv_project_row_exact, qkv_project_with_input_norm, qw, qwen_prefill_maybe_async_sdpa,
-    qwen_prefill_maybe_last_query_q, qwen_prefill_maybe_last_token_bsh,
-    qwen_prefill_maybe_last_token_flat, qwen_prefill_query_seq, rms_norm_opt,
-    rope_bhsd_batch_offset_safe, shape_element_count, shared_expert_forward,
+    qkv_project_row_exact, qkv_project_with_input_norm, qw,
+    qwen_compiled_split_verify_fa_o_proj_ffn, qwen_compiled_split_verify_ffn_plus_residual,
+    qwen_prefill_maybe_async_sdpa, qwen_prefill_maybe_last_query_q,
+    qwen_prefill_maybe_last_token_bsh, qwen_prefill_maybe_last_token_flat, qwen_prefill_query_seq,
+    rms_norm_opt, rope_bhsd_batch_offset_safe, shape_element_count, shared_expert_forward,
 };
 use crate::attention_mask::{batched_decode_validity_mask_with_window, create_ring_sliding_mask};
 use crate::batched_kv_cache::BatchedKvCache;
@@ -229,6 +230,39 @@ fn layer_shell_post_attention(
             cfg.rms_norm_eps,
             None,
         );
+        if let Some(started) = residual_norm_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttnResidualNorm,
+                started,
+                &[&out],
+            );
+        }
+        if let Some(started) = post_attn_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::PostAttn,
+                started,
+                &[&out],
+            );
+        }
+        return out;
+    }
+
+    // Exact S=2..=4 Qwen dense: compile residual-add + pre-FFN RMS + FFN +
+    // residual as one closure. Portable attention RMS+SiLU is not in this
+    // graph. Last-only / Gemma / per-layer-input stay on the split path.
+    if !last_only_active
+        && !profile_forward_layer
+        && w.router_proj.is_none()
+        && per_layer_input.is_none()
+        && w.per_layer_gate.is_none()
+        && w.layer_scalar.is_none()
+        && let Some(out) =
+            qwen_compiled_split_verify_ffn_plus_residual(cfg, w, hidden, attn_proj, layer_idx)
+    {
         if let Some(started) = residual_norm_started {
             forward_profile_eval_elapsed(
                 profile_decode_layer,
@@ -1827,6 +1861,43 @@ fn layer_forward_internal(
         qwen_prefill_maybe_async_sdpa(&attn_sdpa, &cfg.model_family, query_seq as i32);
         post_attn_started = profile_forward_layer.then(Instant::now);
         let output_proj_started = profile_forward_layer.then(Instant::now);
+
+        // Exact S=2..=4 full-attn: compile flatten + o_proj + residual + FFN
+        // after SDPA. Not the linear-attention portable RMS+SiLU gate.
+        if !last_position_only_after_attention
+            && attn_gate.is_none()
+            && query_seq == seq
+            && let Some(out) = qwen_compiled_split_verify_fa_o_proj_ffn(
+                cfg,
+                w,
+                hidden,
+                &attn_sdpa,
+                layer_idx,
+                query_seq,
+                cfg.n_heads,
+                head_dim,
+            )
+        {
+            if let Some(started) = output_proj_started {
+                forward_profile_eval_elapsed(
+                    profile_decode_layer,
+                    profile_prefill_layer,
+                    DecodeProfileStage::PostAttnOutputProj,
+                    started,
+                    &[&out],
+                );
+            }
+            if let Some(started) = post_attn_started {
+                forward_profile_eval_elapsed(
+                    profile_decode_layer,
+                    profile_prefill_layer,
+                    DecodeProfileStage::PostAttn,
+                    started,
+                    &[&out],
+                );
+            }
+            return out;
+        }
 
         // 10-11. Flatten + output projection (+ optional post-attn RMSNorm).
         // Last-only generate prefill: o_proj is position-wise and KV is already

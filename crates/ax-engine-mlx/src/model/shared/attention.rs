@@ -733,6 +733,10 @@ pub(crate) fn attention_mask_array(
     if offset > 0 && seq_len > 1 {
         if crate::fastpath::native_offset_causal_enabled()
             || super::utils::qwen_prefill_native_offset_causal_active()
+            // Exact depth-1/2/3 verify is S=2..=4 with KV history. Native
+            // causal uses qL_off = key_len - seq, matching create_causal_mask
+            // without a 2×key bool array per full-attn layer.
+            || (crate::fastpath::qwen_linear_mtp_exact_enabled() && (2..=4).contains(&seq_len))
         {
             return None;
         }
@@ -2069,6 +2073,66 @@ mod tests {
         assert!(
             max_diff < 1e-5,
             "windowed view diverged from full view: max diff {max_diff}"
+        );
+    }
+
+    #[test]
+    fn exact_s2_native_causal_sdpa_matches_explicit_offset_mask() {
+        use crate::attention_mask::create_causal_mask;
+        use mlx_sys::{
+            MlxArray, MlxDtype, ScaledDotProductAttentionMask, astype, eval, reshape,
+            scaled_dot_product_attention_with_mask,
+        };
+        let seq = 2i32;
+        let key_len = 8i32;
+        let heads = 2i32;
+        let dim = 8i32;
+        let fill = |n: usize, seed: f32| -> Vec<f32> {
+            (0..n).map(|i| ((i as f32) * 0.17 + seed).sin()).collect()
+        };
+        let q = astype(
+            &MlxArray::from_f32_slice(&fill((heads * seq * dim) as usize, 0.2)),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let q = reshape(&q, &[1, heads, seq, dim], None);
+        let k = astype(
+            &MlxArray::from_f32_slice(&fill((heads * key_len * dim) as usize, 0.6)),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let k = reshape(&k, &[1, heads, key_len, dim], None);
+        let v = astype(
+            &MlxArray::from_f32_slice(&fill((heads * key_len * dim) as usize, 1.1)),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let v = reshape(&v, &[1, heads, key_len, dim], None);
+        let scale = (dim as f32).powf(-0.5);
+        let explicit = create_causal_mask(2, 6, None);
+        let with_mask = scaled_dot_product_attention_with_mask(
+            &q,
+            &k,
+            &v,
+            scale,
+            ScaledDotProductAttentionMask::Array(&explicit),
+            None,
+        );
+        let native = scaled_dot_product_attention_with_mask(
+            &q,
+            &k,
+            &v,
+            scale,
+            ScaledDotProductAttentionMask::Causal,
+            None,
+        );
+        let a = astype(&with_mask, MlxDtype::Float32, None);
+        let b = astype(&native, MlxDtype::Float32, None);
+        eval(&[&a, &b]);
+        assert_eq!(
+            a.data_f32(),
+            b.data_f32(),
+            "native offset causal must be bit-exact vs create_causal_mask for S=2"
         );
     }
 

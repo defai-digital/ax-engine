@@ -1,6 +1,6 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, async_eval, concatenate, contiguous, eval,
-    qwen_linear_attention_inputs_packed, qwen_linear_attention_inputs_packed_compiled,
+    MlxArray, MlxDtype, MlxQuantizationMode, MlxVectorArray, async_eval, concatenate, contiguous,
+    eval, qwen_linear_attention_inputs_packed, qwen_linear_attention_inputs_packed_compiled,
     qwen_linear_attention_post_input, qwen_linear_attention_post_input_compiled, reshape, rms_norm,
     rms_norm_quantized_matmul, silu_mul_quantized_matmul, slice, slice_last_dim, zeros,
 };
@@ -30,7 +30,7 @@ use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::{
     gated_delta_kernel, gated_delta_kernel_with_prefix_checkpoint, linear_attention_conv1d,
     linear_attention_decode_post_input_metal, normalize_linear_attention_qk,
-    rms_norm_gated_with_full_gate_policy, split_linear_attention_qkv,
+    rms_norm_gated_with_full_gate_policy, slice_seq_row_4d, split_linear_attention_qkv,
 };
 use crate::weights::{LayerWeights, LinearAttentionWeights, QuantizedWeight};
 use std::cell::RefCell;
@@ -38,6 +38,8 @@ use std::collections::HashMap;
 
 thread_local! {
     static LA_NORM_QKVZ_FUSE: RefCell<Option<(MlxArray, f32)>> = const { RefCell::new(None) };
+    static LA_EXACT_ATTN_NORM: RefCell<Option<(MlxArray, f32)>> = const { RefCell::new(None) };
+    static LA_PRE_GATE_Z: RefCell<Option<MlxArray>> = const { RefCell::new(None) };
 }
 
 /// Bind `attn_norm` so packed QKVZ/BA can fuse RMSNorm into the qmm.
@@ -49,6 +51,29 @@ pub(crate) fn set_qwen_la_norm_qkvz_fuse_weights(norm: Option<(MlxArray, f32)>) 
 
 fn qwen_la_norm_qkvz_fuse_weights() -> Option<(MlxArray, f32)> {
     LA_NORM_QKVZ_FUSE.with(|slot| slot.borrow().clone())
+}
+
+/// Bind `attn_norm` so exact S=2..=4 can compile RMS + fused QKVZ+BA qmm +
+/// unpack as one pre-Metal closure. Not the affine `rms_norm_quantized_matmul`
+/// fuse and not the portable RMS+SiLU output gate.
+pub(crate) fn set_qwen_la_exact_attn_norm(norm: Option<(MlxArray, f32)>) {
+    LA_EXACT_ATTN_NORM.with(|slot| {
+        *slot.borrow_mut() = norm;
+    });
+}
+
+fn qwen_la_exact_attn_norm() -> Option<(MlxArray, f32)> {
+    LA_EXACT_ATTN_NORM.with(|slot| slot.borrow().clone())
+}
+
+/// Apply the bound exact `attn_norm` when the compile path that folds it
+/// is not taken. The layer shell skips the outer RMS whenever the TLS is
+/// set; dropping it here would project raw residual.
+fn apply_bound_exact_attn_norm(x: &MlxArray) -> MlxArray {
+    match qwen_la_exact_attn_norm() {
+        Some((norm_w, eps)) => rms_norm(x, Some(&norm_w), eps, None),
+        None => x.clone(),
+    }
 }
 
 pub(crate) fn qw_rms_norm_qmm(
@@ -123,6 +148,90 @@ pub(crate) fn linear_attention_forward(
     skip_out_proj: bool,
     last_token_out_proj: bool,
 ) -> MlxArray {
+    linear_attention_forward_inner(
+        cfg,
+        w,
+        x,
+        cache,
+        layer_idx,
+        skip_out_proj,
+        last_token_out_proj,
+        false,
+        false,
+    )
+}
+
+/// Same as [`linear_attention_forward`] but stops after the portable RMS+SiLU
+/// gate, returning `[1, seq, value_dim]` so the caller can compile `out_proj`
+/// together with residual+FFN.
+///
+/// Unhooked from the factory verify path: folding `out_proj` into the
+/// residual+FFN compile reproduced `f4b5490d`.
+#[allow(dead_code)]
+pub(crate) fn linear_attention_forward_pre_out_proj(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    skip_out_proj: bool,
+    last_token_out_proj: bool,
+) -> MlxArray {
+    linear_attention_forward_inner(
+        cfg,
+        w,
+        x,
+        cache,
+        layer_idx,
+        skip_out_proj,
+        last_token_out_proj,
+        true,
+        false,
+    )
+}
+
+/// Run LA through GatedDelta and last-token slice; return `(gd_out, z)`
+/// so exact S=2 can compile portable gate + o_proj + residual + FFN as
+/// one closure (one eval of hidden+gd+z).
+/// Factory `19bc8f95` ON=`f4b5490d`; unhooked.
+#[allow(dead_code)]
+pub(crate) fn linear_attention_forward_pre_gate(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    skip_out_proj: bool,
+    last_token_out_proj: bool,
+) -> (MlxArray, MlxArray) {
+    let gd = linear_attention_forward_inner(
+        cfg,
+        w,
+        x,
+        cache,
+        layer_idx,
+        skip_out_proj,
+        last_token_out_proj,
+        false,
+        true,
+    );
+    let z = LA_PRE_GATE_Z
+        .with(|slot| slot.borrow_mut().take())
+        .expect("pre-gate forward must stash z");
+    (gd, z)
+}
+
+fn linear_attention_forward_inner(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    skip_out_proj: bool,
+    last_token_out_proj: bool,
+    stop_before_out_proj: bool,
+    stop_before_gate: bool,
+) -> MlxArray {
     let linear_cfg = cfg
         .linear_attention
         .as_ref()
@@ -162,10 +271,13 @@ pub(crate) fn linear_attention_forward(
     let prefix_capture_after = cache
         .linear_prefix_capture_after()
         .filter(|after| *after < seq as usize);
-    let prefix_conv_state = prefix_capture_after
-        .and_then(|after| linear_attention_conv_prefix_state(linear_cfg, &qkv, conv_state, after));
-    let (q, k, v, new_conv_state) =
+    let (q, k, v, new_conv_state, metal_prefix_conv) =
         linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, conv_state, profile_enabled);
+    let prefix_conv_state = match (prefix_capture_after, metal_prefix_conv) {
+        (Some(1), Some(prefix)) => Some(prefix),
+        (Some(after), _) => linear_attention_conv_prefix_state(linear_cfg, &qkv, conv_state, after),
+        (None, _) => None,
+    };
     // `a_log` and `dt_bias` are pre-cast to f32 at weight-load time (see
     // `load_linear_attention_weights` in `weights.rs`). mlx_lm preserves A_log
     // as float32 and computes g in float32 precision; doing the cast per
@@ -222,6 +334,12 @@ pub(crate) fn linear_attention_forward(
         Some((out, z, seq)) => (out, z, seq),
         None => (out, z, seq),
     };
+    if stop_before_gate {
+        LA_PRE_GATE_Z.with(|slot| {
+            *slot.borrow_mut() = Some(z);
+        });
+        return out;
+    }
     let out = if let Some(fused) =
         try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim)
     {
@@ -232,14 +350,24 @@ pub(crate) fn linear_attention_forward(
             &z,
             &linear_w.norm,
             cfg.rms_norm_eps,
-            linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx),
+            if fastpath::qwen_linear_mtp_exact_enabled() {
+                // Exact S=2 fused Metal on early layers (`dced27d4`) kept
+                // MTP-off `39a36e3f` but ON became `f4b5490d`. Stay portable.
+                false
+            } else {
+                linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx)
+            },
         );
         let flat = if fastpath::should_skip_unused_la_out_reshape(&out.shape(), seq, value_dim) {
             out
         } else {
             reshape(&out, &[1, seq, value_dim], None)
         };
-        qw(&flat, &linear_w.out_proj)
+        if stop_before_out_proj {
+            flat
+        } else {
+            qw(&flat, &linear_w.out_proj)
+        }
     };
     linear_attention_profile_eval_elapsed(
         profile_enabled,
@@ -248,6 +376,46 @@ pub(crate) fn linear_attention_forward(
         &[&out],
     );
     out
+}
+
+/// Exact S=2..=4: run the MTP-off S=1 Metal gate + S=1 o_proj per row.
+///
+/// Factory trial-2 `0c6b1484` kept `39a36e3f`, but `--full` regressed
+/// general-long 1.038 → 1.010 (two S=1 Metal+o_proj is slower than fused
+/// portable S=2). Unhooked from the verify path.
+#[cfg_attr(not(test), allow(dead_code))]
+fn exact_verify_s1_metal_gate_o_proj(
+    hidden: &MlxArray,
+    gate: &MlxArray,
+    linear_w: &LinearAttentionWeights,
+    eps: f32,
+    value_dim: i32,
+    seq: i32,
+    allow_full_gate_metal: bool,
+) -> Option<MlxArray> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() || !(2..=4).contains(&seq) {
+        return None;
+    }
+    if hidden.shape().len() != 4 || gate.shape().len() != 4 {
+        return None;
+    }
+    let _mtp_off_gate = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+    let mut rows: Vec<MlxArray> = Vec::with_capacity(seq as usize);
+    for t in 0..seq {
+        let h = slice_seq_row_4d(hidden, t);
+        let g = slice_seq_row_4d(gate, t);
+        let gated = rms_norm_gated_with_full_gate_policy(
+            &h,
+            &g,
+            &linear_w.norm,
+            eps,
+            allow_full_gate_metal,
+        );
+        let flat = reshape(&gated, &[1, 1, value_dim], None);
+        rows.push(qw(&flat, &linear_w.out_proj));
+    }
+    let refs: Vec<&MlxArray> = rows.iter().collect();
+    Some(concatenate(&refs, 1, None))
 }
 
 fn try_qwen_la_out_proj_silu_mul_qmm(
@@ -550,7 +718,7 @@ fn linear_attention_post_input(
     qkv: &MlxArray,
     cached_conv_state: Option<&MlxArray>,
     profile_enabled: bool,
-) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
+) -> (MlxArray, MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
     let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(cfg)
         && fastpath::qwen_direct_cpp_linear_attention_post_input_enabled();
     let seq = qkv.shape().get(1).copied().unwrap_or_default();
@@ -573,17 +741,19 @@ fn linear_attention_post_input(
         if profile_enabled {
             record_linear_attention_decode_post_input_metal_profile_blocked();
             record_linear_attention_decode_post_input_metal_fallback();
-        } else if let Some(outputs) = linear_attention_decode_post_input_metal(
-            linear_cfg,
-            qkv,
-            &linear_w.conv1d_dense,
-            cached_conv_state,
-            linear_cfg.q_scale,
-            linear_cfg.k_scale,
-            cfg.rms_norm_eps,
-        ) {
+        } else if let Some((q, k, v, new_state, prefix_conv)) =
+            linear_attention_decode_post_input_metal(
+                linear_cfg,
+                qkv,
+                &linear_w.conv1d_dense,
+                cached_conv_state,
+                linear_cfg.q_scale,
+                linear_cfg.k_scale,
+                cfg.rms_norm_eps,
+            )
+        {
             record_linear_attention_decode_post_input_metal_hit();
-            return outputs;
+            return (q, k, v, new_state, Some(prefix_conv));
         } else {
             record_linear_attention_decode_post_input_metal_fallback();
         }
@@ -619,7 +789,7 @@ fn linear_attention_post_input(
             )
         {
             record_linear_attention_direct_cpp_post_input_hit();
-            return outputs;
+            return (outputs.0, outputs.1, outputs.2, outputs.3, None);
         } else if let Some(outputs) = qwen_linear_attention_post_input(
             qkv,
             &linear_w.conv1d_dense,
@@ -635,7 +805,7 @@ fn linear_attention_post_input(
             None,
         ) {
             record_linear_attention_direct_cpp_post_input_hit();
-            return outputs;
+            return (outputs.0, outputs.1, outputs.2, outputs.3, None);
         } else {
             record_linear_attention_direct_cpp_post_input_fallback();
         }
@@ -661,7 +831,7 @@ fn linear_attention_post_input(
         profile_started,
         &[&q, &k],
     );
-    (q, k, split.v, new_conv_state)
+    (q, k, split.v, new_conv_state, None)
 }
 
 /// Submit packed LA projections before conv/GatedDelta is attached.
@@ -838,6 +1008,27 @@ pub(crate) fn linear_attention_inputs(
             (qkvz_w, ba_w)
         };
         let fuse_norm = qwen_la_norm_qkvz_fuse_weights();
+        // Exact S=2..=4: one MXFP4 qmm for QKVZ+BA instead of two. S=1
+        // decode keeps the split qmm pair. Isolated BA is ~10ms of LA.
+        if fuse_norm.is_none()
+            && !profile_enabled
+            && fastpath::qwen_linear_mtp_exact_enabled()
+            && (2..=4).contains(&seq)
+            && qkvz_w.matching_mxfp4_quant(ba_w)
+            && let Some(outputs) =
+                linear_attention_inputs_fused_qmm(cfg, x, qkvz_w, ba_w, w.fused_qkvz_ba.as_ref())
+        {
+            return outputs;
+        }
+        // Compile-fold of attn_norm missed (or this is the split-qmm path).
+        // The layer shell already skipped the outer RMS.
+        let x_exact_norm;
+        let x = if fuse_norm.is_none() && qwen_la_exact_attn_norm().is_some() {
+            x_exact_norm = apply_bound_exact_attn_norm(x);
+            &x_exact_norm
+        } else {
+            x
+        };
         if fuse_norm.is_none()
             && !fastpath::qwen_linear_mtp_exact_enabled()
             && !profile_enabled
@@ -1057,6 +1248,17 @@ fn linear_attention_full_gate_metal_allowed(
     true
 }
 
+/// Exact S=2..=4 fused Metal is limited to the same early-layer window
+/// as 5-bit Qwen (`layer_idx < 16`). Later layers stay portable.
+/// Factory `dced27d4` still flipped ON to `f4b5490d`; call site stays off.
+#[allow(dead_code)]
+const EXACT_S2_FULL_GATE_METAL_LAYER_LIMIT: usize = 16;
+
+#[allow(dead_code)]
+fn exact_s2_full_gate_metal_allowed(seq: i32, layer_idx: usize, family_allow: bool) -> bool {
+    family_allow && (2..=4).contains(&seq) && layer_idx < EXACT_S2_FULL_GATE_METAL_LAYER_LIMIT
+}
+
 fn linear_attention_full_gate_metal_allowed_for_bits(
     model_family: &str,
     quantized: bool,
@@ -1206,16 +1408,25 @@ fn linear_attention_inputs_fused_qmm(
         None
     };
     let fused = load_fused.or(owned.as_ref())?;
-    let mixed = qw(x, fused);
+    let batch = x.shape().first().copied().unwrap_or(1);
+    let seq = x.shape().get(1).copied()?;
+    if let Some(compiled) = compiled_fused_qkvz_ba_qmm_unpack(cfg, x, fused, batch, seq) {
+        return Some(compiled);
+    }
+    let x = apply_bound_exact_attn_norm(x);
+    let mixed = qw(&x, fused);
     let (qkvz_out, ba_out) = packed_qkvz_ba_widths(cfg);
     let last = *mixed.shape().last()?;
     if last != qkvz_out + ba_out {
         return None;
     }
-    let batch = x.shape().first().copied().unwrap_or(1);
-    let seq = x.shape().get(1).copied()?;
     let mixed_qkvz = slice_last_dim(&mixed, 0, qkvz_out, None);
     let mixed_ba = slice_last_dim(&mixed, qkvz_out, qkvz_out + ba_out, None);
+    if let Some(compiled) =
+        compiled_split_packed_qkvz_ba_projection(cfg, &mixed_qkvz, &mixed_ba, batch, seq)
+    {
+        return Some(compiled);
+    }
     Some(split_packed_qkvz_ba_projection(
         cfg,
         &mixed_qkvz,
@@ -1223,6 +1434,138 @@ fn linear_attention_inputs_fused_qmm(
         batch,
         seq,
     ))
+}
+
+/// Compile identity for exact S=2..=4 fused QKVZ+BA qmm + unpack.
+/// One graph is shared across every linear-attention layer (same shapes).
+const EXACT_LA_FUSED_QMM_UNPACK_COMPILE_ID: u64 = 0x5155_4D4D_554E_5032;
+/// Distinct cache key when `attn_norm` is compiled into the same closure.
+const EXACT_LA_RMS_QMM_UNPACK_COMPILE_ID: u64 = 0x5155_524D_5351_4D32;
+
+fn compiled_fused_qkvz_ba_qmm_unpack(
+    cfg: &LinearAttentionConfig,
+    x: &MlxArray,
+    fused: &QuantizedWeight,
+    batch: i32,
+    seq: i32,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() || batch != 1 || !(2..=4).contains(&seq) {
+        return None;
+    }
+    let scales = fused.scales.as_ref()?;
+    let (qkvz_out, ba_out) = packed_qkvz_ba_widths(cfg);
+    let leading = i64::from(batch).checked_mul(i64::from(seq))?;
+    let cfg = cfg.clone();
+    let group_size = fused.group_size;
+    let bits = fused.bits;
+    let mode = fused.mode.clone();
+    let attn_norm = qwen_la_exact_attn_norm();
+    let (compile_id, input_store, fold_rms, rms_eps) = if let Some((norm_w, eps)) = attn_norm {
+        (
+            EXACT_LA_RMS_QMM_UNPACK_COMPILE_ID,
+            vec![x.clone(), norm_w, fused.weight.clone(), scales.clone()],
+            true,
+            eps,
+        )
+    } else {
+        (
+            EXACT_LA_FUSED_QMM_UNPACK_COMPILE_ID,
+            vec![x.clone(), fused.weight.clone(), scales.clone()],
+            false,
+            0.0,
+        )
+    };
+    let input_refs: Vec<&MlxArray> = input_store.iter().collect();
+    crate::per_layer_compile::apply_layer_dense_ffn_prefill_min(
+        compile_id,
+        0,
+        leading,
+        2,
+        &input_refs,
+        move |inputs: &MlxVectorArray| {
+            let x = if fold_rms {
+                rms_norm(&inputs.get(0), Some(&inputs.get(1)), rms_eps, None)
+            } else {
+                inputs.get(0)
+            };
+            let weight_idx = if fold_rms { 2 } else { 1 };
+            let fused = QuantizedWeight {
+                weight: inputs.get(weight_idx),
+                scales: Some(inputs.get(weight_idx + 1)),
+                biases: None,
+                group_size,
+                bits,
+                mode: mode.clone(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            };
+            let mixed = qw(&x, &fused);
+            let mixed_qkvz = slice_last_dim(&mixed, 0, qkvz_out, None);
+            let mixed_ba = slice_last_dim(&mixed, qkvz_out, qkvz_out + ba_out, None);
+            let (qkv, z, a, b) =
+                split_packed_qkvz_ba_projection(&cfg, &mixed_qkvz, &mixed_ba, 1, seq);
+            vec![qkv, z, a, b]
+        },
+    )
+    .and_then(|mut outs| {
+        if outs.len() != 4 {
+            return None;
+        }
+        let b = outs.pop()?;
+        let a = outs.pop()?;
+        let z = outs.pop()?;
+        let qkv = outs.pop()?;
+        Some((qkv, z, a, b))
+    })
+}
+
+/// Compile identity for the exact S=2..=4 QKVZ/BA unpack glue. One graph
+/// is shared across every linear-attention layer (same shapes).
+const EXACT_LA_UNPACK_COMPILE_ID: u64 = 0x5155_4E50_4143_4B32;
+
+/// Shape-compile the reshape/slice/concat unpack after fused QKVZ+BA qmm.
+///
+/// Sits between two graph-breaks (the fused qmm and Metal post-input). Does
+/// not touch the portable RMS+SiLU gate. Falls back to the imperative unpack
+/// when exact MTP is off or compile fails.
+fn compiled_split_packed_qkvz_ba_projection(
+    cfg: &LinearAttentionConfig,
+    mixed_qkvz: &MlxArray,
+    mixed_ba: &MlxArray,
+    batch: i32,
+    seq: i32,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() || batch != 1 || !(2..=4).contains(&seq) {
+        return None;
+    }
+    let leading = i64::from(batch).checked_mul(i64::from(seq))?;
+    let cfg = cfg.clone();
+    let inputs = [mixed_qkvz, mixed_ba];
+    crate::per_layer_compile::apply_layer_dense_ffn_prefill_min(
+        EXACT_LA_UNPACK_COMPILE_ID,
+        0,
+        leading,
+        2,
+        &inputs,
+        move |inputs: &MlxVectorArray| {
+            let (qkv, z, a, b) =
+                split_packed_qkvz_ba_projection(&cfg, &inputs.get(0), &inputs.get(1), 1, seq);
+            vec![qkv, z, a, b]
+        },
+    )
+    .and_then(|mut outs| {
+        if outs.len() != 4 {
+            return None;
+        }
+        let b = outs.pop()?;
+        let a = outs.pop()?;
+        let z = outs.pop()?;
+        let qkv = outs.pop()?;
+        Some((qkv, z, a, b))
+    })
 }
 
 fn linear_attention_inputs_packed_direct(
@@ -1352,7 +1695,7 @@ pub(crate) fn try_linear_attention_whole_layer_metal(
     let seq = x.shape()[1];
     let (qkv, z, a, b) = linear_attention_inputs(cfg, linear_cfg, linear_w, x, seq, false);
     let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
-    let (q, k, v, new_conv_state) =
+    let (q, k, v, new_conv_state, _prefix_conv) =
         linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, conv_state, false);
     let a_log_f32 = linear_w.a_log.clone();
     let dt_bias_f32 = linear_w.dt_bias.clone();
@@ -1406,6 +1749,133 @@ mod tests {
         assert!(linear_attention_full_gate_metal_allowed_for_bits(
             "qwen3_5", false, 5, 63
         ));
+    }
+
+    #[test]
+    fn exact_s2_full_gate_metal_follows_early_layer_policy() {
+        assert!(exact_s2_full_gate_metal_allowed(2, 0, true));
+        assert!(exact_s2_full_gate_metal_allowed(2, 15, true));
+        assert!(!exact_s2_full_gate_metal_allowed(2, 16, true));
+        assert!(!exact_s2_full_gate_metal_allowed(1, 0, true));
+        assert!(!exact_s2_full_gate_metal_allowed(2, 0, false));
+        assert!(exact_s2_full_gate_metal_allowed(4, 7, true));
+    }
+
+    #[test]
+    fn exact_s2_s1_metal_gate_o_proj_matches_two_s1_rows() {
+        let seq = 2i32;
+        let hv = 2i32;
+        let dv = 32i32;
+        let value_dim = hv * dv;
+        let n = (seq * hv * dv) as usize;
+        let hidden_data: Vec<f32> = (0..n).map(|i| ((i as f32) - 32.0) * 0.015625).collect();
+        let gate_data: Vec<f32> = (0..n).map(|i| ((i as f32) - 16.0) * 0.03125).collect();
+        let norm_data: Vec<f32> = (0..dv as usize)
+            .map(|i| 0.75 + (i as f32) * 0.004)
+            .collect();
+        let o_data: Vec<f32> = (0..(value_dim * value_dim) as usize)
+            .map(|i| ((i as f32) - 20.0) * 0.004)
+            .collect();
+        let to_bf16 = |data: &[f32], shape: &[i32]| {
+            mlx_sys::astype(
+                &MlxArray::from_raw_data(
+                    data.as_ptr() as *const u8,
+                    std::mem::size_of_val(data),
+                    shape,
+                    MlxDtype::Float32,
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let hidden = to_bf16(&hidden_data, &[1, seq, hv, dv]);
+        let gate = to_bf16(&gate_data, &[1, seq, hv, dv]);
+        let norm = to_bf16(&norm_data, &[dv]);
+        let o_w = MlxArray::from_raw_data(
+            o_data.as_ptr() as *const u8,
+            std::mem::size_of_val(o_data.as_slice()),
+            &[value_dim, value_dim],
+            MlxDtype::Float32,
+        );
+        let q = mlx_sys::quantize(
+            &o_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        let out_proj = QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: None,
+            group_size: 32,
+            bits: 4,
+            mode: "mxfp4".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let dummy = zeros(&[1], MlxDtype::Float32, None);
+        let linear_w = LinearAttentionWeights {
+            in_proj_qkv: None,
+            in_proj_z: None,
+            in_proj_a: None,
+            in_proj_b: None,
+            in_proj_qkvz: None,
+            in_proj_ba: None,
+            fused_qkvz_ba: None,
+            prefill_q2_qkvz: None,
+            prefill_q2_ba: None,
+            conv1d_dense: dummy.clone(),
+            conv1d_bias: None,
+            dt_bias: dummy.clone(),
+            a_log: dummy,
+            d: None,
+            norm: norm.clone(),
+            out_proj: out_proj.clone(),
+        };
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let shipped = exact_verify_s1_metal_gate_o_proj(
+            &hidden, &gate, &linear_w, 1e-6, value_dim, seq, true,
+        )
+        .expect("exact S=2 per-row S=1 Metal gate+o_proj must engage");
+        let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let r0 = {
+            let h = slice_seq_row_4d(&hidden, 0);
+            let g = slice_seq_row_4d(&gate, 0);
+            let gated = rms_norm_gated_with_full_gate_policy(&h, &g, &norm, 1e-6, true);
+            qw(&reshape(&gated, &[1, 1, value_dim], None), &out_proj)
+        };
+        let r1 = {
+            let h = slice_seq_row_4d(&hidden, 1);
+            let g = slice_seq_row_4d(&gate, 1);
+            let gated = rms_norm_gated_with_full_gate_policy(&h, &g, &norm, 1e-6, true);
+            qw(&reshape(&gated, &[1, 1, value_dim], None), &out_proj)
+        };
+        let expected = concatenate(&[&r0, &r1], 1, None);
+        eval(&[&shipped, &expected]);
+        let a = mlx_sys::astype(&shipped, MlxDtype::Float32, None);
+        let b = mlx_sys::astype(&expected, MlxDtype::Float32, None);
+        eval(&[&a, &b]);
+        let mut max_abs = 0.0f32;
+        for (l, r) in a.data_f32().iter().zip(b.data_f32().iter()) {
+            max_abs = max_abs.max((l - r).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "per-row S=1 Metal gate+o_proj must match two decode rows, max_abs={max_abs}"
+        );
+        let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        assert!(
+            exact_verify_s1_metal_gate_o_proj(
+                &hidden, &gate, &linear_w, 1e-6, value_dim, seq, true
+            )
+            .is_none(),
+            "per-row S=1 path must stay off when exact MTP is scoped off"
+        );
     }
 
     #[test]
@@ -2002,6 +2472,9 @@ mod tests {
         assert!(affine_qw.matching_affine_quant(&affine_qw));
         assert!(!mxfp4_qw.matching_affine_quant(&mxfp4_qw));
         assert!(!affine_qw.matching_affine_quant(&mxfp4_qw));
+        assert!(mxfp4_qw.matching_mxfp4_quant(&mxfp4_qw));
+        assert!(!affine_qw.matching_mxfp4_quant(&mxfp4_qw));
+        assert!(mxfp4_qw.concat_output_rows(&mxfp4_qw).is_some());
         let mut mislabeled = mxfp4_qw.clone();
         mislabeled.mode = "affine".to_string();
         assert!(!mislabeled.is_affine_quantized());
@@ -2024,6 +2497,346 @@ mod tests {
         assert!(
             !fastpath::should_qwen_la_fused_qkvz_ba_qmm_for(true, 1, true),
             "decode must not take the fused prefill qmm"
+        );
+    }
+
+    #[test]
+    fn exact_s2_mxfp4_fused_qkvz_ba_matches_split_qw() {
+        let hidden = 32i32;
+        let qkvz_out = 64i32;
+        let ba_out = 16i32;
+        let seq = 2i32;
+        let mk = |rows: i32, seed: f32| {
+            let n = (rows * hidden) as usize;
+            let data: Vec<f32> = (0..n).map(|i| ((i as f32) - seed) * 0.015625).collect();
+            let w = MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                std::mem::size_of_val(data.as_slice()),
+                &[rows, hidden],
+                MlxDtype::Float32,
+            );
+            let q = mlx_sys::quantize(
+                &w,
+                Some(32),
+                Some(4),
+                mlx_sys::MlxQuantizationMode::Mxfp4,
+                None,
+                None,
+            );
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let qkvz = mk(qkvz_out, 8.0);
+        let ba = mk(ba_out, 3.0);
+        assert!(qkvz.matching_mxfp4_quant(&ba));
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 16.0) * 0.03125)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let fused_w = qkvz.concat_output_rows(&ba).expect("mxfp4 concat");
+        let fused = qw(&x, &fused_w);
+        let split_q = qw(&x, &qkvz);
+        let split_b = qw(&x, &ba);
+        let expected = concatenate(&[&split_q, &split_b], 2, None);
+        eval(&[&fused, &expected]);
+        let a = fused.data_f32();
+        let b = expected.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "fused MXFP4 QKVZ+BA qmm must match split qw, max_abs={max_abs}"
+        );
+    }
+
+    #[test]
+    fn exact_s2_compiled_qkvz_ba_unpack_matches_imperative() {
+        let seq = 2i32;
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 4,
+            num_key_heads: 2,
+            key_head_dim: 4,
+            value_head_dim: 4,
+            conv_kernel_dim: 4,
+            q_scale: 0.25,
+            k_scale: 0.5,
+        };
+        let (qkvz_out, ba_out) = packed_qkvz_ba_widths(&cfg);
+        let qkvz_data: Vec<f32> = (0..(seq * qkvz_out) as usize)
+            .map(|i| ((i as f32) - 12.0) * 0.03125)
+            .collect();
+        let ba_data: Vec<f32> = (0..(seq * ba_out) as usize)
+            .map(|i| ((i as f32) - 4.0) * 0.0625)
+            .collect();
+        let mixed_qkvz = MlxArray::from_raw_data(
+            qkvz_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkvz_data.as_slice()),
+            &[1, seq, qkvz_out],
+            MlxDtype::Float32,
+        );
+        let mixed_ba = MlxArray::from_raw_data(
+            ba_data.as_ptr() as *const u8,
+            std::mem::size_of_val(ba_data.as_slice()),
+            &[1, seq, ba_out],
+            MlxDtype::Float32,
+        );
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let compiled =
+            compiled_split_packed_qkvz_ba_projection(&cfg, &mixed_qkvz, &mixed_ba, 1, seq)
+                .expect("exact S=2 unpack compile must engage");
+        let imperative = split_packed_qkvz_ba_projection(&cfg, &mixed_qkvz, &mixed_ba, 1, seq);
+        eval(&[
+            &compiled.0,
+            &compiled.1,
+            &compiled.2,
+            &compiled.3,
+            &imperative.0,
+            &imperative.1,
+            &imperative.2,
+            &imperative.3,
+        ]);
+        for (got, want, name) in [
+            (&compiled.0, &imperative.0, "qkv"),
+            (&compiled.1, &imperative.1, "z"),
+            (&compiled.2, &imperative.2, "a"),
+            (&compiled.3, &imperative.3, "b"),
+        ] {
+            assert_eq!(got.shape(), want.shape(), "{name} shape");
+            let g = got.data_f32();
+            let w = want.data_f32();
+            assert_eq!(g.len(), w.len(), "{name} len");
+            for i in 0..g.len() {
+                let err = (g[i] - w[i]).abs();
+                assert!(
+                    err < 1.0e-6,
+                    "{name}[{i}] compiled {} imperative {} err {err}",
+                    g[i],
+                    w[i]
+                );
+            }
+        }
+        let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        assert!(
+            compiled_split_packed_qkvz_ba_projection(&cfg, &mixed_qkvz, &mixed_ba, 1, seq)
+                .is_none(),
+            "unpack compile must stay off when exact MTP is scoped off"
+        );
+    }
+
+    #[test]
+    fn exact_s2_compiled_rms_qmm_unpack_matches_rms_then_fused() {
+        let seq = 2i32;
+        let hidden = 32i32;
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 4,
+            num_key_heads: 2,
+            key_head_dim: 8,
+            value_head_dim: 8,
+            conv_kernel_dim: 4,
+            q_scale: 0.125,
+            k_scale: 0.35355338,
+        };
+        let (qkvz_out, ba_out) = packed_qkvz_ba_widths(&cfg);
+        let mk = |rows: i32, seed: f32| {
+            let n = (rows * hidden) as usize;
+            let data: Vec<f32> = (0..n).map(|i| ((i as f32) - seed) * 0.015625).collect();
+            let w = MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                std::mem::size_of_val(data.as_slice()),
+                &[rows, hidden],
+                MlxDtype::Float32,
+            );
+            let q = mlx_sys::quantize(
+                &w,
+                Some(32),
+                Some(4),
+                mlx_sys::MlxQuantizationMode::Mxfp4,
+                None,
+                None,
+            );
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let qkvz = mk(qkvz_out, 8.0);
+        let ba = mk(ba_out, 3.0);
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 16.0) * 0.03125)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let norm_data: Vec<f32> = (0..hidden as usize)
+            .map(|i| 0.8 + (i as f32) * 0.004)
+            .collect();
+        let norm_w = MlxArray::from_raw_data(
+            norm_data.as_ptr() as *const u8,
+            std::mem::size_of_val(norm_data.as_slice()),
+            &[hidden],
+            MlxDtype::Float32,
+        );
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        set_qwen_la_exact_attn_norm(Some((norm_w.clone(), 1e-6)));
+        let compiled = linear_attention_inputs_fused_qmm(&cfg, &x, &qkvz, &ba, None)
+            .expect("exact S=2 rms+qmm+unpack compile must engage");
+        set_qwen_la_exact_attn_norm(None);
+        let normed = rms_norm(&x, Some(&norm_w), 1e-6, None);
+        let imperative = linear_attention_inputs_fused_qmm(&cfg, &normed, &qkvz, &ba, None)
+            .expect("exact S=2 qmm+unpack compile must engage");
+        eval(&[
+            &compiled.0,
+            &compiled.1,
+            &compiled.2,
+            &compiled.3,
+            &imperative.0,
+            &imperative.1,
+            &imperative.2,
+            &imperative.3,
+        ]);
+        for (got, want, name) in [
+            (&compiled.0, &imperative.0, "qkv"),
+            (&compiled.1, &imperative.1, "z"),
+            (&compiled.2, &imperative.2, "a"),
+            (&compiled.3, &imperative.3, "b"),
+        ] {
+            assert_eq!(got.shape(), want.shape(), "{name} shape");
+            let g = got.data_f32();
+            let w = want.data_f32();
+            for i in 0..g.len() {
+                let err = (g[i] - w[i]).abs();
+                assert!(
+                    err < 1.0e-5,
+                    "{name}[{i}] rms-folded {} split {} err {err}",
+                    g[i],
+                    w[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_attn_norm_fallback_applies_rms_when_compile_does_not() {
+        // batch=2 makes compiled_fused_qkvz_ba_qmm_unpack return None.
+        // The layer shell still skips outer RMS whenever the TLS is set.
+        let seq = 2i32;
+        let batch = 2i32;
+        let hidden = 32i32;
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 4,
+            num_key_heads: 2,
+            key_head_dim: 8,
+            value_head_dim: 8,
+            conv_kernel_dim: 4,
+            q_scale: 0.125,
+            k_scale: 0.35355338,
+        };
+        let (qkvz_out, ba_out) = packed_qkvz_ba_widths(&cfg);
+        let mk = |rows: i32, seed: f32| {
+            let n = (rows * hidden) as usize;
+            let data: Vec<f32> = (0..n).map(|i| ((i as f32) - seed) * 0.015625).collect();
+            let w = MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                std::mem::size_of_val(data.as_slice()),
+                &[rows, hidden],
+                MlxDtype::Float32,
+            );
+            let q = mlx_sys::quantize(
+                &w,
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Mxfp4,
+                None,
+                None,
+            );
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: None,
+                group_size: 32,
+                bits: 4,
+                mode: "mxfp4".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            }
+        };
+        let qkvz = mk(qkvz_out, 8.0);
+        let ba = mk(ba_out, 3.0);
+        let x_data: Vec<f32> = (0..(batch * seq * hidden) as usize)
+            .map(|i| ((i as f32) - 16.0) * 0.03125)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[batch, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let norm_data: Vec<f32> = (0..hidden as usize)
+            .map(|i| 0.8 + (i as f32) * 0.004)
+            .collect();
+        let norm_w = MlxArray::from_raw_data(
+            norm_data.as_ptr() as *const u8,
+            std::mem::size_of_val(norm_data.as_slice()),
+            &[hidden],
+            MlxDtype::Float32,
+        );
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        set_qwen_la_exact_attn_norm(Some((norm_w.clone(), 1e-6)));
+        let got = linear_attention_inputs_fused_qmm(&cfg, &x, &qkvz, &ba, None)
+            .expect("fallback fused qmm must still run");
+        set_qwen_la_exact_attn_norm(None);
+        let normed = rms_norm(&x, Some(&norm_w), 1e-6, None);
+        let want = linear_attention_inputs_fused_qmm(&cfg, &normed, &qkvz, &ba, None)
+            .expect("normed fused qmm");
+        eval(&[
+            &got.0, &got.1, &got.2, &got.3, &want.0, &want.1, &want.2, &want.3,
+        ]);
+        let g = got.0.data_f32();
+        let w = want.0.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..g.len() {
+            max_abs = max_abs.max((g[i] - w[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "compile-miss fallback must still apply bound attn_norm, max_abs={max_abs}"
         );
     }
 

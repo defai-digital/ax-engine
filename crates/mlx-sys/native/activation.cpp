@@ -824,6 +824,22 @@ std::pair<mx::array, mx::array> add_rms_norm_pair_impl(
   return {residual, normed};
 }
 
+// Exact Qwen linear-attention portable gate: same five MLX ops as
+// `rms_norm` + f32 `silu_mul` + cast, built in one Rust FFI. Not
+// `mx::compile` and not Metal — those flip factory trial-2 to f4b5490d.
+mx::array rms_norm_silu_mul_normed_impl(
+    const mx::array& hidden,
+    const mx::array& gate,
+    const mx::array& norm_weight,
+    float eps,
+    mx::StreamOrDevice stream) {
+  auto normed = mx::fast::rms_norm(hidden, norm_weight, eps, stream);
+  auto gate_f32 = mx::astype(gate, mx::float32, stream);
+  auto normed_f32 = mx::astype(normed, mx::float32, stream);
+  auto gated = silu_mul_impl(gate_f32, normed_f32, stream);
+  return mx::astype(gated, hidden.dtype(), stream);
+}
+
 mx::array quantized_matmul_rms_norm_impl(
     const mx::array& x,
     const mx::array& weight,
@@ -1059,6 +1075,26 @@ extern "C" int ax_mlx_add_rms_norm_pair(
         sd(stream));
     aset(residual_res, std::move(residual));
     aset(normed_res, std::move(normed));
+    return 0;
+  } AX_CATCH
+}
+
+extern "C" int ax_mlx_rms_norm_silu_mul_normed(
+    mlx_array* res,
+    const mlx_array hidden,
+    const mlx_array gate,
+    const mlx_array norm_weight,
+    float eps,
+    const mlx_stream stream) {
+  AX_TRY {
+    aset(
+        res,
+        rms_norm_silu_mul_normed_impl(
+            aref(hidden),
+            aref(gate),
+            aref(norm_weight),
+            eps,
+            sd(stream)));
     return 0;
   } AX_CATCH
 }

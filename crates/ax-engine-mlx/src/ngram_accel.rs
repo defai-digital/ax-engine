@@ -1943,6 +1943,41 @@ mod tests {
     }
 
     #[test]
+    fn mtp_stacked_policy_drafts_ignore_eos_special_token_loop() {
+        // Factory general-long measured trials loop 248045,248046,198 after the
+        // short answer because ignore_eos keeps generating. min_support=3 is
+        // the MTP-stacked default; after four cycles the next token is certain.
+        let mut t = NgramTable::new();
+        let mut tokens = vec![271, 39, 30763, 46, 248044];
+        for _ in 0..4 {
+            tokens.extend_from_slice(&[248045, 248046, 198]);
+        }
+        t.feed(&tokens);
+        let policy = NgramDraftPolicy {
+            variant: NgramPolicyVariant::MajorityRecency,
+            max_len: 1,
+            min_support: 3,
+            confidence_threshold: 0.85,
+            adaptive_match_len: true,
+            bypass_prompt_min_support: true,
+            min_context_len: 3,
+        };
+        let outcome = t.predict_with_policy(policy);
+        assert_eq!(
+            outcome.draft,
+            vec![248045],
+            "n-gram must propose the next special-token-loop token under the MTP stacked policy"
+        );
+        assert!(
+            outcome
+                .confidence
+                .first()
+                .copied()
+                .is_some_and(|c| c >= 0.85)
+        );
+    }
+
+    #[test]
     fn predict_with_min_support_filters_one_off_prompt_matches() {
         let t = table_from_sequence(&[9, 8, 7, 9, 8, 7]);
 
