@@ -1,5 +1,5 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, async_eval, concatenate, contiguous, eval,
+    MlxArray, MlxDtype, MlxQuantizationMode, async_eval, concatenate, contiguous, eval,
     qwen_linear_attention_inputs_packed, qwen_linear_attention_inputs_packed_compiled,
     qwen_linear_attention_post_input, qwen_linear_attention_post_input_compiled, reshape, rms_norm,
     rms_norm_quantized_matmul, silu_mul_quantized_matmul, slice, slice_last_dim, zeros,
@@ -57,25 +57,23 @@ pub(crate) fn qw_rms_norm_qmm(
     eps: f32,
     proj: &QuantizedWeight,
 ) -> MlxArray {
+    // The fused C++ helper (and its fallback) hardcodes affine qmm. MXFP4 /
+    // MXFP8 have no group biases — use the mode-aware `qw` path instead.
     match &proj.scales {
-        Some(scales) => {
-            let biases = match proj.mlx_quantization_mode() {
-                mlx_sys::MlxQuantizationMode::Affine => proj.biases.as_ref(),
-                _ => None,
-            };
+        Some(scales) if matches!(proj.mlx_quantization_mode(), MlxQuantizationMode::Affine) => {
             rms_norm_quantized_matmul(
                 x,
                 norm_w,
                 eps,
                 &proj.weight,
                 scales,
-                biases,
+                proj.biases.as_ref(),
                 proj.group_size,
                 proj.bits,
                 None,
             )
         }
-        None => qw(&rms_norm(x, Some(norm_w), eps, None), proj),
+        _ => qw(&rms_norm(x, Some(norm_w), eps, None), proj),
     }
 }
 
@@ -261,6 +259,9 @@ fn try_qwen_la_out_proj_silu_mul_qmm(
     value_dim: i32,
 ) -> Option<MlxArray> {
     if !fastpath::should_qwen_la_out_proj_silu_mul_qmm(&cfg.model_family, seq) {
+        return None;
+    }
+    if !linear_w.out_proj.is_affine_quantized() {
         return None;
     }
     let scales = linear_w.out_proj.scales.as_ref()?;
@@ -1230,6 +1231,10 @@ fn linear_attention_inputs_packed_direct(
     qkvz_w: &crate::weights::QuantizedWeight,
     ba_w: &crate::weights::QuantizedWeight,
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    // Packed C++ helper hardcodes affine qmm (requires group biases).
+    if !qkvz_w.is_affine_quantized() || !ba_w.is_affine_quantized() {
+        return None;
+    }
     let qkvz_quantized = qkvz_w.scales.is_some();
     let ba_quantized = ba_w.scales.is_some();
     let mixed_quant = qkvz_quantized
@@ -1943,6 +1948,70 @@ mod tests {
     }
 
     #[test]
+    fn matching_affine_quant_rejects_mxfp4_even_when_bits_match() {
+        let w = MlxArray::from_raw_data(
+            [0.1f32; 64].as_ptr() as *const u8,
+            64 * std::mem::size_of::<f32>(),
+            &[2, 32],
+            MlxDtype::Float32,
+        );
+        let affine = mlx_sys::quantize(
+            &w,
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let mxfp4 = mlx_sys::quantize(
+            &w,
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        let affine_qw = QuantizedWeight {
+            weight: affine[0].clone(),
+            scales: Some(affine[1].clone()),
+            biases: Some(affine[2].clone()),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let mxfp4_qw = QuantizedWeight {
+            weight: mxfp4[0].clone(),
+            scales: Some(mxfp4[1].clone()),
+            biases: None,
+            group_size: 32,
+            bits: 4,
+            mode: "mxfp4".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        assert!(affine_qw.is_affine_quantized());
+        assert!(!mxfp4_qw.is_affine_quantized());
+        assert!(affine_qw.matching_affine_quant(&affine_qw));
+        assert!(!mxfp4_qw.matching_affine_quant(&mxfp4_qw));
+        assert!(!affine_qw.matching_affine_quant(&mxfp4_qw));
+        let mut mislabeled = mxfp4_qw.clone();
+        mislabeled.mode = "affine".to_string();
+        assert!(!mislabeled.is_affine_quantized());
+        assert!(matches!(
+            mislabeled.mlx_quantization_mode(),
+            mlx_sys::MlxQuantizationMode::Mxfp4
+        ));
+    }
+
+    #[test]
     fn matching_affine_quant_rejects_mixed_bits() {
         let w = mlx_sys::zeros(&[4, 8], MlxDtype::Uint32, None);
         let s = mlx_sys::zeros(&[4, 1], MlxDtype::Float32, None);
@@ -2188,6 +2257,71 @@ mod tests {
         assert!(
             fastpath::should_qwen_la_norm_qkvz_fuse_for(true, "qwen3_5", 1024),
             "shipped LA norm fuse gate must accept the p2048 chunk length"
+        );
+    }
+
+    #[test]
+    fn qw_rms_norm_qmm_mxfp4_matches_rms_then_qw() {
+        let hidden_data: Vec<f32> = (0..8 * 64)
+            .map(|i| ((i as f32) - 256.0) * 0.0009765625)
+            .collect();
+        let proj_data: Vec<f32> = (0..96 * 64)
+            .map(|i| ((i as f32) - 1024.0) * 0.0004)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            hidden_data.as_ptr() as *const u8,
+            std::mem::size_of_val(hidden_data.as_slice()),
+            &[1, 8, 64],
+            MlxDtype::Float32,
+        );
+        let proj_w = MlxArray::from_raw_data(
+            proj_data.as_ptr() as *const u8,
+            std::mem::size_of_val(proj_data.as_slice()),
+            &[96, 64],
+            MlxDtype::Float32,
+        );
+        let dq = mlx_sys::quantize(
+            &proj_w,
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        assert_eq!(dq.len(), 2, "mxfp4 quant returns [packed, scales]");
+        let proj = QuantizedWeight {
+            weight: dq[0].clone(),
+            scales: Some(dq[1].clone()),
+            biases: None,
+            group_size: 32,
+            bits: 4,
+            mode: "mxfp4".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let norm_data = vec![1.0f32; 64];
+        let norm_w = MlxArray::from_raw_data(
+            norm_data.as_ptr() as *const u8,
+            std::mem::size_of_val(norm_data.as_slice()),
+            &[64],
+            MlxDtype::Float32,
+        );
+        let fused = qw_rms_norm_qmm(&x, &norm_w, 1e-6, &proj);
+        let portable = qw(&rms_norm(&x, Some(&norm_w), 1e-6, None), &proj);
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        let g = fused.data_f32();
+        let w = portable.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..g.len() {
+            max_abs = max_abs.max((g[i] - w[i]).abs());
+        }
+        assert!(
+            max_abs < 3.0e-2,
+            "MXFP4 LA norm+qmm must use portable qw, max_abs={max_abs}"
         );
     }
 

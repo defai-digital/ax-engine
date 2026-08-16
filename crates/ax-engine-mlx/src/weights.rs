@@ -648,13 +648,34 @@ impl QuantizedWeight {
             "mxfp4" => MlxQuantizationMode::Mxfp4,
             "mxfp8" => MlxQuantizationMode::Mxfp8,
             "nvfp4" => MlxQuantizationMode::Nvfp4,
+            // Some MXFP4 packs label tensors `affine` but ship no group-bias
+            // channel. Affine dequant panics without biases; treat the 4/32
+            // no-bias contract as MXFP4.
+            _ if self.scales.is_some()
+                && self.biases.is_none()
+                && self.bits == 4
+                && self.group_size == 32 =>
+            {
+                MlxQuantizationMode::Mxfp4
+            }
             _ => MlxQuantizationMode::Affine,
         }
     }
 
-    pub fn matching_affine_quant(&self, other: &Self) -> bool {
+    /// Affine group-quantized linear (has scales **and** group biases).
+    ///
+    /// MXFP4/MXFP8/NVFP4 keep scales but have no group-bias channel. Affine-only
+    /// fused qmm helpers must not treat those modes as affine or MLX panics
+    /// (`Biases must be provided for affine quantization`).
+    pub fn is_affine_quantized(&self) -> bool {
         self.scales.is_some()
-            && other.scales.is_some()
+            && self.biases.is_some()
+            && matches!(self.mlx_quantization_mode(), MlxQuantizationMode::Affine)
+    }
+
+    pub fn matching_affine_quant(&self, other: &Self) -> bool {
+        self.is_affine_quantized()
+            && other.is_affine_quantized()
             && self.bits == other.bits
             && self.group_size == other.group_size
             && self.mode == other.mode
@@ -4381,12 +4402,20 @@ fn load_linear_attention_weights(
         "linear_attention_conv1d",
     )?;
     let conv1d_dense = if let Some(scales) = &conv1d_raw.scales {
-        dequantize(
+        let mode = conv1d_raw.mlx_quantization_mode();
+        let quant_biases = match mode {
+            MlxQuantizationMode::Affine => conv1d_raw.biases.as_ref(),
+            _ => None,
+        };
+        dequantize_with_mode(
             &conv1d_raw.weight,
             scales,
-            conv1d_raw.biases.as_ref(),
+            quant_biases,
             Some(conv1d_raw.group_size),
             Some(conv1d_raw.bits),
+            mode,
+            None,
+            Some(MlxDtype::Bfloat16),
             None,
         )
     } else {
@@ -5715,7 +5744,7 @@ fn pack_linear_attention_projection_rows(
         biases,
         group_size: first.group_size,
         bits: first.bits,
-        mode: "affine".to_string(),
+        mode: first.mode.clone(),
         linear_bias: None,
         decode_weight_t: None,
         decode_q4_weight: None,
@@ -5752,6 +5781,12 @@ fn validate_linear_attention_pack_compatibility(
         if weight.biases.is_some() != first.biases.is_some() {
             return Err(WeightLoadError::InvalidLayer(format!(
                 "cannot pack {label} projections where only one has quantization biases"
+            )));
+        }
+        if weight.mode != first.mode {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "cannot pack {label} projections with different quantization modes: {} vs {}",
+                first.mode, weight.mode
             )));
         }
     }

@@ -307,6 +307,7 @@ fn qkv_project_inner(
             && !fastpath::qwen_linear_mtp_exact_enabled()
             && !fastpath::moe_mt_bf16_identity_enabled()
             && fastpath::should_attn_norm_qkv_fuse(&cfg.model_family, seq)
+            && packed.is_affine_quantized()
             && let Some(scales) = packed.scales.as_ref()
         {
             rms_norm_quantized_matmul(
@@ -515,6 +516,7 @@ pub(crate) fn attention_output_projection_with_post_norm_policy(
         && attn_gate.is_none()
         && let Some(norm_w) = post_norm
         && fastpath::o_proj_qmatmul_rms_norm_enabled()
+        && o_proj.is_affine_quantized()
         && let Some(scales) = o_proj.scales.as_ref()
     {
         return quantized_matmul_rms_norm(
@@ -661,7 +663,9 @@ pub(crate) fn per_layer_input_gate_project(
     {
         return qw(&hidden, proj_w);
     }
-    if let Some(scales) = proj_w.scales.as_ref() {
+    if proj_w.is_affine_quantized()
+        && let Some(scales) = proj_w.scales.as_ref()
+    {
         return gelu_approx_mul_quantized_matmul(
             gate,
             per_layer_input,
@@ -3115,6 +3119,7 @@ fn ffn_swiglu_with_policy_inner(
                         && !profile_prefill
                         && projection_policy == ProjectionBatchPolicy::Shared
                         && fastpath::dense_qmatmul_rms_norm_enabled()
+                        && down.is_affine_quantized()
                         && let Some(scales) = down.scales.as_ref()
                     {
                         let out = quantized_matmul_rms_norm(
@@ -3194,6 +3199,7 @@ fn ffn_swiglu_with_policy_inner(
                         && !profile_prefill
                         && projection_policy == ProjectionBatchPolicy::Shared
                         && fastpath::dense_qmatmul_rms_norm_enabled()
+                        && down.is_affine_quantized()
                         && let Some(scales) = down.scales.as_ref()
                     {
                         let out = quantized_matmul_rms_norm(
@@ -3321,6 +3327,7 @@ fn ffn_swiglu_with_policy_inner(
             if let Some(norm_w) = post_norm {
                 if projection_policy == ProjectionBatchPolicy::Shared
                     && fastpath::dense_qmatmul_rms_norm_enabled()
+                    && down.is_affine_quantized()
                     && let Some(scales) = down.scales.as_ref()
                 {
                     let out = quantized_matmul_rms_norm(
@@ -3448,6 +3455,7 @@ fn ffn_swiglu_with_policy_inner(
             if let Some(norm_w) = post_norm {
                 if projection_policy == ProjectionBatchPolicy::Shared
                     && fastpath::dense_qmatmul_rms_norm_enabled()
+                    && down.is_affine_quantized()
                     && let Some(scales) = down.scales.as_ref()
                 {
                     let out = quantized_matmul_rms_norm(
@@ -3522,6 +3530,7 @@ fn ffn_swiglu_with_policy_inner(
             if let Some(norm_w) = post_norm {
                 if projection_policy == ProjectionBatchPolicy::Shared
                     && fastpath::dense_qmatmul_rms_norm_enabled()
+                    && down.is_affine_quantized()
                     && let Some(scales) = down.scales.as_ref()
                 {
                     let out = quantized_matmul_rms_norm(
@@ -3611,6 +3620,7 @@ fn ffn_swiglu_with_policy_inner(
                     && !profile_prefill
                     && projection_policy == ProjectionBatchPolicy::Shared
                     && fastpath::dense_qmatmul_rms_norm_enabled()
+                    && down.is_affine_quantized()
                     && let Some(scales) = down.scales.as_ref()
                 {
                     let out = quantized_matmul_rms_norm(
@@ -3906,6 +3916,7 @@ fn ffn_swiglu_with_policy_inner(
         && !profile_prefill
         && projection_policy == ProjectionBatchPolicy::Shared
         && fastpath::dense_geglu_down_fuse_enabled()
+        && down.is_affine_quantized()
         && let Some(scales) = down.scales.as_ref()
     {
         let activation_started = Instant::now();
@@ -4027,6 +4038,7 @@ fn ffn_swiglu_with_policy_inner(
             && !profile_prefill
             && projection_policy == ProjectionBatchPolicy::Shared
             && fastpath::dense_qmatmul_rms_norm_enabled()
+            && down.is_affine_quantized()
             && let Some(scales) = down.scales.as_ref()
         {
             let out = quantized_matmul_rms_norm(
@@ -4598,7 +4610,7 @@ fn qwen_swiglu_down_fuse(
     down: &QuantizedWeight,
 ) -> Option<MlxArray> {
     let scales = down.scales.as_ref()?;
-    if down.group_size <= 0 || down.bits <= 0 {
+    if !down.is_affine_quantized() || down.group_size <= 0 || down.bits <= 0 {
         return None;
     }
     silu_mul_quantized_matmul(

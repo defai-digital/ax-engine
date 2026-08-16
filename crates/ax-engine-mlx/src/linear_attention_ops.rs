@@ -1227,6 +1227,7 @@ pub fn rms_norm_gated_with_full_gate_policy(
     allow_full_gate_metal: bool,
 ) -> MlxArray {
     if allow_full_gate_metal
+        && !skip_rms_norm_gate_metal_for_exact_verify()
         && let Some(gated) = rms_norm_full_gate_metal(hidden_states, gate, weight, eps)
     {
         return gated;
@@ -1241,12 +1242,20 @@ pub fn rms_norm_gated_with_full_gate_policy(
     astype(&gated, hidden_states.dtype(), None)
 }
 
+fn skip_rms_norm_gate_metal_for_exact_verify() -> bool {
+    // Factory MXFP4: Metal gate on MTP-on (S=1 or S=2) flips token 41 vs
+    // MTP-off. Portable silu*norm for the whole exact request matches.
+    fastpath::qwen_linear_mtp_exact_enabled()
+}
+
 fn rms_norm_gate_metal(
     normed: &MlxArray,
     gate: &MlxArray,
     output_dtype: MlxDtype,
 ) -> Option<MlxArray> {
-    if !fastpath::linear_attention_rms_norm_gate_metal_enabled() {
+    if !fastpath::linear_attention_rms_norm_gate_metal_enabled()
+        || skip_rms_norm_gate_metal_for_exact_verify()
+    {
         return None;
     }
     rms_norm_gate_metal_impl(normed, gate, output_dtype)
@@ -1258,7 +1267,9 @@ fn rms_norm_full_gate_metal(
     weight: &MlxArray,
     eps: f32,
 ) -> Option<MlxArray> {
-    if !fastpath::linear_attention_rms_norm_gate_metal_enabled() {
+    if !fastpath::linear_attention_rms_norm_gate_metal_enabled()
+        || skip_rms_norm_gate_metal_for_exact_verify()
+    {
         return None;
     }
     rms_norm_full_gate_metal_impl(hidden_states, gate, weight, eps)
@@ -2273,6 +2284,78 @@ mod tests {
     }
 
     #[test]
+    fn gated_delta_prefix_checkpoint_matches_decode_kernel_row0() {
+        const SEQ: i32 = 2;
+        const KEY_HEAD_DIM: i32 = 32;
+        const VALUE_HEAD_DIM: i32 = 4;
+        let q_data: Vec<f32> = (0..(SEQ * KEY_HEAD_DIM) as usize)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..(SEQ * KEY_HEAD_DIM) as usize)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data = vec![0.10, -0.05, 0.07, 0.03, -0.02, 0.04, 0.08, -0.06];
+        let a_log = f32_array(&[-0.2], &[1]);
+        let a_raw = f32_array(&[0.1, -0.15], &[1, SEQ, 1]);
+        let dt_bias = f32_array(&[0.05], &[1]);
+        let b_raw = f32_array(&[0.25, -0.1], &[1, SEQ, 1]);
+        let q = f32_array(&q_data, &[1, SEQ, 1, KEY_HEAD_DIM]);
+        let k = f32_array(&k_data, &[1, SEQ, 1, KEY_HEAD_DIM]);
+        let v = f32_array(&v_data, &[1, SEQ, 1, VALUE_HEAD_DIM]);
+        let state = f32_array(
+            &(0..(VALUE_HEAD_DIM * KEY_HEAD_DIM) as usize)
+                .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+                .collect::<Vec<_>>(),
+            &[1, 1, VALUE_HEAD_DIM, KEY_HEAD_DIM],
+        );
+
+        let (_y_ck, _final_ck, prefix_ck) = gated_delta_kernel_with_prefix_checkpoint(
+            &q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state, 1,
+        );
+        let q0 = contiguous(
+            &slice(
+                &q,
+                &[0, 0, 0, 0],
+                &[1, 1, 1, KEY_HEAD_DIM],
+                &[1, 1, 1, 1],
+                None,
+            ),
+            None,
+        );
+        let k0 = contiguous(
+            &slice(
+                &k,
+                &[0, 0, 0, 0],
+                &[1, 1, 1, KEY_HEAD_DIM],
+                &[1, 1, 1, 1],
+                None,
+            ),
+            None,
+        );
+        let v0 = contiguous(
+            &slice(
+                &v,
+                &[0, 0, 0, 0],
+                &[1, 1, 1, VALUE_HEAD_DIM],
+                &[1, 1, 1, 1],
+                None,
+            ),
+            None,
+        );
+        let a0 = contiguous(
+            &slice(&a_raw, &[0, 0, 0], &[1, 1, 1], &[1, 1, 1], None),
+            None,
+        );
+        let b0 = contiguous(
+            &slice(&b_raw, &[0, 0, 0], &[1, 1, 1], &[1, 1, 1], None),
+            None,
+        );
+        let (_y0, state1) = gated_delta_kernel(&q0, &k0, &v0, &a_log, &a0, &dt_bias, &b0, &state);
+        mlx_sys::eval(&[&prefix_ck, &state1]);
+        assert_eq!(prefix_ck.data_f32(), state1.data_f32());
+    }
+
+    #[test]
     fn gated_delta_decode_kernel_matches_cpu_reference_for_single_token() {
         const SEQ: usize = 1;
         const KEY_HEAD_DIM: usize = 32;
@@ -2684,5 +2767,15 @@ mod tests {
 
         assert_eq!(out.shape(), vec![1, 5, 2, 3]);
         assert_eq!(out.dtype(), MlxDtype::Bfloat16);
+    }
+
+    #[test]
+    fn exact_profile_skips_rms_norm_gate_metal() {
+        {
+            let _off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+            assert!(!super::skip_rms_norm_gate_metal_for_exact_verify());
+        }
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        assert!(super::skip_rms_norm_gate_metal_for_exact_verify());
     }
 }

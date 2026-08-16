@@ -571,7 +571,6 @@ pub(crate) fn qw_with_policy(
     qw: &QuantizedWeight,
     policy: ProjectionBatchPolicy,
 ) -> MlxArray {
-    let shape = x.shape();
     // Under an invariant projection scope, the S=1 baseline uses this same
     // kernel through Shared and S>1 RowExact must use it too. The scope owner
     // is responsible for applying the arithmetic contract symmetrically.
@@ -583,33 +582,46 @@ pub(crate) fn qw_with_policy(
     }
     // Outside an invariant scope, RowExact stays on per-row MLX so it matches
     // an ordinary pure-direct singleton.
-    if policy == ProjectionBatchPolicy::RowExact && shape.len() == 3 {
-        // Batch-decode: B>1, S=1 — one projection per batch row.
-        if shape[0] > 1 && shape[1] == 1 {
-            let rows: Vec<MlxArray> = (0..shape[0])
-                .map(|row| {
-                    let row = slice(x, &[row, 0, 0], &[row + 1, 1, shape[2]], &[1, 1, 1], None);
-                    qw_direct_mlx(&contiguous(&row, None), qw)
-                })
-                .collect();
-            let refs: Vec<&MlxArray> = rows.iter().collect();
-            return concatenate(&refs, 0, None);
-        }
-        // Multi-token teacher-forced: B=1, S>1 — one projection per sequence
-        // position so each row matches singleton pure-direct (Gemma MoE MTP).
-        if shape[0] == 1 && shape[1] > 1 {
-            let cols: Vec<MlxArray> = (0..shape[1])
-                .map(|t| {
-                    let row = slice(x, &[0, t, 0], &[1, t + 1, shape[2]], &[1, 1, 1], None);
-                    qw_direct_mlx(&contiguous(&row, None), qw)
-                })
-                .collect();
-            let refs: Vec<&MlxArray> = cols.iter().collect();
-            return concatenate(&refs, 1, None);
+    if policy == ProjectionBatchPolicy::RowExact {
+        if let Some(row_exact) = qw_row_exact_mlx(x, qw) {
+            return row_exact;
         }
     }
-    // Shared (default): invariant when exact profile scopes it.
+    // Shared (default): invariant when exact profile scopes it. MXFP4
+    // quantized_matmul is already singleton-exact at S=2, so a batched
+    // qmm is safe here (and much faster than a per-row loop).
     qw_direct(x, qw)
+}
+
+/// Per-row MLX projection so S>1 / B>1 matches the corresponding singleton.
+fn qw_row_exact_mlx(x: &MlxArray, qw: &QuantizedWeight) -> Option<MlxArray> {
+    let shape = x.shape();
+    if shape.len() != 3 {
+        return None;
+    }
+    // Batch-decode: B>1, S=1 — one projection per batch row.
+    if shape[0] > 1 && shape[1] == 1 {
+        let rows: Vec<MlxArray> = (0..shape[0])
+            .map(|row| {
+                let row = slice(x, &[row, 0, 0], &[row + 1, 1, shape[2]], &[1, 1, 1], None);
+                qw_direct_mlx(&contiguous(&row, None), qw)
+            })
+            .collect();
+        let refs: Vec<&MlxArray> = rows.iter().collect();
+        return Some(concatenate(&refs, 0, None));
+    }
+    // Multi-token teacher-forced / MTP verify: B=1, S>1.
+    if shape[0] == 1 && shape[1] > 1 {
+        let cols: Vec<MlxArray> = (0..shape[1])
+            .map(|t| {
+                let row = slice(x, &[0, t, 0], &[1, t + 1, shape[2]], &[1, 1, 1], None);
+                qw_direct_mlx(&contiguous(&row, None), qw)
+            })
+            .collect();
+        let refs: Vec<&MlxArray> = cols.iter().collect();
+        return Some(concatenate(&refs, 1, None));
+    }
+    None
 }
 
 /// Runtime 2-bit `lm_head` is a decode GEMV. Prefill (S>1) stays on the
@@ -2271,6 +2283,142 @@ mod tests {
             );
             eval(&[&actual, &expected]);
             assert_eq!(actual.data_f32(), expected.data_f32(), "row {row}");
+        }
+    }
+
+    #[test]
+    fn batched_mxfp4_multi_token_without_exact_vs_singleton() {
+        let input_dim = 64i32;
+        let output_dim = 32i32;
+        let seq = 2i32;
+        let weight_data: Vec<f32> = (0..input_dim * output_dim)
+            .map(|index| ((index % 97) as f32 - 48.0) * 0.01171875)
+            .collect();
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
+        let quantized = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        let weight = QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(quantized[1].clone()),
+            biases: None,
+            group_size: 32,
+            bits: 4,
+            mode: "mxfp4".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
+            .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
+            .collect();
+        let input = array_f32(&input_data, &[1, seq, input_dim]);
+        let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let batched = qw(&input, &weight);
+        let mut max_abs = 0.0f32;
+        for t in 0..seq {
+            let start = (t * input_dim) as usize;
+            let single = array_f32(
+                &input_data[start..start + input_dim as usize],
+                &[1, 1, input_dim],
+            );
+            let expected = qw(&single, &weight);
+            let actual = contiguous(
+                &slice(
+                    &batched,
+                    &[0, t, 0],
+                    &[1, t + 1, output_dim],
+                    &[1, 1, 1],
+                    None,
+                ),
+                None,
+            );
+            eval(&[&actual, &expected]);
+            let got = actual.data_f32();
+            let exp = expected.data_f32();
+            for i in 0..got.len() {
+                max_abs = max_abs.max((got[i] - exp[i]).abs());
+            }
+        }
+        eprintln!("batched MXFP4 S=2 vs singleton max_abs={max_abs}");
+        assert!(
+            max_abs < 1.0e-5,
+            "if this fails, batched MXFP4 qmm is not singleton-exact (max_abs={max_abs})"
+        );
+    }
+
+    #[test]
+    fn exact_shared_mxfp4_multi_token_matches_singleton_rows() {
+        let input_dim = 64i32;
+        let output_dim = 32i32;
+        let seq = 2i32;
+        let weight_data: Vec<f32> = (0..input_dim * output_dim)
+            .map(|index| ((index % 97) as f32 - 48.0) * 0.01171875)
+            .collect();
+        let weight = array_f32(&weight_data, &[output_dim, input_dim]);
+        let quantized = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        assert_eq!(quantized.len(), 2, "mxfp4 quant returns [packed, scales]");
+        let weight = QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(quantized[1].clone()),
+            biases: None,
+            group_size: 32,
+            bits: 4,
+            mode: "mxfp4".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
+            .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
+            .collect();
+        let input = array_f32(&input_data, &[1, seq, input_dim]);
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let batched = qw(&input, &weight);
+        for t in 0..seq {
+            let start = (t * input_dim) as usize;
+            let single = array_f32(
+                &input_data[start..start + input_dim as usize],
+                &[1, 1, input_dim],
+            );
+            let expected = qw(&single, &weight);
+            let actual = contiguous(
+                &slice(
+                    &batched,
+                    &[0, t, 0],
+                    &[1, t + 1, output_dim],
+                    &[1, 1, 1],
+                    None,
+                ),
+                None,
+            );
+            eval(&[&actual, &expected]);
+            let got = actual.data_f32();
+            let exp = expected.data_f32();
+            let mut max_abs = 0.0f32;
+            for i in 0..got.len() {
+                max_abs = max_abs.max((got[i] - exp[i]).abs());
+            }
+            assert!(
+                max_abs < 1.0e-5,
+                "MXFP4 exact S>1 Shared qw must match singleton row {t}, max_abs={max_abs}"
+            );
         }
     }
 

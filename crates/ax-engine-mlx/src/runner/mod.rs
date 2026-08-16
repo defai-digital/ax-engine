@@ -840,6 +840,10 @@ pub struct MlxRunner {
     qwen_linear_mtp_exact_eligible: bool,
     qwen_linear_mtp_exact_enabled: bool,
     qwen_linear_mtp_exact_selection: u32,
+    /// MXFP4's verifier arithmetic is exact-capable, but its recurrent
+    /// checkpoint is not sequence-equivalent yet. Formal opt-ins therefore
+    /// stay on singleton replay instead of entering the checkpoint path.
+    qwen_linear_mtp_force_replay: bool,
     /// When true, keep MTP enabled but do not use the n-gram-first draft source
     /// inside the MTP verify loop.
     disable_mtp_ngram_stacking: bool,
@@ -1553,6 +1557,12 @@ impl MlxRunner {
                 loaded
             }
         };
+        let has_mxfp4_linears = artifacts.tensor_specs().iter().any(|tensor| {
+            tensor
+                .quantization
+                .as_ref()
+                .is_some_and(|quantization| quantization.mode == "mxfp4")
+        });
         let qwen_linear_mtp_exact_eligible = qwen_linear_mtp_exact_model_eligible(
             &cfg.model_family,
             cfg.linear_attention.is_some(),
@@ -1589,9 +1599,11 @@ impl MlxRunner {
             // Exact-eligible linear Qwen takes the certified MTP route when
             // speculation is on. `--ax-direct` / disable-ngram stays
             // fail-closed. Env opt-in still wins for formal harnesses.
+            // MXFP4 is exact-capable but not auto-promoted. Formal candidate
+            // env still opts in; checkpoint adopt is the measured exact path.
             qwen_linear_certification_candidate: resolve_qwen_linear_certification_candidate(
                 qwen_linear_mtp_certification_candidate_from_env(),
-                qwen_linear_mtp_exact_enabled,
+                qwen_linear_mtp_exact_enabled && !has_mxfp4_linears,
             ),
             // DeepSeek V4 nextn: same fail-closed product default until Tier 2.
             deepseek_v4_certification_candidate: deepseek_v4_mtp_certification_candidate_from_env(),
@@ -1910,6 +1922,10 @@ impl MlxRunner {
             qwen_linear_mtp_exact_eligible,
             qwen_linear_mtp_exact_enabled,
             qwen_linear_mtp_exact_selection: qwen_linear_mtp_exact_selection.route_code(),
+            // Checkpoint adopt is sequence-equivalent on this pack when the
+            // exact profile skips fused RMS+SiLU Metal. Do not force replay
+            // for MXFP4 — that is ~2× S=1 plus identity drift vs MTP-off.
+            qwen_linear_mtp_force_replay: false,
             disable_mtp_ngram_stacking,
             mtp_optimistic: mtp_optimistic_from_env(),
             mtp_skip_state: mtp_skip_state_from_env(),
@@ -8672,7 +8688,7 @@ impl MlxRunner {
                 let exact_linear_replay = linear_mtp_requires_singleton_replay(
                     pending.len(),
                     crate::fastpath::qwen_linear_mtp_exact_enabled(),
-                    replay_kill_switch,
+                    replay_kill_switch || self.qwen_linear_mtp_force_replay,
                 );
                 let clone_started = Instant::now();
                 let mut verify_cache = state.cache.clone();
@@ -8745,20 +8761,23 @@ impl MlxRunner {
                 // Always compute argmax for the correction/bonus fallback.
                 let predicted_arr = Some(argmax(&logits_all, None));
                 let kv_refs = verify_cache.collect_eval_refs();
-                let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs.len());
-                targets.push(predicted_arr.as_ref().unwrap());
-                targets.push(&post_norm_all);
+                // Accept only needs predicted tokens (and optional target
+                // probs / lazy drafts). Materialising the full verify cache
+                // on a complete miss wastes the reject path; adopt/partial
+                // eval it after the decision.
+                let mut accept_targets: Vec<&MlxArray> = Vec::with_capacity(4);
+                accept_targets.push(predicted_arr.as_ref().unwrap());
+                accept_targets.push(&post_norm_all);
                 if let Some(ref ltp) = lazy_target_probs {
-                    ltp.push_eval_targets(&mut targets);
+                    ltp.push_eval_targets(&mut accept_targets);
                 }
                 if let Some(lazy) = deferred_lazy_draft.as_ref() {
                     for tok in &lazy.tokens {
-                        targets.push(tok);
+                        accept_targets.push(tok);
                     }
                 }
-                targets.extend(kv_refs);
                 let verify_eval_started = Instant::now();
-                eval(&targets);
+                eval(&accept_targets);
                 mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
                 if let Some(lazy) = deferred_lazy_draft.take() {
                     // The eval batch above materialised the draft tokens;
@@ -8830,10 +8849,30 @@ impl MlxRunner {
                         &pending[..ac],
                         token_offset,
                     ))
-                } else if all_accepted && verify_cache.trim_to(token_offset + 1 + ac) {
-                    verify_cache.clear_linear_prefix_checkpoint();
-                    state.cache = verify_cache;
-                    None
+                } else if all_accepted {
+                    // Cache was left lazy during accept. Materialise the
+                    // adopted state now so the next step does not grow an
+                    // unevaluated S=2 graph.
+                    let adopt_eval_started = Instant::now();
+                    eval(&kv_refs);
+                    mtp_timings.verify_eval_wall_us = mtp_timings
+                        .verify_eval_wall_us
+                        .saturating_add(elapsed_us(adopt_eval_started));
+                    drop(kv_refs);
+                    if verify_cache.trim_to(token_offset + 1 + ac) {
+                        verify_cache.clear_linear_prefix_checkpoint();
+                        state.cache = verify_cache;
+                        None
+                    } else {
+                        Some(recompute_committed_prefix_with_argmax(
+                            &self.cfg,
+                            &self.weights,
+                            &mut state.cache,
+                            verify_input[0],
+                            &pending[..ac],
+                            token_offset,
+                        ))
+                    }
                 } else if ac == 0 {
                     // The capture point is the committed prefix (after the
                     // last committed token), so a complete miss restores it
@@ -11987,8 +12026,8 @@ const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
 
 /// Exact arithmetic is the speculative-verifier contract.
 ///
-/// An exact-eligible pack (AXQ sidecar, affine 4/6/8) auto-selects the
-/// profile at load time. Applying that profile on `--ax-direct` skips the
+/// An exact-eligible pack (AXQ sidecar, affine 4/6/8, or MXFP4 gs32) auto-selects
+/// the profile at load time. Applying that profile on `--ax-direct` skips the
 /// packed linear-attention inputs route and other fused S=1 kernels. Direct
 /// decode therefore keeps the community-4-bit fast path; MTP still installs
 /// the verifier contract when `mtp_requested` is on.
@@ -12005,7 +12044,8 @@ fn qwen_linear_mtp_exact_tensor_supported(
 ) -> bool {
     match quantization {
         Some((mode, bits, group_size)) => {
-            mode == "affine" && matches!(bits, 4 | 6 | 8) && matches!(group_size, 32 | 64)
+            (mode == "affine" && matches!(bits, 4 | 6 | 8) && matches!(group_size, 32 | 64))
+                || (mode == "mxfp4" && bits == 4 && group_size == 32)
         }
         // Dense BF16/F16/F32 projections are covered by the invariant dense
         // kernel. A tensor marked source-quantized without normalized affine
@@ -12019,8 +12059,11 @@ fn qwen_linear_mtp_exact_tensor_supported(
 /// This intentionally derives from the loaded model contract rather than an
 /// artifact's marketing/runtime recommendation. Qwen3.5 and Qwen3.6 share the
 /// `qwen3_5` runtime family. The invariant kernels and recurrent checkpoint are
-/// certified for draft depths 1-3 and dense or affine 4/6/8-bit tensors with
-/// the production group sizes used by uniform, OptiQ, and AXQ artifacts.
+/// certified for draft depths 1-3 and dense, affine 4/6/8-bit, or MXFP4
+/// (bits=4, group_size=32) tensors with the production group sizes used by
+/// uniform, OptiQ, and AXQ artifacts. MXFP4 uses the mode-aware MLX qmm
+/// path (no affine group-bias channel); the invariant affine Metal kernel
+/// does not host it.
 fn qwen_linear_mtp_exact_model_eligible(
     model_family: &str,
     has_linear_attention: bool,
@@ -13892,6 +13935,10 @@ mod tests {
             Some(("affine", 8, 64))
         ));
         assert!(qwen_linear_mtp_exact_tensor_supported(false, None));
+        assert!(qwen_linear_mtp_exact_tensor_supported(
+            true,
+            Some(("mxfp4", 4, 32))
+        ));
     }
 
     #[test]
@@ -13901,7 +13948,8 @@ mod tests {
             Some(("affine", 3, 64)),
             Some(("affine", 5, 64)),
             Some(("affine", 6, 128)),
-            Some(("mxfp4", 4, 32)),
+            Some(("mxfp4", 4, 64)),
+            Some(("mxfp8", 8, 32)),
         ] {
             assert!(
                 !qwen_linear_mtp_exact_tensor_supported(true, quantization),

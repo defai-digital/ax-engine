@@ -1061,6 +1061,9 @@ pub(crate) fn should_upcast_multi_token_sdpa_to_f32(seq: usize) -> bool {
     fastpath::multi_token_f32_attention_enabled()
         && seq > 1
         && !super::utils::qwen_prefill_skip_f32_sdpa_active()
+        // Exact Qwen linear MTP verify: factory MXFP4 A/B kept the same
+        // tokens with f32 upcast off. Skip the extra cast on S=2..4.
+        && !(fastpath::qwen_linear_mtp_exact_enabled() && (2..=4).contains(&seq))
 }
 
 /// Attention with per-head learned sinks (GPT-OSS).
