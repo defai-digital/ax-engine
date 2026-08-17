@@ -669,6 +669,11 @@ impl EngineSession {
         self.runtime.clone()
     }
 
+    /// Whether `auto`/`on` resolved this native model onto SSD expert paging.
+    pub fn native_expert_streaming_active(&self) -> bool {
+        self.core.native_expert_streaming_active()
+    }
+
     pub fn core(&self) -> &EngineCore {
         &self.core
     }

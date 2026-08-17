@@ -751,6 +751,14 @@ type EmbedBatchCompileKey = (ThreadId, usize, usize, Option<Vec<usize>>, bool);
 /// (thread_id, batch_size, max_seq_len)
 type EmbedMeanPoolCompileKey = (ThreadId, usize, usize);
 
+fn should_run_load_time_generation_warmup(
+    is_encoder_embed_family: bool,
+    reused_shared_weights: bool,
+    expert_streaming_active: bool,
+) -> bool {
+    !is_encoder_embed_family && !reused_shared_weights && !expert_streaming_active
+}
+
 /// EmbeddingGemma compiled batch closure output contract.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum EmbedGemmaBatchCompileKind {
@@ -1609,6 +1617,7 @@ impl MlxRunner {
             deepseek_v4_certification_candidate: deepseek_v4_mtp_certification_candidate_from_env(),
         });
 
+        let expert_streaming_active = weights.expert_stream.is_some();
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
         let affine_quant_telemetry = AffineQuantBitsTelemetry::from_specs(artifacts.tensor_specs());
 
@@ -1699,7 +1708,17 @@ impl MlxRunner {
         // contract.
         let is_encoder_embed_family =
             cfg.model_family == "embeddinggemma" || cfg.model_family == "nemotron_embed";
-        if !is_encoder_embed_family && !reused_shared_weights {
+        // A streamed model must not run the resident-model JIT warmup suite.
+        // Every forward below walks all MoE layers, so even a tiny dummy
+        // request performs a complete SSD expert sweep. The server also skips
+        // its production-path warmups using the resolved worker state. The
+        // first real request pays the one necessary cold sweep instead of
+        // startup performing dozens of hidden sweeps.
+        if should_run_load_time_generation_warmup(
+            is_encoder_embed_family,
+            reused_shared_weights,
+            expert_streaming_active,
+        ) {
             let mut dummy_cache = MlxKVCache::new(cfg.layer_count);
             let mut dummy_rng = Xorshift64::new(0);
             decode_step(
@@ -3668,6 +3687,10 @@ impl ExecutionRunner for MlxRunner {
 
     fn native_model_binding_summary(&self) -> Option<NativeModelBindingSummary> {
         Some(self.binding_summary)
+    }
+
+    fn native_expert_streaming_active(&self) -> bool {
+        self.weights.expert_stream.is_some()
     }
 
     fn release_request_state(&self, request_id: RequestId) {
@@ -16122,6 +16145,14 @@ mod tests {
         assert_eq!(summary.source_q5_k_binding_count, 0);
         assert_eq!(summary.source_q6_k_binding_count, 0);
         assert_eq!(summary.source_q8_0_binding_count, 0);
+    }
+
+    #[test]
+    fn load_time_generation_warmup_skips_streamed_experts() {
+        assert!(should_run_load_time_generation_warmup(false, false, false));
+        assert!(!should_run_load_time_generation_warmup(false, false, true));
+        assert!(!should_run_load_time_generation_warmup(false, true, false));
+        assert!(!should_run_load_time_generation_warmup(true, false, false));
     }
 
     fn unit_weight() -> QuantizedWeight {

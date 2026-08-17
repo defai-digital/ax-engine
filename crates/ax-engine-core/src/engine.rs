@@ -262,6 +262,10 @@ impl EngineCore {
         self.runner.native_model_binding_summary()
     }
 
+    pub fn native_expert_streaming_active(&self) -> bool {
+        self.runner.native_expert_streaming_active()
+    }
+
     pub fn embed(
         &self,
         token_ids: &[u32],

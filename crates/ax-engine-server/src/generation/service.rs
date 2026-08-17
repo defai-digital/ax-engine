@@ -519,6 +519,7 @@ impl ServiceCommand {
 
 struct ServiceState {
     alive: AtomicBool,
+    expert_streaming_active: AtomicBool,
     pending_jobs: AtomicUsize,
     queued_commands: AtomicUsize,
     active_streams: AtomicUsize,
@@ -591,6 +592,7 @@ impl NativeGenerationService {
         let (startup_sender, startup_receiver) = std::sync::mpsc::sync_channel(1);
         let state = Arc::new(ServiceState {
             alive: AtomicBool::new(false),
+            expert_streaming_active: AtomicBool::new(false),
             pending_jobs: AtomicUsize::new(0),
             queued_commands: AtomicUsize::new(0),
             active_streams: AtomicUsize::new(0),
@@ -771,6 +773,10 @@ impl NativeGenerationService {
 
     pub(crate) fn is_ready(&self) -> bool {
         self.state.alive.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn expert_streaming_active(&self) -> bool {
+        self.state.expert_streaming_active.load(Ordering::Acquire)
     }
 
     pub(crate) fn is_busy(&self) -> bool {
@@ -972,6 +978,9 @@ fn run_worker(
         }
     };
     let runtime_report = session.runtime_report();
+    state
+        .expert_streaming_active
+        .store(session.native_expert_streaming_active(), Ordering::Release);
     state.alive.store(true, Ordering::Release);
     if startup_sender.send(Ok(runtime_report)).is_err() {
         return;
@@ -2570,6 +2579,7 @@ mod tests {
     fn failed_enqueue_rollback_tolerates_worker_exit_reset() {
         let state = ServiceState {
             alive: AtomicBool::new(false),
+            expert_streaming_active: AtomicBool::new(false),
             pending_jobs: AtomicUsize::new(1),
             queued_commands: AtomicUsize::new(1),
             active_streams: AtomicUsize::new(0),

@@ -359,6 +359,16 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     fn native_model_binding_summary(&self) -> Option<NativeModelBindingSummary> {
         None
     }
+
+    /// Whether this runner resolved the model onto SSD expert streaming.
+    ///
+    /// This is runtime state rather than a caller request: `auto` can resolve
+    /// to either resident weights or paging after the manifest and host memory
+    /// are inspected. Servers use the resolved value to avoid resident-model
+    /// warmup loops that would otherwise perform many full SSD sweeps.
+    fn native_expert_streaming_active(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) fn successful_runner_output_from_input(input: &RunnerInput) -> RunnerOutput {

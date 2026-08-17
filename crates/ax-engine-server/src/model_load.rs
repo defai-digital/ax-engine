@@ -1203,7 +1203,8 @@ fn validate_unload_preflight(state: &AppState, model_id: &str) -> Result<(), Htt
 
 /// Re-run production-path warmup on every resident except `skip_model_id`.
 /// Dual-resident memory pressure can cool interactive first-token latency;
-/// two warm passes stabilize S2 TTFT toward the S0 envelope.
+/// two warm passes stabilize S2 TTFT toward the S0 envelope. Streamed models
+/// are excluded because each pass would sweep every expert layer from SSD.
 fn rewarm_sibling_residents(state: &AppState, skip_model_id: &str) {
     for resident in state.snapshots() {
         if resident.model_id.as_ref() == skip_model_id {
@@ -1214,6 +1215,7 @@ fn rewarm_sibling_residents(state: &AppState, skip_model_id: &str) {
             .resolved_backend
             .selected_backend
             .is_mlx()
+            || resident.generation_service.expert_streaming_active()
         {
             continue;
         }
@@ -1241,6 +1243,7 @@ fn rewarm_published_long_prefill(state: &AppState, model_id: &str) {
         .resolved_backend
         .selected_backend
         .is_mlx()
+        || resident.generation_service.expert_streaming_active()
     {
         return;
     }

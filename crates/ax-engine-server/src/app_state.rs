@@ -1076,7 +1076,12 @@ fn build_live_state_inner(
     // generation POST during control-plane startup; they use readiness probes
     // only. Failure is non-fatal — the model remains usable and the caller just
     // sees cold TTFT.
-    if session_config.resolved_backend.selected_backend.is_mlx() {
+    // Resident-model warmups are deliberately skipped after the worker
+    // reports resolved expert paging: every nominally small request would
+    // otherwise trigger a complete SSD expert sweep.
+    if session_config.resolved_backend.selected_backend.is_mlx()
+        && !generation_service.expert_streaming_active()
+    {
         // First process-lifetime load of a model id pays the production-path
         // warm. Reloads (flip S2) skip it — OS page cache + prior JIT already
         // paid, and re-warming dominated S2 thr (~8s/load with long shapes).
