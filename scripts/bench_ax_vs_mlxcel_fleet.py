@@ -79,6 +79,31 @@ WAVE1 = {
         "family": "qwen3_next",
         "mtp": False,
     },
+    "muse-glimmer-30b": {
+        "repo": "mlx-community/Muse-Glimmer-30B-4bit",
+        "family": "muse_glimmer",
+        "mtp": False,
+    },
+    # Wave-2 AXQ lanes (PRD §4 Wave 2): catalog-pinned AutomatosX packs.
+    # Revisions mirror docs/SUPPORTED-MODELS.md; do not re-pin here.
+    "qwen3.6-27b-axq": {
+        "repo": "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
+        "revision": "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc",
+        "family": "qwen3_5",
+        "mtp": True,
+    },
+    "qwen36-35b-axq": {
+        "repo": "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
+        "revision": "6a4c220734f81112555ee8783d91e0065c54301c",
+        "family": "qwen3_5",
+        "mtp": True,
+    },
+    "muse-glimmer-30b-axq": {
+        "repo": "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
+        "revision": "bcfb0b748fc44487c1657fb6ae190592d515398b",
+        "family": "muse_glimmer",
+        "mtp": False,
+    },
 }
 
 
@@ -96,10 +121,15 @@ def pack_dir_looks_complete(path: Path) -> bool:
     )
 
 
-def hub_snapshot(repo_id: str) -> Path | None:
+def hub_snapshot(repo_id: str, revision: str | None = None) -> Path | None:
     dirname = "models--" + repo_id.replace("/", "--")
     snaps = HF_HUB / dirname / "snapshots"
     if not snaps.is_dir():
+        return None
+    if revision:
+        candidate = snaps / revision
+        if pack_dir_looks_complete(candidate):
+            return candidate
         return None
     refs = snaps.parent / "refs" / "main"
     if refs.is_file():
@@ -140,7 +170,8 @@ def resolve_snapshot(
                 return candidate
     repo = spec.get("repo")
     if isinstance(repo, str) and repo:
-        return hub_snapshot(repo)
+        revision = spec.get("revision")
+        return hub_snapshot(repo, revision if isinstance(revision, str) else None)
     return None
 
 

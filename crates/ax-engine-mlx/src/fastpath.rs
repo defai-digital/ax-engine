@@ -3883,7 +3883,9 @@ env_flag!(
 
 env_flag_default_on!(
     /// `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_F32_SDPA` — keep Qwen prefill SDPA
-    /// in the model dtype at `seq >= 1024`. `AX_MLX_MULTI_TOKEN_F32_ATTENTION`
+    /// in the model dtype at `seq >= 128` (was `>= 1024`; lowered to the
+    /// Gemma 4 contract gate for the fleet short-prefill miss — p128/p512
+    /// paid the upcast on every full-attn layer). `AX_MLX_MULTI_TOKEN_F32_ATTENTION`
     /// is default-ON for Gemma short teacher-forced verify; on 27B prefill
     /// it upcasts every full-attn Q/K/V to f32 (16 layers × two 1024
     /// chunks). Decode `seq==1` and short MTP verify stay on the Gemma
@@ -4031,13 +4033,20 @@ pub fn should_qwen_prefill_skip_unused_f32_sdpa(model_family: &str, seq: i32) ->
 }
 
 /// Pure helper for [`should_qwen_prefill_skip_unused_f32_sdpa`].
+///
+/// Contract-prefill gate is `seq >= 128`, mirroring
+/// [`should_gemma4_prefill_skip_unused_f32_sdpa_for`]: the f32 upcast exists
+/// for short teacher-forced MTP verify (`seq` 2..=8), and decode `seq == 1`
+/// never arms the guard. The former `seq >= 1024` gate left every p128/p512
+/// full-attention layer paying a Q/K/V f32 round-trip that mlxcel never pays
+/// (PRD-M5-FLEET-AX-VS-MLXCEL short-prefill miss).
 pub fn should_qwen_prefill_skip_unused_f32_sdpa_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
 ) -> bool {
     enabled
-        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && seq >= 128
         && matches!(
             model_family.to_ascii_lowercase().as_str(),
             "qwen3_5" | "qwen3_next"
@@ -4796,9 +4805,13 @@ pub fn long_prompt_prefill_chunk() -> usize {
 /// `qwen3_5` (Qwen 3.5/3.6 linear 27B) splits a 2048-token prefill into
 /// four evals and is the p2048 cell that misses mlx_lm. Decode on this
 /// family is not SWA-ring-bound, so the Gemma decode penalty does not
-/// apply. Other families keep the historical clamp.
+/// apply. `muse_glimmer` is exempt for the same shape reason: its sliding
+/// window is 2048, so a 512-token clamp buys no SWA trimming below the
+/// window and only splits a 2048-token prefill into four evals. Other
+/// families keep the historical clamp.
 pub fn long_prompt_prefill_clamp_applies(model_family: &str) -> bool {
-    !model_family.eq_ignore_ascii_case("qwen3_5")
+    !(model_family.eq_ignore_ascii_case("qwen3_5")
+        || model_family.eq_ignore_ascii_case("muse_glimmer"))
 }
 
 /// Scale a base prefill chunk for the remaining prompt length.
@@ -4823,6 +4836,9 @@ pub fn should_clear_mlx_cache_before_cold_prefill(seq_len: usize) -> bool {
 /// mlxcel-bench-decode does a single 128/512/2048 forward. On
 /// `df-macbookpro-m5` Wave-1 that split left Gemma 4 E2B p128 at 0.35×
 /// mlxcel. Skip it for Certified non-DeepSeek families up to 2048.
+/// `muse_glimmer` (dense standard route, SWA window 2048 ≥ every contract
+/// shape) joins the list for the Wave-2 AXQ lane: its split cost is the
+/// same two-forward shape, and its sliding window never trims below 2048.
 pub fn skip_cache_only_split_for_family(model_family: &str, total_tokens: usize) -> bool {
     if !(1..=2048).contains(&total_tokens) {
         return false;
@@ -4830,6 +4846,7 @@ pub fn skip_cache_only_split_for_family(model_family: &str, total_tokens: usize)
     matches!(
         model_family.to_ascii_lowercase().as_str(),
         "qwen3_5" | "qwen3_next" | "qwen3" | "gemma4" | "glm4_moe_lite" | "gpt_oss"
+            | "muse_glimmer"
     )
 }
 
@@ -6505,8 +6522,19 @@ mod tests {
             "qwen3_next",
             2048
         ));
-        assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
+        assert!(
+            should_qwen_prefill_skip_unused_f32_sdpa_for(true, "qwen3_5", 128),
+            "contract p128 prefill must skip the f32 upcast"
+        );
+        assert!(should_qwen_prefill_skip_unused_f32_sdpa_for(
             true, "qwen3_5", 512
+        ));
+        assert!(
+            !should_qwen_prefill_skip_unused_f32_sdpa_for(true, "qwen3_5", 8),
+            "short MTP verify must keep f32 SDPA"
+        );
+        assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
+            true, "qwen3_5", 127
         ));
         assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
             true, "gemma4", 1024
@@ -8008,10 +8036,15 @@ mod tests {
     fn long_prompt_prefill_clamp_skips_qwen3_5() {
         assert!(!long_prompt_prefill_clamp_applies("qwen3_5"));
         assert!(!long_prompt_prefill_clamp_applies("QWEN3_5"));
+        assert!(!long_prompt_prefill_clamp_applies("muse_glimmer"));
         assert!(long_prompt_prefill_clamp_applies("gemma4"));
         assert!(long_prompt_prefill_clamp_applies("qwen3_next"));
         assert_eq!(
             scale_prefill_chunk_for_remaining_in_family(2048, 2048, "qwen3_5"),
+            2048
+        );
+        assert_eq!(
+            scale_prefill_chunk_for_remaining_in_family(2048, 2048, "muse_glimmer"),
             2048
         );
         assert_eq!(
@@ -8105,6 +8138,7 @@ mod tests {
             "gemma4",
             "glm4_moe_lite",
             "gpt_oss",
+            "muse_glimmer",
         ] {
             assert!(
                 skip_cache_only_split_for_family(family, 128),

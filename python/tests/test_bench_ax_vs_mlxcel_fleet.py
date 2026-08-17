@@ -31,6 +31,7 @@ def test_wave1_excludes_deepseek_and_covers_certified_text_families() -> None:
         "gemma4",
         "glm4_moe_lite",
         "gpt_oss",
+        "muse_glimmer",
     }
     assert "qwen3.6-27b" in ids
     assert "gemma4-12b" in ids
@@ -40,6 +41,17 @@ def test_wave1_excludes_deepseek_and_covers_certified_text_families() -> None:
     assert "AXQ" in mod.WAVE1["gemma4-12b"]["repo"]
     assert "AXQ" in mod.WAVE1["gemma4-26b"]["repo"]
     assert "AXQ" in mod.WAVE1["gemma4-31b"]["repo"]
+    # Wave-2 AXQ lanes stay catalog-pinned (docs/SUPPORTED-MODELS.md).
+    assert mod.WAVE1["qwen3.6-27b-axq"]["revision"] == (
+        "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"
+    )
+    assert mod.WAVE1["qwen36-35b-axq"]["revision"] == (
+        "6a4c220734f81112555ee8783d91e0065c54301c"
+    )
+    assert mod.WAVE1["muse-glimmer-30b-axq"]["revision"] == (
+        "bcfb0b748fc44487c1657fb6ae190592d515398b"
+    )
+    assert mod.WAVE1["muse-glimmer-30b"]["repo"] == "mlx-community/Muse-Glimmer-30B-4bit"
 
 
 def test_parse_mlxcel_log_reads_prefill_and_decode(tmp_path: Path) -> None:
@@ -112,6 +124,34 @@ def test_resolve_snapshot_prefers_local_root_over_stub_hub(tmp_path: Path) -> No
     finally:
         mod.HF_HUB = original_hub
     assert got == pack
+
+
+def test_resolve_snapshot_pinned_revision_ignores_refs_main(tmp_path: Path) -> None:
+    mod = _load()
+    repo_dir = tmp_path / "hub" / "models--AutomatosX--AX-Pinned-Test"
+    pinned = repo_dir / "snapshots" / "aaaa1111"
+    newer = repo_dir / "snapshots" / "bbbb2222"
+    for snap in (pinned, newer):
+        snap.mkdir(parents=True)
+        (snap / "config.json").write_text("{}")
+        (snap / "model-00001-of-00001.safetensors").write_bytes(b"w" * 1_000_001)
+    refs = repo_dir / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("bbbb2222")
+
+    original_hub = mod.HF_HUB
+    mod.HF_HUB = tmp_path / "hub"
+    try:
+        got = mod.resolve_snapshot(
+            {"repo": "AutomatosX/AX-Pinned-Test", "revision": "aaaa1111"}
+        )
+        missing = mod.resolve_snapshot(
+            {"repo": "AutomatosX/AX-Pinned-Test", "revision": "cccc3333"}
+        )
+    finally:
+        mod.HF_HUB = original_hub
+    assert got == pinned
+    assert missing is None
 
 
 def test_resolve_snapshot_explicit_local_dir(tmp_path: Path) -> None:
