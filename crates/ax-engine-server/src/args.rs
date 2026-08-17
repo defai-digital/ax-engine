@@ -110,6 +110,13 @@ pub struct ServerArgs {
     #[arg(long = "max-batch-tokens", default_value_t = 2048)]
     pub max_batch_tokens: u32,
 
+    /// Per-request output budget advertised via `/v1/models`
+    /// (`max_output_tokens`). This only controls the advertisement clients bind
+    /// their output budgets to; it does not change request admission or the
+    /// scheduler batch width. Defaults to `--max-batch-tokens` when unset.
+    #[arg(long = "max-output-tokens")]
+    pub max_output_tokens: Option<u32>,
+
     #[arg(long = "cache-group-id", default_value_t = 0)]
     pub cache_group_id: u16,
 

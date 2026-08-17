@@ -279,6 +279,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         list_presets: false,
         deterministic: true,
         max_batch_tokens: 2048,
+        max_output_tokens: None,
         cache_group_id: 0,
         block_size_tokens: 16,
         total_blocks: 1024,

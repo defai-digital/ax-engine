@@ -112,6 +112,7 @@ impl ServerArgs {
             total_blocks: self.total_blocks,
             deterministic: self.deterministic,
             max_batch_tokens: effective_max_batch_tokens,
+            max_output_tokens: self.max_output_tokens,
             backend_request,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir,

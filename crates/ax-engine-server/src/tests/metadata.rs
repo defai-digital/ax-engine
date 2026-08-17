@@ -8,6 +8,7 @@ use std::path::Path;
 
 use super::fixtures::{
     json_response, llama_cpp_state, minimal_tokenizer_artifact, native_mlx_openai_builder_state,
+    test_app_state,
 };
 
 #[tokio::test]
@@ -43,6 +44,50 @@ async fn models_reports_ax_code_safe_capabilities() {
     );
     assert_eq!(model["context_length"], json!(16 * 1024u32));
     assert_eq!(model["limit"]["output"], json!(2048u32));
+}
+
+#[tokio::test]
+async fn models_advertises_explicit_max_output_tokens_override() {
+    let app = build_router(test_app_state(|args| {
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+        args.max_output_tokens = Some(4096);
+    }));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let model = &json["data"][0];
+    assert_eq!(model["max_output_tokens"], json!(4096u32));
+    assert_eq!(model["limit"]["output"], json!(4096u32));
+}
+
+#[tokio::test]
+async fn models_falls_back_to_max_batch_tokens_for_max_output_tokens() {
+    let app = build_router(test_app_state(|args| {
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+        args.max_batch_tokens = 1024;
+    }));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let model = &json["data"][0];
+    assert_eq!(model["max_output_tokens"], json!(1024u32));
+    assert_eq!(model["limit"]["output"], json!(1024u32));
 }
 
 #[tokio::test]

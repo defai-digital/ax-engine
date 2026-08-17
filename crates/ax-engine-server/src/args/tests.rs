@@ -53,6 +53,7 @@ fn base_args() -> ServerArgs {
         list_presets: false,
         deterministic: true,
         max_batch_tokens: 2048,
+        max_output_tokens: None,
         cache_group_id: 0,
         block_size_tokens: 16,
         total_blocks: 1024,
@@ -100,6 +101,7 @@ fn assert_configs_match(actual: &EngineSessionConfig, expected: &EngineSessionCo
     assert_eq!(actual.kv_config, expected.kv_config);
     assert_eq!(actual.deterministic, expected.deterministic);
     assert_eq!(actual.max_batch_tokens, expected.max_batch_tokens);
+    assert_eq!(actual.max_output_tokens, expected.max_output_tokens);
     assert_eq!(actual.backend_policy, expected.backend_policy);
     assert_eq!(actual.resolved_backend, expected.resolved_backend);
     assert_eq!(actual.llama_backend, expected.llama_backend);
@@ -189,6 +191,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         total_blocks: 2048,
         deterministic: true,
         max_batch_tokens: 2048,
+        max_output_tokens: None,
         mlx_runtime_artifacts_dir: None,
         mlx_model_artifacts_dir: None,
         mlx_mtp_policy: MlxMtpPolicy::Auto,
@@ -236,6 +239,7 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         total_blocks: 512,
         deterministic: false,
         max_batch_tokens: 1024,
+        max_output_tokens: None,
         mlx_runtime_artifacts_dir: None,
         mlx_model_artifacts_dir: None,
         mlx_mtp_policy: MlxMtpPolicy::Auto,
@@ -358,6 +362,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
         total_blocks: 1024,
         deterministic: true,
         max_batch_tokens: 2048,
+        max_output_tokens: None,
         mlx_runtime_artifacts_dir: None,
         mlx_model_artifacts_dir: None,
         mlx_mtp_policy: MlxMtpPolicy::Auto,

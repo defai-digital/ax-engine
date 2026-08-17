@@ -743,6 +743,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         total_blocks: 2048,
         deterministic: false,
         max_batch_tokens: 4096,
+        max_output_tokens: None,
         backend_policy: BackendPolicy::allow_llama_cpp(),
         resolved_backend: ResolvedBackend::llama_cpp(
             SelectedBackend::LlamaCpp,
