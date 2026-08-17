@@ -292,6 +292,7 @@ impl NativeTensorRole {
                 | Self::AttentionKvANorm
                 | Self::AttentionEmbedQ
                 | Self::AttentionUnembedOut
+                | Self::AttentionOutputGate
                 | Self::AttentionO
                 | Self::LinearAttentionInProjQkv
                 | Self::LinearAttentionInProjQkvz

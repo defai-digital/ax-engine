@@ -7528,6 +7528,11 @@ fn converts_muse_glimmer_with_scalar_contract_and_gate() {
         2,
         "each layer's self_attn.gate_proj must map to AttentionOutputGate"
     );
+    // The generated manifest must survive loader validation (the server's
+    // AutoConvert path rejects e.g. per-layer roles missing from the
+    // requires_layer_index list).
+    crate::model::validate_native_model_manifest(&dir, &manifest)
+        .expect("muse manifest must pass loader validation");
 
     let _ = fs::remove_dir_all(dir);
 }
