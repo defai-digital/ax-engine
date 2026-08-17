@@ -347,10 +347,21 @@ pub(super) fn mtp_ngram_stacking_env() -> MtpNgramStackingEnv {
 /// the var unset and sets `AX_MLX_QWEN_LINEAR_MTP_EXACT=1`; general-long
 /// ignore_eos then loops special tokens that n-gram can accept and MTP
 /// cannot (~51%). Explicit `=1` still forces isolated MTP.
+///
+/// `runner_disabled` is the session/CLI contract (`--mlx-mtp-disable-ngram-
+/// stacking` → `MlxRunner::disable_mtp_ngram_stacking`). It must gate here
+/// and not only in the coalesced-verify route: the harness pure-MTP row
+/// (CLI flag, env unset) otherwise still fires n-gram drafts and trips its
+/// zero-n-gram contract (observed 105 hit steps on qwen3.8-27b-axq-4bit,
+/// 2026-08-16).
 pub(super) fn mtp_ngram_stacking_allowed(
     env: MtpNgramStackingEnv,
     qwen_linear_mtp_exact: bool,
+    runner_disabled: bool,
 ) -> bool {
+    if runner_disabled {
+        return false;
+    }
     match env {
         MtpNgramStackingEnv::ExplicitlyEnabled => true,
         MtpNgramStackingEnv::ExplicitlyDisabled => false,
@@ -679,20 +690,39 @@ mod tests {
     #[test]
     fn exact_qwen_linear_mtp_stacks_ngram_when_env_unset() {
         assert!(
-            mtp_ngram_stacking_allowed(MtpNgramStackingEnv::Unset, true),
+            mtp_ngram_stacking_allowed(MtpNgramStackingEnv::Unset, true, false),
             "official Qwen38 exact --full leaves DISABLE_NGRAM_STACKING unset"
         );
         assert!(
-            !mtp_ngram_stacking_allowed(MtpNgramStackingEnv::Unset, false),
+            !mtp_ngram_stacking_allowed(MtpNgramStackingEnv::Unset, false, false),
             "non-exact unset keeps historical pure-MTP benches"
         );
         assert!(!mtp_ngram_stacking_allowed(
             MtpNgramStackingEnv::ExplicitlyDisabled,
-            true
+            true,
+            false
         ));
         assert!(mtp_ngram_stacking_allowed(
             MtpNgramStackingEnv::ExplicitlyEnabled,
+            false,
             false
+        ));
+    }
+
+    #[test]
+    fn runner_cli_flag_disables_stacking_regardless_of_env() {
+        // --mlx-mtp-disable-ngram-stacking reaches the runner as a session
+        // field, not the env var; it must still suppress n-gram stacking
+        // (harness pure-MTP rows rely on the CLI flag alone).
+        assert!(!mtp_ngram_stacking_allowed(
+            MtpNgramStackingEnv::Unset,
+            true,
+            true
+        ));
+        assert!(!mtp_ngram_stacking_allowed(
+            MtpNgramStackingEnv::ExplicitlyEnabled,
+            true,
+            true
         ));
     }
 

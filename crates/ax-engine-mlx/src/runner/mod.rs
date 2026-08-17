@@ -9942,12 +9942,14 @@ impl MlxRunner {
             let mtp_post_think_guarded =
                 self.cfg.think_start_token_id.is_some() && !think_state_after_result;
             // Pure-MTP override: explicit AX_MLX_MTP_DISABLE_NGRAM_STACKING=1
-            // still skips n-gram. Unset + exact Qwen linear MTP allows
+            // or the session-level --mlx-mtp-disable-ngram-stacking flag still
+            // skips n-gram. Unset + exact Qwen linear MTP allows
             // stacking — official Qwen38 --full leaves the var unset and
             // general-long ignore_eos is a special-token loop n-gram can hit.
             let mut ngram_max = if !mtp_ngram_stacking_allowed(
                 mtp_ngram_stacking_env(),
                 crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                self.disable_mtp_ngram_stacking,
             ) {
                 0
             } else {
@@ -10119,6 +10121,7 @@ impl MlxRunner {
             let cycle_tok = if mtp_ngram_stacking_allowed(
                 mtp_ngram_stacking_env(),
                 crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                self.disable_mtp_ngram_stacking,
             ) {
                 // `result` is only this step; the loop lives in generated_tokens.
                 short_cycle_next_token_from_parts(&state.generated_tokens, &result)
@@ -14105,6 +14108,22 @@ mod tests {
         // When mtp_requested is wrongly left true, the *predicate* fails, which
         // is why decode_one also forces pipeline from disable_ngram alone.
         assert!(!should_use_session_direct_pipeline(true, true, true, true));
+    }
+
+    #[test]
+    fn v4_uncertified_fallback_uses_pure_direct_even_when_ngram_is_on() {
+        assert!(v4_uncertified_uses_pure_direct_pipeline(
+            true, false, false, false, true
+        ));
+        assert!(!v4_uncertified_uses_pure_direct_pipeline(
+            false, false, false, false, true
+        ));
+        assert!(!v4_uncertified_uses_pure_direct_pipeline(
+            true, false, false, true, true
+        ));
+        assert!(v4_uncertified_uses_pure_direct_pipeline(
+            false, true, false, false, true
+        ));
     }
 
     #[test]
