@@ -139,6 +139,20 @@ class RepairMlxMetallibWheelTests(unittest.TestCase):
             self.assertNotIn(STAGED_LIBJACCL, archive.namelist())
             self.assertEqual(archive.read(FINAL_LIBJACCL), b"jaccl-library")
 
+    def test_prefers_delocate_rewritten_libjaccl(self) -> None:
+        self._write_wheel(
+            include_final_jaccl=True,
+            final_jaccl_data=b"delocate-rewritten-jaccl-library",
+        )
+
+        self.assertTrue(repair_wheel(self.wheel))
+        with zipfile.ZipFile(self.wheel) as archive:
+            self.assertNotIn(STAGED_LIBJACCL, archive.namelist())
+            self.assertEqual(
+                archive.read(FINAL_LIBJACCL),
+                b"delocate-rewritten-jaccl-library",
+            )
+
     def test_rejects_signed_record(self) -> None:
         self._write_wheel(signed=True)
         with self.assertRaisesRegex(WheelRepairError, "signed RECORD"):

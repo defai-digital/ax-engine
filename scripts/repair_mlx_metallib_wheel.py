@@ -32,6 +32,13 @@ STAGED_TO_FINAL = {
     STAGED_METALLIB: FINAL_METALLIB,
     STAGED_LIBJACCL: FINAL_LIBJACCL,
 }
+# Delocate may discover libjaccl through a native extension and rewrite its
+# Mach-O load commands while copying it into the final directory.  In that
+# case the final member is the dependency delocate actually wired into the
+# wheel, so its bytes legitimately differ from the untouched staging copy.
+# Other companions (notably mlx.metallib) are not rewritten and must still
+# match exactly if both locations are present.
+DELOCATE_AUTHORITATIVE_STAGED = frozenset({STAGED_LIBJACCL})
 RECORD_HASH_ALGORITHMS = frozenset({"sha256", "sha384", "sha512"})
 
 
@@ -219,7 +226,11 @@ def repair_wheel(wheel: Path) -> bool:
     with zipfile.ZipFile(wheel) as archive:
         for staged in staged_names:
             final = STAGED_TO_FINAL[staged]
-            if final in by_name and not _members_equal(archive, by_name[staged], by_name[final]):
+            if (
+                final in by_name
+                and staged not in DELOCATE_AUTHORITATIVE_STAGED
+                and not _members_equal(archive, by_name[staged], by_name[final])
+            ):
                 raise WheelRepairError(
                     f"wheel contains conflicting temporary and final runtime companions: "
                     f"{staged}, {final}"
