@@ -580,6 +580,28 @@ pub fn qwen_linear_mtp_exact_enabled() -> bool {
     })
 }
 
+/// Widest sequence shape the exact verifier contract covers: S=1 singleton
+/// replay plus S=2..=4 verify (`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS` = 3
+/// drafts + bonus token).
+pub const QWEN_LINEAR_MTP_EXACT_MAX_EXACT_SEQ: i32 = 4;
+
+/// Exact-contract check scoped to the decode shapes the verify/replay
+/// invariant actually constrains. The invariant is between the S=2..=4
+/// verify forward and the S=1 in-session singleton replay — both consume the
+/// same cache state, so it holds regardless of how earlier prefill chunks
+/// (seq > 4) computed their projections. Callers guarding fusion decisions
+/// that also affect prefill must use this seq-aware variant so fused prefill
+/// kernels stay enabled under the exact profile; callers guarding
+/// decode-only paths keep [`qwen_linear_mtp_exact_enabled`].
+///
+/// Caveat: fused prefill can flip greedy argmax on near-ties, so a run under
+/// the narrowed scope is a new configuration whose token stream may differ
+/// from the fully de-fused one — the verify/replay correctness mode is
+/// unaffected.
+pub fn qwen_linear_mtp_exact_for_seq(seq: i32) -> bool {
+    qwen_linear_mtp_exact_enabled() && seq <= QWEN_LINEAR_MTP_EXACT_MAX_EXACT_SEQ
+}
+
 /// Exact S=2..=4 verify: `async_eval` kernel-boundary tensors (fused QKVZ+BA
 /// projections, GatedDelta, FA SDPA) so their GPU work overlaps host encode
 /// of the still-lazy portable RMS+SiLU gate + o_proj.
@@ -3859,7 +3881,7 @@ env_flag!(
     "AX_MLX_QWEN_PREFILL_SKIP_UNUSED_EMBED_CLIP"
 );
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_QWEN_PREFILL_SKIP_UNUSED_F32_SDPA` — keep Qwen prefill SDPA
     /// in the model dtype at `seq >= 1024`. `AX_MLX_MULTI_TOKEN_F32_ATTENTION`
     /// is default-ON for Gemma short teacher-forced verify; on 27B prefill
@@ -3867,10 +3889,17 @@ env_flag!(
     /// chunks). Decode `seq==1` and short MTP verify stay on the Gemma
     /// exactness path. Not FFN/qmm/compile/last-layer, not skip-embed-clip.
     ///
-    /// **Default: OFF**. Remasured binary `fbf0b12d…` (2026-08-15): 3a PASS
-    /// (p2048 pre 914.746/931.574=0.981936); 3d 914.746/857.999=**1.066139
-    /// FAIL** (need 986.699); vs q2only **1.0068** small gain, not 1.15.
-    /// AXQ killed after 3d FAIL. bf16 SDPA does not cut compute-bound qmm.
+    /// **Default: ON** (kill switch `=0`). Remasured binary `fbf0b12d…`
+    /// (2026-08-15): 3a PASS (p2048 pre 914.746/931.574=0.981936); 3d
+    /// 914.746/857.999=**1.066139 FAIL** (need 986.699); vs q2only
+    /// **1.0068** small gain, not 1.15. AXQ killed after 3d FAIL. bf16 SDPA
+    /// does not cut compute-bound qmm.
+    /// M3 Max re-measure (2026-08-16, qwen3.8-27b-axq-4bit, fair_prefill_
+    /// bench_probe, 5 reps): p2048 192.1 vs 191.9 baseline (wash); p10240
+    /// **172.0 vs 166.7 (+3.2%)** — the f32 K/V astype cost grows with the
+    /// cached prefix, so the win appears at agentic prompt lengths the p2048
+    /// gate never exercised. Do NOT stack with NATIVE_OFFSET_CAUSAL: the
+    /// pair regresses (176.6 @ p2048, 165.6 @ p10240).
     qwen_prefill_skip_unused_f32_sdpa_enabled,
     "AX_MLX_QWEN_PREFILL_SKIP_UNUSED_F32_SDPA"
 );

@@ -954,7 +954,9 @@ fn layer_forward_internal(
     // 1. Attention norm (may be fused into packed QKV below).
     // Only skip the standalone rms when the fused QKV path will actually
     // run. Exact / moe-mt identity skip the fuse and still need `normed`.
-    let skip_qkv_fuse = crate::fastpath::qwen_linear_mtp_exact_enabled()
+    // The exact contract only constrains decode shapes (seq <= 4); prefill
+    // keeps the fused path (fastpath::qwen_linear_mtp_exact_for_seq).
+    let skip_qkv_fuse = crate::fastpath::qwen_linear_mtp_exact_for_seq(seq as i32)
         || crate::fastpath::moe_mt_bf16_identity_enabled();
     let fuse_attn_norm_qkv = fastpath::should_call_attn_norm_qkv_fuse(
         fastpath::should_attn_norm_qkv_fuse(&cfg.model_family, seq as i32),

@@ -1040,7 +1040,7 @@ pub(crate) fn linear_attention_inputs(
             x
         };
         if fuse_norm.is_none()
-            && !fastpath::qwen_linear_mtp_exact_enabled()
+            && !fastpath::qwen_linear_mtp_exact_for_seq(seq)
             && !profile_enabled
             && should_fuse_qkvz_ba_qmm(qkvz_w, ba_w, seq)
             && let Some(outputs) = linear_attention_inputs_fused_qmm(
@@ -1056,9 +1056,9 @@ pub(crate) fn linear_attention_inputs(
         }
         let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(model_cfg)
             && fastpath::qwen_direct_cpp_linear_attention_inputs_enabled()
-            && !fastpath::qwen_linear_mtp_exact_enabled();
+            && !fastpath::qwen_linear_mtp_exact_for_seq(seq);
         if fuse_norm.is_none()
-            && !fastpath::qwen_linear_mtp_exact_enabled()
+            && !fastpath::qwen_linear_mtp_exact_for_seq(seq)
             && (fastpath::direct_cpp_linear_attention_inputs_enabled() || qwen_default_enabled)
         {
             record_linear_attention_direct_cpp_inputs_attempt();
