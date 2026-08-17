@@ -731,6 +731,24 @@ pub(crate) fn parse_rope_params(
         return (full_theta, sliding_theta, None);
     }
 
+    if is_muse_glimmer_model_type(model_type) {
+        // Muse Glimmer: sliding layers rotate at `rope_parameters.rope_theta`
+        // (full layers are NoPE, decided purely by `layer_types`). Store the
+        // same theta in both slots so the sliding LayerConfig branch reads
+        // the real value; `validate_muse_layer_rope_theta` rejects per-layer
+        // divergence at convert time.
+        let theta = arch_f64(config, model_type, "rope_theta")
+            .or_else(|| {
+                config
+                    .get("text_config")
+                    .and_then(|tc| tc.get("rope_parameters"))
+                    .and_then(|rp| rp.get("rope_theta"))
+                    .and_then(|v| v.as_f64())
+            })
+            .and_then(f64_to_u32);
+        return (theta, theta, None);
+    }
+
     let theta = arch_f64(config, model_type, "rope_theta")
         .or_else(|| {
             let text_config = config.get("text_config")?;

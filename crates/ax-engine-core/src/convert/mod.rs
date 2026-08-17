@@ -312,6 +312,22 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let sliding_window_size = arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32);
     let final_logit_softcapping =
         arch_f64(&config, &model_type, "final_logit_softcapping").map(|v| v as f32);
+    // Muse Glimmer scalar contract (family-gated so stray keys on other
+    // configs cannot silently change their math): `output_multiplier`
+    // scales logits before the softcap, `qk_scale_factor` multiplies the
+    // SDPA query scale on every layer, and `post_norm_eps` is the
+    // post-attention / post-feedforward sandwich-norm eps.
+    let (final_logits_scale, attention_scale_multiplier, post_norm_eps) =
+        if is_muse_glimmer_model_type(&model_type) {
+            validate_muse_layer_rope_theta(&config, &model_type, &layer_types, rope_theta)?;
+            (
+                arch_f64(&config, &model_type, "output_multiplier").map(|v| v as f32),
+                arch_f64(&config, &model_type, "qk_scale_factor").map(|v| v as f32),
+                arch_f64(&config, &model_type, "post_norm_eps").map(|v| v as f32),
+            )
+        } else {
+            (None, None, None)
+        };
     let hidden_size_per_layer_input = arch_u64(&config, &model_type, "hidden_size_per_layer_input")
         .and_then(u64_to_u32)
         .unwrap_or(0);
@@ -392,6 +408,9 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         layer_types,
         kv_shared_source_layers,
         final_logit_softcapping,
+        final_logits_scale,
+        attention_scale_multiplier,
+        post_norm_eps,
         hidden_states_scale: if is_gemma4_target_model_type(&model_type)
             || is_embeddinggemma_model_type(&model_type)
         {
@@ -415,6 +434,12 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         // runtime), so lift the `+1` into the norm weights at load.
         weight_sanitize: if is_embeddinggemma_model_type(&model_type) {
             WeightSanitize::HfNormOnly
+        } else if is_muse_glimmer_model_type(&model_type) {
+            // Muse checkpoints store the four per-layer sandwich norms as
+            // zero-centered deltas (`MuseRmsNorm::centered`, `1 + w` at
+            // runtime in the reference) while the final `model.norm` is a
+            // plain gain. Lift the `+1` into the per-layer norms at load.
+            WeightSanitize::HfLayerNormsOnly
         } else {
             WeightSanitize::None
         },
@@ -2515,6 +2540,53 @@ fn invalid_model_contract(
         model_type: model_type.to_string(),
         message: message.into(),
     })
+}
+
+/// Muse Glimmer: the manifest carries one sliding-layer rope theta
+/// (`rope_theta_swa` = `rope_parameters.rope_theta`), so reject checkpoints
+/// whose `layer_rope_theta` array asks for a *different* non-null theta on
+/// any sliding layer. Entries on `full_attention` layers are ignored — the
+/// reference decides NoPE purely from `layer_types` and never reads the
+/// array for full layers (a `0` there is a placeholder, not "no rope").
+pub(super) fn validate_muse_layer_rope_theta(
+    config: &serde_json::Value,
+    model_type: &str,
+    layer_types: &[String],
+    rope_theta: Option<u32>,
+) -> Result<(), ConvertError> {
+    let Some(array) = config
+        .get("layer_rope_theta")
+        .or_else(|| {
+            config
+                .get("text_config")
+                .and_then(|tc| tc.get("layer_rope_theta"))
+        })
+        .and_then(|v| v.as_array())
+    else {
+        return Ok(());
+    };
+    let Some(uniform_theta) = rope_theta else {
+        return Ok(());
+    };
+    for (idx, entry) in array.iter().enumerate() {
+        if layer_types.get(idx).map(String::as_str) != Some("sliding_attention") {
+            continue;
+        }
+        let Some(theta) = entry.as_f64() else {
+            continue;
+        };
+        if (theta - uniform_theta as f64).abs() > 0.5 {
+            return Err(ConvertError::InvalidModelContract {
+                model_type: model_type.to_string(),
+                message: format!(
+                    "layer_rope_theta[{idx}] = {theta} differs from the uniform \
+                     rope theta {uniform_theta}; per-layer sliding thetas are not \
+                     supported by the muse_glimmer manifest"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Llama4 iRoPE period for `no_rope_layer_interval`.

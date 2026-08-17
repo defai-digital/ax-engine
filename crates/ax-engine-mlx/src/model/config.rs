@@ -540,6 +540,16 @@ pub struct ModelConfig {
     pub attn_output_gate: bool,
     pub query_scale: f32,
     pub final_logit_softcapping: Option<f32>,
+    /// Scalar multiplied into logits after lm_head, before the softcap
+    /// (Muse Glimmer `output_multiplier`). `None` = no scaling.
+    pub final_logits_scale: Option<f32>,
+    /// RMSNorm eps for the post-attention / post-feedforward sandwich norms.
+    /// Defaults to `rms_norm_eps` when the manifest carries no override
+    /// (Muse Glimmer: 1e-8 vs 1e-6).
+    pub post_norm_eps: f32,
+    /// Apply a weightless RMSNorm to token embeddings before the first layer
+    /// (Muse Glimmer `embed_norm`; eps = `rms_norm_eps`).
+    pub embed_norm_no_weight: bool,
     // MoE (0 means dense-only model).
     pub moe_expert_count: usize,
     pub moe_experts_per_token: usize,
@@ -749,8 +759,14 @@ impl ModelConfig {
             rope_theta,
             rope_dims,
             attn_output_gate: m.attn_output_gate,
-            query_scale,
+            query_scale: query_scale * m.attention_scale_multiplier.unwrap_or(1.0),
             final_logit_softcapping: m.final_logit_softcapping,
+            final_logits_scale: m.final_logits_scale,
+            post_norm_eps: m.post_norm_eps.unwrap_or_else(|| {
+                m.rms_norm_eps
+                    .unwrap_or_else(|| default_rms_norm_eps(&m.model_family))
+            }),
+            embed_norm_no_weight: m.model_family == "muse_glimmer",
             moe_expert_count: m.moe.expert_count.unwrap_or(0) as usize,
             moe_experts_per_token: m.moe.experts_per_token.unwrap_or(0) as usize,
             moe_expert_intermediate_size: m.moe.expert_intermediate_size.unwrap_or(0) as usize,
@@ -913,6 +929,7 @@ fn default_rms_norm_eps(model_family: &str) -> f32 {
         || model_family.starts_with("gemma")
         || model_family == "diffusion_gemma"
         || model_family == "unlimited_ocr"
+        || model_family == "muse_glimmer"
         || model_family.starts_with("deepseek")
     {
         1e-6
@@ -977,7 +994,12 @@ pub(super) fn build_layer_configs(
                 LayerConfig {
                     head_dim: full_head_dim,
                     rope_theta: default_rope_theta,
-                    rope_dims: if full_rope_freqs.is_some() {
+                    // Muse Glimmer full-attention layers are NoPE (iRoPE):
+                    // the reference never rotates them; rope_dims = 0 marks
+                    // that for the muse route.
+                    rope_dims: if m.model_family == "muse_glimmer" {
+                        0
+                    } else if full_rope_freqs.is_some() {
                         full_head_dim
                     } else {
                         full_rope_dims

@@ -244,6 +244,15 @@ pub fn layer_forward(
             token_offset,
             shared_mask,
         ),
+        Some(LayerForwardRoute::MuseGlimmer) => families::muse_glimmer::layer_forward(
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+            shared_mask,
+        ),
         Some(LayerForwardRoute::GlmMoeLite) => {
             families::glm4_moe_lite::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
         }
@@ -547,6 +556,7 @@ pub fn decode_batched_forward(
     );
     let mut hidden = embed_decode_tokens_batched(tokens, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -682,6 +692,7 @@ pub fn prefill_batched_forward(
         None,
     );
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -909,6 +920,7 @@ pub fn forward_pipeline_stage(
             );
             let embedded = embed_tokens_arr(&ids_1d, embedding, cfg.hidden_size);
             let embedded = astype(&embedded, MlxDtype::Bfloat16, None);
+            let embedded = shared::utils::maybe_weightless_embed_norm(cfg, embedded);
             match cfg.hidden_states_scale {
                 Some(scale) => scale_hidden(&embedded, scale),
                 None => embedded,
@@ -1065,6 +1077,7 @@ fn forward_and_logits_mode(
         &cfg.model_family,
         token_ids.len() as i32,
     );
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1277,6 +1290,7 @@ fn deepseek_v4_forward_trunk(
     let v4_cfg = cfg.deepseek_v4.as_ref().expect("DeepSeek V4 config");
     let mut hidden = embed_tokens_arr(ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1662,6 +1676,7 @@ pub fn forward_all_positions_update_cache(
         &cfg.model_family,
         token_ids.len() as i32,
     );
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1725,6 +1740,7 @@ pub fn forward_all_positions(
         &cfg.model_family,
         token_ids.len() as i32,
     );
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1812,6 +1828,7 @@ pub fn forward_all_positions_with_post_norm_greedy(
         &cfg.model_family,
         token_ids.len() as i32,
     );
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1893,6 +1910,7 @@ pub fn forward_all_positions_with_post_norm_ids(
     }
     let mut hidden = embed_tokens_arr(ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -2089,6 +2107,7 @@ pub fn forward_all_positions_post_norm_last_lm_head(
         &cfg.model_family,
         token_ids.len() as i32,
     );
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -2909,6 +2928,7 @@ pub fn forward_for_embedding(
         return out;
     }
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -3666,6 +3686,7 @@ fn build_embedding_batch_hidden(
         batch,
         max_len,
     );
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -4138,6 +4159,7 @@ fn forward_lazy_single_and_logits_mode(
     if hidden.dtype() != MlxDtype::Bfloat16 {
         hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     }
+    hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -4394,6 +4416,9 @@ mod tests {
             attn_output_gate,
             query_scale: 1.0,
             final_logit_softcapping: None,
+            final_logits_scale: None,
+            post_norm_eps: 1e-6,
+            embed_norm_no_weight: false,
             moe_expert_count: 0,
             moe_experts_per_token: 0,
             moe_expert_intermediate_size: 0,
@@ -4496,6 +4521,9 @@ mod tests {
             ],
             kv_shared_source_layers: BTreeMap::new(),
             final_logit_softcapping: Some(30.0),
+            final_logits_scale: None,
+            attention_scale_multiplier: None,
+            post_norm_eps: None,
             hidden_states_scale: Some((2816_f32).sqrt()),
             moe_norm_topk_prob: false,
             hidden_size_per_layer_input: 0,
@@ -4556,6 +4584,9 @@ mod tests {
             layer_types: Vec::new(),
             kv_shared_source_layers: BTreeMap::new(),
             final_logit_softcapping: None,
+            final_logits_scale: None,
+            attention_scale_multiplier: None,
+            post_norm_eps: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: true,
             hidden_size_per_layer_input: 0,
@@ -4724,6 +4755,9 @@ mod tests {
             layer_types: Vec::new(),
             kv_shared_source_layers: BTreeMap::new(),
             final_logit_softcapping: None,
+            final_logits_scale: None,
+            attention_scale_multiplier: None,
+            post_norm_eps: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: true,
             hidden_size_per_layer_input: 0,
@@ -5212,6 +5246,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
@@ -5262,6 +5297,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: Some(dense_weight(&[
                 cfg.hidden_size as i32,
                 (cfg.n_heads * mla.value_head_dim) as i32,
@@ -5460,6 +5496,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: None,
             linear_attn: Some(LinearAttentionWeights {
                 in_proj_qkv: Some(dense_weight(&[cfg.conv_dim() as i32, hidden_size as i32])),
@@ -5648,6 +5685,7 @@ mod tests {
             k_proj: Some(dense_weight(&[4, 4])),
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: Some(dense_weight(&[4, 8])),
             linear_attn: None,
             glm_mla_attn: None,
@@ -7151,6 +7189,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
@@ -7250,6 +7289,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
@@ -7325,6 +7365,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
@@ -7400,6 +7441,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
@@ -7475,6 +7517,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,
@@ -7593,6 +7636,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,

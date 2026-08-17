@@ -1,3 +1,4 @@
+use crate::WeightSanitize;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -7413,6 +7414,134 @@ fn deepseek_v4_fp8_weight_without_scale_stays_fail_loud() {
     assert!(
         matches!(error, ConvertError::UnsupportedDtype { .. }),
         "expected UnsupportedDtype, got {error}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn muse_text_config(layer_rope_theta: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "model_type": "muse_glimmer",
+        "architectures": ["MuseGlimmerForConditionalGeneration"],
+        "tie_word_embeddings": false,
+        "text_config": {
+            "model_type": "muse_glimmer_text",
+            "hidden_size": 96,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 16,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "vocab_size": 1000,
+            "rms_norm_eps": 1e-6,
+            "post_norm_eps": 1e-8,
+            "qk_scale_factor": 3.87,
+            "output_multiplier": 0.19611613513818404,
+            "final_logit_softcapping": 20.0,
+            "sliding_window": 2048,
+            "layer_types": ["sliding_attention", "full_attention"],
+            "layer_rope_theta": layer_rope_theta,
+            "rope_parameters": {"rope_theta": 500000.0, "rope_type": "default"}
+        }
+    })
+}
+
+fn write_muse_tensors(dir: &Path) {
+    let mut tensors: Vec<(String, &str, Vec<u64>)> = vec![
+        (
+            "language_model.model.embed_tokens.weight".to_string(),
+            "BF16",
+            vec![1000, 96],
+        ),
+        (
+            "language_model.model.norm.weight".to_string(),
+            "BF16",
+            vec![96],
+        ),
+        (
+            "language_model.lm_head.weight".to_string(),
+            "BF16",
+            vec![1000, 96],
+        ),
+    ];
+    for layer in 0..2 {
+        let p = format!("language_model.model.layers.{layer}");
+        for (name, shape) in [
+            ("input_layernorm.weight", vec![96]),
+            ("post_attention_layernorm.weight", vec![96]),
+            ("pre_feedforward_layernorm.weight", vec![96]),
+            ("post_feedforward_layernorm.weight", vec![96]),
+            ("self_attn.q_proj.weight", vec![64, 96]),
+            ("self_attn.k_proj.weight", vec![32, 96]),
+            ("self_attn.v_proj.weight", vec![32, 96]),
+            ("self_attn.gate_proj.weight", vec![64, 96]),
+            ("self_attn.o_proj.weight", vec![96, 64]),
+            ("mlp.gate_proj.weight", vec![128, 96]),
+            ("mlp.up_proj.weight", vec![128, 96]),
+            ("mlp.down_proj.weight", vec![96, 128]),
+        ] {
+            tensors.push((format!("{p}.{name}"), "BF16", shape));
+        }
+    }
+    let borrowed: Vec<(&str, &str, &[u64])> = tensors
+        .iter()
+        .map(|(n, d, s)| (n.as_str(), *d, s.as_slice()))
+        .collect();
+    write_fake_safetensors(dir, "model.safetensors", &borrowed);
+}
+
+#[test]
+fn converts_muse_glimmer_with_scalar_contract_and_gate() {
+    let dir = unique_test_dir("muse_glimmer_scalars");
+    write_config(&dir, muse_text_config(serde_json::json!([500000.0, 0])));
+    write_muse_tensors(&dir);
+
+    let manifest = convert_hf_model_dir(&dir).expect("muse conversion should succeed");
+
+    assert_eq!(manifest.model_family, "muse_glimmer");
+    assert_eq!(manifest.rope_theta, Some(500000));
+    assert_eq!(manifest.rope_theta_swa, Some(500000));
+    assert_eq!(manifest.sliding_window_size, Some(2048));
+    assert_eq!(manifest.final_logit_softcapping, Some(20.0));
+    assert_eq!(manifest.final_logits_scale, Some(0.19611613));
+    assert_eq!(manifest.attention_scale_multiplier, Some(3.87));
+    assert_eq!(manifest.post_norm_eps, Some(1e-8));
+    assert_eq!(manifest.weight_sanitize, WeightSanitize::HfLayerNormsOnly);
+    assert_eq!(
+        manifest.layer_types,
+        vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string()
+        ]
+    );
+    // Muse must not inherit the Gemma embedding scale or the Qwen
+    // interleaved attention gate.
+    assert_eq!(manifest.hidden_states_scale, None);
+    assert!(!manifest.attn_output_gate);
+    let gate_roles: Vec<_> = manifest
+        .tensors
+        .iter()
+        .filter(|t| t.role == NativeTensorRole::AttentionOutputGate)
+        .collect();
+    assert_eq!(
+        gate_roles.len(),
+        2,
+        "each layer's self_attn.gate_proj must map to AttentionOutputGate"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn muse_glimmer_rejects_divergent_sliding_layer_rope_theta() {
+    let dir = unique_test_dir("muse_glimmer_theta_mismatch");
+    write_config(&dir, muse_text_config(serde_json::json!([123.0, 0])));
+    write_muse_tensors(&dir);
+
+    let error = convert_hf_model_dir(&dir).expect_err("divergent sliding theta must fail");
+    assert!(
+        matches!(error, ConvertError::InvalidModelContract { .. }),
+        "expected InvalidModelContract, got {error}"
     );
 
     let _ = fs::remove_dir_all(dir);

@@ -653,6 +653,7 @@ mod tests {
             k_proj: None,
             v_proj: None,
             qkv_packed: None,
+            attn_out_gate: None,
             o_proj: None,
             linear_attn: None,
             glm_mla_attn: None,

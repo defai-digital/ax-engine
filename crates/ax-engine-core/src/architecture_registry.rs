@@ -27,6 +27,10 @@ pub enum LayerForwardRoute {
     GptOss,
     /// Nemotron-H hybrid: per-layer Mamba-2 / attention / ReLU² MoE mixers.
     NemotronH,
+    /// Muse Glimmer: Llama4-style iRoPE dense decoder with Gemma-style
+    /// sandwich norms, weightless QK norms, sigmoid attention output gate,
+    /// and softcapped scaled final logits.
+    MuseGlimmer,
 }
 
 /// Whether an architecture artifact may be loaded as the primary MLX runner.
@@ -62,6 +66,7 @@ impl LayerForwardRoute {
             Self::Mixtral => 5,
             Self::GptOss => 6,
             Self::NemotronH => 7,
+            Self::MuseGlimmer => 9,
         }
     }
 
@@ -73,6 +78,7 @@ impl LayerForwardRoute {
             Self::DeepseekV3 => "deepseek_v3",
             Self::DeepseekV4 => "deepseek_v4",
             Self::Mistral3 => "mistral3",
+            Self::MuseGlimmer => "muse_glimmer",
             Self::Mixtral => "mixtral",
             Self::GptOss => "gpt_oss",
             Self::NemotronH => "nemotron_h",
@@ -223,9 +229,9 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         family_label: "muse_glimmer",
         mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
-        layer_forward_route: LayerForwardRoute::Standard,
+        layer_forward_route: LayerForwardRoute::MuseGlimmer,
         dense_batched_decode_candidate: false,
-        cert_gate_note: "Muse-Glimmer dense SWA + gated attention; convert recognized; native decode incubating (not on Gemma SWA allowlist)",
+        cert_gate_note: "Muse-Glimmer iRoPE dense SWA + gated attention; dedicated muse_glimmer route (sandwich norms, weightless QK norms, softcapped scaled logits)",
         support_tier: ModelSupportTier::Experimental,
     },
     ArchitectureRegistration {
@@ -459,6 +465,9 @@ mod tests {
             layer_types: Vec::new(),
             kv_shared_source_layers: Default::default(),
             final_logit_softcapping: None,
+            final_logits_scale: None,
+            attention_scale_multiplier: None,
+            post_norm_eps: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
             hidden_size_per_layer_input: 0,
@@ -493,7 +502,7 @@ mod tests {
         let muse = lookup_architecture("muse_glimmer").expect("muse_glimmer registered");
         assert!(!muse.dense_batched_decode_candidate);
         assert_eq!(muse.support_tier, ModelSupportTier::Experimental);
-        assert_eq!(muse.layer_forward_route, LayerForwardRoute::Standard);
+        assert_eq!(muse.layer_forward_route, LayerForwardRoute::MuseGlimmer);
     }
 
     #[test]

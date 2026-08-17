@@ -735,6 +735,8 @@ pub(super) fn validate_gemma4_interleaved_attention(
     // Families with a runtime path for per-layer sliding/full patterns.
     // GPT-OSS uses alternating sliding-128 / full attention (mlx-lm gpt_oss);
     // Gemma4-class families use SWA interleaving (and optional KV sharing).
+    // Muse Glimmer interleaves SWA(2048)+RoPE layers with NoPE full layers
+    // through the dedicated muse_glimmer route.
     if !matches!(
         manifest.model_family.as_str(),
         "gemma4"
@@ -744,6 +746,7 @@ pub(super) fn validate_gemma4_interleaved_attention(
             | "diffusion_gemma"
             | "embeddinggemma"
             | "gpt_oss"
+            | "muse_glimmer"
     ) {
         return Err(MlxRunnerError::UnsupportedFeature(format!(
             "interleaved sliding/full attention is not implemented for {} manifests",

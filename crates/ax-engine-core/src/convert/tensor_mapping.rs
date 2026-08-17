@@ -7,6 +7,14 @@ pub(crate) enum TensorMapping {
 }
 
 /// Extra per-layer tensor patterns for Qwen3 MoE (mlp.gate → router; switch_mlp → experts).
+/// Muse Glimmer extras on top of [`HF_STANDARD_TENSOR_MAP`]: the sigmoid
+/// attention output gate is a separate per-layer projection (unlike the
+/// Qwen3.5 gate interleaved into `q_proj`).
+pub(crate) const MUSE_GLIMMER_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[(
+    "self_attn.gate_proj.weight",
+    TensorMapping::PerLayer(NativeTensorRole::AttentionOutputGate),
+)];
+
 pub(crate) const QWEN3_MOE_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "mlp.gate.weight",

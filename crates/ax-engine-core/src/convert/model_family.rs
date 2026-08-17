@@ -240,12 +240,14 @@ pub(crate) fn model_family_for_type(
             uses_decoder_prefix: false,
         }),
         // Muse-Glimmer: dense Gemma-like text tower under language_model.* plus
-        // a Perception Encoder. Convert maps the language path; native decode
-        // stays fail-closed until gated attention / centered RMSNorm land.
+        // a Perception Encoder. Convert maps the language path including the
+        // separate attention output gate; the dedicated muse_glimmer route
+        // implements gated attention, centered sandwich norms, iRoPE, and
+        // softcapped scaled logits.
         "muse_glimmer" | "muse_glimmer_text" => Ok(ModelFamily {
             family_name: "muse_glimmer",
             tensor_map: HF_STANDARD_TENSOR_MAP,
-            extra_tensor_map: None,
+            extra_tensor_map: Some(MUSE_GLIMMER_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,
             uses_decoder_prefix: false,
         }),

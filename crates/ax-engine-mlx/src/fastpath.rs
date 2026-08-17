@@ -4845,7 +4845,12 @@ pub fn skip_cache_only_split_for_family(model_family: &str, total_tokens: usize)
     }
     matches!(
         model_family.to_ascii_lowercase().as_str(),
-        "qwen3_5" | "qwen3_next" | "qwen3" | "gemma4" | "glm4_moe_lite" | "gpt_oss"
+        "qwen3_5"
+            | "qwen3_next"
+            | "qwen3"
+            | "gemma4"
+            | "glm4_moe_lite"
+            | "gpt_oss"
             | "muse_glimmer"
     )
 }

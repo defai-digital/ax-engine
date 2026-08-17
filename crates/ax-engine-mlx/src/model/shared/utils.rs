@@ -1689,6 +1689,16 @@ pub(crate) fn scalar_like(value: f32, dtype: MlxDtype) -> MlxArray {
 }
 
 pub(crate) fn apply_final_logit_softcap(cfg: &ModelConfig, logits: &MlxArray) -> MlxArray {
+    // Muse Glimmer `output_multiplier`: scale logits BEFORE the softcap
+    // (reference: `logits * output_multiplier`, then `tanh(x * (1/cap)) * cap`).
+    let scaled_logits;
+    let logits = if let Some(scale) = cfg.final_logits_scale.filter(|s| *s != 1.0) {
+        let scale_arr = mlx_sys::ops::cached_scalar(scale, logits.dtype());
+        scaled_logits = multiply(logits, &scale_arr, None);
+        &scaled_logits
+    } else {
+        logits
+    };
     let Some(cap) = cfg.final_logit_softcapping.filter(|cap| *cap > 0.0) else {
         return logits.clone();
     };
@@ -1697,6 +1707,16 @@ pub(crate) fn apply_final_logit_softcap(cfg: &ModelConfig, logits: &MlxArray) ->
     let cap_arr = mlx_sys::ops::cached_scalar(cap, logits.dtype());
     let scaled = multiply(logits, &inv_cap_arr, None);
     multiply(&tanh(&scaled, None), &cap_arr, None)
+}
+
+/// Weightless RMSNorm on token embeddings (Muse Glimmer `embed_norm`).
+/// No-op for families without `embed_norm_no_weight`.
+pub(crate) fn maybe_weightless_embed_norm(cfg: &ModelConfig, hidden: MlxArray) -> MlxArray {
+    if cfg.embed_norm_no_weight {
+        mlx_sys::rms_norm(&hidden, None, cfg.rms_norm_eps, None)
+    } else {
+        hidden
+    }
 }
 
 pub(crate) fn shape_element_count(shape: &[i32]) -> usize {

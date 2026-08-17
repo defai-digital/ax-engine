@@ -72,6 +72,10 @@ pub enum NativeTensorRole {
     AttentionKvANorm,
     AttentionEmbedQ,
     AttentionUnembedOut,
+    /// Separate attention output gate projection: `sigmoid(x·W_gate)` is
+    /// multiplied into the attention output before `o_proj` (Muse Glimmer
+    /// `self_attn.gate_proj`; distinct from the Qwen3.5 interleaved-in-q gate).
+    AttentionOutputGate,
     AttentionO,
     LinearAttentionInProjQkv,
     LinearAttentionInProjQkvz,
@@ -743,6 +747,11 @@ pub enum WeightSanitize {
     /// zero-centered deltas. The loader adds 1.0 to norm weights only; it does
     /// NOT re-swap the conv1d axes.
     HfNormOnly,
+    /// Like `HfNormOnly`, but only the per-layer sandwich norms carry
+    /// zero-centered deltas; the final `model.norm` is already a plain gain
+    /// and must NOT get `+1` (Muse Glimmer: `MuseRmsNorm::centered` for the
+    /// four per-layer norms vs `standard` for the final norm).
+    HfLayerNormsOnly,
 }
 
 impl WeightSanitize {
@@ -971,6 +980,20 @@ pub struct NativeModelManifest {
     /// Final-logit softcapping: apply `tanh(x / cap) * cap` after lm_head (Gemma4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_logit_softcapping: Option<f32>,
+    /// Scalar multiplied into logits after lm_head, BEFORE
+    /// `final_logit_softcapping` (Muse Glimmer `output_multiplier`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_logits_scale: Option<f32>,
+    /// Multiplier folded into the SDPA query scale on top of
+    /// `head_dim^-0.5` (Muse Glimmer `qk_scale_factor`: scale =
+    /// `head_dim^-0.5 * qk_scale_factor` on every layer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_scale_multiplier: Option<f32>,
+    /// RMSNorm eps for the post-attention and post-feedforward sandwich
+    /// norms when it differs from `rms_norm_eps` (Muse Glimmer
+    /// `post_norm_eps` = 1e-8; the input/pre-FFN norms keep `rms_norm_eps`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_norm_eps: Option<f32>,
     /// Scale applied to token embeddings before the first layer (Gemma4: sqrt(hidden_size)).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden_states_scale: Option<f32>,
@@ -5054,6 +5077,9 @@ mod tests {
             layer_types: Vec::new(),
             kv_shared_source_layers: Default::default(),
             final_logit_softcapping: None,
+            final_logits_scale: None,
+            attention_scale_multiplier: None,
+            post_norm_eps: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
             hidden_size_per_layer_input: 0,

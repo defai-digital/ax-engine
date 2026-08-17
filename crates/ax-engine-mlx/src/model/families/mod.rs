@@ -9,3 +9,4 @@ pub(super) mod standard;
 
 pub(super) mod mistral3;
 pub(super) mod mixtral;
+pub(super) mod muse_glimmer;

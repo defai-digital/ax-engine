@@ -218,6 +218,11 @@ pub struct LayerWeights {
     pub v_proj: Option<QuantizedWeight>,
     // Packed QKV projection (some architectures).
     pub qkv_packed: Option<QuantizedWeight>,
+    /// Separate attention output gate projection (Muse Glimmer):
+    /// `sigmoid(normed_x · W_gate)` multiplies the attention output per
+    /// head/dim before `o_proj`. Distinct from the Qwen3.5 gate interleaved
+    /// into `q_proj`.
+    pub attn_out_gate: Option<QuantizedWeight>,
     pub o_proj: Option<QuantizedWeight>,
     // Linear attention (Qwen3.5 hybrid layers). Present instead of full-attention QKV/O.
     pub linear_attn: Option<LinearAttentionWeights>,
@@ -1231,8 +1236,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         &name_map,
     );
     match effective_sanitize {
-        WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true),
-        WeightSanitize::HfNormOnly => apply_hf_sanitize_transforms(specs, &mut name_map, false),
+        WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true, true),
+        WeightSanitize::HfNormOnly => {
+            apply_hf_sanitize_transforms(specs, &mut name_map, false, true)
+        }
+        WeightSanitize::HfLayerNormsOnly => {
+            apply_hf_sanitize_transforms(specs, &mut name_map, false, false)
+        }
         WeightSanitize::None => {}
     }
 
@@ -1425,6 +1435,18 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                 "o_proj",
             )?),
             AttentionLayout::Full | AttentionLayout::Linear | AttentionLayout::None => None,
+        };
+        // Muse Glimmer separate attention output gate (sigmoid, pre-o_proj).
+        let attn_out_gate = if has_role(specs, NativeTensorRole::AttentionOutputGate, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AttentionOutputGate,
+                idx,
+                "attn_out_gate",
+            )?)
+        } else {
+            None
         };
         let linear_attn = match attention_layout {
             AttentionLayout::Full | AttentionLayout::None => None,
@@ -1839,6 +1861,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             k_proj,
             v_proj,
             qkv_packed,
+            attn_out_gate,
             o_proj,
             linear_attn,
             glm_mla_attn,
@@ -2090,8 +2113,13 @@ pub fn load_pipeline_stage_weights(
         &name_map,
     );
     match effective_sanitize {
-        WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true),
-        WeightSanitize::HfNormOnly => apply_hf_sanitize_transforms(specs, &mut name_map, false),
+        WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true, true),
+        WeightSanitize::HfNormOnly => {
+            apply_hf_sanitize_transforms(specs, &mut name_map, false, true)
+        }
+        WeightSanitize::HfLayerNormsOnly => {
+            apply_hf_sanitize_transforms(specs, &mut name_map, false, false)
+        }
         WeightSanitize::None => {}
     }
 
@@ -2238,6 +2266,7 @@ fn load_dense_llama3_layer(
         k_proj: Some(k_proj),
         v_proj: Some(v_proj),
         qkv_packed: None,
+        attn_out_gate: None,
         o_proj: Some(o_proj),
         linear_attn: None,
         glm_mla_attn: None,
@@ -3322,6 +3351,7 @@ fn load_glm_mtp_sidecar(
         k_proj: None,
         v_proj: None,
         qkv_packed: None,
+        attn_out_gate: None,
         o_proj: Some(o_proj),
         linear_attn: None,
         glm_mla_attn,
@@ -3689,6 +3719,7 @@ fn load_mtp(
         k_proj: None,
         v_proj: None,
         qkv_packed: None,
+        attn_out_gate: None,
         o_proj: None,
         linear_attn: None,
         glm_mla_attn: None,
@@ -3970,6 +4001,7 @@ fn apply_hf_sanitize_transforms(
     specs: &[NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
     swap_conv1d: bool,
+    lift_final_norm: bool,
 ) {
     let one = MlxArray::from_f32_slice(&[1.0_f32]);
     for spec in specs {
@@ -3977,6 +4009,9 @@ fn apply_hf_sanitize_transforms(
             continue;
         }
         let transformed = match spec.role {
+            // `HfLayerNormsOnly` (Muse Glimmer): the final `model.norm` is a
+            // plain gain in the checkpoint and must not be lifted.
+            NativeTensorRole::FinalNorm if !lift_final_norm => None,
             role if is_hf_rmsnorm_lift_role(role) => {
                 let tensor = name_map.get(&spec.name).expect("checked via contains_key");
                 // MLX promotes (bf16/f16 + f32) to f32, which would silently
@@ -5213,6 +5248,7 @@ fn load_deepseek_v4_mtp_sidecar(
         k_proj: None,
         v_proj: None,
         qkv_packed: None,
+        attn_out_gate: None,
         o_proj: None,
         linear_attn: None,
         glm_mla_attn: None,
@@ -6897,7 +6933,7 @@ mod tests {
             make_spec("layers.0.conv1d", NativeTensorRole::LinearAttentionConv1d),
         ];
 
-        apply_hf_sanitize_transforms(&specs, &mut name_map, true);
+        apply_hf_sanitize_transforms(&specs, &mut name_map, true, true);
 
         let sanitized_norm = name_map
             .get("layers.0.attn_norm")
@@ -7007,7 +7043,7 @@ mod tests {
             make_spec("conv1d", NativeTensorRole::LinearAttentionConv1d),
         ];
 
-        apply_hf_sanitize_transforms(&specs, &mut name_map, false);
+        apply_hf_sanitize_transforms(&specs, &mut name_map, false, true);
 
         let norm_out = name_map.get("attn_norm").expect("attn_norm present");
         for (got, want) in norm_out
@@ -7348,7 +7384,7 @@ mod tests {
             length_bytes: 4,
         }];
 
-        apply_hf_sanitize_transforms(&specs, &mut name_map, true);
+        apply_hf_sanitize_transforms(&specs, &mut name_map, true, true);
 
         let preserved = name_map.get("q_proj").expect("q_proj tensor still present");
         let values = preserved.data_f32();
@@ -7401,7 +7437,7 @@ mod tests {
             length_bytes: 2,
         }];
 
-        apply_hf_sanitize_transforms(&specs, &mut name_map, true);
+        apply_hf_sanitize_transforms(&specs, &mut name_map, true, true);
 
         let sanitized = name_map
             .get("layers.0.attn_norm")
