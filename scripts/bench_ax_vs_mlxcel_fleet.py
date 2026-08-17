@@ -26,6 +26,11 @@ REPO = Path(__file__).resolve().parents[1]
 STACK = REPO / "scripts" / "bench_mlx_inference_stack.py"
 HF_HUB = Path.home() / ".cache" / "huggingface" / "hub"
 
+# Priority-ordered hub-layout roots searched before HF_HUB. `--hub-root`
+# prepends more. On `df-macbookpro-m5` the default HF cache symlinks to a
+# NAS share; `~/models` holds local-disk mirrors that load much faster.
+EXTRA_HUB_ROOTS: list[Path] = []
+
 # Factory / host-local AXQ pack roots (complete weights, not the stub Hub cache).
 AXQ_LOCAL_ROOTS = (
     Path("/Volumes/Ext4T/axquant/axq-canonical-v2"),
@@ -123,24 +128,25 @@ def pack_dir_looks_complete(path: Path) -> bool:
 
 def hub_snapshot(repo_id: str, revision: str | None = None) -> Path | None:
     dirname = "models--" + repo_id.replace("/", "--")
-    snaps = HF_HUB / dirname / "snapshots"
-    if not snaps.is_dir():
-        return None
-    if revision:
-        candidate = snaps / revision
-        if pack_dir_looks_complete(candidate):
-            return candidate
-        return None
-    refs = snaps.parent / "refs" / "main"
-    if refs.is_file():
-        rev = refs.read_text().strip()
-        candidate = snaps / rev
-        if pack_dir_looks_complete(candidate):
-            return candidate
-    kids = sorted(p for p in snaps.iterdir() if p.is_dir())
-    for candidate in reversed(kids):
-        if pack_dir_looks_complete(candidate):
-            return candidate
+    for root in [*EXTRA_HUB_ROOTS, HF_HUB]:
+        snaps = root / dirname / "snapshots"
+        if not snaps.is_dir():
+            continue
+        if revision:
+            candidate = snaps / revision
+            if pack_dir_looks_complete(candidate):
+                return candidate
+            continue
+        refs = snaps.parent / "refs" / "main"
+        if refs.is_file():
+            rev = refs.read_text().strip()
+            candidate = snaps / rev
+            if pack_dir_looks_complete(candidate):
+                return candidate
+        kids = sorted(p for p in snaps.iterdir() if p.is_dir())
+        for candidate in reversed(kids):
+            if pack_dir_looks_complete(candidate):
+                return candidate
     return None
 
 
@@ -286,12 +292,23 @@ def main() -> int:
         type=Path,
         help="Extra directory to search for AXQ pack basenames (repeatable)",
     )
+    parser.add_argument(
+        "--hub-root",
+        action="append",
+        default=[],
+        type=Path,
+        help=(
+            "Extra hub-layout cache root (models--Org--Name/snapshots/rev) "
+            "searched before the default HF cache (repeatable)"
+        ),
+    )
     parser.add_argument("--skip-ax", action="store_true")
     parser.add_argument("--skip-mlxcel", action="store_true")
     args = parser.parse_args()
 
     out_dir = args.out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    EXTRA_HUB_ROOTS.extend(Path(p).expanduser() for p in args.hub_root)
     selected = [item.strip() for item in args.models.split(",") if item.strip()]
     unknown = [item for item in selected if item not in WAVE1]
     if unknown:

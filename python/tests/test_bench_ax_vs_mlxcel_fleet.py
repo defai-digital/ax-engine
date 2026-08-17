@@ -154,6 +154,35 @@ def test_resolve_snapshot_pinned_revision_ignores_refs_main(tmp_path: Path) -> N
     assert missing is None
 
 
+def test_hub_snapshot_prefers_extra_hub_roots(tmp_path: Path) -> None:
+    mod = _load()
+
+    def make_pack(root: Path, rev: str) -> Path:
+        snap = root / "models--AutomatosX--AX-Root-Test" / "snapshots" / rev
+        snap.mkdir(parents=True)
+        (snap / "config.json").write_text("{}")
+        (snap / "model-00001-of-00001.safetensors").write_bytes(b"w" * 1_000_001)
+        return snap
+
+    slow = make_pack(tmp_path / "nas-hub", "aaaa1111")
+    fast = make_pack(tmp_path / "local-hub", "aaaa1111")
+
+    original_hub = mod.HF_HUB
+    original_extra = list(mod.EXTRA_HUB_ROOTS)
+    mod.HF_HUB = tmp_path / "nas-hub"
+    mod.EXTRA_HUB_ROOTS[:] = [tmp_path / "local-hub"]
+    try:
+        got = mod.hub_snapshot("AutomatosX/AX-Root-Test", "aaaa1111")
+        # Falls back to the default root when the extra root lacks the pack.
+        mod.EXTRA_HUB_ROOTS[:] = [tmp_path / "missing-hub"]
+        fallback = mod.hub_snapshot("AutomatosX/AX-Root-Test", "aaaa1111")
+    finally:
+        mod.HF_HUB = original_hub
+        mod.EXTRA_HUB_ROOTS[:] = original_extra
+    assert got == fast
+    assert fallback == slow
+
+
 def test_resolve_snapshot_explicit_local_dir(tmp_path: Path) -> None:
     mod = _load()
     pack = tmp_path / "explicit"
