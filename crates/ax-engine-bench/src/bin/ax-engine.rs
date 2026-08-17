@@ -498,7 +498,9 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3.8-27b:axq-4bit",
         ],
         downloadable: true,
-        approx_size_bytes: Some(25_080_915_804),
+        // Measured on-disk snapshot 2026-08-16: 18,203,066,368 bytes (~17 GiB).
+        // The previous 25 GB figure overstated the pack by ~38%.
+        approx_size_bytes: Some(18_203_066_368),
     },
     ModelProfile {
         label: "ax-qwen3.6-35b",
