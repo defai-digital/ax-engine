@@ -664,6 +664,15 @@ struct EngineStepStats {
     request_terminal_snapshots: u64,
     request_terminal_snapshot_order: u64,
     request_terminal_snapshot_bytes: u64,
+    /// MTP/speculative-decoding counters accumulated from per-step route
+    /// telemetry (ax_mtp_* decisions). Zero for non-speculative models.
+    mtp_draft_tokens_total: u64,
+    mtp_accepted_tokens_total: u64,
+    mtp_direct_fallback_steps_total: u64,
+    /// Latest cascade-corrected MTP-only acceptance EWMA (x1000). This is the
+    /// rate the low-acceptance bypass watches; expose it so operators can see
+    /// speculation paying for itself (or not) without bench tooling.
+    mtp_accept_rate_ewma_x1000: u64,
     memory: Option<ModelMemoryGauges>,
 }
 
@@ -697,6 +706,10 @@ pub(crate) struct EngineStepGauges {
     pub(crate) request_terminal_snapshots: u64,
     pub(crate) request_terminal_snapshot_order: u64,
     pub(crate) request_terminal_snapshot_bytes: u64,
+    pub(crate) mtp_draft_tokens_total: u64,
+    pub(crate) mtp_accepted_tokens_total: u64,
+    pub(crate) mtp_direct_fallback_steps_total: u64,
+    pub(crate) mtp_accept_rate_ewma_x1000: u64,
 }
 
 /// Latest model-attributed memory geometry reported by the native runner.
@@ -864,6 +877,24 @@ impl ServerMetrics {
         entry.request_terminal_snapshots = report.request_terminal_snapshots;
         entry.request_terminal_snapshot_order = report.request_terminal_snapshot_order;
         entry.request_terminal_snapshot_bytes = report.request_terminal_snapshot_bytes;
+        if let Some(route) = report.route.as_ref() {
+            entry.mtp_draft_tokens_total = entry.mtp_draft_tokens_total.saturating_add(u64::from(
+                route.decision("ax_mtp_draft_tokens").unwrap_or(0),
+            ));
+            entry.mtp_accepted_tokens_total = entry.mtp_accepted_tokens_total.saturating_add(
+                u64::from(route.decision("ax_mtp_accepted_tokens").unwrap_or(0)),
+            );
+            entry.mtp_direct_fallback_steps_total = entry
+                .mtp_direct_fallback_steps_total
+                .saturating_add(u64::from(
+                    route.decision("ax_mtp_direct_fallback_steps").unwrap_or(0),
+                ));
+            // Gauge: only overwrite when the step actually reports an EWMA —
+            // pure direct steps carry no MTP telemetry and must not zero it.
+            if let Some(ewma) = route.decision("ax_mtp_mtp_only_accept_rate_ewma_x1000") {
+                entry.mtp_accept_rate_ewma_x1000 = u64::from(ewma);
+            }
+        }
         if let Some(route) = report.route.as_ref()
             && route
                 .decision("ax_mlx_kv_request_snapshots")
@@ -948,6 +979,10 @@ impl ServerMetrics {
                         request_terminal_snapshots: entry.request_terminal_snapshots,
                         request_terminal_snapshot_order: entry.request_terminal_snapshot_order,
                         request_terminal_snapshot_bytes: entry.request_terminal_snapshot_bytes,
+                        mtp_draft_tokens_total: entry.mtp_draft_tokens_total,
+                        mtp_accepted_tokens_total: entry.mtp_accepted_tokens_total,
+                        mtp_direct_fallback_steps_total: entry.mtp_direct_fallback_steps_total,
+                        mtp_accept_rate_ewma_x1000: entry.mtp_accept_rate_ewma_x1000,
                     },
                 )
             })

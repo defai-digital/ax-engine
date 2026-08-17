@@ -268,6 +268,38 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             &step_models,
             |step| step.prefix_hits_total,
         );
+        append_step_metric(
+            &mut body,
+            "ax_engine_mtp_draft_tokens_total",
+            "Speculative draft tokens proposed across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            |step| step.mtp_draft_tokens_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_mtp_accepted_tokens_total",
+            "Speculative draft tokens accepted across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            |step| step.mtp_accepted_tokens_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_mtp_direct_fallback_steps_total",
+            "Decode steps that fell back to direct (non-speculative) decode across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            |step| step.mtp_direct_fallback_steps_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_mtp_accept_rate_ewma_x1000",
+            "Latest cascade-corrected MTP-only draft acceptance EWMA, scaled by 1000. Per-model series is authoritative (unlabeled: summed across loaded models).",
+            "gauge",
+            &step_models,
+            |step| step.mtp_accept_rate_ewma_x1000,
+        );
         for (name, help, kind, value) in [
             (
                 "ax_engine_kv_allocated_blocks_total",

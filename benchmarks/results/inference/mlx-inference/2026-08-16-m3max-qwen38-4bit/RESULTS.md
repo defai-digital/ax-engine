@@ -55,3 +55,7 @@ decode gets fused singleton kernels.
 | prefill p2048 | 191.9 | **202.1** (re-run; an earlier back-to-back run read 171.9 — thermal noise) | **+5.3%** |
 
 Lib tests: 1323/1323 pass. Artifacts: after-*.json in this directory.
+
+Exactness gate (bf16 prefill SDPA flip): greedy_token_dump_probe at p10240,
+100 steps, f32 vs bf16 — 100/100 tokens identical (exactness-f32sdpa.txt /
+exactness-bf16sdpa.txt).

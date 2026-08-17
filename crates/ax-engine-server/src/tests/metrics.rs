@@ -85,6 +85,10 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
                     ("ax_mlx_kv_linear_state_kib".to_string(), 4),
                     ("ax_mlx_kv_full_attention_layers".to_string(), 8),
                     ("ax_mlx_kv_linear_state_layers".to_string(), 2),
+                    ("ax_mtp_draft_tokens".to_string(), 7),
+                    ("ax_mtp_accepted_tokens".to_string(), 5),
+                    ("ax_mtp_direct_fallback_steps".to_string(), 1),
+                    ("ax_mtp_mtp_only_accept_rate_ewma_x1000".to_string(), 714),
                 ]),
                 ..Default::default()
             }),
@@ -110,6 +114,13 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_step_scheduled_tokens 5\n"));
     assert!(body.contains("ax_engine_step_kv_usage_blocks 4\n"));
     assert!(body.contains("ax_engine_step_prefix_hits_total 3\n"));
+    // MTP/speculation series: counters accumulate, the EWMA gauge holds the
+    // latest reported value and is not zeroed by steps without MTP telemetry.
+    assert!(body.contains("ax_engine_mtp_draft_tokens_total 7\n"));
+    assert!(body.contains("ax_engine_mtp_accepted_tokens_total 5\n"));
+    assert!(body.contains("ax_engine_mtp_direct_fallback_steps_total 1\n"));
+    assert!(body.contains("ax_engine_mtp_accept_rate_ewma_x1000 714\n"));
+    assert!(body.contains("ax_engine_mtp_accepted_tokens_total{model=\"qwen3\"} 5\n"));
     assert!(body.contains("ax_engine_kv_allocated_blocks_total 23\n"));
     assert!(body.contains("ax_engine_kv_released_blocks_total 19\n"));
     assert!(body.contains("ax_engine_kv_cache_evictions_total 7\n"));
