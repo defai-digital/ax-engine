@@ -50,10 +50,12 @@ echo "==> Ensuring a correctly-built MLX (pip wheel) is available..."
 MLX_PIN="$(tr -d '[:space:]' < "$REPO_ROOT/mlx.version")"
 python3 -m pip install --upgrade --quiet "mlx==${MLX_PIN}"
 MLX_PIP_DIR="$(python3 -c 'import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]))')"
-if [[ ! -f "$MLX_PIP_DIR/lib/libmlx.dylib" ]]; then
-    echo "error: pip-installed mlx has no lib/libmlx.dylib at $MLX_PIP_DIR"
-    exit 1
-fi
+for runtime_name in libmlx.dylib libjaccl.dylib; do
+    if [[ ! -s "$MLX_PIP_DIR/lib/$runtime_name" ]]; then
+        echo "error: pip-installed mlx has no non-empty lib/$runtime_name at $MLX_PIP_DIR"
+        exit 1
+    fi
+done
 export MLX_LIB_DIR="${MLX_LIB_DIR:-$MLX_PIP_DIR/lib}"
 export MLX_INCLUDE_DIR="${MLX_INCLUDE_DIR:-$MLX_PIP_DIR/include}"
 mlx_minos="$(otool -l "$MLX_LIB_DIR/libmlx.dylib" | awk '/LC_BUILD_VERSION/{f=1} f && /minos/{print $2; exit}')"
@@ -169,13 +171,15 @@ cp "$NATIVE_BIN" "$SCRIPTS_DIR/ax-engine"
 chmod +x "$SCRIPTS_DIR/ax-engine"
 echo "    staged: $SCRIPTS_DIR/ax-engine"
 
-# ── 3b. Stage mlx.metallib so the wheel ships MLX's Metal shader library. ──
-# pyproject.toml stages python/ax_engine.dylibs/mlx.metallib in the wheel.
-# Delocate cannot start with ax_engine/.dylibs already present, so step 5 moves
-# the staged file beside delocate's bundled libmlx.dylib and regenerates RECORD.
+# ── 3b. Stage MLX runtime companions that delocate cannot infer. ────────
+# pyproject.toml stages these files under python/ax_engine.dylibs. Delocate
+# cannot start with ax_engine/.dylibs already present, so step 5 moves them
+# beside delocate's bundled libmlx.dylib and regenerates RECORD. libjaccl must
+# be staged explicitly: MLX 0.32 still ships it, but libmlx no longer has a
+# load-command dependency that lets delocate discover it.
 # Copy it from the same pip MLX resolved in step 0 (not Homebrew — see the file
 # header) so the build is self-contained and consistent on CI and local Macs.
-echo "==> Staging mlx.metallib into the wheel data dir..."
+echo "==> Staging MLX runtime companions into the wheel data dir..."
 MLX_METALLIB="${MLX_METALLIB:-$MLX_LIB_DIR/mlx.metallib}"
 if [[ ! -f "$MLX_METALLIB" ]]; then
     echo "error: mlx.metallib not found at '$MLX_METALLIB'"
@@ -187,6 +191,9 @@ METALLIB_DIR="$REPO_ROOT/python/ax_engine.dylibs"
 mkdir -p "$METALLIB_DIR"
 cp -f "$MLX_METALLIB" "$METALLIB_DIR/mlx.metallib"
 echo "    staged: $METALLIB_DIR/mlx.metallib ($(wc -c < "$METALLIB_DIR/mlx.metallib" | tr -d ' ') bytes)"
+MLX_JACCL="$MLX_LIB_DIR/libjaccl.dylib"
+cp -f "$MLX_JACCL" "$METALLIB_DIR/libjaccl.dylib"
+echo "    staged: $METALLIB_DIR/libjaccl.dylib ($(wc -c < "$METALLIB_DIR/libjaccl.dylib" | tr -d ' ') bytes)"
 
 # ── 3c. Stage AX Metal runtime assets into the wheel data dir. ─────────────
 # Keep the package-owned copy self-contained: _setup_bundled_metal() writes a
@@ -226,10 +233,9 @@ echo "    built: $WHEEL"
 # ── 5. Delocalize — bundle libmlx into the wheel ──────────────────────────
 echo "==> Delocalizing wheel (bundling dylibs)..."
 # --require-archs ensures we only accept arm64 (Apple Silicon only)
-# The pip mlx wheel's libmlx.dylib has no embedded LC_RPATH (unlike Homebrew's
-# build), so its own @rpath/libjaccl.dylib reference can't be statically
-# resolved by delocate's dependency walk without help. Export DYLD_LIBRARY_PATH
-# so delocate finds libjaccl.dylib alongside libmlx.dylib and bundles both.
+# Export the pip runtime directory so delocate can resolve every dependency
+# that is present in the current MLX load-command graph. Runtime companions
+# with no dependency edge are staged explicitly above.
 DYLD_LIBRARY_PATH="$MLX_LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
 DYLD_FALLBACK_LIBRARY_PATH="$MLX_LIB_DIR${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}" \
     delocate-wheel --require-archs arm64 -w "$DELOCATED_OUT" "$WHEEL"
@@ -245,10 +251,10 @@ echo "    delocated: $DELOCATED"
 echo "==> Bundled dependencies:"
 delocate-listdeps "$DELOCATED"
 
-# MLX resolves mlx.metallib relative to libmlx.dylib's current binary dir.
-# Maturin staged it outside the package so delocate could create .dylibs; now
-# atomically move it beside libmlx and regenerate the wheel RECORD.
-echo "==> Placing mlx.metallib beside bundled libmlx.dylib..."
+# MLX resolves runtime companions relative to libmlx.dylib's current binary
+# dir. Maturin staged them outside the package so delocate could create
+# .dylibs; now atomically move them beside libmlx and regenerate wheel RECORD.
+echo "==> Placing MLX runtime companions beside bundled libmlx.dylib..."
 python3 scripts/repair_mlx_metallib_wheel.py "$DELOCATED"
 
 # Keep this guard after repair so a release cannot silently regress native pip inference.

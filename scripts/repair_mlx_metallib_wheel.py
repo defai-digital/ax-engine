@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Place MLX's Metal library beside delocate's bundled libmlx.dylib.
+"""Place MLX runtime companions beside delocate's bundled libmlx.dylib.
 
-Maturin cannot stage ``mlx.metallib`` directly in ``ax_engine/.dylibs``:
-delocate rejects a wheel when its destination directory already exists.  The
-build therefore stages the file in ``ax_engine.dylibs`` and runs this helper
-after delocate.  The helper performs an atomic wheel rewrite and regenerates
-the wheel ``RECORD`` so the installed distribution remains verifiable.
+Maturin cannot stage the companions directly in ``ax_engine/.dylibs`` because
+delocate rejects a wheel when its destination directory already exists. The
+build therefore stages them in ``ax_engine.dylibs`` and runs this helper after
+delocate. The helper performs an atomic wheel rewrite and regenerates the wheel
+``RECORD`` so the installed distribution remains verifiable.
 """
 
 from __future__ import annotations
@@ -23,9 +23,15 @@ import zipfile
 from pathlib import Path
 
 STAGED_METALLIB = "ax_engine.dylibs/mlx.metallib"
+STAGED_LIBJACCL = "ax_engine.dylibs/libjaccl.dylib"
 BUNDLED_DYLIB_DIR = "ax_engine/.dylibs"
 BUNDLED_LIBMLX = f"{BUNDLED_DYLIB_DIR}/libmlx.dylib"
 FINAL_METALLIB = f"{BUNDLED_DYLIB_DIR}/mlx.metallib"
+FINAL_LIBJACCL = f"{BUNDLED_DYLIB_DIR}/libjaccl.dylib"
+STAGED_TO_FINAL = {
+    STAGED_METALLIB: FINAL_METALLIB,
+    STAGED_LIBJACCL: FINAL_LIBJACCL,
+}
 RECORD_HASH_ALGORITHMS = frozenset({"sha256", "sha384", "sha512"})
 
 
@@ -136,6 +142,19 @@ def _copy_member(
     return output_name, _record_digest(digest.digest()), str(size)
 
 
+def _members_equal(archive: zipfile.ZipFile, left: zipfile.ZipInfo, right: zipfile.ZipInfo) -> bool:
+    if left.file_size != right.file_size:
+        return False
+    left_digest = hashlib.sha256()
+    right_digest = hashlib.sha256()
+    with archive.open(left) as left_reader, archive.open(right) as right_reader:
+        while chunk := left_reader.read(1024 * 1024):
+            left_digest.update(chunk)
+        while chunk := right_reader.read(1024 * 1024):
+            right_digest.update(chunk)
+    return left_digest.digest() == right_digest.digest()
+
+
 def _wheel_members(wheel: Path) -> tuple[list[zipfile.ZipInfo], str]:
     with zipfile.ZipFile(wheel) as archive:
         members = archive.infolist()
@@ -164,10 +183,11 @@ def _verify_repaired_wheel(wheel: Path) -> None:
     _verify_record(wheel, members, record_path)
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
-        if STAGED_METALLIB in names:
-            raise WheelRepairError(f"temporary staged member remains: {STAGED_METALLIB}")
-        if FINAL_METALLIB not in names:
-            raise WheelRepairError(f"repaired wheel is missing {FINAL_METALLIB}")
+        for staged, final in STAGED_TO_FINAL.items():
+            if staged in names:
+                raise WheelRepairError(f"temporary staged member remains: {staged}")
+            if final not in names:
+                raise WheelRepairError(f"repaired wheel is missing {final}")
 
 
 def repair_wheel(wheel: Path) -> bool:
@@ -181,19 +201,29 @@ def repair_wheel(wheel: Path) -> bool:
 
     members, record_path = _wheel_members(wheel)
     _verify_record(wheel, members, record_path)
-    names = {member.filename for member in members}
-    staged = STAGED_METALLIB in names
-    final = FINAL_METALLIB in names
-    if staged and final:
-        raise WheelRepairError(
-            f"wheel contains both temporary and final metallib members: "
-            f"{STAGED_METALLIB}, {FINAL_METALLIB}"
-        )
-    if not staged:
-        if not final:
-            raise WheelRepairError(f"wheel is missing staged member {STAGED_METALLIB}")
+    by_name = {member.filename: member for member in members}
+    missing_pairs = [
+        (staged, final)
+        for staged, final in STAGED_TO_FINAL.items()
+        if staged not in by_name and final not in by_name
+    ]
+    if missing_pairs:
+        staged, final = missing_pairs[0]
+        raise WheelRepairError(f"wheel is missing runtime companion: {staged} or {final}")
+
+    staged_names = set(STAGED_TO_FINAL).intersection(by_name)
+    if not staged_names:
         _verify_repaired_wheel(wheel)
         return False
+
+    with zipfile.ZipFile(wheel) as archive:
+        for staged in staged_names:
+            final = STAGED_TO_FINAL[staged]
+            if final in by_name and not _members_equal(archive, by_name[staged], by_name[final]):
+                raise WheelRepairError(
+                    f"wheel contains conflicting temporary and final runtime companions: "
+                    f"{staged}, {final}"
+                )
 
     original_mode = stat.S_IMODE(wheel.stat().st_mode)
     temporary_path: Path | None = None
@@ -212,7 +242,9 @@ def repair_wheel(wheel: Path) -> bool:
             for info in members:
                 if info.filename == record_path:
                     continue
-                output_name = FINAL_METALLIB if info.filename == STAGED_METALLIB else info.filename
+                if info.filename in STAGED_TO_FINAL and STAGED_TO_FINAL[info.filename] in by_name:
+                    continue
+                output_name = STAGED_TO_FINAL.get(info.filename, info.filename)
                 row = _copy_member(source, destination, info, output_name=output_name)
                 if row is not None:
                     rows.append(row)

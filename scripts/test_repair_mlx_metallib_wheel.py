@@ -12,7 +12,9 @@ from pathlib import Path
 if __package__:
     from scripts.repair_mlx_metallib_wheel import (
         BUNDLED_LIBMLX,
+        FINAL_LIBJACCL,
         FINAL_METALLIB,
+        STAGED_LIBJACCL,
         STAGED_METALLIB,
         WheelRepairError,
         repair_wheel,
@@ -20,7 +22,9 @@ if __package__:
 else:
     from repair_mlx_metallib_wheel import (
         BUNDLED_LIBMLX,
+        FINAL_LIBJACCL,
         FINAL_METALLIB,
+        STAGED_LIBJACCL,
         STAGED_METALLIB,
         WheelRepairError,
         repair_wheel,
@@ -46,7 +50,9 @@ class RepairMlxMetallibWheelTests(unittest.TestCase):
         *,
         include_anchor: bool = True,
         include_staged: bool = True,
-        include_final: bool = False,
+        include_final_metallib: bool = False,
+        include_final_jaccl: bool = False,
+        final_jaccl_data: bytes = b"final-jaccl-library",
         signed: bool = False,
         tampered_member: bool = False,
         duplicate_record_row: bool = False,
@@ -61,8 +67,11 @@ class RepairMlxMetallibWheelTests(unittest.TestCase):
             members[BUNDLED_LIBMLX] = b"libmlx"
         if include_staged:
             members[STAGED_METALLIB] = b"metal-library"
-        if include_final:
+            members[STAGED_LIBJACCL] = b"jaccl-library"
+        if include_final_metallib:
             members[FINAL_METALLIB] = b"final-metal-library"
+        if include_final_jaccl:
+            members[FINAL_LIBJACCL] = final_jaccl_data
         if unsafe_member:
             members["../outside-wheel"] = b"unsafe"
         record_path = "ax_engine-6.12.0.dist-info/RECORD"
@@ -92,7 +101,9 @@ class RepairMlxMetallibWheelTests(unittest.TestCase):
         with zipfile.ZipFile(self.wheel) as archive:
             names = archive.namelist()
             self.assertNotIn(STAGED_METALLIB, names)
+            self.assertNotIn(STAGED_LIBJACCL, names)
             self.assertEqual(archive.read(FINAL_METALLIB), b"metal-library")
+            self.assertEqual(archive.read(FINAL_LIBJACCL), b"jaccl-library")
             record_path = "ax_engine-6.12.0.dist-info/RECORD"
             rows = {
                 row[0]: (row[1], row[2])
@@ -102,7 +113,12 @@ class RepairMlxMetallibWheelTests(unittest.TestCase):
                 rows[FINAL_METALLIB],
                 (_record_hash(b"metal-library"), str(len(b"metal-library"))),
             )
+            self.assertEqual(
+                rows[FINAL_LIBJACCL],
+                (_record_hash(b"jaccl-library"), str(len(b"jaccl-library"))),
+            )
             self.assertNotIn(STAGED_METALLIB, rows)
+            self.assertNotIn(STAGED_LIBJACCL, rows)
             self.assertEqual(rows[record_path], ("", ""))
 
     def test_requires_delocated_libmlx_anchor(self) -> None:
@@ -110,10 +126,18 @@ class RepairMlxMetallibWheelTests(unittest.TestCase):
         with self.assertRaisesRegex(WheelRepairError, "missing ax_engine/.dylibs/libmlx"):
             repair_wheel(self.wheel)
 
-    def test_rejects_ambiguous_metallib_members(self) -> None:
-        self._write_wheel(include_final=True)
-        with self.assertRaisesRegex(WheelRepairError, "both temporary and final"):
+    def test_rejects_conflicting_metallib_members(self) -> None:
+        self._write_wheel(include_final_metallib=True)
+        with self.assertRaisesRegex(WheelRepairError, "conflicting temporary and final"):
             repair_wheel(self.wheel)
+
+    def test_deduplicates_matching_delocated_libjaccl(self) -> None:
+        self._write_wheel(include_final_jaccl=True, final_jaccl_data=b"jaccl-library")
+
+        self.assertTrue(repair_wheel(self.wheel))
+        with zipfile.ZipFile(self.wheel) as archive:
+            self.assertNotIn(STAGED_LIBJACCL, archive.namelist())
+            self.assertEqual(archive.read(FINAL_LIBJACCL), b"jaccl-library")
 
     def test_rejects_signed_record(self) -> None:
         self._write_wheel(signed=True)
@@ -157,6 +181,7 @@ class RepairMlxMetallibReleaseContractTests(unittest.TestCase):
         self.assertIn(repair, script)
         self.assertIn(jaccl_guard, script)
         self.assertIn(final_guard, script)
+        self.assertIn('cp -f "$MLX_JACCL" "$METALLIB_DIR/libjaccl.dylib"', script)
         self.assertLess(script.index("delocate-wheel --require-archs arm64"), script.index(repair))
         self.assertLess(script.index(repair), script.index(jaccl_guard))
         self.assertLess(script.index(repair), script.index(final_guard))

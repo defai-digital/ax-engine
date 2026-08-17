@@ -63,16 +63,17 @@ profile = "release-pyext"
 strip = true
 # Bundle pre-compiled Metal kernel assets so pip-installed ax-engine works out of the box.
 # Maturin collects .py files automatically; binary and data files need explicit inclusion.
-# Maturin stages mlx.metallib in a temporary top-level directory because
-# delocate refuses to vendor dylibs into a package directory that already
-# exists. scripts/build-pypi-wheel.sh moves it next to delocate's libmlx.dylib
-# and regenerates RECORD before accepting the release wheel.
+# Maturin stages MLX runtime companions in a temporary top-level directory
+# because delocate refuses to vendor dylibs into a package directory that
+# already exists. scripts/build-pypi-wheel.sh moves them next to delocate's
+# libmlx.dylib and regenerates RECORD before accepting the release wheel.
 include = [
     { path = "python/ax_engine/_metal/build/ax_phase1_dense_path.metallib", format = ["wheel"] },
     { path = "python/ax_engine/_metal/build/ax_phase1_dense_path.air", format = ["wheel"] },
     { path = "python/ax_engine/_metal/metal/phase1-kernels.json", format = ["wheel"] },
     { path = "python/ax_engine/_metal/metal/kernels/phase1_dense_path.metal", format = ["wheel"] },
     { path = "python/ax_engine.dylibs/mlx.metallib", format = ["wheel"] },
+    { path = "python/ax_engine.dylibs/libjaccl.dylib", format = ["wheel"] },
     # ax-engine-server and ax-engine-bench binaries — staged by scripts/build-pypi-wheel.sh
     # before maturin runs. Placed inside ax_engine/_bin/ so delocate's @loader_path rewrite
     # (../.dylibs/) stays valid after pip installation. ax-engine-server is exposed via
