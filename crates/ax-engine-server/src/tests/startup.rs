@@ -5,7 +5,7 @@ use ax_engine_sdk::SelectedBackend;
 use axum::Router;
 use axum::routing::any;
 
-use crate::warm_http_completions_path;
+use crate::{should_warm_http_completions, warm_http_completions_path};
 
 use super::fixtures::{TEST_MODEL_ID, llama_cpp_state};
 
@@ -50,4 +50,14 @@ async fn native_mlx_startup_issues_three_generation_warmup_requests() {
     warm_http_completions_path(&app, &state, TEST_MODEL_ID).await;
 
     assert_eq!(requests.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn streamed_native_mlx_skips_http_generation_warmup() {
+    assert!(should_warm_http_completions(SelectedBackend::Mlx, false));
+    assert!(!should_warm_http_completions(SelectedBackend::Mlx, true));
+    assert!(!should_warm_http_completions(
+        SelectedBackend::LlamaCpp,
+        false,
+    ));
 }

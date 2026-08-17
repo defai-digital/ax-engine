@@ -6,7 +6,7 @@ compile_error!(
      Mac, or --no-default-features --features delegated-server for a portable control plane"
 );
 
-use ax_engine_sdk::EngineSessionConfig;
+use ax_engine_sdk::{EngineSessionConfig, SelectedBackend};
 use clap::Parser;
 use std::env;
 use tracing::{info, warn};
@@ -261,7 +261,11 @@ fn new_instance_id() -> String {
 const HTTP_WARMUP_PROMPT: &str = "Act as a coding assistant. Implement a deterministic Rust ring buffer with tests, explain its invariants, and continue for at least 256 tokens without concluding early.";
 
 async fn warm_http_completions_path(app: &axum::Router, state: &AppState, model_id: &str) {
-    if !state.snapshot().runtime_report.selected_backend.is_mlx() {
+    let live = state.snapshot();
+    if !should_warm_http_completions(
+        live.runtime_report.selected_backend,
+        live.generation_service.expert_streaming_active(),
+    ) {
         return;
     }
     // Three short streams: first warms tokenize+SSE; later passes exercise the
@@ -293,6 +297,13 @@ async fn warm_http_completions_path(app: &axum::Router, state: &AppState, model_
         let response = app.clone().oneshot(request).await.expect("infallible");
         let _ = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024).await;
     }
+}
+
+fn should_warm_http_completions(
+    selected_backend: SelectedBackend,
+    expert_streaming_active: bool,
+) -> bool {
+    selected_backend.is_mlx() && !expert_streaming_active
 }
 
 fn is_loopback_bind_host(host: &str) -> bool {
