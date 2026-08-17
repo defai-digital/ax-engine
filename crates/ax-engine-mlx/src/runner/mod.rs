@@ -3166,9 +3166,27 @@ impl ExecutionRunner for MlxRunner {
         // MTP model from changing the projection path of another model in the
         // same server process. Direct sessions stay off the verifier
         // contract so an AXQ sidecar does not disable fused decode.
+        //
+        // Bypass escape: when every item in the batch is a decode step for a
+        // request whose low-acceptance MTP bypass has latched, no verify can
+        // happen in this run, so the verify/replay exactness contract is
+        // moot — drop the scope and let fallback decode use the fused
+        // singleton kernels (full direct speed). Mixed or prefill batches
+        // keep the scope.
+        let all_decode_items_mtp_bypassed = {
+            let items = &input.execution_batch.items;
+            !items.is_empty()
+                && items.iter().all(|item| item.mode == ExecutionMode::Decode)
+                && {
+                    let states = self.states.lock();
+                    items
+                        .iter()
+                        .all(|item| states.get(&item.request_id).is_some_and(|state| state.mtp_bypassed))
+                }
+        };
         let exact_arithmetic_enabled = qwen_linear_mtp_exact_scope_for_request(
             self.qwen_linear_mtp_exact_enabled,
-            self.mtp_requested,
+            self.mtp_requested && !all_decode_items_mtp_bypassed,
         );
         let _qwen_linear_mtp_exact_scope =
             crate::fastpath::scoped_qwen_linear_mtp_exact(exact_arithmetic_enabled);
