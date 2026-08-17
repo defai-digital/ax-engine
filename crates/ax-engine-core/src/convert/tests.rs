@@ -7551,3 +7551,60 @@ fn muse_glimmer_rejects_divergent_sliding_layer_rope_theta() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn muse_glimmer_manifest_requires_per_layer_attention_gate() {
+    let dir = unique_test_dir("muse_glimmer_missing_gate");
+    write_config(&dir, muse_text_config(serde_json::json!([500000.0, 0])));
+    // Same tensor set minus the per-layer self_attn.gate_proj.
+    let mut tensors: Vec<(String, &str, Vec<u64>)> = vec![
+        (
+            "language_model.model.embed_tokens.weight".to_string(),
+            "BF16",
+            vec![1000, 96],
+        ),
+        (
+            "language_model.model.norm.weight".to_string(),
+            "BF16",
+            vec![96],
+        ),
+        (
+            "language_model.lm_head.weight".to_string(),
+            "BF16",
+            vec![1000, 96],
+        ),
+    ];
+    for layer in 0..2 {
+        let p = format!("language_model.model.layers.{layer}");
+        for (name, shape) in [
+            ("input_layernorm.weight", vec![96]),
+            ("post_attention_layernorm.weight", vec![96]),
+            ("pre_feedforward_layernorm.weight", vec![96]),
+            ("post_feedforward_layernorm.weight", vec![96]),
+            ("self_attn.q_proj.weight", vec![64, 96]),
+            ("self_attn.k_proj.weight", vec![32, 96]),
+            ("self_attn.v_proj.weight", vec![32, 96]),
+            ("self_attn.o_proj.weight", vec![96, 64]),
+            ("mlp.gate_proj.weight", vec![128, 96]),
+            ("mlp.up_proj.weight", vec![128, 96]),
+            ("mlp.down_proj.weight", vec![96, 128]),
+        ] {
+            tensors.push((format!("{p}.{name}"), "BF16", shape));
+        }
+    }
+    let borrowed: Vec<(&str, &str, &[u64])> = tensors
+        .iter()
+        .map(|(n, d, s)| (n.as_str(), *d, s.as_slice()))
+        .collect();
+    write_fake_safetensors(&dir, "model.safetensors", &borrowed);
+
+    let manifest = convert_hf_model_dir(&dir).expect("conversion itself succeeds");
+    let error = crate::model::validate_native_model_manifest(&dir, &manifest)
+        .expect_err("gate-less muse manifest must fail loader validation");
+    assert!(
+        error.to_string().contains("attn_out_gate"),
+        "unexpected validation error: {error}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}

@@ -357,8 +357,9 @@ stays the AutomatosX OptiQ/QAT flagship whenever that sibling exists. Do not
 silently retarget `ax-gemma4-12b` or `ax-qwen3.6-35b` at AXQ. AXQ-only
 families (Holo3, Ornith, Qwen 3.8, Qwen3-VL, Muse-Glimmer) may use
 `ax-<family>` as the AXQ pack. Muse-Glimmer convert/chat identity is
-first-class; native decode stays fail-closed until gated attention and
-centered RMSNorm land on the MLX runner. Qwen3-VL 30B AXQ packs have no
+first-class; native text decode runs on the dedicated `muse_glimmer` MLX
+route (gated attention, centered sandwich norms, iRoPE) at Experimental
+tier — image/video inputs are not yet wired. Qwen3-VL 30B AXQ packs have no
 MTP sidecar; promotion requires the
 quality, runtime, memory, provenance, and published-evidence checks in the
 [Qwen 3.6 27B AXQ certification record](model-certifications/qwen3.6-27b-axq.md)

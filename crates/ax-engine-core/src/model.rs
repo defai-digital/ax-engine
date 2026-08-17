@@ -1675,6 +1675,7 @@ pub(crate) fn validate_native_model_manifest(
 
     let is_nemotron_h = manifest.model_family == "nemotron_h";
     let is_deepseek_v4 = manifest.model_family == "deepseek_v4";
+    let is_muse_glimmer = manifest.model_family == "muse_glimmer";
 
     for layer_index in 0..manifest.layer_count {
         let roles =
@@ -1705,6 +1706,18 @@ pub(crate) fn validate_native_model_manifest(
         if is_deepseek_v4 {
             validate_deepseek_v4_layer(manifest, layer_index, roles)?;
             continue;
+        }
+
+        // Muse Glimmer requires the separate sigmoid attention output gate on
+        // every layer — the muse route has no fallback and a missing gate
+        // would otherwise surface as a generation-thread panic at load.
+        if is_muse_glimmer {
+            require_layer_role(
+                roles,
+                NativeTensorRole::AttentionOutputGate,
+                layer_index,
+                "attn_out_gate",
+            )?;
         }
 
         // ffn_norm is optional when attention_post_norm serves as the FFN norm
