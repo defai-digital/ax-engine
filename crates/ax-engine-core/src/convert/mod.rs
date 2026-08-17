@@ -206,6 +206,9 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         converted_v4.as_ref().map(|converted| &converted.consumed),
     )?;
     if is_deepseek_v4(&model_type) {
+        // Name match treats `switch_mlp.gate_proj` as fused. When the same
+        // layer also has `switch_mlp.up_proj`, the pair is split experts.
+        remap_deepseek_v4_split_switch_mlp(&mut mapped_tensors);
         // AXQ/mlx-lm affine weights are `X.weight` + `X.scales` + `X.biases`
         // triplets; only `X.weight` enters the manifest and the runtime
         // resolves the sidecars by name, so a missing sidecar must fail here.
@@ -1492,6 +1495,36 @@ fn map_tensors(
     Ok((mapped, dropped))
 }
 
+/// AXQ DeepSeek V4 ships two `switch_mlp` layouts:
+///
+/// * fused: only `ffn.switch_mlp.gate_proj` with out-dim `2 * intermediate`
+///   → `FfnGateUpExpsPacked`
+/// * split: `gate_proj` + `up_proj` each with out-dim `intermediate`
+///   → `FfnGateExps` + `FfnUpExps` (Flash-0731 AXQ)
+///
+/// The name map always matches `gate_proj` to packed. After the full name
+/// set is known, remapping packed → gate_exps when that layer also has
+/// `up_proj`. The runtime already has a split-expert gather path.
+fn remap_deepseek_v4_split_switch_mlp(mapped: &mut [NativeTensorSpec]) {
+    let split_layers: BTreeSet<u32> = mapped
+        .iter()
+        .filter(|spec| spec.role == NativeTensorRole::FfnUpExps)
+        .filter_map(|spec| spec.layer_index)
+        .collect();
+    if split_layers.is_empty() {
+        return;
+    }
+    for spec in mapped.iter_mut() {
+        if spec.role == NativeTensorRole::FfnGateUpExpsPacked
+            && spec
+                .layer_index
+                .is_some_and(|index| split_layers.contains(&index))
+        {
+            spec.role = NativeTensorRole::FfnGateExps;
+        }
+    }
+}
+
 fn is_training_only_tensor(name: &str) -> bool {
     name.ends_with(".num_batches_tracked") || name == "alignment_heads"
 }
@@ -2205,8 +2238,9 @@ fn validate_deepseek_v4_contract(
             require_model_role(model_type, manifest, layer_index, role)?;
         }
         // Routed experts ship exactly one layout: split gate/up stacks (raw
-        // HF / sanitized `ffn.experts.{gate,up}`) or one fused gate+up tensor
-        // (AXQ/mlx-lm `ffn.switch_mlp.gate_proj` → ffn_gate_up_exps_packed).
+        // HF / sanitized `ffn.experts.{gate,up}`, or AXQ `switch_mlp` with
+        // both `gate_proj` and `up_proj`) or one fused gate+up tensor
+        // (AXQ/mlx-lm `ffn.switch_mlp.gate_proj` only → packed).
         let has_packed_experts =
             has_model_role(manifest, layer_index, NativeTensorRole::FfnGateUpExpsPacked);
         let has_gate_exps = has_model_role(manifest, layer_index, NativeTensorRole::FfnGateExps);

@@ -2420,7 +2420,8 @@ fn validate_deepseek_v4_layer(
         require(role, label)?;
     }
     // Routed experts ship exactly one layout: split gate/up stacks (raw HF /
-    // sanitized) or the fused AXQ gate+up tensor (`ffn_gate_up_exps_packed`).
+    // sanitized, or AXQ `switch_mlp` with both `gate_proj` and `up_proj`)
+    // or the fused AXQ gate+up tensor (`ffn_gate_up_exps_packed`).
     let has_packed_experts = roles.contains(&NativeTensorRole::FfnGateUpExpsPacked);
     let has_gate_exps = roles.contains(&NativeTensorRole::FfnGateExps);
     let has_up_exps = roles.contains(&NativeTensorRole::FfnUpExps);

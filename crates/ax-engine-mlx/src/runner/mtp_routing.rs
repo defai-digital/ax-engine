@@ -182,6 +182,22 @@ pub(super) const fn should_bootstrap_direct_pipeline(
     session_direct || mtp_uses_direct_pipeline || (request_ngram_disabled && !has_mtp)
 }
 
+/// Greedy Flash-0731 with uncertified nextn must use the mlx-lm-style
+/// async_eval double-buffer even when n-gram is still session-on. The sidecar
+/// makes `has_mtp` true, but `route_safe` is false so MTP is not requested.
+pub(super) const fn v4_uncertified_uses_pure_direct_pipeline(
+    v4_direct_fallback: bool,
+    disable_ngram: bool,
+    think_soft_close_armed: bool,
+    uses_logits_processors: bool,
+    greedy: bool,
+) -> bool {
+    !think_soft_close_armed
+        && (disable_ngram || v4_direct_fallback)
+        && !uses_logits_processors
+        && greedy
+}
+
 pub(super) const fn should_use_session_direct_pipeline(
     session_direct: bool,
     is_greedy: bool,

@@ -4098,6 +4098,12 @@ fn deepseek_v4_tensor_matching_covers_axq_layout() {
             "model.layers.7.ffn.switch_mlp.gate_proj.weight",
             (NativeTensorRole::FfnGateUpExpsPacked, Some(7)),
         ),
+        // Split `up_proj` is matched here; convert remaps the pair to
+        // FfnGateExps + FfnUpExps when both names exist on a layer.
+        (
+            "model.layers.7.ffn.switch_mlp.up_proj.weight",
+            (NativeTensorRole::FfnUpExps, Some(7)),
+        ),
         (
             "model.layers.7.ffn.switch_mlp.down_proj.weight",
             (NativeTensorRole::FfnDownExps, Some(7)),
@@ -4211,6 +4217,80 @@ fn converts_deepseek_v4_axq_layout_to_manifest() {
     );
 
     write_manifest(&dir, &manifest).expect("write should succeed");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Flash-0731 AXQ stacks routed experts as split `switch_mlp.gate_proj` +
+/// `switch_mlp.up_proj` (each `[E, I, packed_in]`), not one fused gate+up
+/// tensor. Convert must remapping `gate_proj` off the packed role.
+fn deepseek_v4_axq_split_switch_mlp_fixture_tensors(
+    base_bits: u32,
+) -> Vec<(String, &'static str, Vec<u64>)> {
+    let mut tensors = deepseek_v4_axq_fixture_tensors(base_bits);
+    for (name, _, shape) in &mut tensors {
+        if name.contains("ffn.switch_mlp.gate_proj") && shape.len() >= 2 {
+            shape[1] = 5; // moe_intermediate_size, not 2 * intermediate
+        }
+    }
+    let extras: Vec<(String, &'static str, Vec<u64>)> = tensors
+        .iter()
+        .filter(|(name, _, _)| name.contains("ffn.switch_mlp.gate_proj"))
+        .map(|(name, dtype, shape)| (name.replace("gate_proj", "up_proj"), *dtype, shape.clone()))
+        .collect();
+    tensors.extend(extras);
+    tensors
+}
+
+#[test]
+fn converts_deepseek_v4_axq_split_switch_mlp_to_manifest() {
+    let dir = unique_test_dir("deepseek_v4_axq_split");
+    write_config(&dir, deepseek_v4_axq_config_json(4));
+    write_deepseek_v4_fixture(&dir, &deepseek_v4_axq_split_switch_mlp_fixture_tensors(4));
+
+    let manifest = convert_hf_model_dir(&dir).expect("split AXQ conversion should succeed");
+    let spec = |name: &str| {
+        manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.name == name)
+            .unwrap_or_else(|| panic!("missing tensor {name}"))
+    };
+    assert_eq!(
+        spec("model.layers.0.ffn.switch_mlp.gate_proj.weight").role,
+        NativeTensorRole::FfnGateExps
+    );
+    assert_eq!(
+        spec("model.layers.0.ffn.switch_mlp.up_proj.weight").role,
+        NativeTensorRole::FfnUpExps
+    );
+    assert_eq!(
+        spec("model.layers.0.ffn.switch_mlp.gate_proj.weight").shape,
+        vec![2, 5, 2]
+    );
+    let has_role = |role: NativeTensorRole, layer_index: Option<u32>| {
+        manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == role && tensor.layer_index == layer_index)
+    };
+    for layer in 0..3 {
+        assert!(
+            has_role(NativeTensorRole::FfnGateExps, Some(layer)),
+            "layer {layer} missing split gate"
+        );
+        assert!(
+            has_role(NativeTensorRole::FfnUpExps, Some(layer)),
+            "layer {layer} missing split up"
+        );
+        assert!(
+            !has_role(NativeTensorRole::FfnGateUpExpsPacked, Some(layer)),
+            "layer {layer} must not keep fused packed role"
+        );
+    }
+
+    write_manifest(&dir, &manifest).expect("write should succeed");
+    crate::model::NativeModelArtifacts::from_dir(&dir)
+        .expect("split AXQ DeepSeek V4 manifest should pass loader validation");
     let _ = fs::remove_dir_all(dir);
 }
 

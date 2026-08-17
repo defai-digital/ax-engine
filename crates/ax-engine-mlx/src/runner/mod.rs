@@ -3175,14 +3175,14 @@ impl ExecutionRunner for MlxRunner {
         // keep the scope.
         let all_decode_items_mtp_bypassed = {
             let items = &input.execution_batch.items;
-            !items.is_empty()
-                && items.iter().all(|item| item.mode == ExecutionMode::Decode)
-                && {
-                    let states = self.states.lock();
-                    items
-                        .iter()
-                        .all(|item| states.get(&item.request_id).is_some_and(|state| state.mtp_bypassed))
-                }
+            !items.is_empty() && items.iter().all(|item| item.mode == ExecutionMode::Decode) && {
+                let states = self.states.lock();
+                items.iter().all(|item| {
+                    states
+                        .get(&item.request_id)
+                        .is_some_and(|state| state.mtp_bypassed)
+                })
+            }
         };
         let exact_arithmetic_enabled = qwen_linear_mtp_exact_scope_for_request(
             self.qwen_linear_mtp_exact_enabled,
@@ -7527,10 +7527,17 @@ impl MlxRunner {
         // regress long-context Gemma to single-step decode (the 2026-07-26
         // decode@2048 failure mode). Speculative sessions still use the
         // stricter `should_use_session_direct_pipeline` predicate.
-        let pure_direct_pipeline = !state.think_soft_close_armed
-            && self.disable_ngram_acceleration
-            && !sampling.uses_logits_processors()
-            && (is_greedy || sampling.temperature <= 0.0);
+        // Uncertified V4 nextn is attached (`has_mtp`) but `route_safe` is
+        // false, so MTP is not requested. Without this, greedy Flash decode
+        // skipped the mlx-lm-style async_eval double-buffer and sat ~1.8×
+        // behind mlx-lm (15 vs 28 tok/s on Flash-0731 AXQ 2-bit).
+        let pure_direct_pipeline = v4_uncertified_uses_pure_direct_pipeline(
+            self.mtp_model_policy.is_deepseek_v4_direct_fallback(),
+            self.disable_ngram_acceleration,
+            state.think_soft_close_armed,
+            sampling.uses_logits_processors(),
+            is_greedy || sampling.temperature <= 0.0,
+        );
         let direct_pipeline = pure_direct_pipeline
             || (!state.think_soft_close_armed
                 && should_use_session_direct_pipeline(

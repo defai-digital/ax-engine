@@ -183,10 +183,9 @@ pub(crate) const DEEPSEEK_V3_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
 /// `model.norm.weight` / `lm_head.weight` resolve via the standard map. The
 /// AXQ-specific entries below cover what the raw-HF map does not: the
 /// `model.hc_head.{fn,base,scale}` root globals, `attn_hc.*` / `ffn_hc.*`
-/// hyper-connections (raw HF: `hc_attn_*` / `hc_ffn_*`), the fused
-/// `ffn.switch_mlp.gate_proj` (gate+up in one `[E, 2*I, packed_in]` tensor,
-/// mapped to the engine's packed-experts role like Qwen3/Gemma
-/// `experts.gate_up_proj.weight`), `ffn.switch_mlp.down_proj`, and the
+/// hyper-connections (raw HF: `hc_attn_*` / `hc_ffn_*`), the switch-MLP
+/// experts (`ffn.switch_mlp.gate_proj` fused, or `gate_proj`+`up_proj`
+/// split), `ffn.switch_mlp.down_proj`, and the
 /// `ffn.shared_experts.{gate,up,down}_proj` trio (raw HF: `w1`/`w2`/`w3`).
 /// Affine quantization rides as `{name}.scales` / `{name}.biases` sidecars
 /// resolved by the runtime from the same files; only the `.weight` member of
@@ -404,14 +403,18 @@ pub(crate) const DEEPSEEK_V4_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         "ffn.shared_experts.w3.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
     ),
-    // AXQ/mlx-lm MoE: the switch MLP keeps gate+up fused in one
-    // `[n_routed_experts, 2*moe_intermediate, packed_hidden]` tensor — the
-    // engine's packed-experts convention (`gate_up_exps_packed`, same as
-    // `experts.gate_up_proj.weight` in the standard map), so no split
-    // `up_proj` exists. Shared experts use `{gate,up,down}_proj` names.
+    // AXQ/mlx-lm MoE: `switch_mlp.gate_proj` is fused gate+up
+    // (`[E, 2*I, packed_in]` → `ffn_gate_up_exps_packed`) unless the same
+    // layer also ships `switch_mlp.up_proj`. Convert remaps that split pair
+    // to `ffn_gate_exps` + `ffn_up_exps` after the full name set is known
+    // (Flash-0731 AXQ). Shared experts use `{gate,up,down}_proj` names.
     (
         "ffn.switch_mlp.gate_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnGateUpExpsPacked),
+    ),
+    (
+        "ffn.switch_mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
     ),
     (
         "ffn.switch_mlp.down_proj.weight",

@@ -763,13 +763,50 @@ pub(super) fn deepseek_v4_swiglu_limit(cfg: &ModelConfig) -> Option<f32> {
 ///
 /// llama.cpp `ffn_gate_clamped` / `ffn_up_clamped` + `ggml_swiglu_split` for
 /// `LLM_ARCH_DEEPSEEK4`; vLLM `SiluAndMulWithClamp(swiglu_limit)` with the
-/// default `alpha=1, beta=0`.
+/// default `alpha=1, beta=0`. mlx-lm compiles this as `_limited_swiglu`.
 fn deepseek_v4_clamped_swiglu(gate: &MlxArray, up: &MlxArray, limit: f32) -> MlxArray {
+    if let Some(compiled) = try_compiled_v4_clamped_swiglu(gate, up, limit) {
+        return compiled;
+    }
+    v4_clamped_swiglu_imperative(gate, up, limit)
+}
+
+fn v4_clamped_swiglu_imperative(gate: &MlxArray, up: &MlxArray, limit: f32) -> MlxArray {
     let pos = mlx_sys::ops::cached_scalar(limit, gate.dtype());
     let neg = mlx_sys::ops::cached_scalar(-limit, gate.dtype());
     let gate_c = minimum(gate, &pos, None);
     let up_c = mlx_sys::clip(up, &neg, &pos, None);
     silu_mul(&gate_c, &up_c, None)
+}
+
+type V4SwigluCompileKey = (MlxDtype, MlxDtype, u32, std::thread::ThreadId);
+static V4_CLAMPED_SWIGLU_COMPILE: OnceLock<Mutex<HashMap<V4SwigluCompileKey, Option<MlxClosure>>>> =
+    OnceLock::new();
+
+fn try_compiled_v4_clamped_swiglu(gate: &MlxArray, up: &MlxArray, limit: f32) -> Option<MlxArray> {
+    if gate.shape() != up.shape() {
+        return None;
+    }
+    let key = (
+        gate.dtype(),
+        up.dtype(),
+        limit.to_bits(),
+        std::thread::current().id(),
+    );
+    let cache = V4_CLAMPED_SWIGLU_COMPILE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().ok()?;
+    let slot = guard.entry(key).or_insert_with(|| {
+        MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+            let gate = inputs.get(0);
+            let up = inputs.get(1);
+            vec![v4_clamped_swiglu_imperative(&gate, &up, limit)]
+        })
+        .compile(true)
+        .ok()
+    });
+    let closure = slot.as_ref()?;
+    let mut outputs = closure.try_apply(&[gate, up]).ok()?;
+    (outputs.len() == 1).then(|| outputs.pop().unwrap())
 }
 
 fn packed_ffn_activation(
@@ -10555,6 +10592,28 @@ mod tests {
             attn_sink: None,
             rotation_smoothing_inverse: None,
             expert_stream: None,
+        }
+    }
+
+    #[test]
+    fn compiled_v4_clamped_swiglu_matches_imperative() {
+        let half = mlx_sys::ops::cached_scalar(0.5_f32, MlxDtype::Bfloat16);
+        let one_half = mlx_sys::ops::cached_scalar(1.5_f32, MlxDtype::Bfloat16);
+        let zeros_g = zeros(&[1, 1, 8], MlxDtype::Bfloat16, None);
+        let gate = add(&zeros_g, &half, None);
+        let up = add(&zeros_g, &one_half, None);
+        let compiled =
+            try_compiled_v4_clamped_swiglu(&gate, &up, 7.0).expect("V4 SwiGLU must compile");
+        let imperative = v4_clamped_swiglu_imperative(&gate, &up, 7.0);
+        mlx_sys::eval(&[&compiled, &imperative]);
+        let compiled_f = astype(&compiled, MlxDtype::Float32, None);
+        let imperative_f = astype(&imperative, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&compiled_f, &imperative_f]);
+        let a = compiled_f.data_f32();
+        let b = imperative_f.data_f32();
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert!((x - y).abs() < 1e-4, "{x} vs {y}");
         }
     }
 

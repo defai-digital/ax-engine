@@ -1657,6 +1657,16 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             (gate_exps, up_exps, down_exps, None, None)
         };
 
+        // Flash-0731 AXQ ships split `switch_mlp.{gate,up}_proj`. One packed
+        // gather_qmm is the decode-critical path; mlx-lm SwitchGLU still
+        // launches two. Fuse only V4 here — GPT-OSS stays on the split
+        // sanitize that matches mlx-lm token-exact.
+        let (gate_up_exps_packed, gate_exps, up_exps) = if is_deepseek_v4 {
+            fuse_resident_split_moe_experts(gate_up_exps_packed, gate_exps, up_exps)
+        } else {
+            (gate_up_exps_packed, gate_exps, up_exps)
+        };
+
         // GPT-OSS per-head attention sink. V4 owns its sink inside
         // `DeepseekV4LayerWeights` (loaded below), so skip the generic slot here.
         let attn_sink = if is_deepseek_v4 {
@@ -5448,15 +5458,24 @@ fn requantize_affine_weight(
     })
 }
 
-/// Concatenate two weight matrices along the output (row) dimension.
+/// Concatenate two weight matrices along the output-feature axis.
 ///
-/// Used to fuse parallel projections that read the same input (e.g. q_a_proj
-/// and kv_a_proj in GLM MLA, or Q/K/V in standard full-attention), replacing
-/// multiple matmul kernel launches with one.
+/// 2-D `[out, packed_in]` concatenates on axis 0 (dense FFN / GLM MLA).
+/// 3-D `[experts, out, packed_in]` concatenates on axis 1 (MoE SwitchGLU).
+/// Used to fuse parallel projections that read the same input, replacing
+/// multiple matmul / gather_qmm launches with one.
 fn concat_quantized_weight_rows(
     a: &QuantizedWeight,
     b: &QuantizedWeight,
 ) -> Result<QuantizedWeight, WeightLoadError> {
+    let axis = quantized_out_feature_axis(&a.weight)?;
+    validate_concat_shapes("projection weights", &a.weight, &b.weight, axis)?;
+    if a.mode != b.mode {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "cannot fuse projections with different quant modes: {} vs {}",
+            a.mode, b.mode
+        )));
+    }
     let (scales, biases) = match (&a.scales, &b.scales) {
         (Some(sa), Some(sb)) => {
             if a.group_size != b.group_size {
@@ -5471,8 +5490,14 @@ fn concat_quantized_weight_rows(
                     a.bits, b.bits
                 )));
             }
+            let scale_axis = quantized_out_feature_axis(sa)?;
+            validate_concat_shapes("quantization scales", sa, sb, scale_axis)?;
             let biases = match (a.biases.as_ref(), b.biases.as_ref()) {
-                (Some(ba), Some(bb)) => Some(concatenate(&[ba, bb], 0, None)),
+                (Some(ba), Some(bb)) => {
+                    let bias_axis = quantized_out_feature_axis(ba)?;
+                    validate_concat_shapes("quantization biases", ba, bb, bias_axis)?;
+                    Some(concatenate(&[ba, bb], bias_axis, None))
+                }
                 (None, None) => None,
                 _ => {
                     return Err(WeightLoadError::InvalidLayer(
@@ -5481,7 +5506,7 @@ fn concat_quantized_weight_rows(
                     ));
                 }
             };
-            (Some(concatenate(&[sa, sb], 0, None)), biases)
+            (Some(concatenate(&[sa, sb], scale_axis, None)), biases)
         }
         (None, None) => (None, None),
         _ => {
@@ -5491,7 +5516,11 @@ fn concat_quantized_weight_rows(
         }
     };
     let linear_bias = match (a.linear_bias.as_ref(), b.linear_bias.as_ref()) {
-        (Some(ba), Some(bb)) => Some(concatenate(&[ba, bb], 0, None)),
+        (Some(ba), Some(bb)) => {
+            let bias_axis = linear_bias_output_feature_axis(ba)?;
+            validate_concat_shapes("dense linear biases", ba, bb, bias_axis)?;
+            Some(concatenate(&[ba, bb], bias_axis, None))
+        }
         (None, None) => None,
         _ => {
             return Err(WeightLoadError::InvalidLayer(
@@ -5499,14 +5528,8 @@ fn concat_quantized_weight_rows(
             ));
         }
     };
-    if a.mode != b.mode {
-        return Err(WeightLoadError::InvalidLayer(format!(
-            "cannot fuse projections with different quant modes: {} vs {}",
-            a.mode, b.mode
-        )));
-    }
     Ok(QuantizedWeight {
-        weight: concatenate(&[&a.weight, &b.weight], 0, None),
+        weight: concatenate(&[&a.weight, &b.weight], axis, None),
         scales,
         biases,
         group_size: a.group_size,
@@ -5518,6 +5541,117 @@ fn concat_quantized_weight_rows(
         decode_q4_scales: None,
         decode_q4_biases: None,
     })
+}
+
+fn validate_concat_shapes(
+    label: &str,
+    a: &MlxArray,
+    b: &MlxArray,
+    axis: i32,
+) -> Result<(), WeightLoadError> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    if a_shape.len() != b_shape.len() {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "cannot fuse {label} with ranks {} vs {}",
+            a_shape.len(),
+            b_shape.len()
+        )));
+    }
+    let axis = usize::try_from(axis)
+        .ok()
+        .filter(|axis| *axis < a_shape.len())
+        .ok_or_else(|| {
+            WeightLoadError::InvalidLayer(format!(
+                "cannot fuse {label} on invalid axis {axis} for rank {}",
+                a_shape.len()
+            ))
+        })?;
+    for (dim, (left, right)) in a_shape.iter().zip(b_shape.iter()).enumerate() {
+        if dim != axis && left != right {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "cannot fuse {label} with mismatched dim {dim}: {left} vs {right}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Output-feature axis of a quantized weight: last-but-one dim.
+/// 2-D `[out, packed_in]` → 0; 3-D `[experts, out, packed_in]` → 1.
+fn quantized_out_feature_axis(weight: &MlxArray) -> Result<i32, WeightLoadError> {
+    let ndim = weight.ndim();
+    if ndim < 2 {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "cannot fuse rank-{ndim} quantized projection"
+        )));
+    }
+    Ok((ndim as i32) - 2)
+}
+
+/// Output-feature axis of a dense linear bias: the final dimension.
+/// 1-D `[out]` → 0; 2-D `[experts, out]` → 1.
+fn linear_bias_output_feature_axis(bias: &MlxArray) -> Result<i32, WeightLoadError> {
+    let ndim = bias.ndim();
+    if ndim == 0 {
+        return Err(WeightLoadError::InvalidLayer(
+            "cannot fuse rank-0 dense linear bias".to_string(),
+        ));
+    }
+    Ok((ndim as i32) - 1)
+}
+
+type MoeExpertProjectionSet = (
+    Option<QuantizedWeight>,
+    Option<QuantizedWeight>,
+    Option<QuantizedWeight>,
+);
+
+fn fuse_split_moe_experts(
+    packed: Option<QuantizedWeight>,
+    gate: Option<QuantizedWeight>,
+    up: Option<QuantizedWeight>,
+) -> (MoeExpertProjectionSet, bool) {
+    if packed.is_some() {
+        return ((packed, gate, up), false);
+    }
+    match (gate, up) {
+        (Some(gate), Some(up)) => match concat_quantized_weight_rows(&gate, &up) {
+            Ok(fused) => ((Some(fused), None, None), true),
+            Err(_) => ((None, Some(gate), Some(up)), false),
+        },
+        (gate, up) => ((None, gate, up), false),
+    }
+}
+
+/// Fuse split MoE `gate_exps` + `up_exps` into `gate_up_exps_packed`.
+///
+/// Leaves an already-packed layout alone. On metadata mismatch keeps the
+/// split pair so decode still works (two gather_qmm).
+pub(crate) fn fuse_resident_split_moe_experts(
+    packed: Option<QuantizedWeight>,
+    gate: Option<QuantizedWeight>,
+    up: Option<QuantizedWeight>,
+) -> MoeExpertProjectionSet {
+    let (projections, fused) = fuse_split_moe_experts(packed, gate, up);
+    if fused && let Some(packed) = projections.0.as_ref() {
+        eval_packed_projection(packed);
+    }
+    projections
+}
+
+/// Fuse a just-paged split MoE layer without turning an MLX evaluation error
+/// into a process panic. Metadata incompatibility still keeps the split pair.
+pub(crate) fn try_fuse_paged_split_moe_experts(
+    packed: Option<QuantizedWeight>,
+    gate: Option<QuantizedWeight>,
+    up: Option<QuantizedWeight>,
+) -> Result<MoeExpertProjectionSet, String> {
+    let (projections, fused) = fuse_split_moe_experts(packed, gate, up);
+    if fused && let Some(packed) = projections.0.as_ref() {
+        try_eval_packed_projection(packed)?;
+    }
+    Ok(projections)
 }
 
 /// Split a packed gate+up projection back into two row-halves.
@@ -5733,6 +5867,12 @@ fn pack_split_linear_attention_projections(
 }
 
 fn eval_packed_projection(weight: &QuantizedWeight) {
+    if let Err(message) = try_eval_packed_projection(weight) {
+        panic!("{message}");
+    }
+}
+
+fn try_eval_packed_projection(weight: &QuantizedWeight) -> Result<(), String> {
     let mut arrays = vec![&weight.weight];
     if let Some(scales) = &weight.scales {
         arrays.push(scales);
@@ -5740,7 +5880,7 @@ fn eval_packed_projection(weight: &QuantizedWeight) {
     if let Some(biases) = &weight.biases {
         arrays.push(biases);
     }
-    eval(&arrays);
+    mlx_sys::try_eval(&arrays)
 }
 
 fn pack_linear_attention_projection_rows(
@@ -7477,6 +7617,94 @@ mod tests {
             Err(error) => panic!("expected invalid layer error, got {error}"),
             Ok(_) => panic!("expected fused GLM MLA weights to be rejected"),
         }
+    }
+
+    fn moe_expert_quantized_weight(
+        experts: i32,
+        out: i32,
+        packed_in: i32,
+        group_size: i32,
+        bits: i32,
+    ) -> QuantizedWeight {
+        QuantizedWeight {
+            weight: zeros(&[experts, out, packed_in], MlxDtype::Uint32, None),
+            scales: Some(zeros(&[experts, out, 1], MlxDtype::Bfloat16, None)),
+            biases: Some(zeros(&[experts, out, 1], MlxDtype::Bfloat16, None)),
+            group_size,
+            bits,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        }
+    }
+
+    #[test]
+    fn fuse_resident_split_moe_experts_concatenates_on_out_axis() {
+        let gate = moe_expert_quantized_weight(4, 8, 2, 32, 2);
+        let up = moe_expert_quantized_weight(4, 8, 2, 32, 2);
+        let (packed, gate_out, up_out) =
+            fuse_resident_split_moe_experts(None, Some(gate), Some(up));
+        let packed = packed.expect("split V4 experts must fuse");
+        assert!(gate_out.is_none());
+        assert!(up_out.is_none());
+        assert_eq!(packed.weight.shape(), vec![4, 16, 2]);
+        assert_eq!(
+            packed.scales.as_ref().expect("scales").shape(),
+            vec![4, 16, 1]
+        );
+        assert_eq!(packed.bits, 2);
+        assert_eq!(packed.group_size, 32);
+    }
+
+    #[test]
+    fn fuse_resident_split_moe_experts_keeps_existing_packed() {
+        let packed_in = moe_expert_quantized_weight(4, 16, 2, 32, 2);
+        let gate = moe_expert_quantized_weight(4, 8, 2, 32, 2);
+        let (packed, gate_out, up_out) =
+            fuse_resident_split_moe_experts(Some(packed_in), Some(gate), None);
+        assert!(packed.is_some());
+        assert!(gate_out.is_some());
+        assert!(up_out.is_none());
+        assert_eq!(packed.expect("kept").weight.shape(), vec![4, 16, 2]);
+    }
+
+    #[test]
+    fn fuse_resident_split_moe_experts_keeps_split_on_bit_mismatch() {
+        let gate = moe_expert_quantized_weight(4, 8, 2, 32, 2);
+        let up = moe_expert_quantized_weight(4, 8, 2, 32, 4);
+        let (packed, gate_out, up_out) =
+            fuse_resident_split_moe_experts(None, Some(gate), Some(up));
+        assert!(packed.is_none());
+        assert!(gate_out.is_some());
+        assert!(up_out.is_some());
+    }
+
+    #[test]
+    fn fuse_resident_split_moe_experts_keeps_split_on_scale_shape_mismatch() {
+        let gate = moe_expert_quantized_weight(4, 8, 2, 32, 2);
+        let mut up = moe_expert_quantized_weight(4, 8, 2, 32, 2);
+        up.scales = Some(zeros(&[5, 8, 1], MlxDtype::Bfloat16, None));
+        let (packed, gate_out, up_out) =
+            fuse_resident_split_moe_experts(None, Some(gate), Some(up));
+        assert!(packed.is_none());
+        assert!(gate_out.is_some());
+        assert!(up_out.is_some());
+    }
+
+    #[test]
+    fn fuse_resident_split_moe_experts_keeps_split_on_rank_one_sidecars() {
+        let mut gate = moe_expert_quantized_weight(4, 8, 2, 32, 2);
+        let mut up = moe_expert_quantized_weight(4, 8, 2, 32, 2);
+        gate.scales = Some(zeros(&[8], MlxDtype::Bfloat16, None));
+        up.scales = Some(zeros(&[8], MlxDtype::Bfloat16, None));
+        let (packed, gate_out, up_out) =
+            fuse_resident_split_moe_experts(None, Some(gate), Some(up));
+        assert!(packed.is_none());
+        assert!(gate_out.is_some());
+        assert!(up_out.is_some());
     }
 
     #[test]

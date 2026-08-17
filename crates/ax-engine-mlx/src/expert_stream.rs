@@ -761,6 +761,15 @@ impl ExpertStackPager {
                 "no expert tensors were paged for layer {layer}"
             )));
         }
+        let (packed, gate, up) = crate::weights::try_fuse_paged_split_moe_experts(
+            stack.gate_up_exps_packed,
+            stack.gate_exps,
+            stack.up_exps,
+        )
+        .map_err(ExpertStreamError::Paging)?;
+        stack.gate_up_exps_packed = packed;
+        stack.gate_exps = gate;
+        stack.up_exps = up;
         Ok(stack)
     }
 }
