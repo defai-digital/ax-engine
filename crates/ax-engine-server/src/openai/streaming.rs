@@ -2,8 +2,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ax_engine_sdk::{
     EngineSessionError, EngineTokenizer, EngineTokenizerError, GenerateFinishReason,
-    GenerateRequest, GenerateStreamEvent, LlamaCppChatGenerateRequest, LlamaCppStreamHandle,
-    MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend, finish_reason_from_mlx_lm,
+    GenerateRequest, GenerateRouteReport, GenerateStreamEvent, LlamaCppChatGenerateRequest,
+    LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend,
+    finish_reason_from_mlx_lm,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -27,7 +28,7 @@ use crate::openai::chunks::{
 use crate::openai::reasoning_stream::ThinkTagScanner;
 use crate::openai::requests::OpenAiResponseOptions;
 use crate::openai::responses::{finish_reason_from_llama_cpp_chat, openai_usage};
-use crate::openai::schema::{OpenAiStreamKind, OpenAiUsage};
+use crate::openai::schema::{OpenAiPromptTokensDetails, OpenAiStreamKind, OpenAiUsage};
 use crate::openai::sse::send_openai_stream_chunk;
 use crate::openai::stop::StopSequenceScanner;
 use crate::openai::tool_stream::{ToolCallStreamScanner, ToolScanEvent};
@@ -222,6 +223,7 @@ fn drive_openai_stream_state<N>(
         calls_emitted: 0,
         prompt_token_count: None,
         output_token_count: None,
+        prefix_reused_tokens: None,
     };
 
     drive_stream_events(
@@ -246,19 +248,36 @@ struct OpenAiStreamDriver {
     calls_emitted: u32,
     prompt_token_count: Option<u32>,
     output_token_count: Option<u32>,
+    /// Prompt tokens whose KV state was served from the prefix cache, as
+    /// reported by route decisions on the request/step reports (the prefill
+    /// step carries it). Surfaced as `prompt_tokens_details.cached_tokens`
+    /// when the terminal usage falls back to the count-based path.
+    prefix_reused_tokens: Option<u32>,
 }
 
 impl OpenAiStreamDriver {
+    /// Records prefix-cache reuse reported on request/step route decisions.
+    /// The prefill step carries the reused-token count; later reports may
+    /// repeat or omit it, so a fresh value wins and `None` keeps the last
+    /// observed count.
+    fn track_prefix_reuse(&mut self, route: &GenerateRouteReport) {
+        self.prefix_reused_tokens = route
+            .decision("prefix_reused_tokens")
+            .or(self.prefix_reused_tokens);
+    }
+
     fn handle_event(&mut self, tx: &StreamEventSender, event: GenerateStreamEvent) -> bool {
         match event {
             GenerateStreamEvent::Request(payload) => {
                 self.prompt_token_count = Some(payload.request.prompt_len);
                 self.output_token_count = Some(payload.request.output_len);
+                self.track_prefix_reuse(&payload.request.route);
                 true
             }
             GenerateStreamEvent::Step(payload) => {
                 self.prompt_token_count = Some(payload.request.prompt_len);
                 self.output_token_count = Some(payload.request.output_len);
+                self.track_prefix_reuse(&payload.request.route);
                 let request_id = payload.request.request_id;
                 let model_id = payload.request.model_id.clone();
                 let decoded = match self.decode_step_text(tx, &payload) {
@@ -558,6 +577,7 @@ impl OpenAiStreamDriver {
                     self.pipeline.include_usage,
                     self.prompt_token_count,
                     self.output_token_count,
+                    self.prefix_reused_tokens,
                 ) {
                     return false;
                 }
@@ -1162,6 +1182,9 @@ fn drive_openai_mlx_lm_chat_stream(
     let mut prompt_token_count = None;
     let mut output_token_count = None;
     let mut final_emitted = false;
+    // mlx-lm stream chunks carry no route/prefix-reuse signal, so the
+    // count-based usage below never reports cached_tokens on this path.
+    let prefix_reused_tokens = None;
     loop {
         if cancel.load(Ordering::Relaxed) {
             tracing::debug!("stream cancelled: client disconnected");
@@ -1202,6 +1225,7 @@ fn drive_openai_mlx_lm_chat_stream(
                         include_usage,
                         prompt_token_count,
                         output_token_count,
+                        prefix_reused_tokens,
                     ) {
                         return;
                     }
@@ -1220,6 +1244,7 @@ fn drive_openai_mlx_lm_chat_stream(
                         include_usage,
                         prompt_token_count,
                         output_token_count,
+                        prefix_reused_tokens,
                     )
                 {
                     return;
@@ -1247,6 +1272,10 @@ fn drive_openai_llama_cpp_chat_stream(
     let mut chat_role_emitted = false;
     let mut prompt_token_count = None;
     let mut output_token_count = None;
+    // llama.cpp reports cached prompt tokens via `prompt_progress.cache`; the
+    // OpenAI chat-completion chunk mapping leaves it unset, so this stays
+    // `None` on the chat path unless a chunk format carries the counts.
+    let mut prefix_reused_tokens = None;
     let mut final_emitted = false;
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -1257,6 +1286,11 @@ fn drive_openai_llama_cpp_chat_stream(
             Ok(Some(chunk)) => {
                 prompt_token_count = chunk.prompt_token_count.or(prompt_token_count);
                 output_token_count = chunk.output_token_count.or(output_token_count);
+                prefix_reused_tokens = chunk
+                    .prompt_progress
+                    .as_ref()
+                    .map(|progress| progress.cache)
+                    .or(prefix_reused_tokens);
                 if !final_emitted && !chunk.content.is_empty() {
                     let role = next_chat_delta_role(&mut chat_role_emitted);
                     let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.content);
@@ -1288,6 +1322,7 @@ fn drive_openai_llama_cpp_chat_stream(
                         include_usage,
                         prompt_token_count,
                         output_token_count,
+                        prefix_reused_tokens,
                     ) {
                         return;
                     }
@@ -1306,6 +1341,7 @@ fn drive_openai_llama_cpp_chat_stream(
                         include_usage,
                         prompt_token_count,
                         output_token_count,
+                        prefix_reused_tokens,
                     )
                 {
                     return;
@@ -1322,6 +1358,7 @@ fn drive_openai_llama_cpp_chat_stream(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_stream_usage_from_counts(
     tx: &StreamEventSender,
     request_id: u64,
@@ -1330,6 +1367,7 @@ fn send_stream_usage_from_counts(
     include_usage: bool,
     prompt_token_count: Option<u32>,
     output_token_count: Option<u32>,
+    prefix_reused_tokens: Option<u32>,
 ) -> bool {
     if !include_usage {
         return true;
@@ -1342,14 +1380,28 @@ fn send_stream_usage_from_counts(
         request_id,
         model_id.to_string(),
         stream_kind,
-        OpenAiUsage {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens.saturating_add(completion_tokens),
-            prompt_tokens_details: None,
-        },
+        count_based_stream_usage(prompt_tokens, completion_tokens, prefix_reused_tokens),
     );
     send_openai_stream_chunk(tx, &chunk)
+}
+
+/// Builds the terminal usage for count-based stream paths, surfacing
+/// prefix-cache reuse in the OpenAI prompt-caching shape. The details block
+/// is omitted when the engine reported no reuse, matching `openai_usage` on
+/// the non-stream path.
+fn count_based_stream_usage(
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    prefix_reused_tokens: Option<u32>,
+) -> OpenAiUsage {
+    OpenAiUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens.saturating_add(completion_tokens),
+        prompt_tokens_details: prefix_reused_tokens
+            .filter(|reused| *reused > 0)
+            .map(|cached_tokens| OpenAiPromptTokensDetails { cached_tokens }),
+    }
 }
 
 fn send_openai_mlx_lm_chat_final_chunk(
@@ -1552,5 +1604,76 @@ mod incremental_decode_tests {
         // is held back entirely until the tail completes.
         assert_eq!(incremental_delta("你", "你好\u{FFFD}"), None);
         assert_eq!(incremental_delta("你", "你好世"), Some("好世".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod stream_usage_tests {
+    use ax_engine_sdk::GenerateRouteReport;
+
+    use super::{
+        OpenAiStreamDriver, OpenAiStreamKind, OpenAiStreamPipeline, count_based_stream_usage,
+    };
+
+    fn completion_driver() -> OpenAiStreamDriver {
+        OpenAiStreamDriver {
+            stream_kind: OpenAiStreamKind::Completion,
+            chat_role_emitted: false,
+            decoder: None,
+            channel_filter: None,
+            pipeline: OpenAiStreamPipeline {
+                tool_scanner: None,
+                stop_scanner: None,
+                include_usage: true,
+            },
+            reasoning: None,
+            calls_emitted: 0,
+            prompt_token_count: None,
+            output_token_count: None,
+            prefix_reused_tokens: None,
+        }
+    }
+
+    #[test]
+    fn count_based_usage_reports_cached_tokens_on_prefix_reuse() {
+        let usage = count_based_stream_usage(4, 2, Some(64));
+        assert_eq!(usage.prompt_tokens, 4);
+        assert_eq!(usage.completion_tokens, 2);
+        assert_eq!(usage.total_tokens, 6);
+        assert_eq!(
+            usage
+                .prompt_tokens_details
+                .expect("cached-token details should be present")
+                .cached_tokens,
+            64
+        );
+
+        // Zero or unreported reuse: the details block is omitted entirely,
+        // matching the non-stream `openai_usage` shape.
+        assert!(
+            count_based_stream_usage(4, 2, Some(0))
+                .prompt_tokens_details
+                .is_none()
+        );
+        assert!(
+            count_based_stream_usage(4, 2, None)
+                .prompt_tokens_details
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn driver_tracks_prefix_reuse_from_route_decisions() {
+        let mut driver = completion_driver();
+        let mut route = GenerateRouteReport::default();
+        route
+            .crossover_decisions
+            .insert("prefix_reused_tokens".to_string(), 64);
+        driver.track_prefix_reuse(&route);
+        assert_eq!(driver.prefix_reused_tokens, Some(64));
+
+        // Later reports without the decision keep the last observed count.
+        driver.track_prefix_reuse(&GenerateRouteReport::default());
+        assert_eq!(driver.prefix_reused_tokens, Some(64));
     }
 }
