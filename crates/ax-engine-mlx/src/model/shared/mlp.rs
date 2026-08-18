@@ -918,23 +918,67 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
     const uint row_base = row * PackedCols;
     const uint scale_row = row * GroupCount;
 
-    // 256-wide stride over packed columns.
-    for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
-        uint gate_packed = gate_weight[row_base + packed_col];
-        uint up_packed = up_weight[row_base + packed_col];
-        for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
-            uint input_col = packed_col * PackFactor + packed_lane;
-            uint gate_q = (gate_packed >> (packed_lane * Bits)) & QuantMask;
-            uint up_q = (up_packed >> (packed_lane * Bits)) & QuantMask;
-            uint group = input_col / GroupSize;
-            uint scale_idx = scale_row + group;
-            float x_v = static_cast<float>(x[input_col]);
+    if (Bits == 6) {
+        // MLX 6-bit packing (quantized.h qdot order): 4 values per 3 bytes,
+        // v0=b0&0x3f, v1=(b0>>6)|((b1&0x0f)<<2), v2=(b1>>4)|((b2&0x03)<<4),
+        // v3=b2>>2. GroupSize is a multiple of 4, so one pack shares one
+        // (scale, bias) pair.
+        const device uchar* gwb = (const device uchar*)(gate_weight + row_base);
+        const device uchar* uwb = (const device uchar*)(up_weight + row_base);
+        const uint packs = InputDim / 4;
+        for (uint p = tid; p < packs; p += 256) {
+            uint base = p * 4;
+            uint scale_idx = scale_row + base / GroupSize;
             float gate_scale = static_cast<float>(gate_scales[scale_idx]);
             float gate_bias = static_cast<float>(gate_biases[scale_idx]);
             float up_scale = static_cast<float>(up_scales[scale_idx]);
             float up_bias = static_cast<float>(up_biases[scale_idx]);
-            gate_acc = fma(x_v, static_cast<float>(gate_q) * gate_scale + gate_bias, gate_acc);
-            up_acc = fma(x_v, static_cast<float>(up_q) * up_scale + up_bias, up_acc);
+            uint gb0 = gwb[p * 3u];
+            uint gb1 = gwb[p * 3u + 1u];
+            uint gb2 = gwb[p * 3u + 2u];
+            uint ub0 = uwb[p * 3u];
+            uint ub1 = uwb[p * 3u + 1u];
+            uint ub2 = uwb[p * 3u + 2u];
+            uint gq0 = gb0 & 0x3fu;
+            uint gq1 = (gb0 >> 6) | ((gb1 & 0x0fu) << 2);
+            uint gq2 = (gb1 >> 4) | ((gb2 & 0x03u) << 4);
+            uint gq3 = gb2 >> 2;
+            uint uq0 = ub0 & 0x3fu;
+            uint uq1 = (ub0 >> 6) | ((ub1 & 0x0fu) << 2);
+            uint uq2 = (ub1 >> 4) | ((ub2 & 0x03u) << 4);
+            uint uq3 = ub2 >> 2;
+            float x0 = static_cast<float>(x[base]);
+            float x1 = static_cast<float>(x[base + 1u]);
+            float x2 = static_cast<float>(x[base + 2u]);
+            float x3 = static_cast<float>(x[base + 3u]);
+            gate_acc = fma(x0, static_cast<float>(gq0) * gate_scale + gate_bias, gate_acc);
+            gate_acc = fma(x1, static_cast<float>(gq1) * gate_scale + gate_bias, gate_acc);
+            gate_acc = fma(x2, static_cast<float>(gq2) * gate_scale + gate_bias, gate_acc);
+            gate_acc = fma(x3, static_cast<float>(gq3) * gate_scale + gate_bias, gate_acc);
+            up_acc = fma(x0, static_cast<float>(uq0) * up_scale + up_bias, up_acc);
+            up_acc = fma(x1, static_cast<float>(uq1) * up_scale + up_bias, up_acc);
+            up_acc = fma(x2, static_cast<float>(uq2) * up_scale + up_bias, up_acc);
+            up_acc = fma(x3, static_cast<float>(uq3) * up_scale + up_bias, up_acc);
+        }
+    } else {
+        // 256-wide stride over packed columns (power-of-2 bits).
+        for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
+            uint gate_packed = gate_weight[row_base + packed_col];
+            uint up_packed = up_weight[row_base + packed_col];
+            for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
+                uint input_col = packed_col * PackFactor + packed_lane;
+                uint gate_q = (gate_packed >> (packed_lane * Bits)) & QuantMask;
+                uint up_q = (up_packed >> (packed_lane * Bits)) & QuantMask;
+                uint group = input_col / GroupSize;
+                uint scale_idx = scale_row + group;
+                float x_v = static_cast<float>(x[input_col]);
+                float gate_scale = static_cast<float>(gate_scales[scale_idx]);
+                float gate_bias = static_cast<float>(gate_biases[scale_idx]);
+                float up_scale = static_cast<float>(up_scales[scale_idx]);
+                float up_bias = static_cast<float>(up_biases[scale_idx]);
+                gate_acc = fma(x_v, static_cast<float>(gate_q) * gate_scale + gate_bias, gate_acc);
+                up_acc = fma(x_v, static_cast<float>(up_q) * up_scale + up_bias, up_acc);
+            }
         }
     }
 
@@ -1200,17 +1244,45 @@ const QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE: &str = r#"
     const uint row_base = row * PackedCols;
     const uint scale_row = row * GroupCount;
 
-    for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
-        uint packed = weight[row_base + packed_col];
-        for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
-            uint input_col = packed_col * PackFactor + packed_lane;
-            uint q = (packed >> (packed_lane * Bits)) & QuantMask;
-            uint group = input_col / GroupSize;
-            uint scale_idx = scale_row + group;
-            float x_v = static_cast<float>(x[input_col]);
+    if (Bits == 6) {
+        // MLX 6-bit packing (quantized.h qdot order): 4 values per 3 bytes.
+        // GroupSize is a multiple of 4, so one pack shares one (scale, bias).
+        const device uchar* wb = (const device uchar*)(weight + row_base);
+        const uint packs = InputDim / 4;
+        for (uint p = tid; p < packs; p += 256) {
+            uint base = p * 4;
+            uint scale_idx = scale_row + base / GroupSize;
             float scale = static_cast<float>(scales[scale_idx]);
             float bias = static_cast<float>(biases[scale_idx]);
-            acc = fma(x_v, static_cast<float>(q) * scale + bias, acc);
+            uint b0 = wb[p * 3u];
+            uint b1 = wb[p * 3u + 1u];
+            uint b2 = wb[p * 3u + 2u];
+            uint q0 = b0 & 0x3fu;
+            uint q1 = (b0 >> 6) | ((b1 & 0x0fu) << 2);
+            uint q2 = (b1 >> 4) | ((b2 & 0x03u) << 4);
+            uint q3 = b2 >> 2;
+            acc = fma(static_cast<float>(x[base]),
+                      static_cast<float>(q0) * scale + bias, acc);
+            acc = fma(static_cast<float>(x[base + 1u]),
+                      static_cast<float>(q1) * scale + bias, acc);
+            acc = fma(static_cast<float>(x[base + 2u]),
+                      static_cast<float>(q2) * scale + bias, acc);
+            acc = fma(static_cast<float>(x[base + 3u]),
+                      static_cast<float>(q3) * scale + bias, acc);
+        }
+    } else {
+        for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
+            uint packed = weight[row_base + packed_col];
+            for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
+                uint input_col = packed_col * PackFactor + packed_lane;
+                uint q = (packed >> (packed_lane * Bits)) & QuantMask;
+                uint group = input_col / GroupSize;
+                uint scale_idx = scale_row + group;
+                float x_v = static_cast<float>(x[input_col]);
+                float scale = static_cast<float>(scales[scale_idx]);
+                float bias = static_cast<float>(biases[scale_idx]);
+                acc = fma(x_v, static_cast<float>(q) * scale + bias, acc);
+            }
         }
     }
 
@@ -1243,17 +1315,45 @@ const QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL_SOURCE: &str = r#"
     const uint row_base = row * PackedCols;
     const uint scale_row = row * GroupCount;
 
-    for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
-        uint packed = weight[row_base + packed_col];
-        for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
-            uint input_col = packed_col * PackFactor + packed_lane;
-            uint q = (packed >> (packed_lane * Bits)) & QuantMask;
-            uint group = input_col / GroupSize;
-            uint scale_idx = scale_row + group;
-            float x_v = static_cast<float>(x[input_col]);
+    if (Bits == 6) {
+        // MLX 6-bit packing (quantized.h qdot order): 4 values per 3 bytes.
+        // GroupSize is a multiple of 4, so one pack shares one (scale, bias).
+        const device uchar* wb = (const device uchar*)(weight + row_base);
+        const uint packs = InputDim / 4;
+        for (uint p = tid; p < packs; p += 256) {
+            uint base = p * 4;
+            uint scale_idx = scale_row + base / GroupSize;
             float scale = static_cast<float>(scales[scale_idx]);
             float bias = static_cast<float>(biases[scale_idx]);
-            acc = fma(x_v, static_cast<float>(q) * scale + bias, acc);
+            uint b0 = wb[p * 3u];
+            uint b1 = wb[p * 3u + 1u];
+            uint b2 = wb[p * 3u + 2u];
+            uint q0 = b0 & 0x3fu;
+            uint q1 = (b0 >> 6) | ((b1 & 0x0fu) << 2);
+            uint q2 = (b1 >> 4) | ((b2 & 0x03u) << 4);
+            uint q3 = b2 >> 2;
+            acc = fma(static_cast<float>(x[base]),
+                      static_cast<float>(q0) * scale + bias, acc);
+            acc = fma(static_cast<float>(x[base + 1u]),
+                      static_cast<float>(q1) * scale + bias, acc);
+            acc = fma(static_cast<float>(x[base + 2u]),
+                      static_cast<float>(q2) * scale + bias, acc);
+            acc = fma(static_cast<float>(x[base + 3u]),
+                      static_cast<float>(q3) * scale + bias, acc);
+        }
+    } else {
+        for (uint packed_col = tid; packed_col < PackedCols; packed_col += 256) {
+            uint packed = weight[row_base + packed_col];
+            for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
+                uint input_col = packed_col * PackFactor + packed_lane;
+                uint q = (packed >> (packed_lane * Bits)) & QuantMask;
+                uint group = input_col / GroupSize;
+                uint scale_idx = scale_row + group;
+                float x_v = static_cast<float>(x[input_col]);
+                float scale = static_cast<float>(scales[scale_idx]);
+                float bias = static_cast<float>(biases[scale_idx]);
+                acc = fma(x_v, static_cast<float>(q) * scale + bias, acc);
+            }
         }
     }
 
@@ -1636,6 +1736,9 @@ fn qwen_dense_ffn_gate_up_swiglu_metal(
         || fastpath::qwen_linear_mtp_exact_enabled()
         || cfg.uses_geglu
         || !cfg.model_family.starts_with("qwen")
+        // 6/8-bit engagement (gate/up + the downstream down matvec) is
+        // opt-in until the formal A/B on those packs lands.
+        || (gate.bits != 4 && !fastpath::qwen_dense_ffn_matvec_ext_bits_enabled())
         || (gate.bits == up.bits
             && gate.group_size == up.group_size
             && qwen_dense_ffn_gate_up_matvec_metal_regresses(
@@ -1726,7 +1829,7 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
     if gate.bits != up.bits || gate.group_size != up.group_size {
         return None;
     }
-    if gate.bits != 4 || gate.group_size <= 0 {
+    if !matches!(gate.bits, 4 | 6 | 8) || gate.group_size <= 0 || gate.group_size % 4 != 0 {
         return None;
     }
 
@@ -1741,8 +1844,14 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
         return None;
     }
 
-    let pack_factor = 32 / gate.bits;
-    if packed_cols.checked_mul(pack_factor)? != input_dim {
+    // 6-bit packs 4 values into 3 bytes (16 values per 3 uint32 columns);
+    // power-of-2 bits pack 32/bits values per uint32 column.
+    let pack_factor = if gate.bits == 6 { 4 } else { 32 / gate.bits };
+    if gate.bits == 6 {
+        if input_dim % 16 != 0 || packed_cols.checked_mul(16)? != input_dim.checked_mul(3)? {
+            return None;
+        }
+    } else if packed_cols.checked_mul(pack_factor)? != input_dim {
         return None;
     }
     if input_dim % gate.group_size != 0 {
@@ -1763,7 +1872,7 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen_dense_ffn_gate_up_swiglu_simd_v1d",
+            "ax_qwen_dense_ffn_gate_up_swiglu_simd_v2",
             &[
                 "x",
                 "gate_weight",
@@ -1806,6 +1915,10 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
                 KernelTemplateArg::Int {
                     name: "PackedCols",
                     value: packed_cols,
+                },
+                KernelTemplateArg::Int {
+                    name: "InputDim",
+                    value: input_dim,
                 },
                 KernelTemplateArg::Int {
                     name: "GroupSize",
@@ -2214,7 +2327,7 @@ fn qwen_dense_ffn_down_matvec_metal_impl(
     let (Some(scales), Some(biases)) = (down.scales.as_ref(), down.biases.as_ref()) else {
         return None;
     };
-    if down.bits != 4 || down.group_size <= 0 {
+    if !matches!(down.bits, 4 | 6 | 8) || down.group_size <= 0 || down.group_size % 4 != 0 {
         return None;
     }
     let weight_shape = down.weight.shape();
@@ -2226,8 +2339,13 @@ fn qwen_dense_ffn_down_matvec_metal_impl(
     if out_dim <= 0 || packed_cols <= 0 {
         return None;
     }
-    let pack_factor = 32 / down.bits;
-    if packed_cols.checked_mul(pack_factor)? != input_dim {
+    // 6-bit packs 4 values into 3 bytes (16 values per 3 uint32 columns).
+    let pack_factor = if down.bits == 6 { 4 } else { 32 / down.bits };
+    if down.bits == 6 {
+        if input_dim % 16 != 0 || packed_cols.checked_mul(16)? != input_dim.checked_mul(3)? {
+            return None;
+        }
+    } else if packed_cols.checked_mul(pack_factor)? != input_dim {
         return None;
     }
     if input_dim % down.group_size != 0 {
@@ -2256,7 +2374,7 @@ fn qwen_dense_ffn_down_matvec_metal_impl(
     let (kernel, inputs): (&MlxMetalKernel, Vec<&MlxArray>) = if let Some(residual) = residual {
         let kernel = QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL.get_or_init(|| {
             MlxMetalKernel::new(
-                "ax_qwen_dense_ffn_down_residual_v1",
+                "ax_qwen_dense_ffn_down_residual_v2",
                 &["x", "weight", "scales", "biases", "residual"],
                 &["out"],
                 QWEN_DENSE_FFN_DOWN_RESIDUAL_KERNEL_SOURCE,
@@ -2268,7 +2386,7 @@ fn qwen_dense_ffn_down_matvec_metal_impl(
     } else {
         let kernel = QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL.get_or_init(|| {
             MlxMetalKernel::new(
-                "ax_qwen_dense_ffn_down_matvec_simd_v1d",
+                "ax_qwen_dense_ffn_down_matvec_simd_v2",
                 &["x", "weight", "scales", "biases"],
                 &["out"],
                 QWEN_DENSE_FFN_DOWN_MATVEC_KERNEL_SOURCE,
@@ -2297,6 +2415,10 @@ fn qwen_dense_ffn_down_matvec_metal_impl(
                 KernelTemplateArg::Int {
                     name: "PackedCols",
                     value: packed_cols,
+                },
+                KernelTemplateArg::Int {
+                    name: "InputDim",
+                    value: input_dim,
                 },
                 KernelTemplateArg::Int {
                     name: "GroupSize",
@@ -10161,6 +10283,165 @@ mod tests {
             .expect("residual down Metal kernel must compile and evaluate");
         assert_eq!(fused.shape(), vec![1, 1, 16]);
         assert_close(fused.data_f32(), reference.data_f32(), 1.0e-4);
+    }
+
+    fn affine_6bit_weight(weight: &MlxArray, group_size: i32) -> (QuantizedWeight, Vec<MlxArray>) {
+        let q = quantize(
+            weight,
+            Some(group_size),
+            Some(6),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        (
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: Some(q[2].clone()),
+                group_size,
+                bits: 6,
+                mode: "affine".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            },
+            q,
+        )
+    }
+
+    #[test]
+    fn qwen_dense_ffn_gate_up_swiglu_metal_6bit_matches_split_quantized_matmuls() {
+        // 6-bit packs 4 values into 3 bytes: input_dim must be a multiple of
+        // 16 so the packed row is whole uint32 columns (64 * 6 / 32 = 12).
+        let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 30.0) * 0.017).collect();
+        let gate_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 500.0) * 0.0011).collect();
+        let up_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 300.0) * -0.0009).collect();
+        let x = array_f32(&x_data, &[1, 1, 64]);
+        let (gate, gate_q) = affine_6bit_weight(&array_f32(&gate_data, &[16, 64]), 32);
+        let (up, up_q) = affine_6bit_weight(&array_f32(&up_data, &[16, 64]), 32);
+        assert_eq!(gate.weight.shape(), vec![16, 12]);
+
+        let metal = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up)
+            .expect("6-bit affine gate/up SwiGLU matvec should be eligible");
+        assert_eq!(metal.shape(), vec![1, 1, 16]);
+        let gate_ref = quantized_matmul(
+            &x,
+            &gate_q[0],
+            &gate_q[1],
+            Some(&gate_q[2]),
+            true,
+            Some(32),
+            Some(6),
+            None,
+        );
+        let up_ref = quantized_matmul(
+            &x,
+            &up_q[0],
+            &up_q[1],
+            Some(&up_q[2]),
+            true,
+            Some(32),
+            Some(6),
+            None,
+        );
+        let reference = silu_mul(&gate_ref, &up_ref, None);
+        mlx_sys::transforms::try_eval(&[&metal, &reference])
+            .expect("6-bit gate/up SwiGLU matvec Metal kernel must compile and evaluate");
+        assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
+    }
+
+    #[test]
+    fn qwen_dense_ffn_down_matvec_metal_6bit_matches_quantized_matmul() {
+        let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.015625).collect();
+        let weight_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 400.0) * 0.00125).collect();
+        let residual_data: Vec<f32> = (0..16).map(|i| (i as f32) * 0.25 - 2.0).collect();
+        let x = array_f32(&x_data, &[1, 1, 64]);
+        let residual = array_f32(&residual_data, &[1, 1, 16]);
+        let (down, q) = affine_6bit_weight(&array_f32(&weight_data, &[16, 64]), 64);
+
+        let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
+            .expect("6-bit affine down matvec should be eligible");
+        let fused = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, Some(&residual))
+            .expect("6-bit residual down matvec should be eligible");
+        let reference =
+            quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(64), Some(6), None);
+        let fused_reference = add(&residual, &reference, None);
+        mlx_sys::transforms::try_eval(&[&metal, &fused, &reference, &fused_reference])
+            .expect("6-bit down matvec Metal kernels must compile and evaluate");
+        assert_eq!(metal.shape(), vec![1, 1, 16]);
+        assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
+        assert_close(fused.data_f32(), fused_reference.data_f32(), 1.0e-4);
+    }
+
+    #[test]
+    fn qwen_dense_ffn_down_matvec_metal_8bit_matches_quantized_matmul() {
+        let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.015625).collect();
+        let weight_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 400.0) * 0.00125).collect();
+        let x = array_f32(&x_data, &[1, 1, 64]);
+        let weight = array_f32(&weight_data, &[16, 64]);
+        let q = quantize(
+            &weight,
+            Some(32),
+            Some(8),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        let down = QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 32,
+            bits: 8,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        };
+        let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
+            .expect("8-bit affine down matvec should be eligible");
+        let reference =
+            quantized_matmul(&x, &q[0], &q[1], Some(&q[2]), true, Some(32), Some(8), None);
+        mlx_sys::transforms::try_eval(&[&metal, &reference])
+            .expect("8-bit down matvec Metal kernel must compile and evaluate");
+        assert_eq!(metal.shape(), vec![1, 1, 16]);
+        assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
+    }
+
+    #[test]
+    fn qwen_dense_ffn_matvec_rejects_unsupported_bit_widths() {
+        let x = mlx_sys::zeros(&[1, 1, 64], MlxDtype::Float32, None);
+        for bits in [2_i32, 3, 5] {
+            let packed_cols = 64 * bits / 32;
+            let weight = QuantizedWeight {
+                weight: mlx_sys::zeros(&[16, packed_cols.max(1)], MlxDtype::Uint32, None),
+                scales: Some(mlx_sys::zeros(&[16, 2], MlxDtype::Float32, None)),
+                biases: Some(mlx_sys::zeros(&[16, 2], MlxDtype::Float32, None)),
+                group_size: 32,
+                bits,
+                mode: "affine".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q4_weight: None,
+                decode_q4_scales: None,
+                decode_q4_biases: None,
+            };
+            assert!(
+                qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &weight, &weight).is_none(),
+                "{bits}-bit must not reach the gate/up matvec kernel"
+            );
+            assert!(
+                qwen_dense_ffn_down_matvec_metal_impl(&x, &weight, None).is_none(),
+                "{bits}-bit must not reach the down matvec kernel"
+            );
+        }
     }
 
     #[test]

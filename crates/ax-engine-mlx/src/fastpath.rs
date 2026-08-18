@@ -626,6 +626,18 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_QWEN_DENSE_FFN_MATVEC_EXT_BITS` — admit 6-bit and 8-bit
+    /// affine weights into the Qwen decode gate/up SwiGLU and down matvec
+    /// Metal kernels (6-bit via the MLX `qdot` 4-values-per-3-bytes
+    /// unpacker; 8-bit via the existing power-of-2 shift unpack). Default
+    /// OFF pending a formal A/B on the 6-bit flagship and 8-bit packs;
+    /// 4-bit engagement is unchanged and stays under
+    /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL`.
+    qwen_dense_ffn_matvec_ext_bits_enabled,
+    "AX_MLX_QWEN_DENSE_FFN_MATVEC_EXT_BITS"
+);
+
+env_flag!(
     /// `AX_MLX_EXACT_RMS_GATE_METAL` — keep the fused RMS+SiLU gate Metal
     /// kernels under the exact MTP profile instead of the blanket portable
     /// fallback. Default OFF: factory MXFP4 measured any Metal gate on
