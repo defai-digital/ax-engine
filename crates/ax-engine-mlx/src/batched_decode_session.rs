@@ -25,7 +25,7 @@ use crate::batched_linear_state::BatchedLinearState;
 use crate::batched_sampling::argmax_batched;
 use crate::kv_cache::MlxKVCache;
 use crate::model::{ModelConfig, decode_batched_forward};
-use crate::weights::{LayerWeights, ModelWeights};
+use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
 /// `AX_MLX_BATCHED_DECODE` — route certified eligible decode requests through a
 /// shared batched forward. **Default: ON**; `0`/`false`/`off`/`no` is the
@@ -211,16 +211,22 @@ pub(crate) fn layer_shares_kv_from_source(weights: &LayerWeights) -> bool {
 }
 
 /// Weight-level fail-closed check for the only MoE router the batched FFN runs
-/// (`moe_router_qwen3` + non-MXFP4 expert stacks). Gemma4 and GPT-OSS leave
-/// distinctive tensors that must never reach `ffn_batched`.
+/// (`moe_router_qwen3` + affine expert stacks). Gemma4 and GPT-OSS leave
+/// distinctive tensors that must never reach `ffn_batched`; block-float
+/// (MXFP4) expert stacks are rejected by mode, not by a family name.
 fn layer_moe_is_batched_qwen3_compatible(weights: &LayerWeights) -> bool {
     if weights.router_proj.is_none() {
         return true;
     }
-    weights.mxfp4_gate_up_exps.is_none()
-        && weights.mxfp4_down_exps.is_none()
-        && weights.router_expert_scale.is_none()
+    let expert_mode_supported = |qw: Option<&QuantizedWeight>| {
+        qw.is_none_or(|w| !w.is_quantized() || w.is_affine_quantized())
+    };
+    weights.router_expert_scale.is_none()
         && weights.router_combined_scale.is_none()
+        && expert_mode_supported(weights.gate_up_exps_packed.as_ref())
+        && expert_mode_supported(weights.gate_exps.as_ref())
+        && expert_mode_supported(weights.up_exps.as_ref())
+        && expert_mode_supported(weights.down_exps.as_ref())
         && (weights.gate_up_exps_packed.is_some()
             || weights.gate_exps.is_some()
             || weights.down_exps.is_some())
@@ -685,8 +691,6 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
-            mxfp4_gate_up_exps: None,
-            mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
             expert_stream: None,

@@ -6,7 +6,7 @@ use super::super::ModelConfig;
 use super::super::config::layer_params;
 use super::super::shared::{
     attention_mask_array, attention_with_sinks, moe_router_gpt_oss, prepare_value_bhsd_from_proj,
-    qk_norm_bhsd_from_proj, qw, qw_gather, squeeze_switch_singleton,
+    qk_norm_bhsd_from_proj, qw, qw_gather, squeeze_switch_singleton, switch_gather_inputs,
 };
 use crate::kv_cache::MlxKVCache;
 use crate::weights::LayerWeights;
@@ -196,15 +196,39 @@ fn gpt_oss_moe_experts_forward(
     let seq_len = x.shape()[1];
     let top_k = top_k_indices.shape().last().copied().unwrap_or(0);
 
+    // Expert-id sort (shared SwitchGLU policy): prefill stacks S·K selections
+    // into one gather, so sorting streams each unique expert's MXFP4 weights
+    // contiguously through `gather_qmm(sorted_indices=true)`; the down output
+    // is unsorted back to original row order — a permutation of independent
+    // rows, bit-identical per row. Decode (S=1) stays below the threshold and
+    // keeps the previous unsorted path.
+    let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
+
     // x_up = up_proj(x, indices); x_gate = gate_proj(x, indices)
     // Do not squeeze between gate/up and down — match shared moe_experts_forward.
-    let up = qw_gather(&x_exp, up_exps, top_k_indices, false);
-    let gate = qw_gather(&x_exp, gate_exps, top_k_indices, false);
+    let up = qw_gather(
+        &gather_inputs.x,
+        up_exps,
+        &gather_inputs.indices,
+        gather_inputs.sorted_indices,
+    );
+    let gate = qw_gather(
+        &gather_inputs.x,
+        gate_exps,
+        &gather_inputs.indices,
+        gather_inputs.sorted_indices,
+    );
 
     // activation(x_up, x_gate) → swiglu_oai(up, gate)  [mlx-lm gpt_oss.SwiGLU]
     let h = swiglu_oai(&up, &gate, None);
 
-    let down_out = squeeze_switch_singleton(&qw_gather(&h, down_exps, top_k_indices, false));
+    let down_out = squeeze_switch_singleton(&qw_gather(
+        &h,
+        down_exps,
+        &gather_inputs.indices,
+        gather_inputs.sorted_indices,
+    ));
+    let down_out = gather_inputs.unsort(down_out);
     let down_out = mlx_sys::reshape(
         &down_out,
         &[batch, seq_len, top_k, cfg.hidden_size as i32],

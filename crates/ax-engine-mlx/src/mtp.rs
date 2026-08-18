@@ -3217,7 +3217,6 @@ mod deepseek_v4_mtp_tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: None,
-            gpt_oss_uses_mxfp4_experts: false,
             generation_kind: ax_engine_core::GenerationKind::Autoregressive,
             kv_cache_quant: vec![None; 1],
         }
@@ -3328,8 +3327,6 @@ mod deepseek_v4_mtp_tests {
                 None,
                 None,
             )),
-            mxfp4_gate_up_exps: None,
-            mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
             expert_stream: None,

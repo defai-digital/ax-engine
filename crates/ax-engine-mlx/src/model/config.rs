@@ -621,11 +621,6 @@ pub struct ModelConfig {
     pub think_end_token_id: Option<u32>,
     /// Diffusion decoding config (DiffusionGemma). `None` = standard AR decoding.
     pub diffusion: Option<DiffusionConfig>,
-    /// GPT-OSS uses MXFP4 quantized expert weights kept packed at load time.
-    /// When true, the MoE forward path uses packed `mxfp4_gate_up_exps` /
-    /// `mxfp4_down_exps` via `gather_qmm(mode=mxfp4)` instead
-    /// of the standard `gate_exps`/`up_exps`/`down_exps` QuantizedWeight path.
-    pub gpt_oss_uses_mxfp4_experts: bool,
     /// Generation paradigm derived from the manifest (ADR-038). Prefer this over
     /// family-string checks when gating diffusion / embed / AR behavior.
     pub generation_kind: GenerationKind,
@@ -801,7 +796,6 @@ impl ModelConfig {
             think_start_token_id: think_token_ids_from_manifest(m).0,
             think_end_token_id: think_token_ids_from_manifest(m).1,
             diffusion: DiffusionConfig::from_manifest(m),
-            gpt_oss_uses_mxfp4_experts: m.model_family == "gpt_oss" && m.moe.is_enabled(),
             generation_kind: GenerationKind::from_manifest(m),
             kv_cache_quant: kv_cache_quant_from_manifest(m),
         }

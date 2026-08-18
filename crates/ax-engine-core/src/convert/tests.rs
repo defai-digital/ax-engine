@@ -422,7 +422,7 @@ fn gpt_oss_moe_config_reads_expert_geometry() {
     );
     assert!(
         moe.is_enabled(),
-        "gpt_oss must enable MoE so gpt_oss_uses_mxfp4_experts can arm"
+        "gpt_oss must enable MoE so the packed MXFP4 expert loader can arm"
     );
 }
 

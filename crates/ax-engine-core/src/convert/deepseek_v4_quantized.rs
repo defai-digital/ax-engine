@@ -25,7 +25,7 @@
 //! (llama.cpp `deepseek.py` comment at lines 729-731). MLX's MXFP4 packing —
 //! 8 nibbles per little-endian `u32`, value `2k` in the low nibble of byte
 //! `k` — is byte-identical, which is why the GPT-OSS loader can view OpenAI
-//! blocks directly as `u32` (`weights.rs` `Mxfp4ExpertWeight`). The nibble
+//! blocks directly as `u32` (`load_gpt_oss_openai_mxfp4_split_experts`). The nibble
 //! re-layout in llama.cpp (lines 732-736: values 0..15 into low nibbles,
 //! 16..31 into high) targets ggml's MXFP4 block format only and does **not**
 //! apply here; repacking is pure per-expert stacking with validated shapes.

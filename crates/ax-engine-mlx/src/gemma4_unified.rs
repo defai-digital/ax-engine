@@ -600,7 +600,6 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: None,
-            gpt_oss_uses_mxfp4_experts: false,
             generation_kind: ax_engine_core::GenerationKind::Autoregressive,
             kv_cache_quant: Vec::new(),
         }
