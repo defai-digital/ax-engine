@@ -4705,10 +4705,12 @@ env_flag_default_on!(
 
 /// Prefill seq ceiling for MoE packed SwiGLU Metal (Qwen3 MoE experts).
 ///
-/// The packed kernel was decode-only ("prefill is bandwidth-bound; split
-/// slice+silu_mul is faster"), but that predates the Gemma GeGLU prefill
-/// band (≤512) and the M5. `AX_MLX_MOE_SWIGLU_PREFILL_MAX_SEQ=N` overrides
-/// for A/B; default 0 keeps the shipped decode-only behavior.
+/// The packed kernel is decode-only ("prefill is bandwidth-bound; split
+/// slice+silu_mul is faster"). M5 A/B on Ornith 35B 6bit (2026-08-18,
+/// two rounds, reps 5): band=512 measured +1.2%/-1.7% at p128 and
+/// +0.6%/+0.3% at p512 — a wash within session noise, so the shipped
+/// decode-only behavior stays. `AX_MLX_MOE_SWIGLU_PREFILL_MAX_SEQ=N`
+/// remains for future-host A/Bs; default 0.
 pub fn moe_packed_swiglu_prefill_max_seq() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED
