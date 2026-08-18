@@ -1245,7 +1245,11 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         }
         WeightSanitize::None => {}
     }
-    normalize_f32_pack_to_bf16(artifacts.manifest().model_family.as_str(), &mut name_map);
+    normalize_f32_pack_to_bf16(
+        artifacts.manifest().model_family.as_str(),
+        specs,
+        &mut name_map,
+    );
 
     let token_embedding = take_weight(
         specs,
@@ -3998,21 +4002,27 @@ fn apply_rotated_checkpoint(
 /// The companion `ensure_conv1d_mlx_layout` check downstream remains as the
 /// safety net for the `WeightSanitize::None` path where a manifest mis-declares
 /// raw HF conv1d layout.
-/// Cast stray F32 floating tensors to BF16 for qwen3_5-class packs.
+/// Cast stray F32 floating tensors to BF16 for quantized qwen3_5-class packs.
 ///
 /// The runtime's qwen3_5 graphs are tuned for the mlx-community layout where
 /// every non-quantized tensor (norms, quantization scales/biases, embeddings)
-/// is BF16. Some AXQ packs (Holo3 35B 6bit) store them all in F32, which
-/// promotes the entire activation stream to f32: on `df-macbookpro-m5` the
-/// F32 pack ran ~25% slower p2048 prefill and ~5% slower decode than its
-/// BF16 sibling (Ornith 6bit, same 35B-A3B graph). Quantized integer
-/// payloads are untouched — this is a dtype normalization, not a requant.
-/// Kill switch: `AX_MLX_F32_PACK_BF16_NORMALIZE=0`.
-fn normalize_f32_pack_to_bf16(model_family: &str, name_map: &mut HashMap<String, MlxArray>) {
+/// is BF16. Some AXQ packs (Holo3 35B 6bit) store them in F32, which promotes
+/// the entire activation stream to f32: M5 Max measurements were ~25% slower
+/// at p2048 prefill and ~5% slower at decode than its BF16 sibling (Ornith
+/// 6bit, same 35B-A3B graph). Quantized integer payloads are untouched — this
+/// is a dtype normalization, not a requant. Dense F32 checkpoints must remain
+/// F32. Kill switch: `AX_MLX_F32_PACK_BF16_NORMALIZE=0`.
+fn normalize_f32_pack_to_bf16(
+    model_family: &str,
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+) {
+    let is_runtime_quantized = specs.iter().any(|spec| spec.quantization.is_some());
     if !matches!(
         model_family.to_ascii_lowercase().as_str(),
         "qwen3_5" | "qwen3_next"
-    ) || !crate::fastpath::f32_pack_bf16_normalize_enabled()
+    ) || !is_runtime_quantized
+        || !crate::fastpath::f32_pack_bf16_normalize_enabled()
     {
         return;
     }
@@ -6913,15 +6923,19 @@ mod tests {
             zeros(&[4, 2], MlxDtype::Bfloat16, None),
         );
 
-        // Non-qwen family: untouched.
+        let mut quantized = spec(NativeTensorRole::AttentionQ);
+        quantized.quantization = Some(NativeTensorQuantization::default());
+        let specs = [quantized];
+
+        // Non-qwen family: untouched even when it is quantized.
         let mut other = map.clone();
-        normalize_f32_pack_to_bf16("gemma4", &mut other);
+        normalize_f32_pack_to_bf16("gemma4", &specs, &mut other);
         assert_eq!(
             other["layers.0.input_layernorm.weight"].dtype(),
             MlxDtype::Float32
         );
 
-        normalize_f32_pack_to_bf16("qwen3_5", &mut map);
+        normalize_f32_pack_to_bf16("qwen3_5", &specs, &mut map);
         assert_eq!(
             map["layers.0.input_layernorm.weight"].dtype(),
             MlxDtype::Bfloat16,
@@ -6940,6 +6954,29 @@ mod tests {
         assert_eq!(
             map["layers.0.mlp.gate_proj.scales"].dtype(),
             MlxDtype::Bfloat16
+        );
+    }
+
+    #[test]
+    fn normalize_f32_pack_preserves_dense_f32_qwen_checkpoints() {
+        let dense_specs = [spec(NativeTensorRole::AttentionQ)];
+        let mut map = HashMap::from([
+            (
+                "layers.0.self_attn.q_proj.weight".to_string(),
+                zeros(&[4, 4], MlxDtype::Float32, None),
+            ),
+            (
+                "layers.0.input_layernorm.weight".to_string(),
+                zeros(&[4], MlxDtype::Float32, None),
+            ),
+        ]);
+
+        normalize_f32_pack_to_bf16("qwen3_5", &dense_specs, &mut map);
+
+        assert!(
+            map.values()
+                .all(|tensor| tensor.dtype() == MlxDtype::Float32),
+            "an unquantized F32 checkpoint must not be silently downcast"
         );
     }
 

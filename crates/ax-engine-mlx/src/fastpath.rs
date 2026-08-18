@@ -4049,7 +4049,7 @@ pub fn should_qwen_prefill_skip_unused_f32_sdpa_for(
         && seq >= 128
         && matches!(
             model_family.to_ascii_lowercase().as_str(),
-            "qwen3_5" | "qwen3_next"
+            "qwen3_5" | "qwen3_next" | "qwen3_vl_moe"
         )
 }
 
@@ -4692,11 +4692,12 @@ pub const MOE_PACKED_GEGLU_PREFILL_MAX_SEQ: usize = 512;
 env_flag_default_on!(
     /// `AX_MLX_F32_PACK_BF16_NORMALIZE` — cast stray F32 floating tensors
     /// (norms, quantization scales/biases, embeddings) to BF16 at load for
-    /// qwen3_5-class packs. Holo3 35B 6bit ships them F32, promoting the
-    /// whole activation stream to f32: `df-macbookpro-m5` measured ~25%
-    /// slower p2048 prefill and ~5% slower decode vs the BF16 sibling
-    /// (Ornith 6bit, same 35B-A3B graph). Not a requant — quantized integer
-    /// payloads are untouched.
+    /// quantized qwen3_5-class packs. Holo3 35B 6bit ships them F32,
+    /// promoting the whole activation stream to f32: M5 Max measurements
+    /// were ~25% slower at p2048 prefill and ~5% slower at decode vs the
+    /// BF16 sibling (Ornith 6bit, same 35B-A3B graph). Not a requant —
+    /// quantized integer payloads are untouched, and dense F32 checkpoints
+    /// remain F32.
     ///
     /// **Default: ON** (kill switch `=0`).
     f32_pack_bf16_normalize_enabled,
@@ -4724,11 +4725,10 @@ pub fn moe_packed_swiglu_prefill_max_seq() -> usize {
 /// `AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD=N` overrides for A/B on the
 /// 35B-A3B class contract shapes.
 pub fn moe_shared_fusion_seq_threshold(default_threshold: usize) -> usize {
-    static CACHED: OnceLock<usize> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        parse_positive_usize_env("AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD")
-            .unwrap_or(default_threshold)
-    })
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| parse_positive_usize_env("AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD"))
+        .unwrap_or(default_threshold)
 }
 
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
@@ -4853,7 +4853,8 @@ pub fn long_prompt_prefill_chunk() -> usize {
 /// families keep the historical clamp.
 pub fn long_prompt_prefill_clamp_applies(model_family: &str) -> bool {
     !(model_family.eq_ignore_ascii_case("qwen3_5")
-        || model_family.eq_ignore_ascii_case("muse_glimmer"))
+        || model_family.eq_ignore_ascii_case("muse_glimmer")
+        || model_family.eq_ignore_ascii_case("qwen3_vl_moe"))
 }
 
 /// Scale a base prefill chunk for the remaining prompt length.
@@ -4931,6 +4932,8 @@ pub fn skip_cache_only_split_for_family(model_family: &str, total_tokens: usize)
             | "glm4_moe_lite"
             | "gpt_oss"
             | "muse_glimmer"
+            | "qwen3_vl"
+            | "qwen3_vl_moe"
     )
 }
 
@@ -6620,6 +6623,10 @@ mod tests {
         assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
             true, "qwen3_5", 127
         ));
+        assert!(
+            should_qwen_prefill_skip_unused_f32_sdpa_for(true, "qwen3_vl_moe", 128),
+            "VL-MoE text prefill shares the qwen full-attention graphs"
+        );
         assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
             true, "gemma4", 1024
         ));
@@ -8121,6 +8128,8 @@ mod tests {
         assert!(!long_prompt_prefill_clamp_applies("qwen3_5"));
         assert!(!long_prompt_prefill_clamp_applies("QWEN3_5"));
         assert!(!long_prompt_prefill_clamp_applies("muse_glimmer"));
+        assert!(!long_prompt_prefill_clamp_applies("qwen3_vl_moe"));
+        assert!(long_prompt_prefill_clamp_applies("qwen3_vl"));
         assert!(long_prompt_prefill_clamp_applies("gemma4"));
         assert!(long_prompt_prefill_clamp_applies("qwen3_next"));
         assert_eq!(
@@ -8229,6 +8238,8 @@ mod tests {
             "glm4_moe_lite",
             "gpt_oss",
             "muse_glimmer",
+            "qwen3_vl",
+            "qwen3_vl_moe",
         ] {
             assert!(
                 skip_cache_only_split_for_family(family, 128),
