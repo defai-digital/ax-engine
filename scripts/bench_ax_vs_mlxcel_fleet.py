@@ -121,6 +121,24 @@ WAVE1 = {
         "family": "qwen3_5",
         "mtp": False,
     },
+    "qwen3.8-27b-axq": {
+        "repo": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+        "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+        "family": "qwen3_5",
+        "mtp": True,
+    },
+    "qwen3-coder-next-axq": {
+        "repo": "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit",
+        "revision": "29e7bcf5e6ef2471cc3587783713e3631e98b50c",
+        "family": "qwen3_next",
+        "mtp": False,
+    },
+    "qwen3-vl-30b-axq": {
+        "repo": "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit",
+        "revision": "b48b626d9b00e45d6200aa3c15e40cc47d83b7e7",
+        "family": "qwen3_vl_moe",
+        "mtp": False,
+    },
 }
 
 

@@ -32,6 +32,7 @@ def test_wave1_excludes_deepseek_and_covers_certified_text_families() -> None:
         "glm4_moe_lite",
         "gpt_oss",
         "muse_glimmer",
+        "qwen3_vl_moe",
     }
     assert "qwen3.6-27b" in ids
     assert "gemma4-12b" in ids
@@ -57,6 +58,15 @@ def test_wave1_excludes_deepseek_and_covers_certified_text_families() -> None:
     )
     assert mod.WAVE1["ornith-35b-axq"]["revision"] == (
         "41015da430ae62802d9357b0ef31bf46c2b13b58"
+    )
+    assert mod.WAVE1["qwen3.8-27b-axq"]["revision"] == (
+        "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+    )
+    assert mod.WAVE1["qwen3-coder-next-axq"]["revision"] == (
+        "29e7bcf5e6ef2471cc3587783713e3631e98b50c"
+    )
+    assert mod.WAVE1["qwen3-vl-30b-axq"]["revision"] == (
+        "b48b626d9b00e45d6200aa3c15e40cc47d83b7e7"
     )
 
 
