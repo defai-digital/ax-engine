@@ -4834,7 +4834,10 @@ env_flag!(
     /// *after* the prefill timer). p128 short-prefill lever for
     /// PRD-M5-FLEET-AX-VS-MLXCEL.
     ///
-    /// **Default: OFF** (clear preserved) pending an M5 A/B.
+    /// **Default: OFF** (clear preserved). M5 A/B 2026-08-17
+    /// (`df-macbookpro-m5`, 27B AXQ 6bit, p128/p512, reps 5): **wash** —
+    /// p128 378.55 (off) vs 378.10 (on), p512 703.77 vs 703.34. The clear
+    /// is not the short-prefill gap; do not reopen without new evidence.
     skip_cold_prefill_cache_clear_enabled,
     "AX_MLX_SKIP_COLD_PREFILL_CACHE_CLEAR"
 );
