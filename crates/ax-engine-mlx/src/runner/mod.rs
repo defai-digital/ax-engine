@@ -1639,6 +1639,7 @@ impl MlxRunner {
                 Some(
                     crate::linear_attention_ops::linear_attention_prefill_chunk_cap(
                         crate::fastpath::qwen_gated_delta_prefill_streaming_enabled(),
+                        cfg.moe_expert_count > 0,
                     ),
                 )
             } else {

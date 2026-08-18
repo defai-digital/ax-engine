@@ -4824,6 +4824,20 @@ pub fn scale_prefill_chunk_for_remaining(base_chunk: usize, remaining_tokens: us
     scale_prefill_chunk_for_remaining_in_family(base_chunk, remaining_tokens, "")
 }
 
+env_flag_default_on!(
+    /// `AX_MLX_QWEN_MOE_PREFILL_SINGLE_2048` — MoE hybrid linear-attention
+    /// models (Qwen 3.6 35B-A3B class) prefill in one 2048-token chunk
+    /// instead of two 1024 chunks. Per-chunk MoE argsort/gather/dispatch
+    /// overhead scales with chunk count; `df-macbookpro-m5` A/B
+    /// (2026-08-17, 35B AXQ 6bit, p2048, reps 5): **+11.9%** prefill
+    /// (2813.59 → 3149.26 tok/s), decode flat. Dense hybrids (27B) keep the
+    /// 1024 TG tile (single-2048 measured wash there, 2026-08-13).
+    ///
+    /// **Default: ON** (kill switch `=0`).
+    qwen_moe_prefill_single_2048_enabled,
+    "AX_MLX_QWEN_MOE_PREFILL_SINGLE_2048"
+);
+
 env_flag!(
     /// `AX_MLX_SKIP_COLD_PREFILL_CACHE_CLEAR` — keep MLX's buffer freelist
     /// across requests instead of dropping it before every cold prefill.

@@ -40,16 +40,26 @@ pub(crate) const GATED_DELTA_CHUNKWISE_TILE: usize = 256;
 
 /// Runner prefill-chunk cap for linear-attention families.
 ///
-/// Production clamp is 1024. 1536 remasured community p2048 ~899 vs 908.5.
-/// One 2048 FFN + tile-512 remasured 889.96 vs 891.02 (2026-08-13).
-/// Streaming / `AX_MLX_QWEN_PREFILL_SINGLE_2048=1` still take 2048.
-pub(crate) fn linear_attention_prefill_chunk_cap(streaming: bool) -> usize {
+/// Dense-hybrid production clamp is 1024. 1536 remasured community p2048
+/// ~899 vs 908.5. One 2048 FFN + tile-512 remasured 889.96 vs 891.02
+/// (2026-08-13). Streaming / `AX_MLX_QWEN_PREFILL_SINGLE_2048=1` still
+/// take 2048.
+///
+/// MoE hybrids (Qwen 3.6 35B-A3B class) default to one 2048 chunk:
+/// per-chunk MoE argsort/gather/dispatch overhead scales with chunk count,
+/// and the `df-macbookpro-m5` A/B (2026-08-17, 35B AXQ 6bit, p2048,
+/// reps 5) measured **+11.9%** prefill (2813.59 → 3149.26 tok/s) with
+/// decode flat (131.86 vs 131.56). Dense hybrids measured wash and keep
+/// the 1024 TG tile. Kill switch: `AX_MLX_QWEN_MOE_PREFILL_SINGLE_2048=0`.
+pub(crate) fn linear_attention_prefill_chunk_cap(streaming: bool, moe: bool) -> usize {
     if streaming || fastpath::qwen_prefill_single_2048_enabled() {
         GATED_DELTA_THREADGROUP_CACHE_CAPACITY
     } else if fastpath::qwen_prefill_chunk_1536_enabled() {
         1536
     } else if fastpath::qwen_prefill_chunk_1280_enabled() {
         1280
+    } else if moe && fastpath::qwen_moe_prefill_single_2048_enabled() {
+        GATED_DELTA_THREADGROUP_CACHE_CAPACITY
     } else {
         GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY
     }
@@ -2463,19 +2473,28 @@ mod tests {
     }
 
     #[test]
-    fn linear_attention_prefill_chunk_cap_follows_streaming() {
+    fn linear_attention_prefill_chunk_cap_follows_streaming_and_moe() {
         assert_eq!(
-            linear_attention_prefill_chunk_cap(true),
+            linear_attention_prefill_chunk_cap(true, false),
             GATED_DELTA_THREADGROUP_CACHE_CAPACITY
         );
-        // Default-OFF after the 1280 wash: non-streaming cap is 1024.
+        // Default-OFF after the 1280 wash: dense-hybrid cap is 1024.
         assert_eq!(
-            linear_attention_prefill_chunk_cap(false),
+            linear_attention_prefill_chunk_cap(false, false),
             GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY
+        );
+        // MoE hybrids default to one 2048 chunk (M5 +11.9% p2048, 2026-08-17).
+        assert_eq!(
+            linear_attention_prefill_chunk_cap(false, true),
+            GATED_DELTA_THREADGROUP_CACHE_CAPACITY
         );
         assert!(
             !fastpath::qwen_prefill_chunk_1280_enabled(),
             "closed 1280 chunk stays opt-in"
+        );
+        assert!(
+            fastpath::qwen_moe_prefill_single_2048_enabled(),
+            "MoE single-2048 ships default-ON"
         );
     }
 
