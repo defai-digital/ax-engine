@@ -8089,6 +8089,16 @@ mod tests {
     }
 
     #[test]
+    fn shared_fusion_threshold_preserves_each_callers_default_when_unset() {
+        if std::env::var_os("AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD").is_some() {
+            return;
+        }
+
+        assert_eq!(moe_shared_fusion_seq_threshold(64), 64);
+        assert_eq!(moe_shared_fusion_seq_threshold(128), 128);
+    }
+
+    #[test]
     fn parse_nonnegative_f32_accepts_finite_zero_and_positive_values() {
         assert_eq!(parse_nonnegative_f32("0"), Some(0.0));
         assert_eq!(parse_nonnegative_f32("1e-5"), Some(1.0e-5));
