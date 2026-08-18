@@ -7538,6 +7538,53 @@ fn converts_muse_glimmer_with_scalar_contract_and_gate() {
 }
 
 #[test]
+fn muse_glimmer_manifest_rejects_missing_runtime_contract_fields() {
+    let dir = unique_test_dir("muse_glimmer_runtime_contract");
+    write_config(&dir, muse_text_config(serde_json::json!([500000.0, 0])));
+    write_muse_tensors(&dir);
+    let manifest = convert_hf_model_dir(&dir).expect("muse conversion should succeed");
+
+    for (role, label) in [
+        (NativeTensorRole::AttentionQ, "attention_q"),
+        (NativeTensorRole::AttentionK, "attention_k"),
+        (NativeTensorRole::AttentionV, "attention_v"),
+        (NativeTensorRole::AttentionO, "attention_o"),
+        (NativeTensorRole::AttentionOutputGate, "attn_out_gate"),
+        (NativeTensorRole::AttentionPostNorm, "attention_post_norm"),
+        (NativeTensorRole::FfnNorm, "ffn_norm"),
+        (NativeTensorRole::FfnPostNorm, "ffn_post_norm"),
+        (NativeTensorRole::FfnGate, "ffn_gate"),
+        (NativeTensorRole::FfnUp, "ffn_up"),
+        (NativeTensorRole::FfnDown, "ffn_down"),
+    ] {
+        let mut invalid = manifest.clone();
+        invalid
+            .tensors
+            .retain(|tensor| tensor.layer_index != Some(0) || tensor.role != role);
+        let error = crate::model::validate_native_model_manifest(&dir, &invalid)
+            .expect_err("missing Muse runtime tensor must fail validation");
+        assert!(
+            error.to_string().contains(label),
+            "missing {label} produced unexpected error: {error}"
+        );
+    }
+
+    let mut missing_scalar = manifest.clone();
+    missing_scalar.post_norm_eps = None;
+    let error = crate::model::validate_native_model_manifest(&dir, &missing_scalar)
+        .expect_err("missing Muse post_norm_eps must fail validation");
+    assert!(error.to_string().contains("post_norm_eps"));
+
+    let mut missing_layer_types = manifest;
+    missing_layer_types.layer_types.clear();
+    let error = crate::model::validate_native_model_manifest(&dir, &missing_layer_types)
+        .expect_err("missing Muse iRoPE layer pattern must fail validation");
+    assert!(error.to_string().contains("layer_type"));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn muse_glimmer_rejects_divergent_sliding_layer_rope_theta() {
     let dir = unique_test_dir("muse_glimmer_theta_mismatch");
     write_config(&dir, muse_text_config(serde_json::json!([123.0, 0])));

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import socket
 import subprocess
 import sys
@@ -60,6 +59,46 @@ def detokenize(model_dir: Path, ids: list[int]) -> str:
 
     tok = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
     return tok.decode(ids, skip_special_tokens=False)
+
+
+def extract_mlxcel_generated_text(output: str) -> str:
+    """Extract the decoded prompt+continuation from mlxcel CLI output."""
+    normalized = output.replace("\r\n", "\n").replace("\r", "\n")
+    marker = "Generating...\n"
+    marker_at = normalized.find(marker)
+    if marker_at < 0:
+        raise RuntimeError("mlxcel output is missing the Generating... marker")
+    generated = normalized[marker_at + len(marker) :]
+    stats_at = generated.rfind("\n[Generated ")
+    if stats_at < 0:
+        raise RuntimeError("mlxcel output is missing the generated-token summary")
+    generated = generated[:stats_at].rstrip("\n")
+    if not generated:
+        raise RuntimeError("mlxcel output contains no generated text")
+    return generated
+
+
+def reference_completion_ids(
+    model_dir: Path,
+    output: str,
+    prompt_ids: list[int],
+) -> list[int]:
+    """Re-encode mlxcel's decoded stream and remove the known prompt prefix."""
+    generated_text = extract_mlxcel_generated_text(output)
+    generated_ids = tokenize(model_dir, generated_text)
+    if generated_ids[: len(prompt_ids)] != prompt_ids:
+        raise RuntimeError(
+            "mlxcel decoded stream does not begin with the expected prompt token ids"
+        )
+    return generated_ids[len(prompt_ids) :]
+
+
+def common_prefix_len(left: list[int], right: list[int]) -> int:
+    """Return the ordered token-prefix length shared by two continuations."""
+    return next(
+        (index for index, pair in enumerate(zip(left, right)) if pair[0] != pair[1]),
+        min(len(left), len(right)),
+    )
 
 
 def run_ax(model_dir: Path, prompt_ids: list[int], max_tokens: int) -> list[int]:
@@ -161,6 +200,10 @@ def main() -> int:
         "flips between engines' dtype policies can diverge late streams)",
     )
     args = parser.parse_args()
+    if args.max_tokens <= 0:
+        parser.error("--max-tokens must be greater than zero")
+    if args.min_match_tokens <= 0 or args.min_match_tokens > args.max_tokens:
+        parser.error("--min-match-tokens must be in 1..=--max-tokens")
 
     prompt_ids = tokenize(args.model_dir, args.prompt)
     print(f"prompt tokens: {len(prompt_ids)} first={prompt_ids[:8]}")
@@ -170,35 +213,31 @@ def main() -> int:
     print(f"AX tokens ({len(ax_ids)}): {ax_ids[:24]}")
     print(f"AX text: {ax_text[:400]!r}")
 
-    hit = MUSE_SUPPRESSED_IDS.intersection(ax_ids)
-    if hit:
-        print(f"FAIL: AX emitted suppressed-id token(s) {sorted(hit)}; "
-              "comparison would be suppression-sensitive")
-        return 1
-
     mlxcel_out = run_mlxcel(args.mlxcel_bin, args.model_dir, args.prompt, args.max_tokens)
     print(f"mlxcel raw output tail:\n{mlxcel_out[-1200:]}")
 
-    # mlxcel prints the completion text; compare a normalized prefix.
-    ax_norm = re.sub(r"\s+", " ", ax_text).strip()
-    ml_norm = re.sub(r"\s+", " ", mlxcel_out).strip()
-    if ax_norm and ax_norm[: len(ax_norm) // 2] in ml_norm:
-        print("PASS: AX greedy text prefix found in mlxcel output")
-        return 0
+    mlxcel_ids = reference_completion_ids(args.model_dir, mlxcel_out, prompt_ids)
+    print(f"mlxcel tokens ({len(mlxcel_ids)}): {mlxcel_ids[:24]}")
 
-    # Fall back to token-level compare when mlxcel text embeds extra chrome.
-    matched = 0
-    ml_ids = tokenize(args.model_dir, mlxcel_out)
-    for a in ax_ids:
-        if a in ml_ids:
-            matched += 1
+    ax_suppressed = MUSE_SUPPRESSED_IDS.intersection(ax_ids)
+    reference_suppressed = MUSE_SUPPRESSED_IDS.intersection(mlxcel_ids)
+    if ax_suppressed or reference_suppressed:
+        print(
+            "FAIL: comparison is suppression-sensitive; "
+            f"AX suppressed ids={sorted(ax_suppressed)}, "
+            f"mlxcel suppressed ids={sorted(reference_suppressed)}"
+        )
+        return 1
+
+    matched = common_prefix_len(ax_ids, mlxcel_ids)
     print(
-        f"WARN: no direct text-prefix match; loose token overlap {matched}/{len(ax_ids)}"
+        f"ordered greedy prefix: {matched} token(s) "
+        f"(required {args.min_match_tokens})"
     )
     if matched >= args.min_match_tokens:
-        print("PASS (loose)")
+        print("PASS: ordered greedy token prefix matches")
         return 0
-    print("FAIL: outputs diverge")
+    print("FAIL: greedy token streams diverge before the required prefix")
     return 1
 
 

@@ -84,6 +84,8 @@ bash scripts/check-qa.sh
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/bench_mlx_inference_stack.py \
   scripts/test_bench_mlx_inference_stack.py \
+  scripts/check_muse_glimmer_parity.py \
+  scripts/test_check_muse_glimmer_parity.py \
   scripts/certify_batched_decode.py \
   scripts/test_certify_batched_decode.py \
   scripts/certify_row_exact_coalesced_decode.py \
@@ -279,6 +281,7 @@ bash scripts/check-qa.sh
   scripts/test_bench_rapid_mlx_prompt_suites.py \
   scripts/test_bench_qwen36_mtp_matrix.py \
   scripts/test_bench_batched_decode_ceiling.py \
+  scripts/test_check_muse_glimmer_parity.py \
   scripts/test_offline_policy_search_artifact.py \
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_check_no_mlxcel_public_docs.py \

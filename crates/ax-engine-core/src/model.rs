@@ -1384,6 +1384,26 @@ pub(crate) fn validate_native_model_manifest(
             });
         }
     }
+    for (value, field_name) in [
+        (manifest.final_logit_softcapping, "final_logit_softcapping"),
+        (manifest.final_logits_scale, "final_logits_scale"),
+        (
+            manifest.attention_scale_multiplier,
+            "attention_scale_multiplier",
+        ),
+        (manifest.post_norm_eps, "post_norm_eps"),
+    ] {
+        if let Some(value) = value
+            && (!value.is_finite() || value <= 0.0)
+        {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!("{field_name} must be finite and > 0, got {value}"),
+            });
+        }
+    }
+    if manifest.model_family == "muse_glimmer" {
+        validate_muse_glimmer_manifest_contract(manifest)?;
+    }
     if manifest.linear_attention.is_enabled() {
         require_positive_field(
             manifest
@@ -1708,16 +1728,26 @@ pub(crate) fn validate_native_model_manifest(
             continue;
         }
 
-        // Muse Glimmer requires the separate sigmoid attention output gate on
-        // every layer — the muse route has no fallback and a missing gate
-        // would otherwise surface as a generation-thread panic at load.
+        // Muse Glimmer's dedicated route reads a fixed split-attention and
+        // sandwich-norm layout. Require every tensor it dereferences so a
+        // malformed/stale manifest fails at load instead of panicking during
+        // generation or silently selecting a packed fallback.
         if is_muse_glimmer {
-            require_layer_role(
-                roles,
-                NativeTensorRole::AttentionOutputGate,
-                layer_index,
-                "attn_out_gate",
-            )?;
+            for (role, label) in [
+                (NativeTensorRole::AttentionQ, "attention_q"),
+                (NativeTensorRole::AttentionK, "attention_k"),
+                (NativeTensorRole::AttentionV, "attention_v"),
+                (NativeTensorRole::AttentionO, "attention_o"),
+                (NativeTensorRole::AttentionOutputGate, "attn_out_gate"),
+                (NativeTensorRole::AttentionPostNorm, "attention_post_norm"),
+                (NativeTensorRole::FfnNorm, "ffn_norm"),
+                (NativeTensorRole::FfnPostNorm, "ffn_post_norm"),
+                (NativeTensorRole::FfnGate, "ffn_gate"),
+                (NativeTensorRole::FfnUp, "ffn_up"),
+                (NativeTensorRole::FfnDown, "ffn_down"),
+            ] {
+                require_layer_role(roles, role, layer_index, label)?;
+            }
         }
 
         // ffn_norm is optional when attention_post_norm serves as the FFN norm
@@ -3951,6 +3981,82 @@ fn require_positive_field(value: Option<u32>, field_name: &str) -> Result<u32, N
         }),
         Some(value) => Ok(value),
     }
+}
+
+/// Validate the non-tensor invariants consumed unconditionally by the
+/// dedicated Muse Glimmer forward route.
+///
+/// Muse manifests created before the route learned its scalar and iRoPE
+/// contract can still deserialize because these fields are optional for every
+/// other family. Loading one with generic defaults would produce plausible but
+/// numerically wrong text, so this family must fail closed instead.
+fn validate_muse_glimmer_manifest_contract(
+    manifest: &NativeModelManifest,
+) -> Result<(), NativeModelError> {
+    for (present, field_name) in [
+        (manifest.rms_norm_eps.is_some(), "rms_norm_eps"),
+        (manifest.post_norm_eps.is_some(), "post_norm_eps"),
+        (
+            manifest.attention_scale_multiplier.is_some(),
+            "attention_scale_multiplier",
+        ),
+        (manifest.final_logits_scale.is_some(), "final_logits_scale"),
+        (
+            manifest.final_logit_softcapping.is_some(),
+            "final_logit_softcapping",
+        ),
+        (manifest.rope_theta.is_some(), "rope_theta"),
+        (manifest.rope_theta_swa.is_some(), "rope_theta_swa"),
+        (
+            manifest.sliding_window_size.is_some(),
+            "sliding_window_size",
+        ),
+    ] {
+        if !present {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!("muse_glimmer requires {field_name}"),
+            });
+        }
+    }
+    if manifest.layer_types.len() != manifest.layer_count as usize
+        || !manifest
+            .layer_types
+            .iter()
+            .any(|kind| kind == "sliding_attention")
+        || !manifest
+            .layer_types
+            .iter()
+            .any(|kind| kind == "full_attention")
+    {
+        return Err(NativeModelError::InvalidManifest {
+            message: "muse_glimmer requires one interleaved sliding_attention/full_attention layer_type per layer"
+                .to_string(),
+        });
+    }
+    if manifest.attn_output_gate {
+        return Err(NativeModelError::InvalidManifest {
+            message:
+                "muse_glimmer uses AttentionOutputGate tensors and must not set attn_output_gate"
+                    .to_string(),
+        });
+    }
+    if manifest.hidden_states_scale.is_some() {
+        return Err(NativeModelError::InvalidManifest {
+            message: "muse_glimmer must not set hidden_states_scale".to_string(),
+        });
+    }
+    if manifest.linear_attention.is_enabled()
+        || manifest.mla_attention.is_enabled()
+        || manifest.moe.is_enabled()
+        || !manifest.kv_shared_source_layers.is_empty()
+        || !manifest.attention_value_from_key_layers.is_empty()
+    {
+        return Err(NativeModelError::InvalidManifest {
+            message: "muse_glimmer does not support linear attention, MLA, MoE, or shared/value-from-key KV layouts"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
