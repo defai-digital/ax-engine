@@ -4049,7 +4049,7 @@ pub fn should_qwen_prefill_skip_unused_f32_sdpa_for(
         && seq >= 128
         && matches!(
             model_family.to_ascii_lowercase().as_str(),
-            "qwen3_5" | "qwen3_next" | "qwen3_vl_moe"
+            "qwen3_5" | "qwen3_next" | "qwen3_vl_moe" | "qwen3_vl"
         )
 }
 
@@ -4854,7 +4854,8 @@ pub fn long_prompt_prefill_chunk() -> usize {
 pub fn long_prompt_prefill_clamp_applies(model_family: &str) -> bool {
     !(model_family.eq_ignore_ascii_case("qwen3_5")
         || model_family.eq_ignore_ascii_case("muse_glimmer")
-        || model_family.eq_ignore_ascii_case("qwen3_vl_moe"))
+        || model_family.eq_ignore_ascii_case("qwen3_vl_moe")
+        || model_family.eq_ignore_ascii_case("qwen3_vl"))
 }
 
 /// Scale a base prefill chunk for the remaining prompt length.
@@ -6627,6 +6628,9 @@ mod tests {
             should_qwen_prefill_skip_unused_f32_sdpa_for(true, "qwen3_vl_moe", 128),
             "VL-MoE text prefill shares the qwen full-attention graphs"
         );
+        assert!(should_qwen_prefill_skip_unused_f32_sdpa_for(
+            true, "qwen3_vl", 128
+        ));
         assert!(!should_qwen_prefill_skip_unused_f32_sdpa_for(
             true, "gemma4", 1024
         ));
@@ -8139,7 +8143,7 @@ mod tests {
         assert!(!long_prompt_prefill_clamp_applies("QWEN3_5"));
         assert!(!long_prompt_prefill_clamp_applies("muse_glimmer"));
         assert!(!long_prompt_prefill_clamp_applies("qwen3_vl_moe"));
-        assert!(long_prompt_prefill_clamp_applies("qwen3_vl"));
+        assert!(!long_prompt_prefill_clamp_applies("qwen3_vl"));
         assert!(long_prompt_prefill_clamp_applies("gemma4"));
         assert!(long_prompt_prefill_clamp_applies("qwen3_next"));
         assert_eq!(
