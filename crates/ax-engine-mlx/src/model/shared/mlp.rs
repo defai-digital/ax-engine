@@ -6669,9 +6669,9 @@ impl QuantInputSlot {
             mode: Self::mode_str(self.mode_tag).to_string(),
             linear_bias: self.linear_bias.map(|i| inputs.get(i)),
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         }
     }
 }
@@ -7826,9 +7826,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         assert!(
             qwen_compiled_split_prefill_gate_up(&x, &w, &w).is_none(),
@@ -7876,9 +7876,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let up_w = QuantizedWeight {
             weight: uq[0].clone(),
@@ -7889,9 +7889,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         assert!(
             qwen_prefill_maybe_dual_affine_gate_up_for(false, "qwen3_5", seq, &x, &gate_w, &up_w)
@@ -7978,9 +7978,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let gate = qweight(&gq);
         let up = qweight(&uq);
@@ -8079,9 +8079,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let gate = qmx(&array_f32(&gate_data, &[intermediate, hidden]));
@@ -8129,9 +8129,9 @@ mod tests {
             mode: "mxfp4".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         }
     }
 
@@ -8300,9 +8300,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let mut cfg = v4_test_config(1, 1);
@@ -8384,9 +8384,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let mut cfg = v4_test_config(1, 1);
@@ -8492,9 +8492,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let mut cfg = v4_test_config(1, 1);
@@ -8597,9 +8597,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let mut cfg = v4_test_config(1, 1);
@@ -8719,9 +8719,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let mut cfg = v4_test_config(1, 1);
@@ -8824,9 +8824,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let mut cfg = v4_test_config(1, 1);
@@ -8897,9 +8897,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let compiled =
             qwen_compiled_prefill_down_qmm_for(true, 0x444F_574E_5052_4546, 3, &hidden, &down)
@@ -8947,9 +8947,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let q2 = cached_prefill_q2_down(0x5132_444F_574E, 7, &down)
             .expect("4-bit gs32 down must grow a 2-bit overlay");
@@ -8998,9 +8998,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let gs64 = cached_prefill_ffn_gs64(0x4753_3634, 3, PREFILL_FFN_GS64_DOWN, &down)
             .expect("4-bit gs32 down must grow a gs64 overlay");
@@ -9049,9 +9049,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let q3 = cached_prefill_ffn_q3(0x5133_4646_4e51, 5, PREFILL_FFN_GS64_DOWN, &down)
             .expect("4-bit gs32 down must grow a 3-bit overlay");
@@ -9100,9 +9100,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let contig =
             cached_prefill_ffn_contiguous_weight(0x434f_4e54, 2, PREFILL_FFN_GS64_DOWN, &down)
@@ -9231,9 +9231,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let contig = cached_prefill_attn_contiguous_weight(&src);
         assert_eq!(contig.bits, 4);
@@ -9339,9 +9339,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let gate = qweight(&gq);
         let up = qweight(&uq);
@@ -9521,9 +9521,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let packed = qw(&contiguous(&view, None), &down);
         let portable = qw(&view, &down);
@@ -9567,9 +9567,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let (flat, orig) = flatten_qwen_prefill_ffn_activation(&hidden);
         assert_eq!(flat.shape(), vec![8, 64]);
@@ -9613,9 +9613,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let flat = qwen_prefill_flat_down_qmm(&hidden, &down)
             .expect("Qwen 4-bit gs32 flat down qmm should engage");
@@ -9674,9 +9674,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let gate = qweight(&gq);
         let up = qweight(&uq);
@@ -9740,9 +9740,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let fused =
             qwen_swiglu_down_fuse(&gate, &up, &down).expect("Qwen SwiGLU+down fuse should engage");
@@ -10104,9 +10104,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let up = QuantizedWeight {
             weight: up_q[0].clone(),
@@ -10117,9 +10117,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
 
         let metal = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up)
@@ -10164,9 +10164,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let batched = mlx_sys::zeros(&[2, 1, 32], MlxDtype::Float32, None);
         let prefill = mlx_sys::zeros(&[1, 2, 32], MlxDtype::Float32, None);
@@ -10228,9 +10228,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
 
         let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
@@ -10269,9 +10269,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
 
         let fused = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, Some(&residual))
@@ -10305,9 +10305,9 @@ mod tests {
                 mode: "affine".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             },
             q,
         )
@@ -10401,9 +10401,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
             .expect("8-bit affine down matvec should be eligible");
@@ -10429,9 +10429,9 @@ mod tests {
                 mode: "affine".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             };
             assert!(
                 qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &weight, &weight).is_none(),
@@ -10826,9 +10826,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
 
         // Capture a *clone* of the weight into the closure body. Per

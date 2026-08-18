@@ -514,9 +514,9 @@ pub struct QuantizedWeight {
     /// Decode `qw` prefers this (2-bit gs=64) so each token streams ~0.4 GB
     /// instead of 2.54 GB BF16. Prefill keeps the BF16 `W_t` GEMM. Not a Hub
     /// requant; the checkpoint files are unchanged.
-    pub decode_q4_weight: Option<MlxArray>,
-    pub decode_q4_scales: Option<MlxArray>,
-    pub decode_q4_biases: Option<MlxArray>,
+    pub decode_q2_weight: Option<MlxArray>,
+    pub decode_q2_scales: Option<MlxArray>,
+    pub decode_q2_biases: Option<MlxArray>,
 }
 
 /// Decode-only `lm_head` cache. 2-bit gs64 cuts ~2.14 GB/token vs BF16
@@ -549,9 +549,9 @@ impl QuantizedWeight {
             },
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         }
     }
 
@@ -588,8 +588,8 @@ impl QuantizedWeight {
     /// Same `mlx_sys::quantize` path as MTP `draft_lm_head`. No-ops when the
     /// tensor is already quantized, not rank-2, or last dim is not a
     /// multiple of 64.
-    pub fn prepare_decode_q4_lm_head(&mut self) {
-        if self.decode_q4_weight.is_some() || self.scales.is_some() {
+    pub fn prepare_decode_q2_lm_head(&mut self) {
+        if self.decode_q2_weight.is_some() || self.scales.is_some() {
             return;
         }
         let shape = self.weight.shape();
@@ -613,9 +613,9 @@ impl QuantizedWeight {
             return;
         }
         eval(&[&quantized[0], &quantized[1], &quantized[2]]);
-        self.decode_q4_weight = Some(quantized[0].clone());
-        self.decode_q4_scales = Some(quantized[1].clone());
-        self.decode_q4_biases = Some(quantized[2].clone());
+        self.decode_q2_weight = Some(quantized[0].clone());
+        self.decode_q2_scales = Some(quantized[1].clone());
+        self.decode_q2_biases = Some(quantized[2].clone());
     }
 
     pub fn is_quantized(&self) -> bool {
@@ -717,9 +717,9 @@ impl QuantizedWeight {
             mode: self.mode.clone(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         })
     }
 
@@ -844,9 +844,9 @@ pub(crate) fn requant_affine_to_prefill_q2(src: &QuantizedWeight) -> Option<Quan
         mode: "affine".to_string(),
         linear_bias: None,
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     })
 }
 
@@ -896,9 +896,9 @@ pub(crate) fn requant_affine_to_prefill_gs64(src: &QuantizedWeight) -> Option<Qu
         mode: "affine".to_string(),
         linear_bias: src.linear_bias.clone(),
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     })
 }
 
@@ -945,9 +945,9 @@ pub(crate) fn requant_affine_to_prefill_q3(src: &QuantizedWeight) -> Option<Quan
         mode: "affine".to_string(),
         linear_bias: src.linear_bias.clone(),
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     })
 }
 
@@ -976,9 +976,9 @@ pub(crate) fn contiguous_affine_weight(src: &QuantizedWeight) -> QuantizedWeight
         mode: src.mode.clone(),
         linear_bias: src.linear_bias.clone(),
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     }
 }
 
@@ -1993,7 +1993,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let glm_mtp = load_glm_mtp_sidecar(&root, &mut name_map, artifacts.manifest());
 
     let mut lm_head = lm_head;
-    lm_head.prepare_decode_q4_lm_head();
+    lm_head.prepare_decode_q2_lm_head();
     lm_head.prepare_contiguous_decode_weight_t();
     let mut model = ModelWeights {
         token_embedding,
@@ -2153,7 +2153,7 @@ pub fn load_pipeline_stage_weights(
             tied.group_size = embedding.group_size;
             tied.bits = embedding.bits;
             tied.mode.clone_from(&embedding.mode);
-            tied.prepare_decode_q4_lm_head();
+            tied.prepare_decode_q2_lm_head();
             tied.prepare_contiguous_decode_weight_t();
             Some(tied)
         } else {
@@ -2164,7 +2164,7 @@ pub fn load_pipeline_stage_weights(
                 None,
                 "lm_head",
             )?;
-            head.prepare_decode_q4_lm_head();
+            head.prepare_decode_q2_lm_head();
             head.prepare_contiguous_decode_weight_t();
             Some(head)
         }
@@ -2510,9 +2510,9 @@ fn mtp_take_weight(
         mode: "affine".to_string(),
         linear_bias: None,
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     })
 }
 
@@ -2696,9 +2696,9 @@ fn mtp_take_mxfp4_experts(
         mode: "mxfp4".to_string(),
         linear_bias: None,
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     };
     let down = QuantizedWeight {
         weight: stack(&down_weight_refs, 0, None),
@@ -2709,9 +2709,9 @@ fn mtp_take_mxfp4_experts(
         mode: "mxfp4".to_string(),
         linear_bias: None,
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     };
     Some((gate_up, down))
 }
@@ -2813,9 +2813,9 @@ fn build_draft_lm_head(
         mode: "affine".to_string(),
         linear_bias: None,
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     })
 }
 
@@ -5456,9 +5456,9 @@ fn split_deepseek_kv_b_projection(
                 mode: "affine".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             },
             QuantizedWeight {
                 weight: unembed_out,
@@ -5470,9 +5470,9 @@ fn split_deepseek_kv_b_projection(
                 mode: "affine".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             },
         ))
     }
@@ -5511,9 +5511,9 @@ fn requantize_affine_weight(
         mode: "affine".to_string(),
         linear_bias: None,
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     })
 }
 
@@ -5596,9 +5596,9 @@ fn concat_quantized_weight_rows(
         mode: a.mode.clone(),
         linear_bias,
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     })
 }
 
@@ -5759,9 +5759,9 @@ fn slice_quantized_weight_rows(
         mode: src.mode.clone(),
         linear_bias,
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     })
 }
 
@@ -5996,9 +5996,9 @@ fn pack_linear_attention_projection_rows(
         mode: first.mode.clone(),
         linear_bias: None,
         decode_weight_t: None,
-        decode_q4_weight: None,
-        decode_q4_scales: None,
-        decode_q4_biases: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
     })
 }
 
@@ -7741,9 +7741,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         }
     }
 
@@ -7771,9 +7771,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         }
     }
 

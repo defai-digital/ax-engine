@@ -769,9 +769,9 @@ fn qw_direct_mlx(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
         )
     } else if decode_lm_head_quant_cache_eligible(x)
         && let (Some(q_w), Some(q_s), Some(q_b)) = (
-            qw.decode_q4_weight.as_ref(),
-            qw.decode_q4_scales.as_ref(),
-            qw.decode_q4_biases.as_ref(),
+            qw.decode_q2_weight.as_ref(),
+            qw.decode_q2_scales.as_ref(),
+            qw.decode_q2_biases.as_ref(),
         )
     {
         mlx_sys::quantized_matmul_with_mode(
@@ -944,9 +944,9 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
         })
     } else if decode_lm_head_quant_cache_eligible(x)
         && let (Some(q_w), Some(q_s), Some(q_b)) = (
-            qw.decode_q4_weight.as_ref(),
-            qw.decode_q4_scales.as_ref(),
-            qw.decode_q4_biases.as_ref(),
+            qw.decode_q2_weight.as_ref(),
+            qw.decode_q2_scales.as_ref(),
+            qw.decode_q2_biases.as_ref(),
         )
     {
         mlx_sys::quantized_matmul_with_mode(
@@ -1305,16 +1305,20 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
 
     // Split dimensions that are not aligned to one complete qmv_fast lane
     // block: 512 values for 4-bit, 256 for 6/8-bit. Both pure-direct and
-    // multi-token use this split so A/B identity holds.
+    // multi-token use this split so A/B identity holds. Other bit widths
+    // never reach the custom qmv (`values_per_thread == 0` below), so the
+    // split would only trade one MLX qmm for two plus an add — skip it.
     let qmv_block_size = match qw.bits {
         4 => 512,
         6 | 8 => 256,
-        _ => 512,
+        _ => 0,
     };
-    if matches!(
-        qw.mlx_quantization_mode(),
-        mlx_sys::MlxQuantizationMode::Affine
-    ) && qw.bits > 0
+    if qmv_block_size > 0
+        && matches!(
+            qw.mlx_quantization_mode(),
+            mlx_sys::MlxQuantizationMode::Affine
+        )
+        && qw.bits > 0
         && qw.bits <= 8
         && qw.group_size > 0
         && input_dim % qmv_block_size != 0
@@ -1387,9 +1391,9 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
                     mode: qw.mode.clone(),
                     linear_bias: None,
                     decode_weight_t: None,
-                    decode_q4_weight: None,
-                    decode_q4_scales: None,
-                    decode_q4_biases: None,
+                    decode_q2_weight: None,
+                    decode_q2_scales: None,
+                    decode_q2_biases: None,
                 };
                 let qw_rem = QuantizedWeight {
                     weight: w_rem,
@@ -1400,9 +1404,9 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
                     mode: qw.mode.clone(),
                     linear_bias: None,
                     decode_weight_t: None,
-                    decode_q4_weight: None,
-                    decode_q4_scales: None,
-                    decode_q4_biases: None,
+                    decode_q2_weight: None,
+                    decode_q2_scales: None,
+                    decode_q2_biases: None,
                 };
                 // The aligned prefix hits qmv_fast.
                 let y_al = invariant_projection_metal_impl(&x_al, &qw_al)?;
@@ -1950,9 +1954,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: Some(bias),
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let x = array_f32(&[1.0, 2.0], &[1, 1, 2]);
         let out = super::qw(&x, &qw);
@@ -1987,9 +1991,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let shipped = super::project_lm_head(&x, &lm);
         let reference = matmul(&x, &transpose(&weight, &[1, 0], None), None);
@@ -2070,9 +2074,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         prepared.prepare_contiguous_decode_weight_t();
         let weight_t = prepared
@@ -2095,9 +2099,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let got = super::qw(&x, &prepared);
         let want = super::qw(&x, &lazy);
@@ -2129,24 +2133,24 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         quantized.prepare_contiguous_decode_weight_t();
-        quantized.prepare_decode_q4_lm_head();
+        quantized.prepare_decode_q2_lm_head();
         assert!(
             quantized.decode_weight_t.is_none(),
             "quantized lm_head must not grow a dense W_t copy"
         );
         assert!(
-            quantized.decode_q4_weight.is_none(),
-            "already-quantized tensors must not grow a decode q4 cache"
+            quantized.decode_q2_weight.is_none(),
+            "already-quantized tensors must not grow a decode q2 cache"
         );
     }
 
     #[test]
-    fn prepare_decode_q4_lm_head_is_decode_only() {
+    fn prepare_decode_q2_lm_head_is_decode_only() {
         let hidden = 64i32;
         let vocab = 32i32;
         let seq = 4i32;
@@ -2169,14 +2173,14 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
-        prepared.prepare_decode_q4_lm_head();
+        prepared.prepare_decode_q2_lm_head();
         prepared.prepare_contiguous_decode_weight_t();
         assert!(
-            prepared.decode_q4_weight.is_some(),
+            prepared.decode_q2_weight.is_some(),
             "unquantized rank-2 hidden%64==0 must build a decode quant cache"
         );
         assert!(
@@ -2279,9 +2283,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..seq * input_dim)
             .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)
@@ -2471,9 +2475,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         prepared.prepare_contiguous_decode_weight_t();
         let weight_t = prepared.decode_weight_t.as_ref().expect("prepared W_t");
@@ -2680,9 +2684,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..2 * input_dim)
             .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)
@@ -2738,9 +2742,9 @@ mod tests {
             mode: "mxfp4".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
             .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
@@ -2807,9 +2811,9 @@ mod tests {
             mode: "mxfp4".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
             .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
@@ -3011,9 +3015,9 @@ mod tests {
             mode: "mxfp4".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         }
     }
 
@@ -3191,9 +3195,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..2 * input_dim)
             .map(|index| ((index % 43) as f32 - 21.0) * 0.02734375)
@@ -3264,9 +3268,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..3 * input_dim)
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -3354,9 +3358,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..input_dim)
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -3429,9 +3433,9 @@ mod tests {
                 mode: "affine".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             };
             let s = 3_i32;
             let input_data: Vec<f32> = (0..(s * input_dim) as usize)
@@ -3541,9 +3545,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..input_dim as usize)
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -3602,9 +3606,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..input_dim as usize)
             .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -3673,9 +3677,9 @@ mod tests {
                 mode: "affine".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             };
             let microbatch = invariant_projection_metal_impl(&input, &weight)
                 .expect("fast invariant affine projection should support two rows");
@@ -3751,9 +3755,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let input_data: Vec<f32> = (0..2 * input_dim)
             .map(|index| ((index % 37) as f32 - 18.0) * 0.0234375)

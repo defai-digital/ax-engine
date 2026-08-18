@@ -4995,9 +4995,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let token_ids = [0_u32, 3, 7, 1];
         let ids = MlxArray::from_raw_data(
@@ -5229,9 +5229,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         }
     }
 
@@ -8469,9 +8469,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let plain = QuantizedWeight {
             weight: weight.clone(),
@@ -8482,9 +8482,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
 
         for embedding in [&quantized, &plain] {

@@ -1542,9 +1542,9 @@ fn compiled_fused_qkvz_ba_qmm_unpack(
                 mode: mode.clone(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             };
             let mixed = qw(&x, &fused);
             let mixed_qkvz = slice_last_dim(&mixed, 0, qkvz_out, None);
@@ -1861,9 +1861,9 @@ mod tests {
             mode: "mxfp4".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let dummy = zeros(&[1], MlxDtype::Float32, None);
         let linear_w = LinearAttentionWeights {
@@ -2107,9 +2107,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let contig = cached_prefill_la_contiguous_weight(&src);
         assert_eq!(contig.bits, 4);
@@ -2458,9 +2458,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         }
     }
 
@@ -2497,9 +2497,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let mxfp4_qw = QuantizedWeight {
             weight: mxfp4[0].clone(),
@@ -2510,9 +2510,9 @@ mod tests {
             mode: "mxfp4".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         assert!(affine_qw.is_affine_quantized());
         assert!(!mxfp4_qw.is_affine_quantized());
@@ -2611,9 +2611,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let qkvz = mk(qkvz_out, 8.0);
@@ -2776,9 +2776,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let qkvz = mk(qkvz_out, 8.0);
@@ -2892,9 +2892,9 @@ mod tests {
                 mode: "mxfp4".to_string(),
                 linear_bias: None,
                 decode_weight_t: None,
-                decode_q4_weight: None,
-                decode_q4_scales: None,
-                decode_q4_biases: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
             }
         };
         let qkvz = mk(qkvz_out, 8.0);
@@ -3151,9 +3151,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let norm_data = vec![1.0f32; 64];
         let norm_w = MlxArray::from_raw_data(
@@ -3220,9 +3220,9 @@ mod tests {
             mode: "mxfp4".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let norm_data = vec![1.0f32; 64];
         let norm_w = MlxArray::from_raw_data(
@@ -3285,9 +3285,9 @@ mod tests {
             mode: "affine".to_string(),
             linear_bias: None,
             decode_weight_t: None,
-            decode_q4_weight: None,
-            decode_q4_scales: None,
-            decode_q4_biases: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
         };
         let packed = qw(&contiguous(&view, None), &proj);
         let portable = qw(&view, &proj);
