@@ -139,6 +139,12 @@ WAVE1 = {
         "family": "qwen3_vl_moe",
         "mtp": False,
     },
+    "qwen3-vl-8b-axq": {
+        "repo": "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit",
+        "revision": "e52d06296bf133b248a6572561c4f2e150dc3429",
+        "family": "qwen3_vl",
+        "mtp": False,
+    },
 }
 
 

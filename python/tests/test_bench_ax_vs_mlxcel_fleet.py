@@ -33,6 +33,7 @@ def test_wave1_excludes_deepseek_and_covers_certified_text_families() -> None:
         "gpt_oss",
         "muse_glimmer",
         "qwen3_vl_moe",
+        "qwen3_vl",
     }
     assert "qwen3.6-27b" in ids
     assert "gemma4-12b" in ids
@@ -67,6 +68,9 @@ def test_wave1_excludes_deepseek_and_covers_certified_text_families() -> None:
     )
     assert mod.WAVE1["qwen3-vl-30b-axq"]["revision"] == (
         "b48b626d9b00e45d6200aa3c15e40cc47d83b7e7"
+    )
+    assert mod.WAVE1["qwen3-vl-8b-axq"]["revision"] == (
+        "e52d06296bf133b248a6572561c4f2e150dc3429"
     )
 
 
