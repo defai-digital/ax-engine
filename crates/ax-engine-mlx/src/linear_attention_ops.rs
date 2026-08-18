@@ -1545,7 +1545,8 @@ fn try_compiled_silu_mul_normed(
 fn skip_rms_norm_gate_metal_for_exact_verify() -> bool {
     // Factory MXFP4: any Metal gate on MTP-on (fused or elementwise) flips
     // token 41 (`f4b5490d`) vs MTP-off. Portable silu*norm matches.
-    fastpath::qwen_linear_mtp_exact_enabled()
+    // `AX_MLX_EXACT_RMS_GATE_METAL=1` re-arms the Metal gate for A/B.
+    fastpath::qwen_linear_mtp_exact_enabled() && !fastpath::exact_rms_gate_metal_enabled()
 }
 
 fn rms_norm_gate_metal(

@@ -626,6 +626,20 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_EXACT_RMS_GATE_METAL` — keep the fused RMS+SiLU gate Metal
+    /// kernels under the exact MTP profile instead of the blanket portable
+    /// fallback. Default OFF: factory MXFP4 measured any Metal gate on
+    /// MTP-on flipping token 41 vs MTP-off (`f4b5490d`), and the exact
+    /// profile has skipped the gate for every pack (affine included) since.
+    /// A/B lever: if that flip was multi-token SDPA reduction drift (now
+    /// handled by the singleton-fold / per-position verify paths) rather
+    /// than the gate kernel itself, this returns rms_norm+silu+multiply+
+    /// astype per LA layer per step to one Metal dispatch.
+    exact_rms_gate_metal_enabled,
+    "AX_MLX_EXACT_RMS_GATE_METAL"
+);
+
+env_flag!(
     /// `AX_MLX_MTP_ASYNC_DRAFT` — schedule the greedy zero-gate MTP draft
     /// with `async_eval` and defer host token extraction to the start of the
     /// next decode cycle, overlapping the draft head's GPU forward with
