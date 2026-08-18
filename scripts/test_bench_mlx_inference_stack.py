@@ -13,7 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 SCRIPT_PATH = Path(__file__).with_name("bench_mlx_inference_stack.py")
 MODULE_SPEC = importlib.util.spec_from_file_location(
@@ -59,6 +59,14 @@ def write_sparse_file(path: Path, size: int) -> None:
 
 
 class MlxInferenceStackBenchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Default-on GPU wake would otherwise POST to localhost and sleep
+        # 250ms per warmup/rep in every bench_axengine unit test.
+        self._axengine_gpu_wake = bench.axengine_gpu_wake
+        gpu_wake = patch.object(bench, "axengine_gpu_wake")
+        self.axengine_gpu_wake = gpu_wake.start()
+        self.addCleanup(gpu_wake.stop)
+
     def test_default_repetition_and_cooldown_contract_matches_docs(self) -> None:
         self.assertEqual(bench.DEFAULT_REPETITIONS, 5)
         self.assertEqual(bench.DEFAULT_COOLDOWN, 15.0)
@@ -960,6 +968,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             )
 
         sleep.assert_called_once_with(5.0)
+        self.assertEqual(self.axengine_gpu_wake.call_args_list, [call(19091), call(19091)])
+        self.assertTrue(row["trials"][0]["gpu_wake_before_rep"])
         self.assertEqual(row["decode_tok_s"]["median"], 25.0)
         output = stderr.getvalue()
         self.assertIn("interim after 1/2:", output)
@@ -967,6 +977,99 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("decode=20.0 tok/s", output)
         self.assertIn("range=20.0-20.0", output)
         self.assertIn("cooldown 5s", output)
+
+    def test_axengine_gpu_wake_posts_tiny_generate_and_settles(self) -> None:
+        response = MagicMock()
+        response.read.return_value = b"{}"
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        with (
+            patch.object(bench.urllib.request, "urlopen", return_value=response) as urlopen,
+            patch.object(bench.time, "sleep") as sleep,
+        ):
+            self._axengine_gpu_wake(19091)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:19091/v1/generate")
+        self.assertEqual(
+            json.loads(request.data.decode()),
+            {
+                "input_tokens": bench.GPU_WAKE_PROMPT_TOKENS,
+                "max_output_tokens": bench.GPU_WAKE_GENERATION_TOKENS,
+                "sampling": {"ignore_eos": True, "seed": 0},
+            },
+        )
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 120)
+        sleep.assert_called_once_with(bench.GPU_WAKE_SETTLE_SECONDS)
+
+    def test_axengine_gpu_wake_swallows_request_errors(self) -> None:
+        stderr = io.StringIO()
+        with (
+            patch.object(
+                bench.urllib.request, "urlopen", side_effect=OSError("down")
+            ),
+            patch.object(bench.time, "sleep") as sleep,
+            patch.object(sys, "stderr", stderr),
+        ):
+            self._axengine_gpu_wake(19091)
+
+        sleep.assert_called_once_with(bench.GPU_WAKE_SETTLE_SECONDS)
+        self.assertIn("[gpu-wake] ignored error: down", stderr.getvalue())
+
+    def test_bench_axengine_wakes_gpu_before_warmup_and_each_rep(self) -> None:
+        run = {
+            "prefill_s": 0.3,
+            "decode_s": 0.1,
+            "ttft_ms": 300.0,
+            "prefill_tok_s": 10.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+        }
+        with patch.object(
+            bench, "axengine_one_run", side_effect=[dict(run), dict(run), dict(run)]
+        ):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                2,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+            )
+
+        self.assertEqual(
+            self.axengine_gpu_wake.call_args_list,
+            [call(19091), call(19091), call(19091)],
+        )
+        self.assertTrue(row["trials"][0]["gpu_wake_before_rep"])
+        self.assertTrue(row["trials"][1]["gpu_wake_before_rep"])
+
+    def test_bench_axengine_skips_gpu_wake_when_disabled(self) -> None:
+        run = {
+            "prefill_s": 0.3,
+            "decode_s": 0.1,
+            "ttft_ms": 300.0,
+            "prefill_tok_s": 10.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[dict(run), dict(run)]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+                gpu_wake=False,
+            )
+
+        self.axengine_gpu_wake.assert_not_called()
+        self.assertFalse(row["trials"][0]["gpu_wake_before_rep"])
 
     def test_bench_axengine_checks_load_gate_before_warmup_and_repetitions(self) -> None:
         run = {
