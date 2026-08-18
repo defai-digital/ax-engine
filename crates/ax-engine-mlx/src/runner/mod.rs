@@ -848,9 +848,11 @@ pub struct MlxRunner {
     qwen_linear_mtp_exact_eligible: bool,
     qwen_linear_mtp_exact_enabled: bool,
     qwen_linear_mtp_exact_selection: u32,
-    /// MXFP4's verifier arithmetic is exact-capable, but its recurrent
-    /// checkpoint is not sequence-equivalent yet. Formal opt-ins therefore
-    /// stay on singleton replay instead of entering the checkpoint path.
+    /// Force singleton replay instead of the exact lazy-checkpoint verify
+    /// path. Currently initialized `false` for every pack: MXFP4 checkpoint
+    /// adopt became sequence-equivalent once the exact profile skipped the
+    /// fused RMS+SiLU Metal gate (see the initializer), and replay costs
+    /// ~2× S=1 plus identity drift vs MTP-off. Kept as a kill switch.
     qwen_linear_mtp_force_replay: bool,
     /// When true, keep MTP enabled but do not use the n-gram-first draft source
     /// inside the MTP verify loop.
@@ -16202,8 +16204,6 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
-            mxfp4_gate_up_exps: None,
-            mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
             expert_stream: None,
