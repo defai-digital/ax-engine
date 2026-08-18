@@ -4824,10 +4824,30 @@ pub fn scale_prefill_chunk_for_remaining(base_chunk: usize, remaining_tokens: us
     scale_prefill_chunk_for_remaining_in_family(base_chunk, remaining_tokens, "")
 }
 
+env_flag!(
+    /// `AX_MLX_SKIP_COLD_PREFILL_CACHE_CLEAR` — keep MLX's buffer freelist
+    /// across requests instead of dropping it before every cold prefill.
+    /// The historical clear protects decode `eval_kv_refs` wall from a
+    /// previous request's residency, but it also forces every buffer in the
+    /// prefill graph to be re-allocated inside the measured window — a cost
+    /// mlxcel never pays (its process-wide pool stays warm; it clears
+    /// *after* the prefill timer). p128 short-prefill lever for
+    /// PRD-M5-FLEET-AX-VS-MLXCEL.
+    ///
+    /// **Default: OFF** (clear preserved) pending an M5 A/B.
+    skip_cold_prefill_cache_clear_enabled,
+    "AX_MLX_SKIP_COLD_PREFILL_CACHE_CLEAR"
+);
+
 /// Drop MLX's graph/buffer cache before a cold prefill so the previous
 /// request's decode residency does not inflate `eval_kv_refs` wall.
 pub fn should_clear_mlx_cache_before_cold_prefill(seq_len: usize) -> bool {
-    seq_len == 0
+    should_clear_mlx_cache_before_cold_prefill_for(skip_cold_prefill_cache_clear_enabled(), seq_len)
+}
+
+/// Pure helper for [`should_clear_mlx_cache_before_cold_prefill`].
+pub fn should_clear_mlx_cache_before_cold_prefill_for(skip_enabled: bool, seq_len: usize) -> bool {
+    seq_len == 0 && !skip_enabled
 }
 
 /// Contract shapes (p128/p512/p2048) should use one prefill forward.
@@ -8063,6 +8083,12 @@ mod tests {
         assert!(should_clear_mlx_cache_before_cold_prefill(0));
         assert!(!should_clear_mlx_cache_before_cold_prefill(1));
         assert!(!should_clear_mlx_cache_before_cold_prefill(2048));
+        assert!(should_clear_mlx_cache_before_cold_prefill_for(false, 0));
+        assert!(
+            !should_clear_mlx_cache_before_cold_prefill_for(true, 0),
+            "skip flag must keep the buffer pool warm on cold prefill"
+        );
+        assert!(!should_clear_mlx_cache_before_cold_prefill_for(true, 1));
     }
 
     #[test]
