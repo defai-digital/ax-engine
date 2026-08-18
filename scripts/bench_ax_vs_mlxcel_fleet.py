@@ -109,6 +109,18 @@ WAVE1 = {
         "family": "muse_glimmer",
         "mtp": False,
     },
+    "holo3-35b-axq": {
+        "repo": "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit",
+        "revision": "e6cc340b04bfcec57544e462ec756e48dd248cf9",
+        "family": "qwen3_5",
+        "mtp": False,
+    },
+    "ornith-35b-axq": {
+        "repo": "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+        "revision": "41015da430ae62802d9357b0ef31bf46c2b13b58",
+        "family": "qwen3_5",
+        "mtp": False,
+    },
 }
 
 

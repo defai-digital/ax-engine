@@ -52,6 +52,12 @@ def test_wave1_excludes_deepseek_and_covers_certified_text_families() -> None:
         "bcfb0b748fc44487c1657fb6ae190592d515398b"
     )
     assert mod.WAVE1["muse-glimmer-30b"]["repo"] == "mlx-community/Muse-Glimmer-30B-4bit"
+    assert mod.WAVE1["holo3-35b-axq"]["revision"] == (
+        "e6cc340b04bfcec57544e462ec756e48dd248cf9"
+    )
+    assert mod.WAVE1["ornith-35b-axq"]["revision"] == (
+        "41015da430ae62802d9357b0ef31bf46c2b13b58"
+    )
 
 
 def test_parse_mlxcel_log_reads_prefill_and_decode(tmp_path: Path) -> None:
