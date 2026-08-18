@@ -10416,6 +10416,92 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "micro-bench: run with --ignored --nocapture for kernel-vs-MLX timings"]
+    fn bench_qwen_dense_ffn_matvec_6bit_vs_mlx() {
+        // Qwen3.5-9B-ish decode FFN shape: hidden 4096 -> intermediate 12288.
+        let hidden = 4096_i32;
+        let intermediate = 12288_i32;
+        let x_data: Vec<f32> = (0..hidden as usize)
+            .map(|i| (((i % 509) as f32) - 250.0) * 0.004)
+            .collect();
+        let x = astype(
+            &array_f32(&x_data, &[1, 1, hidden]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let mk = |rows: i32, cols: i32, seed: usize| -> MlxArray {
+            let data: Vec<f32> = (0..(rows * cols) as usize)
+                .map(|i| ((((i + seed) % 977) as f32) - 480.0) * 0.001)
+                .collect();
+            array_f32(&data, &[rows, cols])
+        };
+        let (gate, gate_q) = affine_6bit_weight(&mk(intermediate, hidden, 0), 64);
+        let (up, up_q) = affine_6bit_weight(&mk(intermediate, hidden, 7), 64);
+        let (down, down_q) = affine_6bit_weight(&mk(hidden, intermediate, 13), 64);
+        let iters = 200;
+        let warm = 20;
+        for _ in 0..warm {
+            let h = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up).unwrap();
+            let o = qwen_dense_ffn_down_matvec_metal_impl(&h, &down, None).unwrap();
+            eval(&[&o]);
+        }
+        let start = std::time::Instant::now();
+        for _ in 0..iters {
+            let h = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up).unwrap();
+            let o = qwen_dense_ffn_down_matvec_metal_impl(&h, &down, None).unwrap();
+            eval(&[&o]);
+        }
+        let kernel_us = start.elapsed().as_micros() as f64 / iters as f64;
+        let mlx_ffn = |x: &MlxArray| {
+            let g = quantized_matmul(
+                x,
+                &gate_q[0],
+                &gate_q[1],
+                Some(&gate_q[2]),
+                true,
+                Some(64),
+                Some(6),
+                None,
+            );
+            let u = quantized_matmul(
+                x,
+                &up_q[0],
+                &up_q[1],
+                Some(&up_q[2]),
+                true,
+                Some(64),
+                Some(6),
+                None,
+            );
+            let h = silu_mul(&g, &u, None);
+            quantized_matmul(
+                &h,
+                &down_q[0],
+                &down_q[1],
+                Some(&down_q[2]),
+                true,
+                Some(64),
+                Some(6),
+                None,
+            )
+        };
+        for _ in 0..warm {
+            let o = mlx_ffn(&x);
+            eval(&[&o]);
+        }
+        let start = std::time::Instant::now();
+        for _ in 0..iters {
+            let o = mlx_ffn(&x);
+            eval(&[&o]);
+        }
+        let mlx_us = start.elapsed().as_micros() as f64 / iters as f64;
+        println!(
+            "6-bit decode FFN {hidden}->{intermediate}: kernel {kernel_us:.1}us vs MLX {mlx_us:.1}us ({:.3}x)",
+            mlx_us / kernel_us
+        );
+    }
+
+    #[test]
     fn qwen_dense_ffn_matvec_rejects_unsupported_bit_widths() {
         let x = mlx_sys::zeros(&[1, 1, 64], MlxDtype::Float32, None);
         for bits in [2_i32, 3, 5] {

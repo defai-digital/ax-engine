@@ -2626,6 +2626,58 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "micro-bench: run with --ignored --nocapture for kernel-vs-MLX timings"]
+    fn bench_dense_wide_gemv_vs_matmul() {
+        // lm_head-ish verify shape: hidden 4096 -> a 32k vocab slice.
+        let input_dim = 4096_i32;
+        let out_dim = 32_768_i32;
+        let weight_t_data: Vec<f32> = (0..(input_dim as usize) * (out_dim as usize))
+            .map(|i| (((i % 977) as f32) - 480.0) * 0.001)
+            .collect();
+        let weight_t = astype(
+            &array_f32(&weight_t_data, &[input_dim, out_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        for leading in [2_i32, 4] {
+            let x_data: Vec<f32> = (0..(leading * input_dim) as usize)
+                .map(|i| (((i % 509) as f32) - 250.0) * 0.004)
+                .collect();
+            let x = astype(
+                &array_f32(&x_data, &[1, leading, input_dim]),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            let iters = 100;
+            let warm = 10;
+            for _ in 0..warm {
+                let o = dense_wide_gemv_weight_t(&x, &weight_t).unwrap();
+                eval(&[&o]);
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..iters {
+                let o = dense_wide_gemv_weight_t(&x, &weight_t).unwrap();
+                eval(&[&o]);
+            }
+            let kernel_us = start.elapsed().as_micros() as f64 / iters as f64;
+            for _ in 0..warm {
+                let o = matmul(&x, &weight_t, None);
+                eval(&[&o]);
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..iters {
+                let o = matmul(&x, &weight_t, None);
+                eval(&[&o]);
+            }
+            let mlx_us = start.elapsed().as_micros() as f64 / iters as f64;
+            println!(
+                "dense wide GEMV S={leading} {input_dim}x{out_dim}: kernel {kernel_us:.1}us vs matmul {mlx_us:.1}us ({:.3}x)",
+                mlx_us / kernel_us
+            );
+        }
+    }
+
+    #[test]
     fn dense_wide_gemv_rejects_out_of_window_shapes() {
         let weight_t = array_f32(&vec![0.0; 96 * 40], &[96, 40]);
         let single = array_f32(&vec![0.0; 96], &[1, 1, 96]);
