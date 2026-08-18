@@ -798,6 +798,114 @@ fn qw_direct_mlx(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     }
 }
 
+static DENSE_WIDE_GEMV_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+/// Multi-row dense GEMV over a contiguous `[in, out]` weight: one thread per
+/// output column, `Leading` (2..=8) f32 accumulators in registers, so each
+/// weight element is read exactly once and FMA'd against every row. Adjacent
+/// threads read adjacent columns (coalesced); `x` reads are warp-broadcast.
+const DENSE_WIDE_GEMV_SOURCE: &str = r#"
+    uint n = thread_position_in_grid.x;
+    if (n >= (uint)OutDim) {
+        return;
+    }
+    float acc[Leading];
+    for (uint s = 0; s < (uint)Leading; ++s) {
+        acc[s] = 0.0f;
+    }
+    for (uint k = 0; k < (uint)InputDim; ++k) {
+        float w = static_cast<float>(weight_t[k * (uint)OutDim + n]);
+        for (uint s = 0; s < (uint)Leading; ++s) {
+            acc[s] = fma(w, static_cast<float>(x[s * (uint)InputDim + k]), acc[s]);
+        }
+    }
+    for (uint s = 0; s < (uint)Leading; ++s) {
+        out[s * (uint)OutDim + n] = static_cast<OutT>(acc[s]);
+    }
+"#;
+
+/// `x [.., S, in] @ weight_t [in, out]` for `S ∈ 2..=8` without the steel
+/// GEMM's per-row weight re-read. See `AX_MLX_DENSE_WIDE_GEMV`.
+pub(crate) fn dense_wide_gemv_weight_t(x: &MlxArray, weight_t: &MlxArray) -> Option<MlxArray> {
+    if !matches!(
+        x.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        weight_t.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let weight_shape = weight_t.shape();
+    if weight_shape.len() != 2 {
+        return None;
+    }
+    let input_dim = weight_shape[0];
+    let out_dim = weight_shape[1];
+    if input_dim <= 0 || out_dim <= 0 {
+        return None;
+    }
+    let x_shape = x.shape();
+    if x_shape.last().copied() != Some(input_dim) {
+        return None;
+    }
+    let leading = x_shape[..x_shape.len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i32, |product, dimension| product.checked_mul(*dimension))?;
+    if !(2..=8).contains(&leading) {
+        return None;
+    }
+    let kernel = DENSE_WIDE_GEMV_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_dense_wide_gemv_wt_v1",
+            &["x", "weight_t"],
+            &["out"],
+            DENSE_WIDE_GEMV_SOURCE,
+            "",
+            true,
+        )
+    });
+    let x_flat = reshape(x, &[leading, input_dim], None);
+    let grid_x = out_dim
+        .checked_add(255)?
+        .checked_div(256)?
+        .checked_mul(256)?;
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[&x_flat, weight_t],
+            &[KernelOutputSpec {
+                shape: vec![leading, out_dim],
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "InputDim",
+                    value: input_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "Leading",
+                    value: leading,
+                },
+            ],
+            (grid_x, 1, 1),
+            (256, 1, 1),
+            None,
+        )
+        .ok()?;
+    let flat = outputs.pop()?;
+    let mut out_shape = x_shape;
+    *out_shape.last_mut()? = out_dim;
+    Some(reshape(&flat, &out_shape, None))
+}
+
 fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     // Dense Linear bias (`QuantizedWeight.linear_bias`) is separate from affine
     // group-quant biases (`qw.biases`). Matches mlx-lm `nn.Linear` /
@@ -853,7 +961,13 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
             None,
         )
     } else if let Some(weight_t) = &qw.decode_weight_t {
-        matmul(x, weight_t, None)
+        if fastpath::dense_wide_gemv_enabled()
+            && let Some(wide) = dense_wide_gemv_weight_t(x, weight_t)
+        {
+            wide
+        } else {
+            matmul(x, weight_t, None)
+        }
     } else {
         let wt = transpose(&qw.weight, &[1, 0], None);
         matmul(x, &wt, None)
@@ -2454,6 +2568,68 @@ mod tests {
             shape,
             MlxDtype::Float32,
         )
+    }
+
+    #[test]
+    fn dense_wide_gemv_matches_matmul_f32_and_bf16() {
+        let input_dim = 96_i32;
+        let out_dim = 40_i32;
+        let weight_t_data: Vec<f32> = (0..(input_dim * out_dim) as usize)
+            .map(|i| (((i % 731) as f32) - 350.0) * 0.002)
+            .collect();
+        let weight_t = array_f32(&weight_t_data, &[input_dim, out_dim]);
+        for leading in [2_i32, 3, 4, 8] {
+            let x_data: Vec<f32> = (0..(leading * input_dim) as usize)
+                .map(|i| (((i % 257) as f32) - 120.0) * 0.01)
+                .collect();
+            let x = array_f32(&x_data, &[1, leading, input_dim]);
+            let wide = dense_wide_gemv_weight_t(&x, &weight_t)
+                .expect("f32 dense wide GEMV must be eligible for 2..=8 rows");
+            let reference = matmul(&x, &weight_t, None);
+            eval(&[&wide, &reference]);
+            assert_eq!(wide.shape(), vec![1, leading, out_dim]);
+            let a = wide.data_f32();
+            let b = reference.data_f32();
+            for i in 0..a.len() {
+                assert!(
+                    (a[i] - b[i]).abs() < 1.0e-4,
+                    "f32 wide GEMV row set {leading} diverged at {i}: {} vs {}",
+                    a[i],
+                    b[i]
+                );
+            }
+
+            let x_bf16 = astype(&x, MlxDtype::Bfloat16, None);
+            let weight_t_bf16 = astype(&weight_t, MlxDtype::Bfloat16, None);
+            let wide_bf16 = dense_wide_gemv_weight_t(&x_bf16, &weight_t_bf16)
+                .expect("bf16 dense wide GEMV must be eligible");
+            let reference_bf16 = matmul(&x_bf16, &weight_t_bf16, None);
+            eval(&[&wide_bf16, &reference_bf16]);
+            let a = astype(&wide_bf16, MlxDtype::Float32, None);
+            let b = astype(&reference_bf16, MlxDtype::Float32, None);
+            eval(&[&a, &b]);
+            let a = a.data_f32();
+            let b = b.data_f32();
+            for i in 0..a.len() {
+                assert!(
+                    (a[i] - b[i]).abs() < 5.0e-2,
+                    "bf16 wide GEMV row set {leading} diverged at {i}: {} vs {}",
+                    a[i],
+                    b[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dense_wide_gemv_rejects_out_of_window_shapes() {
+        let weight_t = array_f32(&vec![0.0; 96 * 40], &[96, 40]);
+        let single = array_f32(&vec![0.0; 96], &[1, 1, 96]);
+        let nine = array_f32(&vec![0.0; 9 * 96], &[1, 9, 96]);
+        let mismatched = array_f32(&vec![0.0; 2 * 64], &[1, 2, 64]);
+        assert!(dense_wide_gemv_weight_t(&single, &weight_t).is_none());
+        assert!(dense_wide_gemv_weight_t(&nine, &weight_t).is_none());
+        assert!(dense_wide_gemv_weight_t(&mismatched, &weight_t).is_none());
     }
 
     #[test]

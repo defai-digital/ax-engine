@@ -638,6 +638,18 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_DENSE_WIDE_GEMV` — dense (unquantized) projections with a
+    /// contiguous `[in, out]` `decode_weight_t` and 2..=8 leading rows take
+    /// a multi-row Metal GEMV that reads each weight element once and FMAs
+    /// it against every row. MLX has no dense analogue of `qmv_wide`, so
+    /// the S=1→2 step on its steel GEMM costs ~1.97× (measured M3 Max) —
+    /// this is the MTP-verify / small-cohort shape on dense lm_heads.
+    /// Default OFF pending the formal A/B.
+    dense_wide_gemv_enabled,
+    "AX_MLX_DENSE_WIDE_GEMV"
+);
+
+env_flag!(
     /// `AX_MLX_EXACT_RMS_GATE_METAL` — keep the fused RMS+SiLU gate Metal
     /// kernels under the exact MTP profile instead of the blanket portable
     /// fallback. Default OFF: factory MXFP4 measured any Metal gate on
