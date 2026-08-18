@@ -4689,6 +4689,20 @@ env_flag_default_on!(
 /// split activation (large gather tensors become bandwidth-bound).
 pub const MOE_PACKED_GEGLU_PREFILL_MAX_SEQ: usize = 512;
 
+env_flag_default_on!(
+    /// `AX_MLX_F32_PACK_BF16_NORMALIZE` — cast stray F32 floating tensors
+    /// (norms, quantization scales/biases, embeddings) to BF16 at load for
+    /// qwen3_5-class packs. Holo3 35B 6bit ships them F32, promoting the
+    /// whole activation stream to f32: `df-macbookpro-m5` measured ~25%
+    /// slower p2048 prefill and ~5% slower decode vs the BF16 sibling
+    /// (Ornith 6bit, same 35B-A3B graph). Not a requant — quantized integer
+    /// payloads are untouched.
+    ///
+    /// **Default: ON** (kill switch `=0`).
+    f32_pack_bf16_normalize_enabled,
+    "AX_MLX_F32_PACK_BF16_NORMALIZE"
+);
+
 /// Prefill seq ceiling for MoE packed SwiGLU Metal (Qwen3 MoE experts).
 ///
 /// The packed kernel was decode-only ("prefill is bandwidth-bound; split

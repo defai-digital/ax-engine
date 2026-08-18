@@ -1245,6 +1245,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         }
         WeightSanitize::None => {}
     }
+    normalize_f32_pack_to_bf16(artifacts.manifest().model_family.as_str(), &mut name_map);
 
     let token_embedding = take_weight(
         specs,
@@ -3997,6 +3998,40 @@ fn apply_rotated_checkpoint(
 /// The companion `ensure_conv1d_mlx_layout` check downstream remains as the
 /// safety net for the `WeightSanitize::None` path where a manifest mis-declares
 /// raw HF conv1d layout.
+/// Cast stray F32 floating tensors to BF16 for qwen3_5-class packs.
+///
+/// The runtime's qwen3_5 graphs are tuned for the mlx-community layout where
+/// every non-quantized tensor (norms, quantization scales/biases, embeddings)
+/// is BF16. Some AXQ packs (Holo3 35B 6bit) store them all in F32, which
+/// promotes the entire activation stream to f32: on `df-macbookpro-m5` the
+/// F32 pack ran ~25% slower p2048 prefill and ~5% slower decode than its
+/// BF16 sibling (Ornith 6bit, same 35B-A3B graph). Quantized integer
+/// payloads are untouched — this is a dtype normalization, not a requant.
+/// Kill switch: `AX_MLX_F32_PACK_BF16_NORMALIZE=0`.
+fn normalize_f32_pack_to_bf16(model_family: &str, name_map: &mut HashMap<String, MlxArray>) {
+    if !matches!(
+        model_family.to_ascii_lowercase().as_str(),
+        "qwen3_5" | "qwen3_next"
+    ) || !crate::fastpath::f32_pack_bf16_normalize_enabled()
+    {
+        return;
+    }
+    let mut casted = 0usize;
+    for tensor in name_map.values_mut() {
+        if tensor.dtype() == MlxDtype::Float32 {
+            *tensor = astype(tensor, MlxDtype::Bfloat16, None);
+            casted += 1;
+        }
+    }
+    if casted > 0 {
+        tracing::info!(
+            target: "ax_mlx::weights",
+            casted,
+            "normalized F32 pack tensors to BF16 (AX_MLX_F32_PACK_BF16_NORMALIZE=0 restores)"
+        );
+    }
+}
+
 fn apply_hf_sanitize_transforms(
     specs: &[NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
@@ -6856,6 +6891,56 @@ mod tests {
 
         ensure_conv1d_mlx_layout(0, &conv1d)
             .expect("MLX-layout conv1d [conv_dim, kernel, 1] should load");
+    }
+
+    #[test]
+    fn normalize_f32_pack_casts_only_f32_for_qwen_class() {
+        let mut map = HashMap::new();
+        map.insert(
+            "layers.0.input_layernorm.weight".to_string(),
+            zeros(&[4], MlxDtype::Float32, None),
+        );
+        map.insert(
+            "layers.0.self_attn.q_proj.scales".to_string(),
+            zeros(&[4, 2], MlxDtype::Float32, None),
+        );
+        map.insert(
+            "layers.0.self_attn.q_proj.weight".to_string(),
+            zeros(&[4, 2], MlxDtype::Uint32, None),
+        );
+        map.insert(
+            "layers.0.mlp.gate_proj.scales".to_string(),
+            zeros(&[4, 2], MlxDtype::Bfloat16, None),
+        );
+
+        // Non-qwen family: untouched.
+        let mut other = map.clone();
+        normalize_f32_pack_to_bf16("gemma4", &mut other);
+        assert_eq!(
+            other["layers.0.input_layernorm.weight"].dtype(),
+            MlxDtype::Float32
+        );
+
+        normalize_f32_pack_to_bf16("qwen3_5", &mut map);
+        assert_eq!(
+            map["layers.0.input_layernorm.weight"].dtype(),
+            MlxDtype::Bfloat16,
+            "f32 norms must normalize to bf16"
+        );
+        assert_eq!(
+            map["layers.0.self_attn.q_proj.scales"].dtype(),
+            MlxDtype::Bfloat16,
+            "f32 scales must normalize to bf16"
+        );
+        assert_eq!(
+            map["layers.0.self_attn.q_proj.weight"].dtype(),
+            MlxDtype::Uint32,
+            "quantized integer payloads stay untouched"
+        );
+        assert_eq!(
+            map["layers.0.mlp.gate_proj.scales"].dtype(),
+            MlxDtype::Bfloat16
+        );
     }
 
     #[test]
