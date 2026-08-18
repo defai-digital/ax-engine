@@ -4278,6 +4278,42 @@ def validate_axengine_policy_telemetry(
             )
 
 
+GPU_WAKE_PROMPT_TOKENS = [11, 12, 13, 14, 15, 16, 17, 18]
+GPU_WAKE_GENERATION_TOKENS = 8
+GPU_WAKE_SETTLE_SECONDS = 0.25
+
+
+def axengine_gpu_wake(port: int) -> None:
+    """Ramp the GPU out of its idle DVFS state before a measured rep.
+
+    The contract cooldown (15 s between reps) parks the GPU at idle clocks;
+    a p128 prefill measured straight out of idle runs ~1.55x slower than the
+    same step on a ramped GPU (M5 Max: 326 ms vs 208 ms). Peer harnesses
+    (mlxcel-bench-decode) self-warm immediately before their measured pass,
+    so cold-start ramp in the AX number is a measurement asymmetry, not
+    engine time. The wake run's tokens are fixed and tiny so it cannot
+    perturb thermal state the cooldown exists to protect.
+    """
+    body = json.dumps(
+        {
+            "input_tokens": GPU_WAKE_PROMPT_TOKENS,
+            "max_output_tokens": GPU_WAKE_GENERATION_TOKENS,
+            "sampling": {"ignore_eos": True, "seed": 0},
+        }
+    ).encode()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            response.read()
+    except Exception as error:  # noqa: BLE001 - wake is best-effort
+        print(f"    [gpu-wake] ignored error: {error}", file=sys.stderr)
+    time.sleep(GPU_WAKE_SETTLE_SECONDS)
+
+
 def bench_axengine(
     port: int,
     tokens: list[int],
@@ -4298,6 +4334,7 @@ def bench_axengine(
     seed: int = MLX_LM_RANDOM_SEED,
     prompt_source: str = "random",
     load_gate: Callable[[str], dict[str, Any]] | None = None,
+    gpu_wake: bool = True,
 ) -> dict[str, Any]:
     if cooldown is None:
         cooldown = float(warmup_repetitions)
@@ -4320,6 +4357,8 @@ def bench_axengine(
     for warmup_index in range(warmup_repetitions):
         if load_gate is not None:
             load_gate(f"{engine_key} warmup {warmup_index + 1}/{warmup_repetitions}")
+        if gpu_wake:
+            axengine_gpu_wake(port)
         axengine_one_run(
             port,
             tokens,
@@ -4339,6 +4378,8 @@ def bench_axengine(
     for index in range(repetitions):
         if load_gate is not None:
             load_gate(f"{engine_key} measured rep {index + 1}/{repetitions}")
+        if gpu_wake:
+            axengine_gpu_wake(port)
         run = axengine_one_run(
             port,
             tokens,
@@ -4351,6 +4392,7 @@ def bench_axengine(
         runs.append(run)
         run["random_seed"] = seed
         run["seed"] = seed
+        run["gpu_wake_before_rep"] = bool(gpu_wake)
         prefill_label = (
             f"{run['prefill_tok_s']:.1f} tok/s"
             if run.get("prefill_tok_s") is not None
@@ -5432,6 +5474,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--no-gpu-wake",
+        dest="gpu_wake",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip the tiny GPU-wake generate before each AX warmup/measured rep. "
+            "Default ON: the contract cooldown parks the GPU at idle DVFS clocks "
+            "and a prefill measured straight from idle runs ~1.55x slower than "
+            "warm (M5), while peer harnesses self-warm before measuring."
+        ),
+    )
+    parser.add_argument(
         "--ax-ngram-accel",
         dest="ax_ngram_accel",
         action="store_true",
@@ -6207,6 +6261,7 @@ def main() -> None:
                             sampler=args.ax_sampling,
                             mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
                             gemma4_assistant_mtp=gemma4_assistant_mtp,
+                            gpu_wake=args.gpu_wake,
                             seed=args.seed,
                             prompt_source=prompt_doc.get("prompt_source", "random"),
                             load_gate=(
