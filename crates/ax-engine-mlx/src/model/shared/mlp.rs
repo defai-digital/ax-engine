@@ -7234,7 +7234,7 @@ fn moe_experts_forward_impl(
         let fused = if moe_packed_geglu_ok {
             packed_geglu_metal_impl(&out, half)
         } else if !cfg.uses_geglu
-            && seq == 1
+            && (seq == 1 || seq <= fastpath::moe_packed_swiglu_prefill_max_seq())
             && !v4_swiglu_clamp
             && fastpath::moe_swiglu_packed_metal_enabled()
         {
@@ -7413,7 +7413,7 @@ fn moe_experts_forward_impl(
     // weighted-sum is bandwidth-bound on a large tensor, where the fused
     // kernel's extra input read costs more than the dispatch it saves. Falls
     // back to the separate `add` in the branches below at long prefill.
-    if seq <= MOE_SHARED_FUSION_SEQ_THRESHOLD
+    if seq <= fastpath::moe_shared_fusion_seq_threshold(MOE_SHARED_FUSION_SEQ_THRESHOLD)
         && let Some(shared) = shared_expert_out
         && fastpath::moe_fuse_shared_expert_add_enabled()
         && let Some(out) =

@@ -4689,6 +4689,32 @@ env_flag_default_on!(
 /// split activation (large gather tensors become bandwidth-bound).
 pub const MOE_PACKED_GEGLU_PREFILL_MAX_SEQ: usize = 512;
 
+/// Prefill seq ceiling for MoE packed SwiGLU Metal (Qwen3 MoE experts).
+///
+/// The packed kernel was decode-only ("prefill is bandwidth-bound; split
+/// slice+silu_mul is faster"), but that predates the Gemma GeGLU prefill
+/// band (≤512) and the M5. `AX_MLX_MOE_SWIGLU_PREFILL_MAX_SEQ=N` overrides
+/// for A/B; default 0 keeps the shipped decode-only behavior.
+pub fn moe_packed_swiglu_prefill_max_seq() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED
+        .get_or_init(|| parse_positive_usize_env("AX_MLX_MOE_SWIGLU_PREFILL_MAX_SEQ").unwrap_or(0))
+}
+
+/// Seq ceiling for the fused MoE shared-expert weighted-sum kernel.
+///
+/// Shipped threshold is 64 ("beyond this the weighted-sum is
+/// bandwidth-bound and the fused kernel's extra input read costs more").
+/// `AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD=N` overrides for A/B on the
+/// 35B-A3B class contract shapes.
+pub fn moe_shared_fusion_seq_threshold(default_threshold: usize) -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_positive_usize_env("AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD")
+            .unwrap_or(default_threshold)
+    })
+}
+
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
 /// cold and warm-extend prefill paths produce the same SDPA Q/K shape
 /// sequence over the same absolute positions, avoiding the reproduced
