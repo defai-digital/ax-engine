@@ -1043,14 +1043,19 @@ fn layer_forward_internal(
         let Some(o_proj) = w.o_proj.as_ref() else {
             break 'fused None;
         };
-        if o_proj.mode != "affine" || o_proj.scales.is_none() {
+        // Typed predicate, not a raw `mode` string compare: a mislabeled
+        // MXFP4 pack (`mode=="affine"`, 4/32, no group biases) resolves to
+        // Mxfp4 via `mlx_quantization_mode()` and must not reach the fused
+        // helpers as affine (MLX panics without biases). Genuine scales-only
+        // MXFP4 is hosted — the shim infers the mode per projection from the
+        // absent bias channel.
+        if !o_proj.is_fused_qmm_quantized() {
             break 'fused None;
         }
         let affine_matching = |qw: &crate::weights::QuantizedWeight| {
-            qw.mode == "affine"
+            qw.is_fused_qmm_quantized()
                 && qw.group_size == o_proj.group_size
                 && qw.bits == o_proj.bits
-                && qw.scales.is_some()
         };
         let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
         if offset_chunk {

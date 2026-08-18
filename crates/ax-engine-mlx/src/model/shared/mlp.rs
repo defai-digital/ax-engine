@@ -309,7 +309,7 @@ fn qkv_project_inner(
             && !fastpath::qwen_linear_mtp_exact_enabled()
             && !fastpath::moe_mt_bf16_identity_enabled()
             && fastpath::should_attn_norm_qkv_fuse(&cfg.model_family, seq)
-            && packed.is_affine_quantized()
+            && packed.is_fused_qmm_quantized()
             && let Some(scales) = packed.scales.as_ref()
         {
             rms_norm_quantized_matmul(
@@ -518,7 +518,7 @@ pub(crate) fn attention_output_projection_with_post_norm_policy(
         && attn_gate.is_none()
         && let Some(norm_w) = post_norm
         && fastpath::o_proj_qmatmul_rms_norm_enabled()
-        && o_proj.is_affine_quantized()
+        && o_proj.is_fused_qmm_quantized()
         && let Some(scales) = o_proj.scales.as_ref()
     {
         return quantized_matmul_rms_norm(
@@ -665,7 +665,7 @@ pub(crate) fn per_layer_input_gate_project(
     {
         return qw(&hidden, proj_w);
     }
-    if proj_w.is_affine_quantized()
+    if proj_w.is_fused_qmm_quantized()
         && let Some(scales) = proj_w.scales.as_ref()
     {
         return gelu_approx_mul_quantized_matmul(
@@ -3158,7 +3158,7 @@ fn ffn_swiglu_with_policy_inner(
                         && !profile_prefill
                         && projection_policy == ProjectionBatchPolicy::Shared
                         && fastpath::dense_qmatmul_rms_norm_enabled()
-                        && down.is_affine_quantized()
+                        && down.is_fused_qmm_quantized()
                         && let Some(scales) = down.scales.as_ref()
                     {
                         let out = quantized_matmul_rms_norm(
@@ -3238,7 +3238,7 @@ fn ffn_swiglu_with_policy_inner(
                         && !profile_prefill
                         && projection_policy == ProjectionBatchPolicy::Shared
                         && fastpath::dense_qmatmul_rms_norm_enabled()
-                        && down.is_affine_quantized()
+                        && down.is_fused_qmm_quantized()
                         && let Some(scales) = down.scales.as_ref()
                     {
                         let out = quantized_matmul_rms_norm(
@@ -3366,7 +3366,7 @@ fn ffn_swiglu_with_policy_inner(
             if let Some(norm_w) = post_norm {
                 if projection_policy == ProjectionBatchPolicy::Shared
                     && fastpath::dense_qmatmul_rms_norm_enabled()
-                    && down.is_affine_quantized()
+                    && down.is_fused_qmm_quantized()
                     && let Some(scales) = down.scales.as_ref()
                 {
                     let out = quantized_matmul_rms_norm(
@@ -3494,7 +3494,7 @@ fn ffn_swiglu_with_policy_inner(
             if let Some(norm_w) = post_norm {
                 if projection_policy == ProjectionBatchPolicy::Shared
                     && fastpath::dense_qmatmul_rms_norm_enabled()
-                    && down.is_affine_quantized()
+                    && down.is_fused_qmm_quantized()
                     && let Some(scales) = down.scales.as_ref()
                 {
                     let out = quantized_matmul_rms_norm(
@@ -3569,7 +3569,7 @@ fn ffn_swiglu_with_policy_inner(
             if let Some(norm_w) = post_norm {
                 if projection_policy == ProjectionBatchPolicy::Shared
                     && fastpath::dense_qmatmul_rms_norm_enabled()
-                    && down.is_affine_quantized()
+                    && down.is_fused_qmm_quantized()
                     && let Some(scales) = down.scales.as_ref()
                 {
                     let out = quantized_matmul_rms_norm(
@@ -3659,7 +3659,7 @@ fn ffn_swiglu_with_policy_inner(
                     && !profile_prefill
                     && projection_policy == ProjectionBatchPolicy::Shared
                     && fastpath::dense_qmatmul_rms_norm_enabled()
-                    && down.is_affine_quantized()
+                    && down.is_fused_qmm_quantized()
                     && let Some(scales) = down.scales.as_ref()
                 {
                     let out = quantized_matmul_rms_norm(
@@ -3978,7 +3978,7 @@ fn ffn_swiglu_with_policy_inner(
         && !profile_prefill
         && projection_policy == ProjectionBatchPolicy::Shared
         && fastpath::dense_geglu_down_fuse_enabled()
-        && down.is_affine_quantized()
+        && down.is_fused_qmm_quantized()
         && let Some(scales) = down.scales.as_ref()
     {
         let activation_started = Instant::now();
@@ -4100,7 +4100,7 @@ fn ffn_swiglu_with_policy_inner(
             && !profile_prefill
             && projection_policy == ProjectionBatchPolicy::Shared
             && fastpath::dense_qmatmul_rms_norm_enabled()
-            && down.is_affine_quantized()
+            && down.is_fused_qmm_quantized()
             && let Some(scales) = down.scales.as_ref()
         {
             let out = quantized_matmul_rms_norm(
@@ -4409,7 +4409,7 @@ pub(crate) fn qwen_compiled_split_verify_la_gate_o_proj(
     w: &LayerWeights,
     gd_out: &MlxArray,
     z: &MlxArray,
-    layer_idx: usize,
+    _layer_idx: usize,
     seq: i32,
     value_dim: i32,
 ) -> Option<MlxArray> {
@@ -4439,8 +4439,10 @@ pub(crate) fn qwen_compiled_split_verify_la_gate_o_proj(
     let input_refs: Vec<&MlxArray> = inputs.iter().collect();
     let eps = cfg.rms_norm_eps;
     apply_layer_dense_ffn_prefill_min(
-        cfg.compile_cache_identity ^ VERIFY_LA_GATE_O_PROJ_COMPILE_SALT,
-        layer_idx,
+        cfg.compile_cache_identity
+            ^ VERIFY_LA_GATE_O_PROJ_COMPILE_SALT
+            ^ compile_quant_contract_salt(&[&linear.out_proj]),
+        SHARED_VERIFY_COMPILE_LAYER,
         i64::from(seq),
         2,
         &input_refs,
@@ -4487,7 +4489,7 @@ pub(crate) fn qwen_compiled_split_verify_la_gate_o_proj_ffn(
     hidden: &MlxArray,
     gd_out: &MlxArray,
     z: &MlxArray,
-    layer_idx: usize,
+    _layer_idx: usize,
     seq: i32,
     value_dim: i32,
 ) -> Option<MlxArray> {
@@ -4539,8 +4541,10 @@ pub(crate) fn qwen_compiled_split_verify_la_gate_o_proj_ffn(
     let input_refs: Vec<&MlxArray> = inputs.iter().collect();
     let eps = cfg.rms_norm_eps;
     apply_layer_dense_ffn_prefill_min(
-        cfg.compile_cache_identity ^ VERIFY_LA_GATE_O_PROJ_FFN_COMPILE_SALT,
-        layer_idx,
+        cfg.compile_cache_identity
+            ^ VERIFY_LA_GATE_O_PROJ_FFN_COMPILE_SALT
+            ^ compile_quant_contract_salt(&[&linear.out_proj, gate, up, down]),
+        SHARED_VERIFY_COMPILE_LAYER,
         i64::from(seq),
         2,
         &input_refs,
@@ -4704,7 +4708,7 @@ pub(crate) fn qwen_compiled_split_verify_fa_attn_norm_qkv(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray,
-    layer_idx: usize,
+    _layer_idx: usize,
     seq: usize,
 ) -> Option<(MlxArray, MlxArray, MlxArray)> {
     if !fastpath::qwen_linear_mtp_exact_enabled() {
@@ -4747,8 +4751,10 @@ pub(crate) fn qwen_compiled_split_verify_fa_attn_norm_qkv(
     let input_refs: Vec<&MlxArray> = inputs.iter().collect();
     let eps = cfg.rms_norm_eps;
     let outs = apply_layer_dense_ffn_prefill_min(
-        cfg.compile_cache_identity ^ VERIFY_FA_ATTN_NORM_QKV_COMPILE_SALT,
-        layer_idx,
+        cfg.compile_cache_identity
+            ^ VERIFY_FA_ATTN_NORM_QKV_COMPILE_SALT
+            ^ compile_quant_contract_salt(&[q_proj, k_proj, v_proj]),
+        SHARED_VERIFY_COMPILE_LAYER,
         leading_elements,
         2,
         &input_refs,
@@ -4820,7 +4826,7 @@ pub(crate) fn qwen_compiled_split_verify_o_proj_ffn_plus_residual(
     w: &LayerWeights,
     hidden: &MlxArray,
     gated: &MlxArray,
-    layer_idx: usize,
+    _layer_idx: usize,
 ) -> Option<MlxArray> {
     if !fastpath::qwen_linear_mtp_exact_enabled() || cfg.uses_geglu {
         return None;
@@ -4877,8 +4883,10 @@ pub(crate) fn qwen_compiled_split_verify_o_proj_ffn_plus_residual(
         vec![add(&residual, &ffn, None)]
     };
     apply_layer_dense_ffn_prefill_min(
-        cfg.compile_cache_identity ^ VERIFY_O_PROJ_FFN_COMPILE_SALT,
-        layer_idx,
+        cfg.compile_cache_identity
+            ^ VERIFY_O_PROJ_FFN_COMPILE_SALT
+            ^ compile_quant_contract_salt(&[out_proj, gate, up, down]),
+        SHARED_VERIFY_COMPILE_LAYER,
         leading_elements,
         2,
         &input_refs,
@@ -5312,14 +5320,15 @@ fn qwen_dual_qmm_swiglu(
     )
 }
 
-/// Fuse `silu(gate)*up` into the down affine qmm for Qwen split prefill.
+/// Fuse `silu(gate)*up` into the down qmm (affine or scales-only MXFP4)
+/// for Qwen split prefill.
 fn qwen_swiglu_down_fuse(
     gate: &MlxArray,
     up: &MlxArray,
     down: &QuantizedWeight,
 ) -> Option<MlxArray> {
     let scales = down.scales.as_ref()?;
-    if !down.is_affine_quantized() || down.group_size <= 0 || down.bits <= 0 {
+    if !down.is_fused_qmm_quantized() || down.group_size <= 0 || down.bits <= 0 {
         return None;
     }
     silu_mul_quantized_matmul(
@@ -6460,8 +6469,6 @@ pub(crate) fn moe_experts_forward_with_cloned_weights(
         gate_exps,
         up_exps,
         down_exps,
-        mxfp4_gate_up_exps: None,
-        mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
@@ -7580,7 +7587,7 @@ pub(crate) struct SwitchGatherInputs {
 }
 
 impl SwitchGatherInputs {
-    fn unsort(&self, x: MlxArray) -> MlxArray {
+    pub(crate) fn unsort(&self, x: MlxArray) -> MlxArray {
         let Some(inv_order) = &self.inv_order else {
             return x;
         };
@@ -7986,6 +7993,152 @@ mod tests {
             max_abs < 1.0e-5,
             "compiled exact S=2 MXFP4 FFN must match imperative, max_abs={max_abs}"
         );
+    }
+
+    fn mxfp4_quant_weight(w: &MlxArray) -> QuantizedWeight {
+        let q = quantize(w, Some(32), Some(4), MlxQuantizationMode::Mxfp4, None, None);
+        assert_eq!(q.len(), 2);
+        QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: None,
+            group_size: 32,
+            bits: 4,
+            mode: "mxfp4".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q4_weight: None,
+            decode_q4_scales: None,
+            decode_q4_biases: None,
+        }
+    }
+
+    #[test]
+    fn qwen_swiglu_down_fuse_mxfp4_matches_imperative() {
+        let seq = 8i32;
+        let hidden = 64i32;
+        let intermediate = 64i32;
+        let gate_data: Vec<f32> = (0..(seq * intermediate) as usize)
+            .map(|i| ((i as f32) - 40.0) * 0.011)
+            .collect();
+        let up_data: Vec<f32> = (0..(seq * intermediate) as usize)
+            .map(|i| ((i as f32) - 20.0) * -0.007)
+            .collect();
+        let down_data: Vec<f32> = (0..(hidden * intermediate) as usize)
+            .map(|i| ((i as f32) - 12.0) * 0.006)
+            .collect();
+        let gate = array_f32(&gate_data, &[1, seq, intermediate]);
+        let up = array_f32(&up_data, &[1, seq, intermediate]);
+        let down = mxfp4_quant_weight(&array_f32(&down_data, &[hidden, intermediate]));
+        let fused = qwen_swiglu_down_fuse(&gate, &up, &down)
+            .expect("scales-only MXFP4 must take the fused SwiGLU-down path");
+        let portable = qw(&silu_mul(&gate, &up, None), &down);
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        let a = fused.data_f32();
+        let b = portable.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "fused MXFP4 SwiGLU-down must match imperative, max_abs={max_abs}"
+        );
+    }
+
+    #[test]
+    fn quantized_matmul_rms_norm_mxfp4_matches_imperative() {
+        let seq = 4i32;
+        let hidden = 64i32;
+        let out_dim = 64i32;
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i as f32) - 30.0) * 0.013)
+            .collect();
+        let w_data: Vec<f32> = (0..(out_dim * hidden) as usize)
+            .map(|i| ((i as f32) - 18.0) * 0.005)
+            .collect();
+        let norm_data: Vec<f32> = (0..out_dim as usize)
+            .map(|i| 0.5 + (i as f32) * 0.01)
+            .collect();
+        let x = array_f32(&x_data, &[1, seq, hidden]);
+        let proj = mxfp4_quant_weight(&array_f32(&w_data, &[out_dim, hidden]));
+        let norm_w = array_f32(&norm_data, &[out_dim]);
+        let fused = mlx_sys::ops::quantized_matmul_rms_norm(
+            &x,
+            &proj.weight,
+            proj.scales.as_ref().expect("scales"),
+            proj.biases.as_ref(),
+            proj.group_size,
+            proj.bits,
+            &norm_w,
+            1e-6,
+            None,
+        );
+        let portable = rms_norm(&qw(&x, &proj), Some(&norm_w), 1e-6, None);
+        eval(&[&fused, &portable]);
+        assert_eq!(fused.shape(), portable.shape());
+        let a = fused.data_f32();
+        let b = portable.data_f32();
+        let mut max_abs = 0.0f32;
+        for i in 0..a.len() {
+            max_abs = max_abs.max((a[i] - b[i]).abs());
+        }
+        assert!(
+            max_abs < 1.0e-5,
+            "fused MXFP4 qmm+rms_norm must match imperative, max_abs={max_abs}"
+        );
+    }
+
+    #[test]
+    fn switch_gather_sorted_mxfp4_experts_match_unsorted() {
+        let experts = 4i32;
+        let hidden = 64i32;
+        let expert_out = 32i32;
+        let seq = 4i32;
+        let top_k = 2i32;
+        let w_data: Vec<f32> = (0..(experts * expert_out * hidden) as usize)
+            .map(|i| (((i % 613) as f32) - 300.0) * 0.003)
+            .collect();
+        let exps = mxfp4_quant_weight(&array_f32(&w_data, &[experts, expert_out, hidden]));
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| (((i % 251) as f32) - 120.0) * 0.008)
+            .collect();
+        let x = array_f32(&x_data, &[1, seq, hidden]);
+        let x_exp = expand_dims_axes(&x, &[-2, -3], None);
+        let idx_data: Vec<u32> = vec![3, 0, 1, 2, 2, 1, 0, 3];
+        let indices = MlxArray::from_raw_data(
+            idx_data.as_ptr() as *const u8,
+            idx_data.len() * std::mem::size_of::<u32>(),
+            &[1, seq, top_k],
+            MlxDtype::Uint32,
+        );
+        let gather_inputs = switch_gather_inputs(&x_exp, &indices);
+        assert!(
+            gather_inputs.sorted_indices,
+            "seq>1 with {} selections must take the sorted path",
+            seq * top_k
+        );
+        let sorted = gather_inputs.unsort(squeeze_switch_singleton(&qw_gather(
+            &gather_inputs.x,
+            &exps,
+            &gather_inputs.indices,
+            true,
+        )));
+        let unsorted = squeeze_switch_singleton(&qw_gather(&x_exp, &exps, &indices, false));
+        let unsorted = reshape(&unsorted, &[1, seq, top_k, expert_out], None);
+        eval(&[&sorted, &unsorted]);
+        assert_eq!(sorted.shape(), unsorted.shape());
+        let a = sorted.data_f32();
+        let b = unsorted.data_f32();
+        assert_eq!(a.len(), b.len());
+        for i in 0..a.len() {
+            assert_eq!(
+                a[i].to_bits(),
+                b[i].to_bits(),
+                "sorted MXFP4 expert gather must be bit-identical after unsort (row {i})"
+            );
+        }
     }
 
     #[test]
@@ -10544,7 +10697,6 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: None,
-            gpt_oss_uses_mxfp4_experts: false,
             generation_kind: ax_engine_core::GenerationKind::Autoregressive,
             kv_cache_quant: vec![None; 1],
         }
@@ -10592,8 +10744,6 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
-            mxfp4_gate_up_exps: None,
-            mxfp4_down_exps: None,
             attn_sink: None,
             rotation_smoothing_inverse: None,
             expert_stream: None,

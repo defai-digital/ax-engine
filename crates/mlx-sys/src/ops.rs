@@ -723,6 +723,24 @@ pub fn gelu_approx_mul_matmul(
 
 /// Compute `quantized_matmul(gelu_approx(gate) * x, weight, ...)`.
 #[allow(clippy::too_many_arguments)]
+/// Affine is the only quantization mode with a group-bias channel; the
+/// block-float modes are fully determined by `(group_size, bits)`. Mirrors
+/// the shim-side `infer_qmm_mode` so the Rust fallbacks of the fused qmm
+/// helpers agree with their C++ entries on scales-only weights.
+fn infer_fused_qmm_mode(has_biases: bool, group_size: i32, bits: i32) -> MlxQuantizationMode {
+    if has_biases {
+        MlxQuantizationMode::Affine
+    } else if bits == 4 && group_size == 32 {
+        MlxQuantizationMode::Mxfp4
+    } else if bits == 8 && group_size == 32 {
+        MlxQuantizationMode::Mxfp8
+    } else if bits == 4 && group_size == 16 {
+        MlxQuantizationMode::Nvfp4
+    } else {
+        MlxQuantizationMode::Affine
+    }
+}
+
 pub fn gelu_approx_mul_quantized_matmul(
     gate: &MlxArray,
     x: &MlxArray,
@@ -755,7 +773,7 @@ pub fn gelu_approx_mul_quantized_matmul(
     }
     crate::error::clear_stale_error();
     let hidden = gelu_approx_mul(gate, x, s);
-    quantized_matmul(
+    quantized_matmul_with_mode(
         &hidden,
         weight,
         scales,
@@ -763,6 +781,7 @@ pub fn gelu_approx_mul_quantized_matmul(
         true,
         Some(group_size),
         Some(bits),
+        infer_fused_qmm_mode(biases.is_some(), group_size, bits),
         s,
     )
 }
@@ -1499,18 +1518,20 @@ pub fn qwen_linear_attention_inputs_packed(
 
 /// Shape-specific `mx::compile` of [`qwen_linear_attention_inputs_packed`].
 ///
-/// Requires affine scales/biases on both QKVZ and BA. Returns `None` on
-/// unsupported shapes or compile failure so the caller can keep the
-/// imperative packed path.
+/// Requires scales on both QKVZ and BA, with group biases either on both
+/// (affine) or on neither (scales-only block-float; the shim infers the mode
+/// from `group_size`/`bits`). Returns `None` on unsupported shapes, mixed
+/// bias contracts, or compile failure so the caller can keep the imperative
+/// packed path.
 #[allow(clippy::too_many_arguments)]
 pub fn qwen_linear_attention_inputs_packed_compiled(
     x: &MlxArray,
     qkvz_weight: &MlxArray,
     qkvz_scales: &MlxArray,
-    qkvz_biases: &MlxArray,
+    qkvz_biases: Option<&MlxArray>,
     ba_weight: &MlxArray,
     ba_scales: &MlxArray,
-    ba_biases: &MlxArray,
+    ba_biases: Option<&MlxArray>,
     num_key_heads: i32,
     num_value_heads: i32,
     key_head_dim: i32,
@@ -1535,10 +1556,14 @@ pub fn qwen_linear_attention_inputs_packed_compiled(
             x.inner,
             qkvz_weight.inner,
             qkvz_scales.inner,
-            qkvz_biases.inner,
+            qkvz_biases
+                .map(|biases| biases.inner)
+                .unwrap_or_else(null_ffi_array),
             ba_weight.inner,
             ba_scales.inner,
-            ba_biases.inner,
+            ba_biases
+                .map(|biases| biases.inner)
+                .unwrap_or_else(null_ffi_array),
             num_key_heads,
             num_value_heads,
             key_head_dim,
@@ -1821,7 +1846,7 @@ pub fn quantized_matmul_rms_norm(
         }
     }
     crate::error::clear_stale_error();
-    let projected = quantized_matmul(
+    let projected = quantized_matmul_with_mode(
         x,
         weight,
         scales,
@@ -1829,6 +1854,7 @@ pub fn quantized_matmul_rms_norm(
         true,
         Some(group_size),
         Some(bits),
+        infer_fused_qmm_mode(biases.is_some(), group_size, bits),
         s,
     );
     crate::fast::rms_norm(&projected, Some(norm_weight), eps, s)
@@ -1873,7 +1899,7 @@ pub fn rms_norm_quantized_matmul(
     }
     crate::error::clear_stale_error();
     let normed = crate::fast::rms_norm(x, Some(norm_weight), eps, s);
-    quantized_matmul(
+    quantized_matmul_with_mode(
         &normed,
         weight,
         scales,
@@ -1881,6 +1907,7 @@ pub fn rms_norm_quantized_matmul(
         true,
         Some(group_size),
         Some(bits),
+        infer_fused_qmm_mode(biases.is_some(), group_size, bits),
         s,
     )
 }
@@ -4123,10 +4150,10 @@ mod tests {
             &x,
             &qkvz_q[0],
             &qkvz_q[1],
-            &qkvz_q[2],
+            Some(&qkvz_q[2]),
             &ba_q[0],
             &ba_q[1],
-            &ba_q[2],
+            Some(&ba_q[2]),
             num_key_heads,
             num_value_heads,
             key_head_dim,
@@ -4157,6 +4184,112 @@ mod tests {
             None,
         )
         .expect("imperative packed LA inputs");
+        eval(&[&c_qkv, &c_z, &c_a, &c_b, &p_qkv, &p_z, &p_a, &p_b]);
+        assert_eq!(c_qkv.shape(), p_qkv.shape());
+        assert_eq!(c_z.shape(), p_z.shape());
+        assert_eq!(c_a.shape(), p_a.shape());
+        assert_eq!(c_b.shape(), p_b.shape());
+        assert_close_f32(c_qkv.data_f32(), p_qkv.data_f32(), 1.0e-5);
+        assert_close_f32(c_z.data_f32(), p_z.data_f32(), 1.0e-5);
+        assert_close_f32(c_a.data_f32(), p_a.data_f32(), 1.0e-5);
+        assert_close_f32(c_b.data_f32(), p_b.data_f32(), 1.0e-5);
+    }
+
+    #[test]
+    fn qwen_linear_attention_inputs_packed_compiled_mxfp4_matches_imperative() {
+        let seq = 2_i32;
+        let hidden = 64_i32;
+        let num_key_heads = 2_i32;
+        let num_value_heads = 4_i32;
+        let key_head_dim = 4_i32;
+        let value_head_dim = 4_i32;
+        let value_heads_per_key = num_value_heads / num_key_heads;
+        let qkvz_per_key = key_head_dim * 2 + value_heads_per_key * value_head_dim * 2;
+        let qkvz_out = num_key_heads * qkvz_per_key;
+        let ba_out = num_key_heads * value_heads_per_key * 2;
+        let x_data: Vec<f32> = (0..(seq * hidden))
+            .map(|i| ((i as f32) - 31.0) * 0.015625)
+            .collect();
+        let qkvz_weight_data: Vec<f32> = (0..(qkvz_out * hidden))
+            .map(|i| ((i as f32) - 200.0) * 0.0005)
+            .collect();
+        let ba_weight_data: Vec<f32> = (0..(ba_out * hidden))
+            .map(|i| ((i as f32) - 80.0) * 0.001)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_w = MlxArray::from_raw_data(
+            qkvz_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkvz_weight_data.as_slice()),
+            &[qkvz_out, hidden],
+            MlxDtype::Float32,
+        );
+        let ba_w = MlxArray::from_raw_data(
+            ba_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(ba_weight_data.as_slice()),
+            &[ba_out, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_q = quantize(
+            &qkvz_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        let ba_q = quantize(
+            &ba_w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        assert_eq!(qkvz_q.len(), 2, "MXFP4 quantize returns weight + scales");
+        assert_eq!(ba_q.len(), 2);
+        let (c_qkv, c_z, c_a, c_b) = qwen_linear_attention_inputs_packed_compiled(
+            &x,
+            &qkvz_q[0],
+            &qkvz_q[1],
+            None,
+            &ba_q[0],
+            &ba_q[1],
+            None,
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            32,
+            4,
+            32,
+            4,
+            None,
+        )
+        .expect("compiled packed LA inputs must engage for scales-only MXFP4");
+        let (p_qkv, p_z, p_a, p_b) = qwen_linear_attention_inputs_packed(
+            &x,
+            &qkvz_q[0],
+            Some(&qkvz_q[1]),
+            None,
+            &ba_q[0],
+            Some(&ba_q[1]),
+            None,
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            32,
+            4,
+            32,
+            4,
+            None,
+        )
+        .expect("imperative packed LA inputs must host scales-only MXFP4");
         eval(&[&c_qkv, &c_z, &c_a, &c_b, &p_qkv, &p_z, &p_a, &p_b]);
         assert_eq!(c_qkv.shape(), p_qkv.shape());
         assert_eq!(c_z.shape(), p_z.shape());

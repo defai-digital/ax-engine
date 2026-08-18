@@ -37,9 +37,34 @@ struct linear_attn_scale_cache {
 };
 static thread_local std::optional<linear_attn_scale_cache> la_scale_cache;
 
-// Static string avoids per-call std::string("affine") construction in every
-// quantized matmul dispatch.
+// Static strings avoid per-call std::string construction in every quantized
+// matmul dispatch.
 static const std::string kAffineMode("affine");
+static const std::string kMxfp4Mode("mxfp4");
+static const std::string kMxfp8Mode("mxfp8");
+static const std::string kNvfp4Mode("nvfp4");
+
+// Affine is the only MLX quantization mode with a group-bias channel, and the
+// block-float modes are fully determined by (group_size, bits): mxfp4 = 4/32,
+// mxfp8 = 8/32, nvfp4 = 4/16. A scales-only call therefore names its mode
+// unambiguously. Unknown scales-only contracts resolve to affine, which MLX
+// rejects ("Biases must be provided"), landing in the caller's fail-closed
+// fallback exactly as before.
+const std::string& infer_qmm_mode(bool has_biases, int group_size, int bits) {
+  if (has_biases) {
+    return kAffineMode;
+  }
+  if (bits == 4 && group_size == 32) {
+    return kMxfp4Mode;
+  }
+  if (bits == 8 && group_size == 32) {
+    return kMxfp8Mode;
+  }
+  if (bits == 4 && group_size == 16) {
+    return kNvfp4Mode;
+  }
+  return kAffineMode;
+}
 
 // Default-OFF after remasure f1d47194… regressed AXQ p2048 879 vs 891.
 // Enable with AX_MLX_QWEN_LA_DUAL_STREAM_QKVZ_BA=1. Not FFN dual-stream.
@@ -112,6 +137,10 @@ mx::array silu_mul_impl(
   return mx::multiply(activated, x, stream);
 }
 
+// Mode-aware quantized matmul shared by every fused helper in this file.
+// Biases present -> affine (unchanged legacy behavior); biases absent -> the
+// block-float mode named by (group_size, bits), so scales-only MXFP4 packs
+// ride the same fused graphs as affine instead of falling back per-op.
 mx::array quantized_matmul_affine_impl(
     const mx::array& x,
     const mx::array& weight,
@@ -120,6 +149,7 @@ mx::array quantized_matmul_affine_impl(
     int group_size,
     int bits,
     mx::StreamOrDevice stream) {
+  const auto& mode = infer_qmm_mode(biases.has_value(), group_size, bits);
   return mx::quantized_matmul(
       x,
       weight,
@@ -128,7 +158,7 @@ mx::array quantized_matmul_affine_impl(
       true,
       std::make_optional<int>(group_size),
       std::make_optional<int>(bits),
-      kAffineMode,
+      mode,
       stream);
 }
 
@@ -1910,8 +1940,6 @@ namespace {
 using CompiledPackedLaFn =
     std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
 
-static const std::string kPackedLaAffineMode("affine");
-
 uint64_t packed_la_shape_sig(const mx::Shape& shape) {
   uint64_t h = static_cast<uint64_t>(shape.size());
   for (auto d : shape) {
@@ -1937,6 +1965,7 @@ CompiledPackedLaFn& get_compiled_packed_la_inputs(
     int bits,
     int ba_group_size,
     int ba_bits,
+    bool has_biases,
     uint64_t shape_sig) {
   struct Key {
     int num_key_heads;
@@ -1947,6 +1976,7 @@ CompiledPackedLaFn& get_compiled_packed_la_inputs(
     int bits;
     int ba_group_size;
     int ba_bits;
+    bool has_biases;
     uint64_t shape_sig;
   };
   struct KeyHash {
@@ -1962,6 +1992,7 @@ CompiledPackedLaFn& get_compiled_packed_la_inputs(
       mix(k.bits);
       mix(k.ba_group_size);
       mix(k.ba_bits);
+      mix(k.has_biases ? 1 : 0);
       h ^= std::hash<uint64_t>{}(k.shape_sig) + 0x9e3779b9 + (h << 6) +
            (h >> 2);
       return h;
@@ -1975,30 +2006,33 @@ CompiledPackedLaFn& get_compiled_packed_la_inputs(
              a.value_head_dim == b.value_head_dim &&
              a.group_size == b.group_size && a.bits == b.bits &&
              a.ba_group_size == b.ba_group_size && a.ba_bits == b.ba_bits &&
-             a.shape_sig == b.shape_sig;
+             a.has_biases == b.has_biases && a.shape_sig == b.shape_sig;
     }
   };
   static std::mutex mu;
   static std::unordered_map<Key, CompiledPackedLaFn, KeyHash, KeyEq> cache;
   std::lock_guard<std::mutex> lock(mu);
-  Key key{num_key_heads, num_value_heads, key_head_dim, value_head_dim,
-          group_size,    bits,            ba_group_size, ba_bits, shape_sig};
+  Key key{num_key_heads, num_value_heads, key_head_dim,  value_head_dim,
+          group_size,    bits,            ba_group_size, ba_bits,
+          has_biases,    shape_sig};
   auto it = cache.find(key);
   if (it != cache.end()) {
     return it->second;
   }
   auto fn = [=](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
-    // inputs: x, qkvz_w, qkvz_s, qkvz_b, ba_w, ba_s, ba_b
+    // inputs with biases:    x, qkvz_w, qkvz_s, qkvz_b, ba_w, ba_s, ba_b
+    // inputs scales-only:    x, qkvz_w, qkvz_s, ba_w, ba_s
     const auto& x = inputs[0];
+    const size_t ba_base = has_biases ? 4 : 3;
     auto mixed_qkvz = mx::quantized_matmul(
         x,
         inputs[1],
         inputs[2],
-        std::optional<mx::array>(inputs[3]),
+        has_biases ? std::optional<mx::array>(inputs[3]) : std::nullopt,
         true,
         std::make_optional<int>(group_size),
         std::make_optional<int>(bits),
-        kPackedLaAffineMode);
+        infer_qmm_mode(has_biases, group_size, bits));
     const int batch = mixed_qkvz.shape(0);
     const int seq = mixed_qkvz.shape(1);
     const int value_heads_per_key = num_value_heads / num_key_heads;
@@ -2024,13 +2058,14 @@ CompiledPackedLaFn& get_compiled_packed_la_inputs(
     z = mx::reshape(z, {batch, seq, num_value_heads, value_head_dim});
     auto mixed_ba = mx::quantized_matmul(
         x,
-        inputs[4],
-        inputs[5],
-        std::optional<mx::array>(inputs[6]),
+        inputs[ba_base],
+        inputs[ba_base + 1],
+        has_biases ? std::optional<mx::array>(inputs[ba_base + 2])
+                   : std::nullopt,
         true,
         std::make_optional<int>(ba_group_size),
         std::make_optional<int>(ba_bits),
-        kPackedLaAffineMode);
+        infer_qmm_mode(has_biases, ba_group_size, ba_bits));
     auto ba = mx::reshape(
         mixed_ba, {batch, seq, num_key_heads, value_heads_per_key * 2});
     auto b = mx::reshape(
@@ -2074,8 +2109,14 @@ extern "C" int ax_mlx_qwen_linear_attention_inputs_packed_compiled(
     if (group_size <= 0 || bits <= 0 || ba_group_size <= 0 || ba_bits <= 0) {
       return 1;
     }
-    if (!qkvz_scales.ctx || !qkvz_biases.ctx || !ba_scales.ctx ||
-        !ba_biases.ctx) {
+    if (!qkvz_scales.ctx || !ba_scales.ctx) {
+      return 1;
+    }
+    // Both projections carry group biases (affine) or neither does
+    // (block-float, mode inferred from group_size/bits). Mixed contracts
+    // fail closed to the caller's portable path.
+    const bool has_biases = qkvz_biases.ctx && ba_biases.ctx;
+    if (!has_biases && (qkvz_biases.ctx || ba_biases.ctx)) {
       return 1;
     }
     if (num_key_heads <= 0 || num_value_heads <= 0 || key_head_dim <= 0 ||
@@ -2096,16 +2137,22 @@ extern "C" int ax_mlx_qwen_linear_attention_inputs_packed_compiled(
         bits,
         ba_group_size,
         ba_bits,
+        has_biases,
         packed_la_shape_sig(x_shape));
-    auto result = compiled_fn({
-        x_ref,
-        aref(qkvz_weight),
-        aref(qkvz_scales),
-        aref(qkvz_biases),
-        aref(ba_weight),
-        aref(ba_scales),
-        aref(ba_biases),
-    });
+    std::vector<mx::array> compiled_inputs;
+    compiled_inputs.reserve(has_biases ? 7 : 5);
+    compiled_inputs.push_back(x_ref);
+    compiled_inputs.push_back(aref(qkvz_weight));
+    compiled_inputs.push_back(aref(qkvz_scales));
+    if (has_biases) {
+      compiled_inputs.push_back(aref(qkvz_biases));
+    }
+    compiled_inputs.push_back(aref(ba_weight));
+    compiled_inputs.push_back(aref(ba_scales));
+    if (has_biases) {
+      compiled_inputs.push_back(aref(ba_biases));
+    }
+    auto result = compiled_fn(compiled_inputs);
     if (result.size() != 4) {
       return 1;
     }

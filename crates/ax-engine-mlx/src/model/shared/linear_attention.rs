@@ -85,10 +85,16 @@ pub(crate) fn qw_rms_norm_qmm(
     eps: f32,
     proj: &QuantizedWeight,
 ) -> MlxArray {
-    // The fused C++ helper (and its fallback) hardcodes affine qmm. MXFP4 /
-    // MXFP8 have no group biases — use the mode-aware `qw` path instead.
+    // The fused C++ helper infers the mode from the bias channel: affine
+    // with group biases, scales-only MXFP4 without. MXFP8/NVFP4 keep the
+    // mode-aware `qw` path (no fused-path evidence for them).
     match &proj.scales {
-        Some(scales) if matches!(proj.mlx_quantization_mode(), MlxQuantizationMode::Affine) => {
+        Some(scales)
+            if matches!(
+                proj.mlx_quantization_mode(),
+                MlxQuantizationMode::Affine | MlxQuantizationMode::Mxfp4
+            ) =>
+        {
             rms_norm_quantized_matmul(
                 x,
                 norm_w,
@@ -433,7 +439,7 @@ fn try_qwen_la_out_proj_silu_mul_qmm(
     if !fastpath::should_qwen_la_out_proj_silu_mul_qmm(&cfg.model_family, seq) {
         return None;
     }
-    if !linear_w.out_proj.is_affine_quantized() {
+    if !linear_w.out_proj.is_fused_qmm_quantized() {
         return None;
     }
     let scales = linear_w.out_proj.scales.as_ref()?;
@@ -1296,7 +1302,13 @@ pub(crate) const fn linear_attention_prefill_allows_mixed_pack(
 }
 
 fn should_fuse_qkvz_ba_qmm(qkvz_w: &QuantizedWeight, ba_w: &QuantizedWeight, seq: i32) -> bool {
-    fastpath::should_qwen_la_fused_qkvz_ba_qmm(seq, qkvz_w.matching_affine_quant(ba_w))
+    // MXFP4 packs materialize `fused_qkvz_ba` at load just like affine; the
+    // fused qmm underneath (`qw`) is mode-aware, so prefill may take the
+    // single-qmm route for both contracts.
+    fastpath::should_qwen_la_fused_qkvz_ba_qmm(
+        seq,
+        qkvz_w.matching_affine_quant(ba_w) || qkvz_w.matching_mxfp4_quant(ba_w),
+    )
 }
 
 fn packed_la_outputs_match_cfg(
@@ -1477,6 +1489,12 @@ fn compiled_fused_qkvz_ba_qmm_unpack(
     if !fastpath::qwen_linear_mtp_exact_enabled() || batch != 1 || !(2..=4).contains(&seq) {
         return None;
     }
+    // The closure below rebuilds the weight with `biases: None`, which is
+    // only correct for scales-only contracts. An affine fused pack must not
+    // reach it, or its group biases would be silently dropped.
+    if fused.biases.is_some() {
+        return None;
+    }
     let scales = fused.scales.as_ref()?;
     let (qkvz_out, ba_out) = packed_qkvz_ba_widths(cfg);
     let leading = i64::from(batch).checked_mul(i64::from(seq))?;
@@ -1601,8 +1619,9 @@ fn linear_attention_inputs_packed_direct(
     qkvz_w: &crate::weights::QuantizedWeight,
     ba_w: &crate::weights::QuantizedWeight,
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
-    // Packed C++ helper hardcodes affine qmm (requires group biases).
-    if !qkvz_w.is_affine_quantized() || !ba_w.is_affine_quantized() {
+    // The packed C++ helper infers each projection's mode from its bias
+    // channel: affine with group biases, scales-only MXFP4 without.
+    if !qkvz_w.is_fused_qmm_quantized() || !ba_w.is_fused_qmm_quantized() {
         return None;
     }
     let qkvz_quantized = qkvz_w.scales.is_some();
@@ -1635,20 +1654,19 @@ fn linear_attention_inputs_packed_direct(
     let ba_bits = if mixed_quant { ba_w.bits } else { bits };
 
     if fastpath::should_qwen_packed_la_inputs_compile(seq)
-        && let (Some(qkvz_scales), Some(qkvz_biases), Some(ba_scales), Some(ba_biases)) = (
-            qkvz_w.scales.as_ref(),
-            qkvz_w.biases.as_ref(),
-            ba_w.scales.as_ref(),
-            ba_w.biases.as_ref(),
-        )
+        && let (Some(qkvz_scales), Some(ba_scales)) =
+            (qkvz_w.scales.as_ref(), ba_w.scales.as_ref())
+        // Both projections carry group biases (affine) or neither does
+        // (scales-only MXFP4); mixed contracts fail closed in the shim.
+        && qkvz_w.biases.is_some() == ba_w.biases.is_some()
         && let Some(compiled) = qwen_linear_attention_inputs_packed_compiled(
             x,
             &qkvz_w.weight,
             qkvz_scales,
-            qkvz_biases,
+            qkvz_w.biases.as_ref(),
             &ba_w.weight,
             ba_scales,
-            ba_biases,
+            ba_w.biases.as_ref(),
             cfg.num_key_heads as i32,
             cfg.num_value_heads as i32,
             cfg.key_head_dim as i32,
@@ -2248,10 +2266,10 @@ mod tests {
                 &x,
                 &qkvz_qw.weight,
                 qkvz_qw.scales.as_ref().expect("qkvz scales"),
-                qkvz_qw.biases.as_ref().expect("qkvz biases"),
+                qkvz_qw.biases.as_ref(),
                 &ba_qw.weight,
                 ba_qw.scales.as_ref().expect("ba scales"),
-                ba_qw.biases.as_ref().expect("ba biases"),
+                ba_qw.biases.as_ref(),
                 cfg.num_key_heads as i32,
                 cfg.num_value_heads as i32,
                 cfg.key_head_dim as i32,
@@ -2498,6 +2516,10 @@ mod tests {
         };
         assert!(affine_qw.is_affine_quantized());
         assert!(!mxfp4_qw.is_affine_quantized());
+        assert!(mxfp4_qw.is_mxfp4_quantized());
+        assert!(!affine_qw.is_mxfp4_quantized());
+        assert!(affine_qw.is_fused_qmm_quantized());
+        assert!(mxfp4_qw.is_fused_qmm_quantized());
         assert!(affine_qw.matching_affine_quant(&affine_qw));
         assert!(!mxfp4_qw.matching_affine_quant(&mxfp4_qw));
         assert!(!affine_qw.matching_affine_quant(&mxfp4_qw));
@@ -2507,6 +2529,10 @@ mod tests {
         let mut mislabeled = mxfp4_qw.clone();
         mislabeled.mode = "affine".to_string();
         assert!(!mislabeled.is_affine_quantized());
+        assert!(
+            mislabeled.is_fused_qmm_quantized(),
+            "mislabeled 4/32 no-bias resolves to MXFP4 and stays fused-eligible"
+        );
         assert!(matches!(
             mislabeled.mlx_quantization_mode(),
             mlx_sys::MlxQuantizationMode::Mxfp4

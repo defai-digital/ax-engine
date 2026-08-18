@@ -268,17 +268,6 @@ pub struct LayerWeights {
     pub gate_exps: Option<QuantizedWeight>,
     pub up_exps: Option<QuantizedWeight>,
     pub down_exps: Option<QuantizedWeight>,
-    /// GPT-OSS MXFP4 gate-up expert weights kept packed at load time.
-    ///
-    /// `weight` is the sanitized u32 view of the MXFP4 blocks tensor
-    /// (`[num_experts, 2 * intermediate, packed_in]`); `scales` is the
-    /// matching E8M0 scale tensor. Forward uses `gather_qmm` with
-    /// `mode=mxfp4` so expert parameters stay 4-bit in unified memory.
-    pub mxfp4_gate_up_exps: Option<Mxfp4ExpertWeight>,
-    /// GPT-OSS MXFP4 down expert weights kept packed at load time.
-    /// Shape convention matches gate-up: `[num_experts, hidden, packed_in]`
-    /// for the packed weight and matching scales.
-    pub mxfp4_down_exps: Option<Mxfp4ExpertWeight>,
     /// GPT-OSS per-head learned attention sink weight. Shape: `[num_attention_heads]`.
     pub attn_sink: Option<MlxArray>,
     /// Per-layer AWQ-lite smoothing reciprocal `1/s` of shape `[hidden_size]`.
@@ -490,21 +479,6 @@ enum LinearAttentionProjectionRowSource {
     A(usize),
 }
 
-/// Packed MXFP4 expert matrix for GPT-OSS MoE.
-///
-/// Stays quantized in memory; runtime matmul uses `gather_qmm` with
-/// `MlxQuantizationMode::Mxfp4` (group_size=32, bits=4, no biases).
-#[derive(Clone)]
-pub struct Mxfp4ExpertWeight {
-    pub weight: MlxArray,
-    pub scales: MlxArray,
-}
-
-impl Mxfp4ExpertWeight {
-    pub const GROUP_SIZE: i32 = 32;
-    pub const BITS: i32 = 4;
-}
-
 /// A weight matrix plus optional MLX affine quantization metadata.
 ///
 /// When `scales` is `Some`, the weight tensor contains packed affine-quantized
@@ -676,6 +650,21 @@ impl QuantizedWeight {
         self.scales.is_some()
             && self.biases.is_some()
             && matches!(self.mlx_quantization_mode(), MlxQuantizationMode::Affine)
+    }
+
+    /// Scales-only MXFP4 linear (4-bit, group 32, no group-bias channel).
+    pub fn is_mxfp4_quantized(&self) -> bool {
+        self.scales.is_some()
+            && self.biases.is_none()
+            && matches!(self.mlx_quantization_mode(), MlxQuantizationMode::Mxfp4)
+    }
+
+    /// Quantized linear the fused C++ qmm helpers can host: affine with group
+    /// biases, or scales-only MXFP4 (the shim infers the mode from the absent
+    /// bias channel). MXFP8/NVFP4 stay excluded — their Metal kernels cannot
+    /// shapeless-compile and no fused path has measured evidence on them.
+    pub fn is_fused_qmm_quantized(&self) -> bool {
+        self.is_affine_quantized() || self.is_mxfp4_quantized()
     }
 
     pub fn matching_affine_quant(&self, other: &Self) -> bool {
@@ -1673,15 +1662,14 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         // into split gate/up experts (matches mlx-lm gpt_oss.Model.sanitize).
         // mlx-community product checkpoints already ship split gate/up/down and
         // are loaded above via FfnGateExps / FfnUpExps / FfnDownExps.
-        let (gate_exps, up_exps, down_exps, mxfp4_gate_up_exps, mxfp4_down_exps) = if gate_exps
-            .is_none()
+        let (gate_exps, up_exps, down_exps) = if gate_exps.is_none()
             && has_role(specs, NativeTensorRole::FfnGateUpExpsMxfp4Blocks, idx)
         {
             let (gate, up, down) =
                 load_gpt_oss_openai_mxfp4_split_experts(specs, &mut name_map, idx)?;
-            (Some(gate), Some(up), Some(down), None, None)
+            (Some(gate), Some(up), Some(down))
         } else {
-            (gate_exps, up_exps, down_exps, None, None)
+            (gate_exps, up_exps, down_exps)
         };
 
         // Flash-0731 AXQ ships split `switch_mlp.{gate,up}_proj`. One packed
@@ -1903,8 +1891,6 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             gate_exps,
             up_exps,
             down_exps,
-            mxfp4_gate_up_exps,
-            mxfp4_down_exps,
             attn_sink,
             rotation_smoothing_inverse: None,
             expert_stream: None,
@@ -2303,8 +2289,6 @@ fn load_dense_llama3_layer(
         gate_exps: None,
         up_exps: None,
         down_exps: None,
-        mxfp4_gate_up_exps: None,
-        mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
@@ -3388,8 +3372,6 @@ fn load_glm_mtp_sidecar(
         gate_exps,
         up_exps,
         down_exps,
-        mxfp4_gate_up_exps: None,
-        mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
@@ -3756,8 +3738,6 @@ fn load_mtp(
         gate_exps,
         up_exps,
         down_exps,
-        mxfp4_gate_up_exps: None,
-        mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
@@ -5343,8 +5323,6 @@ fn load_deepseek_v4_mtp_sidecar(
         gate_exps,
         up_exps,
         down_exps,
-        mxfp4_gate_up_exps: None,
-        mxfp4_down_exps: None,
         attn_sink: None,
         rotation_smoothing_inverse: None,
         expert_stream: None,
