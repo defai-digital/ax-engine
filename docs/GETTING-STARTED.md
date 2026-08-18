@@ -179,7 +179,7 @@ recommended setup:
 ```bash
 uv venv --python 3.11 .venv
 source .venv/bin/activate
-uv pip install --upgrade "ax-engine[download]>=7.1.0,<8"
+uv pip install --upgrade "ax-engine[download]>=7.1.1,<8"
 python -c 'import importlib.metadata; print(importlib.metadata.version("ax-engine"))'
 which -a ax-engine
 ax-engine doctor
@@ -191,7 +191,7 @@ The standard-library equivalent is:
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=7.1.0,<8"
+python -m pip install --upgrade "ax-engine[download]>=7.1.1,<8"
 ```
 
 The current macOS arm64 wheel exposes `ax-engine` and `ax-engine-server` and
@@ -354,7 +354,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install with
-`python3 -m pip install --upgrade "ax-engine[download]>=7.1.0,<8"`.
+`python3 -m pip install --upgrade "ax-engine[download]>=7.1.1,<8"`.
 
 Or via the script:
 
