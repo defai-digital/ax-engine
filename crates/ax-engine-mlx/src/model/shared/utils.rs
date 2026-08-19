@@ -2814,7 +2814,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn dense_wide_gemv_rows_are_leading_invariant_bit_exact() {
         // The verify-window projection relies on this: row s of a Leading=S
         // launch must be bit-identical to a Leading=1 launch of that row, so
