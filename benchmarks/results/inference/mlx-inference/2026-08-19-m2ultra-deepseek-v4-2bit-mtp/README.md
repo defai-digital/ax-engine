@@ -1,25 +1,30 @@
-# 2026-08-19 M2 Ultra: DeepSeek V4 Flash 2-bit + MTP validation
+# Correction: the 2-bit run did not activate DeepSeek V4 MTP
 
-Host `df-macstudio-m2` (Mac14,14 M2 Ultra, 192 GB), freshly
-bootstrapped (rustup + MLX 0.32 wheel lib via `MLX_LIB_DIR`, repo at
-`eec3478b`). Pack `AutomatosX/AX-DeepSeek-V4-Flash-0731-MLX-AXQ-2bit-MTP`
-(122.3 GB, 37 files), loaded with `AX_ENGINE_2BIT_EXPERIMENTAL=1`.
-CLI `ax-engine-bench generate`, pre-tokenized 200-token greedy runs.
+These artifacts are valid raw outputs from an M2 Ultra 192 GB run of
+`AutomatosX/AX-DeepSeek-V4-Flash-0731-MLX-AXQ-2bit-MTP` (122.3 GB,
+loaded with `AX_ENGINE_2BIT_EXPERIMENTAL=1`), but the original interpretation
+of them as a DeepSeek V4 nextn validation was incorrect.
 
-| config | decode tok/s | steps/199 tok | output sha256[:16] |
-| --- | --- | --- | --- |
-| direct (AX_NO_SPEC) ×2 | 16.82 / 16.80 | 199 | `7442f1d94f9c5bb3` both |
-| MTP (default) ×2 | **31.99 / 31.90** | **65** | `7442f1d94f9c5bb3` both |
+The route telemetry is conclusive:
 
-- **MTP speedup 1.90×** — 199 tokens in 65 steps (~2.06 accepted
-  drafts/step through the V4 nextn head).
-- **All four streams token-identical**: MTP-on ≡ MTP-off and
-  deterministic on the V4 nextn path, with no exact-profile
-  complication (unlike the Qwen-linear packs).
-- TTFT ~370-424 ms at p~30; 122 GB weights resident on 192 GB.
-- Telemetry quirk to file: the `performance.mtp` block reports
-  `available: false / draft_tokens: 0` while `step_count` (65) and the
-  route's `ax_mtp_requested: 1` prove the nextn path ran — the CLI perf
-  block maps the qwen-linear MTP counters, not the deepseek nextn ones.
-- Probe harness note: wrapping the generate in `/usr/bin/time env ...`
-  kills the run ("signal: Invalid argument"); invoke `env` directly.
+| config | decode tok/s | steps/199 tok | MTP available / drafts | decode route |
+| --- | --- | --- | --- | --- |
+| direct (`AX_NO_SPEC`) ×2 | 16.82 / 16.80 | 199 | `0 / 0` | 199 direct-pipeline steps |
+| originally labelled “MTP” ×2 | 31.99 / 31.90 | 65 | `0 / 0` | 24 n-gram + 40 direct-pipeline steps |
+
+- Both accelerated artifacts report `ax_mtp_available: 0`,
+  `ax_mlx_mtp_model_policy: 0`, `ax_mtp_draft_tokens: 0`, and
+  `ax_mtp_decode_steps: 0`. `ax_mtp_requested: 1` records request intent; it
+  does not prove that a model drafter attached or ran.
+- The measured **1.90×** gain is an n-gram-acceleration result relative to the
+  all-speculation-off baseline. It is not a DeepSeek V4 nextn MTP claim.
+- All four 199-token streams are identical (`7442f1d94f9c5bb3…`), which proves
+  determinism for the routes that actually ran, not MTP-on ≡ MTP-off parity.
+- The run does validate that this experimental 2-bit pack loads and completes
+  direct generation within 192 GB. DeepSeek V4 MTP remains unvalidated until a
+  rerun records an attached candidate policy, `ax_mtp_available: 1`, active
+  model-draft counters, and an n-gram-isolated comparison.
+- The `performance.mtp` block correctly reported the inactive model drafter;
+  it was not a counter-mapping defect. The probe should also invoke `env`
+  directly because wrapping this runtime with `/usr/bin/time` exited by signal
+  before producing usable evidence.

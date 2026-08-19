@@ -3297,6 +3297,28 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         checker.validate_evidence_set_manifest(manifest)
 
+    def test_deepseek_v4_2bit_evidence_does_not_claim_inactive_mtp(self) -> None:
+        run_dir = (
+            SCRIPT_PATH.parents[1]
+            / "benchmarks/results/inference/mlx-inference"
+            / "2026-08-19-m2ultra-deepseek-v4-2bit-mtp"
+        )
+        readme = (run_dir / "README.md").read_text(encoding="utf-8")
+        self.assertIn("did not activate DeepSeek V4 MTP", readme)
+        self.assertIn("not a DeepSeek V4 nextn MTP claim", readme)
+
+        for artifact_name in ["mtp1.json", "mtp2.json"]:
+            artifact = json.loads(
+                (run_dir / artifact_name).read_text(encoding="utf-8")
+            )
+            decisions = artifact["route"]["crossover_decisions"]
+            self.assertFalse(artifact["performance"]["mtp"]["available"])
+            self.assertEqual(decisions["ax_mtp_available"], 0)
+            self.assertEqual(decisions["ax_mlx_mtp_model_policy"], 0)
+            self.assertEqual(decisions["ax_mtp_draft_tokens"], 0)
+            self.assertEqual(decisions["ax_mtp_decode_steps"], 0)
+            self.assertGreater(decisions["ax_mlx_ngram_decode_steps"], 0)
+
     def test_readme_accepts_nonpublishable_mtp_diagnostic_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             readme_path, _summary_path = write_mtp_diagnostic_claim_fixture(Path(tmp))
