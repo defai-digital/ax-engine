@@ -824,8 +824,13 @@ const DENSE_WIDE_GEMV_SOURCE: &str = r#"
     }
 "#;
 
-/// `x [.., S, in] @ weight_t [in, out]` for `S ∈ 2..=8` without the steel
-/// GEMM's per-row weight re-read. See `AX_MLX_DENSE_WIDE_GEMV`.
+/// `x [.., S, in] @ weight_t [in, out]` for `S ∈ 1..=8` without the steel
+/// GEMM's per-row weight re-read — and, crucially, without materializing a
+/// contiguous `[out, in]` copy of a `decode_weight_t`-prepared head whose
+/// `weight` field is only a lazy transpose view. One arithmetic for every
+/// `S`, so exact-profile MTP-off singles and S=2..4 verify stay mutually
+/// consistent. See `AX_MLX_DENSE_WIDE_GEMV` (non-exact opt-in hook) and
+/// `AX_MLX_EXACT_DENSE_WEIGHT_T_GEMV` (exact-profile routing).
 pub(crate) fn dense_wide_gemv_weight_t(x: &MlxArray, weight_t: &MlxArray) -> Option<MlxArray> {
     if !matches!(
         x.dtype(),
@@ -852,7 +857,7 @@ pub(crate) fn dense_wide_gemv_weight_t(x: &MlxArray, weight_t: &MlxArray) -> Opt
     let leading = x_shape[..x_shape.len().saturating_sub(1)]
         .iter()
         .try_fold(1_i32, |product, dimension| product.checked_mul(*dimension))?;
-    if !(2..=8).contains(&leading) {
+    if !(1..=8).contains(&leading) {
         return None;
     }
     let kernel = DENSE_WIDE_GEMV_KERNEL.get_or_init(|| {
@@ -1629,6 +1634,18 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
             )
         {
             return None;
+        }
+        // A `decode_weight_t`-prepared head only exposes `weight` as a lazy
+        // transpose view; feeding that to the kernel below re-materializes
+        // the full contiguous head every call (2.54 GB/step on Qwen3.8-27B
+        // — the 6bit-MTP 0.80× regression). Read the `[in, out]` buffer
+        // directly instead; one arithmetic covers S=1..8 so MTP-off and
+        // verify stay mutually consistent.
+        if fastpath::exact_dense_weight_t_gemv_enabled()
+            && let Some(weight_t) = qw.decode_weight_t.as_ref()
+            && let Some(out) = dense_wide_gemv_weight_t(x, weight_t)
+        {
+            return Some(out);
         }
         let kernel = INVARIANT_DENSE_PROJECTION_KERNEL.get_or_init(|| {
             MlxMetalKernel::new(
@@ -2804,7 +2821,7 @@ mod tests {
             .map(|i| (((i % 731) as f32) - 350.0) * 0.002)
             .collect();
         let weight_t = array_f32(&weight_t_data, &[input_dim, out_dim]);
-        for leading in [2_i32, 3, 4, 8] {
+        for leading in [1_i32, 2, 3, 4, 8] {
             let x_data: Vec<f32> = (0..(leading * input_dim) as usize)
                 .map(|i| (((i % 257) as f32) - 120.0) * 0.01)
                 .collect();
@@ -3061,9 +3078,46 @@ mod tests {
         let single = array_f32(&vec![0.0; 96], &[1, 1, 96]);
         let nine = array_f32(&vec![0.0; 9 * 96], &[1, 9, 96]);
         let mismatched = array_f32(&vec![0.0; 2 * 64], &[1, 2, 64]);
-        assert!(dense_wide_gemv_weight_t(&single, &weight_t).is_none());
+        assert!(
+            dense_wide_gemv_weight_t(&single, &weight_t).is_some(),
+            "S=1 must be hosted so exact MTP-off singles share the verify arithmetic"
+        );
         assert!(dense_wide_gemv_weight_t(&nine, &weight_t).is_none());
         assert!(dense_wide_gemv_weight_t(&mismatched, &weight_t).is_none());
+    }
+
+    #[test]
+    fn invariant_dense_projection_routes_prepared_head_through_weight_t() {
+        let out_dim = 48_i32;
+        let input_dim = 96_i32;
+        let weight_data: Vec<f32> = (0..(out_dim * input_dim) as usize)
+            .map(|i| (((i % 641) as f32) - 320.0) * 0.002)
+            .collect();
+        let mut head =
+            QuantizedWeight::new(array_f32(&weight_data, &[out_dim, input_dim]), None, None);
+        head.prepare_contiguous_decode_weight_t();
+        assert!(head.decode_weight_t.is_some());
+        for leading in [1_i32, 2, 4] {
+            let x_data: Vec<f32> = (0..(leading * input_dim) as usize)
+                .map(|i| (((i % 253) as f32) - 120.0) * 0.008)
+                .collect();
+            let x = array_f32(&x_data, &[1, leading, input_dim]);
+            let routed = invariant_projection_metal_impl(&x, &head)
+                .expect("prepared dense head must stay hosted under the exact profile");
+            let reference = matmul(&x, head.decode_weight_t.as_ref().unwrap(), None);
+            eval(&[&routed, &reference]);
+            assert_eq!(routed.shape(), vec![1, leading, out_dim]);
+            let a = routed.data_f32();
+            let b = reference.data_f32();
+            for i in 0..a.len() {
+                assert!(
+                    (a[i] - b[i]).abs() < 1.0e-4,
+                    "prepared-head routing diverged at S={leading}, {i}: {} vs {}",
+                    a[i],
+                    b[i]
+                );
+            }
+        }
     }
 
     #[test]
