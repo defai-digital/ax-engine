@@ -1828,6 +1828,21 @@ fn lm_head_verify_window_projection(
     hidden_size: i32,
 ) -> MlxArray {
     if (2..=4).contains(&seq) {
+        // Dense heads with a prepared `[in, out]` buffer: one batched
+        // multi-row GEMV reads the head once for the whole window, and its
+        // per-row k-ascending accumulation is bit-identical across Leading —
+        // so each verify row still matches the S=1 singleton the exact
+        // profile decodes with. The row-by-row loop below would re-read the
+        // full dense head once per row (2.54 GB × S on Qwen3.8-27B: the
+        // 6-bit pack's verify_eval 25.3 ms/step vs the quantized-head
+        // sibling's 9.2 ms in the 2026-08-19 M5 review).
+        if lm_head.scales.is_none()
+            && crate::fastpath::exact_dense_weight_t_gemv_enabled()
+            && let Some(weight_t) = lm_head.decode_weight_t.as_ref()
+            && let Some(wide) = shared::utils::dense_wide_gemv_weight_t(normed, weight_t)
+        {
+            return wide;
+        }
         lm_head_rows_singleton(normed, lm_head, seq, hidden_size)
     } else {
         qw(normed, lm_head)
