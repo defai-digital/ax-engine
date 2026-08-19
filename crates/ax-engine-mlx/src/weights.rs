@@ -2731,11 +2731,13 @@ fn draft_lm_head_spec_from_runtime(v: &serde_json::Value) -> Option<DraftLmHeadS
     if mode != "affine" {
         return None;
     }
-    let bits = spec.get("bits").and_then(|x| x.as_i64())? as i32;
-    let group_size = spec
-        .get("group_size")
-        .and_then(|x| x.as_i64())
-        .unwrap_or(64) as i32;
+    let bits = i32::try_from(spec.get("bits").and_then(|x| x.as_i64())?).ok()?;
+    let group_size = i32::try_from(
+        spec.get("group_size")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(64),
+    )
+    .ok()?;
     valid_draft_lm_head_spec(bits, group_size)
 }
 
@@ -2757,29 +2759,45 @@ fn runtime_draft_lm_head_spec_enabled() -> bool {
 }
 
 fn valid_draft_lm_head_spec(bits: i32, group_size: i32) -> Option<DraftLmHeadSpec> {
-    if (2..=8).contains(&bits) && group_size > 0 {
+    // Keep this in lockstep with MLX's affine quantizer. Passing an unsupported
+    // width or group size through the C API turns bad configuration into an
+    // MLX FFI panic instead of a recoverable fallback.
+    if matches!(bits, 2 | 3 | 4 | 5 | 6 | 8) && matches!(group_size, 32 | 64 | 128) {
         Some(DraftLmHeadSpec { bits, group_size })
     } else {
         None
     }
 }
 
+fn draft_lm_head_dequantization_contract(
+    lm_head: &QuantizedWeight,
+) -> (MlxQuantizationMode, Option<&MlxArray>) {
+    let mode = lm_head.mlx_quantization_mode();
+    let quant_biases = match mode {
+        MlxQuantizationMode::Affine => lm_head.biases.as_ref(),
+        _ => None,
+    };
+    (mode, quant_biases)
+}
+
 fn build_draft_lm_head(
     lm_head: &QuantizedWeight,
     spec: DraftLmHeadSpec,
 ) -> Option<QuantizedWeight> {
+    let spec = valid_draft_lm_head_spec(spec.bits, spec.group_size)?;
     if lm_head.is_quantized() && lm_head.bits == spec.bits && lm_head.group_size == spec.group_size
     {
         return Some(lm_head.clone());
     }
     let dense = if let Some(scales) = &lm_head.scales {
+        let (mode, quant_biases) = draft_lm_head_dequantization_contract(lm_head);
         dequantize_with_mode(
             &lm_head.weight,
             scales,
-            lm_head.biases.as_ref(),
+            quant_biases,
             Some(lm_head.group_size),
             Some(lm_head.bits),
-            MlxQuantizationMode::Affine,
+            mode,
             None,
             Some(MlxDtype::Bfloat16),
             None,
@@ -2787,6 +2805,10 @@ fn build_draft_lm_head(
     } else {
         lm_head.weight.clone()
     };
+    let shape = dense.shape();
+    if shape.len() != 2 || shape[0] <= 0 || shape[1] <= 0 || shape[1] % spec.group_size != 0 {
+        return None;
+    }
     let dense = astype(&dense, MlxDtype::Bfloat16, None);
     eval(&[&dense]);
     let mut quantized = quantize(
@@ -6655,6 +6677,134 @@ mod tests {
         assert!(!skip_mtp_sidecar_from_env(Some("0")));
         assert!(skip_mtp_sidecar_from_env(Some("1")));
         assert!(skip_mtp_sidecar_from_env(Some("TRUE")));
+    }
+
+    #[test]
+    fn draft_lm_head_spec_matches_mlx_affine_contract() {
+        for bits in [2, 3, 4, 5, 6, 8] {
+            for group_size in [32, 64, 128] {
+                assert_eq!(
+                    valid_draft_lm_head_spec(bits, group_size),
+                    Some(DraftLmHeadSpec { bits, group_size })
+                );
+            }
+        }
+
+        for bits in [-1, 0, 1, 7, 9] {
+            assert_eq!(valid_draft_lm_head_spec(bits, 64), None);
+        }
+        for group_size in [-1, 0, 1, 16, 33, 256] {
+            assert_eq!(valid_draft_lm_head_spec(4, group_size), None);
+        }
+    }
+
+    #[test]
+    fn runtime_draft_lm_head_spec_rejects_out_of_range_integers() {
+        let valid = serde_json::json!({
+            "recommended_draft_lm_head": {"mode": "affine", "bits": 4, "group_size": 64}
+        });
+        assert_eq!(
+            draft_lm_head_spec_from_runtime(&valid),
+            Some(DraftLmHeadSpec {
+                bits: 4,
+                group_size: 64,
+            })
+        );
+
+        // Both oversized values wrapped to supported 4/64 settings with the
+        // former `as i32` conversion.
+        for invalid in [
+            serde_json::json!({
+                "recommended_draft_lm_head": {
+                    "mode": "affine",
+                    "bits": i64::from(u32::MAX) + 5,
+                    "group_size": 64,
+                }
+            }),
+            serde_json::json!({
+                "recommended_draft_lm_head": {
+                    "mode": "affine",
+                    "bits": 4,
+                    "group_size": i64::from(u32::MAX) + 65,
+                }
+            }),
+        ] {
+            assert_eq!(draft_lm_head_spec_from_runtime(&invalid), None);
+        }
+    }
+
+    #[test]
+    fn draft_lm_head_requantization_rejects_unaligned_dense_shape() {
+        let lm_head = QuantizedWeight::new(zeros(&[8, 65], MlxDtype::Bfloat16, None), None, None);
+
+        assert!(
+            build_draft_lm_head(
+                &lm_head,
+                DraftLmHeadSpec {
+                    bits: 4,
+                    group_size: 64,
+                },
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn draft_lm_head_dequantization_preserves_source_mode_contract() {
+        let mut mxfp4 = QuantizedWeight::new(
+            zeros(&[8, 8], MlxDtype::Uint32, None),
+            Some(zeros(&[8, 2], MlxDtype::Bfloat16, None)),
+            None,
+        );
+        mxfp4.group_size = 32;
+        mxfp4.bits = 4;
+        mxfp4.mode = "mxfp4".to_string();
+
+        let (mode, biases) = draft_lm_head_dequantization_contract(&mxfp4);
+        assert_eq!(mode, MlxQuantizationMode::Mxfp4);
+        assert!(biases.is_none());
+
+        let mut affine = mxfp4;
+        affine.mode = "affine".to_string();
+        affine.biases = Some(zeros(&[8, 2], MlxDtype::Bfloat16, None));
+        let (mode, biases) = draft_lm_head_dequantization_contract(&affine);
+        assert_eq!(mode, MlxQuantizationMode::Affine);
+        assert!(biases.is_some());
+    }
+
+    #[test]
+    fn draft_lm_head_requantizes_mxfp_sources_without_affine_biases() {
+        let dense = astype(
+            &zeros(&[8, 64], MlxDtype::Float32, None),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        for (source_mode, source_bits, mode_name) in [
+            (MlxQuantizationMode::Mxfp4, 4, "mxfp4"),
+            (MlxQuantizationMode::Mxfp8, 8, "mxfp8"),
+        ] {
+            let mut parts = quantize(&dense, Some(32), Some(source_bits), source_mode, None, None);
+            assert_eq!(parts.len(), 2);
+            let weight = parts.remove(0);
+            let scales = parts.remove(0);
+            let mut source = QuantizedWeight::new(weight, Some(scales), None);
+            source.group_size = 32;
+            source.bits = source_bits;
+            source.mode = mode_name.to_string();
+
+            let draft = build_draft_lm_head(
+                &source,
+                DraftLmHeadSpec {
+                    bits: 4,
+                    group_size: 64,
+                },
+            )
+            .expect("MXFP source should dequantize with its own mode before affine requantization");
+            assert_eq!(draft.mode, "affine");
+            assert_eq!(draft.bits, 4);
+            assert_eq!(draft.group_size, 64);
+            assert!(draft.biases.is_some());
+        }
     }
 
     #[test]

@@ -55,3 +55,20 @@ Net honest status of the MTP-on ≡ single-step property:
   reports `exact_enabled: 0` with `exact_eligible: 1`, and its stream
   changes between selection modes — a pack-dependent exact-activation
   discrepancy in the model-policy gate worth its own investigation.
+
+## Third correction: the 8-bit activation claim lacked artifact support
+
+The committed r19/r20 JSON records that the harness requested the exact
+profile, but its AX telemetry whitelist discarded
+`ax_mlx_qwen_linear_mtp_exact_{eligible,enabled,selection}` and the MTP
+model-policy decisions. The only surviving `exact_enabled: 0` claim was
+the prose above, not machine-verifiable route evidence. A terminal
+request step may also legitimately report disabled after low-acceptance
+bypass, so reading one final snapshot cannot establish a model-level
+activation discrepancy.
+
+The v7.1.4 harness preserves the model-contract decisions, max-merges
+them across request steps, and requires them to remain stable across
+benchmark repetitions. Until a new run captures that evidence, the
+honest status is **unproven observability gap**, not a confirmed 8-bit
+pack-dependent runtime bug.

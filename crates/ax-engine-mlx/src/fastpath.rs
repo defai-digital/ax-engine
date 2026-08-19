@@ -676,7 +676,7 @@ env_flag_default_on!(
 
 env_flag!(
     /// `AX_MLX_DENSE_WIDE_GEMV` — dense (unquantized) projections with a
-    /// contiguous `[in, out]` `decode_weight_t` and 2..=8 leading rows take
+    /// contiguous `[in, out]` `decode_weight_t` and 1..=8 leading rows take
     /// a multi-row Metal GEMV that reads each weight element once and FMAs
     /// it against every row. MLX has no dense analogue of `qmv_wide`, so
     /// the S=1→2 step on its steel GEMM costs ~1.97× (measured M3 Max) —

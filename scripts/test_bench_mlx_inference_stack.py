@@ -2864,6 +2864,13 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_attempts": 64,
                     "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_hits": 64,
                     "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_fallbacks": 0,
+                    "ax_mlx_qwen_linear_mtp_exact_eligible": 1,
+                    "ax_mlx_qwen_linear_mtp_exact_enabled": 1,
+                    "ax_mlx_qwen_linear_mtp_exact_selection": 2,
+                    "ax_mlx_mtp_model_policy": 2,
+                    "ax_mlx_mtp_model_policy_route_safe": 1,
+                    "ax_mlx_deepseek_v4_mtp_certification_candidate": 0,
+                    "ax_mlx_deepseek_v4_mtp_direct_fallback": 0,
                     "unrelated": 99,
                 }
             }
@@ -2938,6 +2945,13 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertEqual(telemetry["ax_mlx_single_decode_steps"], 0)
         self.assertEqual(telemetry["ax_mlx_bonus_tokens"], 0)
+        self.assertEqual(telemetry["ax_mlx_qwen_linear_mtp_exact_eligible"], 1)
+        self.assertEqual(telemetry["ax_mlx_qwen_linear_mtp_exact_enabled"], 1)
+        self.assertEqual(telemetry["ax_mlx_qwen_linear_mtp_exact_selection"], 2)
+        self.assertEqual(telemetry["ax_mlx_mtp_model_policy"], 2)
+        self.assertEqual(telemetry["ax_mlx_mtp_model_policy_route_safe"], 1)
+        self.assertEqual(telemetry["ax_mlx_deepseek_v4_mtp_certification_candidate"], 0)
+        self.assertEqual(telemetry["ax_mlx_deepseek_v4_mtp_direct_fallback"], 0)
         self.assertNotIn("unrelated", telemetry)
 
         partial_telemetry = bench.extract_ax_mlx_telemetry(
@@ -2959,6 +2973,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_mlx_prefill_drain_async_evals": 3,
                         "ax_mlx_decode_steps": 3,
                         "ax_mlx_decode_wall_us": 120,
+                        "ax_mlx_qwen_linear_mtp_exact_eligible": 1,
+                        "ax_mlx_qwen_linear_mtp_exact_enabled": 1,
+                        "ax_mlx_qwen_linear_mtp_exact_selection": 2,
+                        "ax_mlx_mtp_model_policy": 2,
+                        "ax_mlx_mtp_model_policy_route_safe": 1,
                     }
                 },
             ]
@@ -2970,6 +2989,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_prefill_eval_barriers"], 2)
         self.assertEqual(summary["ax_mlx_prefill_drain_async_evals"], 5)
         self.assertEqual(summary["ax_mlx_decode_steps"], 5)
+        self.assertEqual(summary["ax_mlx_qwen_linear_mtp_exact_enabled"], 1)
+        self.assertEqual(summary["ax_mlx_qwen_linear_mtp_exact_selection"], 2)
+        self.assertEqual(summary["ax_mlx_mtp_model_policy"], 2)
         self.assertEqual(
             summary["ax_mlx_direct_cpp_linear_attention_inputs_attempts"],
             4,
@@ -4610,6 +4632,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "retained_cache_hits": 1,
                     "max_prefix_blocks_reused_per_request": 8,
                     "core_prefix_reuse_disabled": 1,
+                    "ax_mlx_qwen_linear_mtp_exact_eligible": 1,
+                    "ax_mlx_qwen_linear_mtp_exact_enabled": 1,
                     "ax_ngram_draft_attempts": 99,
                 }
             },
@@ -4622,6 +4646,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_prefix_cache_hits": 1,
                     "ax_mlx_prefix_cache_entries": 1,
                     "ax_mlx_prefix_cache_bytes_kib": 32,
+                    "ax_mlx_qwen_linear_mtp_exact_eligible": 1,
+                    "ax_mlx_qwen_linear_mtp_exact_enabled": 0,
                 }
             },
         )
@@ -4653,6 +4679,25 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(decisions["retained_cache_hits"], 1)
         self.assertEqual(decisions["max_prefix_blocks_reused_per_request"], 8)
         self.assertEqual(decisions["core_prefix_reuse_disabled"], 1)
+        self.assertEqual(decisions["ax_mlx_qwen_linear_mtp_exact_eligible"], 1)
+        self.assertEqual(decisions["ax_mlx_qwen_linear_mtp_exact_enabled"], 1)
+
+    def test_ax_mlx_model_contract_must_be_stable_across_repetitions(self) -> None:
+        with self.assertRaisesRegex(ValueError, "changed across repetitions"):
+            bench.summarize_ax_mlx_telemetry(
+                [
+                    {
+                        "ax_mlx_telemetry": {
+                            "ax_mlx_qwen_linear_mtp_exact_selection": 2,
+                        }
+                    },
+                    {
+                        "ax_mlx_telemetry": {
+                            "ax_mlx_qwen_linear_mtp_exact_selection": 1,
+                        }
+                    },
+                ]
+            )
 
     def test_linear_attention_profile_prefers_prefill_route(self) -> None:
         prefill_route = {

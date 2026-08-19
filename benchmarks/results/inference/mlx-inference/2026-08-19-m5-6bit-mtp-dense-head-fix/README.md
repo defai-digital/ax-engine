@@ -49,9 +49,10 @@ this fix.
 
 **8bit-MTP** (`AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP`, r19/r20): direct 19.05 →
 MTP **29.51 tok/s (1.549×)**, acceptance 118/124, CLI streams
-deterministic. One open telemetry discrepancy filed in
-PARITY-CORRECTION.md: `exact_enabled: 0` despite `exact_eligible: 1`
-under the env that enables on the 6-bit pack.
+deterministic. The run requested the exact profile, but the artifact did
+not retain the request-scoped exact eligibility/activation decisions;
+see the third correction in PARITY-CORRECTION.md. No pack-dependent
+activation conclusion can be drawn from r19/r20.
 
 **5-bit**: loadable (`SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS` includes 5)
 but no 5-bit pack exists in the fleet and no 5-bit MTP variant ships;

@@ -801,7 +801,7 @@ fn qw_direct_mlx(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
 static DENSE_WIDE_GEMV_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 /// Multi-row dense GEMV over a contiguous `[in, out]` weight: one thread per
-/// output column, `Leading` (2..=8) f32 accumulators in registers, so each
+/// output column, `Leading` (1..=8) f32 accumulators in registers, so each
 /// weight element is read exactly once and FMA'd against every row. Adjacent
 /// threads read adjacent columns (coalesced); `x` reads are warp-broadcast.
 const DENSE_WIDE_GEMV_SOURCE: &str = r#"
@@ -2827,7 +2827,7 @@ mod tests {
                 .collect();
             let x = array_f32(&x_data, &[1, leading, input_dim]);
             let wide = dense_wide_gemv_weight_t(&x, &weight_t)
-                .expect("f32 dense wide GEMV must be eligible for 2..=8 rows");
+                .expect("f32 dense wide GEMV must be eligible for 1..=8 rows");
             let reference = matmul(&x, &weight_t, None);
             eval(&[&wide, &reference]);
             assert_eq!(wide.shape(), vec![1, leading, out_dim]);

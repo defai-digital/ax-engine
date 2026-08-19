@@ -397,6 +397,27 @@ AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_KEYS = [
     "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_fallbacks",
 ]
 
+# Model-scoped MTP policy and exact-profile decisions are gauges, not work
+# counters. Preserve them in artifacts and max-merge step-local snapshots so
+# a terminal low-acceptance bypass step cannot erase the profile that was
+# active earlier in the same request.
+AX_MLX_MTP_MODEL_CONTRACT_KEYS = [
+    "ax_mlx_qwen_linear_mtp_exact_eligible",
+    "ax_mlx_qwen_linear_mtp_exact_enabled",
+    "ax_mlx_qwen_linear_mtp_exact_selection",
+    "ax_mlx_qwen_linear_mtp_certification_candidate",
+    "ax_mlx_qwen_linear_mtp_depth_one_gate_zero_model_default",
+    "ax_mlx_qwen_linear_mtp_direct_fallback",
+    "ax_mlx_deepseek_v4_mtp_certification_candidate",
+    "ax_mlx_deepseek_v4_mtp_direct_fallback",
+    "ax_mlx_mtp_model_policy",
+    "ax_mlx_mtp_model_policy_depth",
+    "ax_mlx_mtp_model_policy_route_safe",
+    "ax_mlx_mtp_model_policy_active",
+    "ax_mlx_mtp_model_gate_default_present",
+    "ax_mlx_mtp_model_gate_default_x1000",
+]
+
 AX_MLX_TELEMETRY_KEYS = [
     # Resolved speculation profile (ADR-022): 0=auto, 1=coding, 2=agentic, 3=chatbot.
     "ax_mlx_speculation_profile",
@@ -492,6 +513,7 @@ AX_MLX_TELEMETRY_KEYS = [
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT_KEYS,
     *AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS,
     *AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_KEYS,
+    *AX_MLX_MTP_MODEL_CONTRACT_KEYS,
     # Affine quantization bit summary — constant per model load, max-merged across trials.
     "ax_mlx_affine_tensor_count",
     "ax_mlx_affine_min_bits",
@@ -524,6 +546,10 @@ AX_MLX_KV_GAUGE_KEYS: frozenset[str] = frozenset(
         "ax_mlx_kv_paged_pool_slab_kib",
         "ax_mlx_kv_paged_pool_slab_grow_events",
     }
+)
+
+AX_MLX_STABLE_MODEL_CONTRACT_KEYS: frozenset[str] = frozenset(
+    AX_MLX_MTP_MODEL_CONTRACT_KEYS
 )
 
 AX_MLX_PREFIX_CACHE_MAX_KEYS = {
@@ -3001,6 +3027,8 @@ def merge_step_local_route_decisions(
         totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
     for key in AX_MLX_DECODE_PATH_MAX_KEYS:
         totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
+    for key in AX_MLX_STABLE_MODEL_CONTRACT_KEYS:
+        totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
 
 
 def route_with_step_local_decisions(
@@ -3110,7 +3138,15 @@ def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for run in runs:
         for key, value in (run.get("ax_mlx_telemetry") or {}).items():
-            if key in AX_MLX_AFFINE_MAX_KEYS or key in AX_MLX_KV_GAUGE_KEYS:
+            if key in AX_MLX_STABLE_MODEL_CONTRACT_KEYS:
+                value = int(value)
+                if key in totals and totals[key] != value:
+                    raise ValueError(
+                        f"{key} changed across repetitions; expected one model contract, "
+                        f"got {totals[key]} and {value}"
+                    )
+                totals[key] = value
+            elif key in AX_MLX_AFFINE_MAX_KEYS or key in AX_MLX_KV_GAUGE_KEYS:
                 totals[key] = max(totals.get(key, 0), int(value))
             else:
                 totals[key] = totals.get(key, 0) + int(value)
