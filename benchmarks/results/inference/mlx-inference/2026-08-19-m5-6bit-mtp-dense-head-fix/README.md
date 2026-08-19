@@ -44,3 +44,21 @@ fixed `f546a26c`; gate-metal a third stream on both) — a pre-existing
 exact-profile drift on the 6bit pack, unlike MXFP4-MTP whose probe is
 4-way clean. Filed for the pending v7 re-cert pass; not introduced by
 this fix.
+
+## Addendum (2026-08-19): 8-bit / 5-bit / 7-bit status
+
+**8bit-MTP** (`AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP`, r19/r20): direct 19.05 →
+MTP **29.51 tok/s (1.549×)**, acceptance 118/124, CLI streams
+deterministic. One open telemetry discrepancy filed in
+PARITY-CORRECTION.md: `exact_enabled: 0` despite `exact_eligible: 1`
+under the env that enables on the 6-bit pack.
+
+**5-bit**: loadable (`SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS` includes 5)
+but no 5-bit pack exists in the fleet and no 5-bit MTP variant ships;
+the existing `qwen_linear_mtp_exact_capability_rejects_uncertified_quantization`
+test pins `("affine", 5, 64)` out of exact eligibility onto the safe
+replay route, and the known layers<16 LA-gate numerics carve-out covers
+community 5-bit direct inference.
+
+**7-bit**: not a valid MLX quantization width (affine supports
+{2,3,4,5,6,8}); rejected at manifest validation. Nothing to handle.
