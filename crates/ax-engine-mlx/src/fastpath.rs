@@ -658,21 +658,6 @@ env_flag_default_on!(
     "AX_MLX_EXACT_DENSE_WEIGHT_T_GEMV"
 );
 
-env_flag_default_on!(
-    /// `AX_MLX_MTP_DRAFT_Q2_LM_HEAD` — MTP draft logits over a dense bf16
-    /// lm_head use the runtime 2-bit gs64 decode overlay when the head has
-    /// one. Draft logits only propose tokens — verify decides acceptance
-    /// against the exact profile's own lm_head arithmetic — and direct
-    /// decode already emits from this overlay, so the draft argmax follows
-    /// the same shipped contract. A dense Qwen3.8-27B head otherwise costs
-    /// a full 2.54 GB read per draft step (~6.4 ms of the measured
-    /// 11.5 ms/step on the 6bit-MTP pack) vs ~0.16 GB at 2-bit.
-    ///
-    /// **Default: ON** (kill-switch via `AX_MLX_MTP_DRAFT_Q2_LM_HEAD=0`).
-    mtp_draft_q2_lm_head_enabled,
-    "AX_MLX_MTP_DRAFT_Q2_LM_HEAD"
-);
-
 env_flag!(
     /// `AX_MLX_DENSE_WIDE_GEMV` — dense (unquantized) projections with a
     /// contiguous `[in, out]` `decode_weight_t` and 2..=8 leading rows take

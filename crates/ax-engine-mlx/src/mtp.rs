@@ -641,32 +641,7 @@ fn mtp_post_norm_to_logits(
 ) -> MlxArray {
     use mlx_sys::reshape as mlx_reshape;
     let lm_head = head.draft_lm_head.as_ref().unwrap_or(&weights.lm_head);
-    // Draft logits only propose tokens (verify decides acceptance on the
-    // exact profile's own lm_head arithmetic). For a dense bf16 head,
-    // prefer the runtime 2-bit decode overlay direct decode already emits
-    // from — a 2.54 GB per-draft read otherwise dominates the draft step.
-    let logits = if head.draft_lm_head.is_none()
-        && lm_head.scales.is_none()
-        && crate::fastpath::mtp_draft_q2_lm_head_enabled()
-        && let (Some(q_w), Some(q_s), Some(q_b)) = (
-            lm_head.decode_q2_weight.as_ref(),
-            lm_head.decode_q2_scales.as_ref(),
-            lm_head.decode_q2_biases.as_ref(),
-        ) {
-        mlx_sys::quantized_matmul_with_mode(
-            post_norm_hidden,
-            q_w,
-            q_s,
-            Some(q_b),
-            true,
-            Some(crate::weights::DECODE_LM_HEAD_QUANT_GROUP_SIZE),
-            Some(crate::weights::DECODE_LM_HEAD_QUANT_BITS),
-            mlx_sys::MlxQuantizationMode::Affine,
-            None,
-        )
-    } else {
-        qw(post_norm_hidden, lm_head)
-    };
+    let logits = qw(post_norm_hidden, lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
     // [1, 1, vocab] → [vocab]
