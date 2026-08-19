@@ -60,7 +60,7 @@ pub enum EngineSessionError {
     #[error("unsupported support tier cannot start an engine session")]
     UnsupportedSupportTier,
     #[error(
-        "AX Engine MLX requires macOS on Apple M2 or newer; detected unsupported host {detected_host}. Set AX_ALLOW_UNSUPPORTED_HOST=1 only for internal development or CI bring-up."
+        "AX Engine MLX requires macOS 26 or later on Apple M2 or newer; detected unsupported host {detected_host}. Set AX_ALLOW_UNSUPPORTED_HOST=1 only for internal development or CI bring-up."
     )]
     UnsupportedHostHardware { detected_host: String },
     #[error("llama.cpp backend {selected_backend:?} requires llama_backend config")]

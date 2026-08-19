@@ -18,7 +18,7 @@ busy_exit() {
 
 if ! ssh "${SSH_OPTS[@]}" "$HOST" "true" >/dev/null 2>&1; then
   busy_exit "cannot reach $HOST"
-}
+fi
 
 remote() {
   ssh "${SSH_OPTS[@]}" "$HOST" "$@"
@@ -58,7 +58,7 @@ python3 - <<'PY'
 from huggingface_hub import snapshot_download
 snapshot_download(
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-    revision="a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6",
+    revision="3e290738e96972307c6aeb9934ab170ca0eae1c1",
 )
 snapshot_download(
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",

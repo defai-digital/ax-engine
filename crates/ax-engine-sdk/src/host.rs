@@ -7,8 +7,10 @@ use std::sync::OnceLock;
 use crate::backend::{HostReport, MetalToolchainReport, ToolStatusReport};
 
 pub(crate) const UNSUPPORTED_HOST_OVERRIDE_ENV: &str = "AX_ALLOW_UNSUPPORTED_HOST";
+const MIN_SUPPORTED_MACOS_MAJOR: u32 = 26;
 
 static SOC_DETECTION: OnceLock<SocDetection> = OnceLock::new();
+static MACOS_VERSION_DETECTION: OnceLock<MacosVersionDetection> = OnceLock::new();
 static METAL_TOOL_STATUS: OnceLock<ToolStatusReport> = OnceLock::new();
 static METALLIB_TOOL_STATUS: OnceLock<ToolStatusReport> = OnceLock::new();
 static METAL_AR_TOOL_STATUS: OnceLock<ToolStatusReport> = OnceLock::new();
@@ -16,6 +18,12 @@ static METAL_AR_TOOL_STATUS: OnceLock<ToolStatusReport> = OnceLock::new();
 #[derive(Clone, Debug, Default)]
 struct SocDetection {
     soc: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MacosVersionDetection {
+    version: Option<String>,
     error: Option<String>,
 }
 
@@ -38,8 +46,14 @@ pub(crate) fn validate_local_host() -> Result<(), String> {
 
 pub(crate) fn runtime_host_report() -> HostReport {
     let detection = soc_detection_cached().clone();
+    let macos_version = macos_version_detection_cached().clone();
     let supported_mlx_runtime = matches!(
-        classify_host(env::consts::OS, env::consts::ARCH, detection.soc.as_deref(),),
+        classify_host(
+            env::consts::OS,
+            env::consts::ARCH,
+            detection.soc.as_deref(),
+            macos_version.version.as_deref(),
+        ),
         HostSupport::Supported { .. }
     );
 
@@ -49,7 +63,7 @@ pub(crate) fn runtime_host_report() -> HostReport {
         detected_soc: detection.soc,
         supported_mlx_runtime,
         unsupported_host_override_active: unsupported_host_override_enabled(),
-        detection_error: detection.error,
+        detection_error: combine_detection_errors(detection.error, macos_version.error),
     }
 }
 
@@ -72,10 +86,16 @@ fn detect_local_host_support() -> HostSupport {
         env::consts::OS,
         env::consts::ARCH,
         soc_detection_cached().soc.as_deref(),
+        macos_version_detection_cached().version.as_deref(),
     )
 }
 
-fn classify_host(os: &str, arch: &str, soc: Option<&str>) -> HostSupport {
+fn classify_host(
+    os: &str,
+    arch: &str,
+    soc: Option<&str>,
+    macos_version: Option<&str>,
+) -> HostSupport {
     if os != "macos" || arch != "aarch64" {
         return HostSupport::Unsupported {
             detected_host: format!("{os}/{arch}"),
@@ -95,13 +115,32 @@ fn classify_host(os: &str, arch: &str, soc: Option<&str>) -> HostSupport {
     };
 
     if generation >= 2 {
-        HostSupport::Supported {
-            detected_host: soc.to_string(),
+        let Some(version) = macos_version
+            .map(str::trim)
+            .filter(|version| !version.is_empty())
+        else {
+            return HostSupport::Unsupported {
+                detected_host: format!("{soc} on unknown macOS version"),
+            };
+        };
+        let Some(major) = parse_macos_major_version(version) else {
+            return HostSupport::Unsupported {
+                detected_host: format!("{soc} on unrecognized macOS version {version}"),
+            };
+        };
+        if major < MIN_SUPPORTED_MACOS_MAJOR {
+            return HostSupport::Unsupported {
+                detected_host: format!("{soc} on macOS {version}"),
+            };
         }
-    } else {
-        HostSupport::Unsupported {
+
+        return HostSupport::Supported {
             detected_host: soc.to_string(),
-        }
+        };
+    }
+
+    HostSupport::Unsupported {
+        detected_host: soc.to_string(),
     }
 }
 
@@ -116,6 +155,18 @@ fn parse_apple_m_series_generation(soc: &str) -> Option<u32> {
         return None;
     }
     digits.parse().ok()
+}
+
+fn parse_macos_major_version(version: &str) -> Option<u32> {
+    version.trim().split('.').next()?.parse().ok()
+}
+
+fn combine_detection_errors(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}; {second}")),
+        (Some(error), None) | (None, Some(error)) => Some(error),
+        (None, None) => None,
+    }
 }
 
 fn detect_soc() -> SocDetection {
@@ -161,6 +212,43 @@ fn detect_soc() -> SocDetection {
     SocDetection { soc, error }
 }
 
+fn detect_macos_version() -> MacosVersionDetection {
+    if env::consts::OS != "macos" {
+        return MacosVersionDetection::default();
+    }
+
+    let (version, error) = command_stdout_with_reason("/usr/bin/sw_vers", &["-productVersion"]);
+    if version.is_some() {
+        return MacosVersionDetection {
+            version,
+            error: None,
+        };
+    }
+
+    let (fallback_version, fallback_error) =
+        command_stdout_with_reason("sw_vers", &["-productVersion"]);
+    if fallback_version.is_some() {
+        return MacosVersionDetection {
+            version: fallback_version,
+            error: None,
+        };
+    }
+    let reason = error
+        .as_deref()
+        .or(fallback_error.as_deref())
+        .unwrap_or("sw_vers returned no output");
+    tracing::warn!(
+        program = "sw_vers",
+        args = "-productVersion",
+        error = %reason,
+        "ax-engine macOS version detection failed; MLX backends will refuse to start"
+    );
+    MacosVersionDetection {
+        version: None,
+        error: error.or(fallback_error),
+    }
+}
+
 fn detect_soc_from_system_profiler() -> Option<String> {
     command_stdout("system_profiler", &["SPDisplaysDataType"])
         .or_else(|| command_stdout("/usr/sbin/system_profiler", &["SPDisplaysDataType"]))
@@ -181,6 +269,10 @@ fn parse_system_profiler_chipset_model(text: &str) -> Option<String> {
 
 fn soc_detection_cached() -> &'static SocDetection {
     SOC_DETECTION.get_or_init(detect_soc)
+}
+
+fn macos_version_detection_cached() -> &'static MacosVersionDetection {
+    MACOS_VERSION_DETECTION.get_or_init(detect_macos_version)
 }
 
 fn cached_tool_status(cache: &'static OnceLock<ToolStatusReport>, tool: &str) -> ToolStatusReport {
@@ -310,13 +402,23 @@ fn unsupported_host_override_enabled() -> bool {
 mod tests {
     use super::{
         HostSupport, classify_host, command_stdout_with_reason, parse_apple_m_series_generation,
-        parse_system_profiler_chipset_model, runtime_host_report, runtime_metal_toolchain_report,
+        parse_macos_major_version, parse_system_profiler_chipset_model, runtime_host_report,
+        runtime_metal_toolchain_report,
     };
 
     #[test]
     fn parses_apple_m_series_generation() {
         assert_eq!(parse_apple_m_series_generation("Apple M4"), Some(4));
         assert_eq!(parse_apple_m_series_generation("Apple M5 Max"), Some(5));
+    }
+
+    #[test]
+    fn parses_macos_major_version() {
+        assert_eq!(parse_macos_major_version("26"), Some(26));
+        assert_eq!(parse_macos_major_version("26.6.1"), Some(26));
+        assert_eq!(parse_macos_major_version(" 15.5 "), Some(15));
+        assert_eq!(parse_macos_major_version("Tahoe"), None);
+        assert_eq!(parse_macos_major_version(""), None);
     }
 
     #[test]
@@ -350,19 +452,19 @@ mod tests {
     #[test]
     fn classifies_supported_m2_or_newer_host() {
         assert_eq!(
-            classify_host("macos", "aarch64", Some("Apple M2 Max")),
+            classify_host("macos", "aarch64", Some("Apple M2 Max"), Some("26.0")),
             HostSupport::Supported {
                 detected_host: "Apple M2 Max".to_string(),
             }
         );
         assert_eq!(
-            classify_host("macos", "aarch64", Some("Apple M3 Max")),
+            classify_host("macos", "aarch64", Some("Apple M3 Max"), Some("26.2")),
             HostSupport::Supported {
                 detected_host: "Apple M3 Max".to_string(),
             }
         );
         assert_eq!(
-            classify_host("macos", "aarch64", Some("Apple M4 Max")),
+            classify_host("macos", "aarch64", Some("Apple M4 Max"), Some("27.0")),
             HostSupport::Supported {
                 detected_host: "Apple M4 Max".to_string(),
             }
@@ -372,7 +474,7 @@ mod tests {
     #[test]
     fn classifies_m1_host_as_unsupported() {
         assert_eq!(
-            classify_host("macos", "aarch64", Some("Apple M1 Pro")),
+            classify_host("macos", "aarch64", Some("Apple M1 Pro"), Some("26.0")),
             HostSupport::Unsupported {
                 detected_host: "Apple M1 Pro".to_string(),
             }
@@ -380,9 +482,35 @@ mod tests {
     }
 
     #[test]
+    fn classifies_pre_tahoe_macos_as_unsupported() {
+        assert_eq!(
+            classify_host("macos", "aarch64", Some("Apple M3 Max"), Some("15.5")),
+            HostSupport::Unsupported {
+                detected_host: "Apple M3 Max on macOS 15.5".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_missing_or_malformed_macos_version_as_unsupported() {
+        assert_eq!(
+            classify_host("macos", "aarch64", Some("Apple M3 Max"), None),
+            HostSupport::Unsupported {
+                detected_host: "Apple M3 Max on unknown macOS version".to_string(),
+            }
+        );
+        assert_eq!(
+            classify_host("macos", "aarch64", Some("Apple M3 Max"), Some("Tahoe")),
+            HostSupport::Unsupported {
+                detected_host: "Apple M3 Max on unrecognized macOS version Tahoe".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn classifies_non_macos_hosts_as_unsupported() {
         assert_eq!(
-            classify_host("linux", "aarch64", Some("Apple M4 Max")),
+            classify_host("linux", "aarch64", Some("Apple M4 Max"), Some("26.0"),),
             HostSupport::Unsupported {
                 detected_host: "linux/aarch64".to_string(),
             }
@@ -392,13 +520,13 @@ mod tests {
     #[test]
     fn classifies_unknown_soc_as_unsupported() {
         assert_eq!(
-            classify_host("macos", "aarch64", None),
+            classify_host("macos", "aarch64", None, Some("26.0")),
             HostSupport::Unsupported {
                 detected_host: "unknown Apple Silicon".to_string(),
             }
         );
         assert_eq!(
-            classify_host("macos", "aarch64", Some("Apple Silicon")),
+            classify_host("macos", "aarch64", Some("Apple Silicon"), Some("26.0")),
             HostSupport::Unsupported {
                 detected_host: "Apple Silicon".to_string(),
             }

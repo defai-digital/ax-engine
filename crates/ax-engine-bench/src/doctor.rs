@@ -645,7 +645,7 @@ fn doctor_issues(
                 .unwrap_or_else(|| "unknown Apple Silicon".to_string())
         };
         issues.push(format!(
-            "AX Engine MLX Metal runtime requires macOS/aarch64 on Apple M2 or newer; detected {detected_host}"
+            "AX Engine MLX Metal runtime requires macOS 26 or later on Apple M2 or newer; detected {detected_host}"
         ));
     }
 

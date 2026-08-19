@@ -722,7 +722,6 @@ pub fn gelu_approx_mul_matmul(
 }
 
 /// Compute `quantized_matmul(gelu_approx(gate) * x, weight, ...)`.
-#[allow(clippy::too_many_arguments)]
 /// Affine is the only quantization mode with a group-bias channel; the
 /// block-float modes are fully determined by `(group_size, bits)`. Mirrors
 /// the shim-side `infer_qmm_mode` so the Rust fallbacks of the fused qmm
@@ -741,6 +740,7 @@ fn infer_fused_qmm_mode(has_biases: bool, group_size: i32, bits: i32) -> MlxQuan
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn gelu_approx_mul_quantized_matmul(
     gate: &MlxArray,
     x: &MlxArray,

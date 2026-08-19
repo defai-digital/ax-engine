@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import statistics
 import subprocess
@@ -37,6 +38,10 @@ MAX_PUBLICATION_PROCESS_CPU_PERCENT = 50.0
 DEFAULT_LOAD_WAIT_TIMEOUT_S = 900.0
 DEFAULT_LOAD_POLL_INTERVAL_S = 5.0
 MTP_SAMPLER_SIGNATURE = "sampling[temperature=0.6,top_p=0.95,top_k=20]"
+FORMAL_MTP_ENV = {
+    "AX_MLX_MTP_BYPASS_THRESHOLD": "0",
+    "AX_MLX_MTP_MIN_REMAINING_TOKENS": "0",
+}
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
     "ax_ngram_draft_tokens",
@@ -123,10 +128,10 @@ SUPPORTED_TARGETS = (
         label="Qwen3.8 27B AXQ",
         mode="Qwen fused sidecar",
         model_dir=_resolve_mtp_model_dir(
-            "/Volumes/Ext4T/models/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6",
+            "/Volumes/Ext4T/models/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1",
             str(
                 Path.home()
-                / ".cache/huggingface/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/a5a0b700ea7c5c529c66ca3005b79425ab2f7ea6"
+                / ".cache/huggingface/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1"
             ),
         ),
         mtp_depth=1,
@@ -198,15 +203,25 @@ def validate_model_dir(path: Path) -> None:
         raise FileNotFoundError(f"{path} is missing {', '.join(missing)}")
 
 
-def run_logged(cmd: list[str], log_path: Path) -> None:
+def run_logged(
+    cmd: list[str],
+    log_path: Path,
+    *,
+    env_overrides: dict[str, str] | None = None,
+) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w") as log:
-        log.write("$ " + " ".join(cmd) + "\n\n")
+        env_overrides = env_overrides or {}
+        env_prefix = " ".join(
+            f"{key}={value}" for key, value in sorted(env_overrides.items())
+        )
+        log.write("$ " + (f"{env_prefix} " if env_prefix else "") + " ".join(cmd) + "\n\n")
         log.flush()
         started = time.perf_counter()
         result = subprocess.run(
             cmd,
             cwd=REPO_ROOT,
+            env={**os.environ, **env_overrides},
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
@@ -335,7 +350,11 @@ def maybe_run_case(
     print(f"[run] {target.key} {suite} {mode}", flush=True)
     print(f"      artifact: {output_path}", flush=True)
     print(f"      log:      {log_path}", flush=True)
-    run_logged(cmd, log_path)
+    run_logged(
+        cmd,
+        log_path,
+        env_overrides=FORMAL_MTP_ENV if mode != "direct" else None,
+    )
 
 
 def metric_median(artifact: dict[str, Any], metric: str) -> float:

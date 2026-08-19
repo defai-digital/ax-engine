@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts import bench_mtp_6bit_ax_refresh as bench
 
@@ -221,6 +222,55 @@ class BenchMtpRefreshTests(unittest.TestCase):
             str(bench.DEFAULT_LOAD_POLL_INTERVAL_S),
         )
         self.assertIn("--ax-qwen-linear-mtp-exact", command)
+
+    def test_formal_mtp_disables_runtime_bypasses(self) -> None:
+        self.assertEqual(
+            bench.FORMAL_MTP_ENV,
+            {
+                "AX_MLX_MTP_BYPASS_THRESHOLD": "0",
+                "AX_MLX_MTP_MIN_REMAINING_TOKENS": "0",
+            },
+        )
+
+    def test_maybe_run_case_forwards_formal_env_only_for_mtp(self) -> None:
+        target = bench.Target(
+            key="test",
+            label="Test",
+            mode="MTP",
+            model_dir=Path("/models/test"),
+            mtp_depth=1,
+        )
+        args = argparse.Namespace(
+            skip_existing=False,
+            suites_dir=Path("/prompts"),
+            generated_tokens=32,
+            repetitions=5,
+            warmup_repetitions=2,
+            cooldown=0.0,
+            inter_case_cooldown=0.0,
+            approximate_speed_ceiling=False,
+        )
+
+        with mock.patch.object(bench, "run_logged") as run_logged:
+            bench.maybe_run_case(
+                target=target,
+                suite="sample",
+                mode="direct",
+                output_path=Path("/tmp/direct.json"),
+                args=args,
+            )
+            self.assertIsNone(run_logged.call_args.kwargs["env_overrides"])
+
+            bench.maybe_run_case(
+                target=target,
+                suite="sample",
+                mode="mtp",
+                output_path=Path("/tmp/mtp.json"),
+                args=args,
+            )
+            self.assertEqual(
+                run_logged.call_args.kwargs["env_overrides"], bench.FORMAL_MTP_ENV
+            )
 
     def test_exact_artifact_validation_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "not an exact MTP publication candidate"):
