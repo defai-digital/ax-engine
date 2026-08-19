@@ -1905,6 +1905,228 @@ pub(crate) fn qw_gather(
     }
 }
 
+static GATHER_QMV_WIDE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+/// Segmented multi-row gather matvec over sorted expert selections.
+///
+/// MLX has no `gather_qmv_wide`: at small M each selection row re-reads its
+/// expert's full weight matrix, so multi-token MoE verify scales linearly
+/// with stacked rows. This kernel walks host-computed segments of sorted
+/// selections (rows sharing one expert, capped at `MaxRows = 8` like
+/// mlxcel's CUDA multirow qmv), dequantizes each weight pack once, and
+/// FMAs it against every row in the segment. One simdgroup per
+/// (segment, output row); f32 accumulators + `simd_sum` per row.
+///
+/// Spike only — measured and NOT wired (`project_unquantized_decode`
+/// precedent); 4-bit affine, `x` pre-sorted `[rows, in]`.
+///
+/// Verdict (M3 Max, release, 32 rows over 8 of 64 experts, 2048→768):
+/// kernel 498µs vs `gather_qmm` 230–249µs — **0.46–0.50×**. The naive
+/// one-simdgroup-per-output-row loop loses more to MLX's tiled
+/// `qmv_fast` (per-thread value tiling, vectorized loads) than the ≤8-row
+/// weight reuse wins back. A competitive version must first match the
+/// `qmv_fast` structure per row — same class of effort that left the
+/// invariant MXFP4 microbatch clone at 0.84×. Parity holds (1e-4).
+const GATHER_QMV_WIDE_SOURCE: &str = r#"
+    uint flat = thread_position_in_grid.x;
+    uint seg = thread_position_in_grid.y;
+    uint row = flat / 32;
+    uint lane = flat % 32;
+    if (row >= (uint)OutDim || seg >= (uint)SegCount) {
+        return;
+    }
+    uint expert = seg_expert[seg];
+    uint start = seg_start[seg];
+    uint cnt = seg_count[seg];
+    float acc[8];
+    for (uint r = 0; r < 8u; ++r) {
+        acc[r] = 0.0f;
+    }
+    const uint row_base = (expert * (uint)OutDim + row) * (uint)PackedCols;
+    const uint scale_row = (expert * (uint)OutDim + row) * (uint)GroupCount;
+    for (uint packed_col = lane; packed_col < (uint)PackedCols; packed_col += 32) {
+        uint packed = weight[row_base + packed_col];
+        for (uint packed_lane = 0; packed_lane < (uint)PackFactor; ++packed_lane) {
+            uint input_col = packed_col * (uint)PackFactor + packed_lane;
+            uint q = (packed >> (packed_lane * (uint)Bits)) & (uint)QuantMask;
+            uint scale_idx = scale_row + input_col / (uint)GroupSize;
+            float w = static_cast<float>(q) * static_cast<float>(scales[scale_idx])
+                + static_cast<float>(biases[scale_idx]);
+            for (uint r = 0; r < cnt; ++r) {
+                acc[r] = fma(
+                    w,
+                    static_cast<float>(x[(start + r) * (uint)InputDim + input_col]),
+                    acc[r]);
+            }
+        }
+    }
+    for (uint r = 0; r < cnt; ++r) {
+        float total = simd_sum(acc[r]);
+        if (lane == 0) {
+            out[(start + r) * (uint)OutDim + row] = static_cast<OutT>(total);
+        }
+    }
+"#;
+
+/// Build ≤8-row segments from sorted flat expert ids.
+#[cfg_attr(not(test), allow(dead_code))]
+fn gather_wide_segments(sorted_expert_ids: &[u32]) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    let mut expert = Vec::new();
+    let mut start = Vec::new();
+    let mut count = Vec::new();
+    let mut i = 0usize;
+    while i < sorted_expert_ids.len() {
+        let e = sorted_expert_ids[i];
+        let mut j = i + 1;
+        while j < sorted_expert_ids.len() && sorted_expert_ids[j] == e && j - i < 8 {
+            j += 1;
+        }
+        expert.push(e);
+        start.push(i as u32);
+        count.push((j - i) as u32);
+        i = j;
+    }
+    (expert, start, count)
+}
+
+/// `x_sorted [rows, in]` against `exps [E, out, packed]` (4-bit affine),
+/// selections pre-sorted by expert id. Returns `[rows, out]`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn gather_qmv_wide_sorted(
+    x_sorted: &MlxArray,
+    exps: &QuantizedWeight,
+    sorted_expert_ids: &[u32],
+) -> Option<MlxArray> {
+    if !matches!(
+        x_sorted.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let (Some(scales), Some(biases)) = (exps.scales.as_ref(), exps.biases.as_ref()) else {
+        return None;
+    };
+    if exps.bits != 4 || exps.group_size <= 0 {
+        return None;
+    }
+    let weight_shape = exps.weight.shape();
+    if weight_shape.len() != 3 {
+        return None;
+    }
+    let (num_experts, out_dim, packed_cols) = (weight_shape[0], weight_shape[1], weight_shape[2]);
+    let pack_factor = 32 / exps.bits;
+    let input_dim = packed_cols.checked_mul(pack_factor)?;
+    if input_dim % exps.group_size != 0 {
+        return None;
+    }
+    let group_count = input_dim / exps.group_size;
+    let x_shape = x_sorted.shape();
+    if x_shape != vec![sorted_expert_ids.len() as i32, input_dim] {
+        return None;
+    }
+    if sorted_expert_ids.iter().any(|&e| e as i32 >= num_experts) {
+        return None;
+    }
+    let (seg_expert, seg_start, seg_count) = gather_wide_segments(sorted_expert_ids);
+    let seg_len = seg_expert.len() as i32;
+    if seg_len == 0 {
+        return None;
+    }
+    let u32_arr = |data: &[u32]| {
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data),
+            &[data.len() as i32],
+            MlxDtype::Uint32,
+        )
+    };
+    let seg_expert_arr = u32_arr(&seg_expert);
+    let seg_start_arr = u32_arr(&seg_start);
+    let seg_count_arr = u32_arr(&seg_count);
+    let kernel = GATHER_QMV_WIDE_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_gather_qmv_wide_v1",
+            &[
+                "x",
+                "weight",
+                "scales",
+                "biases",
+                "seg_expert",
+                "seg_start",
+                "seg_count",
+            ],
+            &["out"],
+            GATHER_QMV_WIDE_SOURCE,
+            "",
+            true,
+        )
+    });
+    let rows = sorted_expert_ids.len() as i32;
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[
+                x_sorted,
+                &exps.weight,
+                scales,
+                biases,
+                &seg_expert_arr,
+                &seg_start_arr,
+                &seg_count_arr,
+            ],
+            &[KernelOutputSpec {
+                shape: vec![rows, out_dim],
+                dtype: x_sorted.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x_sorted.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "InputDim",
+                    value: input_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackedCols",
+                    value: packed_cols,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupSize",
+                    value: exps.group_size,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupCount",
+                    value: group_count,
+                },
+                KernelTemplateArg::Int {
+                    name: "Bits",
+                    value: exps.bits,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackFactor",
+                    value: pack_factor,
+                },
+                KernelTemplateArg::Int {
+                    name: "QuantMask",
+                    value: (1 << exps.bits) - 1,
+                },
+                KernelTemplateArg::Int {
+                    name: "SegCount",
+                    value: seg_len,
+                },
+            ],
+            (out_dim.saturating_mul(32), seg_len, 1),
+            (32, 1, 1),
+            None,
+        )
+        .ok()?;
+    outputs.pop()
+}
+
 /// `y + expand_dims(linear_bias[indices], -2)` matching mlx-lm QuantizedSwitchLinear.
 fn apply_expert_linear_bias(y: &MlxArray, linear_bias: &MlxArray, indices: &MlxArray) -> MlxArray {
     // take along expert axis 0: bias[indices] with indices of any rank.
@@ -2672,6 +2894,162 @@ mod tests {
             let mlx_us = start.elapsed().as_micros() as f64 / iters as f64;
             println!(
                 "dense wide GEMV S={leading} {input_dim}x{out_dim}: kernel {kernel_us:.1}us vs matmul {mlx_us:.1}us ({:.3}x)",
+                mlx_us / kernel_us
+            );
+        }
+    }
+
+    fn quantized_expert_stack(
+        num_experts: i32,
+        out_dim: i32,
+        input_dim: i32,
+        group_size: i32,
+    ) -> (QuantizedWeight, Vec<MlxArray>) {
+        let data: Vec<f32> = (0..(num_experts * out_dim * input_dim) as usize)
+            .map(|i| (((i % 883) as f32) - 440.0) * 0.0015)
+            .collect();
+        let dense = array_f32(&data, &[num_experts, out_dim, input_dim]);
+        let q = mlx_sys::quantize(
+            &dense,
+            Some(group_size),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(q.len(), 3);
+        (
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: Some(q[2].clone()),
+                group_size,
+                bits: 4,
+                mode: "affine".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
+            },
+            q,
+        )
+    }
+
+    fn sorted_gather_reference(
+        x_sorted: &MlxArray,
+        exps: &QuantizedWeight,
+        ids: &[u32],
+        out_dim: i32,
+    ) -> MlxArray {
+        let rows = ids.len() as i32;
+        let input_dim = *x_sorted.shape().last().unwrap();
+        let x3 = reshape(x_sorted, &[rows, 1, input_dim], None);
+        let idx = MlxArray::from_raw_data(
+            ids.as_ptr() as *const u8,
+            std::mem::size_of_val(ids),
+            &[rows],
+            MlxDtype::Uint32,
+        );
+        let y = qw_gather(&x3, exps, &idx, true);
+        reshape(&y, &[rows, out_dim], None)
+    }
+
+    #[test]
+    fn gather_qmv_wide_sorted_matches_gather_qmm() {
+        let (num_experts, out_dim, input_dim, group_size) = (8, 48, 128, 64);
+        let (exps, _q) = quantized_expert_stack(num_experts, out_dim, input_dim, group_size);
+        // 20 sorted selections over 6 experts with segment sizes 1..=9
+        // (the 9-run splits into 8+1 host-side).
+        let ids: Vec<u32> = [
+            0u32, 0, 0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 4, 5, 5, 7, 7, 7, 7,
+        ]
+        .to_vec();
+        let rows = ids.len() as i32;
+        let x_data: Vec<f32> = (0..(rows * input_dim) as usize)
+            .map(|i| (((i % 311) as f32) - 150.0) * 0.006)
+            .collect();
+        let x = array_f32(&x_data, &[rows, input_dim]);
+        let wide = gather_qmv_wide_sorted(&x, &exps, &ids)
+            .expect("sorted 4-bit gather qmv wide must engage");
+        let reference = sorted_gather_reference(&x, &exps, &ids, out_dim);
+        eval(&[&wide, &reference]);
+        assert_eq!(wide.shape(), vec![rows, out_dim]);
+        let a = wide.data_f32();
+        let b = reference.data_f32();
+        for i in 0..a.len() {
+            assert!(
+                (a[i] - b[i]).abs() < 1.0e-4,
+                "gather qmv wide diverged at {i}: {} vs {}",
+                a[i],
+                b[i]
+            );
+        }
+    }
+
+    #[test]
+    fn gather_wide_segments_caps_runs_at_eight() {
+        let ids = [3u32; 19];
+        let (expert, start, count) = gather_wide_segments(&ids);
+        assert_eq!(expert, vec![3, 3, 3]);
+        assert_eq!(start, vec![0, 8, 16]);
+        assert_eq!(count, vec![8, 8, 3]);
+    }
+
+    #[test]
+    #[ignore = "micro-bench: run with --ignored --nocapture for kernel-vs-MLX timings"]
+    fn bench_gather_qmv_wide_vs_gather_qmm() {
+        // MoE verify-ish shape: 32 stacked selections (S=4 x top-8) over a
+        // 64-expert 4-bit stack, 2048 -> 768 per expert.
+        let (num_experts, out_dim, input_dim, group_size) = (64, 768, 2048, 64);
+        let (exps, _q) = quantized_expert_stack(num_experts, out_dim, input_dim, group_size);
+        let mut ids: Vec<u32> = Vec::new();
+        for e in [3u32, 9, 17, 22, 31, 40, 52, 61] {
+            for _ in 0..4 {
+                ids.push(e);
+            }
+        }
+        let rows = ids.len() as i32;
+        let x_data: Vec<f32> = (0..(rows * input_dim) as usize)
+            .map(|i| (((i % 509) as f32) - 250.0) * 0.004)
+            .collect();
+        let x = astype(
+            &array_f32(&x_data, &[rows, input_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let iters = 200;
+        let warm = 20;
+        for _ in 0..warm {
+            let o = gather_qmv_wide_sorted(&x, &exps, &ids).unwrap();
+            eval(&[&o]);
+        }
+        let start = std::time::Instant::now();
+        for _ in 0..iters {
+            let o = gather_qmv_wide_sorted(&x, &exps, &ids).unwrap();
+            eval(&[&o]);
+        }
+        let kernel_us = start.elapsed().as_micros() as f64 / iters as f64;
+        let x3 = reshape(&x, &[rows, 1, input_dim], None);
+        let idx = MlxArray::from_raw_data(
+            ids.as_ptr() as *const u8,
+            std::mem::size_of_val(ids.as_slice()),
+            &[rows],
+            MlxDtype::Uint32,
+        );
+        for sorted in [true, false] {
+            for _ in 0..warm {
+                let o = qw_gather(&x3, &exps, &idx, sorted);
+                eval(&[&o]);
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..iters {
+                let o = qw_gather(&x3, &exps, &idx, sorted);
+                eval(&[&o]);
+            }
+            let mlx_us = start.elapsed().as_micros() as f64 / iters as f64;
+            println!(
+                "gather qmv wide rows={rows} E={num_experts} {input_dim}->{out_dim}: kernel {kernel_us:.1}us vs gather_qmm(sorted={sorted}) {mlx_us:.1}us ({:.3}x)",
                 mlx_us / kernel_us
             );
         }
