@@ -1786,6 +1786,54 @@ pub fn forward_all_positions(
 /// vocab-wide f32 cast. Used by Gemma assistant-MTP multi-token always-adopt so
 /// teacher-forced argmax agrees with singleton pure-direct on near-ties (4-bit
 /// cycle breaks) where softcap(f32(logits)) can flip vs bf16 argmax.
+/// Project verify-window hidden states through `lm_head` one row at a time
+/// so every position inherits the singleton decode arithmetic. Batched
+/// `S >= 2` projection is not leading-invariant: a dense head's runtime
+/// 2-bit decode overlay only serves `leading == 1`, and MLX's affine
+/// `qmv_wide` (gen >= 15) reduces `M >= 2` rows differently from the
+/// `M == 1` kernel — both diverge MTP verify streams from MTP-off decode.
+/// First bad commit `8983bbb1` (2-bit decode-only lm_head), 2026-08-19 M5
+/// bisect on the certified Qwen3.6-27B 6-bit MTP pack.
+fn lm_head_rows_singleton(
+    normed: &MlxArray,
+    lm_head: &crate::weights::QuantizedWeight,
+    seq: i32,
+    hidden_size: i32,
+) -> MlxArray {
+    let rows: Vec<MlxArray> = (0..seq)
+        .map(|t| {
+            let row = mlx_sys::contiguous(
+                &mlx_sys::slice(
+                    normed,
+                    &[0, t, 0],
+                    &[1, t + 1, hidden_size],
+                    &[1, 1, 1],
+                    None,
+                ),
+                None,
+            );
+            qw(&row, lm_head)
+        })
+        .collect();
+    let refs: Vec<&MlxArray> = rows.iter().collect();
+    mlx_sys::concatenate(&refs, 1, None)
+}
+
+/// Verify windows (2..=4 rows) must match singleton decode token-for-token;
+/// larger multi-token windows (MTP warmup) keep the batched projection.
+fn lm_head_verify_window_projection(
+    normed: &MlxArray,
+    lm_head: &crate::weights::QuantizedWeight,
+    seq: i32,
+    hidden_size: i32,
+) -> MlxArray {
+    if (2..=4).contains(&seq) {
+        lm_head_rows_singleton(normed, lm_head, seq, hidden_size)
+    } else {
+        qw(normed, lm_head)
+    }
+}
+
 pub fn forward_all_positions_with_post_norm_greedy(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1851,7 +1899,8 @@ pub fn forward_all_positions_with_post_norm_greedy(
     }
     let seq_i = seq as i32;
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
-    let logits = qw(&normed, &weights.lm_head);
+    let logits =
+        lm_head_verify_window_projection(&normed, &weights.lm_head, seq_i, cfg.hidden_size as i32);
     // ArgmaxOnly: no softcap / no f32 cast (matches pure-direct greedy).
     let logits_out = reshape(&logits, &[seq_i, cfg.vocab_size as i32], None);
     (logits_out, normed)
@@ -1987,7 +2036,8 @@ pub fn forward_all_positions_with_post_norm_ids(
 
     let seq_i = seq as i32;
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
-    let logits = qw(&normed, &weights.lm_head);
+    let logits =
+        lm_head_verify_window_projection(&normed, &weights.lm_head, seq_i, cfg.hidden_size as i32);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
     let logits_out = reshape(&logits_f32, &[seq_i, cfg.vocab_size as i32], None);
