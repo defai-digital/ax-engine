@@ -658,6 +658,22 @@ env_flag_default_on!(
     "AX_MLX_EXACT_DENSE_WEIGHT_T_GEMV"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4` — when the target lm_head is dense
+    /// (unquantized) and no draft-head spec was configured, derive a 4-bit
+    /// gs64 `draft_lm_head` at MTP load. Draft logits only propose tokens
+    /// (verify decides on the target head's own arithmetic); the dense head
+    /// otherwise costs a full-weight read per draft step — 2.54 GB on
+    /// Qwen3.8-27B, ~6.4 ms of the 11.5 ms draft wall measured on the
+    /// 6bit-MTP pack. 4-bit argmax tracks bf16 closely; the 2-bit decode
+    /// overlay tried first collapsed acceptance and tripped the MTP bypass
+    /// gate (2026-08-19 M5 A/B). Costs one ~320 MB buffer at load.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4=0`).
+    mtp_dense_head_draft_q4_enabled,
+    "AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4"
+);
+
 env_flag!(
     /// `AX_MLX_DENSE_WIDE_GEMV` — dense (unquantized) projections with a
     /// contiguous `[in, out]` `decode_weight_t` and 2..=8 leading rows take
