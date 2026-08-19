@@ -3784,7 +3784,12 @@ fn load_mtp(
                 // target head), and 4-bit argmax tracks bf16 closely, unlike
                 // the 2-bit decode overlay whose acceptance collapse tripped
                 // the MTP bypass gate in the 2026-08-19 M5 A/B.
-                if lm_head.scales.is_none() && crate::fastpath::mtp_dense_head_draft_q4_enabled() {
+                let head_shape = lm_head.weight.shape();
+                if lm_head.scales.is_none()
+                    && crate::fastpath::mtp_dense_head_draft_q4_enabled()
+                    && head_shape.len() == 2
+                    && head_shape.last().is_some_and(|last| last % 64 == 0)
+                {
                     valid_draft_lm_head_spec(4, 64)
                 } else {
                     None
