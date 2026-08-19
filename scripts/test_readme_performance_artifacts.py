@@ -3319,6 +3319,28 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             self.assertEqual(decisions["ax_mtp_decode_steps"], 0)
             self.assertGreater(decisions["ax_mlx_ngram_decode_steps"], 0)
 
+    def test_qwen38_review_distinguishes_profile_selection_from_terminal_scope(
+        self,
+    ) -> None:
+        run_dir = (
+            SCRIPT_PATH.parents[1]
+            / "benchmarks/results/inference/mlx-inference"
+            / "2026-08-19-m5-qwen38-4bit-mtp-review"
+        )
+        readme = (run_dir / "README.md").read_text(encoding="utf-8")
+        self.assertIn("terminal-step", readme)
+        self.assertIn("telemetry artifact", readme)
+        self.assertIn("not evidence that the 3.8 pack ignored the opt-in", readme)
+
+        artifact = json.loads((run_dir / "q4-exact.json").read_text(encoding="utf-8"))
+        decisions = artifact["route"]["crossover_decisions"]
+        self.assertEqual(decisions["ax_mlx_qwen_linear_mtp_exact_eligible"], 1)
+        self.assertEqual(decisions["ax_mlx_qwen_linear_mtp_exact_selection"], 2)
+        self.assertEqual(decisions["ax_mlx_qwen_linear_mtp_exact_enabled"], 0)
+        self.assertGreater(decisions["ax_mtp_decode_steps"], 0)
+        self.assertGreater(decisions["ax_mtp_direct_fallback_steps"], 0)
+        self.assertGreater(decisions["ax_mtp_short_budget_bypass_steps"], 0)
+
     def test_readme_accepts_nonpublishable_mtp_diagnostic_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             readme_path, _summary_path = write_mtp_diagnostic_claim_fixture(Path(tmp))

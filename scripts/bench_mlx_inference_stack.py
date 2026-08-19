@@ -418,6 +418,13 @@ AX_MLX_MTP_MODEL_CONTRACT_KEYS = [
     "ax_mlx_mtp_model_gate_default_x1000",
 ]
 
+# Request activity is a high-water gauge. Unlike the stable model contract,
+# the final short-budget or bypass step may legitimately report it as zero
+# after earlier exact-profile verification work.
+AX_MLX_MTP_REQUEST_ACTIVITY_KEYS = [
+    "ax_mlx_qwen_linear_mtp_exact_active",
+]
+
 AX_MLX_TELEMETRY_KEYS = [
     # Resolved speculation profile (ADR-022): 0=auto, 1=coding, 2=agentic, 3=chatbot.
     "ax_mlx_speculation_profile",
@@ -514,6 +521,7 @@ AX_MLX_TELEMETRY_KEYS = [
     *AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS,
     *AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_KEYS,
     *AX_MLX_MTP_MODEL_CONTRACT_KEYS,
+    *AX_MLX_MTP_REQUEST_ACTIVITY_KEYS,
     # Affine quantization bit summary — constant per model load, max-merged across trials.
     "ax_mlx_affine_tensor_count",
     "ax_mlx_affine_min_bits",
@@ -550,6 +558,9 @@ AX_MLX_KV_GAUGE_KEYS: frozenset[str] = frozenset(
 
 AX_MLX_STABLE_MODEL_CONTRACT_KEYS: frozenset[str] = frozenset(
     AX_MLX_MTP_MODEL_CONTRACT_KEYS
+)
+AX_MLX_REQUEST_ACTIVITY_MAX_KEYS: frozenset[str] = frozenset(
+    AX_MLX_MTP_REQUEST_ACTIVITY_KEYS
 )
 
 AX_MLX_PREFIX_CACHE_MAX_KEYS = {
@@ -3029,6 +3040,8 @@ def merge_step_local_route_decisions(
         totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
     for key in AX_MLX_STABLE_MODEL_CONTRACT_KEYS:
         totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
+    for key in AX_MLX_REQUEST_ACTIVITY_MAX_KEYS:
+        totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
 
 
 def route_with_step_local_decisions(
@@ -3146,7 +3159,11 @@ def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
                         f"got {totals[key]} and {value}"
                     )
                 totals[key] = value
-            elif key in AX_MLX_AFFINE_MAX_KEYS or key in AX_MLX_KV_GAUGE_KEYS:
+            elif (
+                key in AX_MLX_AFFINE_MAX_KEYS
+                or key in AX_MLX_KV_GAUGE_KEYS
+                or key in AX_MLX_REQUEST_ACTIVITY_MAX_KEYS
+            ):
                 totals[key] = max(totals.get(key, 0), int(value))
             else:
                 totals[key] = totals.get(key, 0) + int(value)

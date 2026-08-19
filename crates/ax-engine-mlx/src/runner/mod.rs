@@ -3256,19 +3256,11 @@ impl ExecutionRunner for MlxRunner {
                 work_unit.telemetry_code(),
             );
         }
-        upsert_route_decision(
+        append_qwen_linear_mtp_exact_route_decisions(
             &mut route_metadata.crossover_decisions,
-            "ax_mlx_qwen_linear_mtp_exact_eligible",
-            u32::from(self.qwen_linear_mtp_exact_eligible),
-        );
-        upsert_route_decision(
-            &mut route_metadata.crossover_decisions,
-            "ax_mlx_qwen_linear_mtp_exact_enabled",
-            u32::from(exact_arithmetic_enabled),
-        );
-        upsert_route_decision(
-            &mut route_metadata.crossover_decisions,
-            "ax_mlx_qwen_linear_mtp_exact_selection",
+            self.qwen_linear_mtp_exact_eligible,
+            self.qwen_linear_mtp_exact_enabled,
+            exact_arithmetic_enabled,
             self.qwen_linear_mtp_exact_selection,
         );
         {
@@ -12124,6 +12116,39 @@ const fn qwen_linear_mtp_exact_scope_for_request(
     resolved_profile_enabled && mtp_requested
 }
 
+/// Emit the stable runner contract separately from the per-step arithmetic
+/// scope. A terminal short-budget or latched-bypass step can legitimately drop
+/// the scope after earlier MTP verification work; it must not rewrite the
+/// resolved model profile to disabled in the final response.
+fn append_qwen_linear_mtp_exact_route_decisions(
+    decisions: &mut Vec<(String, u32)>,
+    eligible: bool,
+    resolved_profile_enabled: bool,
+    active_for_step: bool,
+    selection: u32,
+) {
+    upsert_route_decision(
+        decisions,
+        "ax_mlx_qwen_linear_mtp_exact_eligible",
+        u32::from(eligible),
+    );
+    upsert_route_decision(
+        decisions,
+        "ax_mlx_qwen_linear_mtp_exact_enabled",
+        u32::from(resolved_profile_enabled),
+    );
+    upsert_route_decision(
+        decisions,
+        "ax_mlx_qwen_linear_mtp_exact_active",
+        u32::from(active_for_step),
+    );
+    upsert_route_decision(
+        decisions,
+        "ax_mlx_qwen_linear_mtp_exact_selection",
+        selection,
+    );
+}
+
 fn qwen_linear_mtp_exact_tensor_supported(
     source_quantized: bool,
     quantization: Option<(&str, u32, u32)>,
@@ -13989,6 +14014,28 @@ mod tests {
         assert!(!qwen_linear_mtp_exact_scope_for_request(true, false));
         assert!(!qwen_linear_mtp_exact_scope_for_request(false, true));
         assert!(!qwen_linear_mtp_exact_scope_for_request(false, false));
+    }
+
+    #[test]
+    fn qwen_linear_exact_route_keeps_resolved_profile_on_inactive_terminal_step() {
+        let mut decisions = Vec::new();
+        append_qwen_linear_mtp_exact_route_decisions(
+            &mut decisions,
+            true,
+            true,
+            false,
+            crate::fastpath::QwenLinearMtpExactSelection::ExplicitEnabled.route_code(),
+        );
+
+        assert_eq!(
+            decisions,
+            vec![
+                ("ax_mlx_qwen_linear_mtp_exact_eligible".to_owned(), 1),
+                ("ax_mlx_qwen_linear_mtp_exact_enabled".to_owned(), 1),
+                ("ax_mlx_qwen_linear_mtp_exact_active".to_owned(), 0),
+                ("ax_mlx_qwen_linear_mtp_exact_selection".to_owned(), 2),
+            ]
+        );
     }
 
     #[test]

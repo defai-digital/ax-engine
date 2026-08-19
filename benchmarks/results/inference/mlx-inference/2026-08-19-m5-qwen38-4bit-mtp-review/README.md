@@ -26,11 +26,11 @@ verify which drafter ran (the lesson from the corrected DeepSeek V4
    while winning under yesterday's harness protocol (1.15× at
    p128/random with the exact env): heavier 6-bit forwards do not
    absorb the non-exact replay verify the way 4-bit does.
-3. **Open engine question consolidated**: every Qwen3.8 pack reports
-   `ax_mlx_qwen_linear_mtp_exact_enabled: 0` (with `eligible: 1`) even
-   when the env opt-in is set, while the certified Qwen3.6 pack reports
-   1 — and the 4-bit exact-env run's throughput matched default. Either
-   the telemetry field is recorded before the effective resolution or
-   the 3.8 packs never actually engage the checkpoint path. This gates
-   the 6-bit default-serve MTP economics and belongs to the same
-   investigation as the pending Tier-2 re-cert for the 3.8 family.
+3. **Exact-profile telemetry correction**: the exact-env artifact records
+   `eligible: 1` and `selection: 2`, proving that the explicit profile was
+   resolved at model load. Its final `enabled: 0` was a terminal-step
+   telemetry artifact: the last short-budget/direct-fallback step dropped the
+   per-step arithmetic scope and overwrote the stable runner decision. It was
+   not evidence that the 3.8 pack ignored the opt-in. v7.1.4 keeps `enabled`
+   model-stable and reports per-step activity separately as `active`. Formal
+   Tier-2 re-certification for the 3.8 family remains pending.

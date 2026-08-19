@@ -4634,6 +4634,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "core_prefix_reuse_disabled": 1,
                     "ax_mlx_qwen_linear_mtp_exact_eligible": 1,
                     "ax_mlx_qwen_linear_mtp_exact_enabled": 1,
+                    "ax_mlx_qwen_linear_mtp_exact_active": 1,
                     "ax_ngram_draft_attempts": 99,
                 }
             },
@@ -4647,7 +4648,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_prefix_cache_entries": 1,
                     "ax_mlx_prefix_cache_bytes_kib": 32,
                     "ax_mlx_qwen_linear_mtp_exact_eligible": 1,
-                    "ax_mlx_qwen_linear_mtp_exact_enabled": 0,
+                    "ax_mlx_qwen_linear_mtp_exact_enabled": 1,
+                    "ax_mlx_qwen_linear_mtp_exact_active": 0,
                 }
             },
         )
@@ -4681,6 +4683,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(decisions["core_prefix_reuse_disabled"], 1)
         self.assertEqual(decisions["ax_mlx_qwen_linear_mtp_exact_eligible"], 1)
         self.assertEqual(decisions["ax_mlx_qwen_linear_mtp_exact_enabled"], 1)
+        self.assertEqual(decisions["ax_mlx_qwen_linear_mtp_exact_active"], 1)
 
     def test_ax_mlx_model_contract_must_be_stable_across_repetitions(self) -> None:
         with self.assertRaisesRegex(ValueError, "changed across repetitions"):
