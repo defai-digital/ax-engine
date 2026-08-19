@@ -9,6 +9,7 @@
 //! without promoting it for normal users. GLM and Gemma retain their
 //! independently calibrated policies, and incompatible drafters fail closed.
 
+use super::mtp_tuning::MtpRuntimeCertification;
 use super::pipeline::RouteDecisionSink;
 
 const CERTIFICATION_DEPTH_ONE_GATE: f32 = 0.0;
@@ -124,6 +125,8 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) qwen_linear_attention: bool,
     pub(super) qwen_linear_exact_enabled: bool,
     pub(super) qwen_linear_certification_candidate: bool,
+    /// Publisher-declared MTP certification from `axquant_runtime.json`.
+    pub(super) runtime_certification: MtpRuntimeCertification,
 }
 
 /// Immutable policy snapshot owned by one [`super::MlxRunner`].
@@ -131,10 +134,12 @@ pub(super) struct MtpModelPolicyInputs {
 pub(super) struct MtpModelPolicy {
     kind: MtpModelPolicyKind,
     max_depth: usize,
+    runtime_certification: MtpRuntimeCertification,
 }
 
 impl MtpModelPolicy {
     pub(super) fn from_loaded(inputs: MtpModelPolicyInputs) -> Self {
+        let runtime_certification = inputs.runtime_certification;
         let attachment_count = [
             inputs.qwen_depth.is_some(),
             inputs.glm_depth.is_some(),
@@ -156,6 +161,7 @@ impl MtpModelPolicy {
                     .chain(inputs.deepseek_v4_depth)
                     .max()
                     .unwrap_or(0),
+                runtime_certification,
             };
         }
 
@@ -178,13 +184,18 @@ impl MtpModelPolicy {
                 // alone.
                 MtpModelPolicyKind::QwenLinearUncertifiedDirectFallback
             };
-            return Self { kind, max_depth };
+            return Self {
+                kind,
+                max_depth,
+                runtime_certification,
+            };
         }
 
         if let Some(max_depth) = inputs.glm_depth {
             return Self {
                 kind: MtpModelPolicyKind::GlmCalibrated,
                 max_depth,
+                runtime_certification,
             };
         }
 
@@ -192,6 +203,7 @@ impl MtpModelPolicy {
             return Self {
                 kind: MtpModelPolicyKind::Gemma4AssistantCalibrated,
                 max_depth,
+                runtime_certification,
             };
         }
 
@@ -202,12 +214,17 @@ impl MtpModelPolicy {
                 // Tensor eligibility is not end-to-end acceleration evidence.
                 MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
             };
-            return Self { kind, max_depth };
+            return Self {
+                kind,
+                max_depth,
+                runtime_certification,
+            };
         }
 
         Self {
             kind: MtpModelPolicyKind::None,
             max_depth: 0,
+            runtime_certification,
         }
     }
 
@@ -227,6 +244,27 @@ impl MtpModelPolicy {
 
     pub(super) const fn max_depth(self) -> usize {
         self.max_depth
+    }
+
+    pub(super) const fn is_qwen_calibrated(self) -> bool {
+        matches!(self.kind, MtpModelPolicyKind::QwenCalibrated)
+    }
+
+    /// Release gate for *default-on* model MTP. The default-on QwenCalibrated
+    /// route additionally requires publisher runtime certification (the
+    /// `axquant_runtime.json` `"mtp"` block: `enabled_by_default` plus either
+    /// an `optimized` stamp or a measured speedup >= 1.0x). Every other kind
+    /// keeps its existing default: GLM/Gemma4 policies were calibrated
+    /// independently and their packs ship no AXQuant `mtp` block, the
+    /// certification-candidate and fallback kinds are already opt-in or
+    /// route-blocked, and `None` has nothing to gate. Explicit requests
+    /// (`set_mtp_requested`, `MlxMtpPolicy::Required`) are unaffected.
+    pub(super) const fn certified_default_on(self) -> bool {
+        if self.is_qwen_calibrated() {
+            self.runtime_certification.default_on
+        } else {
+            true
+        }
     }
 
     pub(super) const fn is_qwen_linear_direct_fallback(self) -> bool {
@@ -344,6 +382,24 @@ impl MtpModelPolicy {
             "ax_mlx_mtp_model_gate_default_x1000",
             model_default.map_or(0, |gate| (gate.clamp(0.0, 1.0) * 1000.0) as u32),
         );
+        decisions.upsert_route_decision(
+            "ax_mlx_mtp_certified_default_on",
+            u32::from(self.certified_default_on()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_mtp_runtime_enabled_by_default",
+            u32::from(self.runtime_certification.enabled_by_default),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_mtp_runtime_optimized",
+            u32::from(self.runtime_certification.optimized),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_mtp_runtime_measured_speedup_x1000",
+            self.runtime_certification
+                .measured_speedup_x1000
+                .unwrap_or(0),
+        );
     }
 }
 
@@ -391,12 +447,77 @@ mod tests {
             qwen_depth,
             glm_depth,
             gemma4_assistant_depth: gemma_depth,
-            deepseek_v4_depth: None,
-            deepseek_v4_certification_candidate: false,
             qwen_linear_attention: qwen_linear,
             qwen_linear_exact_enabled: qwen_exact,
             qwen_linear_certification_candidate: certification_candidate,
+            ..Default::default()
         })
+    }
+
+    fn certification(default_on: bool) -> MtpRuntimeCertification {
+        MtpRuntimeCertification {
+            enabled_by_default: true,
+            optimized: default_on,
+            measured_speedup_x1000: None,
+            default_on,
+        }
+    }
+
+    #[test]
+    fn certified_default_on_gates_only_qwen_calibrated() {
+        // QwenCalibrated (route 1, the only default-on model-MTP route today)
+        // follows the pack's runtime certification.
+        for (default_on, expect) in [(false, false), (true, true)] {
+            let dense_qwen = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+                qwen_depth: Some(1),
+                runtime_certification: certification(default_on),
+                ..Default::default()
+            });
+            assert!(dense_qwen.is_qwen_calibrated());
+            assert!(dense_qwen.route_safe());
+            assert_eq!(dense_qwen.certified_default_on(), expect);
+        }
+
+        // Every other kind keeps its existing default (gate returns true).
+        let others = [
+            policy(None, None, None, false, false, false), // None
+            policy(None, Some(1), None, false, false, false), // GLM
+            policy(None, None, Some(1), false, false, false), // Gemma4
+            policy(Some(1), None, None, true, true, true), // linear candidate
+            policy(Some(1), None, None, true, false, false), // linear fallback
+            policy_v4(Some(1)),                            // V4 fallback
+        ];
+        for other in others {
+            assert!(!other.is_qwen_calibrated());
+            assert!(
+                other.certified_default_on(),
+                "non-QwenCalibrated kinds must not be gated: {other:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn route_telemetry_exposes_runtime_certification() {
+        let mut decisions = Vec::new();
+        MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_depth: Some(1),
+            runtime_certification: MtpRuntimeCertification {
+                enabled_by_default: true,
+                optimized: false,
+                measured_speedup_x1000: Some(960),
+                default_on: false,
+            },
+            ..Default::default()
+        })
+        .append_route_decisions(false, &mut decisions);
+        let map = decisions.into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(map.get("ax_mlx_mtp_certified_default_on"), Some(&0));
+        assert_eq!(map.get("ax_mlx_mtp_runtime_enabled_by_default"), Some(&1));
+        assert_eq!(map.get("ax_mlx_mtp_runtime_optimized"), Some(&0));
+        assert_eq!(
+            map.get("ax_mlx_mtp_runtime_measured_speedup_x1000"),
+            Some(&960)
+        );
     }
 
     fn policy_v4(v4_depth: Option<usize>) -> MtpModelPolicy {

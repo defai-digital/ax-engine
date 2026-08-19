@@ -675,6 +675,20 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_MTP_FORCE_REQUESTED` — treat every pack as certified for
+    /// *default-on* model MTP, bypassing the `axquant_runtime.json` `"mtp"`
+    /// certification gate (`enabled_by_default` + `optimized`/measured
+    /// speedup >= 1.0x). For formal benches and certification runs against
+    /// packs whose metadata has not been stamped yet. Route safety
+    /// (`MtpModelPolicy::route_safe`), `--ax-direct`, and `AX_NO_SPEC`
+    /// still apply — this only neutralizes the certification check, it
+    /// cannot resurrect an unsafe or explicitly disabled route.
+    /// Default OFF.
+    mtp_force_requested,
+    "AX_MLX_MTP_FORCE_REQUESTED"
+);
+
+env_flag!(
     /// `AX_MLX_DENSE_WIDE_GEMV` — dense (unquantized) projections with a
     /// contiguous `[in, out]` `decode_weight_t` and 1..=8 leading rows take
     /// a multi-row Metal GEMV that reads each weight element once and FMAs

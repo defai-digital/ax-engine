@@ -4,7 +4,7 @@ use std::env;
 use ax_engine_core::EngineCore;
 
 use super::config::EngineSessionConfig;
-#[cfg(feature = "mlx-native")]
+#[cfg(any(feature = "mlx-native", test))]
 use super::config::MlxMtpPolicy;
 use super::errors::EngineSessionError;
 
@@ -142,7 +142,10 @@ fn build_mlx_core(
     if config.mlx_mtp_policy == MlxMtpPolicy::Required && !runner.has_mtp() {
         return Err(EngineSessionError::MlxMtpRequiredButUnavailable);
     }
-    runner.set_mtp_requested(config.mlx_mtp_policy != MlxMtpPolicy::Disabled);
+    runner.set_mtp_requested(mtp_requested_for_policy(
+        config.mlx_mtp_policy,
+        runner.mtp_certified_default_on(),
+    ));
     // Couple PR4 FA private pool capacity to the session logical block table
     // when the opt-in flag is engaged (default remains OFF / contiguous).
     runner.align_fa_block_pool_to_kv(
@@ -158,6 +161,23 @@ fn build_mlx_core(
     // diffusion models (and PrefillChunk / TokenDecode for AR) per request.
     core.set_generation_kind(artifacts.manifest().generation_kind());
     Ok(core)
+}
+
+/// Map the session MTP policy to the runner's `set_mtp_requested` argument.
+///
+/// `Disabled` and `Required` are explicit and unconditional (`Required`
+/// availability is checked separately before this call). `Auto` — the SDK
+/// and server default — follows the pack's publisher certification so an
+/// uncertified pack decodes direct by default instead of paying an
+/// unmeasured MTP verify tax. `set_mtp_requested` itself still enforces
+/// route safety and the `AX_NO_SPEC` kill switch.
+#[cfg(any(feature = "mlx-native", test))]
+fn mtp_requested_for_policy(policy: MlxMtpPolicy, certified_default_on: bool) -> bool {
+    match policy {
+        MlxMtpPolicy::Disabled => false,
+        MlxMtpPolicy::Required => true,
+        MlxMtpPolicy::Auto => certified_default_on,
+    }
 }
 
 #[cfg(feature = "mlx-native")]
@@ -193,6 +213,19 @@ mod tests {
         }
         for value in ["", "0", "false", "no", "enabled"] {
             assert!(!prefix_reuse_disabled_value(value));
+        }
+    }
+
+    #[test]
+    fn mtp_policy_tri_state_respects_pack_certification() {
+        for certified in [false, true] {
+            assert!(!mtp_requested_for_policy(MlxMtpPolicy::Disabled, certified));
+            assert!(mtp_requested_for_policy(MlxMtpPolicy::Required, certified));
+            assert_eq!(
+                mtp_requested_for_policy(MlxMtpPolicy::Auto, certified),
+                certified,
+                "Auto must follow the pack certification verdict"
+            );
         }
     }
 }

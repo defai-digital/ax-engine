@@ -1267,6 +1267,16 @@ impl MlxRunner {
         self.mtp_requested
     }
 
+    /// Whether this pack is certified for *default-on* model MTP
+    /// (`MlxMtpPolicy::Auto`). True unless the loaded target is the
+    /// default-on QwenCalibrated route and its `axquant_runtime.json`
+    /// `"mtp"` block lacks publisher certification. Explicit
+    /// `MlxMtpPolicy::Required` and `AX_MLX_MTP_FORCE_REQUESTED` bypass
+    /// this gate; route safety and speculation kill switches do not.
+    pub fn mtp_certified_default_on(&self) -> bool {
+        self.mtp_model_policy.certified_default_on() || crate::fastpath::mtp_force_requested()
+    }
+
     fn mtp_max_depth(&self) -> usize {
         self.mtp_model_policy.max_depth()
     }
@@ -1617,6 +1627,9 @@ impl MlxRunner {
             ),
             // DeepSeek V4 nextn: same fail-closed product default until Tier 2.
             deepseek_v4_certification_candidate: deepseek_v4_mtp_certification_candidate_from_env(),
+            // Publisher-declared default-on certification from the pack's
+            // axquant_runtime.json "mtp" block; fail-closed when absent.
+            runtime_certification: mtp_runtime_certification(artifacts.root_dir()),
         });
 
         let expert_streaming_active = weights.expert_stream.is_some();
@@ -1938,8 +1951,13 @@ impl MlxRunner {
             // AX-only README benches (`--ax-direct` / `AX_NO_SPEC`). Leave MTP
             // requested only when speculation remains enabled so greedy direct
             // decode keeps the double-buffer pipeline instead of falling into
-            // `run_non_ngram_decode` → single-decode.
-            mtp_requested: !disable_ngram_acceleration && mtp_model_route_safe,
+            // `run_non_ngram_decode` → single-decode. Default-on additionally
+            // requires the pack's publisher certification (fail-closed);
+            // explicit requests re-enter through `set_mtp_requested`.
+            mtp_requested: !disable_ngram_acceleration
+                && mtp_model_route_safe
+                && (mtp_model_policy.certified_default_on()
+                    || crate::fastpath::mtp_force_requested()),
             mtp_model_policy,
             qwen_linear_mtp_exact_eligible,
             qwen_linear_mtp_exact_enabled,

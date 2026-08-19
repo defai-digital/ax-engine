@@ -683,9 +683,165 @@ pub(super) fn adaptive_ngram_saturation_threshold(mtp_depth: usize) -> f32 {
         .unwrap_or(if mtp_depth >= 3 { 0.97 } else { 0.98 })
 }
 
+/// Publisher-declared MTP runtime certification, parsed from the optional
+/// `"mtp"` block of `axquant_runtime.json` in the pack root.
+///
+/// This is the fail-closed release gate for default-on MTP: a pack only gets
+/// MTP enabled by default when its publisher has *measured* the pack and
+/// stamped it as optimized (or recorded a >= 1.0x speedup). Absent, missing,
+/// or malformed metadata all resolve to `default_on == false`; explicit
+/// requests (`MlxMtpPolicy::Required`, env overrides) are unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct MtpRuntimeCertification {
+    /// `mtp.enabled_by_default` as published (false when absent/malformed).
+    pub enabled_by_default: bool,
+    /// `mtp.optimized` as published (false when absent/malformed).
+    pub optimized: bool,
+    /// `mtp.measured_speedup` scaled by 1000 (e.g. 1.20x -> 1200), kept as an
+    /// integer so the struct stays `Copy + Eq`. `None` when absent/invalid.
+    pub measured_speedup_x1000: Option<u32>,
+    /// The certification verdict: publisher opted in *and* backed it with
+    /// either an `optimized` stamp or a measured speedup >= 1.0x.
+    pub default_on: bool,
+}
+
+impl MtpRuntimeCertification {
+    pub(crate) fn from_runtime_json(value: &serde_json::Value) -> Self {
+        let Some(mtp) = value.get("mtp").and_then(|v| v.as_object()) else {
+            return Self::default();
+        };
+        let enabled_by_default = mtp
+            .get("enabled_by_default")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let optimized = mtp
+            .get("optimized")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let measured_speedup_x1000 = mtp
+            .get("measured_speedup")
+            .and_then(|v| v.as_f64())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|v| (v * 1000.0).round().min(f64::from(u32::MAX)) as u32);
+        let default_on =
+            enabled_by_default && (optimized || measured_speedup_x1000.is_some_and(|x| x >= 1000));
+        Self {
+            enabled_by_default,
+            optimized,
+            measured_speedup_x1000,
+            default_on,
+        }
+    }
+}
+
+/// Read the MTP runtime certification from `<root>/axquant_runtime.json`.
+/// Fail-closed: a missing or unparseable file yields the all-false default.
+pub(crate) fn mtp_runtime_certification(root: &std::path::Path) -> MtpRuntimeCertification {
+    let path = root.join("axquant_runtime.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return MtpRuntimeCertification::default();
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(value) => MtpRuntimeCertification::from_runtime_json(&value),
+        Err(_) => MtpRuntimeCertification::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MtpNgramStackingEnv, mtp_ngram_stacking_allowed};
+    use super::{
+        MtpNgramStackingEnv, MtpRuntimeCertification, mtp_ngram_stacking_allowed,
+        mtp_runtime_certification,
+    };
+
+    #[test]
+    fn certification_defaults_closed_without_mtp_block() {
+        let v: serde_json::Value = serde_json::json!({"quantization": {"bits": 6}});
+        assert_eq!(
+            MtpRuntimeCertification::from_runtime_json(&v),
+            MtpRuntimeCertification::default()
+        );
+        assert!(!MtpRuntimeCertification::default().default_on);
+    }
+
+    #[test]
+    fn certification_enabled_but_unoptimized_stays_off() {
+        // Today's fleet state: every published MTP pack carries exactly this.
+        let v = serde_json::json!({"mtp": {
+            "enabled_by_default": true, "optimized": false, "measured_speedup": null
+        }});
+        let cert = MtpRuntimeCertification::from_runtime_json(&v);
+        assert!(cert.enabled_by_default);
+        assert!(!cert.optimized);
+        assert_eq!(cert.measured_speedup_x1000, None);
+        assert!(!cert.default_on);
+    }
+
+    #[test]
+    fn certification_optimized_stamp_turns_default_on() {
+        let v = serde_json::json!({"mtp": {"enabled_by_default": true, "optimized": true}});
+        assert!(MtpRuntimeCertification::from_runtime_json(&v).default_on);
+    }
+
+    #[test]
+    fn certification_measured_speedup_gates_at_unity() {
+        let win = serde_json::json!({"mtp": {
+            "enabled_by_default": true, "optimized": false, "measured_speedup": 1.20
+        }});
+        let cert = MtpRuntimeCertification::from_runtime_json(&win);
+        assert_eq!(cert.measured_speedup_x1000, Some(1200));
+        assert!(cert.default_on);
+
+        let lose = serde_json::json!({"mtp": {
+            "enabled_by_default": true, "measured_speedup": 0.96
+        }});
+        let cert = MtpRuntimeCertification::from_runtime_json(&lose);
+        assert_eq!(cert.measured_speedup_x1000, Some(960));
+        assert!(!cert.default_on, "0.96x flagship row must not default on");
+    }
+
+    #[test]
+    fn certification_requires_enabled_by_default_opt_in() {
+        let v = serde_json::json!({"mtp": {
+            "enabled_by_default": false, "optimized": true, "measured_speedup": 1.55
+        }});
+        assert!(!MtpRuntimeCertification::from_runtime_json(&v).default_on);
+    }
+
+    #[test]
+    fn certification_rejects_malformed_fields() {
+        let v = serde_json::json!({"mtp": {
+            "enabled_by_default": "yes", "optimized": 1, "measured_speedup": "fast"
+        }});
+        let cert = MtpRuntimeCertification::from_runtime_json(&v);
+        assert_eq!(cert, MtpRuntimeCertification::default());
+
+        let nan = serde_json::json!({"mtp": {
+            "enabled_by_default": true, "measured_speedup": -1.0
+        }});
+        assert_eq!(
+            MtpRuntimeCertification::from_runtime_json(&nan).measured_speedup_x1000,
+            None
+        );
+    }
+
+    #[test]
+    fn certification_missing_file_fails_closed() {
+        let dir = std::env::temp_dir().join("ax-mtp-cert-missing-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::remove_file(dir.join("axquant_runtime.json"));
+        assert_eq!(
+            mtp_runtime_certification(&dir),
+            MtpRuntimeCertification::default()
+        );
+        // Unparseable file also fails closed.
+        std::fs::write(dir.join("axquant_runtime.json"), b"{not json").unwrap();
+        assert_eq!(
+            mtp_runtime_certification(&dir),
+            MtpRuntimeCertification::default()
+        );
+        let _ = std::fs::remove_file(dir.join("axquant_runtime.json"));
+    }
 
     #[test]
     fn exact_qwen_linear_mtp_stacks_ngram_when_env_unset() {
