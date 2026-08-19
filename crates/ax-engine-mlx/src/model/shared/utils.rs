@@ -2814,6 +2814,63 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn dense_wide_gemv_rows_are_leading_invariant_bit_exact() {
+        // The verify-window projection relies on this: row s of a Leading=S
+        // launch must be bit-identical to a Leading=1 launch of that row, so
+        // batched dense-head verify matches the exact profile's singleton
+        // decode arithmetic.
+        let input_dim = 96_i32;
+        let out_dim = 40_i32;
+        let weight_t_data: Vec<f32> = (0..(input_dim * out_dim) as usize)
+            .map(|i| (((i % 733) as f32) - 350.0) * 0.002)
+            .collect();
+        let weight_t = astype(
+            &array_f32(&weight_t_data, &[input_dim, out_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        for leading in [2_i32, 3, 4] {
+            let x_data: Vec<f32> = (0..(leading * input_dim) as usize)
+                .map(|i| (((i % 259) as f32) - 120.0) * 0.01)
+                .collect();
+            let x = astype(
+                &array_f32(&x_data, &[1, leading, input_dim]),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            let batched = dense_wide_gemv_weight_t(&x, &weight_t)
+                .expect("batched dense wide GEMV must engage");
+            let mut rows = Vec::new();
+            for t in 0..leading {
+                let row = contiguous(
+                    &slice(&x, &[0, t, 0], &[1, t + 1, input_dim], &[1, 1, 1], None),
+                    None,
+                );
+                rows.push(
+                    dense_wide_gemv_weight_t(&row, &weight_t)
+                        .expect("singleton dense wide GEMV must engage"),
+                );
+            }
+            let refs: Vec<&MlxArray> = rows.iter().collect();
+            let singles = concatenate(&refs, 1, None);
+            let a = astype(&batched, MlxDtype::Float32, None);
+            let b = astype(&singles, MlxDtype::Float32, None);
+            eval(&[&a, &b]);
+            let av = a.data_f32();
+            let bv = b.data_f32();
+            assert_eq!(av.len(), bv.len());
+            for i in 0..av.len() {
+                assert_eq!(
+                    av[i].to_bits(),
+                    bv[i].to_bits(),
+                    "Leading={leading} row projection diverged at {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn dense_wide_gemv_matches_matmul_f32_and_bf16() {
         let input_dim = 96_i32;
         let out_dim = 40_i32;
