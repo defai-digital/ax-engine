@@ -3775,7 +3775,22 @@ fn load_mtp(
     Some(MtpWeights {
         fc,
         mtp_norm,
-        draft_lm_head: draft_lm_head_spec.and_then(|spec| build_draft_lm_head(lm_head, spec)),
+        draft_lm_head: draft_lm_head_spec
+            .or_else(|| {
+                // A dense bf16 head costs a full-weight read per draft step
+                // (2.54 GB on Qwen3.8-27B — the dominant term of the 6bit-MTP
+                // draft wall). Default a 4-bit gs64 draft head for dense
+                // targets: draft logits only propose (verify decides on the
+                // target head), and 4-bit argmax tracks bf16 closely, unlike
+                // the 2-bit decode overlay whose acceptance collapse tripped
+                // the MTP bypass gate in the 2026-08-19 M5 A/B.
+                if lm_head.scales.is_none() && crate::fastpath::mtp_dense_head_draft_q4_enabled() {
+                    valid_draft_lm_head_spec(4, 64)
+                } else {
+                    None
+                }
+            })
+            .and_then(|spec| build_draft_lm_head(lm_head, spec)),
         pre_fc_norm_embedding,
         pre_fc_norm_hidden,
         attn_norm,
