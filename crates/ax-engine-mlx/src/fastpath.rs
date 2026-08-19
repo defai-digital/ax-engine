@@ -637,6 +637,27 @@ env_flag!(
     "AX_MLX_QWEN_DENSE_FFN_MATVEC_EXT_BITS"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_EXACT_DENSE_WEIGHT_T_GEMV` — under the exact MTP profile,
+    /// dense projections whose head carries a contiguous `[in, out]`
+    /// `decode_weight_t` read it directly through the multi-row GEMV
+    /// instead of the invariant dense kernel. The invariant kernel reads
+    /// `qw.weight`, which `prepare_contiguous_decode_weight_t` replaced
+    /// with a lazy transpose view — `ensure_row_contiguous` then
+    /// re-materializes the full head (2.54 GB on Qwen3.8-27B) on **every**
+    /// draft and verify call. Measured on the 6bit-MTP pack (M5): draft
+    /// 18.6 ms/step and verify-eval 22.9 ms/step against 4.1 / 6.4 on the
+    /// quantized-head MXFP4 sibling — the whole 0.80× MTP regression.
+    /// One arithmetic serves S=1..8 so MTP-off and verify stay mutually
+    /// consistent; greedy streams may shift vs the old kernel, so packs
+    /// certified on it need a re-cert pass.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_EXACT_DENSE_WEIGHT_T_GEMV=0`).
+    exact_dense_weight_t_gemv_enabled,
+    "AX_MLX_EXACT_DENSE_WEIGHT_T_GEMV"
+);
+
 env_flag!(
     /// `AX_MLX_DENSE_WIDE_GEMV` — dense (unquantized) projections with a
     /// contiguous `[in, out]` `decode_weight_t` and 2..=8 leading rows take
