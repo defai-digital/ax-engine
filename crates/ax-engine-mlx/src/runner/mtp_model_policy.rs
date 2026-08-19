@@ -125,6 +125,11 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) qwen_linear_attention: bool,
     pub(super) qwen_linear_exact_enabled: bool,
     pub(super) qwen_linear_certification_candidate: bool,
+    /// The explicit `AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE` opt-in,
+    /// kept separate from the resolved candidate bit above (which the
+    /// exact-profile auto-default also satisfies): only the env form keeps
+    /// default-on MTP for an uncertified pack (formal-harness recipe).
+    pub(super) qwen_linear_certification_env_opt_in: bool,
     /// Publisher-declared MTP certification from `axquant_runtime.json`.
     pub(super) runtime_certification: MtpRuntimeCertification,
 }
@@ -134,12 +139,22 @@ pub(super) struct MtpModelPolicyInputs {
 pub(super) struct MtpModelPolicy {
     kind: MtpModelPolicyKind,
     max_depth: usize,
+    qwen_linear_certification_env_opt_in: bool,
     runtime_certification: MtpRuntimeCertification,
 }
 
 impl MtpModelPolicy {
     pub(super) fn from_loaded(inputs: MtpModelPolicyInputs) -> Self {
-        let runtime_certification = inputs.runtime_certification;
+        let (kind, max_depth) = Self::classify(inputs);
+        Self {
+            kind,
+            max_depth,
+            qwen_linear_certification_env_opt_in: inputs.qwen_linear_certification_env_opt_in,
+            runtime_certification: inputs.runtime_certification,
+        }
+    }
+
+    fn classify(inputs: MtpModelPolicyInputs) -> (MtpModelPolicyKind, usize) {
         let attachment_count = [
             inputs.qwen_depth.is_some(),
             inputs.glm_depth.is_some(),
@@ -151,9 +166,9 @@ impl MtpModelPolicy {
         .count();
 
         if attachment_count > 1 {
-            return Self {
-                kind: MtpModelPolicyKind::ConflictingDrafters,
-                max_depth: inputs
+            return (
+                MtpModelPolicyKind::ConflictingDrafters,
+                inputs
                     .qwen_depth
                     .into_iter()
                     .chain(inputs.glm_depth)
@@ -161,8 +176,7 @@ impl MtpModelPolicy {
                     .chain(inputs.deepseek_v4_depth)
                     .max()
                     .unwrap_or(0),
-                runtime_certification,
-            };
+            );
         }
 
         if let Some(max_depth) = inputs.qwen_depth {
@@ -184,27 +198,15 @@ impl MtpModelPolicy {
                 // alone.
                 MtpModelPolicyKind::QwenLinearUncertifiedDirectFallback
             };
-            return Self {
-                kind,
-                max_depth,
-                runtime_certification,
-            };
+            return (kind, max_depth);
         }
 
         if let Some(max_depth) = inputs.glm_depth {
-            return Self {
-                kind: MtpModelPolicyKind::GlmCalibrated,
-                max_depth,
-                runtime_certification,
-            };
+            return (MtpModelPolicyKind::GlmCalibrated, max_depth);
         }
 
         if let Some(max_depth) = inputs.gemma4_assistant_depth {
-            return Self {
-                kind: MtpModelPolicyKind::Gemma4AssistantCalibrated,
-                max_depth,
-                runtime_certification,
-            };
+            return (MtpModelPolicyKind::Gemma4AssistantCalibrated, max_depth);
         }
 
         if let Some(max_depth) = inputs.deepseek_v4_depth {
@@ -214,18 +216,10 @@ impl MtpModelPolicy {
                 // Tensor eligibility is not end-to-end acceleration evidence.
                 MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
             };
-            return Self {
-                kind,
-                max_depth,
-                runtime_certification,
-            };
+            return (kind, max_depth);
         }
 
-        Self {
-            kind: MtpModelPolicyKind::None,
-            max_depth: 0,
-            runtime_certification,
-        }
+        (MtpModelPolicyKind::None, 0)
     }
 
     /// Hard safety gate for model-based speculation.
@@ -250,20 +244,37 @@ impl MtpModelPolicy {
         matches!(self.kind, MtpModelPolicyKind::QwenCalibrated)
     }
 
-    /// Release gate for *default-on* model MTP. The default-on QwenCalibrated
-    /// route additionally requires publisher runtime certification (the
-    /// `axquant_runtime.json` `"mtp"` block: `enabled_by_default` plus either
-    /// an `optimized` stamp or a measured speedup >= 1.0x). Every other kind
-    /// keeps its existing default: GLM/Gemma4 policies were calibrated
-    /// independently and their packs ship no AXQuant `mtp` block, the
-    /// certification-candidate and fallback kinds are already opt-in or
-    /// route-blocked, and `None` has nothing to gate. Explicit requests
-    /// (`set_mtp_requested`, `MlxMtpPolicy::Required`) are unaffected.
+    /// Release gate for *default-on* model MTP. Every Qwen route that can be
+    /// reached without an explicit env opt-in additionally requires publisher
+    /// runtime certification (the `axquant_runtime.json` `"mtp"` block:
+    /// `enabled_by_default` plus either an `optimized` stamp or a measured
+    /// speedup >= 1.0x):
+    ///
+    /// - `QwenCalibrated` (dense Qwen, route 1) is default-on today.
+    /// - `QwenLinearCertificationCandidate*` (routes 2/3) are ALSO reached by
+    ///   default on every exact-eligible linear pack, because the exact
+    ///   profile auto-enables and `resolve_qwen_linear_certification_candidate`
+    ///   accepts the exact profile alone — the Qwen3.8-27B AXQ family
+    ///   (including the 0.96x 6-bit flagship) lives here, not on route 1.
+    ///   The explicit `AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE` env
+    ///   opt-in keeps default-on for the formal harness.
+    ///
+    /// Every other kind keeps its existing default: GLM/Gemma4 policies were
+    /// calibrated independently and their packs ship no AXQuant `mtp` block,
+    /// the DeepSeek V4 candidate kind is reachable only via env, fallback and
+    /// conflicting kinds are already route-blocked, and `None` has nothing to
+    /// gate. Explicit requests (`set_mtp_requested`, `MlxMtpPolicy::Required`)
+    /// are unaffected.
     pub(super) const fn certified_default_on(self) -> bool {
         if self.is_qwen_calibrated() {
-            self.runtime_certification.default_on
-        } else {
-            true
+            return self.runtime_certification.default_on;
+        }
+        match self.kind {
+            MtpModelPolicyKind::QwenLinearCertificationCandidateDepthOne
+            | MtpModelPolicyKind::QwenLinearCertificationCandidateMultiDepth => {
+                self.runtime_certification.default_on || self.qwen_linear_certification_env_opt_in
+            }
+            _ => true,
         }
     }
 
@@ -464,9 +475,8 @@ mod tests {
     }
 
     #[test]
-    fn certified_default_on_gates_only_qwen_calibrated() {
-        // QwenCalibrated (route 1, the only default-on model-MTP route today)
-        // follows the pack's runtime certification.
+    fn certified_default_on_gates_default_reachable_qwen_routes() {
+        // QwenCalibrated (dense Qwen, route 1) follows the pack certification.
         for (default_on, expect) in [(false, false), (true, true)] {
             let dense_qwen = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
                 qwen_depth: Some(1),
@@ -478,20 +488,61 @@ mod tests {
             assert_eq!(dense_qwen.certified_default_on(), expect);
         }
 
+        // The linear certification-candidate routes 2/3 are reached WITHOUT
+        // env on every exact-eligible pack (the Qwen3.8 AXQ family — incl.
+        // the 0.96x 6-bit flagship — lives here), so they are gated too.
+        for max_depth in [1, 2] {
+            let auto_exact = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+                qwen_depth: Some(max_depth),
+                qwen_linear_attention: true,
+                qwen_linear_exact_enabled: true,
+                qwen_linear_certification_candidate: true,
+                qwen_linear_certification_env_opt_in: false,
+                ..Default::default()
+            });
+            assert!(auto_exact.route_safe());
+            assert!(
+                !auto_exact.certified_default_on(),
+                "exact-auto candidate route must be gated without env opt-in"
+            );
+
+            // Pack certification turns default-on back on for the same route.
+            let certified = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+                qwen_depth: Some(max_depth),
+                qwen_linear_attention: true,
+                qwen_linear_exact_enabled: true,
+                qwen_linear_certification_candidate: true,
+                runtime_certification: certification(true),
+                ..Default::default()
+            });
+            assert!(certified.certified_default_on());
+
+            // The explicit env opt-in preserves the formal-harness recipe on
+            // an uncertified pack.
+            let env_opt_in = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+                qwen_depth: Some(max_depth),
+                qwen_linear_attention: true,
+                qwen_linear_exact_enabled: true,
+                qwen_linear_certification_candidate: true,
+                qwen_linear_certification_env_opt_in: true,
+                ..Default::default()
+            });
+            assert!(env_opt_in.certified_default_on());
+        }
+
         // Every other kind keeps its existing default (gate returns true).
         let others = [
             policy(None, None, None, false, false, false), // None
             policy(None, Some(1), None, false, false, false), // GLM
             policy(None, None, Some(1), false, false, false), // Gemma4
-            policy(Some(1), None, None, true, true, true), // linear candidate
-            policy(Some(1), None, None, true, false, false), // linear fallback
-            policy_v4(Some(1)),                            // V4 fallback
+            policy(Some(1), None, None, true, false, false), // linear fallback (route-blocked)
+            policy_v4(Some(1)),                            // V4 fallback (route-blocked)
         ];
         for other in others {
             assert!(!other.is_qwen_calibrated());
             assert!(
                 other.certified_default_on(),
-                "non-QwenCalibrated kinds must not be gated: {other:?}"
+                "ungated kinds must keep their existing default: {other:?}"
             );
         }
     }

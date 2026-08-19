@@ -1598,6 +1598,8 @@ impl MlxRunner {
             crate::fastpath::scoped_qwen_linear_mtp_exact(qwen_linear_mtp_exact_enabled);
         let (gemma4_assistant_mtp_status, gemma4_assistant_mtp) =
             load_gemma4_assistant_mtp_runtime(&cfg, &weights.gemma4_assistant_mtp);
+        let qwen_linear_certification_env_opt_in =
+            qwen_linear_mtp_certification_candidate_from_env();
         let mtp_model_policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
             qwen_depth: weights.mtp.as_ref().map(|head| head.max_depth),
             glm_depth: weights.glm_mtp.as_ref().map(|head| head.max_depth),
@@ -1622,9 +1624,10 @@ impl MlxRunner {
             // MXFP4 is exact-capable but not auto-promoted. Formal candidate
             // env still opts in; checkpoint adopt is the measured exact path.
             qwen_linear_certification_candidate: resolve_qwen_linear_certification_candidate(
-                qwen_linear_mtp_certification_candidate_from_env(),
+                qwen_linear_certification_env_opt_in,
                 qwen_linear_mtp_exact_enabled && !has_mxfp4_linears,
             ),
+            qwen_linear_certification_env_opt_in,
             // DeepSeek V4 nextn: same fail-closed product default until Tier 2.
             deepseek_v4_certification_candidate: deepseek_v4_mtp_certification_candidate_from_env(),
             // Publisher-declared default-on certification from the pack's
