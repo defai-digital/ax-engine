@@ -16,7 +16,7 @@ import Foundation
 public final class AxEngineClient: @unchecked Sendable {
     /// The SDK version. Kept in lockstep with the workspace version in
     /// Cargo.toml by the CI "Verify version consistency" check.
-    public static let version = "7.1.4"
+    public static let version = "7.1.5"
 
     private let baseURL: URL
     private let session: URLSession
