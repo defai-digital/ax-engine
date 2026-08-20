@@ -153,6 +153,11 @@ pub(crate) struct ChatPromptRenderOptions {
     /// `<think>` tags. Disabled by default so hidden reasoning does not grow
     /// ordinary agent transcripts.
     pub(crate) preserve_thinking: bool,
+    /// Resolved DeepSeek V4 framing from the architecture registry chat
+    /// contract (ADR-025 Phase 2). `None` means unresolved at the request
+    /// edge (delegated backends, manifest-less paths); renderers then fall
+    /// back to model-id heuristics (`chat::is_deepseek_v4_model`).
+    pub(crate) deepseek_v4_framing: Option<bool>,
 }
 
 /// Tools-free convenience wrapper for tests that don't care about tool
@@ -264,8 +269,14 @@ pub(crate) fn render_openai_chat_prompt_with_family(
     )?;
     let rendered_messages =
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
-    chat::render_prompt_with_qwen_thinking(model_id, &rendered_messages, options.enable_thinking)
-        .map_err(chat_error_response)
+    chat::render_prompt_with_template_and_framing(
+        model_id,
+        template,
+        &rendered_messages,
+        options.enable_thinking,
+        options.deepseek_v4_framing,
+    )
+    .map_err(chat_error_response)
 }
 
 /// DeepSeek V3/R1/V4 chat renderer (ds4 reference parity): assistant history
@@ -284,7 +295,11 @@ fn render_deepseek_openai_chat_prompt(
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
     }
-    let v4 = chat::is_deepseek_v4_model(model_id);
+    // Contract-resolved framing wins; model-id heuristics remain the
+    // manifest-less fallback (ADR-025 Phase 2).
+    let v4 = options
+        .deepseek_v4_framing
+        .unwrap_or_else(|| chat::is_deepseek_v4_model(model_id));
     let thinking = options.enable_thinking;
     let tool_context = tools.map(openai_value_is_present).unwrap_or(false)
         || messages.iter().any(|message| {
@@ -326,7 +341,16 @@ fn render_deepseek_openai_chat_prompt(
             pairs.insert(0, ("system".to_string(), contract));
         }
     }
-    chat::render_prompt_with_qwen_thinking(model_id, &pairs, thinking).map_err(chat_error_response)
+    // The template is passed explicitly so contract-driven selection survives
+    // for artifacts whose model id carries no recognizable family substring.
+    chat::render_prompt_with_template_and_framing(
+        model_id,
+        chat::ChatPromptTemplate::DeepSeekChat,
+        &pairs,
+        thinking,
+        options.deepseek_v4_framing,
+    )
+    .map_err(chat_error_response)
 }
 
 /// DeepSeek V3/R1 DSML tool instructions retained for prompt compatibility.
@@ -4975,6 +4999,7 @@ mod deepseek_dsml_contract_tests {
             ChatPromptRenderOptions {
                 enable_thinking: true,
                 preserve_thinking: false,
+                deepseek_v4_framing: None,
             },
         )
         .expect("render");

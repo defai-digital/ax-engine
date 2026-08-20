@@ -179,9 +179,10 @@ impl ChatPromptTemplate {
             ChatTemplateKind::MinistralInstruct => Self::MinistralInstruct,
             ChatTemplateKind::GptOssHarmony => Self::GptOssHarmony,
             ChatTemplateKind::MuseGlimmerAtem => Self::MuseGlimmerAtem,
-            // V4 framing stays driven by `is_deepseek_v4_model` inside the
-            // DeepSeek renderer until Phase 2 threads a resolved flag through
-            // render options (tech-spec §3.2).
+            // Both frame through the DeepSeek renderer; the V3-vs-V4
+            // distinction rides the resolved `deepseek_v4_framing` render
+            // option (ADR-025 Phase 2), with `is_deepseek_v4_model` as the
+            // manifest-less fallback.
             ChatTemplateKind::DeepSeekChat | ChatTemplateKind::DeepSeekV4Chat => Self::DeepSeekChat,
             ChatTemplateKind::PlainRolePrefix => Self::PlainRolePrefix,
             ChatTemplateKind::Unsupported => match family_label {
@@ -211,6 +212,32 @@ pub(crate) fn resolve_chat_template(
         return template;
     }
     ChatPromptTemplate::for_model_id(model_id)
+}
+
+/// Resolve DeepSeek V4 framing from the registry chat contract (ADR-025
+/// Phase 2).
+///
+/// Returns `Some(true)` / `Some(false)` when the manifest family identifies
+/// a DeepSeek chat contract (V4 canonical vs V3 framing), and `None` when
+/// the family is unknown or not a DeepSeek chat family — callers then fall
+/// back to [`is_deepseek_v4_model`] model-id heuristics, which keeps
+/// delegated backends and manifest-less paths working.
+pub(crate) fn resolve_deepseek_v4_framing(family_hint: Option<&str>) -> Option<bool> {
+    use ax_engine_core::ChatTemplateKind;
+    let family = family_hint?;
+    let contract = ax_engine_core::chat_contract_for_family(family)?;
+    match contract.template {
+        ChatTemplateKind::DeepSeekV4Chat => Some(true),
+        ChatTemplateKind::DeepSeekChat => Some(false),
+        _ => None,
+    }
+}
+
+/// DeepSeek V4 framing with contract precedence and model-id fallback:
+/// the manifest family wins when it resolves a DeepSeek chat contract;
+/// otherwise the [`is_deepseek_v4_model`] heuristic decides.
+pub(crate) fn deepseek_v4_framing_for(model_id: &str, family_hint: Option<&str>) -> bool {
+    resolve_deepseek_v4_framing(family_hint).unwrap_or_else(|| is_deepseek_v4_model(model_id))
 }
 
 /// DiffusionGemma IT uses Gemma 4 turn markers but does **not** pre-fill an
@@ -545,33 +572,46 @@ pub(crate) fn render_prompt_with_qwen_thinking(
     messages: &[(String, String)],
     qwen_thinking_enabled: bool,
 ) -> Result<String, String> {
+    render_prompt_with_template_and_framing(
+        model_id,
+        ChatPromptTemplate::for_model_id(model_id),
+        messages,
+        qwen_thinking_enabled,
+        None,
+    )
+}
+
+/// Render with an already-resolved template plus an optional DeepSeek V4
+/// framing override (ADR-025 Phase 2).
+///
+/// `deepseek_v4_framing = None` means "unresolved at the request edge";
+/// render internals then fall back to [`is_deepseek_v4_model`] model-id
+/// heuristics so delegated backends and manifest-less paths keep working.
+/// Passing the resolved template avoids re-deriving it from the model id,
+/// which would drop contract-driven selection for unrecognized product ids.
+pub(crate) fn render_prompt_with_template_and_framing(
+    model_id: &str,
+    template: ChatPromptTemplate,
+    messages: &[(String, String)],
+    qwen_thinking_enabled: bool,
+    deepseek_v4_framing: Option<bool>,
+) -> Result<String, String> {
     if messages.is_empty() {
         return Err("chat.completions requires at least one message".to_string());
     }
-
-    let template = ChatPromptTemplate::for_model_id(model_id);
     if let ChatPromptTemplate::Unsupported(family) = template {
         return Err(format!(
             "OpenAI chat fallback for {family} is not supported yet; use a backend-native chat path or add a verified AX chat-template fixture before serving this family through raw completion fallback",
             family = family.label()
         ));
     }
-
-    render_prompt_with_template_for_model(model_id, template, messages, qwen_thinking_enabled)
-}
-
-fn render_prompt_with_template_for_model(
-    model_id: &str,
-    template: ChatPromptTemplate,
-    messages: &[(String, String)],
-    qwen_thinking_enabled: bool,
-) -> Result<String, String> {
     render_prompt_internal(
         model_id,
         template,
         messages,
         qwen_assistant_generation_prompt(model_id, qwen_thinking_enabled),
         qwen_thinking_enabled,
+        deepseek_v4_framing,
     )
 }
 
@@ -591,6 +631,7 @@ pub(crate) fn render_prompt_with_template(
             QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
         },
         qwen_thinking_enabled,
+        None,
     )
 }
 
@@ -600,7 +641,11 @@ fn render_prompt_internal(
     messages: &[(String, String)],
     qwen_generation_prompt: &str,
     thinking_enabled: bool,
+    deepseek_v4_framing: Option<bool>,
 ) -> Result<String, String> {
+    // Resolved once per render (ADR-025 Phase 2): the registry contract
+    // wins when known; model-id heuristics remain the manifest-less fallback.
+    let deepseek_v4 = deepseek_v4_framing.unwrap_or_else(|| is_deepseek_v4_model(model_id));
     let mut prompt = String::new();
     let mut qwen_tool_response_open = false;
     let mut deepseek_tool_response_open = false;
@@ -876,7 +921,7 @@ fn render_prompt_internal(
                 _ => {}
             },
             ChatPromptTemplate::DeepSeekChat => {
-                let v4 = is_deepseek_v4_model(model_id);
+                let v4 = deepseek_v4;
                 if matches!(role, "tool" | "function") {
                     if !deepseek_tool_response_open {
                         prompt.push_str(DEEPSEEK_USER);
@@ -961,10 +1006,8 @@ fn render_prompt_internal(
     if qwen_tool_response_open {
         prompt.push_str("<|im_end|>\n");
     }
-    if deepseek_tool_response_open {
-        if !is_deepseek_v4_model(model_id) {
-            prompt.push_str(DEEPSEEK_EOS);
-        }
+    if deepseek_tool_response_open && !deepseek_v4 {
+        prompt.push_str(DEEPSEEK_EOS);
     }
     // System-only chats still need the system block emitted before generation.
     if matches!(template, ChatPromptTemplate::MistralInstruct) {
@@ -1009,7 +1052,7 @@ fn render_prompt_internal(
             prompt.push_str("<|start|>assistant<|channel|>final<|message|>")
         }
         ChatPromptTemplate::DeepSeekChat => {
-            let v4 = is_deepseek_v4_model(model_id);
+            let v4 = deepseek_v4;
             let last_role_can_generate = messages
                 .last()
                 .and_then(|(role, _)| normalize_role(role).ok())
@@ -1511,6 +1554,137 @@ mod tests {
             resolve_chat_template("ministral-8b", Some("mistral3")),
             ChatPromptTemplate::MinistralInstruct
         );
+    }
+
+    /// ADR-025 Phase 2: the registry contract is the only source of DeepSeek
+    /// V4 framing truth once a manifest family is known.
+    #[test]
+    fn resolve_deepseek_v4_framing_follows_the_registry_contract() {
+        assert_eq!(resolve_deepseek_v4_framing(Some("deepseek_v4")), Some(true));
+        assert_eq!(
+            resolve_deepseek_v4_framing(Some("deepseek_v3")),
+            Some(false)
+        );
+        assert_eq!(
+            resolve_deepseek_v4_framing(Some("deepseek_v32")),
+            Some(false)
+        );
+        // Non-DeepSeek and unknown families stay unresolved so renderers
+        // keep their model-id fallback.
+        assert_eq!(resolve_deepseek_v4_framing(Some("qwen3")), None);
+        assert_eq!(resolve_deepseek_v4_framing(Some("not_a_family")), None);
+        assert_eq!(resolve_deepseek_v4_framing(None), None);
+    }
+
+    #[test]
+    fn deepseek_v4_framing_for_prefers_contract_and_falls_back_to_heuristic() {
+        // Manifest-less (delegated) path: heuristic decides.
+        assert!(deepseek_v4_framing_for(
+            "deepseek-ai/DeepSeek-V4-Flash",
+            None
+        ));
+        assert!(!deepseek_v4_framing_for("deepseek-ai/DeepSeek-V3", None));
+        assert!(!deepseek_v4_framing_for("some-lab/aurora-ft", None));
+        // Contract wins over the id in both directions.
+        assert!(deepseek_v4_framing_for(
+            "some-lab/aurora-ft",
+            Some("deepseek_v4")
+        ));
+        assert!(!deepseek_v4_framing_for(
+            "deepseek-ai/DeepSeek-V4-Flash",
+            Some("deepseek_v3")
+        ));
+        // Non-DeepSeek contracts leave the heuristic in charge.
+        assert!(deepseek_v4_framing_for(
+            "deepseek-ai/DeepSeek-V4-Flash",
+            Some("qwen3")
+        ));
+    }
+
+    fn deepseek_history_messages() -> Vec<(String, String)> {
+        vec![
+            ("system".to_string(), "S".to_string()),
+            ("user".to_string(), "U1".to_string()),
+            ("assistant".to_string(), "A1".to_string()),
+            ("user".to_string(), "U2".to_string()),
+        ]
+    }
+
+    fn render_deepseek_with_framing(
+        model_id: &str,
+        framing: Option<bool>,
+    ) -> Result<String, String> {
+        render_prompt_with_template_and_framing(
+            model_id,
+            ChatPromptTemplate::DeepSeekChat,
+            &deepseek_history_messages(),
+            false,
+            framing,
+        )
+    }
+
+    /// Council test matrix (ADR-025 Phase 2): golden framing behavior for
+    /// V3/V4 ids with and without a resolved contract.
+    /// Case 1 + 5: V3 id, unresolved => V3 framing via heuristic.
+    #[test]
+    fn deepseek_v3_id_without_hint_renders_v3_framing() {
+        let prompt = render_deepseek_with_framing("deepseek-ai/DeepSeek-V3", None)
+            .expect("V3 render succeeds");
+        assert!(
+            prompt.contains(DEEPSEEK_SYSTEM),
+            "V3 framing keeps the system token: {prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("{DEEPSEEK_ASSISTANT}{DEEPSEEK_THINK_CLOSE}A1")),
+            "V3 history assistant turns carry the Assistant marker: {prompt}"
+        );
+    }
+
+    /// Case 2 + 5: V4 id, unresolved => V4 framing via heuristic.
+    #[test]
+    fn deepseek_v4_id_without_hint_renders_v4_framing() {
+        let prompt = render_deepseek_with_framing("deepseek-ai/DeepSeek-V4-Flash", None)
+            .expect("V4 render succeeds");
+        assert!(
+            !prompt.contains(DEEPSEEK_SYSTEM),
+            "V4 framing drops the system token: {prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("U1{DEEPSEEK_ASSISTANT}")),
+            "V4 user turns own the Assistant transition: {prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("A1{DEEPSEEK_EOS}")),
+            "V4 history assistant turns emit bare content + EOS: {prompt}"
+        );
+    }
+
+    /// Case 3: V3 id + deepseek_v4 contract => V4 framing (contract wins).
+    #[test]
+    fn deepseek_v4_contract_overrides_v3_style_id() {
+        let framing = resolve_deepseek_v4_framing(Some("deepseek_v4"));
+        assert_eq!(framing, Some(true));
+        let prompt = render_deepseek_with_framing("deepseek-ai/DeepSeek-V3", framing)
+            .expect("render succeeds");
+        assert!(
+            !prompt.contains(DEEPSEEK_SYSTEM),
+            "contract V4 framing wins over the id: {prompt}"
+        );
+        assert!(prompt.contains(&format!("U1{DEEPSEEK_ASSISTANT}")));
+    }
+
+    /// Case 4: V4 id + deepseek_v3 contract => V3 framing (contract wins).
+    #[test]
+    fn deepseek_v3_contract_overrides_v4_style_id() {
+        let framing = resolve_deepseek_v4_framing(Some("deepseek_v3"));
+        assert_eq!(framing, Some(false));
+        let prompt = render_deepseek_with_framing("deepseek-ai/DeepSeek-V4-Flash", framing)
+            .expect("render succeeds");
+        assert!(
+            prompt.contains(DEEPSEEK_SYSTEM),
+            "contract V3 framing wins over the id: {prompt}"
+        );
+        assert!(prompt.contains(&format!("{DEEPSEEK_ASSISTANT}{DEEPSEEK_THINK_CLOSE}A1")));
     }
 
     #[test]

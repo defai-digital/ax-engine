@@ -92,7 +92,11 @@ pub(crate) fn openai_chat_completion_response(
     native_reasoning: Option<String>,
 ) -> OpenAiChatCompletionResponse {
     let mut raw_content = response.output_text.clone().unwrap_or_default();
-    if !options.include_reasoning && crate::chat::is_deepseek_v4_model(&response.model_id) {
+    // Response building has no manifest access, so the framing hint is
+    // unresolved and the model-id heuristic decides (ADR-025 Phase 2); the
+    // native decode path already applied the contract-resolved sanitize.
+    if !options.include_reasoning && crate::chat::deepseek_v4_framing_for(&response.model_id, None)
+    {
         raw_content = crate::chat::sanitize_deepseek_non_thinking_output(&raw_content);
     }
     // The native MLX decode extracts Gemma 4 thinking channels at the token

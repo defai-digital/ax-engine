@@ -1352,7 +1352,14 @@ pub(crate) fn openai_chat_prompt_render_options_for_live(
         .as_deref()
         .filter(|model| !model.trim().is_empty())
         .unwrap_or(live.model_id.as_ref());
-    openai_chat_prompt_render_options_for_model(request, model_id)
+    let mut options = openai_chat_prompt_render_options_for_model(request, model_id);
+    // Resolve DeepSeek V4 framing once at the request edge from the manifest
+    // family (ADR-025 Phase 2). `None` keeps the renderer's model-id
+    // heuristic for delegated backends and manifest-less artifacts.
+    options.deepseek_v4_framing = chat::resolve_deepseek_v4_framing(
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
+    );
+    options
 }
 
 fn openai_chat_prompt_render_options_for_model(
@@ -1372,6 +1379,9 @@ fn openai_chat_prompt_render_options_for_model(
         preserve_thinking: template
             .and_then(|kwargs| kwargs.preserve_thinking)
             .unwrap_or(false),
+        // Model-only construction has no manifest access; the `_for_live`
+        // wrapper resolves the contract framing (ADR-025 Phase 2).
+        deepseek_v4_framing: None,
     }
 }
 

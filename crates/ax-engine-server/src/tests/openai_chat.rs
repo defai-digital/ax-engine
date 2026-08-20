@@ -2086,6 +2086,7 @@ fn deepseek_replays_reasoning_per_turn_rules() {
     let options = ChatPromptRenderOptions {
         enable_thinking: true,
         preserve_thinking: false,
+        deepseek_v4_framing: None,
     };
     let prompt = render_openai_chat_prompt_with_options(
         "deepseek-ai/DeepSeek-R1",
@@ -2110,6 +2111,7 @@ fn deepseek_replays_reasoning_per_turn_rules() {
         ChatPromptRenderOptions {
             enable_thinking: true,
             preserve_thinking: false,
+            deepseek_v4_framing: None,
         },
     )
     .expect("deepseek replay with tools should render");
@@ -4118,4 +4120,65 @@ fn hub_chat_template_family_matrix_control_tokens() {
         );
         fs::write(dir.join("matrix_status.md"), md).expect("write matrix_status.md");
     }
+}
+
+/// ADR-025 Phase 2 (council matrix case 6): the request-edge framing
+/// resolution rides `ChatPromptRenderOptions` through the full OpenAI
+/// renderer, overriding model-id heuristics in both directions while
+/// unresolved options keep the delegated-path heuristic.
+#[test]
+fn openai_chat_prompt_render_options_carry_deepseek_v4_framing() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "S"},
+        {"role": "user", "content": "U"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    // Contract-resolved V4 framing wins over a V3-style id.
+    let v4_prompt = render_openai_chat_prompt_with_options(
+        "deepseek-ai/DeepSeek-V3",
+        &messages,
+        None,
+        None,
+        ChatPromptRenderOptions {
+            deepseek_v4_framing: Some(true),
+            ..Default::default()
+        },
+    )
+    .expect("V4-framed render");
+    assert!(
+        !v4_prompt.contains(chat::DEEPSEEK_SYSTEM),
+        "V4 framing must drop the system token: {v4_prompt}"
+    );
+
+    // Contract-resolved V3 framing wins over a V4-style id.
+    let v3_prompt = render_openai_chat_prompt_with_options(
+        "deepseek-ai/DeepSeek-V4-Flash",
+        &messages,
+        None,
+        None,
+        ChatPromptRenderOptions {
+            deepseek_v4_framing: Some(false),
+            ..Default::default()
+        },
+    )
+    .expect("V3-framed render");
+    assert!(
+        v3_prompt.contains(chat::DEEPSEEK_SYSTEM),
+        "V3 framing must keep the system token: {v3_prompt}"
+    );
+
+    // Unresolved options keep the model-id heuristic (delegated backends).
+    let heuristic = render_openai_chat_prompt_with_options(
+        "deepseek-ai/DeepSeek-V4-Flash",
+        &messages,
+        None,
+        None,
+        ChatPromptRenderOptions::default(),
+    )
+    .expect("heuristic render");
+    assert!(
+        !heuristic.contains(chat::DEEPSEEK_SYSTEM),
+        "heuristic V4 framing must drop the system token: {heuristic}"
+    );
 }
