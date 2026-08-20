@@ -38,6 +38,15 @@ class BenchMtpRefreshTests(unittest.TestCase):
                 "performance_conditions_start": conditions,
                 "performance_conditions_end": conditions,
             },
+            "results": [
+                {
+                    "prompt_case_id": "case",
+                    "ngram_acceleration_telemetry": {
+                        "ax_mtp_profitability_gate_enabled": 0,
+                        "ax_mtp_profitability_probe_steps": 0,
+                    },
+                }
+            ],
         }
 
     @staticmethod
@@ -142,6 +151,8 @@ class BenchMtpRefreshTests(unittest.TestCase):
                 "ax_mtp_decode_steps": mtp_steps,
                 "ax_mtp_direct_fallback_steps": fallback_steps,
                 "ax_mtp_emitted_tokens": emitted_tokens,
+                "ax_mtp_profitability_gate_enabled": 0,
+                "ax_mtp_profitability_probe_steps": 0,
             },
         }
 
@@ -229,8 +240,42 @@ class BenchMtpRefreshTests(unittest.TestCase):
             {
                 "AX_MLX_MTP_BYPASS_THRESHOLD": "0",
                 "AX_MLX_MTP_MIN_REMAINING_TOKENS": "0",
+                "AX_MLX_MTP_PROFITABILITY_GATE": "0",
             },
         )
+
+    def test_formal_mtp_artifact_proves_profitability_policy_was_disabled(self) -> None:
+        artifact = {
+            "results": [
+                self.mtp_row(
+                    case_id="case",
+                    match_x1000=1000,
+                    mtp_steps=16,
+                    fallback_steps=0,
+                    emitted_tokens=32,
+                )
+            ]
+        }
+        bench.validate_forced_mtp_profitability_policy(Path("artifact.json"), artifact)
+
+        artifact["results"][0]["ngram_acceleration_telemetry"][
+            "ax_mtp_profitability_gate_enabled"
+        ] = 1
+        with self.assertRaisesRegex(ValueError, "profitability gate was disabled"):
+            bench.validate_forced_mtp_profitability_policy(
+                Path("artifact.json"), artifact
+            )
+
+        artifact["results"][0]["ngram_acceleration_telemetry"][
+            "ax_mtp_profitability_gate_enabled"
+        ] = 0
+        artifact["results"][0]["ngram_acceleration_telemetry"][
+            "ax_mtp_profitability_probe_steps"
+        ] = 1
+        with self.assertRaisesRegex(ValueError, "calibration probes"):
+            bench.validate_forced_mtp_profitability_policy(
+                Path("artifact.json"), artifact
+            )
 
     def test_maybe_run_case_forwards_formal_env_only_for_mtp(self) -> None:
         target = bench.Target(

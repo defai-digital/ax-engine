@@ -9,6 +9,15 @@
 
 use super::*;
 
+fn profitability_speedup_x1000(baseline_wall_us: u32, mtp_wall_us: u32) -> u32 {
+    if mtp_wall_us == 0 {
+        return 0;
+    }
+    (f64::from(baseline_wall_us) / f64::from(mtp_wall_us) * 1000.0)
+        .round()
+        .clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct MtpTelemetry {
     pub(super) correctness_mode: MtpCorrectnessMode,
@@ -20,6 +29,25 @@ pub(super) struct MtpTelemetry {
     /// Steps where MTP was skipped because remaining output budget was below
     /// `AX_MLX_MTP_MIN_REMAINING_TOKENS` (ADR-020).
     pub(super) short_budget_bypass_steps: u32,
+    /// Requests admitted to the measured Qwen depth-one profitability policy.
+    pub(super) profitability_eligible_requests: u32,
+    /// Real single-token target probes used as the direct-decode reference.
+    pub(super) profitability_probe_steps: u32,
+    pub(super) profitability_probe_wall_us: u32,
+    /// Sum of each request's conservative direct-step reference.
+    pub(super) profitability_direct_reference_wall_us: u32,
+    /// Complete pure-MTP rounds observed, including calibration warmups.
+    pub(super) profitability_mtp_rounds_seen: u32,
+    /// Initial pure-MTP rounds excluded from the cost estimate.
+    pub(super) profitability_mtp_warmup_rounds: u32,
+    /// Complete pure-MTP rounds included in the profitability estimate.
+    pub(super) profitability_mtp_rounds: u32,
+    pub(super) profitability_mtp_round_wall_us: u32,
+    pub(super) profitability_mtp_emitted_tokens: u32,
+    /// Direct reference × MTP-emitted tokens, used to aggregate speedup.
+    pub(super) profitability_baseline_equivalent_wall_us: u32,
+    pub(super) profitability_estimated_speedup_x1000: u32,
+    pub(super) profitability_bypass_events: u32,
     pub(super) residual_correction_tokens: u32,
     pub(super) draft_tokens: u32,
     pub(super) accepted_tokens: u32,
@@ -162,6 +190,21 @@ impl MtpTelemetry {
 
     pub(super) fn record_short_budget_bypass(&mut self) {
         self.short_budget_bypass_steps = self.short_budget_bypass_steps.saturating_add(1);
+    }
+
+    pub(super) fn record_profitability_snapshot(&mut self, snapshot: MtpProfitabilitySnapshot) {
+        self.profitability_eligible_requests = u32::from(snapshot.eligible);
+        self.profitability_probe_steps = snapshot.probe_steps;
+        self.profitability_probe_wall_us = snapshot.probe_wall_us;
+        self.profitability_direct_reference_wall_us = snapshot.direct_reference_wall_us;
+        self.profitability_mtp_rounds_seen = snapshot.mtp_rounds_seen;
+        self.profitability_mtp_warmup_rounds = snapshot.mtp_warmup_rounds;
+        self.profitability_mtp_rounds = snapshot.mtp_rounds;
+        self.profitability_mtp_round_wall_us = snapshot.mtp_round_wall_us;
+        self.profitability_mtp_emitted_tokens = snapshot.mtp_emitted_tokens;
+        self.profitability_baseline_equivalent_wall_us = snapshot.baseline_equivalent_wall_us;
+        self.profitability_estimated_speedup_x1000 = snapshot.estimated_speedup_x1000;
+        self.profitability_bypass_events = u32::from(snapshot.bypassed);
     }
 
     pub(super) fn record_optimistic_step(&mut self) {
@@ -496,6 +539,43 @@ impl MtpTelemetry {
         self.short_budget_bypass_steps = self
             .short_budget_bypass_steps
             .saturating_add(other.short_budget_bypass_steps);
+        self.profitability_eligible_requests = self
+            .profitability_eligible_requests
+            .saturating_add(other.profitability_eligible_requests);
+        self.profitability_probe_steps = self
+            .profitability_probe_steps
+            .saturating_add(other.profitability_probe_steps);
+        self.profitability_probe_wall_us = self
+            .profitability_probe_wall_us
+            .saturating_add(other.profitability_probe_wall_us);
+        self.profitability_direct_reference_wall_us = self
+            .profitability_direct_reference_wall_us
+            .saturating_add(other.profitability_direct_reference_wall_us);
+        self.profitability_mtp_rounds_seen = self
+            .profitability_mtp_rounds_seen
+            .saturating_add(other.profitability_mtp_rounds_seen);
+        self.profitability_mtp_warmup_rounds = self
+            .profitability_mtp_warmup_rounds
+            .saturating_add(other.profitability_mtp_warmup_rounds);
+        self.profitability_mtp_rounds = self
+            .profitability_mtp_rounds
+            .saturating_add(other.profitability_mtp_rounds);
+        self.profitability_mtp_round_wall_us = self
+            .profitability_mtp_round_wall_us
+            .saturating_add(other.profitability_mtp_round_wall_us);
+        self.profitability_mtp_emitted_tokens = self
+            .profitability_mtp_emitted_tokens
+            .saturating_add(other.profitability_mtp_emitted_tokens);
+        self.profitability_baseline_equivalent_wall_us = self
+            .profitability_baseline_equivalent_wall_us
+            .saturating_add(other.profitability_baseline_equivalent_wall_us);
+        self.profitability_estimated_speedup_x1000 = profitability_speedup_x1000(
+            self.profitability_baseline_equivalent_wall_us,
+            self.profitability_mtp_round_wall_us,
+        );
+        self.profitability_bypass_events = self
+            .profitability_bypass_events
+            .saturating_add(other.profitability_bypass_events);
         self.residual_correction_tokens = self
             .residual_correction_tokens
             .saturating_add(other.residual_correction_tokens);
@@ -754,6 +834,54 @@ impl MtpTelemetry {
                 self.short_budget_bypass_steps,
             ),
             (
+                "ax_mtp_profitability_eligible_requests",
+                self.profitability_eligible_requests,
+            ),
+            (
+                "ax_mtp_profitability_probe_steps",
+                self.profitability_probe_steps,
+            ),
+            (
+                "ax_mtp_profitability_probe_wall_us",
+                self.profitability_probe_wall_us,
+            ),
+            (
+                "ax_mtp_profitability_direct_reference_wall_us",
+                self.profitability_direct_reference_wall_us,
+            ),
+            (
+                "ax_mtp_profitability_mtp_rounds_seen",
+                self.profitability_mtp_rounds_seen,
+            ),
+            (
+                "ax_mtp_profitability_mtp_warmup_rounds",
+                self.profitability_mtp_warmup_rounds,
+            ),
+            (
+                "ax_mtp_profitability_mtp_rounds",
+                self.profitability_mtp_rounds,
+            ),
+            (
+                "ax_mtp_profitability_mtp_round_wall_us",
+                self.profitability_mtp_round_wall_us,
+            ),
+            (
+                "ax_mtp_profitability_mtp_emitted_tokens",
+                self.profitability_mtp_emitted_tokens,
+            ),
+            (
+                "ax_mtp_profitability_baseline_equivalent_wall_us",
+                self.profitability_baseline_equivalent_wall_us,
+            ),
+            (
+                "ax_mtp_profitability_estimated_speedup_x1000",
+                self.profitability_estimated_speedup_x1000,
+            ),
+            (
+                "ax_mtp_profitability_bypass_events",
+                self.profitability_bypass_events,
+            ),
+            (
                 "ax_mtp_residual_correction_tokens",
                 self.residual_correction_tokens,
             ),
@@ -1004,6 +1132,31 @@ impl MtpTelemetry {
         decisions.upsert_route_decision(
             "ax_mtp_adaptive_gate_enabled",
             u32::from(adaptive_gate_enabled_from_env()),
+        );
+        let profitability_config = mtp_profitability_config_from_env();
+        decisions.upsert_route_decision(
+            "ax_mtp_profitability_gate_enabled",
+            u32::from(profitability_config.enabled),
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_profitability_probe_rounds",
+            profitability_config.probe_rounds,
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_profitability_probe_spacing",
+            profitability_config.probe_spacing,
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_profitability_warmup_rounds",
+            profitability_config.warmup_mtp_rounds,
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_profitability_min_rounds",
+            profitability_config.min_mtp_rounds,
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_profitability_decline_ratio_x1000",
+            (profitability_config.decline_ratio * 1000.0).round() as u32,
         );
         // ADR-019: emit draft mode and hurt gate mode for A/B audit.
         decisions.upsert_route_decision(

@@ -41,6 +41,7 @@ MTP_SAMPLER_SIGNATURE = "sampling[temperature=0.6,top_p=0.95,top_k=20]"
 FORMAL_MTP_ENV = {
     "AX_MLX_MTP_BYPASS_THRESHOLD": "0",
     "AX_MLX_MTP_MIN_REMAINING_TOKENS": "0",
+    "AX_MLX_MTP_PROFITABILITY_GATE": "0",
 }
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
@@ -462,6 +463,26 @@ def aggregate_ngram_telemetry(artifact: dict[str, Any]) -> dict[str, int]:
     return {key: telemetry_sum(artifact, key) for key in NGRAM_ZERO_KEYS}
 
 
+def validate_forced_mtp_profitability_policy(
+    path: Path, artifact: dict[str, Any]
+) -> None:
+    """Prove that the formal MTP row contains no calibration or cost bypass."""
+    rows = prompt_case_rows(artifact)
+    if not rows:
+        raise ValueError(f"{path} has no prompt-case rows for profitability policy validation")
+    for row in rows:
+        case_id = row.get("prompt_case_id")
+        telemetry = row.get("ngram_acceleration_telemetry") or {}
+        if telemetry.get("ax_mtp_profitability_gate_enabled") != 0:
+            raise ValueError(
+                f"{path} did not prove the profitability gate was disabled for {case_id}"
+            )
+        if int(telemetry.get("ax_mtp_profitability_probe_steps", 0) or 0) != 0:
+            raise ValueError(
+                f"{path} contains profitability calibration probes for {case_id}"
+            )
+
+
 def load_artifact(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
@@ -785,6 +806,7 @@ def build_summary(
             mtp_path = output_dir / target.key / suite / "ax_mtp.json"
             direct = load_artifact(direct_path)
             mtp = load_artifact(mtp_path)
+            validate_forced_mtp_profitability_policy(mtp_path, mtp)
             row_build_identity = matching_build_identity(
                 direct_path, direct, mtp_path, mtp
             )

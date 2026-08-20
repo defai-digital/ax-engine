@@ -112,6 +112,7 @@ use crate::weights::{ModelWeights, load_weights};
 mod manifest_validation;
 mod mtp_model_policy;
 mod mtp_ngram_gates;
+mod mtp_profitability;
 mod mtp_routing;
 mod mtp_tuning;
 mod pipeline;
@@ -123,6 +124,7 @@ mod util;
 use manifest_validation::*;
 use mtp_model_policy::*;
 use mtp_ngram_gates::*;
+use mtp_profitability::*;
 use mtp_routing::*;
 use mtp_tuning::*;
 use step_telemetry::*;
@@ -502,6 +504,8 @@ struct RequestState {
     /// threshold with sufficient samples, MTP is disabled for the rest of the
     /// request and all decode steps use the direct single-token path.
     mtp_bypassed: bool,
+    /// Measured direct-vs-MTP cost policy for exact greedy Qwen depth one.
+    mtp_profitability: MtpProfitabilityState,
     /// Per-request latch: once auto-optimistic activates (EWMA ≥ 0.99),
     /// it stays latched until the argmax-based EWMA drops below 0.85.
     /// Hysteresis prevents oscillation because argmax acceptance is strictly
@@ -632,6 +636,7 @@ impl RequestState {
             gemma_mtp_cycle_latched: false,
             mtp_consecutive_misses: 0,
             mtp_bypassed: false,
+            mtp_profitability: MtpProfitabilityState::default(),
             auto_optimistic_active: false,
             mtp_adaptive_gate: None,
             mtp_draft_gate_x1000: 0,
@@ -694,6 +699,21 @@ impl RequestState {
         append_tail(&mut history, &self.generated_tokens, &mut remaining_skip);
         history
     }
+}
+
+/// Drop every unverified proposal while preserving committed target and MTP
+/// head cache state. Used when the measured-cost policy latches a bypass.
+fn clear_pending_mtp_proposal(state: &mut RequestState) {
+    state.mtp_pending_draft.clear();
+    state.mtp_pending_draft_lazy = None;
+    state.mtp_pending_draft_log_probs.clear();
+    state.mtp_pending_draft_log_prob_temperature = None;
+    state.mtp_pending_draft_distributions.clear();
+    state.mtp_pending_draft_sources.clear();
+    state.ngram_draft_policy = None;
+    state.mtp_skip_logits = None;
+    state.mtp_skip_argmax = None;
+    state.mtp_skip_hidden = None;
 }
 
 fn append_tail(target: &mut Vec<u32>, source: &[u32], skip: &mut usize) {
@@ -8205,6 +8225,22 @@ impl MlxRunner {
         (drafts, vec![], vec![])
     }
 
+    /// Measure one true direct singleton step without mutating request state.
+    ///
+    /// The outer runner enables the exact S=2 verifier arithmetic while MTP is
+    /// active. Timing an empty verifier step would therefore overestimate the
+    /// direct fallback cost because it suppresses singleton-only kernels. Run
+    /// the canonical direct pipeline bootstrap under a nested direct scope on
+    /// a cloned target cache, then fully materialize its token before return.
+    fn measure_mtp_direct_probe(&self, cache: &MlxKVCache, last_token: u32) -> u32 {
+        let mut probe_cache = cache.clone();
+        let _direct_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let started = Instant::now();
+        let pending = start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut probe_cache);
+        let (_token, _eval_wall_us, _read_wall_us) = finish_pending_token(&pending);
+        elapsed_us(started)
+    }
+
     /// MTP model-based speculative decode step.
     ///
     /// Runs a verify forward on `[last_token] ++ pending_draft`, accepts/rejects
@@ -8327,6 +8363,17 @@ impl MlxRunner {
             state.mtp_telemetry.record_timings(mtp_timings);
             return vec![tok];
         }
+
+        if state.mtp_profitability.should_probe_now() {
+            let probe_wall_us = self.measure_mtp_direct_probe(&state.cache, last_token);
+            state.mtp_profitability.record_direct_probe(probe_wall_us);
+        }
+
+        // Complete-round wall time for the measured profitability policy.
+        // Start after any calibration probe and before lazy proposal
+        // materialization so host synchronization and extraction costs are
+        // included, not only named kernel buckets.
+        let profitability_round_started = Instant::now();
 
         // Async-scheduled draft (`AX_MLX_MTP_ASYNC_DRAFT`): in the greedy
         // exact-profile regime the verify graph chains directly on the lazy
@@ -8638,6 +8685,10 @@ impl MlxRunner {
             state.mtp_pending_draft = tokens.clone();
             pending = tokens;
         }
+
+        let profitability_mtp_round = pending.len() == 1
+            && state.mtp_pending_draft_sources.len() == pending.len()
+            && state.mtp_pending_draft_sources[0] == MtpDraftSource::Mtp;
 
         // Build verify sequence: [primary_token] ++ pending_draft.
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + pending.len());
@@ -10563,6 +10614,22 @@ impl MlxRunner {
             }
             mtp_timings.draft_wall_us = elapsed_us(draft_started);
         } // end of !mtp_bypassed draft generation block
+
+        // Compare complete MTP-round wall time with the real target probes.
+        // A losing decision latches only for this request; committed cache
+        // state is intentionally retained.
+        if profitability_mtp_round
+            && !state.mtp_bypassed
+            && state
+                .mtp_profitability
+                .record_mtp_round(elapsed_us(profitability_round_started), result.len())
+        {
+            state.mtp_bypassed = true;
+            clear_pending_mtp_proposal(state);
+        }
+        state
+            .mtp_telemetry
+            .record_profitability_snapshot(state.mtp_profitability.snapshot());
         let gemma4_assistant_submitted = state
             .mtp_pending_draft_sources
             .iter()
@@ -10640,9 +10707,30 @@ impl MlxRunner {
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
         state.mtp_bypassed = false;
+        let profitability_config = mtp_profitability_config_from_env();
+        let profitability_eligible = MtpProfitabilityEligibility {
+            mtp_requested: self.mtp_requested,
+            exact_qwen_linear: self.qwen_linear_mtp_exact_enabled,
+            has_linear_attention,
+            has_qwen_mtp: self.weights.mtp.is_some(),
+            depth_one: self.mtp_max_depth() == 1,
+            dense_lm_head: !self.weights.lm_head.is_quantized(),
+            greedy: is_greedy,
+            skip_state_disabled: !self.mtp_skip_state,
+            optimistic_disabled: !self.mtp_optimistic && !mtp_auto_optimistic_enabled_from_env(),
+            automatic_bypass_allowed: mtp_bypass_threshold() > 0.0,
+            output_budget_sufficient: profitability_config
+                .has_observation_budget(max_output, mtp_min_remaining_tokens()),
+        }
+        .eligible();
+        state
+            .mtp_profitability
+            .reset(profitability_eligible, profitability_config);
+        state
+            .mtp_telemetry
+            .record_profitability_snapshot(state.mtp_profitability.snapshot());
         state.gemma_mtp_cycle_latched = false;
         // Adaptive gate: allocate only for low-T auto when flag is on (A.0b).
-        let _ = is_greedy;
         state.mtp_adaptive_gate = mtp_adaptive_maybe_init(
             adaptive_gate_enabled_from_env(),
             speculation_profile_from_env(),
@@ -10996,6 +11084,10 @@ impl MlxRunner {
             sampling.uses_logits_processors(),
         ) {
             MtpRequestRoute::DirectFallback => {
+                // Mixed batches keep the outer exact-verifier scope enabled
+                // for sibling MTP requests. This row has selected direct
+                // fallback, so restore the singleton kernel contract locally.
+                let _direct_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
                 state.mtp_telemetry.record_direct_fallback();
                 state.mtp_pending_draft.clear();
                 state.mtp_pending_draft_lazy = None;
@@ -20215,6 +20307,67 @@ mod tests {
         a.merge_from(b);
         assert_eq!(a.ngram_source_hurt_gated_steps, 17);
         assert_eq!(a.ngram_legacy_hurt_gated_steps, 8);
+    }
+
+    #[test]
+    fn mtp_profitability_telemetry_merges_cost_totals_and_recomputes_speedup() {
+        let mut a = MtpTelemetry::default();
+        a.record_profitability_snapshot(MtpProfitabilitySnapshot {
+            eligible: true,
+            probe_steps: 2,
+            probe_wall_us: 60_000,
+            direct_reference_wall_us: 30_000,
+            mtp_rounds_seen: 12,
+            mtp_warmup_rounds: 4,
+            mtp_rounds: 8,
+            mtp_round_wall_us: 500_000,
+            mtp_emitted_tokens: 20,
+            baseline_equivalent_wall_us: 600_000,
+            estimated_speedup_x1000: 1_200,
+            bypassed: false,
+        });
+        let mut b = MtpTelemetry::default();
+        b.record_profitability_snapshot(MtpProfitabilitySnapshot {
+            eligible: true,
+            probe_steps: 2,
+            probe_wall_us: 58_000,
+            direct_reference_wall_us: 29_000,
+            mtp_rounds_seen: 12,
+            mtp_warmup_rounds: 4,
+            mtp_rounds: 8,
+            mtp_round_wall_us: 500_000,
+            mtp_emitted_tokens: 16,
+            baseline_equivalent_wall_us: 480_000,
+            estimated_speedup_x1000: 960,
+            bypassed: true,
+        });
+
+        a.merge_from(b);
+        assert_eq!(a.profitability_eligible_requests, 2);
+        assert_eq!(a.profitability_probe_steps, 4);
+        assert_eq!(a.profitability_mtp_rounds_seen, 24);
+        assert_eq!(a.profitability_mtp_warmup_rounds, 8);
+        assert_eq!(a.profitability_mtp_rounds, 16);
+        assert_eq!(a.profitability_mtp_round_wall_us, 1_000_000);
+        assert_eq!(a.profitability_baseline_equivalent_wall_us, 1_080_000);
+        assert_eq!(a.profitability_estimated_speedup_x1000, 1_080);
+        assert_eq!(a.profitability_bypass_events, 1);
+    }
+
+    #[test]
+    fn clearing_pending_mtp_proposal_preserves_committed_cache_progress() {
+        let mut state = RequestState::new(2, 0, None);
+        state.mtp_pending_draft = vec![7];
+        state.mtp_pending_draft_log_probs = vec![-0.1];
+        state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp];
+        state.mtp_decode_count = 11;
+
+        clear_pending_mtp_proposal(&mut state);
+
+        assert!(state.mtp_pending_draft.is_empty());
+        assert!(state.mtp_pending_draft_log_probs.is_empty());
+        assert!(state.mtp_pending_draft_sources.is_empty());
+        assert_eq!(state.mtp_decode_count, 11);
     }
 
     // ── MTP bypass and initial adaptive depth ──────────────────────────────
