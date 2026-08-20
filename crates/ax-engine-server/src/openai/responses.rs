@@ -91,7 +91,10 @@ pub(crate) fn openai_chat_completion_response(
     options: OpenAiResponseOptions,
     native_reasoning: Option<String>,
 ) -> OpenAiChatCompletionResponse {
-    let raw_content = response.output_text.clone().unwrap_or_default();
+    let mut raw_content = response.output_text.clone().unwrap_or_default();
+    if !options.include_reasoning && crate::chat::is_deepseek_v4_model(&response.model_id) {
+        raw_content = crate::chat::sanitize_deepseek_non_thinking_output(&raw_content);
+    }
     // The native MLX decode extracts Gemma 4 thinking channels at the token
     // level, so their framing never survives into `output_text`; when the
     // decode supplied reasoning, use it instead of re-scanning text markers.

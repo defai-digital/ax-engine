@@ -1295,6 +1295,22 @@ pub(crate) fn decode_deepseek_chat_output_with_reasoning(
     Ok((content.to_string(), reasoning))
 }
 
+/// Visible assistant text for DeepSeek V4 when thinking is off.
+///
+/// Generation is prefixed with `</think>` in the prompt. A later `</think>`
+/// in the decoded tokens is a leak; keep the prefix before that marker so
+/// exact-match answers are not poisoned by the next turn (`<|eot|>`, User).
+pub(crate) fn sanitize_deepseek_non_thinking_output(text: &str) -> String {
+    let without_eot = match text.split_once("<|eot|>") {
+        Some((before, _)) => before,
+        None => text,
+    };
+    match without_eot.split_once(DEEPSEEK_THINK_CLOSE) {
+        Some((before, _)) => before.to_string(),
+        None => without_eot.to_string(),
+    }
+}
+
 /// GLM 4.x structural tool-call markers. They are *special* tokens in GLM's
 /// tokenizer, so a plain `skip_special_tokens` decode drops them and the
 /// tool-call parser never sees the call (it surfaces as `nameKeyValue` text).
@@ -1516,6 +1532,16 @@ mod tests {
             rendered,
             "<｜begin▁of▁sentence｜><｜User｜>hi<｜Assistant｜></think>hello<｜end▁of▁sentence｜><｜User｜>again<｜Assistant｜></think>"
         );
+    }
+
+    #[test]
+    fn sanitize_deepseek_non_thinking_output_drops_leaked_think_and_eot() {
+        assert_eq!(
+            sanitize_deepseek_non_thinking_output("hello hello hello</think><|eot|>hi, ignore"),
+            "hello hello hello"
+        );
+        assert_eq!(sanitize_deepseek_non_thinking_output("cold"), "cold");
+        assert_eq!(sanitize_deepseek_non_thinking_output(".</think>Five"), ".");
     }
 
     #[test]

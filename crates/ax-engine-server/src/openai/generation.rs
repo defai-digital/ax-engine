@@ -432,6 +432,14 @@ pub(crate) fn populate_native_mlx_output_text(
             format!("failed to decode native MLX OpenAI response tokens: {error}"),
         )
     })?;
+    let output_text = if !include_reasoning
+        && matches!(kind, OpenAiStreamKind::ChatCompletion)
+        && matches!(chat_template, ChatPromptTemplate::DeepSeekChat)
+    {
+        crate::chat::sanitize_deepseek_non_thinking_output(&output_text)
+    } else {
+        output_text
+    };
     response.output_text = Some(output_text);
 
     Ok(reasoning)
