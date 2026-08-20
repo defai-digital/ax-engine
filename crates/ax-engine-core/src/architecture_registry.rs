@@ -5,6 +5,7 @@
 //! registry + structural caps over ad-hoc string allowlists when adding
 //! hybrid variants.
 
+use crate::chat_contract::{ChatContract, ChatOutputPolicy, ChatTemplateKind};
 use crate::generation::GenerationKind;
 use crate::support_tier::ModelSupportTier;
 
@@ -46,6 +47,26 @@ pub enum MlxRunnerAdmission {
     AuxiliaryOnly,
 }
 
+/// How a layer-forward route composes with the generic per-layer dispatcher
+/// (ADR-025 D3).
+///
+/// Exotic families whose residual or packing contract cannot be expressed per
+/// layer (DeepSeek V4's packed hyper-connection stream; future DeepSeek V4
+/// Pro / MiniMax M3 trunks) register a [`TrunkStyle::DedicatedTrunk`] route
+/// and own their forward entry points, instead of bypassing dispatch ad hoc.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrunkStyle {
+    /// The route implements a per-layer `families::*::layer_forward` and
+    /// composes through the shared `model::layer_forward` dispatcher; the
+    /// caller owns the residual stream.
+    PerLayer,
+    /// The route owns a dedicated forward trunk because its residual/packing
+    /// contract cannot fit the per-layer signature. The generic dispatcher
+    /// must not grow special cases for these routes; they are entered through
+    /// their own trunk entry points.
+    DedicatedTrunk,
+}
+
 impl MlxRunnerAdmission {
     /// Whether this registration is eligible for primary-runner validation.
     pub const fn allows_primary(self) -> bool {
@@ -84,6 +105,22 @@ impl LayerForwardRoute {
             Self::NemotronH => "nemotron_h",
         }
     }
+
+    /// Trunk composition style for this route (ADR-025 D3).
+    pub const fn trunk_style(self) -> TrunkStyle {
+        match self {
+            Self::DeepseekV4 => TrunkStyle::DedicatedTrunk,
+            Self::Standard
+            | Self::Llama4
+            | Self::GlmMoeLite
+            | Self::DeepseekV3
+            | Self::Mistral3
+            | Self::Mixtral
+            | Self::GptOss
+            | Self::NemotronH
+            | Self::MuseGlimmer => TrunkStyle::PerLayer,
+        }
+    }
 }
 
 /// Static registration entry for a supported (or incubating) architecture label.
@@ -104,6 +141,8 @@ pub struct ArchitectureRegistration {
     pub cert_gate_note: &'static str,
     /// Three-tier model quality grade (see [`crate::support_tier`]).
     pub support_tier: ModelSupportTier,
+    /// Serving-visible chat behavior contract (ADR-025 D1).
+    pub chat_contract: ChatContract,
 }
 
 /// Forward-compatible name for a complete model-family descriptor.
@@ -125,6 +164,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: true,
         cert_gate_note: "dense full-attention AR; batched decode when certified",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::QwenChatMl,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "qwen3_5",
@@ -134,6 +179,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "hybrid linear+full; structural rejections include linear_attention",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::QwenChatMl,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "qwen3_next",
@@ -143,6 +194,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "hybrid gated-delta / MoE; capability-gated, not name-allowlisted",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::QwenChatMl,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "minicpmv4_6",
@@ -152,6 +209,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "Qwen3.5 hybrid text backbone with MiniCPM-V vision prefill",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::QwenChatMl,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "llama3",
@@ -161,6 +224,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: true,
         cert_gate_note: "dense full-attention AR when structurally dense",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::Llama3,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "gemma3",
@@ -170,6 +239,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "Gemma3 SWA text backbone; standard path",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::Unsupported,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "gemma4",
@@ -179,6 +254,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "interleaved SWA / optional MoE; dense pilot rejects SWA+MoE; SWA text may use gemma_swa structural helper + multi_token_window_views",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::Gemma4,
+            output_policy: ChatOutputPolicy::Gemma4Channels,
+            default_thinking_off: true,
+            requires_instruct_artifact: true,
+        },
     },
     ArchitectureRegistration {
         family_label: "gemma4_assistant",
@@ -188,6 +269,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "assistant MTP drafter; not dense-batch candidate",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract::not_applicable(),
     },
     ArchitectureRegistration {
         family_label: "gemma4_unified",
@@ -197,6 +279,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "multimodal prefill adapters feed AR generation",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::Gemma4,
+            output_policy: ChatOutputPolicy::Gemma4Channels,
+            default_thinking_off: true,
+            requires_instruct_artifact: true,
+        },
     },
     ArchitectureRegistration {
         family_label: "gemma4_vl",
@@ -206,6 +294,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "Gemma 4 E2B/E4B ViT+Conformer towers into gemma4 AR backbone (WS-V1)",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::Gemma4,
+            output_policy: ChatOutputPolicy::Gemma4Channels,
+            default_thinking_off: true,
+            requires_instruct_artifact: true,
+        },
     },
     ArchitectureRegistration {
         family_label: "qwen3_vl",
@@ -215,6 +309,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: true,
         cert_gate_note: "Qwen3-VL dense: text path rides certified qwen3 batched decode when text-only",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::QwenChatMl,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "qwen3_vl_moe",
@@ -224,6 +324,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "Qwen3-VL-MoE; text decode shares qwen3-MoE graphs; batch cert separate",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::QwenChatMl,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "muse_glimmer",
@@ -233,6 +339,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "Muse-Glimmer iRoPE dense SWA + gated attention; dedicated muse_glimmer route (sandwich norms, weightless QK norms, softcapped scaled logits)",
         support_tier: ModelSupportTier::Experimental,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::MuseGlimmerAtem,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "diffusion_gemma",
@@ -242,6 +354,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "block diffusion; generation kind BlockDiffusion",
         support_tier: ModelSupportTier::Experimental,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::Gemma4,
+            output_policy: ChatOutputPolicy::Gemma4Channels,
+            default_thinking_off: true,
+            requires_instruct_artifact: true,
+        },
     },
     ArchitectureRegistration {
         family_label: "embeddinggemma",
@@ -251,6 +369,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "encoder embed strategy; not a decode path",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract::not_applicable(),
     },
     ArchitectureRegistration {
         family_label: "nemotron_embed",
@@ -260,6 +379,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "Nemotron 3 Embed: bidirectional Ministral encoder + mean pool",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract::not_applicable(),
     },
     ArchitectureRegistration {
         family_label: "glm4_moe_lite",
@@ -269,6 +389,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "MLA + MoE; structural rejections",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::Glm47,
+            output_policy: ChatOutputPolicy::GlmToolMarkers,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "deepseek_v3",
@@ -278,6 +404,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "MLA + MoE",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::DeepSeekChat,
+            output_policy: ChatOutputPolicy::DeepSeekThinkSplit,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "deepseek_v32",
@@ -287,6 +419,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "MLA + MoE",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::DeepSeekChat,
+            output_policy: ChatOutputPolicy::DeepSeekThinkSplit,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "deepseek_v4",
@@ -296,6 +434,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "sparse attention + hash-routed MoE; repo-owned graph with limited smoke evidence; no certification evidence",
         support_tier: ModelSupportTier::Experimental,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::DeepSeekV4Chat,
+            output_policy: ChatOutputPolicy::DeepSeekThinkSplit,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "mistral3",
@@ -305,6 +449,9 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "uniform SWA; sliding_window rejection",
         support_tier: ModelSupportTier::Compatible,
+        // Instruct-vs-Ministral framing is a model-id-level distinction;
+        // resolution falls back to server heuristics (tech-spec §2.1).
+        chat_contract: ChatContract::not_applicable(),
     },
     ArchitectureRegistration {
         family_label: "mixtral",
@@ -314,6 +461,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "MoE",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::Unsupported,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "llama4",
@@ -323,6 +476,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "iRoPE / MoE hybrid",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::Llama4,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "gpt_oss",
@@ -332,6 +491,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "MXFP4 MoE",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::GptOssHarmony,
+            output_policy: ChatOutputPolicy::GptOssFinalChannel,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "nemotron_h",
@@ -341,6 +506,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "hybrid Mamba-2 + GQA + ReLU2 MoE; pattern-driven mixers",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::QwenChatMl,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "unlimited_ocr",
@@ -350,6 +521,12 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "Unlimited-OCR multimodal: dual vision + SWA MoE language tower",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::PlainRolePrefix,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: false,
+            requires_instruct_artifact: false,
+        },
     },
     // Whisper uses a dedicated encoder-decoder ASR runtime (`ax-engine-mlx`
     // whisper module + audio endpoints). It is still a convert-supported
@@ -363,6 +540,7 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "Whisper large-v3-turbo ASR: dedicated encoder-decoder; audio endpoints only",
         support_tier: ModelSupportTier::Compatible,
+        chat_contract: ChatContract::not_applicable(),
     },
 ];
 

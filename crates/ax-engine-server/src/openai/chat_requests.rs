@@ -182,8 +182,25 @@ pub(crate) fn render_openai_chat_prompt_with_tools(
     )
 }
 
+/// Test/delegated-path facade: renders without a manifest family hint, so
+/// template selection uses model-id heuristics only (ADR-025 D2 fallback).
+#[cfg(test)]
 pub(crate) fn render_openai_chat_prompt_with_options(
     model_id: &str,
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+    options: ChatPromptRenderOptions,
+) -> Result<String, HttpErrorResponse> {
+    render_openai_chat_prompt_with_family(model_id, None, messages, tools, tool_choice, options)
+}
+
+/// Render the OpenAI chat prompt with an optional manifest `model_family`
+/// hint. When the hint resolves a registered chat contract, the contract
+/// selects the template; otherwise model-id heuristics apply (ADR-025 D2).
+pub(crate) fn render_openai_chat_prompt_with_family(
+    model_id: &str,
+    family_hint: Option<&str>,
     messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
@@ -195,7 +212,7 @@ pub(crate) fn render_openai_chat_prompt_with_options(
     // Google's 2026-07-09 canonical chat template (not only when tools are
     // present).
     if matches!(
-        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::resolve_chat_template(model_id, family_hint),
         chat::ChatPromptTemplate::Gemma4
     ) {
         return render_gemma4_openai_chat_prompt(
@@ -207,18 +224,18 @@ pub(crate) fn render_openai_chat_prompt_with_options(
         );
     }
     if matches!(
-        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::resolve_chat_template(model_id, family_hint),
         chat::ChatPromptTemplate::Glm47
     ) {
         return render_glm_openai_chat_prompt(model_id, messages, tools, tool_choice);
     }
     if matches!(
-        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::resolve_chat_template(model_id, family_hint),
         chat::ChatPromptTemplate::DeepSeekChat
     ) {
         return render_deepseek_openai_chat_prompt(model_id, messages, tools, tool_choice, options);
     }
-    let template = chat::ChatPromptTemplate::for_model_id(model_id);
+    let template = chat::resolve_chat_template(model_id, family_hint);
     // Always use the dedicated Ministral renderer: structured tool-call history
     // can be present even when this request does not redeclare the tool schemas.
     if matches!(template, chat::ChatPromptTemplate::MinistralInstruct) {

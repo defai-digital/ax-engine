@@ -130,6 +130,8 @@ pub(crate) async fn run_openai_text_generation(
     if stream {
         let tool_chat =
             response_options.parse_tool_calls && matches!(kind, OpenAiStreamKind::ChatCompletion);
+        // Manifest family hint for registry-driven chat resolution (ADR-025 D2).
+        let family_hint = crate::metadata::model_family_from_artifacts(&live);
         // Incremental tool-call streaming (ADR-040 D1) covers the product
         // scope's text-marker families. GLM 4.x encodes tool markers as
         // special tokens the plain incremental decode strips, and GPT-OSS
@@ -138,7 +140,7 @@ pub(crate) async fn run_openai_text_generation(
         let incremental_tool_chat = tool_chat
             && live.runtime_report.selected_backend == SelectedBackend::Mlx
             && matches!(
-                ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+                crate::chat::resolve_chat_template(live.model_id.as_ref(), family_hint.as_deref()),
                 ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Gemma4
             );
         if tool_chat && !incremental_tool_chat {
@@ -156,7 +158,8 @@ pub(crate) async fn run_openai_text_generation(
             && matches!(kind, OpenAiStreamKind::ChatCompletion)
             && live.runtime_report.selected_backend == SelectedBackend::Mlx
         {
-            match ChatPromptTemplate::for_model_id(live.model_id.as_ref()) {
+            match crate::chat::resolve_chat_template(live.model_id.as_ref(), family_hint.as_deref())
+            {
                 ChatPromptTemplate::QwenChatMl => Some(StreamReasoningFamily::QwenThink),
                 ChatPromptTemplate::DeepSeekChat => Some(StreamReasoningFamily::DeepSeekThink),
                 ChatPromptTemplate::Gemma4 => Some(StreamReasoningFamily::Gemma4Channel),
@@ -392,7 +395,9 @@ pub(crate) fn populate_native_mlx_output_text(
     // GLM 4.x encodes tool calls with special tokens that a plain decode strips,
     // so chat output is decoded with those markers preserved for the tool-call
     // parser. GLM does not use Gemma 4 reasoning channels.
-    let chat_template = ChatPromptTemplate::for_model_id(live.model_id.as_ref());
+    let family_hint = crate::metadata::model_family_from_artifacts(live);
+    let chat_template =
+        crate::chat::resolve_chat_template(live.model_id.as_ref(), family_hint.as_deref());
     let is_glm_chat = matches!(kind, OpenAiStreamKind::ChatCompletion)
         && matches!(chat_template, ChatPromptTemplate::Glm47);
     let is_gpt_oss_chat = matches!(kind, OpenAiStreamKind::ChatCompletion)

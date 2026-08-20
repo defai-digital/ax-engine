@@ -28,7 +28,7 @@ use crate::openai::chat_requests::{
     is_nemotron_omni_model_id, is_qwen3_vl_model_id, messages_contain_inline_media,
     openai_tool_choice_disables_tools, reject_video_chat_content,
     render_gemma4_unified_chat_with_media, render_minicpm_v46_chat_with_media,
-    render_nemotron_omni_chat_with_media, render_openai_chat_prompt_with_options,
+    render_nemotron_omni_chat_with_media, render_openai_chat_prompt_with_family,
     render_qwen3_vl_chat_with_media,
 };
 pub(crate) use crate::openai::chat_requests::{
@@ -468,10 +468,13 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 .to_string(),
         ));
     }
+    // Manifest family hint for registry-driven chat resolution (ADR-025 D2);
+    // cached per artifacts dir, so consulting it per request is cheap.
+    let artifact_family = crate::metadata::model_family_from_artifacts(live);
     let streaming_reasoning_supported = live.runtime_report.selected_backend
         == SelectedBackend::Mlx
         && matches!(
-            chat::ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+            chat::resolve_chat_template(live.model_id.as_ref(), artifact_family.as_deref()),
             chat::ChatPromptTemplate::QwenChatMl
                 | chat::ChatPromptTemplate::Gemma4
                 | chat::ChatPromptTemplate::DeepSeekChat
@@ -579,8 +582,9 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
         if media_rendered {
             None
         } else {
-            Some(render_openai_chat_prompt_with_options(
+            Some(render_openai_chat_prompt_with_family(
                 live.model_id.as_ref(),
+                artifact_family.as_deref(),
                 &request.messages,
                 request.tools.as_ref(),
                 request.tool_choice.as_ref(),

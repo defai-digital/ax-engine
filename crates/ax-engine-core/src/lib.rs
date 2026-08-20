@@ -2,6 +2,7 @@
 
 pub mod architecture;
 pub mod architecture_registry;
+pub mod chat_contract;
 pub mod convert;
 pub mod distributed;
 pub mod engine;
@@ -36,8 +37,11 @@ pub use architecture::{
 };
 pub use architecture_registry::{
     ARCHITECTURE_REGISTRY, ArchitectureRegistration, FamilyDescriptor, LayerForwardRoute,
-    MlxRunnerAdmission, default_generation_for_family, is_primary_mlx_runner_family,
+    MlxRunnerAdmission, TrunkStyle, default_generation_for_family, is_primary_mlx_runner_family,
     lookup_architecture, mlx_runner_admission_for_family, resolve_layer_forward_route,
+};
+pub use chat_contract::{
+    ChatContract, ChatOutputPolicy, ChatTemplateKind, chat_contract_for_family,
 };
 pub use distributed::{
     ActivationDtype, ActivationFrame, ActivationFrameHeader, PIPELINE_WIRE_VERSION,

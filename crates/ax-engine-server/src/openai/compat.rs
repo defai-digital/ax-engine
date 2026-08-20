@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::app_state::{AppState, LiveState};
 use crate::errors::{ErrorResponse, error_response};
 use crate::metadata::context_length;
-use crate::openai::chat_requests::render_openai_chat_prompt_with_options;
+use crate::openai::chat_requests::render_openai_chat_prompt_with_family;
 use crate::openai::requests::openai_chat_prompt_render_options_for_live;
 use crate::openai::schema::OpenAiChatCompletionHttpRequest;
 use crate::openai::validation::select_model;
@@ -103,8 +103,10 @@ pub(crate) async fn apply_template(
     // reasoning/chat-template controls, so this preview shows the exact
     // text-only prompt generation would see.
     let prompt_options = openai_chat_prompt_render_options_for_live(&request, &live);
-    let prompt = render_openai_chat_prompt_with_options(
+    let artifact_family = crate::metadata::model_family_from_artifacts(&live);
+    let prompt = render_openai_chat_prompt_with_family(
         live.model_id.as_ref(),
+        artifact_family.as_deref(),
         &request.messages,
         request.tools.as_ref(),
         request.tool_choice.as_ref(),

@@ -1,7 +1,13 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::SystemTime;
+
 use ax_engine_sdk::{RuntimeReport, SelectedBackend};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -309,7 +315,10 @@ fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool 
         && (chat::is_qwen_thinking_model(live.model_id.as_ref())
             || chat::is_deepseek_model(live.model_id.as_ref())
             || matches!(
-                ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+                chat::resolve_chat_template(
+                    live.model_id.as_ref(),
+                    model_family_from_artifacts(live).as_deref()
+                ),
                 ChatPromptTemplate::Gemma4
             ))
 }
@@ -332,7 +341,10 @@ fn openai_tool_calling_supported_live(live: &LiveState, openai_text: bool) -> bo
     openai_text
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         && matches!(
-            ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+            chat::resolve_chat_template(
+                live.model_id.as_ref(),
+                model_family_from_artifacts(live).as_deref()
+            ),
             ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Gemma4 | ChatPromptTemplate::Glm47
         )
 }
@@ -438,15 +450,42 @@ fn family_from_manifest(manifest: &Value) -> Option<String> {
 }
 
 /// Read `model_family` from the live session's model-manifest.json when present.
+///
+/// Cached per manifest path with a `(len, mtime)` fingerprint (same pattern
+/// as `validate_gemma4_instruct_eos_cached`), because per-request chat
+/// resolution (ADR-025 D2) consults this on every chat request and the
+/// manifest embeds the full tensor list.
 pub(crate) fn model_family_from_artifacts(live: &LiveState) -> Option<String> {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return None;
     }
     let artifacts_dir = live.session_config.mlx_model_artifacts_dir()?;
     let manifest_path = artifacts_dir.join("model-manifest.json");
-    let bytes = std::fs::read(manifest_path).ok()?;
-    let manifest: Value = serde_json::from_slice(&bytes).ok()?;
-    family_from_manifest(&manifest)
+    model_family_from_manifest_path_cached(&manifest_path)
+}
+
+type ManifestFingerprint = Option<(u64, SystemTime)>;
+
+fn model_family_from_manifest_path_cached(manifest_path: &Path) -> Option<String> {
+    type FamilyCache = HashMap<PathBuf, (ManifestFingerprint, Option<String>)>;
+    static FAMILIES: OnceLock<Mutex<FamilyCache>> = OnceLock::new();
+    let cache = FAMILIES.get_or_init(|| Mutex::new(HashMap::new()));
+    let fingerprint = std::fs::metadata(manifest_path)
+        .ok()
+        .and_then(|meta| Some((meta.len(), meta.modified().ok()?)));
+    if let Some((cached_fingerprint, family)) = cache.lock().get(manifest_path)
+        && *cached_fingerprint == fingerprint
+    {
+        return family.clone();
+    }
+    let family = std::fs::read(manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|manifest| family_from_manifest(&manifest));
+    cache
+        .lock()
+        .insert(manifest_path.to_path_buf(), (fingerprint, family.clone()));
+    family
 }
 
 fn has_global_tensor_role(tensors: &[Value], role: &str) -> bool {

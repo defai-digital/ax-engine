@@ -159,6 +159,58 @@ impl ChatPromptTemplate {
             Self::PlainRolePrefix
         }
     }
+
+    /// Map a registry chat-contract template kind (ADR-025) to the server
+    /// renderer enum. Returns `None` when the contract does not override
+    /// model-id heuristics (`NotApplicable`) or does not match the family
+    /// label (`Unsupported` rows only exist for gemma3/mixtral).
+    pub(crate) fn from_contract_kind(
+        kind: ax_engine_core::ChatTemplateKind,
+        family_label: &str,
+    ) -> Option<Self> {
+        use ax_engine_core::ChatTemplateKind;
+        Some(match kind {
+            ChatTemplateKind::QwenChatMl => Self::QwenChatMl,
+            ChatTemplateKind::Llama3 => Self::Llama3,
+            ChatTemplateKind::Llama4 => Self::Llama4,
+            ChatTemplateKind::Gemma4 => Self::Gemma4,
+            ChatTemplateKind::Glm47 => Self::Glm47,
+            ChatTemplateKind::MistralInstruct => Self::MistralInstruct,
+            ChatTemplateKind::MinistralInstruct => Self::MinistralInstruct,
+            ChatTemplateKind::GptOssHarmony => Self::GptOssHarmony,
+            ChatTemplateKind::MuseGlimmerAtem => Self::MuseGlimmerAtem,
+            // V4 framing stays driven by `is_deepseek_v4_model` inside the
+            // DeepSeek renderer until Phase 2 threads a resolved flag through
+            // render options (tech-spec §3.2).
+            ChatTemplateKind::DeepSeekChat | ChatTemplateKind::DeepSeekV4Chat => Self::DeepSeekChat,
+            ChatTemplateKind::PlainRolePrefix => Self::PlainRolePrefix,
+            ChatTemplateKind::Unsupported => match family_label {
+                "gemma3" => Self::Unsupported(ChatUnsupportedFamily::Gemma3),
+                "mixtral" => Self::Unsupported(ChatUnsupportedFamily::Mixtral),
+                _ => return None,
+            },
+            ChatTemplateKind::NotApplicable => return None,
+        })
+    }
+}
+
+/// Resolve the chat template for a model, preferring the architecture
+/// registry contract when the manifest family is known (ADR-025 D2).
+///
+/// Falls back to [`ChatPromptTemplate::for_model_id`] heuristics for
+/// unconverted artifacts, delegated backends, unknown family labels, and rows
+/// without a family-level contract (`ChatTemplateKind::NotApplicable`).
+pub(crate) fn resolve_chat_template(
+    model_id: &str,
+    family_hint: Option<&str>,
+) -> ChatPromptTemplate {
+    if let Some(family) = family_hint
+        && let Some(contract) = ax_engine_core::chat_contract_for_family(family)
+        && let Some(template) = ChatPromptTemplate::from_contract_kind(contract.template, family)
+    {
+        return template;
+    }
+    ChatPromptTemplate::for_model_id(model_id)
 }
 
 /// DiffusionGemma IT uses Gemma 4 turn markers but does **not** pre-fill an
@@ -1365,6 +1417,101 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// ADR-025 behavior-preservation gate: for every registered family, the
+    /// registry-contract resolution must agree with the legacy model-id
+    /// heuristic on canonical ids. `NotApplicable` rows exercise the fallback
+    /// (they agree by construction, which is the contract).
+    #[test]
+    fn registry_contract_resolution_matches_model_id_heuristics() {
+        const CASES: &[(&str, &str)] = &[
+            ("qwen3", "qwen3-32b-instruct-4bit"),
+            ("qwen3_5", "qwen3.5-35b-a3b-4bit"),
+            ("qwen3_next", "qwen3-next-80b-a3b-thinking"),
+            ("minicpmv4_6", "minicpm-v4_6-4bit"),
+            ("llama3", "meta-llama-3.1-8b-instruct"),
+            ("llama4", "meta-llama-4-maverick"),
+            ("gemma3", "gemma-3-27b-it"),
+            ("gemma4", "gemma-4-27b-it"),
+            ("gemma4_unified", "gemma4-unified-e4b-it"),
+            ("gemma4_vl", "gemma4-vl-e4b-it"),
+            ("qwen3_vl", "qwen3-vl-32b-instruct"),
+            ("qwen3_vl_moe", "qwen3-vl-moe-30b-a3b"),
+            ("muse_glimmer", "muse-glimmer-30b"),
+            ("diffusion_gemma", "diffusiongemma-2b-it"),
+            ("embeddinggemma", "embeddinggemma-300m"),
+            ("nemotron_embed", "nvidia/nemotron-embed-300m"),
+            ("glm4_moe_lite", "glm-4.7-flash-4bit"),
+            ("deepseek_v3", "deepseek-ai/DeepSeek-V3"),
+            ("deepseek_v32", "deepseek-ai/DeepSeek-V3.2"),
+            ("deepseek_v4", "deepseek-ai/DeepSeek-V4-Flash"),
+            ("mistral3", "ministral-8b"),
+            ("mixtral", "mistralai/Mixtral-8x7B-Instruct-v0.1"),
+            ("gpt_oss", "openai/gpt-oss-20b"),
+            ("nemotron_h", "nvidia/Nemotron-H-8B"),
+            ("unlimited_ocr", "unlimited-ocr-v1"),
+            ("gemma4_assistant", "gemma4-assistant-mtp"),
+            ("whisper", "mlx-community/whisper-large-v3-turbo"),
+        ];
+        for &(family, model_id) in CASES {
+            assert_eq!(
+                resolve_chat_template(model_id, Some(family)),
+                ChatPromptTemplate::for_model_id(model_id),
+                "registry contract for {family} disagrees with the heuristic for {model_id}"
+            );
+        }
+        // Spot-check the shared expectations behind the equivalence above.
+        assert_eq!(
+            resolve_chat_template("deepseek-ai/DeepSeek-V4-Flash", Some("deepseek_v4")),
+            ChatPromptTemplate::DeepSeekChat
+        );
+        assert_eq!(
+            resolve_chat_template("ministral-8b", Some("mistral3")),
+            ChatPromptTemplate::MinistralInstruct
+        );
+        assert_eq!(
+            resolve_chat_template("gemma-3-27b-it", Some("gemma3")),
+            ChatPromptTemplate::Unsupported(ChatUnsupportedFamily::Gemma3)
+        );
+    }
+
+    /// The manifest family wins when the model-id heuristic cannot recognize
+    /// a converted artifact (community fine-tunes with product ids that carry
+    /// no family substring would otherwise fall through to plain role
+    /// prefixes).
+    #[test]
+    fn registry_contract_overrides_mismatched_model_id_heuristic() {
+        let model_id = "some-lab/aurora-ft-4bit";
+        assert_eq!(
+            ChatPromptTemplate::for_model_id(model_id),
+            ChatPromptTemplate::PlainRolePrefix
+        );
+        assert_eq!(
+            resolve_chat_template(model_id, Some("gemma4")),
+            ChatPromptTemplate::Gemma4
+        );
+        assert_eq!(
+            resolve_chat_template(model_id, Some("deepseek_v4")),
+            ChatPromptTemplate::DeepSeekChat
+        );
+    }
+
+    #[test]
+    fn resolve_chat_template_falls_back_without_family_hint() {
+        assert_eq!(
+            resolve_chat_template("gpt-oss-20b", None),
+            ChatPromptTemplate::for_model_id("gpt-oss-20b")
+        );
+        // Unknown family labels and rows without a mapping fall back too.
+        assert_eq!(
+            resolve_chat_template("gpt-oss-20b", Some("not_a_family")),
+            ChatPromptTemplate::GptOssHarmony
+        );
+        assert_eq!(
+            resolve_chat_template("ministral-8b", Some("mistral3")),
+            ChatPromptTemplate::MinistralInstruct
+        );
+    }
 
     #[test]
     fn stop_sequences_merge_user_and_native_stops() {

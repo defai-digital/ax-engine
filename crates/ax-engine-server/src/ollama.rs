@@ -1552,7 +1552,10 @@ fn ollama_modelfile(live: &LiveState) -> String {
 }
 
 fn ollama_template_hint(live: &LiveState) -> String {
-    match ChatPromptTemplate::for_model_id(live.model_id.as_ref()) {
+    match crate::chat::resolve_chat_template(
+        live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
+    ) {
         ChatPromptTemplate::QwenChatMl => "qwen-chatml".to_string(),
         ChatPromptTemplate::Gemma4 => "gemma4".to_string(),
         ChatPromptTemplate::Llama3 => "llama3".to_string(),
