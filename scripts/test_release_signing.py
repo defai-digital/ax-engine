@@ -68,6 +68,18 @@ class ReleaseSigningTests(unittest.TestCase):
         self.assertIn("--profile release-server", text)
         self.assertIn("target/release-server/ax-engine-server", text)
 
+    def test_publisher_redacts_notary_credentials_and_honors_team_override(self):
+        with open(PUBLISH_SCRIPT, encoding="utf-8") as fh:
+            text = fh.read()
+
+        self.assertIn("[App Store Connect API credentials redacted]", text)
+        self.assertNotIn("${NOTARY_ARGS[*]}", text)
+        self.assertIn('grep -F "Authority=Developer ID Application:"', text)
+        self.assertNotIn(
+            'Authority=Developer ID Application: DEFAI PRIVATE LIMITED', text
+        )
+        self.assertIn("TeamIdentifier=$EXPECTED_APPLE_TEAM_ID", text)
+
     def test_legacy_brew_publisher_cannot_mutate_releases(self):
         with open(BREW_RELEASE_SCRIPT, encoding="utf-8") as fh:
             text = fh.read()

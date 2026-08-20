@@ -295,6 +295,14 @@ resolve_notary_args() {
     fi
 }
 
+notary_args_for_log() {
+    if [[ "${NOTARY_ARGS[0]:-}" == "--keychain-profile" ]]; then
+        printf -- '--keychain-profile %q' "${NOTARY_ARGS[1]}"
+        return
+    fi
+    printf '%s' '[App Store Connect API credentials redacted]'
+}
+
 binary_rpaths() {
     otool -l "$1" | awk '
         $1 == "cmd" && $2 == "LC_RPATH" { want_path = 1; next }
@@ -409,8 +417,8 @@ codesign_release_payload() {
             continue
         fi
         signature_details="$(codesign -dv --verbose=4 "$image" 2>&1)"
-        grep -F "Authority=Developer ID Application: DEFAI PRIVATE LIMITED" <<<"$signature_details" >/dev/null || {
-            die "$(basename "$image") is not signed by the expected Developer ID authority"
+        grep -F "Authority=Developer ID Application:" <<<"$signature_details" >/dev/null || {
+            die "$(basename "$image") is not signed with a Developer ID Application certificate"
         }
         grep -F "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details" >/dev/null || {
             die "$(basename "$image") is not signed by Apple team $EXPECTED_APPLE_TEAM_ID"
@@ -527,6 +535,7 @@ notarize_release_payload() {
 
     local notarize_zip="$ARTIFACT_DIR/ax-engine-${TAG}-notarize.zip"
     local submit_json="$ARTIFACT_DIR/ax-engine-${TAG}-notary-submit.json"
+    local notary_log_args
     local submission_info
     local submission_status
     rm -f "$notarize_zip"
@@ -535,7 +544,10 @@ notarize_release_payload() {
         cd "$STAGING_DIR"
         run zip -qry "$notarize_zip" .
     )
-    echo ">> xcrun notarytool submit $notarize_zip ${NOTARY_ARGS[*]} --wait --output-format json"
+    notary_log_args="$(notary_args_for_log)"
+    printf '>> xcrun notarytool submit %q %s --wait --output-format json\n' \
+        "$notarize_zip" \
+        "$notary_log_args"
     xcrun notarytool submit \
         "$notarize_zip" \
         "${NOTARY_ARGS[@]}" \
@@ -556,7 +568,9 @@ PY
     }
 
     NOTARIZATION_LOG_PATH="$ARTIFACT_DIR/ax-engine-${TAG}-notary-log.json"
-    echo ">> xcrun notarytool log $NOTARIZATION_SUBMISSION_ID ${NOTARY_ARGS[*]}"
+    printf '>> xcrun notarytool log %q %s\n' \
+        "$NOTARIZATION_SUBMISSION_ID" \
+        "$notary_log_args"
     xcrun notarytool log \
         "$NOTARIZATION_SUBMISSION_ID" \
         "${NOTARY_ARGS[@]}" > "$NOTARIZATION_LOG_PATH"
@@ -740,8 +754,8 @@ PY
             for image in "${release_machos[@]}"; do
                 run codesign --verify --strict --verbose=2 "$verify_dir/payload/$image"
                 signature_details="$(codesign -dv --verbose=4 "$verify_dir/payload/$image" 2>&1)"
-                grep -F "Authority=Developer ID Application: DEFAI PRIVATE LIMITED" <<<"$signature_details" >/dev/null || {
-                    die "uploaded $image has the wrong Developer ID authority"
+                grep -F "Authority=Developer ID Application:" <<<"$signature_details" >/dev/null || {
+                    die "uploaded $image is not signed with a Developer ID Application certificate"
                 }
                 grep -F "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details" >/dev/null || {
                     die "uploaded $image has the wrong Apple team"

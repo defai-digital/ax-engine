@@ -33,10 +33,13 @@ jobs:
     steps:
       - name: Resolve tag
         id: tag
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          TAG="${{ inputs.tag }}"
-          if [[ -z "$TAG" ]]; then
-            echo "error: could not determine release tag" >&2
+          set -euo pipefail
+          TAG="$REQUESTED_TAG"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: Homebrew release tag must be stable semver (vX.Y.Z): $TAG" >&2
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -67,10 +70,18 @@ jobs:
           MANIFEST="ax-engine-${TAG}-macos-arm64.manifest.json"
           DOWNLOAD_URL="https://github.com/${MAIN_REPO}/releases/download/${TAG}/${ARCHIVE}"
 
-          # Refuse draft releases: draft assets must not land in the public formula.
-          is_draft="$(gh release view "$TAG" --repo "$MAIN_REPO" --json isDraft --jq .isDraft)"
+          # Refuse draft and prerelease assets: neither may land in the stable formula.
+          release_state="$(gh release view "$TAG" \
+            --repo "$MAIN_REPO" \
+            --json isDraft,isPrerelease \
+            --jq '[.isDraft, .isPrerelease] | @tsv')"
+          IFS=$'\t' read -r is_draft is_prerelease <<< "$release_state"
           if [[ "$is_draft" != "false" ]]; then
             echo "error: release $TAG is still a draft; refusing to update Homebrew" >&2
+            exit 1
+          fi
+          if [[ "$is_prerelease" != "false" ]]; then
+            echo "error: release $TAG is a prerelease; refusing to update Homebrew" >&2
             exit 1
           fi
 

@@ -250,6 +250,16 @@ class CiWorkflowPolicyTests(unittest.TestCase):
             publisher.index("gh workflow run brew-release.yml"),
         )
 
+    def test_homebrew_dispatch_accepts_only_published_stable_tags(self) -> None:
+        brew = (WORKFLOWS_DIR / "brew-release.yml").read_text()
+
+        self.assertIn("REQUESTED_TAG: ${{ inputs.tag }}", brew)
+        self.assertIn('TAG="$REQUESTED_TAG"', brew)
+        self.assertNotIn('TAG="${{ inputs.tag }}"', brew)
+        self.assertIn(r'^v[0-9]+\.[0-9]+\.[0-9]+$', brew)
+        self.assertIn("--json isDraft,isPrerelease", brew)
+        self.assertIn("is a prerelease; refusing to update Homebrew", brew)
+
     def test_homebrew_verifies_minisign_before_trusting_checksum(self) -> None:
         brew = (WORKFLOWS_DIR / "brew-release.yml").read_text()
 
