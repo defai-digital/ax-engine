@@ -57,6 +57,20 @@ def fake_stream(url: str, payload: dict[str, object], timeout: float):
 
 
 class AxServingBenchTests(unittest.TestCase):
+    def test_build_payload_can_force_fixed_length_generation(self) -> None:
+        payload = bench.build_payload(
+            prompt(),
+            model_id="qwen3",
+            input_kind="tokens",
+            temperature=0.0,
+            top_p=1.0,
+            top_k=0,
+            seed=7,
+            ignore_eos=True,
+        )
+
+        self.assertTrue(payload["sampling"]["ignore_eos"])
+
     def test_parse_sse_text_supports_named_and_done_frames(self) -> None:
         frames = bench.parse_sse_text(
             'event: step\n'

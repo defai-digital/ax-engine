@@ -55,9 +55,9 @@ class StandaloneReleaseTests(unittest.TestCase):
         site_packages = root / "site-packages"
         mlx_lib = site_packages / "mlx" / "lib"
         mlx_include = site_packages / "mlx" / "include" / "mlx"
-        mlx_dist_info = site_packages / "mlx-0.32.0.dist-info"
+        mlx_dist_info = site_packages / "mlx-0.32.1.dist-info"
         mlx_license = mlx_dist_info / "licenses"
-        metal_dist_info = site_packages / "mlx_metal-0.32.0.dist-info"
+        metal_dist_info = site_packages / "mlx_metal-0.32.1.dist-info"
         source.mkdir()
         binaries.mkdir()
         mlx_lib.mkdir(parents=True)
@@ -109,7 +109,7 @@ class StandaloneReleaseTests(unittest.TestCase):
         (mlx_include / "version.h").write_text(
             "#define MLX_VERSION_MAJOR 0\n"
             "#define MLX_VERSION_MINOR 32\n"
-            "#define MLX_VERSION_PATCH 0\n"
+            "#define MLX_VERSION_PATCH 1\n"
         )
         (mlx_dist_info / "WHEEL").write_text("Tag: cp312-cp312-macosx_15_0_arm64\n")
         (metal_dist_info / "WHEEL").write_text("Tag: py3-none-macosx_15_0_arm64\n")
@@ -215,7 +215,7 @@ class StandaloneReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _, mlx_lib, site_packages = self.build_fixture(root)
-            for distribution in ("mlx-0.32.0", "mlx_metal-0.32.0"):
+            for distribution in ("mlx-0.32.1", "mlx_metal-0.32.1"):
                 wheel = site_packages / f"{distribution}.dist-info" / "WHEEL"
                 wheel.write_text(wheel.read_text().replace("macosx_15_0", "macosx_14_0"))
 
@@ -233,7 +233,7 @@ class StandaloneReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _, mlx_lib, site_packages = self.build_fixture(root)
-            for distribution in ("mlx-0.32.0", "mlx_metal-0.32.0"):
+            for distribution in ("mlx-0.32.1", "mlx_metal-0.32.1"):
                 wheel = site_packages / f"{distribution}.dist-info" / "WHEEL"
                 wheel.write_text(wheel.read_text().replace("macosx_15_0", "macosx_16_0"))
 

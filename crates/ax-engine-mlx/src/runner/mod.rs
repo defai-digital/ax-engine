@@ -43,7 +43,7 @@ use ax_engine_core::{
 use crate::batched_decode_certification::load_batched_decode_certification;
 use crate::batched_decode_session::{
     BatchedDecodeCapabilities, BatchedDecodeSession, batched_decode_allow_uncertified,
-    batched_decode_enabled, batched_decode_sampling_enabled,
+    batched_decode_enabled, batched_decode_sampling_enabled, mtp_multirow_batch_enabled,
 };
 use crate::batched_sampling::{BatchedSamplingClass, argmax_batched, batched_sampling_class};
 use crate::gemma4_assistant_mtp::{
@@ -504,6 +504,13 @@ struct RequestState {
     /// threshold with sufficient samples, MTP is disabled for the rest of the
     /// request and all decode steps use the direct single-token path.
     mtp_bypassed: bool,
+    /// The request transferred its committed target state into the shared
+    /// direct-decode session because a compatible multirow cohort formed.
+    /// MTP state is discarded and cannot be restored until a new generation
+    /// starts. Session KV is normally authoritative; scheduler deferral may
+    /// write it back to the private cache without clearing this direct-only
+    /// latch.
+    mtp_suspended_for_batched_decode: bool,
     /// Measured direct-vs-MTP cost policy for exact greedy Qwen depth one.
     mtp_profitability: MtpProfitabilityState,
     /// Per-request latch: once auto-optimistic activates (EWMA ≥ 0.99),
@@ -636,6 +643,7 @@ impl RequestState {
             gemma_mtp_cycle_latched: false,
             mtp_consecutive_misses: 0,
             mtp_bypassed: false,
+            mtp_suspended_for_batched_decode: false,
             mtp_profitability: MtpProfitabilityState::default(),
             auto_optimistic_active: false,
             mtp_adaptive_gate: None,
@@ -714,6 +722,36 @@ fn clear_pending_mtp_proposal(state: &mut RequestState) {
     state.mtp_skip_logits = None;
     state.mtp_skip_argmax = None;
     state.mtp_skip_hidden = None;
+}
+
+/// A shared batched session takes its feed token from the core scheduler and
+/// owns all model lookahead while the row is resident. Private pipeline/feed
+/// latches must not survive that handoff: `next_model_last_token` otherwise
+/// takes precedence over the scheduler token after a deferred row is written
+/// back, and a non-zero direct-pipeline count would resume at the wrong stage.
+fn clear_private_decode_latches_for_batched_session(state: &mut RequestState) {
+    state.pending_direct = None;
+    state.direct_pipeline_emitted_tokens = 0;
+    state.next_model_last_token = None;
+}
+
+fn restore_private_cache_after_batched_writeback(state: &mut RequestState, cache: MlxKVCache) {
+    state.cache = cache;
+    clear_private_decode_latches_for_batched_session(state);
+}
+
+/// Transfer an MTP request to direct batched decode. Only committed target
+/// state survives: drafts are unverified, and the MTP head cache is not used by
+/// the target-only cohort. The caller seeds the full target cache into the
+/// batched session immediately after this transition.
+fn suspend_mtp_for_batched_decode(state: &mut RequestState) {
+    clear_pending_mtp_proposal(state);
+    state.mtp_cache = None;
+    state.mtp_decode_count = 0;
+    state.mtp_prefill_hidden = None;
+    state.mtp_prefill_history_tokens.clear();
+    clear_private_decode_latches_for_batched_session(state);
+    state.mtp_suspended_for_batched_decode = true;
 }
 
 fn append_tail(target: &mut Vec<u32>, source: &[u32], skip: &mut usize) {
@@ -2085,6 +2123,20 @@ fn batched_admission_blocked_by_memory_pressure(memory_pressure: Option<&str>) -
     )
 }
 
+fn should_suspend_qwen_linear_mtp_for_multirow_batch(
+    feature_enabled: bool,
+    mtp_requested: bool,
+    qwen_linear_candidate: bool,
+    mtp_max_depth: usize,
+    decode_candidate_count: usize,
+) -> bool {
+    feature_enabled
+        && mtp_requested
+        && qwen_linear_candidate
+        && mtp_max_depth == 1
+        && decode_candidate_count >= 2
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CoalescedDirectDisposition {
     /// Remain on the ordinary direct pipeline.
@@ -2131,12 +2183,14 @@ impl MlxRunner {
         &self,
         item: &ax_engine_core::ExecutionItem,
         ctx: Option<&RunnerRequestContext>,
+        mtp_suspended: bool,
     ) -> bool {
         // MTP is a request/session route, not a property of the target
         // weights. Keep strict MTP requests on their speculative path while
         // allowing the same package to use batched direct decode when MTP is
         // disabled for the session.
-        if self.has_mtp() && self.mtp_requested {
+        let strict_mtp = self.has_mtp() && self.mtp_requested;
+        if strict_mtp && !mtp_suspended {
             return false;
         }
         if !matches!(item.mode, ExecutionMode::Decode) || item.input_token_slice.len() != 1 {
@@ -2153,7 +2207,11 @@ impl MlxRunner {
             ctx.deterministic_argmax_sampling,
         ) {
             Some(BatchedSamplingClass::Greedy) => true,
-            Some(BatchedSamplingClass::HostSampled) => batched_decode_sampling_enabled(),
+            // The initial oMLX-backed promotion is intentionally greedy-only.
+            // Sampled MTP-to-direct equivalence needs a separate certificate.
+            Some(BatchedSamplingClass::HostSampled) => {
+                !strict_mtp && batched_decode_sampling_enabled()
+            }
             None => false,
         }
     }
@@ -2989,6 +3047,7 @@ impl MlxRunner {
         session: &mut BatchedDecodeSession,
         group: &[&ax_engine_core::ExecutionItem],
         contexts: &[RunnerRequestContext],
+        mtp_transition_ids: &std::collections::HashSet<u64>,
     ) -> Vec<RequestExecutionUpdate> {
         // 1. Seed joiners from their prefilled state.cache; set the feed token
         //    (the scheduler is the source of truth) for every group member.
@@ -3000,16 +3059,24 @@ impl MlxRunner {
             } else {
                 let mut states = self.states.lock();
                 if let Some(state) = states.get_mut(&item.request_id) {
-                    // The runner's cache is warmed: its last token is `feed`'s KV
-                    // (appended by generation-state init). Seed all but that last
-                    // token so the first step re-appends it without doubling.
-                    let seed_len = state.cache.seq_len().saturating_sub(1);
+                    let mtp_transition = mtp_transition_ids.contains(&id);
+                    if mtp_transition {
+                        // Target KV contains only committed inputs; `feed` is
+                        // the next unprocessed token. Discard unverified draft
+                        // state and transfer the complete target cache.
+                        suspend_mtp_for_batched_decode(state);
+                    }
+                    clear_private_decode_latches_for_batched_session(state);
                     seed_batched_session_and_reclaim_private_cache(
                         session,
                         id,
                         &mut state.cache,
                         feed,
-                        Some(seed_len),
+                        // Every joiner reaching this path is cold: warm direct
+                        // pipelines are intercepted by join_direct_pipeline_group.
+                        // The scheduler feed token has not entered this cache,
+                        // so transfer every committed KV position.
+                        None,
                     );
                 }
             }
@@ -3017,6 +3084,12 @@ impl MlxRunner {
         // 2. One batched forward for the whole cohort (the amortized weight
         //    read), then per-row token resolution matching each request's
         //    single-sequence sampler.
+        //
+        // A mixed scheduler turn can still hold an exact-MTP sibling outside
+        // this group, leaving the outer model scope enabled. The tensor cohort
+        // is target-only, so restore the ordinary direct kernel contract for
+        // its forward just as the per-row direct fallback does.
+        let _direct_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
         let outs = self.resolve_batched_group_tokens(session, contexts);
         // 3. Per request: stop detection + update, mirroring the decode tail.
         let mut updates = Vec::with_capacity(outs.len());
@@ -3091,6 +3164,7 @@ impl MlxRunner {
             let (sampled, stop_reason) =
                 truncate_sampled_tokens_for_stop(vec![token], generated_len, max_output, terminal);
             if stop_reason.is_none() {
+                clear_private_decode_latches_for_batched_session(state);
                 seed_batched_session_and_reclaim_private_cache(
                     session,
                     request_id.0,
@@ -3230,26 +3304,25 @@ impl ExecutionRunner for MlxRunner {
         // same server process. Direct sessions stay off the verifier
         // contract so an AXQ sidecar does not disable fused decode.
         //
-        // Bypass escape: when every item in the batch is a decode step for a
-        // request whose low-acceptance MTP bypass has latched, no verify can
-        // happen in this run, so the verify/replay exactness contract is
-        // moot — drop the scope and let fallback decode use the fused
-        // singleton kernels (full direct speed). Mixed or prefill batches
-        // keep the scope.
-        let all_decode_items_mtp_bypassed = {
+        // Direct escape: when every item is a decode step whose MTP
+        // profitability bypass or multirow-batch suspension has latched, no
+        // verify can happen in this run. Drop the verifier exactness scope so
+        // target-only decode uses its certified direct kernels. Mixed and
+        // prefill batches keep the scope.
+        let all_decode_items_mtp_inactive = {
             let items = &input.execution_batch.items;
             !items.is_empty() && items.iter().all(|item| item.mode == ExecutionMode::Decode) && {
                 let states = self.states.lock();
                 items.iter().all(|item| {
-                    states
-                        .get(&item.request_id)
-                        .is_some_and(|state| state.mtp_bypassed)
+                    states.get(&item.request_id).is_some_and(|state| {
+                        state.mtp_bypassed || state.mtp_suspended_for_batched_decode
+                    })
                 })
             }
         };
         let exact_arithmetic_enabled = qwen_linear_mtp_exact_scope_for_request(
             self.qwen_linear_mtp_exact_enabled,
-            self.mtp_requested && !all_decode_items_mtp_bypassed,
+            self.mtp_requested && !all_decode_items_mtp_inactive,
         );
         let _qwen_linear_mtp_exact_scope =
             crate::fastpath::scoped_qwen_linear_mtp_exact(exact_arithmetic_enabled);
@@ -3334,6 +3407,7 @@ impl ExecutionRunner for MlxRunner {
         let mut row_exact_coalesced_rows = 0usize;
         let mut row_exact_coalesced_forward_rows = 0usize;
         let mut gemma4_assistant_mtp_coalesced_rows = 0usize;
+        let mut mtp_suspended_batched_rows = 0usize;
         let batched_enabled = batched_decode_enabled();
         let decode_candidate_count = input
             .execution_batch
@@ -3343,6 +3417,40 @@ impl ExecutionRunner for MlxRunner {
                 matches!(item.mode, ExecutionMode::Decode) && item.input_token_slice.len() == 1
             })
             .count();
+        let mtp_multirow_candidate_count = input
+            .execution_batch
+            .items
+            .iter()
+            .filter(|item| {
+                if !matches!(item.mode, ExecutionMode::Decode) || item.input_token_slice.len() != 1
+                {
+                    return false;
+                }
+                let Some(ctx) = input
+                    .request_contexts
+                    .iter()
+                    .find(|ctx| ctx.request_id == item.request_id)
+                else {
+                    return false;
+                };
+                ctx.generated_len >= 1
+                    && matches!(
+                        batched_sampling_class(
+                            sampling_params_from_context(ctx),
+                            ctx.deterministic_argmax_sampling,
+                        ),
+                        Some(BatchedSamplingClass::Greedy)
+                    )
+            })
+            .count();
+        let mtp_multirow_batch = should_suspend_qwen_linear_mtp_for_multirow_batch(
+            mtp_multirow_batch_enabled(),
+            self.mtp_requested,
+            self.mtp_model_policy
+                .is_qwen_linear_certification_candidate(),
+            self.mtp_model_policy.max_depth(),
+            mtp_multirow_candidate_count,
+        );
         if batched_enabled {
             let group = input
                 .execution_batch
@@ -3388,7 +3496,7 @@ impl ExecutionRunner for MlxRunner {
                     "ax_mlx_batched_decode_rejected_flag_disabled".to_string(),
                     decode_candidate_count as u32,
                 ));
-            } else if self.has_mtp() && self.mtp_requested {
+            } else if self.has_mtp() && self.mtp_requested && !mtp_multirow_batch {
                 let rejected =
                     decode_candidate_count.saturating_sub(gemma4_assistant_mtp_coalesced_rows);
                 if rejected > 0 {
@@ -3407,15 +3515,72 @@ impl ExecutionRunner for MlxRunner {
             }
         }
         if batched_enabled && self.batched_decode_model_eligible {
-            let direct_pipeline_pending = self
-                .states
-                .lock()
+            let (direct_pipeline_pending, suspended_request_ids, bypassed_request_ids) = {
+                let states = self.states.lock();
+                let direct_pipeline_pending = states
+                    .iter()
+                    .filter_map(|(request_id, state)| {
+                        state.pending_direct.is_some().then_some(request_id.0)
+                    })
+                    .collect::<std::collections::HashSet<_>>();
+                let suspended_request_ids = states
+                    .iter()
+                    .filter_map(|(request_id, state)| {
+                        state
+                            .mtp_suspended_for_batched_decode
+                            .then_some(request_id.0)
+                    })
+                    .collect::<std::collections::HashSet<_>>();
+                let bypassed_request_ids = states
+                    .iter()
+                    .filter_map(|(request_id, state)| state.mtp_bypassed.then_some(request_id.0))
+                    .collect::<std::collections::HashSet<_>>();
+                (
+                    direct_pipeline_pending,
+                    suspended_request_ids,
+                    bypassed_request_ids,
+                )
+            };
+            let mut session = self.batched_session.lock();
+            // A session forward advances every resident row. Evict any row the
+            // scheduler did not select for this turn (or that is no longer
+            // eligible) before stepping, restoring its complete cache so it
+            // can safely resume later without a phantom token/update.
+            let eligible_request_ids = input
+                .execution_batch
+                .items
                 .iter()
-                .filter_map(|(request_id, state)| {
-                    state.pending_direct.is_some().then_some(request_id.0)
+                .filter_map(|item| {
+                    let ctx = input
+                        .request_contexts
+                        .iter()
+                        .find(|ctx| ctx.request_id == item.request_id);
+                    let mtp_suspended =
+                        mtp_multirow_batch || suspended_request_ids.contains(&item.request_id.0);
+                    self.batched_item_eligible(item, ctx, mtp_suspended)
+                        .then_some(item.request_id.0)
                 })
                 .collect::<std::collections::HashSet<_>>();
-            let mut session = self.batched_session.lock();
+            let residents_to_write_back = session
+                .active_ids()
+                .iter()
+                .copied()
+                .filter(|id| !eligible_request_ids.contains(id))
+                .collect::<Vec<_>>();
+            if !residents_to_write_back.is_empty() {
+                let mut states = self.states.lock();
+                for id in &residents_to_write_back {
+                    if let Some(cache) = session.writeback_remove(*id)
+                        && let Some(state) = states.get_mut(&RequestId(*id))
+                    {
+                        restore_private_cache_after_batched_writeback(state, cache);
+                    }
+                }
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_batched_decode_unscheduled_writebacks".to_string(),
+                    residents_to_write_back.len() as u32,
+                ));
+            }
             let resident: std::collections::HashSet<u64> =
                 session.active_ids().iter().copied().collect();
             let room = session.capacity().saturating_sub(session.len());
@@ -3427,7 +3592,9 @@ impl ExecutionRunner for MlxRunner {
                     .request_contexts
                     .iter()
                     .find(|c| c.request_id == item.request_id);
-                if !self.batched_item_eligible(item, ctx) {
+                let mtp_suspended =
+                    mtp_multirow_batch || suspended_request_ids.contains(&item.request_id.0);
+                if !self.batched_item_eligible(item, ctx, mtp_suspended) {
                     continue;
                 }
                 if resident.contains(&item.request_id.0) {
@@ -3503,6 +3670,26 @@ impl ExecutionRunner for MlxRunner {
                 && (!resident_items.is_empty() || resident_items.len() + joiner_items.len() >= 2);
             if should_batch {
                 let group: Vec<usize> = resident_items.into_iter().chain(joiner_items).collect();
+                let mtp_transition_ids = if mtp_multirow_batch {
+                    group
+                        .iter()
+                        .filter_map(|index| {
+                            let id = input.execution_batch.items[*index].request_id.0;
+                            (!suspended_request_ids.contains(&id)
+                                && !bypassed_request_ids.contains(&id))
+                            .then_some(id)
+                        })
+                        .collect::<std::collections::HashSet<_>>()
+                } else {
+                    std::collections::HashSet::new()
+                };
+                mtp_suspended_batched_rows = group
+                    .iter()
+                    .filter(|index| {
+                        let id = input.execution_batch.items[**index].request_id.0;
+                        suspended_request_ids.contains(&id) || mtp_transition_ids.contains(&id)
+                    })
+                    .count();
                 let group_items: Vec<&ax_engine_core::ExecutionItem> = group
                     .iter()
                     .map(|&i| &input.execution_batch.items[i])
@@ -3511,6 +3698,7 @@ impl ExecutionRunner for MlxRunner {
                     &mut session,
                     &group_items,
                     &input.request_contexts,
+                    &mtp_transition_ids,
                 );
                 request_updates.extend(updates);
                 batched_forward_rows = group.len();
@@ -3554,6 +3742,7 @@ impl ExecutionRunner for MlxRunner {
                                 .request_contexts
                                 .iter()
                                 .find(|ctx| ctx.request_id == item.request_id),
+                            false,
                         )
                 })
                 .collect::<Vec<_>>();
@@ -3625,6 +3814,18 @@ impl ExecutionRunner for MlxRunner {
                 route_metadata.crossover_decisions.push((
                     "ax_mlx_gemma4_assistant_mtp_coalesced_verify_eval_barriers".into(),
                     1,
+                ));
+            }
+            if mtp_multirow_batch {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_mtp_multirow_batch_candidate_rows".into(),
+                    mtp_multirow_candidate_count as u32,
+                ));
+            }
+            if mtp_suspended_batched_rows > 0 {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_mtp_multirow_batch_suspended_rows".into(),
+                    mtp_suspended_batched_rows as u32,
                 ));
             }
             route_metadata.crossover_decisions.extend([
@@ -10707,6 +10908,7 @@ impl MlxRunner {
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
         state.mtp_bypassed = false;
+        state.mtp_suspended_for_batched_decode = false;
         let profitability_config = mtp_profitability_config_from_env();
         let profitability_eligible = MtpProfitabilityEligibility {
             mtp_requested: self.mtp_requested,
@@ -11067,20 +11269,23 @@ impl MlxRunner {
         // Exact MTP supports deterministic-delta drafts with greedy or filtered
         // target sampling. Unsupported proposal/filter combinations fail closed
         // to direct; optimistic verification remains an explicit approximation.
-        // The per-request bypass (state.mtp_bypassed) short-circuits MTP when
-        // the acceptance EWMA has shown MTP is not paying for itself.
+        // The per-request bypass short-circuits MTP when acceptance shows it is
+        // not paying for itself. A request transferred into direct tensor
+        // batching is likewise direct-only: if scheduler deferral writes it
+        // back and it resumes alone, it must not rebuild speculative state.
         let approximate_profile = mtp_optimistic_allowed(
             self.weights.glm_mtp.is_some() || self.weights.deepseek_v4_nextn.is_some(),
         ) && (self.mtp_optimistic
             || mtp_auto_optimistic_enabled_from_env());
         let exact_supported = state.mtp_pending_draft_distributions.is_empty()
             && mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
+        let mtp_direct_only = state.mtp_bypassed || state.mtp_suspended_for_batched_decode;
         match mtp_request_route(
             self.has_mtp(),
             self.mtp_requested,
             exact_supported,
             approximate_profile,
-            state.mtp_bypassed,
+            mtp_direct_only,
             sampling.uses_logits_processors(),
         ) {
             MtpRequestRoute::DirectFallback => {
@@ -20368,6 +20573,81 @@ mod tests {
         assert!(state.mtp_pending_draft_log_probs.is_empty());
         assert!(state.mtp_pending_draft_sources.is_empty());
         assert_eq!(state.mtp_decode_count, 11);
+    }
+
+    #[test]
+    fn multirow_mtp_suspension_is_qwen_linear_depth_one_only() {
+        assert!(should_suspend_qwen_linear_mtp_for_multirow_batch(
+            true, true, true, 1, 2
+        ));
+        for (enabled, requested, candidate, depth, rows) in [
+            (false, true, true, 1, 2),
+            (true, false, true, 1, 2),
+            (true, true, false, 1, 2),
+            (true, true, true, 2, 2),
+            (true, true, true, 1, 1),
+        ] {
+            assert!(!should_suspend_qwen_linear_mtp_for_multirow_batch(
+                enabled, requested, candidate, depth, rows
+            ));
+        }
+    }
+
+    #[test]
+    fn batched_writeback_clears_stale_private_feed_latches() {
+        let mut state = RequestState::new(2, 0, None);
+        state.pending_direct = Some(mlx_sys::zeros(&[1], MlxDtype::Uint32, None));
+        state.direct_pipeline_emitted_tokens = 7;
+        state.next_model_last_token = Some(42);
+        let mut restored = MlxKVCache::new(2);
+        restored.set_seq_len(19);
+
+        restore_private_cache_after_batched_writeback(&mut state, restored);
+
+        assert_eq!(state.cache.seq_len(), 19);
+        assert!(state.pending_direct.is_none());
+        assert_eq!(state.direct_pipeline_emitted_tokens, 0);
+        assert!(state.next_model_last_token.is_none());
+    }
+
+    #[test]
+    fn mtp_batched_join_transfers_full_committed_target_cache() {
+        let mut state = RequestState::new(2, 0, None);
+        state.generated_tokens = vec![3, 5, 8];
+        state.mtp_pending_draft = vec![13];
+        state.mtp_pending_draft_log_probs = vec![-0.1];
+        state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp];
+        state.mtp_cache = Some(MlxKVCache::new(1));
+        state.mtp_decode_count = 11;
+        state.mtp_prefill_history_tokens = vec![1, 2, 3];
+        state.pending_direct = Some(mlx_sys::zeros(&[1], MlxDtype::Uint32, None));
+        state.direct_pipeline_emitted_tokens = 9;
+        state.next_model_last_token = Some(21);
+
+        suspend_mtp_for_batched_decode(&mut state);
+
+        assert!(state.mtp_suspended_for_batched_decode);
+        assert!(state.mtp_pending_draft.is_empty());
+        assert!(state.mtp_pending_draft_log_probs.is_empty());
+        assert!(state.mtp_pending_draft_sources.is_empty());
+        assert!(state.mtp_cache.is_none());
+        assert_eq!(state.mtp_decode_count, 0);
+        assert!(state.mtp_prefill_history_tokens.is_empty());
+        assert!(state.pending_direct.is_none());
+        assert_eq!(state.direct_pipeline_emitted_tokens, 0);
+        assert!(state.next_model_last_token.is_none());
+        assert_eq!(state.generated_tokens, vec![3, 5, 8]);
+        assert!(matches!(
+            mtp_request_route(
+                true,
+                true,
+                true,
+                false,
+                state.mtp_bypassed || state.mtp_suspended_for_batched_decode,
+                false,
+            ),
+            MtpRequestRoute::DirectFallback
+        ));
     }
 
     // ── MTP bypass and initial adaptive depth ──────────────────────────────

@@ -70,7 +70,7 @@ The archive keeps binaries, `libmlx.dylib`, `libjaccl.dylib`, and
 `mlx.metallib` colocated so direct extraction remains backward-compatible.
 `mlx.metallib` and both dylibs must come from the exact MLX version in
 `mlx.version`; do not substitute Homebrew MLX during publication. The pin
-accepts two forms: a wheel semver (`0.32.0`, installed via pip) or an admitted
+accepts two forms: a wheel semver (`0.32.1`, installed via pip) or an admitted
 source build (`git:<sha>@<version>`, whose build recipe and qmm-admission
 evidence live in `docs/performance/mlx-main-admission-2026-07-28.md`); either
 way the shipped dylibs must come from exactly that runtime. For the current

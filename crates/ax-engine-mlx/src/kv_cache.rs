@@ -434,25 +434,40 @@ impl QuantizedTensorKV {
         let group_dim = self.scales.shape()[3];
         let start = [0i32, 0, token_start as i32, 0];
         let strides = [1i32, 1, 1, 1];
-        let packed = slice(
-            &self.packed,
-            &start,
-            &[1, n_kv_heads, token_end as i32, packed_dim],
-            &strides,
+        // MLX 0.32.1's affine dequantize path does not preserve the leading
+        // strides of token-range views into a capacity-sized buffer. Feeding
+        // those views directly corrupts later heads (8-bit values can jump by
+        // ~512). Materialize tight quantized views before dequantization; this
+        // is also an explicit boundary between the cache's capacity layout and
+        // the quantization kernel's dense last-axis contract.
+        let packed = contiguous(
+            &slice(
+                &self.packed,
+                &start,
+                &[1, n_kv_heads, token_end as i32, packed_dim],
+                &strides,
+                None,
+            ),
             None,
         );
-        let scales = slice(
-            &self.scales,
-            &start,
-            &[1, n_kv_heads, token_end as i32, group_dim],
-            &strides,
+        let scales = contiguous(
+            &slice(
+                &self.scales,
+                &start,
+                &[1, n_kv_heads, token_end as i32, group_dim],
+                &strides,
+                None,
+            ),
             None,
         );
-        let biases = slice(
-            &self.biases,
-            &start,
-            &[1, n_kv_heads, token_end as i32, group_dim],
-            &strides,
+        let biases = contiguous(
+            &slice(
+                &self.biases,
+                &start,
+                &[1, n_kv_heads, token_end as i32, group_dim],
+                &strides,
+                None,
+            ),
             None,
         );
         dequantize_with_mode(

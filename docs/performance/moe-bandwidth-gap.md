@@ -346,11 +346,17 @@ the ~40-point gap estimate. The derived number is internally consistent
 with the dense-model comparison, but a counter-based reading is the
 ground truth.
 
-## Update (2026-07-16): code state corrections and the Tier 1C verdict
+## Update (2026-08-21): code state corrections and the Tier 1C verdict
 
 Several statements above are stale against HEAD; corrected here rather than
 rewriting history:
 
+- **MLX 0.32.1 removes the old shapeless linear cross-shape divergence.** The
+  admission test now requires a compiled linear + sigmoid + multiply graph to
+  match its imperative oracle at both decode and prefill sequence lengths.
+  This removes blocker 2 in the historical discovery notes, but does not by
+  itself promote the MoE compiled route: its stream-registry crash and
+  real-weight performance gates remain.
 - **Tier 3A is no longer dormant.** `per_layer_compile.rs` was rewritten into
   five compile entry points. Dense-FFN decode compile
   (`AX_MLX_DENSE_FFN_COMPILE`) and per-shape prefill compile

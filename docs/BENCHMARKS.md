@@ -390,9 +390,11 @@ Both AX Engine's native route and the `mlx_lm` reference run on the machine's
 installed MLX, and both sides of every comparison must resolve the same MLX
 build. The published v6.9.0 rows were measured on **MLX 0.31.2**; the affected
 Homebrew 0.32.0 bottle and source builds targeting macOS below 26.2 omit the
-M5 neural-accelerator GEMM path. The PyPI MLX 0.32.0 wheel is not affected by
-that packaging defect and passed the admission check below at parity with
-0.31.2 (56.3 TFLOP/s, 2026-07-15); it is the admitted build for new sessions.
+M5 neural-accelerator GEMM path. The historical PyPI MLX 0.32.0 wheel was not
+affected by that packaging defect and passed at 56.3 TFLOP/s. The current repo
+pin, PyPI **MLX 0.32.1**, passed at 56.35 TFLOP/s on 2026-08-21 and is the
+admitted build for new sessions; see the
+[MLX 0.32.1 admission record](performance/mlx-0.32.1-admission-2026-08-21.md).
 Never mix prefill or TTFT rows across different resolved `libmlx` builds, even
 if their package version matches.
 

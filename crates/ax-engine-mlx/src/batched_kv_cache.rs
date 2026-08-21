@@ -503,9 +503,8 @@ impl BatchedKvCache {
     /// resume convention — which `seq_len`/feed-token to restore so the per-item
     /// path does not double the current token. That wiring is validated by the
     /// preemption harness on real weights, not here.
-    // Not yet wired into the runner (Gate 2). Exercised only by the writeback
-    // unit test, mirroring how the validity mask was proven before Phase 2.
-    #[allow(dead_code)]
+    // Used when a scheduler-deferred resident leaves continuous batching and
+    // must resume later through its private request cache.
     pub fn writeback_row(&self, row: usize) -> MlxKVCache {
         let mut cache = MlxKVCache::new(self.num_layers());
         if let Some(table) = &self.kv_quant {

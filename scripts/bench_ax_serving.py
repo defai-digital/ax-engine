@@ -172,6 +172,7 @@ def build_payload(
     top_p: float,
     top_k: int,
     seed: int,
+    ignore_eos: bool = False,
 ) -> dict[str, Any]:
     input_name, input_value = select_prompt_input(prompt, input_kind)
     return {
@@ -184,6 +185,7 @@ def build_payload(
             "top_k": top_k,
             "repetition_penalty": 1.0,
             "seed": seed,
+            "ignore_eos": ignore_eos,
         },
     }
 
@@ -455,6 +457,7 @@ def run_one_request(
     top_p: float,
     top_k: int,
     seed: int,
+    ignore_eos: bool,
     scheduled_offset_s: float,
     benchmark_started: float,
     timeout: float,
@@ -476,6 +479,7 @@ def run_one_request(
         top_p=top_p,
         top_k=top_k,
         seed=seed,
+        ignore_eos=ignore_eos,
     )
     url = f"{base_url.rstrip('/')}/v1/generate/stream"
     try:
@@ -653,6 +657,7 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
             top_p=args.top_p,
             top_k=args.top_k,
             seed=args.seed,
+            ignore_eos=args.ignore_eos,
             scheduled_offset_s=0.0,
             benchmark_started=started,
             timeout=args.timeout,
@@ -675,6 +680,7 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
                 top_p=args.top_p,
                 top_k=args.top_k,
                 seed=args.seed,
+                ignore_eos=args.ignore_eos,
                 scheduled_offset_s=offset,
                 benchmark_started=benchmark_started,
                 timeout=args.timeout,
@@ -730,6 +736,7 @@ def run_benchmark(args: argparse.Namespace, *, stream_func=http_sse_events) -> d
             "top_p": args.top_p,
             "top_k": args.top_k,
             "seed": args.seed,
+            "ignore_eos": args.ignore_eos,
         },
         "corpus": {
             "path": str(corpus_path),
@@ -791,6 +798,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help="force fixed-length native generations by ignoring terminal token IDs",
+    )
     parser.add_argument("--slo-ttft-ms", type=optional_positive_float)
     parser.add_argument("--slo-tpot-ms", type=optional_positive_float)
     parser.add_argument("--slo-e2e-ms", type=optional_positive_float)

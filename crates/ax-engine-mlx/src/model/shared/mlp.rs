@@ -10880,7 +10880,7 @@ mod tests {
         assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
     }
 
-    /// Guardrail probe for the Tier 3A compiled shared-expert closure.
+    /// Admission probe for shapeless compiled linear closures.
     ///
     /// The core risk is that `shapeless=true` compilation with
     /// `quantized_matmul` is untested in this codebase (the existing compile
@@ -10888,10 +10888,13 @@ mod tests {
     /// with per-shape compilation). This probe builds a small quantized weight,
     /// compiles a shapeless closure doing `quantized_matmul -> sigmoid ->
     /// multiply` (the shared-expert gate path), and records the current
-    /// fail-closed finding: the compiled output is correct for the traced
-    /// shape, but not shape-polymorphic across a different sequence length.
+    /// MLX 0.32.1 fixes the previous cross-shape divergence, so both the traced
+    /// decode shape and a different sequence length must now match the
+    /// imperative graph. This does not promote the dormant/opt-in Tier 3A MoE
+    /// route by itself; its separate stream-registry and performance gates
+    /// remain in force.
     #[test]
-    fn shapeless_compiled_linear_closure_is_not_shape_polymorphic() {
+    fn shapeless_compiled_linear_closure_is_shape_polymorphic() {
         use mlx_sys::{MlxClosure, MlxVectorArray, quantized_matmul, sigmoid};
 
         // Build a small non-quantized weight mimicking a shared-expert
@@ -10982,10 +10985,8 @@ mod tests {
             "shapeless compiled quantized_matmul closure must match imperative (shape 1): max_diff={max_diff}"
         );
 
-        // Shape 2: [1, 4, 8] (prefill shape). Current MLX compile behavior
-        // does not preserve correctness across this shape change, so Tier 3A
-        // shared-expert compilation must stay out of production until this is
-        // reworked with a per-shape cache or another fail-closed strategy.
+        // Shape 2: [1, 4, 8] (prefill shape). The admitted MLX runtime must
+        // preserve the same graph across this sequence-length change.
         let x2 = array_f32(
             &(0..32).map(|i| (i as f32) * 0.05).collect::<Vec<_>>(),
             &[1, 4, 8],
@@ -11008,8 +11009,8 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f32, f32::max);
         assert!(
-            max_diff > 1.0e-3,
-            "shapeless compiled linear closure unexpectedly became shape-polymorphic; re-evaluate the Tier 3A guardrail before enabling it"
+            max_diff < 1.0e-6,
+            "shapeless compiled linear closure must match imperative after a sequence-length change: max_diff={max_diff}"
         );
     }
 

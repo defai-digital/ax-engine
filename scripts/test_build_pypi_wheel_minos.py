@@ -2,8 +2,9 @@
 
 ``scripts/build-pypi-wheel.sh`` step 5c enforces ``MACOSX_DEPLOYMENT_TARGET``
 on ax-engine product Mach-O only. Delocate vendors the admitted pip
-``libmlx.dylib`` / ``libjaccl.dylib`` (currently minos 15.0 with NAX). A
-blanket floor on every bundled Mach-O would hard-fail a correct wheel build.
+``libmlx.dylib`` / ``libjaccl.dylib``, whose deployment target is controlled by
+the upstream wheel rather than this project. A blanket floor on every bundled
+Mach-O would hard-fail a correct wheel build.
 """
 
 from __future__ import annotations
@@ -169,10 +170,6 @@ echo "product_ok=1"
         )
         if match:
             minos = match.group(1)
-        # Prove we are on the low-minos pin when possible (regression condition).
-        if minos and int(minos.split(".")[0]) >= 26:
-            self.skipTest(f"pip libmlx minos is already {minos}; not the regression case")
-
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             dylibs = root / "ax_engine.dylibs"
@@ -185,7 +182,10 @@ echo "product_ok=1"
             # debug/release binary here would conflate its own minos with the
             # vendored-MLX regression.
 
-            result = self._run_step5c_on_inspect_dir(root, "26.2")
+            # Use an intentionally higher simulated product floor so this
+            # remains a below-floor vendor fixture when the pinned MLX wheel's
+            # own minos advances (0.32.1 moved it to 26.2).
+            result = self._run_step5c_on_inspect_dir(root, "99.0")
             combined = result.stdout + result.stderr
             self.assertEqual(
                 result.returncode,
@@ -207,7 +207,10 @@ echo "product_ok=1"
             product = root / "ax_engine" / "_bin"
             product.mkdir(parents=True)
             shutil.copy2(lib / "libmlx.dylib", product / "ax-engine-server")
-            result = self._run_step5c_on_inspect_dir(root, "26.2")
+            # The source Mach-O may now meet the real product floor. Raise the
+            # simulated floor so the test continues to exercise classification
+            # of this path as an ax-engine product binary.
+            result = self._run_step5c_on_inspect_dir(root, "99.0")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("product binaries below floor", result.stdout + result.stderr)
             self.assertIn("ax-engine-server", result.stdout + result.stderr)

@@ -213,6 +213,30 @@ Diagnostics may additionally set
 `AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED=1`; this override is not a production
 setting.
 
+Qwen linear-attention packages that request depth-one MTP remain outside the
+tensor cohort by default. `AX_MLX_MTP_MULTIROW_BATCH=1` enables an experimental,
+greedy-only transition when at least two compatible decode rows are available:
+the runner discards unverified draft-head state, seeds the cohort from the full
+committed target KV cache, and keeps each joined request on direct decode for
+the remainder of the request. A row normally remains resident in the tensor
+cohort even when it becomes the only row. If the scheduler defers it for a
+turn, the runner first writes its full-attention KV and linear-attention
+recurrent state back to the private cache; this prevents an unscheduled row
+from being advanced by a whole-cohort forward, and it may safely rejoin later.
+Cold non-MTP joiners likewise transfer the full committed cache; only the
+separate warm direct-pipeline bootstrap owns a cache containing its feed token.
+The transition does not bypass the ordinary structural or numerical
+certification gates; an uncertified artifact still requires the
+diagnostic-only override above. Sampled rows, other model families, and MTP
+depths greater than one fail closed to their existing route.
+
+The 2026-08-21 M5 Max A/B measured 1.75–1.81x at concurrency 2 and
+3.06–3.18x at concurrency 4, but only 31 of 32 multirow streams matched the
+feature-off greedy token hash. That fails the numerical promotion bar: the
+flag remains diagnostic/default-off. See the
+[MLX 0.32.1 admission record](performance/mlx-0.32.1-admission-2026-08-21.md)
+and its linked raw serving artifacts.
+
 Generate evidence with the release probe. `--install` is accepted only when the
 entire matrix passes:
 

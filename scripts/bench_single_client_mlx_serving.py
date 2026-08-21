@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark AX Engine against a peer MLX server through streaming OpenAI chat."""
+"""Benchmark AX Engine and peer MLX servers through streaming OpenAI chat."""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "ax.vs_mlxcel.single_client.v2"
+SCHEMA_VERSION = "ax.cross_runtime.single_client.v1"
 DEFAULT_PROMPT_TARGETS = (512, 2048)
 DEFAULT_GENERATION_TOKENS = 256
 DEFAULT_REPETITIONS = 3
@@ -124,8 +124,15 @@ class EngineSpec:
     binary: Path
 
 
+@dataclass(frozen=True)
+class EngineModelOverride:
+    engine: str
+    label: str
+    path: Path
+
+
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def parse_csv_ints(raw: str, *, field: str) -> tuple[int, ...]:
@@ -148,6 +155,35 @@ def parse_model(raw: str) -> ModelSpec:
     if not (path / "config.json").is_file():
         raise argparse.ArgumentTypeError(f"model directory has no config.json: {path}")
     return ModelSpec(label=label.strip(), path=path)
+
+
+def parse_engine_model(raw: str) -> EngineModelOverride:
+    engine_and_label, separator, path_raw = raw.partition("=")
+    engine, label_separator, label = engine_and_label.partition(":")
+    if (
+        not separator
+        or not label_separator
+        or not engine.strip()
+        or not label.strip()
+        or not path_raw.strip()
+    ):
+        raise argparse.ArgumentTypeError(
+            "--engine-model must use ENGINE:LABEL=/absolute/model/path"
+        )
+    path = Path(path_raw).expanduser().resolve()
+    if not path.is_dir():
+        raise argparse.ArgumentTypeError(f"model directory does not exist: {path}")
+    if not (path / "config.json").is_file():
+        raise argparse.ArgumentTypeError(f"model directory has no config.json: {path}")
+    return EngineModelOverride(engine=engine.strip(), label=label.strip(), path=path)
+
+
+def model_for_engine(
+    model: ModelSpec,
+    engine: str,
+    overrides: dict[tuple[str, str], Path],
+) -> ModelSpec:
+    return ModelSpec(model.label, overrides.get((engine, model.label), model.path))
 
 
 def file_sha256(path: Path) -> str:
@@ -269,6 +305,52 @@ def engine_command(
             "--ctx-size",
             "65536",
         ]
+    if engine.key == "omlx":
+        return [
+            str(engine.binary),
+            "serve",
+            "--model-dir",
+            str(model.path.parent),
+            *common,
+            "--max-concurrent-requests",
+            "1",
+            "--memory-guard",
+            "off",
+            "--no-cache",
+            "--base-path",
+            str(model.path.parent.parent / ".omlx-benchmark-state"),
+        ]
+    if engine.key == "mtplx":
+        return [
+            str(engine.binary),
+            "serve",
+            "--model",
+            str(model.path),
+            "--model-id",
+            "local",
+            *common,
+            "--no-auth",
+            "--profile",
+            "turbo",
+            "--depth",
+            "3",
+            "--mtp",
+            "--scheduler-mode",
+            "serial",
+            "--max-active-requests",
+            "1",
+            "--ssd-session-cache",
+            "off",
+            "--reasoning",
+            "off",
+            "--stream-interval",
+            "1",
+            "--warmup-tokens",
+            "0",
+            "--no-stats-footer",
+            "--fan-mode",
+            "default",
+        ]
     raise ValueError(f"unsupported engine: {engine.key}")
 
 
@@ -346,10 +428,11 @@ def run_request(
     seed: int,
     generation_tokens: int,
     timeout_s: float,
+    model_id: str = "local",
 ) -> dict[str, Any]:
     body = json.dumps(
         {
-            "model": "local",
+            "model": model_id,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": generation_tokens,
             "temperature": 0,
@@ -358,6 +441,7 @@ def run_request(
             "seed": seed,
             "stream": True,
             "stream_options": {"include_usage": True},
+            "chat_template_kwargs": {"enable_thinking": False},
         },
         separators=(",", ":"),
     ).encode()
@@ -375,6 +459,7 @@ def run_request(
     finish_reason: str | None = None
     done = False
     visible_chars = 0
+    visible_parts: list[str] = []
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
         if not 200 <= response.status < 300:
             raise RuntimeError(f"chat request returned HTTP {response.status}")
@@ -407,6 +492,7 @@ def run_request(
                     value = delta.get(key)
                     if isinstance(value, str) and value:
                         visible_chars += len(value)
+                        visible_parts.append(value)
                         emitted = True
             if emitted:
                 first_chunk_s = elapsed_s if first_chunk_s is None else first_chunk_s
@@ -422,6 +508,7 @@ def run_request(
     decode_tps = (
         (completion_tokens - 1) / decode_s if completion_tokens > 1 and decode_s > 0 else None
     )
+    visible_text = "".join(visible_parts)
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -431,6 +518,7 @@ def run_request(
         "decode_window_s": decode_s,
         "e2e_s": e2e_s,
         "visible_chars": visible_chars,
+        "text_sha256": hashlib.sha256(visible_text.encode()).hexdigest(),
         "finish_reason": finish_reason,
     }
 
@@ -480,9 +568,13 @@ def summarize_measurements(measurements: list[dict[str, Any]]) -> list[dict[str,
     return rows
 
 
-def engine_order(model_index: int, rep: int) -> tuple[str, str]:
-    ax_first = (model_index + rep) % 2 == 0
-    return ("ax-engine", "mlxcel") if ax_first else ("mlxcel", "ax-engine")
+def engine_order(
+    model_index: int,
+    rep: int,
+    engines: tuple[str, ...] = ("ax-engine", "mlxcel"),
+) -> tuple[str, ...]:
+    offset = (model_index + rep) % len(engines)
+    return engines[offset:] + engines[:offset]
 
 
 def sanitize_hardware_profile(profile: str) -> str:
@@ -513,13 +605,23 @@ def collect_host() -> dict[str, Any]:
 
 
 def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
-    engines = {
-        "ax-engine": EngineSpec("ax-engine", args.ax_server.resolve()),
-        "mlxcel": EngineSpec("mlxcel", args.mlxcel_server.resolve()),
-    }
+    engines = {"ax-engine": EngineSpec("ax-engine", args.ax_server.resolve())}
+    for key, binary in (
+        ("mlxcel", args.mlxcel_server),
+        ("omlx", args.omlx_server),
+        ("mtplx", args.mtplx_server),
+    ):
+        if binary is not None:
+            engines[key] = EngineSpec(key, binary.resolve())
+    if len(engines) < 2:
+        raise ValueError("at least one peer server must be configured")
     for engine in engines.values():
         if not engine.binary.is_file():
             raise FileNotFoundError(f"server binary does not exist: {engine.binary}")
+
+    model_overrides = {
+        (override.engine, override.label): override.path for override in args.engine_model
+    }
 
     runner = runner_identity()
     binary_identities = {
@@ -531,6 +633,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         for key, engine in engines.items()
     }
     model_identities = [model_identity(model) for model in args.model]
+    engine_model_identities = {
+        engine_key: [
+            model_identity(model_for_engine(model, engine_key, model_overrides))
+            for model in args.model
+        ]
+        for engine_key in engines
+    }
     output = args.output.resolve()
     log_dir = (args.log_dir or output.parent / "logs").resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -542,18 +651,19 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     for model_index, model in enumerate(args.model):
         for rep in range(args.repetitions):
-            for engine_key in engine_order(model_index, rep):
+            for engine_key in engine_order(model_index, rep, tuple(engines)):
                 engine = engines[engine_key]
-                command = engine_command(engine, model=model, port=args.port)
+                runtime_model = model_for_engine(model, engine_key, model_overrides)
+                command = engine_command(engine, model=runtime_model, port=args.port)
+                api_model_id = runtime_model.path.name if engine_key == "omlx" else "local"
                 log_path = log_dir / f"{model_index:02d}-{model.label}-{rep}-{engine_key}.log"
                 environment = os.environ.copy()
                 if engine_key == "ax-engine":
-                    environment.update(
-                        {
-                            "AX_NO_SPEC": "1",
-                            "AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY": "1",
-                        }
-                    )
+                    environment["AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY"] = "1"
+                    if not args.ax_speculative:
+                        environment["AX_NO_SPEC"] = "1"
+                elif engine_key == "mtplx":
+                    environment["MTPLX_STREAM_COALESCE"] = "0"
                 launched_at = utc_now()
                 with log_path.open("wb") as log:
                     process = subprocess.Popen(
@@ -584,6 +694,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                 seed=warmup_seed,
                                 generation_tokens=args.warmup_tokens,
                                 timeout_s=args.timeout,
+                                model_id=api_model_id,
                             )
                         for prompt_target in args.prompt_targets:
                             seed, prompt = deterministic_prompt(prompt_target, rep)
@@ -595,6 +706,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                     seed=seed,
                                     generation_tokens=args.generation_tokens,
                                     timeout_s=args.timeout,
+                                    model_id=api_model_id,
                                 )
                                 require_complete_generation(observed, args.generation_tokens)
                             except Exception as exc:  # noqa: BLE001 - preserve failed evidence.
@@ -613,7 +725,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                 {
                                     "engine": engine_key,
                                     "model": model.label,
-                                    "model_dir": str(model.path),
+                                    "model_dir": str(runtime_model.path),
                                     "prompt_target": prompt_target,
                                     "rep": rep,
                                     "seed": seed,
@@ -653,8 +765,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "warmup_tokens_per_process": args.warmup_tokens,
             "cooldown_s": args.cooldown,
             "engines": list(engines),
-            "ax_engine_version": binary_version(engines["ax-engine"].binary),
-            "mlxcel_version": binary_version(engines["mlxcel"].binary),
+            "engine_model_overrides": {
+                f"{engine}:{label}": str(path)
+                for (engine, label), path in sorted(model_overrides.items())
+            },
+            "engine_versions": {
+                key: binary_version(engine.binary) for key, engine in engines.items()
+            },
+            "ax_speculative": bool(args.ax_speculative),
             "methodology": {
                 "endpoint": "/v1/chat/completions",
                 "streaming": True,
@@ -665,7 +783,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     "(completion_tokens - 1) / (last content chunk - first content chunk)"
                 ),
                 "cache_policy": "fresh server process per engine/model/repetition",
-                "engine_order": "balanced by model index and repetition",
+                "engine_order": "rotated by model index and repetition",
                 "prompt_policy": "deterministic nominal word count; same text and seed per engine",
             },
         },
@@ -676,6 +794,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "binaries": binary_identities,
         "runner": runner,
         "models": model_identities,
+        "engine_models": engine_model_identities,
         "expected_measurements": expected,
         "measurements": measurements,
         "results": summarize_measurements(measurements),
@@ -693,8 +812,25 @@ def main() -> int:
         required=True,
         help="Repeat LABEL=/absolute/model/path for every benchmark checkpoint.",
     )
+    parser.add_argument(
+        "--engine-model",
+        action="append",
+        type=parse_engine_model,
+        default=[],
+        help=(
+            "Override one runtime's compatible view of a checkpoint with "
+            "ENGINE:LABEL=/absolute/model/path."
+        ),
+    )
     parser.add_argument("--ax-server", type=Path, required=True)
-    parser.add_argument("--mlxcel-server", type=Path, required=True)
+    parser.add_argument("--mlxcel-server", type=Path)
+    parser.add_argument("--omlx-server", type=Path)
+    parser.add_argument("--mtplx-server", type=Path)
+    parser.add_argument(
+        "--ax-speculative",
+        action="store_true",
+        help="Keep AX speculative decoding enabled; the historical default sets AX_NO_SPEC=1.",
+    )
     parser.add_argument(
         "--prompt-targets",
         type=lambda value: parse_csv_ints(value, field="prompt targets"),
@@ -723,6 +859,18 @@ def main() -> int:
     labels = [model.label for model in args.model]
     if len(labels) != len(set(labels)):
         parser.error("--model labels must be unique")
+    configured_engines = {
+        "ax-engine",
+        *(key for key in ("mlxcel", "omlx", "mtplx") if getattr(args, f"{key}_server")),
+    }
+    override_keys = [(override.engine, override.label) for override in args.engine_model]
+    if len(override_keys) != len(set(override_keys)):
+        parser.error("--engine-model values must be unique per engine and label")
+    for override in args.engine_model:
+        if override.engine not in configured_engines:
+            parser.error(f"--engine-model names an unconfigured engine: {override.engine}")
+        if override.label not in labels:
+            parser.error(f"--engine-model names an unknown model label: {override.label}")
 
     artifact = run_benchmark(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)

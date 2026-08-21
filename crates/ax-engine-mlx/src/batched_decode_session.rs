@@ -17,7 +17,7 @@
 
 use std::sync::OnceLock;
 
-use mlx_sys::{MlxArray, slice};
+use mlx_sys::{MlxArray, contiguous, eval, slice};
 
 use crate::batched_decode_certification::BatchedDecodeCertificationStatus;
 use crate::batched_kv_cache::BatchedKvCache;
@@ -32,7 +32,8 @@ use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 /// operator kill switch. Certification and structural gates remain fail-closed.
 /// The batched path holds KV in the session rather than each request's
 /// `MlxKVCache`; the core keeps its logical block ledger, while runner state is
-/// released whenever a request is preempted or reaches a terminal state.
+/// released whenever a request is preempted or reaches a terminal state. A
+/// scheduler-deferred resident is first written back to its private cache.
 pub fn batched_decode_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_MLX_BATCHED_DECODE") {
@@ -76,6 +77,33 @@ pub fn batched_decode_allow_uncertified() -> bool {
             std::env::var("AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED").as_deref(),
             Ok("1") | Ok("true") | Ok("yes")
         )
+    })
+}
+
+fn mtp_multirow_batch_setting(raw: Option<&str>) -> bool {
+    raw.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "on" | "yes"
+        )
+    })
+}
+
+/// `AX_MLX_MTP_MULTIROW_BATCH` — suspend depth-one Qwen linear MTP when at
+/// least two compatible requests can enter the certified direct-decode cohort.
+/// **Default: OFF** while the MTP-to-batch transition earns its own real-weight
+/// certification. Enabling it does not bypass the ordinary batched-decode
+/// certification and structural gates.
+///
+/// Once a request joins, it stays on direct decode even if the cohort later
+/// contracts to one row. Its KV normally remains in [`BatchedDecodeSession`];
+/// a scheduler deferral writes the row back to its private cache before the
+/// remaining cohort advances. Requests that never join a multirow cohort
+/// retain singleton MTP.
+pub fn mtp_multirow_batch_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        mtp_multirow_batch_setting(std::env::var("AX_MLX_MTP_MULTIROW_BATCH").ok().as_deref())
     })
 }
 
@@ -407,13 +435,11 @@ impl BatchedDecodeSession {
     /// Like [`Self::add`], but seed only the first `seed_len` KV tokens of each
     /// layer (default: the whole cache).
     ///
-    /// The runner's per-request `MlxKVCache` is **warmed**: its last token is
-    /// `first_token`'s KV, already appended by generation-state init. Re-feeding
-    /// `first_token` would double it, so the runner passes `seed_len =
-    /// cache.seq_len() - 1` — seed everything but that last token, then the first
-    /// `step` re-appends it, reproducing the state exactly. Callers whose
-    /// `first_token` is NOT yet in the cache (a fresh prefill, e.g. the probes)
-    /// pass `None` and seed the whole cache.
+    /// A caller whose cache already contains `first_token` may pass
+    /// `cache.seq_len() - 1` so the first `step` re-appends that token without
+    /// doubling it. Normal cold joins and direct-pipeline handoffs keep
+    /// `first_token` outside the cache, so they pass `None` and transfer every
+    /// committed cache position.
     pub fn add_with_seed_len(
         &mut self,
         id: u64,
@@ -508,6 +534,51 @@ impl BatchedDecodeSession {
         true
     }
 
+    /// Remove `id` while restoring its complete committed cache to a private
+    /// single-request representation.
+    ///
+    /// The scheduler may omit a running decode request from a turn because of
+    /// token budget or route-seed compatibility. A session forward advances
+    /// every active row, so an omitted resident must be written back and
+    /// removed before the remaining cohort steps. Full-attention KV and hybrid
+    /// linear-attention recurrent state are both preserved.
+    pub fn writeback_remove(&mut self, id: u64) -> Option<MlxKVCache> {
+        let slot = self
+            .slot_req
+            .iter()
+            .position(|&request_id| request_id == id)?;
+        let mut cache = self.cache.writeback_row(slot);
+
+        if let Some(linear) = self.lin_state.as_ref() {
+            let mut linear_layer = 0usize;
+            for model_layer in 0..self.cache.num_layers() {
+                // Full-attention layers were restored by writeback_row. Every
+                // remaining layer in an admitted hybrid is a linear layer, in
+                // the same order used by add_with_seed_len.
+                if self.cache.row_view(model_layer, slot).is_some() {
+                    continue;
+                }
+                let (conv, recurrent) = linear
+                    .row_state(linear_layer, slot)
+                    .expect("active hybrid row must have every linear-layer state");
+                let conv = contiguous(&conv, None);
+                let recurrent = contiguous(&recurrent, None);
+                // Detach the lazy row views before remove() swap-mutates the
+                // session buffers. This mirrors the full-KV materialization in
+                // BatchedKvCache::writeback_row; ExecutionRunner does not yet
+                // expose a fallible MLX-step boundary for either operation.
+                eval(&[&conv, &recurrent]);
+                cache.set_linear_state(model_layer, conv, recurrent);
+                linear_layer = linear_layer.saturating_add(1);
+            }
+            debug_assert_eq!(linear_layer, linear.num_layers());
+        }
+        cache.set_seq_len(self.cache.row_len(slot));
+        let removed = self.remove(id);
+        debug_assert!(removed, "located batched row must be removable");
+        Some(cache)
+    }
+
     /// Override the token that will be fed for request `id` on the next
     /// [`Self::step`] — the engine's scheduler is the source of truth for which
     /// token each request decodes. Returns `false` if `id` is not active.
@@ -578,6 +649,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mtp_multirow_batch_requires_explicit_opt_in() {
+        assert!(!mtp_multirow_batch_setting(None));
+        for enabled in ["1", "true", "on", "yes", " ON "] {
+            assert!(mtp_multirow_batch_setting(Some(enabled)), "{enabled}");
+        }
+        for disabled in ["0", "false", "off", "no", "default", "", "unexpected"] {
+            assert!(!mtp_multirow_batch_setting(Some(disabled)), "{disabled}");
+        }
+    }
+
+    #[test]
     fn can_seed_rejects_visual_mrope_position_delta() {
         // Batched decode uses physical row_len as the RoPE offset and does not
         // apply MlxKVCache::mrope_decode_position. Visual prefills that stored a
@@ -590,6 +672,56 @@ mod tests {
             !session.can_seed(&cache),
             "non-zero mrope_position_delta must not seed a batched cohort"
         );
+    }
+
+    #[test]
+    fn unscheduled_writeback_preserves_hybrid_cache() {
+        use mlx_sys::{MlxDtype, contiguous, eval};
+
+        let k_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let v_data = [11.0f32, 12.0, 13.0, 14.0, 15.0, 16.0];
+        let conv_data = [21.0f32, 22.0, 23.0, 24.0];
+        let recurrent_data = [31.0f32, 32.0, 33.0, 34.0];
+        let array = |data: &[f32], shape: &[i32]| {
+            MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data),
+                shape,
+                MlxDtype::Float32,
+            )
+        };
+
+        let mut private = MlxKVCache::new(2);
+        private.set_layer_kv_logical(
+            0,
+            array(&k_data, &[1, 1, 3, 2]),
+            array(&v_data, &[1, 1, 3, 2]),
+            3,
+        );
+        private.set_linear_state(
+            1,
+            array(&conv_data, &[1, 2, 2]),
+            array(&recurrent_data, &[1, 1, 2, 2]),
+        );
+        private.set_seq_len(3);
+
+        let mut session = BatchedDecodeSession::new(2, 2);
+        session.add(7, &private, 99);
+        let restored = session.writeback_remove(7).expect("resident row");
+
+        assert!(session.is_empty());
+        assert_eq!(restored.seq_len(), 3);
+        let (k, v) = restored.peek_layer_kv(0).expect("full-attention KV");
+        let k = contiguous(&k, None);
+        let v = contiguous(&v, None);
+        let (conv, recurrent) = restored.linear_state(1);
+        let conv = contiguous(conv.expect("linear conv state"), None);
+        let recurrent = contiguous(recurrent.expect("linear recurrent state"), None);
+        eval(&[&k, &v, &conv, &recurrent]);
+        assert_eq!(k.data_f32(), k_data);
+        assert_eq!(v.data_f32(), v_data);
+        assert_eq!(conv.data_f32(), conv_data);
+        assert_eq!(recurrent.data_f32(), recurrent_data);
     }
 
     #[test]

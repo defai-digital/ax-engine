@@ -179,7 +179,7 @@ recommended setup:
 ```bash
 uv venv --python 3.11 .venv
 source .venv/bin/activate
-uv pip install --upgrade "ax-engine[download]>=7.1.5,<8"
+uv pip install --upgrade "ax-engine[download]>=7.2.0,<8"
 python -c 'import importlib.metadata; print(importlib.metadata.version("ax-engine"))'
 which -a ax-engine
 ax-engine doctor
@@ -191,7 +191,7 @@ The standard-library equivalent is:
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=7.1.5,<8"
+python -m pip install --upgrade "ax-engine[download]>=7.2.0,<8"
 ```
 
 The current macOS arm64 wheel exposes `ax-engine` and `ax-engine-server` and
@@ -242,10 +242,11 @@ activated, so a bare `cargo build` on a dev machine cannot silently drift to
 another MLX install. `scripts/check-mlx-version.sh` verifies the same
 contract without compiling: pinned version, wheel-bundled `libmlx.dylib`, and
 non-Homebrew provenance. It reports `LC_BUILD_VERSION` for diagnosis, but does
-not use `minos` as a NAX proxy: the admitted PyPI MLX 0.32.0 wheel targets
-macOS 15.0 and still contains the certified kernels. Bumping the pin is
-deliberate: update `mlx.version`, rerun the qmm microbench parity gate and the
-bit-exactness suites, and only then trust results.
+not use `minos` as a NAX proxy: the admitted PyPI MLX 0.32.1 wheel reports
+`minos 26.2`; older admitted wheels reported lower deployment targets while
+still containing certified kernels. Bumping the pin is deliberate: update
+`mlx.version`, rerun the qmm microbench parity gate and the bit-exactness
+suites, and only then trust results.
 
 > [!IMPORTANT]
 > Install `mlx` with `pip`, not `brew install mlx`. Homebrew's `mlx` formula
@@ -354,7 +355,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install with
-`python3 -m pip install --upgrade "ax-engine[download]>=7.1.5,<8"`.
+`python3 -m pip install --upgrade "ax-engine[download]>=7.2.0,<8"`.
 
 Or via the script:
 

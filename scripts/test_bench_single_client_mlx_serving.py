@@ -62,14 +62,43 @@ class SingleClientServingBenchmarkTests(unittest.TestCase):
             model = benchmark.ModelSpec("test", root)
             ax = benchmark.EngineSpec("ax-engine", root / "ax-engine-server")
             peer = benchmark.EngineSpec("mlxcel", root / "mlxcel-server")
+            omlx = benchmark.EngineSpec("omlx", root / "omlx")
+            mtplx = benchmark.EngineSpec("mtplx", root / "mtplx")
 
             ax_command = benchmark.engine_command(ax, model=model, port=31910)
             peer_command = benchmark.engine_command(peer, model=model, port=31910)
+            omlx_command = benchmark.engine_command(omlx, model=model, port=31910)
+            mtplx_command = benchmark.engine_command(mtplx, model=model, port=31910)
 
         self.assertIn("--max-concurrent-requests", ax_command)
         self.assertIn("--max-concurrent-requests-per-model", ax_command)
         self.assertIn("--parallel", peer_command)
         self.assertIn("--max-batch-prefill", peer_command)
+        self.assertIn("--memory-guard", omlx_command)
+        self.assertIn("--no-cache", omlx_command)
+        self.assertIn("--scheduler-mode", mtplx_command)
+        self.assertIn("--ssd-session-cache", mtplx_command)
+
+    def test_three_engine_order_rotates_first_position(self) -> None:
+        engines = ("ax-engine", "omlx", "mtplx")
+        orders = [benchmark.engine_order(0, rep, engines) for rep in range(3)]
+
+        self.assertEqual([order[0] for order in orders], list(engines))
+        self.assertTrue(all(sorted(order) == sorted(engines) for order in orders))
+
+    def test_engine_model_override_preserves_logical_label(self) -> None:
+        canonical = benchmark.ModelSpec("qwen", Path("/canonical"))
+        override = Path("/runtime-view")
+
+        selected = benchmark.model_for_engine(
+            canonical, "omlx", {("omlx", "qwen"): override}
+        )
+
+        self.assertEqual(selected, benchmark.ModelSpec("qwen", override))
+        self.assertEqual(
+            benchmark.model_for_engine(canonical, "mtplx", {}),
+            canonical,
+        )
 
     def test_hardware_profile_omits_machine_identifiers(self) -> None:
         profile = """Hardware:

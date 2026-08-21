@@ -2,6 +2,9 @@
   "crates/ax-engine-mlx/src/attention_mask.rs": {
     "eval": 4
   },
+  "crates/ax-engine-mlx/src/batched_decode_session.rs": {
+    "eval": 1
+  },
   "crates/ax-engine-mlx/src/batched_kv_cache.rs": {
     "eval": 2
   },

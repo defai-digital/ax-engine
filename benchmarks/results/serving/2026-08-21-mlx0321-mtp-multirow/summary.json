@@ -1,0 +1,118 @@
+{
+  "schema_version": "ax.mtp_multirow_ab_summary.v1",
+  "date": "2026-08-21",
+  "runtime": {
+    "ax_engine_version": "7.1.5",
+    "mlx_version": "0.32.1",
+    "mlx_provenance": "pypi-wheel",
+    "hardware": "Apple M5 Max, 128 GB",
+    "model_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "model_revision": "be870bb8c7ff927f79b04388c0205aab8da4f92d"
+  },
+  "workload": {
+    "corpus": "benchmarks/corpora/serving/mtp_multirow_256.jsonl",
+    "corpus_sha256": "5e816dc7c02cd070476ae528552c38880d4d30d3056175d427f0b5f64f9bf4f6",
+    "input_tokens_per_request": 155,
+    "output_tokens_per_request": 256,
+    "temperature": 0.0,
+    "ignore_eos": true,
+    "prefix_reuse": false,
+    "prefix_cache": false
+  },
+  "qmm_admission": {
+    "artifact": "qmm-admission.json",
+    "median_latency_ms": 4.877724999096245,
+    "median_tflops": 56.35371141155559,
+    "passed": true
+  },
+  "results": [
+    {
+      "mode": "feature_off_mtp",
+      "concurrency": 2,
+      "trial": 1,
+      "requests": 8,
+      "output_tok_s": 24.295991996399227,
+      "oracle_matches": 8
+    },
+    {
+      "mode": "feature_off_mtp",
+      "concurrency": 4,
+      "trial": 1,
+      "requests": 8,
+      "output_tok_s": 24.31391505759403,
+      "oracle_matches": 8
+    },
+    {
+      "mode": "mtp_to_direct_batch",
+      "concurrency": 2,
+      "trial": 1,
+      "requests": 8,
+      "output_tok_s": 42.566181214750266,
+      "speedup_x": 1.7519836696134392,
+      "oracle_matches": 7,
+      "candidate_rows": 16,
+      "suspended_rows": 16,
+      "batched_forward_rows": 16
+    },
+    {
+      "mode": "mtp_to_direct_batch",
+      "concurrency": 2,
+      "trial": 2,
+      "requests": 8,
+      "output_tok_s": 44.04651967368422,
+      "speedup_x": 1.8129129973459042,
+      "oracle_matches": 8,
+      "candidate_rows": 16,
+      "suspended_rows": 16,
+      "batched_forward_rows": 16
+    },
+    {
+      "mode": "mtp_to_direct_batch",
+      "concurrency": 4,
+      "trial": 1,
+      "requests": 8,
+      "output_tok_s": 74.42175491160852,
+      "speedup_x": 3.0608708936969067,
+      "oracle_matches": 8,
+      "candidate_rows": 26,
+      "suspended_rows": 26,
+      "batched_forward_rows": 26
+    },
+    {
+      "mode": "mtp_to_direct_batch",
+      "concurrency": 4,
+      "trial": 2,
+      "requests": 8,
+      "output_tok_s": 77.40466248571883,
+      "speedup_x": 3.183554039008737,
+      "oracle_matches": 8,
+      "candidate_rows": 26,
+      "suspended_rows": 26,
+      "batched_forward_rows": 26
+    },
+    {
+      "mode": "feature_on_singleton_control",
+      "concurrency": 1,
+      "trial": 1,
+      "requests": 4,
+      "output_tok_s": 23.975816643068736,
+      "oracle_matches": 4,
+      "candidate_rows": 0,
+      "suspended_rows": 0,
+      "batched_forward_rows": 0
+    }
+  ],
+  "correctness": {
+    "multirow_oracle_matches": 31,
+    "multirow_streams": 32,
+    "bit_exact_certificate": false,
+    "errors": 0,
+    "fixed_length_outputs": true
+  },
+  "decision": {
+    "mlx_0_32_1_admitted": true,
+    "mtp_multirow_feature_promoted": false,
+    "feature_default": "off",
+    "reason": "one multirow stream differed from the feature-off greedy oracle"
+  }
+}

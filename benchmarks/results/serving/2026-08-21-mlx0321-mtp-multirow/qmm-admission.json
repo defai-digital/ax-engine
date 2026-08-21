@@ -1,0 +1,29 @@
+{
+  "mlx_version": "0.32.1",
+  "shape": {
+    "m": 2048,
+    "k": 4096,
+    "n": 16384
+  },
+  "dtype": "float16",
+  "bits": 4,
+  "group_size": 64,
+  "warmups_per_trial": 5,
+  "iterations_per_trial": 30,
+  "trials": [
+    {
+      "latency_ms": 4.9111708319590734,
+      "tflops": 55.96993392191792
+    },
+    {
+      "latency_ms": 4.874537501018494,
+      "tflops": 56.39056154282668
+    },
+    {
+      "latency_ms": 4.877724999096245,
+      "tflops": 56.35371141155559
+    }
+  ],
+  "median_latency_ms": 4.877724999096245,
+  "median_tflops": 56.35371141155559
+}
