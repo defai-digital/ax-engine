@@ -662,6 +662,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     environment["AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY"] = "1"
                     if not args.ax_speculative:
                         environment["AX_NO_SPEC"] = "1"
+                    if args.ax_force_mtp:
+                        environment["AX_MLX_MTP_FORCE_REQUESTED"] = "1"
+                    if args.ax_projected_replay:
+                        environment["AX_MLX_MTP_LINEAR_PROJECTED_REPLAY"] = "1"
+                    if args.ax_relaxed_verify:
+                        environment["AX_MLX_QWEN_LINEAR_MTP_EXACT"] = "0"
                 elif engine_key == "mtplx":
                     environment["MTPLX_STREAM_COALESCE"] = "0"
                 launched_at = utc_now()
@@ -773,6 +779,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 key: binary_version(engine.binary) for key, engine in engines.items()
             },
             "ax_speculative": bool(args.ax_speculative),
+            "ax_force_mtp": bool(args.ax_force_mtp),
+            "ax_projected_replay": bool(args.ax_projected_replay),
+            "ax_relaxed_verify": bool(args.ax_relaxed_verify),
             "methodology": {
                 "endpoint": "/v1/chat/completions",
                 "streaming": True,
@@ -832,6 +841,27 @@ def main() -> int:
         help="Keep AX speculative decoding enabled; the historical default sets AX_NO_SPEC=1.",
     )
     parser.add_argument(
+        "--ax-force-mtp",
+        action="store_true",
+        help=(
+            "Request AX model MTP for an uncertified third-party pack by setting "
+            "AX_MLX_MTP_FORCE_REQUESTED=1."
+        ),
+    )
+    parser.add_argument(
+        "--ax-projected-replay",
+        action="store_true",
+        help="Enable AX's opt-in Qwen gated-delta projected-prefix rollback.",
+    )
+    parser.add_argument(
+        "--ax-relaxed-verify",
+        action="store_true",
+        help=(
+            "Use target-verified batched Qwen arithmetic that is not guaranteed "
+            "bit-identical to singleton direct decode."
+        ),
+    )
+    parser.add_argument(
         "--prompt-targets",
         type=lambda value: parse_csv_ints(value, field="prompt targets"),
         default=DEFAULT_PROMPT_TARGETS,
@@ -848,6 +878,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.generation_tokens <= 0 or args.repetitions <= 0:
         parser.error("--generation-tokens and --repetitions must be positive")
+    if args.ax_force_mtp and not args.ax_speculative:
+        parser.error("--ax-force-mtp requires --ax-speculative")
+    if args.ax_projected_replay and not args.ax_force_mtp:
+        parser.error("AX MTP optimization flags require --ax-force-mtp")
+    if args.ax_relaxed_verify and not args.ax_projected_replay:
+        parser.error("--ax-relaxed-verify requires --ax-projected-replay")
     if args.warmup_tokens < 0 or args.cooldown < 0:
         parser.error("--warmup-tokens and --cooldown must be non-negative")
     if args.timeout <= 0 or args.startup_timeout <= 0:

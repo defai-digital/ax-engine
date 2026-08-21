@@ -1,0 +1,254 @@
+{
+  "schema_version": "ax.cross_runtime.single_client.v1",
+  "status": "complete",
+  "started_at": "2026-08-21T16:03:01.231873+00:00",
+  "updated_at": "2026-08-21T16:04:10.933694+00:00",
+  "config": {
+    "models": [
+      "qwen38"
+    ],
+    "prompt_targets": [
+      90
+    ],
+    "generation_tokens": 256,
+    "repetitions": 1,
+    "warmup_tokens_per_process": 32,
+    "cooldown_s": 0.0,
+    "engines": [
+      "ax-engine",
+      "omlx"
+    ],
+    "engine_model_overrides": {
+      "omlx:qwen38": "/Users/akiralam/.local/share/axquant-tests/cross-runtime-20260821/models/omlx/local"
+    },
+    "engine_versions": {
+      "ax-engine": "ax-engine-server 7.1.5",
+      "omlx": "0.6.2"
+    },
+    "ax_speculative": true,
+    "ax_force_mtp": true,
+    "methodology": {
+      "endpoint": "/v1/chat/completions",
+      "streaming": true,
+      "temperature": 0,
+      "ttft": "request send to first content or reasoning chunk",
+      "prefill_tps": "authoritative prompt token count divided by client TTFT",
+      "decode_tps": "(completion_tokens - 1) / (last content chunk - first content chunk)",
+      "cache_policy": "fresh server process per engine/model/repetition",
+      "engine_order": "rotated by model index and repetition",
+      "prompt_policy": "deterministic nominal word count; same text and seed per engine"
+    }
+  },
+  "host": {
+    "start": {
+      "platform": "darwin",
+      "machine": "arm64",
+      "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.1\nBuildVersion:\t\t25G76",
+      "hardware": "Hardware:\n\n    Hardware Overview:\n\n      Model Name: MacBook Pro\n      Model Identifier: Mac17,6\n      Model Number: Z1N20001BLL/A\n      Chip: Apple M5 Max\n      Total Number of Cores: 18 (6 Super and 12 Performance)\n      Memory: 128 GB\n      System Firmware Version: 18000.161.9\n      OS Loader Version: 18000.161.9",
+      "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=39518307)\t80%; AC attached; not charging present: true",
+      "load_average": [
+        1.2314453125,
+        0.955078125,
+        1.00146484375
+      ]
+    },
+    "end": {
+      "platform": "darwin",
+      "machine": "arm64",
+      "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.1\nBuildVersion:\t\t25G76",
+      "hardware": "Hardware:\n\n    Hardware Overview:\n\n      Model Name: MacBook Pro\n      Model Identifier: Mac17,6\n      Model Number: Z1N20001BLL/A\n      Chip: Apple M5 Max\n      Total Number of Cores: 18 (6 Super and 12 Performance)\n      Memory: 128 GB\n      System Firmware Version: 18000.161.9\n      OS Loader Version: 18000.161.9",
+      "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=39518307)\t80%; AC attached; not charging present: true",
+      "load_average": [
+        1.84619140625,
+        1.21142578125,
+        1.09228515625
+      ]
+    }
+  },
+  "binaries": {
+    "ax-engine": {
+      "path": "/Users/akiralam/.local/share/axquant-tests/ax-engine-mtp-multirow-20260821/target/release-server/ax-engine-server",
+      "sha256": "2cc4b423c971366dd9b91071ad18220d7691646819cb5321b172f548705740e1",
+      "version": "ax-engine-server 7.1.5"
+    },
+    "omlx": {
+      "path": "/Users/akiralam/.local/share/axquant-tests/cross-runtime-20260821/venv-omlx-0.6.2-py313/bin/omlx",
+      "sha256": "858b19329e19f694692e99f8310e6a6500a163d93ca4246d5e2e57012c6d6788",
+      "version": "0.6.2"
+    }
+  },
+  "runner": {
+    "path": "/Users/akiralam/.local/share/axquant-tests/ax-engine-mtp-multirow-20260821/scripts/bench_single_client_mlx_serving.py",
+    "sha256": "6051e272c3db63ae028567cf527f52c1bae3f64fc90d8209863e2638426468cb",
+    "git_commit": "7faacd022d912ced57bce900004382d28b89ad11",
+    "git_blob": "fed665a9776ee327e08bdd85f115f5d81d32ad5b",
+    "clean_at_start": false
+  },
+  "models": [
+    {
+      "label": "qwen38",
+      "path": "/Volumes/huggingface/hub/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed",
+      "identity_file_sha256": {
+        "config.json": "913b57d11eb131d9e1bb7316ea8729b6bcd110b59f8a08840a83ba2e524f370d",
+        "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+        "tokenizer_config.json": "95c557768e6b88a7128befc7bfd3c7de50e5d51af9b8b33a9f4dee0e04f99679",
+        "model.safetensors.index.json": "aec76dd8123c07e947f22a0e391bc278c05989094d398a64d759b76a93e3754e"
+      },
+      "safetensors_files": 6,
+      "safetensors_bytes": 20683241105
+    }
+  ],
+  "engine_models": {
+    "ax-engine": [
+      {
+        "label": "qwen38",
+        "path": "/Volumes/huggingface/hub/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed",
+        "identity_file_sha256": {
+          "config.json": "913b57d11eb131d9e1bb7316ea8729b6bcd110b59f8a08840a83ba2e524f370d",
+          "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+          "tokenizer_config.json": "95c557768e6b88a7128befc7bfd3c7de50e5d51af9b8b33a9f4dee0e04f99679",
+          "model.safetensors.index.json": "aec76dd8123c07e947f22a0e391bc278c05989094d398a64d759b76a93e3754e"
+        },
+        "safetensors_files": 6,
+        "safetensors_bytes": 20683241105
+      }
+    ],
+    "omlx": [
+      {
+        "label": "qwen38",
+        "path": "/Users/akiralam/.local/share/axquant-tests/cross-runtime-20260821/models/omlx/local",
+        "identity_file_sha256": {
+          "config.json": "ce61dae160bd5edf4a78b2e2385ff21008aa6e3ed5c304288090e377d47b47aa",
+          "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+          "tokenizer_config.json": "95c557768e6b88a7128befc7bfd3c7de50e5d51af9b8b33a9f4dee0e04f99679",
+          "model.safetensors.index.json": "9c6c26c72a298da8d4298a75a9c0e2b5a6cb5b17e203ef447029b28588cc0b75"
+        },
+        "safetensors_files": 6,
+        "safetensors_bytes": 20683241576
+      }
+    ]
+  },
+  "expected_measurements": 2,
+  "measurements": [
+    {
+      "engine": "ax-engine",
+      "model": "qwen38",
+      "model_dir": "/Volumes/huggingface/hub/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed",
+      "prompt_target": 90,
+      "rep": 0,
+      "seed": 109000,
+      "measured_at": "2026-08-21T16:03:32.224250+00:00",
+      "prompt_tokens": 154,
+      "completion_tokens": 256,
+      "ttft_s": 0.3973497499828227,
+      "prefill_tps": 387.5678794479105,
+      "decode_tps": 23.543621304143635,
+      "decode_window_s": 10.830959125014488,
+      "e2e_s": 11.232915000000503,
+      "visible_chars": 1189,
+      "text_sha256": "8e75a0f98b521272fa166706d6a4ecef1885a88994387798e4ac381a652768cb",
+      "finish_reason": "length"
+    },
+    {
+      "engine": "omlx",
+      "model": "qwen38",
+      "model_dir": "/Users/akiralam/.local/share/axquant-tests/cross-runtime-20260821/models/omlx/local",
+      "prompt_target": 90,
+      "rep": 0,
+      "seed": 109000,
+      "measured_at": "2026-08-21T16:04:05.424590+00:00",
+      "prompt_tokens": 154,
+      "completion_tokens": 256,
+      "ttft_s": 0.5386000830330886,
+      "prefill_tps": 285.9264319692634,
+      "decode_tps": 56.19787285308909,
+      "decode_window_s": 4.537538292002864,
+      "e2e_s": 5.076654625008814,
+      "visible_chars": 1189,
+      "text_sha256": "8e75a0f98b521272fa166706d6a4ecef1885a88994387798e4ac381a652768cb",
+      "finish_reason": "length"
+    }
+  ],
+  "results": [
+    {
+      "engine": "ax-engine",
+      "model": "qwen38",
+      "prompt_target": 90,
+      "prompt_tokens": 154,
+      "completion_tokens": 256,
+      "ttft_s": 0.3973497499828227,
+      "prefill_tps": 387.5678794479105,
+      "decode_tps": 23.543621304143635,
+      "reps": 1
+    },
+    {
+      "engine": "omlx",
+      "model": "qwen38",
+      "prompt_target": 90,
+      "prompt_tokens": 154,
+      "completion_tokens": 256,
+      "ttft_s": 0.5386000830330886,
+      "prefill_tps": 285.9264319692634,
+      "decode_tps": 56.19787285308909,
+      "reps": 1
+    }
+  ],
+  "process_audit": [
+    {
+      "engine": "ax-engine",
+      "model": "qwen38",
+      "rep": 0,
+      "pid": 54905,
+      "command": [
+        "/Users/akiralam/.local/share/axquant-tests/ax-engine-mtp-multirow-20260821/target/release-server/ax-engine-server",
+        "--model-id",
+        "local",
+        "--mlx",
+        "--mlx-model-artifacts-dir",
+        "/Volumes/huggingface/hub/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18128",
+        "--max-concurrent-requests",
+        "1",
+        "--max-concurrent-requests-per-model",
+        "1"
+      ],
+      "log_path": "/Users/akiralam/.local/share/axquant-tests/cross-runtime-20260821/probe-ax-projected-replay/logs/00-qwen38-0-ax-engine.log",
+      "launched_at": "2026-08-21T16:03:01.340998+00:00",
+      "startup_s": 29.240554124990012,
+      "exit_code": 0,
+      "forced_kill": false
+    },
+    {
+      "engine": "omlx",
+      "model": "qwen38",
+      "rep": 0,
+      "pid": 54961,
+      "command": [
+        "/Users/akiralam/.local/share/axquant-tests/cross-runtime-20260821/venv-omlx-0.6.2-py313/bin/omlx",
+        "serve",
+        "--model-dir",
+        "/Users/akiralam/.local/share/axquant-tests/cross-runtime-20260821/models/omlx",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18128",
+        "--max-concurrent-requests",
+        "1",
+        "--memory-guard",
+        "off",
+        "--no-cache",
+        "--base-path",
+        "/Users/akiralam/.local/share/axquant-tests/cross-runtime-20260821/models/.omlx-benchmark-state"
+      ],
+      "log_path": "/Users/akiralam/.local/share/axquant-tests/cross-runtime-20260821/probe-ax-projected-replay/logs/00-qwen38-0-omlx.log",
+      "launched_at": "2026-08-21T16:03:43.606155+00:00",
+      "startup_s": 4.121379958000034,
+      "exit_code": -15,
+      "forced_kill": false
+    }
+  ],
+  "errors": []
+}

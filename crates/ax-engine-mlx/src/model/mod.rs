@@ -123,8 +123,8 @@ pub use config::{
 };
 
 pub(crate) mod shared;
-pub(crate) use shared::scale_hidden_pub;
 use shared::*;
+pub(crate) use shared::{replay_linear_attention_mtp_prefix, scale_hidden_pub};
 
 mod families;
 

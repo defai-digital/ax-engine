@@ -75,9 +75,10 @@ use crate::model::{
     LinearAttentionProfileSnapshot, ModelConfig, MoeProfileSnapshot, PrefillProfileSnapshot,
     forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_post_norm,
     forward_all_positions_with_post_norm_greedy, forward_all_positions_with_post_norm_ids,
-    take_decode_profile_snapshot, take_dense_ffn_fastpath_snapshot,
-    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
-    take_moe_profile_snapshot, take_prefill_profile_snapshot,
+    replay_linear_attention_mtp_prefix, take_decode_profile_snapshot,
+    take_dense_ffn_fastpath_snapshot, take_gemma4_moe_profile_snapshot,
+    take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
+    take_prefill_profile_snapshot,
 };
 use crate::model::{prefill_batched_forward, supports_batched_prefill};
 use crate::mtp::{
@@ -3059,6 +3060,15 @@ impl MlxRunner {
             } else {
                 let mut states = self.states.lock();
                 if let Some(state) = states.get_mut(&item.request_id) {
+                    // Cold-joiner invariant: a joiner's private cache must not
+                    // already hold `feed`'s KV, or the `None` seed below would
+                    // double it. Warm direct pipelines are intercepted by the
+                    // `direct_pipeline_pending` filter / bootstrap route, so a
+                    // joiner here never carries a pending direct token.
+                    debug_assert!(
+                        state.pending_direct.is_none(),
+                        "batched decode joiner must be cold (no pending direct token)"
+                    );
                     let mtp_transition = mtp_transition_ids.contains(&id);
                     if mtp_transition {
                         // Target KV contains only committed inputs; `feed` is
@@ -8901,7 +8911,6 @@ impl MlxRunner {
         verify_input.extend_from_slice(&pending);
         let verify_len = verify_input.len();
         mtp_timings.verify_tokens = saturating_u32(verify_len);
-
         // Returns logits, draft hidden, acceptance outcome, correction token,
         // whether exact residual correction succeeded, and target argmax tokens.
         // predicted is the target model's argmax tokens for EWMA tracking.
@@ -9001,11 +9010,18 @@ impl MlxRunner {
                 let replay_kill_switch = std::env::var("AX_MLX_MTP_LINEAR_EXACT_REPLAY")
                     .map(|value| value != "0")
                     .unwrap_or(false);
-                let exact_linear_replay = linear_mtp_requires_singleton_replay(
+                let projected_replay = linear_mtp_projected_replay_allowed(
                     pending.len(),
-                    crate::fastpath::qwen_linear_mtp_exact_enabled(),
-                    replay_kill_switch || self.qwen_linear_mtp_force_replay,
+                    crate::fastpath::mtp_linear_projected_replay_enabled(),
+                    replay_kill_switch,
+                    self.qwen_linear_mtp_force_replay,
                 );
+                let exact_linear_replay = !projected_replay
+                    && linear_mtp_requires_singleton_replay(
+                        pending.len(),
+                        crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                        replay_kill_switch || self.qwen_linear_mtp_force_replay,
+                    );
                 let clone_started = Instant::now();
                 let mut verify_cache = state.cache.clone();
                 if !exact_linear_replay && !pending.is_empty() {
@@ -9150,12 +9166,11 @@ impl MlxRunner {
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                 let rollback_started = Instant::now();
-                // Without the exact profile, the batched verifier's recurrent
-                // linear-attention state can differ from singleton production
-                // decode even when every draft token is accepted, so replay
-                // remains the fail-closed fallback. The exact depth-one path
-                // can instead adopt a full-accept state or restore its lazy
-                // committed-prefix checkpoint after rejection.
+                // Without the exact profile, the batched verifier can differ
+                // from singleton production decode at BF16 tail ULPs, so full
+                // replay remains the default. The explicit projected-replay
+                // flag accepts that same non-bit-exact class as oMLX and keeps
+                // verification correctness while avoiding a backbone replay.
                 let recomputed_correction_argmax = if exact_linear_replay {
                     Some(recompute_committed_prefix_with_argmax(
                         &self.cfg,
@@ -9200,6 +9215,51 @@ impl MlxRunner {
                         // forward consumes these recurrent states and its
                         // normal eval barrier materialises them in dependency
                         // order, avoiding a rejection-only GPU/CPU round trip.
+                        state.cache = verify_cache;
+                        None
+                    } else {
+                        Some(recompute_committed_prefix_with_argmax(
+                            &self.cfg,
+                            &self.weights,
+                            &mut state.cache,
+                            verify_input[0],
+                            &pending[..ac],
+                            token_offset,
+                        ))
+                    }
+                } else if crate::fastpath::mtp_linear_projected_replay_enabled() {
+                    // The verifier already produced every linear layer's
+                    // QKV/A/B inputs. Reuse their accepted prefix to rebuild
+                    // only gated-delta state, then trim full-attention KV.
+                    // This is the replay-free-backbone rollback used by oMLX
+                    // 0.6.2; the unchanged source cache remains the fallback.
+                    drop(kv_refs);
+                    let keep = 1 + ac;
+                    let replayed = self
+                        .weights
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, layer)| layer.linear_attn.is_some())
+                        .all(|(layer_idx, layer)| {
+                            replay_linear_attention_mtp_prefix(
+                                &self.cfg,
+                                layer,
+                                &state.cache,
+                                &mut verify_cache,
+                                layer_idx,
+                                keep,
+                            )
+                        });
+                    if replayed && verify_cache.trim_to(token_offset + keep) {
+                        verify_cache.clear_linear_prefix_checkpoint();
+                        let replay_refs = verify_cache.collect_eval_refs();
+                        let replay_eval_started = Instant::now();
+                        eval(&replay_refs);
+                        mtp_timings.verify_eval_wall_us = mtp_timings
+                            .verify_eval_wall_us
+                            .saturating_add(elapsed_us(replay_eval_started));
+                        drop(replay_refs);
                         state.cache = verify_cache;
                         None
                     } else {
@@ -12530,6 +12590,18 @@ fn linear_mtp_requires_singleton_replay(
         || replay_kill_switch
 }
 
+fn linear_mtp_projected_replay_allowed(
+    pending_len: usize,
+    enabled: bool,
+    replay_kill_switch: bool,
+    model_force_replay: bool,
+) -> bool {
+    enabled
+        && !replay_kill_switch
+        && !model_force_replay
+        && (1..=QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS).contains(&pending_len)
+}
+
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
 ///
 /// `target_probs_cpu`: pre-computed p_target(draft_token_i) for each position, already
@@ -14369,6 +14441,17 @@ mod tests {
         assert!(linear_mtp_requires_singleton_replay(0, true, false));
         assert!(linear_mtp_requires_singleton_replay(2, false, false));
         assert!(linear_mtp_requires_singleton_replay(2, true, true));
+    }
+
+    #[test]
+    fn projected_linear_replay_is_explicit_bounded_and_kill_switchable() {
+        assert!(linear_mtp_projected_replay_allowed(1, true, false, false));
+        assert!(linear_mtp_projected_replay_allowed(3, true, false, false));
+        assert!(!linear_mtp_projected_replay_allowed(0, true, false, false));
+        assert!(!linear_mtp_projected_replay_allowed(4, true, false, false));
+        assert!(!linear_mtp_projected_replay_allowed(2, false, false, false));
+        assert!(!linear_mtp_projected_replay_allowed(2, true, true, false));
+        assert!(!linear_mtp_projected_replay_allowed(2, true, false, true));
     }
 
     #[test]

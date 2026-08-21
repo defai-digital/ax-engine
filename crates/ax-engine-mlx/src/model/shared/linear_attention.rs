@@ -269,6 +269,13 @@ fn linear_attention_forward_inner(
     let profile_started = Instant::now();
     let (qkv, z, a, b) =
         linear_attention_inputs(cfg, linear_cfg, linear_w, x, seq, profile_enabled);
+    if cache.linear_prefix_capture_after().is_some() {
+        // oMLX's Qwen verifier avoids a partial-accept backbone replay by
+        // retaining these already-computed projections and replaying only the
+        // gated-delta conv/recurrent update. Keep the stash tied to the same
+        // transient capture lifetime as AX's existing prefix checkpoint.
+        cache.set_linear_mtp_projection_stash(layer_idx, qkv.clone(), a.clone(), b.clone());
+    }
     qwen_prefill_maybe_async_la_outputs(&qkv, &z, &a, &b, seq);
     linear_attention_profile_eval_elapsed(
         profile_enabled,
@@ -386,6 +393,76 @@ fn linear_attention_forward_inner(
         &[&out],
     );
     out
+}
+
+fn mtp_projection_prefix(projected: &MlxArray, keep: i32) -> Option<MlxArray> {
+    let shape = projected.shape();
+    if shape.len() < 2 || shape[0] != 1 || keep <= 0 || keep > shape[1] {
+        return None;
+    }
+    let starts = vec![0_i32; shape.len()];
+    let mut ends = shape;
+    ends[1] = keep;
+    let strides = vec![1_i32; ends.len()];
+    Some(slice(projected, &starts, &ends, &strides, None))
+}
+
+/// Rebuild only one Qwen gated-delta layer's conv/recurrent state after an
+/// MTP partial accept.
+///
+/// The verify forward already paid for the QKV/A/B projections and retained
+/// them in `verify_cache`. Replaying their accepted prefix from the unchanged
+/// pre-verify state is equivalent to oMLX 0.6.2's `mtp_partial_rollback`: full
+/// attention layers can trim their KV window, while linear layers avoid a
+/// second transformer-backbone forward.
+pub(crate) fn replay_linear_attention_mtp_prefix(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    source_cache: &MlxKVCache,
+    verify_cache: &mut MlxKVCache,
+    layer_idx: usize,
+    keep: usize,
+) -> bool {
+    let Some(linear_cfg) = cfg.linear_attention.as_ref() else {
+        return false;
+    };
+    let Some(linear_w) = w.linear_attn.as_ref() else {
+        return false;
+    };
+    let Ok(keep) = i32::try_from(keep) else {
+        return false;
+    };
+    let Some((qkv, a, b)) = verify_cache.linear_mtp_projection_stash(layer_idx) else {
+        return false;
+    };
+    let Some(qkv) = mtp_projection_prefix(&qkv, keep) else {
+        return false;
+    };
+    let Some(a) = mtp_projection_prefix(&a, keep) else {
+        return false;
+    };
+    let Some(b) = mtp_projection_prefix(&b, keep) else {
+        return false;
+    };
+
+    let (source_conv, source_recurrent) = source_cache.linear_state(layer_idx);
+    let (q, k, v, new_conv_state, _) =
+        linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, source_conv, false);
+    let recurrent_state = source_recurrent
+        .cloned()
+        .unwrap_or_else(|| initial_recurrent_state_zeros(linear_cfg));
+    let (_, new_recurrent_state) = gated_delta_kernel(
+        &q,
+        &k,
+        &v,
+        &linear_w.a_log,
+        &a,
+        &linear_w.dt_bias,
+        &b,
+        &recurrent_state,
+    );
+    verify_cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
+    true
 }
 
 /// Exact S=2..=4: run the MTP-off S=1 Metal gate + S=1 o_proj per row.

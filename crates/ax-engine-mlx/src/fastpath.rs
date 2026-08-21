@@ -580,6 +580,21 @@ pub fn qwen_linear_mtp_exact_enabled() -> bool {
     })
 }
 
+env_flag!(
+    /// `AX_MLX_MTP_LINEAR_PROJECTED_REPLAY` — let a Qwen gated-delta MTP
+    /// verifier adopt/restore its clone and, after a partial accept, reuse the
+    /// projected QKV/A/B tensors to rebuild only recurrent state.
+    ///
+    /// This is the narrowly scoped oMLX 0.6.2 rollback design: full-attention
+    /// KV is trimmed normally, while each linear layer replays its accepted
+    /// prefix from the unchanged pre-verify state. When the exact profile is
+    /// explicitly disabled this also opts into oMLX-style verifier arithmetic,
+    /// which is target-verified but not guaranteed bit-identical to singleton
+    /// direct decode. Default OFF until matched M5 admission completes.
+    mtp_linear_projected_replay_enabled,
+    "AX_MLX_MTP_LINEAR_PROJECTED_REPLAY"
+);
+
 /// Widest sequence shape the exact verifier contract covers: S=1 singleton
 /// replay plus S=2..=4 verify (`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS` = 3
 /// drafts + bonus token).

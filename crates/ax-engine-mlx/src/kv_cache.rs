@@ -1135,6 +1135,12 @@ struct LinearLayerState {
     prefix_conv_state: Option<MlxArray>,
     /// Transient verifier checkpoint after a committed prefix.
     prefix_recurrent_state: Option<MlxArray>,
+    /// Projected Q/K/V inputs retained only for an in-flight MTP verify.
+    mtp_qkv: Option<MlxArray>,
+    /// Projected gated-delta `a` input retained only for an in-flight verify.
+    mtp_a: Option<MlxArray>,
+    /// Projected gated-delta `b` input retained only for an in-flight verify.
+    mtp_b: Option<MlxArray>,
 }
 
 /// Destructor compatible with [`MlxArray::from_managed_data`]. Recovers
@@ -1404,6 +1410,9 @@ impl Clone for MlxKVCache {
         for state in &mut linear_layers {
             state.prefix_conv_state = None;
             state.prefix_recurrent_state = None;
+            state.mtp_qkv = None;
+            state.mtp_a = None;
+            state.mtp_b = None;
         }
         Self {
             layers: self.layers.clone(),
@@ -2546,6 +2555,9 @@ impl MlxKVCache {
                         recurrent_state,
                         prefix_conv_state: None,
                         prefix_recurrent_state: None,
+                        mtp_qkv: None,
+                        mtp_a: None,
+                        mtp_b: None,
                     };
                 }
                 other => return Err(MlxKVCacheSerializeError::UnknownLayerKind(other)),
@@ -4624,6 +4636,9 @@ impl MlxKVCache {
         for state in &mut self.linear_layers {
             state.prefix_conv_state = None;
             state.prefix_recurrent_state = None;
+            state.mtp_qkv = None;
+            state.mtp_a = None;
+            state.mtp_b = None;
         }
         self.linear_prefix_capture_after = Some(after_tokens);
     }
@@ -4658,6 +4673,40 @@ impl MlxKVCache {
         state.prefix_recurrent_state = Some(recurrent_state);
     }
 
+    /// Retain the already-computed gated-delta projections for a possible
+    /// partial-accept replay. These are transient graph leaves: clones,
+    /// snapshots, and the wire format intentionally omit them.
+    pub(crate) fn set_linear_mtp_projection_stash(
+        &mut self,
+        layer: usize,
+        qkv: MlxArray,
+        a: MlxArray,
+        b: MlxArray,
+    ) {
+        assert!(
+            self.linear_prefix_capture_after.is_some(),
+            "linear MTP projection stash requires an active capture"
+        );
+        let state = &mut self.linear_layers[layer];
+        state.mtp_qkv = Some(qkv);
+        state.mtp_a = Some(a);
+        state.mtp_b = Some(b);
+    }
+
+    /// Clone the transient verify projections so a replay can mutate the
+    /// destination cache without retaining a borrow into it.
+    pub(crate) fn linear_mtp_projection_stash(
+        &self,
+        layer: usize,
+    ) -> Option<(MlxArray, MlxArray, MlxArray)> {
+        let state = self.linear_layers.get(layer)?;
+        Some((
+            state.mtp_qkv.as_ref()?.clone(),
+            state.mtp_a.as_ref()?.clone(),
+            state.mtp_b.as_ref()?.clone(),
+        ))
+    }
+
     /// Replace final verifier states with the captured committed-prefix states.
     ///
     /// Returns false without mutating any layer when the capture is incomplete.
@@ -4678,6 +4727,9 @@ impl MlxKVCache {
                 state.conv_state = state.prefix_conv_state.take();
                 state.recurrent_state = state.prefix_recurrent_state.take();
             }
+            state.mtp_qkv = None;
+            state.mtp_a = None;
+            state.mtp_b = None;
         }
         self.linear_prefix_capture_after = None;
         true
@@ -4688,6 +4740,9 @@ impl MlxKVCache {
         for state in &mut self.linear_layers {
             state.prefix_conv_state = None;
             state.prefix_recurrent_state = None;
+            state.mtp_qkv = None;
+            state.mtp_a = None;
+            state.mtp_b = None;
         }
         self.linear_prefix_capture_after = None;
     }
@@ -5118,6 +5173,30 @@ mod tests {
         assert!(!branch.restore_linear_prefix_checkpoint());
         let (conv, recurrent) = branch.linear_state(0);
         assert!(conv.is_some() && recurrent.is_some());
+    }
+
+    #[test]
+    fn linear_mtp_projection_stash_is_transient() {
+        let mut cache = MlxKVCache::new(1);
+        cache.set_linear_state(
+            0,
+            zeros(&[1, 2, 3], MlxDtype::Float32, None),
+            zeros(&[1, 2, 2, 2], MlxDtype::Float32, None),
+        );
+        cache.begin_linear_prefix_capture(1);
+        cache.set_linear_mtp_projection_stash(
+            0,
+            zeros(&[1, 3, 8], MlxDtype::Bfloat16, None),
+            zeros(&[1, 3, 2], MlxDtype::Bfloat16, None),
+            zeros(&[1, 3, 2], MlxDtype::Bfloat16, None),
+        );
+        assert!(cache.linear_mtp_projection_stash(0).is_some());
+
+        let branch = cache.clone();
+        assert!(branch.linear_mtp_projection_stash(0).is_none());
+
+        cache.clear_linear_prefix_checkpoint();
+        assert!(cache.linear_mtp_projection_stash(0).is_none());
     }
 
     #[test]
