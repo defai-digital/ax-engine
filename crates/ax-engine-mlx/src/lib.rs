@@ -15,6 +15,7 @@ pub mod gemma4_assistant_mtp;
 pub(crate) mod gemma4_unified;
 pub mod gemma4_vl;
 pub mod generate;
+pub(crate) mod hardware;
 pub mod kv_block_pool;
 pub mod kv_cache;
 pub mod minicpm_v;

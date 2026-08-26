@@ -114,6 +114,16 @@ interleaved pairs put it at 0.998. The predicate still covers Gemma
 Qwen3-Next family. Note the absolute numbers ran under heavy sustained
 thermal load; the pairwise ratios are the reliable signal.
 
+### Neural Accelerator hosts (M5+, macOS 26.2+)
+
+On M5-class hardware the raise is restricted to `qwen3_next` (Coder-Next),
+the only family with a measured M5 server-path decode win. Other eligible
+families keep MLX defaults so Neural Accelerator GEMM/SDPA stay on the
+upstream command-buffer policy. Pre-M5 hosts still use the family exclusions
+above. Kill switch `AX_MLX_AUTO_BUFFER_CAPS=0` still wins. Related:
+`AX_MLX_NAX_ATTENTION=0` disables the Qwen native-causal SDPA policy on those
+same hosts.
+
 ### MLX 0.32 / M5 Max exception: Unlimited-OCR
 
 Unlimited-OCR keeps MLX's default command-buffer caps. A production-session

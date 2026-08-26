@@ -1788,6 +1788,25 @@ mod tests {
     }
 
     #[test]
+    fn nax_qwen_offset_chunk_skips_array_mask_gemma_does_not() {
+        use crate::model::shared::utils::QwenPrefillNativeOffsetCausalGuard;
+        let _hw =
+            crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m5_na());
+        let guard = QwenPrefillNativeOffsetCausalGuard::arm(
+            crate::fastpath::should_qwen_prefill_native_offset_causal("qwen3_5", 1024),
+        );
+        assert!(
+            super::attention_mask_array(1024, 2048, None).is_none(),
+            "M5 NAX Qwen offset chunk must use native causal"
+        );
+        drop(guard);
+        assert!(
+            super::attention_mask_array(1024, 2048, None).is_some(),
+            "Gemma/full-attn without the Qwen guard still materializes the offset array"
+        );
+    }
+
+    #[test]
     fn relaxed_qwen_verify_uses_native_causal_without_f32_upcast() {
         let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
         assert!(super::attention_mask_array(4, 1028, None).is_some());

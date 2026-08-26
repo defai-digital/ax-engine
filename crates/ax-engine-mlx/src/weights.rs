@@ -1023,11 +1023,43 @@ const BUFFER_CAP_TARGET_OPS: u32 = 1000;
 /// measured ~5-6% prefill cost (interleaved A/B, sampled decode parity): its
 /// promotion evidence is the greedy server decode path (+28%), which
 /// dominates the coding workload. `glm4_moe_lite` measured parity.
+///
+/// On Neural Accelerator hosts (M5+, macOS 26.2+) the raise is additionally
+/// restricted to `qwen3_next`. mlxcel leaves MLX defaults on M5+; AX keeps
+/// the Coder-Next decode win and otherwise matches that leave-default
+/// policy. Pre-M5 eligible families still raise.
 fn auto_buffer_caps_supported_for_family(model_family: &str) -> bool {
     !matches!(
         model_family,
         "unlimited_ocr" | "unlimited-ocr" | "deepseekocr" | "qwen3_5"
     ) && !model_family.contains("gemma")
+}
+
+/// Whether this family should auto-raise Metal command-buffer caps on the
+/// current host. Family exclusions always win. On an active Neural
+/// Accelerator the raise is `qwen3_next` only.
+pub(crate) fn should_auto_raise_metal_buffer_caps(model_family: &str) -> bool {
+    should_auto_raise_metal_buffer_caps_for(
+        crate::fastpath::auto_buffer_caps_enabled(),
+        auto_buffer_caps_supported_for_family(model_family),
+        crate::hardware::neural_accelerator_active(),
+        model_family,
+    )
+}
+
+pub(crate) fn should_auto_raise_metal_buffer_caps_for(
+    auto_enabled: bool,
+    family_supported: bool,
+    neural_accelerator_active: bool,
+    model_family: &str,
+) -> bool {
+    if !auto_enabled || !family_supported {
+        return false;
+    }
+    if neural_accelerator_active {
+        return model_family.eq_ignore_ascii_case("qwen3_next");
+    }
+    true
 }
 
 /// Auto-raise MLX's Metal command-buffer caps so `async_eval` keeps overlapping
@@ -1037,13 +1069,10 @@ fn auto_buffer_caps_supported_for_family(model_family: &str) -> bool {
 /// **Decides once per process** — MLX reads `MLX_MAX_*_PER_BUFFER` a single
 /// time at Metal device init, so later loads cannot change the outcome.
 ///
-/// **Optimistic raise when auto is ON:** for eligible families, caps are raised
-/// on the first decision regardless of whether the first checkpoint is
-/// MoE-class. Dense-first loads were previously a silent multi-model footgun
-/// (Llama then Coder-Next never got the MoE win). Dense impact is measured
-/// neutral (Gemma A/B ≈ 0.998); MoE impact is the ship reason (+11–25%).
-/// Unlimited-OCR is excluded by measured MLX 0.32 evidence. Pre-set env vars
-/// still win.
+/// **Optimistic raise when auto is ON:** for eligible pre-M5 families, caps
+/// are raised on the first decision regardless of whether the first checkpoint
+/// is MoE-class. On an active Neural Accelerator the raise is `qwen3_next`
+/// only. Pre-set env vars still win.
 ///
 /// Must run before the process's first MLX Metal init.
 /// `MlxRunner::from_artifacts_inner` calls this ahead of `set_wired_limit`;
@@ -1051,15 +1080,14 @@ fn auto_buffer_caps_supported_for_family(model_family: &str) -> bool {
 pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
     static DECIDED: OnceLock<()> = OnceLock::new();
     DECIDED.get_or_init(|| {
-        if !crate::fastpath::auto_buffer_caps_enabled() {
-            return;
-        }
         let model_family = artifacts.manifest().model_family.as_str();
-        if !auto_buffer_caps_supported_for_family(model_family) {
+        let na_active = crate::hardware::neural_accelerator_active();
+        if !should_auto_raise_metal_buffer_caps(model_family) {
             tracing::info!(
                 target = "ax_engine_mlx",
                 model_family,
-                "retained MLX default command-buffer caps for an excluded model family; \
+                neural_accelerator_active = na_active,
+                "retained MLX default command-buffer caps for this host/family; \
                  explicit MLX_MAX_*_PER_BUFFER values remain authoritative"
             );
             return;
@@ -1070,9 +1098,7 @@ pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
             .filter(|spec| spec.length_bytes > BUFFER_CAP_BIG_TENSOR_BYTES)
             .count();
         let is_moe_class = big_tensors >= BUFFER_CAP_MIN_BIG_TENSORS;
-        // Always raise for eligible families under auto-ON (see doc above).
-        // Telemetry records whether the triggering checkpoint was MoE-class so
-        // operators can diagnose multi-model order.
+        // Eligible families under auto-ON. On M5+ this is qwen3_next only.
         let (mb_applied, ops_applied) =
             mlx_sys::set_metal_buffer_caps_env(BUFFER_CAP_TARGET_MB, BUFFER_CAP_TARGET_OPS);
         tracing::info!(
@@ -1080,6 +1106,7 @@ pub(crate) fn maybe_raise_metal_buffer_caps(artifacts: &NativeModelArtifacts) {
             model_family,
             big_tensors,
             is_moe_class,
+            neural_accelerator_active = na_active,
             mb_applied,
             ops_applied,
             target_mb = BUFFER_CAP_TARGET_MB,
@@ -6836,6 +6863,74 @@ mod tests {
         // prefill degradation with no decode win; see the doc comment on
         // auto_buffer_caps_supported_for_family.
         assert!(!auto_buffer_caps_supported_for_family("qwen3_5"));
+    }
+
+    #[test]
+    fn auto_buffer_caps_na_host_raises_only_qwen3_next() {
+        assert!(should_auto_raise_metal_buffer_caps_for(
+            true,
+            true,
+            true,
+            "qwen3_next"
+        ));
+        assert!(!should_auto_raise_metal_buffer_caps_for(
+            true, true, true, "llama3"
+        ));
+        assert!(!should_auto_raise_metal_buffer_caps_for(
+            true,
+            true,
+            true,
+            "glm4_moe_lite"
+        ));
+        let _m5 =
+            crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m5_na());
+        assert!(should_auto_raise_metal_buffer_caps("qwen3_next"));
+        assert!(!should_auto_raise_metal_buffer_caps("llama3"));
+        assert!(!should_auto_raise_metal_buffer_caps("qwen3_5"));
+    }
+
+    #[test]
+    fn auto_buffer_caps_pre_m5_still_raises_eligible_families() {
+        let _m4 = crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m4());
+        assert!(should_auto_raise_metal_buffer_caps("llama3"));
+        assert!(should_auto_raise_metal_buffer_caps("qwen3_next"));
+        assert!(!should_auto_raise_metal_buffer_caps("qwen3_5"));
+    }
+
+    #[test]
+    fn auto_buffer_caps_m5_without_macos_26_2_keeps_pre_m5_policy() {
+        let _hw = crate::hardware::override_hardware(
+            crate::hardware::HardwareCapabilities::m5_old_macos(),
+        );
+        assert!(should_auto_raise_metal_buffer_caps("llama3"));
+        assert!(should_auto_raise_metal_buffer_caps("qwen3_next"));
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn live_auto_buffer_caps_follow_detected_hardware() {
+        if !crate::fastpath::auto_buffer_caps_enabled() {
+            return;
+        }
+        let active = crate::hardware::neural_accelerator_active();
+        eprintln!(
+            "live auto_buffer_caps: na_active={} qwen3_next={} llama3={}",
+            active,
+            should_auto_raise_metal_buffer_caps("qwen3_next"),
+            should_auto_raise_metal_buffer_caps("llama3"),
+        );
+        assert!(should_auto_raise_metal_buffer_caps("qwen3_next"));
+        if active {
+            assert!(
+                !should_auto_raise_metal_buffer_caps("llama3"),
+                "M5+ NA hosts raise command-buffer caps for qwen3_next only"
+            );
+        } else {
+            assert!(
+                should_auto_raise_metal_buffer_caps("llama3"),
+                "pre-M5 hosts still raise eligible families"
+            );
+        }
     }
 
     fn spec(role: NativeTensorRole) -> NativeTensorSpec {
