@@ -7766,12 +7766,17 @@ fn converts_minimax_m3_vl_language_moe_directory() {
         manifest.moe_norm_topk_prob,
         "MiniMax M3 always L1-normalizes selected expert scores"
     );
-    assert!(manifest.tensors.iter().any(|t| {
-        t.role == NativeTensorRole::FfnGateExps && t.layer_index == Some(2)
-    }));
-    assert!(manifest.tensors.iter().any(|t| {
-        t.role == NativeTensorRole::FfnSharedExpertGate && t.layer_index == Some(3)
-    }));
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| { t.role == NativeTensorRole::FfnGateExps && t.layer_index == Some(2) })
+    );
+    assert!(
+        manifest.tensors.iter().any(|t| {
+            t.role == NativeTensorRole::FfnSharedExpertGate && t.layer_index == Some(3)
+        })
+    );
     assert!(
         !manifest
             .tensors

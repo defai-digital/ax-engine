@@ -579,10 +579,7 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
             vec![DEEPSEEK_EOS.to_string(), DEEPSEEK_USER.to_string()]
         }
         ChatPromptTemplate::MiniMaxM3 => {
-            vec![
-                MINIMAX_EOS.to_string(),
-                format!("{MINIMAX_BOS}user"),
-            ]
+            vec![MINIMAX_EOS.to_string(), format!("{MINIMAX_BOS}user")]
         }
         ChatPromptTemplate::Unsupported(_) => Vec::new(),
         ChatPromptTemplate::PlainRolePrefix => Vec::new(),

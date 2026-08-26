@@ -441,8 +441,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         // the doctor command when REQ-L4 lands). EmbeddingGemma's mlx-community
         // weights store raw Gemma `gamma` norms (mlx-lm applies `1 + weight` at
         // runtime), so lift the `+1` into the norm weights at load.
-        weight_sanitize: if is_embeddinggemma_model_type(&model_type)
-            || is_minimax_m3(&model_type)
+        weight_sanitize: if is_embeddinggemma_model_type(&model_type) || is_minimax_m3(&model_type)
         {
             WeightSanitize::HfNormOnly
         } else if is_muse_glimmer_model_type(&model_type) {

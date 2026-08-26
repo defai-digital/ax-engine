@@ -664,15 +664,15 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         None
     };
 
-    let shared_expert_count = if is_deepseek_v3 || is_deepseek_v4 || is_nemotron || is_ocr || is_minimax
-    {
-        arch_u64(config, model_type, "n_shared_experts").and_then(u64_to_u32)
-    } else if is_llama4 {
-        // LLaMA 4 always has 1 shared expert when MoE is active
-        Some(1)
-    } else {
-        None
-    };
+    let shared_expert_count =
+        if is_deepseek_v3 || is_deepseek_v4 || is_nemotron || is_ocr || is_minimax {
+            arch_u64(config, model_type, "n_shared_experts").and_then(u64_to_u32)
+        } else if is_llama4 {
+            // LLaMA 4 always has 1 shared expert when MoE is active
+            Some(1)
+        } else {
+            None
+        };
 
     // GPT-OSS and Llama 4 expose dense `intermediate_size` for the expert FFN
     // width rather than a separate `moe_intermediate_size`.

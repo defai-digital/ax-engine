@@ -1420,8 +1420,7 @@ mod tests {
                 ),
             ],
         );
-        let prefix =
-            "language_model.model.layers.3.block_sparse_moe.switch_mlp.gate_proj";
+        let prefix = "language_model.model.layers.3.block_sparse_moe.switch_mlp.gate_proj";
         let json = serde_json::json!({
             "schema_version": "axquant.expert-stream.v1",
             "generated_by": "axquant",
