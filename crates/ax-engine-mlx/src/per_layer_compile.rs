@@ -49,7 +49,7 @@ use mlx_sys::{MlxArray, MlxClosure, MlxVectorArray};
 ///
 /// The `catch_unwind` layer is kept because it provides defense-in-depth in
 /// debug/test profiles. The error-slot check is the production safety net.
-fn try_apply_with_abort_safety(
+pub(crate) fn try_apply_with_abort_safety(
     closure: &MlxClosure,
     inputs: &[&MlxArray],
 ) -> Option<Vec<MlxArray>> {
@@ -798,6 +798,7 @@ pub fn clear_all_layer_decode_caches() {
     clear_per_layer_input_gate_decode_cache();
     clear_layer_gemma4_dual_path_cache();
     clear_layer_gemma4_dual_path_prefill_cache();
+    crate::model::clear_whole_verify_compile_cache();
 }
 
 #[cfg(test)]

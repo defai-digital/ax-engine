@@ -498,6 +498,14 @@ extern "C" int mlx_slice(mlx_array* r, const mlx_array a, const int* st, size_t 
 extern "C" int mlx_slice_update(mlx_array* r, const mlx_array src, const mlx_array upd,
     const int* st, size_t sn, const int* sp, size_t spn, const int* str, size_t strn, const mlx_stream s) {
   AX_TRY { aset(r, mx::slice_update(aref(src), aref(upd), make_shape(st,sn), make_shape(sp,spn), make_shape(str,strn), sd(s))); return 0; } AX_CATCH }
+extern "C" int mlx_slice_dynamic(mlx_array* r, const mlx_array a, const mlx_array start,
+    const int* axes, size_t axes_num, const int* slice_size, size_t slice_size_num,
+    const mlx_stream s) {
+  AX_TRY { aset(r, mx::slice(aref(a), aref(start), make_small_vec(axes, axes_num), make_shape(slice_size, slice_size_num), sd(s))); return 0; } AX_CATCH }
+extern "C" int mlx_slice_update_dynamic(mlx_array* r, const mlx_array src,
+    const mlx_array upd, const mlx_array start, const int* axes, size_t axes_num,
+    const mlx_stream s) {
+  AX_TRY { aset(r, mx::slice_update(aref(src), aref(upd), aref(start), make_small_vec(axes, axes_num), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_repeat(mlx_array* r, const mlx_array a, int rep, const mlx_stream s) {
   AX_TRY { aset(r, mx::repeat(aref(a), rep, sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_repeat_axis(mlx_array* r, const mlx_array a, int rep, int ax, const mlx_stream s) {

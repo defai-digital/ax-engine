@@ -225,6 +225,14 @@ impl ExpertStreamManifest {
     }
 }
 
+/// AXQuant Super-class stream manifests list MLX affine sidecars
+/// (`.scales` / `.biases` / `.bias`) as first-class tensors with the same
+/// `proj` as the packed `.weight`. Those names must not be inserted as
+/// expert slots; `load_layer` attaches them onto the weight by convention.
+fn is_quantization_sidecar_name(name: &str) -> bool {
+    name.ends_with(".scales") || name.ends_with(".biases") || name.ends_with(".bias")
+}
+
 /// All tensor names the initial load must skip for a manifest: each streamed
 /// base name plus its MLX quantization sidecars (`.scales`, `.biases`) and any
 /// dense switch `.bias`. These names never enter the resident name map and are
@@ -597,15 +605,30 @@ pub struct ExpertStackPager {
     manifest: Arc<ExpertStreamManifest>,
     root: PathBuf,
     budget_layers: usize,
+    /// When true, concatenate paged `gate`+`up` into one packed projection
+    /// (DeepSeek V4 resident path). MiniMax-M3 mlxcel uses split SwitchLinear
+    /// (`gate_proj` / `up_proj` / `down_proj`) and never fuses; Super-class
+    /// MiniMax packs are stream-required, so this must stay false for them.
+    fuse_split_experts: bool,
     cache: Mutex<PagerCache>,
 }
 
 impl ExpertStackPager {
     pub fn new(manifest: Arc<ExpertStreamManifest>, root: PathBuf, budget_layers: usize) -> Self {
+        Self::new_with_fuse(manifest, root, budget_layers, false)
+    }
+
+    pub fn new_with_fuse(
+        manifest: Arc<ExpertStreamManifest>,
+        root: PathBuf,
+        budget_layers: usize,
+        fuse_split_experts: bool,
+    ) -> Self {
         Self {
             manifest,
             root,
             budget_layers: budget_layers.max(1),
+            fuse_split_experts,
             cache: Mutex::new(PagerCache {
                 entries: HashMap::new(),
                 order: VecDeque::new(),
@@ -721,6 +744,9 @@ impl ExpertStackPager {
 
         let mut stack = LayerExpertStack::default();
         for tensor in &tensors {
+            if is_quantization_sidecar_name(&tensor.name) {
+                continue;
+            }
             let proj = tensor.parsed_proj.ok_or_else(|| {
                 ExpertStreamError::Paging(format!(
                     "tensor {} lost its parsed proj; manifest must be validated before paging",
@@ -761,15 +787,17 @@ impl ExpertStackPager {
                 "no expert tensors were paged for layer {layer}"
             )));
         }
-        let (packed, gate, up) = crate::weights::try_fuse_paged_split_moe_experts(
-            stack.gate_up_exps_packed,
-            stack.gate_exps,
-            stack.up_exps,
-        )
-        .map_err(ExpertStreamError::Paging)?;
-        stack.gate_up_exps_packed = packed;
-        stack.gate_exps = gate;
-        stack.up_exps = up;
+        if self.fuse_split_experts {
+            let (packed, gate, up) = crate::weights::try_fuse_paged_split_moe_experts(
+                stack.gate_up_exps_packed,
+                stack.gate_exps,
+                stack.up_exps,
+            )
+            .map_err(ExpertStreamError::Paging)?;
+            stack.gate_up_exps_packed = packed;
+            stack.gate_exps = gate;
+            stack.up_exps = up;
+        }
         Ok(stack)
     }
 }
@@ -1356,6 +1384,113 @@ mod tests {
         assert_eq!(values[0], 10.0 * SYN_HIDDEN as f32);
         assert_eq!(values[2 * SYN_INTER as usize], 12.0 * SYN_HIDDEN as f32);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pager_attaches_axquant_sidecar_entries_instead_of_overwriting_weight() {
+        // MiniMax / Super-class ax_expert_stream.json lists
+        // `.biases`, `.scales`, then `.weight` as three tensors with the
+        // same proj. Paging must keep the packed weight and attach the
+        // sidecars, not insert scales/biases as the expert slot.
+        let dir = std::env::temp_dir().join("ax_expert_stream_sidecar_overwrite");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let weight = synth_expert_values(0, SYN_INTER, SYN_HIDDEN);
+        let scales = vec![0.5_f32; (SYN_EXPERTS * SYN_INTER) as usize];
+        let biases = vec![0.1_f32; (SYN_EXPERTS * SYN_INTER) as usize];
+        write_safetensors_f32(
+            &dir,
+            "experts.safetensors",
+            &[
+                (
+                    "language_model.model.layers.3.block_sparse_moe.switch_mlp.gate_proj.weight",
+                    vec![SYN_EXPERTS, SYN_INTER, SYN_HIDDEN],
+                    weight,
+                ),
+                (
+                    "language_model.model.layers.3.block_sparse_moe.switch_mlp.gate_proj.scales",
+                    vec![SYN_EXPERTS, SYN_INTER],
+                    scales,
+                ),
+                (
+                    "language_model.model.layers.3.block_sparse_moe.switch_mlp.gate_proj.biases",
+                    vec![SYN_EXPERTS, SYN_INTER],
+                    biases,
+                ),
+            ],
+        );
+        let prefix =
+            "language_model.model.layers.3.block_sparse_moe.switch_mlp.gate_proj";
+        let json = serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "generated_by": "axquant",
+            "required": true,
+            "mode": "layer-stack",
+            "num_experts": SYN_EXPERTS,
+            "experts_per_tok": 4,
+            "estimated_resident_bytes": 1000,
+            "estimated_full_resident_bytes": 5000,
+            "estimated_max_layer_expert_bytes": 2000,
+            "resident_roles": ["embedding", "attention", "router", "shared_expert", "norm", "lm_head"],
+            "streamed_roles": ["expert"],
+            "tensors": [
+                {
+                    "name": format!("{prefix}.biases"),
+                    "file": "experts.safetensors",
+                    "layer": 3,
+                    "proj": "gate",
+                    "expert_axis": 0,
+                    "num_experts": SYN_EXPERTS,
+                    "bits": 2,
+                    "group_size": 32
+                },
+                {
+                    "name": format!("{prefix}.scales"),
+                    "file": "experts.safetensors",
+                    "layer": 3,
+                    "proj": "gate",
+                    "expert_axis": 0,
+                    "num_experts": SYN_EXPERTS,
+                    "bits": 2,
+                    "group_size": 32
+                },
+                {
+                    "name": format!("{prefix}.weight"),
+                    "file": "experts.safetensors",
+                    "layer": 3,
+                    "proj": "gate",
+                    "expert_axis": 0,
+                    "num_experts": SYN_EXPERTS,
+                    "bits": 2,
+                    "group_size": 32
+                }
+            ],
+        });
+        let manifest = ExpertStreamManifest::parse(&serde_json::to_vec(&json).unwrap()).unwrap();
+        let pager = ExpertStackPager::new(
+            Arc::new(manifest),
+            dir.clone(),
+            expert_layer_budget_from_env(None),
+        );
+        let stack = pager.ensure_layer(3).expect("layer 3 must page in");
+        let gate = stack
+            .gate_exps
+            .as_ref()
+            .expect("gate slot must keep the packed weight");
+        assert_eq!(
+            gate.weight.shape(),
+            vec![SYN_EXPERTS, SYN_INTER, SYN_HIDDEN],
+            "sidecar entries must not overwrite the packed weight slot"
+        );
+        assert!(
+            gate.scales.is_some(),
+            "MiniMax stream sidecars must attach as quantization scales"
+        );
+        assert!(
+            gate.biases.is_some(),
+            "MiniMax stream sidecars must attach as quantization biases"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

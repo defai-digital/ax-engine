@@ -244,6 +244,13 @@ pub(crate) fn model_family_for_type(
         // separate attention output gate; the dedicated muse_glimmer route
         // implements gated attention, centered sandwich norms, iRoPE, and
         // softcapped scaled logits.
+        "minimax_m3" | "minimax_m3_vl" => Ok(ModelFamily {
+            family_name: "minimax_m3",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(MINIMAX_M3_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
+        }),
         "muse_glimmer" | "muse_glimmer_text" => Ok(ModelFamily {
             family_name: "muse_glimmer",
             tensor_map: HF_STANDARD_TENSOR_MAP,

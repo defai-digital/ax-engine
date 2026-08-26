@@ -51,6 +51,29 @@ pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING: &str =
     "<|im_start|>assistant\n<think>\n";
 pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK: &str = "<|im_start|>assistant\n";
 
+// MiniMax M3 hub `chat_template.jinja` control tokens. These strings must
+// stay byte-identical to the tokenizer added-token entries.
+pub(crate) const MINIMAX_BOD: &str = "]~!b[";
+pub(crate) const MINIMAX_BOS: &str = "]~b]";
+pub(crate) const MINIMAX_EOS: &str = "[e~[";
+pub(crate) const MINIMAX_THINK_OPEN: &str = "<mm:think>";
+pub(crate) const MINIMAX_THINK_CLOSE: &str = "</mm:think>";
+const MINIMAX_DEFAULT_SYSTEM: &str = "\
+Your model version is MiniMax-M3, developed by MiniMax. Knowledge cutoff: January 2026. Founded in early 2022, MiniMax is a global AI foundation model company committed to advancing the frontiers of AI towards AGI.
+
+<thinking_instructions>
+You have a thinking capability that allows you to reason step by step before responding. When thinking is enabled, wrap your reasoning in <mm:think></mm:think> tags before your response. When thinking is disabled, begin your response directly after the </mm:think> prefix. When thinking is adaptive, decide on your own whether to think for the current turn.
+Current thinking mode: disabled. Do not output any thinking process.
+</thinking_instructions>";
+const MINIMAX_THINKING_SYSTEM: &str = "\
+Your model version is MiniMax-M3, developed by MiniMax. Knowledge cutoff: January 2026. Founded in early 2022, MiniMax is a global AI foundation model company committed to advancing the frontiers of AI towards AGI.
+
+<thinking_instructions>
+You have a thinking capability that allows you to reason step by step before responding. When thinking is enabled, wrap your reasoning in <mm:think></mm:think> tags before your response. When thinking is disabled, begin your response directly after the </mm:think> prefix. When thinking is adaptive, decide on your own whether to think for the current turn.
+Current thinking mode: enabled. You MUST think step by step before every response, including after receiving function/tool results.
+</thinking_instructions>";
+const MINIMAX_DEFAULT_DEVELOPER: &str = "You are a helpful assistant.";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChatPromptTemplate {
     QwenChatMl,
@@ -72,6 +95,8 @@ pub(crate) enum ChatPromptTemplate {
     /// DeepSeek V3/R1: `<｜User｜>` / `<｜Assistant｜>` with think-block framing.
     /// V4 Flash uses the canonical-equivalent Jinja path (see `is_deepseek_v4_model`).
     DeepSeekChat,
+    /// MiniMax M3 hub jinja: `]~b]user` / `]~b]ai` / `[e~[` / `</mm:think>`.
+    MiniMaxM3,
     Unsupported(ChatUnsupportedFamily),
     PlainRolePrefix,
 }
@@ -151,6 +176,8 @@ impl ChatPromptTemplate {
             Self::GptOssHarmony
         } else if is_muse_glimmer_model(model_id) {
             Self::MuseGlimmerAtem
+        } else if normalized.contains("minimax") {
+            Self::MiniMaxM3
         } else if normalized.contains("nemotron") {
             // Nemotron 3 Nano hub chat_template.jinja is ChatML + <think> (Qwen-like).
             Self::QwenChatMl
@@ -184,6 +211,7 @@ impl ChatPromptTemplate {
             // option (ADR-025 Phase 2), with `is_deepseek_v4_model` as the
             // manifest-less fallback.
             ChatTemplateKind::DeepSeekChat | ChatTemplateKind::DeepSeekV4Chat => Self::DeepSeekChat,
+            ChatTemplateKind::MiniMaxM3 => Self::MiniMaxM3,
             ChatTemplateKind::PlainRolePrefix => Self::PlainRolePrefix,
             ChatTemplateKind::Unsupported => match family_label {
                 "gemma3" => Self::Unsupported(ChatUnsupportedFamily::Gemma3),
@@ -550,6 +578,12 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
         ChatPromptTemplate::DeepSeekChat => {
             vec![DEEPSEEK_EOS.to_string(), DEEPSEEK_USER.to_string()]
         }
+        ChatPromptTemplate::MiniMaxM3 => {
+            vec![
+                MINIMAX_EOS.to_string(),
+                format!("{MINIMAX_BOS}user"),
+            ]
+        }
         ChatPromptTemplate::Unsupported(_) => Vec::new(),
         ChatPromptTemplate::PlainRolePrefix => Vec::new(),
     }
@@ -668,6 +702,25 @@ fn render_prompt_internal(
         }
         ChatPromptTemplate::DeepSeekChat => prompt.push_str(DEEPSEEK_BOS),
         ChatPromptTemplate::MuseGlimmerAtem => prompt.push_str(MUSE_GLIMMER_BOS),
+        ChatPromptTemplate::MiniMaxM3 => {
+            // Hub jinja always emits both specials: system SP then developer SP
+            // (`build_developer_message` defaults to "You are a helpful assistant.").
+            prompt.push_str(MINIMAX_BOD);
+            prompt.push_str(MINIMAX_BOS);
+            prompt.push_str("system\n");
+            prompt.push_str(if thinking_enabled {
+                MINIMAX_THINKING_SYSTEM
+            } else {
+                MINIMAX_DEFAULT_SYSTEM
+            });
+            prompt.push_str(MINIMAX_EOS);
+            prompt.push('\n');
+            prompt.push_str(MINIMAX_BOS);
+            prompt.push_str("developer\n");
+            prompt.push_str(MINIMAX_DEFAULT_DEVELOPER);
+            prompt.push_str(MINIMAX_EOS);
+            prompt.push('\n');
+        }
         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
         ChatPromptTemplate::Unsupported(family) => {
             return Err(format!(
@@ -992,6 +1045,34 @@ fn render_prompt_internal(
                     }
                 }
             }
+            ChatPromptTemplate::MiniMaxM3 => match role {
+                "system" => {}
+                "user" => {
+                    prompt.push_str(MINIMAX_BOS);
+                    prompt.push_str("user\n");
+                    prompt.push_str(content);
+                    prompt.push_str(MINIMAX_EOS);
+                    prompt.push('\n');
+                }
+                "assistant" => {
+                    prompt.push_str(MINIMAX_BOS);
+                    prompt.push_str("ai\n");
+                    prompt.push_str(if thinking_enabled {
+                        MINIMAX_THINK_OPEN
+                    } else {
+                        MINIMAX_THINK_CLOSE
+                    });
+                    prompt.push_str(content);
+                    prompt.push_str(MINIMAX_EOS);
+                    prompt.push('\n');
+                }
+                _ => {
+                    return Err(
+                        "MiniMax M3 chat currently supports system, user, and assistant roles"
+                            .to_string(),
+                    );
+                }
+            },
             ChatPromptTemplate::PlainRolePrefix => {
                 prompt.push_str(role);
                 prompt.push_str(": ");
@@ -1071,6 +1152,15 @@ fn render_prompt_internal(
             if thinking_enabled {
                 prompt.push_str(" to=self<|message|>");
             }
+        }
+        ChatPromptTemplate::MiniMaxM3 => {
+            prompt.push_str(MINIMAX_BOS);
+            prompt.push_str("ai\n");
+            prompt.push_str(if thinking_enabled {
+                MINIMAX_THINK_OPEN
+            } else {
+                MINIMAX_THINK_CLOSE
+            });
         }
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
         ChatPromptTemplate::Unsupported(_) => {
@@ -1493,6 +1583,7 @@ mod tests {
             ("gpt_oss", "openai/gpt-oss-20b"),
             ("nemotron_h", "nvidia/Nemotron-H-8B"),
             ("unlimited_ocr", "unlimited-ocr-v1"),
+            ("minimax_m3", "AutomatosX/AX-MiniMax-M3-MLX-AXQ-2bit"),
             ("gemma4_assistant", "gemma4-assistant-mtp"),
             ("whisper", "mlx-community/whisper-large-v3-turbo"),
         ];
@@ -1537,6 +1628,42 @@ mod tests {
             resolve_chat_template(model_id, Some("deepseek_v4")),
             ChatPromptTemplate::DeepSeekChat
         );
+        assert_eq!(
+            resolve_chat_template(model_id, Some("minimax_m3")),
+            ChatPromptTemplate::MiniMaxM3
+        );
+    }
+
+    #[test]
+    fn minimax_m3_render_matches_hub_jinja_shape() {
+        let prompt = render_prompt_with_template(
+            ChatPromptTemplate::MiniMaxM3,
+            &[("user".into(), "Say OK.".into())],
+            false,
+        )
+        .expect("minimax render");
+        assert!(
+            prompt.starts_with("]~!b[]~b]system\n"),
+            "missing MiniMax system prefix: {prompt}"
+        );
+        assert!(
+            prompt.contains("Current thinking mode: disabled"),
+            "thinking-off instructions missing: {prompt}"
+        );
+        assert!(
+            prompt.contains("]~b]developer\nYou are a helpful assistant.[e~[\n"),
+            "missing hub developer turn: {prompt}"
+        );
+        assert!(
+            prompt.contains("]~b]user\nSay OK.[e~[\n"),
+            "user turn mismatch: {prompt}"
+        );
+        assert!(
+            prompt.ends_with("]~b]ai\n</mm:think>"),
+            "generation prompt mismatch: {prompt}"
+        );
+        let stops = default_stop_sequences(ChatPromptTemplate::MiniMaxM3);
+        assert!(stops.iter().any(|s| s == "[e~["));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, arange, as_strided, astype, async_eval,
-    broadcast_to, concatenate, contiguous, cos, eval, multiply, outer,
+    broadcast_to, concatenate, contiguous, cos, eval, greater_equal, multiply, outer,
     qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
     scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks, sin,
     slice, slice_update, subtract, transpose,
@@ -15,6 +15,28 @@ use crate::kv_cache::{MlxKVCache, SlidingRingLayout};
 
 use super::super::config::ModelConfig;
 use super::norm::{rms_norm_no_scale_bshd, use_flat_qk_norm_path};
+
+/// Capacity-wide causal mask driven by an array-valued logical K/V offset.
+/// The fixed width keeps a whole-model compiled verifier shape-stable while
+/// masking every unused backing slot.
+pub(crate) fn fixed_capacity_causal_mask(
+    offset: &MlxArray,
+    query_len: i32,
+    capacity: i32,
+) -> MlxArray {
+    let query_rows = add(
+        &reshape(offset, &[1], None),
+        &arange(0.0, f64::from(query_len), 1.0, MlxDtype::Int32, None),
+        None,
+    );
+    let query_rows = reshape(&query_rows, &[query_len, 1], None);
+    let key_cols = reshape(
+        &arange(0.0, f64::from(capacity), 1.0, MlxDtype::Int32, None),
+        &[1, capacity],
+        None,
+    );
+    greater_equal(&query_rows, &key_cols, None)
+}
 
 /// Materialize the Qwen full-attention activation once before QKVO qmm.
 pub(crate) fn qwen_prefill_maybe_eval_attn_input(x: &MlxArray, model_family: &str, seq: i32) {
@@ -243,7 +265,7 @@ fn reused_neox_cos_sin(
     })
 }
 
-fn build_neox_rope_cos_sin(
+pub(crate) fn build_neox_rope_cos_sin(
     token_offset: i32,
     seq: i32,
     rope_dims: i32,
@@ -278,18 +300,15 @@ fn build_neox_rope_cos_sin(
     (cos_h, sin_h)
 }
 
-/// Apply a cached NeoX cos/sin table to `[B, H, S, D]`.
-pub(crate) fn apply_reused_neox_rope(
+pub(crate) fn apply_neox_rope_cos_sin(
     bhsd: &MlxArray,
     rope_dims: i32,
-    rope_base: Option<f32>,
-    token_offset: i32,
-    rope_freqs: Option<&MlxArray>,
+    cos_h: &MlxArray,
+    sin_h: &MlxArray,
 ) -> MlxArray {
     let shape = bhsd.shape();
     let seq = shape[2];
     let head_dim = shape[3];
-    let (cos_h, sin_h) = reused_neox_cos_sin(token_offset, seq, rope_dims, rope_base, rope_freqs);
     let rotary = if head_dim > rope_dims {
         slice(
             bhsd,
@@ -317,13 +336,13 @@ pub(crate) fn apply_reused_neox_rope(
         None,
     );
     let rx = subtract(
-        &multiply(&x1, &cos_h, None),
-        &multiply(&x2, &sin_h, None),
+        &multiply(&x1, cos_h, None),
+        &multiply(&x2, sin_h, None),
         None,
     );
     let ry = add(
-        &multiply(&x2, &cos_h, None),
-        &multiply(&x1, &sin_h, None),
+        &multiply(&x2, cos_h, None),
+        &multiply(&x1, sin_h, None),
         None,
     );
     let embedded = concatenate(&[&rx, &ry], -1, None);
@@ -338,6 +357,66 @@ pub(crate) fn apply_reused_neox_rope(
         concatenate(&[&embedded, &pass], -1, None)
     } else {
         embedded
+    }
+}
+
+/// Apply a cached NeoX cos/sin table to `[B, H, S, D]`.
+pub(crate) fn apply_reused_neox_rope(
+    bhsd: &MlxArray,
+    rope_dims: i32,
+    rope_base: Option<f32>,
+    token_offset: i32,
+    rope_freqs: Option<&MlxArray>,
+) -> MlxArray {
+    let seq = bhsd.shape()[2];
+    let (cos_h, sin_h) = reused_neox_cos_sin(token_offset, seq, rope_dims, rope_base, rope_freqs);
+    apply_neox_rope_cos_sin(bhsd, rope_dims, &cos_h, &sin_h)
+}
+
+/// Apply NeoX RoPE with an array-valued position offset.
+///
+/// Unlike `fast::rope`'s dynamic-offset overload, this graph is built from
+/// fixed-shape arithmetic rather than a tensor-indexed table slice. That lets
+/// MLX shapeless compilation infer every output shape while the offset remains
+/// an explicit value input across decode positions. The whole-step verifier
+/// currently feeds explicit cos/sin tables instead; this helper is kept for
+/// the equivalence test until a compiled route adopts the dynamic offset.
+#[cfg(test)]
+pub(crate) fn apply_dynamic_neox_rope(
+    bhsd: &MlxArray,
+    rope_dims: i32,
+    rope_base: Option<f32>,
+    token_offset: &MlxArray,
+    rope_freqs: Option<&MlxArray>,
+) -> MlxArray {
+    let output_dtype = bhsd.dtype();
+    let seq = bhsd.shape()[2];
+    let relative_positions = arange(0.0, f64::from(seq), 1.0, MlxDtype::Float32, None);
+    let token_offset = astype(token_offset, MlxDtype::Float32, None);
+    let positions = add(&relative_positions, &token_offset, None);
+    let half = rope_dims / 2;
+    let inv_freq = if let Some(freqs) = rope_freqs {
+        freqs.clone()
+    } else {
+        let base = rope_base.unwrap_or(10_000.0);
+        let data: Vec<f32> = (0..half)
+            .map(|index| 1.0 / base.powf((2 * index) as f32 / rope_dims as f32))
+            .collect();
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[half],
+            MlxDtype::Float32,
+        )
+    };
+    let theta = outer(&positions, &inv_freq, None);
+    let cos_h = reshape(&cos(&theta, None), &[1, 1, seq, half], None);
+    let sin_h = reshape(&sin(&theta, None), &[1, 1, seq, half], None);
+    let output = apply_neox_rope_cos_sin(bhsd, rope_dims, &cos_h, &sin_h);
+    if output.dtype() == output_dtype {
+        output
+    } else {
+        astype(&output, output_dtype, None)
     }
 }
 
@@ -736,7 +815,8 @@ pub(crate) fn attention_mask_array(
             // Exact depth-1/2/3 verify is S=2..=4 with KV history. Native
             // causal uses qL_off = key_len - seq, matching create_causal_mask
             // without a 2×key bool array per full-attn layer.
-            || (crate::fastpath::qwen_linear_mtp_exact_enabled() && (2..=4).contains(&seq_len))
+            || (crate::fastpath::qwen_linear_mtp_verify_fast_kernels_enabled()
+                && (2..=4).contains(&seq_len))
         {
             return None;
         }
@@ -1067,7 +1147,8 @@ pub(crate) fn should_upcast_multi_token_sdpa_to_f32(seq: usize) -> bool {
         && !super::utils::qwen_prefill_skip_f32_sdpa_active()
         // Exact Qwen linear MTP verify: factory MXFP4 A/B kept the same
         // tokens with f32 upcast off. Skip the extra cast on S=2..4.
-        && !(fastpath::qwen_linear_mtp_exact_enabled() && (2..=4).contains(&seq))
+        && !(fastpath::qwen_linear_mtp_verify_fast_kernels_enabled()
+            && (2..=4).contains(&seq))
 }
 
 /// Attention with per-head learned sinks (GPT-OSS).
@@ -1650,8 +1731,8 @@ fn media_prefix_mask_array(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_reused_neox_rope, build_bidirectional_canvas_mask,
-        build_layer_masks_with_media_ranges, full_precision_attention,
+        apply_dynamic_neox_rope, apply_reused_neox_rope, build_bidirectional_canvas_mask,
+        build_layer_masks_with_media_ranges, fixed_capacity_causal_mask, full_precision_attention,
         gemma4_prefill_maybe_async_first_kv_for, media_prefix_mask_array,
         qwen_direct_qk_norm_rope_default_family, qwen_prefill_maybe_eval_attn_input_for,
         qwen_prefill_maybe_last_query_q_for, qwen_prefill_maybe_last_token_bsh_for,
@@ -1675,6 +1756,23 @@ mod tests {
     }
 
     #[test]
+    fn fixed_capacity_mask_hides_unused_tail_slots() {
+        let offset_value = [3_i32];
+        let offset = MlxArray::from_raw_data(
+            offset_value.as_ptr().cast(),
+            std::mem::size_of_val(&offset_value),
+            &[1],
+            MlxDtype::Int32,
+        );
+        let mask = fixed_capacity_causal_mask(&offset, 2, 7);
+        assert_eq!(mask.shape(), vec![2, 7]);
+        assert_eq!(
+            mask_data(&mask),
+            vec![1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0]
+        );
+    }
+
+    #[test]
     fn qwen_prefill_native_offset_causal_skips_array_mask() {
         use crate::model::shared::utils::QwenPrefillNativeOffsetCausalGuard;
         assert!(
@@ -1686,6 +1784,27 @@ mod tests {
         assert!(
             mask.is_none(),
             "offset-1024 Qwen prefill must use native causal, not an O(seq×key) array"
+        );
+    }
+
+    #[test]
+    fn relaxed_qwen_verify_uses_native_causal_without_f32_upcast() {
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        assert!(super::attention_mask_array(4, 1028, None).is_some());
+        assert!(super::should_upcast_multi_token_sdpa_to_f32(4));
+
+        let _verify = crate::fastpath::scoped_qwen_linear_mtp_target_verify(true);
+        assert!(
+            super::attention_mask_array(4, 1028, None).is_none(),
+            "short target verify should use MLX native offset-causal SDPA"
+        );
+        assert!(
+            !super::should_upcast_multi_token_sdpa_to_f32(4),
+            "relaxed target verify should stay in the model dtype"
+        );
+        assert!(
+            !crate::fastpath::qwen_linear_mtp_exact_enabled(),
+            "fast-kernel permission must not turn singleton-exact arithmetic back on"
         );
     }
 
@@ -1970,6 +2089,47 @@ mod tests {
             crate::fastpath::should_qwen_prefill_reuse_rope_for(true, "qwen3_5", 1024),
             "shipped rope reuse must accept the p2048 chunk length"
         );
+    }
+
+    #[test]
+    fn apply_dynamic_neox_rope_matches_mlx_fast_rope_at_decode_offset() {
+        let data: Vec<f32> = (0..96).map(|i| ((i as f32) - 48.0) * 0.03125).collect();
+        let x = MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 4, 3, 8],
+            MlxDtype::Float32,
+        );
+        let offset_data = [2876_i32];
+        let offset = MlxArray::from_raw_data(
+            offset_data.as_ptr().cast(),
+            std::mem::size_of_val(&offset_data),
+            &[1],
+            MlxDtype::Int32,
+        );
+        let dynamic = apply_dynamic_neox_rope(&x, 8, Some(10_000_000.0), &offset, None);
+        let reference = mlx_sys::rope(
+            &x,
+            8,
+            false,
+            Some(10_000_000.0),
+            1.0,
+            offset_data[0],
+            None,
+            None,
+        );
+        eval(&[&dynamic, &reference]);
+        assert_eq!(dynamic.shape(), reference.shape());
+        for (actual, expected) in dynamic.data_f32().iter().zip(reference.data_f32().iter()) {
+            assert!(
+                (actual - expected).abs() < 5e-4
+                    || (actual - expected).abs() / expected.abs().max(1e-6) < 5e-4,
+                "dynamic NeoX rope must match mlx_fast_rope: {actual} vs {expected}"
+            );
+        }
+        let x_bf16 = astype(&x, MlxDtype::Bfloat16, None);
+        let dynamic_bf16 = apply_dynamic_neox_rope(&x_bf16, 8, Some(10_000_000.0), &offset, None);
+        assert_eq!(dynamic_bf16.dtype(), MlxDtype::Bfloat16);
     }
 
     #[test]

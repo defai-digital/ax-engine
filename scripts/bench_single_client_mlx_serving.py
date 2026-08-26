@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import hashlib
 import json
 import os
 import platform
 import random
+import re
 import signal
 import statistics
 import subprocess
@@ -23,12 +25,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "ax.cross_runtime.single_client.v1"
+SCHEMA_VERSION = "ax.cross_runtime.single_client.v2"
 DEFAULT_PROMPT_TARGETS = (512, 2048)
 DEFAULT_GENERATION_TOKENS = 256
 DEFAULT_REPETITIONS = 3
 DEFAULT_COOLDOWN_S = 15.0
 DEFAULT_TIMEOUT_S = 900.0
+DEFAULT_QUALITY_SEED = 20_260_728
+AX_COUNTER_METRICS = (
+    "ax_engine_steps_total",
+    "ax_engine_scheduled_tokens_total",
+    "ax_engine_mtp_draft_tokens_total",
+    "ax_engine_mtp_accepted_tokens_total",
+    "ax_engine_mtp_direct_fallback_steps_total",
+)
+AX_GAUGE_METRICS = ("ax_engine_mtp_accept_rate_ewma_x1000",)
 
 # Intentionally includes words with different tokenizer shapes. The prompt target
 # is a deterministic word count, matching the historical single-client session's
@@ -131,6 +142,16 @@ class EngineModelOverride:
     path: Path
 
 
+@dataclass(frozen=True)
+class QualityTask:
+    task_id: str
+    profile: str
+    category: str
+    prompt: str
+    max_tokens: int
+    checks: tuple[dict[str, Any], ...]
+
+
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -178,6 +199,205 @@ def parse_engine_model(raw: str) -> EngineModelOverride:
     return EngineModelOverride(engine=engine.strip(), label=label.strip(), path=path)
 
 
+QUALITY_PROFILES = frozenset({"agent-coding", "general"})
+QUALITY_CHECK_KINDS = frozenset(
+    {"contains", "exact", "json-equals", "json-keys", "json-valid", "python-syntax"}
+)
+CONTROL_TOKEN_MARKERS = (
+    "<|eot|>",
+    "<|endoftext|>",
+    "<|im_end|>",
+    "<｜User｜>",
+    "<｜end▁of▁sentence｜>",
+)
+PYTHON_FENCE = re.compile(r"```(?:python|py)\b[^\n]*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+ANY_FENCE = re.compile(r"```[^\n]*\n?(.*?)```", re.DOTALL)
+
+
+def require_quality_string(
+    payload: dict[str, Any], field: str, path: Path, line_number: int
+) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"quality task at {path}:{line_number} needs non-empty {field}")
+    return value
+
+
+def load_quality_tasks(path: Path) -> tuple[QualityTask, ...]:
+    """Load a small checksum-bound quality suite using AXQuant-style checks."""
+    tasks: list[QualityTask] = []
+    with path.expanduser().resolve().open(encoding="utf-8") as source:
+        for line_number, line in enumerate(source, 1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid quality JSON at {path}:{line_number}: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise ValueError(f"quality task at {path}:{line_number} must be an object")
+            task_id = require_quality_string(payload, "task_id", path, line_number)
+            profile = require_quality_string(payload, "profile", path, line_number)
+            category = require_quality_string(payload, "category", path, line_number)
+            prompt = require_quality_string(payload, "prompt", path, line_number)
+            max_tokens = payload.get("max_tokens")
+            checks = payload.get("checks")
+            if profile not in QUALITY_PROFILES:
+                raise ValueError(
+                    f"quality task at {path}:{line_number} has unsupported profile {profile!r}"
+                )
+            if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+                raise ValueError(
+                    f"quality task at {path}:{line_number} needs positive integer max_tokens"
+                )
+            if not isinstance(checks, list) or not checks:
+                raise ValueError(f"quality task at {path}:{line_number} needs checks")
+            validated_checks: list[dict[str, Any]] = []
+            for check_index, check in enumerate(checks):
+                if not isinstance(check, dict):
+                    raise ValueError(
+                        f"quality check {check_index} at {path}:{line_number} must be an object"
+                    )
+                kind = check.get("kind")
+                if kind not in QUALITY_CHECK_KINDS:
+                    raise ValueError(
+                        f"quality check {check_index} at {path}:{line_number} "
+                        f"has unsupported kind {kind!r}"
+                    )
+                value = check.get("value")
+                if kind in {"contains", "exact"} and not isinstance(value, str):
+                    raise ValueError(
+                        f"quality check {check_index} at {path}:{line_number} "
+                        f"requires a string value"
+                    )
+                if kind == "json-keys" and (
+                    not isinstance(value, list) or not all(isinstance(key, str) for key in value)
+                ):
+                    raise ValueError(
+                        f"quality check {check_index} at {path}:{line_number} "
+                        f"requires a string-list value"
+                    )
+                validated_checks.append(dict(check))
+            tasks.append(
+                QualityTask(
+                    task_id=task_id,
+                    profile=profile,
+                    category=category,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    checks=tuple(validated_checks),
+                )
+            )
+    if not tasks:
+        raise ValueError(f"quality dataset contains no tasks: {path}")
+    task_ids = [task.task_id for task in tasks]
+    if len(task_ids) != len(set(task_ids)):
+        raise ValueError(f"quality task IDs must be unique: {path}")
+    if {task.profile for task in tasks} != QUALITY_PROFILES:
+        raise ValueError("quality dataset must contain both agent-coding and general profiles")
+    return tuple(tasks)
+
+
+def normalized_text(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def strip_control_tokens(value: str) -> str:
+    text = value.strip()
+    while text.startswith("</think>"):
+        text = text.removeprefix("</think>").lstrip()
+    cut = len(text)
+    for marker in CONTROL_TOKEN_MARKERS:
+        index = text.find(marker)
+        if 0 <= index < cut:
+            cut = index
+    return text[:cut].strip()
+
+
+def unfenced(value: str) -> str:
+    stripped = strip_control_tokens(value)
+    match = re.fullmatch(r"```(?:json|python|py)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    embedded = re.search(
+        r"```(?:json|python|py)?\s*(.*?)```",
+        stripped,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return embedded.group(1).strip() if embedded else stripped
+
+
+def python_source(value: str) -> str:
+    text = strip_control_tokens(value)
+    python_fence = PYTHON_FENCE.search(text)
+    if python_fence:
+        return python_fence.group(1).strip()
+    any_fence = ANY_FENCE.search(text)
+    if any_fence:
+        return any_fence.group(1).strip()
+    return text
+
+
+def parse_json_value(value: str) -> Any:
+    text = unfenced(value)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as original_error:
+        decoder = json.JSONDecoder()
+        for start, character in enumerate(text):
+            if character not in "[{":
+                continue
+            try:
+                parsed, _ = decoder.raw_decode(text[start:])
+            except json.JSONDecodeError:
+                continue
+            return parsed
+        raise original_error
+
+
+def score_quality_task(task: QualityTask, output: str) -> tuple[float, dict[str, float]]:
+    scored = strip_control_tokens(output)
+    check_scores: dict[str, float] = {}
+    for index, check in enumerate(task.checks):
+        kind = str(check["kind"])
+        value = check.get("value")
+        if kind == "exact":
+            passed = normalized_text(scored) == normalized_text(str(value))
+        elif kind == "contains":
+            passed = normalized_text(str(value)) in normalized_text(scored)
+        elif kind == "python-syntax":
+            try:
+                ast.parse(python_source(output))
+                passed = True
+            except SyntaxError:
+                passed = False
+        elif kind == "json-valid":
+            try:
+                parse_json_value(output)
+                passed = True
+            except (json.JSONDecodeError, ValueError):
+                passed = False
+        elif kind == "json-equals":
+            try:
+                passed = parse_json_value(output) == value
+            except (json.JSONDecodeError, ValueError):
+                passed = False
+        elif kind == "json-keys":
+            try:
+                parsed = parse_json_value(output)
+                passed = (
+                    isinstance(parsed, dict)
+                    and isinstance(value, list)
+                    and all(key in parsed for key in value)
+                )
+            except (json.JSONDecodeError, ValueError):
+                passed = False
+        else:  # pragma: no cover - load_quality_tasks rejects unsupported checks.
+            raise AssertionError(f"unsupported quality check: {kind}")
+        check_scores[f"{kind}:{index}"] = float(passed)
+    return sum(check_scores.values()) / len(check_scores), check_scores
+
+
 def model_for_engine(
     model: ModelSpec,
     engine: str,
@@ -213,6 +433,37 @@ def model_identity(model: ModelSpec) -> dict[str, Any]:
         "safetensors_files": len(weights),
         "safetensors_bytes": sum(path.stat().st_size for path in weights),
     }
+
+
+def omlx_base_path(model: ModelSpec) -> Path:
+    return model.path.parent.parent / ".omlx-benchmark-state"
+
+
+def configure_omlx_mtp(model: ModelSpec, *, depth: int = 3) -> Path:
+    """Persist oMLX's per-model Lightning-MTP toggle in its isolated state."""
+    base_path = omlx_base_path(model)
+    settings_path = base_path / "model_settings.json"
+    if settings_path.is_file():
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+    else:
+        data = {}
+    data.setdefault("version", 1)
+    models = data.setdefault("models", {})
+    current = models.setdefault(model.path.name, {})
+    current.update(
+        {
+            "dflash_enabled": False,
+            "mtp_enabled": True,
+            "mtp_num_draft_tokens": depth,
+            "vlm_mtp_enabled": False,
+        }
+    )
+    base_path.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return settings_path
 
 
 def deterministic_prompt(target: int, rep: int) -> tuple[int, str]:
@@ -274,6 +525,8 @@ def engine_command(
     *,
     model: ModelSpec,
     port: int,
+    mlxcel_draft_model: Path | None = None,
+    mtplx_force_unverified: bool = False,
 ) -> list[str]:
     common = ["--host", "127.0.0.1", "--port", str(port)]
     if engine.key == "ax-engine":
@@ -291,12 +544,25 @@ def engine_command(
             "1",
         ]
     if engine.key == "mlxcel":
+        speculative = (
+            []
+            if mlxcel_draft_model is None
+            else [
+                "--model-draft",
+                str(mlxcel_draft_model),
+                "--draft-kind",
+                "mtp",
+                "--draft-block-size",
+                "3",
+            ]
+        )
         return [
             str(engine.binary),
             "-m",
             str(model.path),
             "--alias",
             "local",
+            *speculative,
             *common,
             "--parallel",
             "1",
@@ -304,6 +570,7 @@ def engine_command(
             "1",
             "--ctx-size",
             "65536",
+            "--no-prompt-cache",
         ]
     if engine.key == "omlx":
         return [
@@ -318,9 +585,12 @@ def engine_command(
             "off",
             "--no-cache",
             "--base-path",
-            str(model.path.parent.parent / ".omlx-benchmark-state"),
+            str(omlx_base_path(model)),
         ]
     if engine.key == "mtplx":
+        admission_override = (
+            ["--unsafe-force-unverified", "--yes"] if mtplx_force_unverified else []
+        )
         return [
             str(engine.binary),
             "serve",
@@ -335,6 +605,7 @@ def engine_command(
             "--depth",
             "3",
             "--mtp",
+            *admission_override,
             "--scheduler-mode",
             "serial",
             "--max-active-requests",
@@ -429,6 +700,7 @@ def run_request(
     generation_tokens: int,
     timeout_s: float,
     model_id: str = "local",
+    capture_text: bool = False,
 ) -> dict[str, Any]:
     body = json.dumps(
         {
@@ -460,6 +732,9 @@ def run_request(
     done = False
     visible_chars = 0
     visible_parts: list[str] = []
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    runtime_stats: dict[str, Any] = {}
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
         if not 200 <= response.status < 300:
             raise RuntimeError(f"chat request returned HTTP {response.status}")
@@ -470,6 +745,13 @@ def run_request(
             error = payload.get("error")
             if error is not None:
                 raise RuntimeError(f"server stream error: {json.dumps(error, sort_keys=True)}")
+            # MTPLX publishes its effective route and speculation counters on
+            # the terminal stream frame.  Preserve that evidence in the raw
+            # artifact instead of silently discarding it; effective depth and
+            # acceptance must be audited independently from requested flags.
+            mtplx_stats = payload.get("mtplx_stats")
+            if isinstance(mtplx_stats, dict):
+                runtime_stats["mtplx_stats"] = mtplx_stats
             usage = payload.get("usage")
             if isinstance(usage, dict):
                 if isinstance(usage.get("prompt_tokens"), int):
@@ -493,6 +775,10 @@ def run_request(
                     if isinstance(value, str) and value:
                         visible_chars += len(value)
                         visible_parts.append(value)
+                        if key == "content":
+                            content_parts.append(value)
+                        else:
+                            reasoning_parts.append(value)
                         emitted = True
             if emitted:
                 first_chunk_s = elapsed_s if first_chunk_s is None else first_chunk_s
@@ -509,7 +795,7 @@ def run_request(
         (completion_tokens - 1) / decode_s if completion_tokens > 1 and decode_s > 0 else None
     )
     visible_text = "".join(visible_parts)
-    return {
+    result = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "ttft_s": first_chunk_s,
@@ -521,6 +807,52 @@ def run_request(
         "text_sha256": hashlib.sha256(visible_text.encode()).hexdigest(),
         "finish_reason": finish_reason,
     }
+    if capture_text:
+        content = "".join(content_parts)
+        reasoning = "".join(reasoning_parts)
+        result.update(
+            {
+                "content": content,
+                "reasoning_content": reasoning,
+                "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+                "reasoning_sha256": hashlib.sha256(reasoning.encode()).hexdigest(),
+            }
+        )
+    result.update(runtime_stats)
+    return result
+
+
+def parse_unlabelled_prometheus_metrics(text: str) -> dict[str, float]:
+    """Parse only aggregate, unlabelled samples from AX's metrics endpoint."""
+    values: dict[str, float] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) != 2 or "{" in fields[0]:
+            continue
+        try:
+            values[fields[0]] = float(fields[1])
+        except ValueError:
+            continue
+    return values
+
+
+def fetch_ax_metrics(port: int, timeout_s: float = 5.0) -> dict[str, float]:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=timeout_s) as response:
+        body = response.read().decode("utf-8", errors="replace")
+    available = parse_unlabelled_prometheus_metrics(body)
+    selected = (*AX_COUNTER_METRICS, *AX_GAUGE_METRICS)
+    return {name: available[name] for name in selected if name in available}
+
+
+def ax_metric_delta(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
+    delta = {
+        name: after[name] - before.get(name, 0.0) for name in AX_COUNTER_METRICS if name in after
+    }
+    delta.update({name: after[name] for name in AX_GAUGE_METRICS if name in after})
+    return delta
 
 
 def median(values: Iterable[float | int | None]) -> float | None:
@@ -563,6 +895,66 @@ def summarize_measurements(measurements: list[dict[str, Any]]) -> list[dict[str,
                 "prefill_tps": median(row["prefill_tps"] for row in selected),
                 "decode_tps": median(row["decode_tps"] for row in selected),
                 "reps": len(selected),
+            }
+        )
+    return rows
+
+
+def summarize_quality_measurements(
+    measurements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    keys = sorted(
+        {(str(row["engine"]), str(row["model"]), str(row["profile"])) for row in measurements}
+    )
+    rows: list[dict[str, Any]] = []
+    for engine, model, profile in keys:
+        selected = [
+            row
+            for row in measurements
+            if row["engine"] == engine and row["model"] == model and row["profile"] == profile
+        ]
+        task_ids = sorted({str(row["task_id"]) for row in selected})
+        content_hashes = {
+            task_id: sorted(
+                {str(row["content_sha256"]) for row in selected if row["task_id"] == task_id}
+            )
+            for task_id in task_ids
+        }
+        rows.append(
+            {
+                "engine": engine,
+                "model": model,
+                "profile": profile,
+                "tasks": len(task_ids),
+                "measurements": len(selected),
+                "score": sum(float(row["score"]) for row in selected) / len(selected),
+                "pass_rate": sum(bool(row["passed"]) for row in selected) / len(selected),
+                "all_pass": all(bool(row["passed"]) for row in selected),
+                "deterministic_across_repetitions": all(
+                    len(content_hashes[task_id]) == 1 for task_id in task_ids
+                ),
+            }
+        )
+    return rows
+
+
+def summarize_quality_consensus(
+    measurements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    keys = sorted({(str(row["model"]), str(row["task_id"])) for row in measurements})
+    rows: list[dict[str, Any]] = []
+    for model, task_id in keys:
+        selected = [
+            row for row in measurements if row["model"] == model and row["task_id"] == task_id
+        ]
+        rows.append(
+            {
+                "model": model,
+                "task_id": task_id,
+                "profile": selected[0]["profile"],
+                "all_runtimes_pass": all(bool(row["passed"]) for row in selected),
+                "exact_output_match": len({str(row["content_sha256"]) for row in selected}) == 1,
+                "distinct_outputs": len({str(row["content_sha256"]) for row in selected}),
             }
         )
     return rows
@@ -622,6 +1014,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     model_overrides = {
         (override.engine, override.label): override.path for override in args.engine_model
     }
+    quality_tasks = (
+        load_quality_tasks(args.quality_dataset) if args.quality_dataset is not None else ()
+    )
+    if args.omlx_mtp:
+        for model in args.model:
+            configure_omlx_mtp(model_for_engine(model, "omlx", model_overrides))
 
     runner = runner_identity()
     binary_identities = {
@@ -644,6 +1042,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     log_dir = (args.log_dir or output.parent / "logs").resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
     measurements: list[dict[str, Any]] = []
+    quality_measurements: list[dict[str, Any]] = []
     process_audit: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     started_at = utc_now()
@@ -654,12 +1053,25 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             for engine_key in engine_order(model_index, rep, tuple(engines)):
                 engine = engines[engine_key]
                 runtime_model = model_for_engine(model, engine_key, model_overrides)
-                command = engine_command(engine, model=runtime_model, port=args.port)
+                command = engine_command(
+                    engine,
+                    model=runtime_model,
+                    port=args.port,
+                    mlxcel_draft_model=args.mlxcel_draft_model,
+                    mtplx_force_unverified=args.mtplx_force_unverified,
+                )
                 api_model_id = runtime_model.path.name if engine_key == "omlx" else "local"
                 log_path = log_dir / f"{model_index:02d}-{model.label}-{rep}-{engine_key}.log"
                 environment = os.environ.copy()
                 if engine_key == "ax-engine":
                     environment["AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY"] = "1"
+                    # Peers are started with their request/prefix caches off.
+                    # Disable both AX cache layers too: core retained-prefix
+                    # reuse and the MLX runner's portable snapshot cache.
+                    environment["AX_ENGINE_PREFIX_REUSE_DISABLED"] = "1"
+                    environment["AX_MLX_PREFIX_CACHE_MAX_BYTES"] = "0"
+                    environment["AX_MLX_PREFIX_CACHE_MAX_ENTRIES"] = "0"
+                    environment["AX_MLX_PREFIX_CACHE_DISK_DISABLED"] = "1"
                     if not args.ax_speculative:
                         environment["AX_NO_SPEC"] = "1"
                     if args.ax_force_mtp:
@@ -667,9 +1079,22 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     if args.ax_projected_replay:
                         environment["AX_MLX_MTP_LINEAR_PROJECTED_REPLAY"] = "1"
                     if args.ax_relaxed_verify:
-                        environment["AX_MLX_QWEN_LINEAR_MTP_EXACT"] = "0"
+                        # Keep the exact Qwen MTP drafter active while routing
+                        # only the target verifier through the stock/oMLX-style
+                        # multi-row arithmetic.  Clearing the exact profile here
+                        # bypassed both the intended hybrid policy and the
+                        # verifier-only QMM kernels, understating AX decode.
+                        environment["AX_MLX_QWEN_LINEAR_MTP_EXACT"] = "1"
+                        environment["AX_MLX_MTP_RELAXED_TARGET_VERIFY"] = "1"
                 elif engine_key == "mtplx":
                     environment["MTPLX_STREAM_COALESCE"] = "0"
+                elif engine_key == "mlxcel" and args.mlxcel_relaxed_verify:
+                    # MLXcel's M5 exactness probe rejects Qwen's multi-row
+                    # verifier even after its qmv_wide fallback.  oMLX and the
+                    # admitted AX profile use the same target-verified,
+                    # singleton-non-bit-exact arithmetic class, so opt into
+                    # MLXcel's equivalent route for the matched comparison.
+                    environment["MLXCEL_MTP_ALLOW_INEXACT"] = "1"
                 launched_at = utc_now()
                 with log_path.open("wb") as log:
                     process = subprocess.Popen(
@@ -706,6 +1131,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                             seed, prompt = deterministic_prompt(prompt_target, rep)
                             measured_at = utc_now()
                             try:
+                                ax_metrics_before = (
+                                    fetch_ax_metrics(args.port) if engine_key == "ax-engine" else {}
+                                )
                                 observed = run_request(
                                     port=args.port,
                                     prompt=prompt,
@@ -714,10 +1142,15 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                     timeout_s=args.timeout,
                                     model_id=api_model_id,
                                 )
+                                if engine_key == "ax-engine":
+                                    observed["ax_metrics"] = ax_metric_delta(
+                                        ax_metrics_before, fetch_ax_metrics(args.port)
+                                    )
                                 require_complete_generation(observed, args.generation_tokens)
                             except Exception as exc:  # noqa: BLE001 - preserve failed evidence.
                                 errors.append(
                                     {
+                                        "kind": "performance",
                                         "engine": engine_key,
                                         "model": model.label,
                                         "prompt_target": prompt_target,
@@ -739,9 +1172,68 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                     **observed,
                                 }
                             )
+                        for task_index, task in enumerate(quality_tasks):
+                            seed = args.quality_seed + task_index
+                            measured_at = utc_now()
+                            try:
+                                ax_metrics_before = (
+                                    fetch_ax_metrics(args.port) if engine_key == "ax-engine" else {}
+                                )
+                                observed = run_request(
+                                    port=args.port,
+                                    prompt=task.prompt,
+                                    seed=seed,
+                                    generation_tokens=task.max_tokens,
+                                    timeout_s=args.timeout,
+                                    model_id=api_model_id,
+                                    capture_text=True,
+                                )
+                                if engine_key == "ax-engine":
+                                    observed["ax_metrics"] = ax_metric_delta(
+                                        ax_metrics_before, fetch_ax_metrics(args.port)
+                                    )
+                                score, check_scores = score_quality_task(
+                                    task, str(observed["content"])
+                                )
+                            except Exception as exc:  # noqa: BLE001 - preserve failed evidence.
+                                errors.append(
+                                    {
+                                        "kind": "quality",
+                                        "engine": engine_key,
+                                        "model": model.label,
+                                        "task_id": task.task_id,
+                                        "profile": task.profile,
+                                        "rep": rep,
+                                        "seed": seed,
+                                        "error": str(exc),
+                                    }
+                                )
+                                continue
+                            quality_measurements.append(
+                                {
+                                    "engine": engine_key,
+                                    "model": model.label,
+                                    "model_dir": str(runtime_model.path),
+                                    "task_id": task.task_id,
+                                    "profile": task.profile,
+                                    "category": task.category,
+                                    "rep": rep,
+                                    "seed": seed,
+                                    "measured_at": measured_at,
+                                    "prompt_sha256": hashlib.sha256(
+                                        task.prompt.encode()
+                                    ).hexdigest(),
+                                    "checks": list(task.checks),
+                                    "check_scores": check_scores,
+                                    "score": score,
+                                    "passed": all(value == 1.0 for value in check_scores.values()),
+                                    **observed,
+                                }
+                            )
                     except Exception as exc:  # noqa: BLE001 - preserve failed process evidence.
                         errors.append(
                             {
+                                "kind": "process",
                                 "engine": engine_key,
                                 "model": model.label,
                                 "rep": rep,
@@ -757,7 +1249,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     time.sleep(args.cooldown)
 
     expected = len(args.model) * len(args.prompt_targets) * args.repetitions * len(engines)
-    status = "complete" if not errors and len(measurements) == expected else "incomplete"
+    expected_quality = len(args.model) * len(quality_tasks) * args.repetitions * len(engines)
+    status = (
+        "complete"
+        if not errors
+        and len(measurements) == expected
+        and len(quality_measurements) == expected_quality
+        else "incomplete"
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "status": status,
@@ -778,10 +1277,30 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "engine_versions": {
                 key: binary_version(engine.binary) for key, engine in engines.items()
             },
+            "mlxcel_draft_model": (
+                str(args.mlxcel_draft_model.resolve())
+                if args.mlxcel_draft_model is not None
+                else None
+            ),
+            "mlxcel_relaxed_verify": bool(args.mlxcel_relaxed_verify),
+            "mtplx_force_unverified": bool(args.mtplx_force_unverified),
+            "omlx_mtp": bool(args.omlx_mtp),
             "ax_speculative": bool(args.ax_speculative),
             "ax_force_mtp": bool(args.ax_force_mtp),
             "ax_projected_replay": bool(args.ax_projected_replay),
             "ax_relaxed_verify": bool(args.ax_relaxed_verify),
+            "quality": (
+                {
+                    "dataset": str(args.quality_dataset.resolve()),
+                    "dataset_sha256": file_sha256(args.quality_dataset.resolve()),
+                    "profiles": sorted({task.profile for task in quality_tasks}),
+                    "tasks": [task.task_id for task in quality_tasks],
+                    "seed": args.quality_seed,
+                    "raw_outputs_retained": True,
+                }
+                if args.quality_dataset is not None
+                else None
+            ),
             "methodology": {
                 "endpoint": "/v1/chat/completions",
                 "streaming": True,
@@ -794,6 +1313,10 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "cache_policy": "fresh server process per engine/model/repetition",
                 "engine_order": "rotated by model index and repetition",
                 "prompt_policy": "deterministic nominal word count; same text and seed per engine",
+                "quality_policy": (
+                    "AXQuant-style objective checks; same prompt, greedy controls, and seed per "
+                    "engine; quality requests run after timed throughput requests"
+                ),
             },
         },
         "host": {
@@ -804,9 +1327,26 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "runner": runner,
         "models": model_identities,
         "engine_models": engine_model_identities,
+        "mlxcel_draft_model": (
+            model_identity(ModelSpec("qwen-mtp-drafter", args.mlxcel_draft_model.resolve()))
+            if args.mlxcel_draft_model is not None
+            else None
+        ),
         "expected_measurements": expected,
         "measurements": measurements,
         "results": summarize_measurements(measurements),
+        "expected_quality_measurements": expected_quality,
+        "quality_measurements": quality_measurements,
+        "quality_results": summarize_quality_measurements(quality_measurements),
+        "quality_consensus": summarize_quality_consensus(quality_measurements),
+        "quality_gate_pass": (
+            (
+                len(quality_measurements) == expected_quality
+                and all(bool(row["passed"]) for row in quality_measurements)
+            )
+            if quality_tasks
+            else None
+        ),
         "process_audit": process_audit,
         "errors": errors,
     }
@@ -833,8 +1373,40 @@ def main() -> int:
     )
     parser.add_argument("--ax-server", type=Path, required=True)
     parser.add_argument("--mlxcel-server", type=Path)
+    parser.add_argument(
+        "--mlxcel-draft-model",
+        type=Path,
+        help=(
+            "Qwen MTP drafter directory for MLXcel; enables --draft-kind mtp "
+            "with a three-position verify block."
+        ),
+    )
+    parser.add_argument(
+        "--mlxcel-relaxed-verify",
+        action="store_true",
+        help=(
+            "Set MLXCEL_MTP_ALLOW_INEXACT=1 so its target-verified Qwen MTP "
+            "route may use multi-row arithmetic not bit-identical to singleton decode."
+        ),
+    )
     parser.add_argument("--omlx-server", type=Path)
+    parser.add_argument(
+        "--omlx-mtp",
+        action="store_true",
+        help=(
+            "Enable oMLX Lightning MTP at depth 3 in the benchmark's isolated "
+            "per-model settings store."
+        ),
+    )
     parser.add_argument("--mtplx-server", type=Path)
+    parser.add_argument(
+        "--mtplx-force-unverified",
+        action="store_true",
+        help=(
+            "Pass MTPLX's explicit --unsafe-force-unverified --yes admission override; "
+            "the raw command is retained in the benchmark artifact."
+        ),
+    )
     parser.add_argument(
         "--ax-speculative",
         action="store_true",
@@ -866,6 +1438,15 @@ def main() -> int:
         type=lambda value: parse_csv_ints(value, field="prompt targets"),
         default=DEFAULT_PROMPT_TARGETS,
     )
+    parser.add_argument(
+        "--quality-dataset",
+        type=Path,
+        help=(
+            "Optional JSONL suite containing both general and agent-coding tasks with "
+            "AXQuant-style objective checks."
+        ),
+    )
+    parser.add_argument("--quality-seed", type=int, default=DEFAULT_QUALITY_SEED)
     parser.add_argument("--generation-tokens", type=int, default=DEFAULT_GENERATION_TOKENS)
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
     parser.add_argument("--warmup-tokens", type=int, default=32)
@@ -878,12 +1459,29 @@ def main() -> int:
     args = parser.parse_args()
     if args.generation_tokens <= 0 or args.repetitions <= 0:
         parser.error("--generation-tokens and --repetitions must be positive")
+    if args.quality_seed < 0:
+        parser.error("--quality-seed must be non-negative")
+    if args.quality_dataset is not None and not args.quality_dataset.is_file():
+        parser.error("--quality-dataset must be a JSONL file")
     if args.ax_force_mtp and not args.ax_speculative:
         parser.error("--ax-force-mtp requires --ax-speculative")
     if args.ax_projected_replay and not args.ax_force_mtp:
         parser.error("AX MTP optimization flags require --ax-force-mtp")
     if args.ax_relaxed_verify and not args.ax_projected_replay:
         parser.error("--ax-relaxed-verify requires --ax-projected-replay")
+    if args.mlxcel_draft_model is not None:
+        if args.mlxcel_server is None:
+            parser.error("--mlxcel-draft-model requires --mlxcel-server")
+        if not args.mlxcel_draft_model.is_dir():
+            parser.error("--mlxcel-draft-model must be a model directory")
+        if not (args.mlxcel_draft_model / "config.json").is_file():
+            parser.error("--mlxcel-draft-model directory has no config.json")
+    if args.mlxcel_relaxed_verify and args.mlxcel_draft_model is None:
+        parser.error("--mlxcel-relaxed-verify requires --mlxcel-draft-model")
+    if args.mtplx_force_unverified and args.mtplx_server is None:
+        parser.error("--mtplx-force-unverified requires --mtplx-server")
+    if args.omlx_mtp and args.omlx_server is None:
+        parser.error("--omlx-mtp requires --omlx-server")
     if args.warmup_tokens < 0 or args.cooldown < 0:
         parser.error("--warmup-tokens and --cooldown must be non-negative")
     if args.timeout <= 0 or args.startup_timeout <= 0:

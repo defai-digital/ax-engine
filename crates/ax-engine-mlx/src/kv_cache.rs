@@ -1141,6 +1141,14 @@ struct LinearLayerState {
     mtp_a: Option<MlxArray>,
     /// Projected gated-delta `b` input retained only for an in-flight verify.
     mtp_b: Option<MlxArray>,
+    /// Normalized verifier Q rows retained for accepted-prefix replay.
+    mtp_q: Option<MlxArray>,
+    /// Normalized verifier K rows retained for accepted-prefix replay.
+    mtp_k: Option<MlxArray>,
+    /// Convolved verifier V rows retained for accepted-prefix replay.
+    mtp_v: Option<MlxArray>,
+    /// Compact float32 gated-delta replay tape for a whole-model verifier.
+    mtp_tape: Option<MlxArray>,
 }
 
 /// Destructor compatible with [`MlxArray::from_managed_data`]. Recovers
@@ -1413,6 +1421,10 @@ impl Clone for MlxKVCache {
             state.mtp_qkv = None;
             state.mtp_a = None;
             state.mtp_b = None;
+            state.mtp_q = None;
+            state.mtp_k = None;
+            state.mtp_v = None;
+            state.mtp_tape = None;
         }
         Self {
             layers: self.layers.clone(),
@@ -2558,6 +2570,10 @@ impl MlxKVCache {
                         mtp_qkv: None,
                         mtp_a: None,
                         mtp_b: None,
+                        mtp_q: None,
+                        mtp_k: None,
+                        mtp_v: None,
+                        mtp_tape: None,
                     };
                 }
                 other => return Err(MlxKVCacheSerializeError::UnknownLayerKind(other)),
@@ -4367,6 +4383,52 @@ impl MlxKVCache {
         }
     }
 
+    /// Prepare one dense, fixed-shape full-attention backing pair for the
+    /// whole-model verifier and return cloned array handles.
+    ///
+    /// The compiled verifier threads the complete backing buffers through a
+    /// dynamic `slice_update`; logical length stays in an explicit tensor
+    /// input. Paged storage is materialized once on the speculative branch,
+    /// and unsupported quantized/ring layouts fail closed.
+    pub(crate) fn prepare_whole_verify_layer_kv(
+        &mut self,
+        layer: usize,
+        min_capacity: usize,
+    ) -> Option<(MlxArray, MlxArray)> {
+        if matches!(self.layers.get(layer)?, Some(FaLayerStorage::Paged(_))) {
+            self.demote_paged_layer_to_contiguous(layer, self.seq_len);
+        }
+        let (k, v, grew) = {
+            let entry = self.layers.get_mut(layer)?.as_mut()?;
+            let FaLayerStorage::Contiguous(lkv) = entry else {
+                return None;
+            };
+            if lkv.rotating_window.is_some() || lkv.protected_prefix_ring.is_some() {
+                return None;
+            }
+            let grew = lkv.capacity < min_capacity;
+            if grew {
+                let new_capacity = chunk_ceiling(min_capacity);
+                let shape = [1, lkv.n_kv_heads, new_capacity as i32, lkv.head_dim];
+                let k_new = zeros(&shape, lkv.dtype, None);
+                let v_new = zeros(&shape, lkv.dtype, None);
+                let start = [0, 0, 0, 0];
+                let stop = [1, lkv.n_kv_heads, lkv.capacity as i32, lkv.head_dim];
+                let strides = [1, 1, 1, 1];
+                lkv.k = slice_update(&k_new, &lkv.k, &start, &stop, &strides, None);
+                lkv.v = slice_update(&v_new, &lkv.v, &start, &stop, &strides, None);
+                lkv.capacity = new_capacity;
+                lkv.last_k_view = None;
+                lkv.last_v_view = None;
+            }
+            (lkv.k.clone(), lkv.v.clone(), grew)
+        };
+        if grew {
+            self.growth_count = self.growth_count.saturating_add(1);
+        }
+        Some((k, v))
+    }
+
     /// Commit a pure compiled MTP draft closure's threaded K/V back into the
     /// cache as a tight logical buffer (`capacity == length`) and set `seq_len`.
     ///
@@ -4610,6 +4672,53 @@ impl MlxKVCache {
         (state.conv_state.as_ref(), state.recurrent_state.as_ref())
     }
 
+    /// Replace only contiguous full-attention storage from a speculative
+    /// branch while preserving this cache's logical length and linear state.
+    ///
+    /// A relaxed hybrid-Qwen verifier can safely retain its newly written K/V
+    /// backing on every acceptance outcome: rejected tail rows are outside the
+    /// source cache's unchanged logical boundary and the next append overwrites
+    /// them. Releasing the superseded source handles before `eval` also makes
+    /// MLX buffer donation possible instead of copying every capacity-sized K/V
+    /// buffer merely to preserve an already-obsolete rollback copy.
+    pub(crate) fn rebind_contiguous_attention_storage_from(&mut self, source: &Self) -> bool {
+        if self.layers.len() != source.layers.len()
+            || self.fa_pool.is_some()
+            || source.fa_pool.is_some()
+            || self.glm_mla_layers.iter().any(Option::is_some)
+            || source.glm_mla_layers.iter().any(Option::is_some)
+            || self.deepseek_v4_layers.iter().any(Option::is_some)
+            || source.deepseek_v4_layers.iter().any(Option::is_some)
+        {
+            return false;
+        }
+        let compatible =
+            self.layers
+                .iter()
+                .zip(&source.layers)
+                .all(|(current, replacement)| match (current, replacement) {
+                    (None, None) => true,
+                    (
+                        Some(FaLayerStorage::Contiguous(current)),
+                        Some(FaLayerStorage::Contiguous(replacement)),
+                    ) => {
+                        current.n_kv_heads == replacement.n_kv_heads
+                            && current.head_dim == replacement.head_dim
+                            && current.dtype == replacement.dtype
+                            && current.rotating_window.is_none()
+                            && current.protected_prefix_ring.is_none()
+                            && replacement.rotating_window.is_none()
+                            && replacement.protected_prefix_ring.is_none()
+                    }
+                    _ => false,
+                });
+        if !compatible {
+            return false;
+        }
+        self.layers.clone_from(&source.layers);
+        true
+    }
+
     /// Store the gated-delta states for a Qwen3.5 linear-attention layer.
     pub fn set_linear_state(
         &mut self,
@@ -4639,6 +4748,10 @@ impl MlxKVCache {
             state.mtp_qkv = None;
             state.mtp_a = None;
             state.mtp_b = None;
+            state.mtp_q = None;
+            state.mtp_k = None;
+            state.mtp_v = None;
+            state.mtp_tape = None;
         }
         self.linear_prefix_capture_after = Some(after_tokens);
     }
@@ -4691,6 +4804,42 @@ impl MlxKVCache {
         state.mtp_qkv = Some(qkv);
         state.mtp_a = Some(a);
         state.mtp_b = Some(b);
+        state.mtp_q = None;
+        state.mtp_k = None;
+        state.mtp_v = None;
+        state.mtp_tape = None;
+    }
+
+    /// Retain post-convolution Q/K/V rows that the verifier recurrence has
+    /// already consumed. Rejection replay can slice these materialized arrays
+    /// instead of rebuilding convolution and Q/K normalization.
+    pub(crate) fn set_linear_mtp_processed_stash(
+        &mut self,
+        layer: usize,
+        q: MlxArray,
+        k: MlxArray,
+        v: MlxArray,
+    ) {
+        assert!(
+            self.linear_prefix_capture_after.is_some(),
+            "linear MTP processed stash requires an active capture"
+        );
+        let state = &mut self.linear_layers[layer];
+        state.mtp_q = Some(q);
+        state.mtp_k = Some(k);
+        state.mtp_v = Some(v);
+    }
+
+    pub(crate) fn linear_mtp_processed_stash(
+        &self,
+        layer: usize,
+    ) -> Option<(MlxArray, MlxArray, MlxArray)> {
+        let state = self.linear_layers.get(layer)?;
+        Some((
+            state.mtp_q.as_ref()?.clone(),
+            state.mtp_k.as_ref()?.clone(),
+            state.mtp_v.as_ref()?.clone(),
+        ))
     }
 
     /// Clone the transient verify projections so a replay can mutate the
@@ -4704,6 +4853,42 @@ impl MlxKVCache {
             state.mtp_qkv.as_ref()?.clone(),
             state.mtp_a.as_ref()?.clone(),
             state.mtp_b.as_ref()?.clone(),
+        ))
+    }
+
+    /// Retain the whole-verifier replay leaves. `qkv` rebuilds the accepted
+    /// convolution state and normalized K; `a` rebuilds decay; `tape` carries
+    /// the already-computed per-token delta.
+    pub(crate) fn set_linear_mtp_tape_stash(
+        &mut self,
+        layer: usize,
+        qkv: MlxArray,
+        a: MlxArray,
+        tape: MlxArray,
+    ) {
+        assert!(
+            self.linear_prefix_capture_after.is_some(),
+            "linear MTP tape stash requires an active capture"
+        );
+        let state = &mut self.linear_layers[layer];
+        state.mtp_qkv = Some(qkv);
+        state.mtp_a = Some(a);
+        state.mtp_b = None;
+        state.mtp_q = None;
+        state.mtp_k = None;
+        state.mtp_v = None;
+        state.mtp_tape = Some(tape);
+    }
+
+    pub(crate) fn linear_mtp_tape_stash(
+        &self,
+        layer: usize,
+    ) -> Option<(MlxArray, MlxArray, MlxArray)> {
+        let state = self.linear_layers.get(layer)?;
+        Some((
+            state.mtp_qkv.as_ref()?.clone(),
+            state.mtp_a.as_ref()?.clone(),
+            state.mtp_tape.as_ref()?.clone(),
         ))
     }
 
@@ -4730,6 +4915,10 @@ impl MlxKVCache {
             state.mtp_qkv = None;
             state.mtp_a = None;
             state.mtp_b = None;
+            state.mtp_q = None;
+            state.mtp_k = None;
+            state.mtp_v = None;
+            state.mtp_tape = None;
         }
         self.linear_prefix_capture_after = None;
         true
@@ -4743,6 +4932,10 @@ impl MlxKVCache {
             state.mtp_qkv = None;
             state.mtp_a = None;
             state.mtp_b = None;
+            state.mtp_q = None;
+            state.mtp_k = None;
+            state.mtp_v = None;
+            state.mtp_tape = None;
         }
         self.linear_prefix_capture_after = None;
     }
@@ -5190,13 +5383,59 @@ mod tests {
             zeros(&[1, 3, 2], MlxDtype::Bfloat16, None),
             zeros(&[1, 3, 2], MlxDtype::Bfloat16, None),
         );
+        cache.set_linear_mtp_processed_stash(
+            0,
+            zeros(&[1, 3, 1, 4], MlxDtype::Bfloat16, None),
+            zeros(&[1, 3, 1, 4], MlxDtype::Bfloat16, None),
+            zeros(&[1, 3, 2, 4], MlxDtype::Bfloat16, None),
+        );
         assert!(cache.linear_mtp_projection_stash(0).is_some());
+        assert!(cache.linear_mtp_processed_stash(0).is_some());
 
         let branch = cache.clone();
         assert!(branch.linear_mtp_projection_stash(0).is_none());
+        assert!(branch.linear_mtp_processed_stash(0).is_none());
 
         cache.clear_linear_prefix_checkpoint();
         assert!(cache.linear_mtp_projection_stash(0).is_none());
+        assert!(cache.linear_mtp_processed_stash(0).is_none());
+    }
+
+    #[test]
+    fn linear_mtp_tape_stash_is_transient() {
+        let mut cache = MlxKVCache::new(1);
+        cache.begin_linear_prefix_capture(1);
+        cache.set_linear_mtp_tape_stash(
+            0,
+            zeros(&[1, 3, 8], MlxDtype::Bfloat16, None),
+            zeros(&[1, 3, 2], MlxDtype::Bfloat16, None),
+            zeros(&[1, 3, 2, 4], MlxDtype::Float32, None),
+        );
+        assert!(cache.linear_mtp_tape_stash(0).is_some());
+        assert!(cache.linear_mtp_projection_stash(0).is_none());
+
+        let branch = cache.clone();
+        assert!(branch.linear_mtp_tape_stash(0).is_none());
+
+        cache.clear_linear_prefix_checkpoint();
+        assert!(cache.linear_mtp_tape_stash(0).is_none());
+    }
+
+    #[test]
+    fn whole_verify_backing_reserves_capacity_without_advancing_length() {
+        let mut cache = MlxKVCache::new_contiguous(1);
+        let k = zeros(&[1, 2, 3, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 3, 4], MlxDtype::Bfloat16, None);
+        let _ = cache.append(0, k, v);
+        cache.advance(3);
+
+        let (backing_k, backing_v) = cache
+            .prepare_whole_verify_layer_kv(0, 300)
+            .expect("dense backing");
+        assert_eq!(backing_k.shape(), vec![1, 2, 512, 4]);
+        assert_eq!(backing_v.shape(), vec![1, 2, 512, 4]);
+        assert_eq!(cache.seq_len(), 3);
+        assert_eq!(contiguous_layer(&cache, 0).capacity, 512);
     }
 
     #[test]

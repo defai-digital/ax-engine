@@ -533,6 +533,21 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     // direct family and must appear here so support_tier / lookup stay honest
     // (Wave 0 DI-W0: convert `family_name=whisper` was previously registry-orphan).
     ArchitectureRegistration {
+        family_label: "minimax_m3",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "MiniMax M3 language MoE: GQA + sigmoid top-k + shared expert + SwiGLU-OAI; MSA indexer ignored for seq ≤ sparse block",
+        support_tier: ModelSupportTier::Experimental,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::MiniMaxM3,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
+    },
+    ArchitectureRegistration {
         family_label: "whisper",
         mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
@@ -787,6 +802,7 @@ mod tests {
             "llama3",
             "llama4",
             "minicpmv4_6",
+            "minimax_m3",
             "mistral3",
             "mixtral",
             "nemotron_embed",

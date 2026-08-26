@@ -28,9 +28,11 @@ use crate::batched_linear_state::BatchedLinearState;
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::{
-    gated_delta_kernel, gated_delta_kernel_with_prefix_checkpoint, linear_attention_conv1d,
-    linear_attention_decode_post_input_metal, normalize_linear_attention_qk,
-    rms_norm_gated_with_full_gate_policy, slice_seq_row_4d, split_linear_attention_qkv,
+    gated_delta_fused_verify_from_qkv, gated_delta_kernel, gated_delta_kernel_verify_no_checkpoint,
+    gated_delta_kernel_with_prefix_checkpoint, gated_delta_kernel_with_tape,
+    linear_attention_conv1d, linear_attention_decode_post_input_metal,
+    normalize_linear_attention_qk, replay_gated_delta_tape, rms_norm_gated_with_full_gate_policy,
+    slice_seq_row_4d, split_linear_attention_qkv,
 };
 use crate::weights::{
     LayerWeights, LinearAttentionWeights, QuantizedWeight, SHARED_VERIFY_COMPILE_LAYER,
@@ -145,6 +147,87 @@ fn initial_recurrent_state_zeros(linear_cfg: &LinearAttentionConfig) -> MlxArray
         let arr = zeros(&shape, MlxDtype::Float32, None);
         *slot = Some((dims, arr.clone()));
         arr
+    })
+}
+
+/// Functional state returned by one short Qwen target-verifier
+/// linear-attention layer.
+///
+/// The whole-verifier compiler cannot mutate [`MlxKVCache`] while tracing.
+/// Every recurrent/cache leaf therefore crosses the closure boundary as an
+/// explicit array. A compact delta tape and the projections needed to rebuild
+/// convolution/K are returned instead of a second full recurrent checkpoint.
+pub(crate) struct LinearAttentionVerifyOutput {
+    pub output: MlxArray,
+    pub conv_state: MlxArray,
+    pub recurrent_state: MlxArray,
+    pub qkv: MlxArray,
+    pub a: MlxArray,
+    pub tape: MlxArray,
+}
+
+/// Pure S=2..=4 counterpart of [`linear_attention_forward`].
+///
+/// This deliberately calls the same projection, fused conv/QK-normalization,
+/// gated-delta, portable gate, and output-projection helpers as the ordinary
+/// relaxed target verifier. It only replaces cache mutation with explicit
+/// state inputs/outputs, making the graph legal to enclose in `mlx_compile`.
+pub(crate) fn linear_attention_forward_verify_functional(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    layer_idx: usize,
+    conv_state: &MlxArray,
+    recurrent_state: &MlxArray,
+) -> Option<LinearAttentionVerifyOutput> {
+    let linear_cfg = cfg.linear_attention.as_ref()?;
+    let linear_w = w.linear_attn.as_ref()?;
+    let seq = x.shape().get(1).copied()?;
+    if !(2..=4).contains(&seq) {
+        return None;
+    }
+
+    let (qkv, z, a, b) = linear_attention_inputs(cfg, linear_cfg, linear_w, x, seq, false);
+    let (q, k, v, new_conv_state, _) =
+        linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, Some(conv_state), false);
+    let (out, new_recurrent_state, tape) = gated_delta_kernel_with_tape(
+        &q,
+        &k,
+        &v,
+        &linear_w.a_log,
+        &a,
+        &linear_w.dt_bias,
+        &b,
+        recurrent_state,
+    )?;
+    let value_dim = linear_cfg.value_dim() as i32;
+    let output = if let Some(fused) =
+        try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim)
+    {
+        fused
+    } else {
+        let gated = rms_norm_gated_with_full_gate_policy(
+            &out,
+            &z,
+            &linear_w.norm,
+            cfg.rms_norm_eps,
+            if fastpath::qwen_linear_mtp_exact_enabled() {
+                false
+            } else {
+                linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx)
+            },
+        );
+        let flat = reshape(&gated, &[1, seq, value_dim], None);
+        qw(&flat, &linear_w.out_proj)
+    };
+
+    Some(LinearAttentionVerifyOutput {
+        output,
+        conv_state: new_conv_state,
+        recurrent_state: new_recurrent_state,
+        qkv,
+        a,
+        tape,
     })
 }
 
@@ -288,13 +371,6 @@ fn linear_attention_forward_inner(
     let prefix_capture_after = cache
         .linear_prefix_capture_after()
         .filter(|after| *after < seq as usize);
-    let (q, k, v, new_conv_state, metal_prefix_conv) =
-        linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, conv_state, profile_enabled);
-    let prefix_conv_state = match (prefix_capture_after, metal_prefix_conv) {
-        (Some(1), Some(prefix)) => Some(prefix),
-        (Some(after), _) => linear_attention_conv_prefix_state(linear_cfg, &qkv, conv_state, after),
-        (None, _) => None,
-    };
     // `a_log` and `dt_bias` are pre-cast to f32 at weight-load time (see
     // `load_linear_attention_weights` in `weights.rs`). mlx_lm preserves A_log
     // as float32 and computes g in float32 precision; doing the cast per
@@ -307,10 +383,96 @@ fn linear_attention_forward_inner(
     let state = recurrent_state
         .cloned()
         .unwrap_or_else(|| initial_recurrent_state_zeros(linear_cfg));
-    // g and beta are computed inside the Metal kernel (fused) instead of as separate
-    // lazy MLX ops, eliminating ~8 kernel dispatches per layer.
-    let (out, new_recurrent_state, prefix_recurrent_state) =
-        if let Some(after) = prefix_capture_after {
+    // The short relaxed verifier can keep conv/QK intermediates in one Metal
+    // dispatch. It returns the same final and row-0 checkpoint state as the
+    // established two-kernel composition; every unsupported shape or kernel
+    // error falls through to that composition below.
+    let fused_verify = (prefix_capture_after == Some(1)
+        && !profile_enabled
+        && fastpath::qwen_linear_mtp_target_verify_enabled()
+        && fastpath::mtp_fused_gated_delta_verify_enabled()
+        && !fastpath::mtp_skip_prefix_checkpoint_enabled()
+        && !fastpath::mtp_linear_tape_capture_enabled())
+    .then(|| {
+        gated_delta_fused_verify_from_qkv(
+            linear_cfg,
+            &qkv,
+            &linear_w.conv1d_dense,
+            conv_state,
+            &a_log_f32,
+            &a,
+            &dt_bias_f32,
+            &b,
+            &state,
+            linear_cfg.q_scale,
+            linear_cfg.k_scale,
+            cfg.rms_norm_eps,
+        )
+    })
+    .flatten();
+
+    // g and beta are computed inside the Metal kernels instead of as separate
+    // lazy MLX ops, eliminating ~8 dispatches per layer.
+    let (
+        out,
+        new_conv_state,
+        new_recurrent_state,
+        prefix_conv_state,
+        prefix_recurrent_state,
+        mtp_tape,
+    ) = if let Some((out, new_state, prefix_state, new_conv, prefix_conv)) = fused_verify {
+        (
+            out,
+            new_conv,
+            new_state,
+            Some(prefix_conv),
+            Some(prefix_state),
+            None,
+        )
+    } else {
+        let (q, k, v, new_conv_state, metal_prefix_conv) = linear_attention_post_input(
+            cfg,
+            linear_cfg,
+            linear_w,
+            &qkv,
+            conv_state,
+            profile_enabled,
+        );
+        let prefix_conv_state = match (prefix_capture_after, metal_prefix_conv) {
+            (Some(1), Some(prefix)) => Some(prefix),
+            (Some(after), _) => {
+                linear_attention_conv_prefix_state(linear_cfg, &qkv, conv_state, after)
+            }
+            (None, _) => None,
+        };
+        let mut mtp_tape = None;
+        let (out, new_recurrent_state, prefix_recurrent_state) = if prefix_capture_after.is_some()
+            && fastpath::qwen_linear_mtp_target_verify_enabled()
+            && fastpath::mtp_skip_prefix_checkpoint_enabled()
+        {
+            let (out, new_state) = gated_delta_kernel_verify_no_checkpoint(
+                &q,
+                &k,
+                &v,
+                &a_log_f32,
+                &a,
+                &dt_bias_f32,
+                &b,
+                &state,
+            )
+            .unwrap_or_else(|| {
+                gated_delta_kernel(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state)
+            });
+            (out, new_state, None)
+        } else if prefix_capture_after.is_some()
+            && fastpath::qwen_linear_mtp_target_verify_enabled()
+            && fastpath::mtp_linear_tape_capture_enabled()
+            && let Some((out, new_state, tape)) =
+                gated_delta_kernel_with_tape(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state)
+        {
+            mtp_tape = Some(tape);
+            (out, new_state, None)
+        } else if let Some(after) = prefix_capture_after {
             let (out, new_state, prefix_state) = gated_delta_kernel_with_prefix_checkpoint(
                 &q,
                 &k,
@@ -328,6 +490,21 @@ fn linear_attention_forward_inner(
                 gated_delta_kernel(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
             (out, new_state, None)
         };
+        if prefix_capture_after.is_some()
+            && fastpath::qwen_linear_mtp_target_verify_enabled()
+            && fastpath::mtp_reuse_processed_gdn_enabled()
+        {
+            cache.set_linear_mtp_processed_stash(layer_idx, q.clone(), k.clone(), v.clone());
+        }
+        (
+            out,
+            new_conv_state,
+            new_recurrent_state,
+            prefix_conv_state,
+            prefix_recurrent_state,
+            mtp_tape,
+        )
+    };
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::Recurrent,
@@ -335,6 +512,9 @@ fn linear_attention_forward_inner(
         &[&out, &new_recurrent_state],
     );
     cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
+    if let Some(tape) = mtp_tape {
+        cache.set_linear_mtp_tape_stash(layer_idx, qkv.clone(), a.clone(), tape);
+    }
     if let (Some(conv_state), Some(recurrent_state)) = (prefix_conv_state, prefix_recurrent_state) {
         cache.set_linear_prefix_checkpoint(layer_idx, conv_state, recurrent_state);
     }
@@ -432,9 +612,47 @@ pub(crate) fn replay_linear_attention_mtp_prefix(
     let Ok(keep) = i32::try_from(keep) else {
         return false;
     };
+    if let Some((qkv, a, tape)) = verify_cache.linear_mtp_tape_stash(layer_idx) {
+        let Some(qkv) = mtp_projection_prefix(&qkv, keep) else {
+            return false;
+        };
+        let Some(a_prefix) = mtp_projection_prefix(&a, keep) else {
+            return false;
+        };
+        let Some(tape_prefix) = mtp_projection_prefix(&tape, keep) else {
+            return false;
+        };
+        let (source_conv, source_recurrent) = source_cache.linear_state(layer_idx);
+        let (_, k, _, new_conv_state, _) =
+            linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, source_conv, false);
+        let recurrent_state = source_recurrent
+            .cloned()
+            .unwrap_or_else(|| initial_recurrent_state_zeros(linear_cfg));
+        let Some(new_recurrent_state) = replay_gated_delta_tape(
+            &k,
+            &linear_w.a_log,
+            &a_prefix,
+            &linear_w.dt_bias,
+            &tape_prefix,
+            &recurrent_state,
+            keep as usize,
+        ) else {
+            return false;
+        };
+        verify_cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
+        return true;
+    }
+
     let Some((qkv, a, b)) = verify_cache.linear_mtp_projection_stash(layer_idx) else {
         return false;
     };
+    let processed = fastpath::mtp_reuse_processed_gdn_enabled()
+        .then(|| verify_cache.linear_mtp_processed_stash(layer_idx))
+        .flatten();
+    let (source_conv, source_recurrent) = source_cache.linear_state(layer_idx);
+    let reused_conv_state = processed.as_ref().and_then(|_| {
+        linear_attention_conv_prefix_state(linear_cfg, &qkv, source_conv, keep as usize)
+    });
     let Some(qkv) = mtp_projection_prefix(&qkv, keep) else {
         return false;
     };
@@ -445,7 +663,30 @@ pub(crate) fn replay_linear_attention_mtp_prefix(
         return false;
     };
 
-    let (source_conv, source_recurrent) = source_cache.linear_state(layer_idx);
+    if let (Some((q, k, v)), Some(new_conv_state)) = (processed, reused_conv_state)
+        && let (Some(q), Some(k), Some(v)) = (
+            mtp_projection_prefix(&q, keep),
+            mtp_projection_prefix(&k, keep),
+            mtp_projection_prefix(&v, keep),
+        )
+    {
+        let recurrent_state = source_recurrent
+            .cloned()
+            .unwrap_or_else(|| initial_recurrent_state_zeros(linear_cfg));
+        let (_, new_recurrent_state) = gated_delta_kernel(
+            &q,
+            &k,
+            &v,
+            &linear_w.a_log,
+            &a,
+            &linear_w.dt_bias,
+            &b,
+            &recurrent_state,
+        );
+        verify_cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
+        return true;
+    }
+
     let (q, k, v, new_conv_state, _) =
         linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, source_conv, false);
     let recurrent_state = source_recurrent
@@ -816,7 +1057,7 @@ fn linear_attention_post_input(
     };
     let qkv = qkv_storage.as_ref().unwrap_or(qkv);
     let speculative_multi_token =
-        (2..=4).contains(&seq) && fastpath::qwen_linear_mtp_exact_enabled();
+        (2..=4).contains(&seq) && fastpath::qwen_linear_mtp_verify_fast_kernels_enabled();
     let prefill_metal = seq > 1
         && seq <= crate::linear_attention_ops::GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32
         && fastpath::qwen_linear_attention_prefill_post_input_metal_enabled();

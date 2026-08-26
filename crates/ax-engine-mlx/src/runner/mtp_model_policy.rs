@@ -42,7 +42,9 @@ pub(super) fn qwen_linear_mtp_certification_candidate_from_env() -> bool {
 /// `set_mtp_requested`. Route safety must already be true then, or the
 /// setter is a no-op and "MTP" silently stays direct. Activation remains
 /// `mtp_requested` / `AX_NO_SPEC`. Env opt-in still wins when the exact
-/// profile is off.
+/// profile is off. The explicit projected-replay profile is also a verifier
+/// candidate, but remains default-off and must still be requested by the
+/// session or formal harness.
 pub(super) fn resolve_qwen_linear_certification_candidate(
     env_opt_in: bool,
     exact_profile_enabled: bool,
@@ -124,6 +126,7 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) deepseek_v4_certification_candidate: bool,
     pub(super) qwen_linear_attention: bool,
     pub(super) qwen_linear_exact_enabled: bool,
+    pub(super) qwen_linear_projected_replay_enabled: bool,
     pub(super) qwen_linear_certification_candidate: bool,
     /// The explicit `AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE` opt-in,
     /// kept separate from the resolved candidate bit above (which the
@@ -182,12 +185,15 @@ impl MtpModelPolicy {
         if let Some(max_depth) = inputs.qwen_depth {
             let kind = if !inputs.qwen_linear_attention {
                 MtpModelPolicyKind::QwenCalibrated
-            } else if inputs.qwen_linear_exact_enabled
+            } else if (inputs.qwen_linear_exact_enabled
+                || inputs.qwen_linear_projected_replay_enabled)
                 && inputs.qwen_linear_certification_candidate
                 && max_depth == 1
             {
                 MtpModelPolicyKind::QwenLinearCertificationCandidateDepthOne
-            } else if inputs.qwen_linear_exact_enabled && inputs.qwen_linear_certification_candidate
+            } else if (inputs.qwen_linear_exact_enabled
+                || inputs.qwen_linear_projected_replay_enabled)
+                && inputs.qwen_linear_certification_candidate
             {
                 MtpModelPolicyKind::QwenLinearCertificationCandidateMultiDepth
             } else {
@@ -604,6 +610,25 @@ mod tests {
         assert!(candidate.is_qwen_linear_certification_candidate());
         assert!(candidate.has_attached_drafter());
         assert_eq!(candidate.max_depth(), 1);
+    }
+
+    #[test]
+    fn projected_replay_candidate_is_route_safe_without_exact_profile() {
+        let candidate = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_depth: Some(3),
+            qwen_linear_attention: true,
+            qwen_linear_exact_enabled: false,
+            qwen_linear_projected_replay_enabled: true,
+            qwen_linear_certification_candidate: true,
+            ..Default::default()
+        });
+
+        assert_eq!(
+            candidate.kind,
+            MtpModelPolicyKind::QwenLinearCertificationCandidateMultiDepth
+        );
+        assert!(candidate.route_safe());
+        assert!(!candidate.certified_default_on());
     }
 
     #[test]

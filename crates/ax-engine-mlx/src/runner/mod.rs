@@ -78,7 +78,7 @@ use crate::model::{
     replay_linear_attention_mtp_prefix, take_decode_profile_snapshot,
     take_dense_ffn_fastpath_snapshot, take_gemma4_moe_profile_snapshot,
     take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
-    take_prefill_profile_snapshot,
+    take_prefill_profile_snapshot, try_whole_compiled_qwen_verify,
 };
 use crate::model::{prefill_batched_forward, supports_batched_prefill};
 use crate::mtp::{
@@ -1659,6 +1659,8 @@ impl MlxRunner {
             load_gemma4_assistant_mtp_runtime(&cfg, &weights.gemma4_assistant_mtp);
         let qwen_linear_certification_env_opt_in =
             qwen_linear_mtp_certification_candidate_from_env();
+        let qwen_linear_projected_replay_enabled =
+            crate::fastpath::mtp_linear_projected_replay_enabled();
         let mtp_model_policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
             qwen_depth: weights.mtp.as_ref().map(|head| head.max_depth),
             glm_depth: weights.glm_mtp.as_ref().map(|head| head.max_depth),
@@ -1677,6 +1679,7 @@ impl MlxRunner {
                 .map(|_| 1),
             qwen_linear_attention: cfg.linear_attention.is_some(),
             qwen_linear_exact_enabled: qwen_linear_mtp_exact_enabled,
+            qwen_linear_projected_replay_enabled,
             // Exact-eligible linear Qwen takes the certified MTP route when
             // speculation is on. `--ax-direct` / disable-ngram stays
             // fail-closed. Env opt-in still wins for formal harnesses.
@@ -1684,7 +1687,9 @@ impl MlxRunner {
             // env still opts in; checkpoint adopt is the measured exact path.
             qwen_linear_certification_candidate: resolve_qwen_linear_certification_candidate(
                 qwen_linear_certification_env_opt_in,
-                qwen_linear_mtp_exact_enabled && !has_mxfp4_linears,
+                qwen_linear_mtp_exact_eligible
+                    && (qwen_linear_mtp_exact_enabled || qwen_linear_projected_replay_enabled)
+                    && !has_mxfp4_linears,
             ),
             qwen_linear_certification_env_opt_in,
             // DeepSeek V4 nextn: same fail-closed product default until Tier 2.
@@ -3330,10 +3335,31 @@ impl ExecutionRunner for MlxRunner {
                 })
             }
         };
+        // The relaxed-target profile already accepts stock-MLX target
+        // arithmetic during verification. Keep the cold prefill on the same
+        // arithmetic contract so the first sampled token and recurrent target
+        // state do not come from the exact-profile projection order while all
+        // later target rows come from stock arithmetic. Draft construction is
+        // decode-only and therefore remains under the outer exact scope.
+        let all_items_prefill = !input.execution_batch.items.is_empty()
+            && input
+                .execution_batch
+                .items
+                .iter()
+                .all(|item| item.mode == ExecutionMode::Prefill);
+        let relaxed_target_prefill = all_items_prefill
+            && crate::fastpath::mtp_relaxed_target_verify_enabled()
+            && crate::fastpath::mtp_linear_projected_replay_enabled();
+        let relaxed_mtp_session = self.mtp_requested
+            && !all_decode_items_mtp_inactive
+            && crate::fastpath::mtp_relaxed_target_verify_enabled()
+            && crate::fastpath::mtp_linear_projected_replay_enabled();
         let exact_arithmetic_enabled = qwen_linear_mtp_exact_scope_for_request(
             self.qwen_linear_mtp_exact_enabled,
-            self.mtp_requested && !all_decode_items_mtp_inactive,
+            self.mtp_requested && !all_decode_items_mtp_inactive && !relaxed_target_prefill,
         );
+        let _qwen_linear_mtp_relaxed_session_scope =
+            crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(relaxed_mtp_session);
         let _qwen_linear_mtp_exact_scope =
             crate::fastpath::scoped_qwen_linear_mtp_exact(exact_arithmetic_enabled);
         let step_id = input.execution_batch.step_id;
@@ -3881,6 +3907,84 @@ impl ExecutionRunner for MlxRunner {
             kv_cache.merge_from(result.kv_usage);
             prefix_cache.merge_from(result.prefix_cache);
             request_updates.push(result.update);
+        }
+        if std::env::var_os("AX_MLX_MTP_DEBUG_SUMMARY").is_some() && mtp_telemetry.decode_steps > 0
+        {
+            eprintln!(
+                "AX_MTP_DEBUG steps={} drafted={} accepted={} emitted={} verify_tokens={} full={} partial={} miss={} clone_us={} verify_forward_us={} verify_eval_us={} accept_us={} rollback_us={} tail_us={} draft_us={} softmax_us={} depth_accepted={:?} depth_drafted={:?}",
+                mtp_telemetry.decode_steps,
+                mtp_telemetry.draft_tokens,
+                mtp_telemetry.accepted_tokens,
+                mtp_telemetry.emitted_tokens,
+                mtp_telemetry.verify_tokens,
+                mtp_telemetry.full_accept_steps,
+                mtp_telemetry.partial_reject_steps,
+                mtp_telemetry.complete_miss_steps,
+                mtp_telemetry.cache_clone_wall_us,
+                mtp_telemetry.verify_forward_wall_us,
+                mtp_telemetry.verify_eval_wall_us,
+                mtp_telemetry.accept_wall_us,
+                mtp_telemetry.rollback_wall_us,
+                mtp_telemetry.tail_sample_wall_us,
+                mtp_telemetry.draft_wall_us,
+                mtp_telemetry.target_softmax_wall_us,
+                mtp_telemetry.accepted_by_depth,
+                mtp_telemetry.drafted_by_depth,
+            );
+        }
+        if std::env::var_os("AX_MLX_MTP_DEBUG_SUMMARY").is_some() && prefill_profile.enabled != 0 {
+            eprintln!(
+                "AX_PREFILL_PROFILE steps={} layers={} tokens={} pre_sdpa_us={} qkv_us={} qknorm_us={} rope_kv_us={} sdpa_us={} post_attn_us={} ffn_us={} gate_up_us={} activation_us={} down_us={} oproj_us={} residual_norm_us={} residual_gate_us={} lm_head_us={}",
+                prefill_profile.prefill_steps,
+                prefill_profile.layers,
+                prefill_profile.tokens,
+                prefill_profile.pre_sdpa_wall_us,
+                prefill_profile.pre_sdpa_qkv_proj_wall_us,
+                prefill_profile.pre_sdpa_qk_norm_wall_us,
+                prefill_profile.pre_sdpa_rope_kv_wall_us,
+                prefill_profile.sdpa_wall_us,
+                prefill_profile.post_attn_wall_us,
+                prefill_profile.post_attn_ffn_wall_us,
+                prefill_profile.post_attn_ffn_gate_up_wall_us,
+                prefill_profile.post_attn_ffn_activation_wall_us,
+                prefill_profile.post_attn_ffn_down_wall_us,
+                prefill_profile.post_attn_output_proj_wall_us,
+                prefill_profile.post_attn_residual_norm_wall_us,
+                prefill_profile.post_attn_residual_gate_wall_us,
+                prefill_profile.lm_head_wall_us,
+            );
+        }
+        if std::env::var_os("AX_MLX_MTP_DEBUG_SUMMARY").is_some()
+            && linear_attention_profile.enabled != 0
+        {
+            eprintln!(
+                "AX_LINEAR_PROFILE layers={} tokens={} projection_us={} qkvz_us={} ba_us={} qkv_us={} z_us={} a_us={} b_us={} conv_us={} qknorm_us={} recurrent_us={} output_us={} direct_inputs={}/{}/{} blocked={} post_input={}/{}/{} blocked={} metal={}/{}/{} blocked={}",
+                linear_attention_profile.layers,
+                linear_attention_profile.tokens,
+                linear_attention_profile.projection_wall_us,
+                linear_attention_profile.projection_qkvz_wall_us,
+                linear_attention_profile.projection_ba_wall_us,
+                linear_attention_profile.projection_qkv_wall_us,
+                linear_attention_profile.projection_z_wall_us,
+                linear_attention_profile.projection_a_wall_us,
+                linear_attention_profile.projection_b_wall_us,
+                linear_attention_profile.conv_wall_us,
+                linear_attention_profile.qk_norm_wall_us,
+                linear_attention_profile.recurrent_wall_us,
+                linear_attention_profile.output_wall_us,
+                linear_attention_profile.direct_cpp_inputs_attempts,
+                linear_attention_profile.direct_cpp_inputs_hits,
+                linear_attention_profile.direct_cpp_inputs_fallbacks,
+                linear_attention_profile.direct_cpp_inputs_profile_blocked,
+                linear_attention_profile.direct_cpp_post_input_attempts,
+                linear_attention_profile.direct_cpp_post_input_hits,
+                linear_attention_profile.direct_cpp_post_input_fallbacks,
+                linear_attention_profile.direct_cpp_post_input_profile_blocked,
+                linear_attention_profile.decode_post_input_metal_attempts,
+                linear_attention_profile.decode_post_input_metal_hits,
+                linear_attention_profile.decode_post_input_metal_fallbacks,
+                linear_attention_profile.decode_post_input_metal_profile_blocked,
+            );
         }
         // Always export decode path counters (pipeline / single / bootstrap).
         // `AX_MLX_SKIP_DECODE_ROUTE_TELEMETRY` only omits the heavy profile /
@@ -8587,8 +8691,8 @@ impl MlxRunner {
         let profitability_round_started = Instant::now();
 
         // Async-scheduled draft (`AX_MLX_MTP_ASYNC_DRAFT`): in the greedy
-        // exact-profile regime the verify graph chains directly on the lazy
-        // token arrays, so extraction defers past the verify graph build
+        // exact or explicit projected-replay regime the verify graph chains
+        // directly on the lazy token arrays, so extraction defers past the verify graph build
         // (overlapping the draft head's GPU forward with that CPU work) and
         // completes inside the verify eval batch. Any other flow
         // materialises the draft here, before the first consumer of
@@ -8604,9 +8708,11 @@ impl MlxRunner {
             let gemma_assistant_async =
                 self.gemma4_assistant_mtp_status.enabled || self.gemma4_assistant_mtp.is_some();
             let defer_qualified = crate::fastpath::mtp_async_draft_enabled()
-                && ((crate::fastpath::qwen_linear_mtp_exact_enabled()
-                    && self.cfg.linear_attention.is_some())
-                    || gemma_assistant_async)
+                && (qwen_linear_mtp_async_draft_allowed(
+                    self.cfg.linear_attention.is_some(),
+                    crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                    crate::fastpath::mtp_linear_projected_replay_enabled(),
+                ) || gemma_assistant_async)
                 && sampling.temperature <= 0.0
                 && !self.mtp_optimistic
                 && !state.mtp_bypassed;
@@ -8914,6 +9020,7 @@ impl MlxRunner {
         // Returns logits, draft hidden, acceptance outcome, correction token,
         // whether exact residual correction succeeded, and target argmax tokens.
         // predicted is the target model's argmax tokens for EWMA tracking.
+        let mut mtp_refold_hidden: Option<MlxArray> = None;
         let (
             logits_all,
             draft_hidden,
@@ -8923,6 +9030,26 @@ impl MlxRunner {
             exact_residual_correction_applied,
             predicted,
         ) = if has_linear_attention {
+            // Optional hybrid: retain the exact-profile MTP drafter across
+            // cycles, but build this target verifier with stock MLX arithmetic.
+            // Projected replay is mandatory so the adopted recurrent state is
+            // derived from that same verifier graph. The outer exact scope is
+            // restored before the next draft head is built.
+            let exact_profile_enabled = crate::fastpath::qwen_linear_mtp_exact_enabled();
+            let relaxed_target_verify = crate::fastpath::mtp_relaxed_target_verify_enabled()
+                && crate::fastpath::mtp_linear_projected_replay_enabled();
+            let _target_verify_fast_scope =
+                crate::fastpath::scoped_qwen_linear_mtp_target_verify(relaxed_target_verify);
+            let _target_verify_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(
+                exact_profile_enabled && !relaxed_target_verify,
+            );
+            let _verify_qmm_scope =
+                crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(relaxed_target_verify);
+            let native_greedy_logits = sampling.temperature <= 0.0
+                && !sampling.uses_logits_processors()
+                && std::env::var("AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS")
+                    .ok()
+                    .is_some_and(|raw| matches!(raw.trim(), "1" | "true" | "TRUE" | "yes" | "on"));
             if optimistic {
                 // ── Explicit approximate optimistic shortcut ──
                 // Accept all drafts without rejection sampling. The full draft
@@ -9047,11 +9174,30 @@ impl MlxRunner {
                         parts.push(tok);
                     }
                     let ids_1d = mlx_sys::concatenate(&parts, 0, None);
-                    forward_all_positions_with_post_norm_ids(
+                    let compiled = try_whole_compiled_qwen_verify(
                         &self.cfg,
                         &self.weights,
                         &ids_1d,
                         verify_len,
+                        &mut verify_cache,
+                        token_offset,
+                    );
+                    compiled.unwrap_or_else(|| {
+                        forward_all_positions_with_post_norm_ids(
+                            &self.cfg,
+                            &self.weights,
+                            &ids_1d,
+                            verify_len,
+                            &mut verify_cache,
+                            token_offset,
+                            native_greedy_logits,
+                        )
+                    })
+                } else if native_greedy_logits {
+                    forward_all_positions_with_post_norm_greedy(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
                         &mut verify_cache,
                         token_offset,
                     )
@@ -9066,6 +9212,19 @@ impl MlxRunner {
                 };
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 verify_cache.advance(verify_len);
+                if relaxed_target_verify
+                    && projected_replay
+                    && crate::fastpath::mtp_rebind_verify_fa_enabled()
+                {
+                    // The verifier's K/V output is a valid backing store for
+                    // every acceptance outcome; only the logical boundary and
+                    // gated-delta state differ. Rebind the rollback source now
+                    // so its obsolete K/V handles cannot block MLX donation at
+                    // the evaluation fence below.
+                    let _ = state
+                        .cache
+                        .rebind_contiguous_attention_storage_from(&verify_cache);
+                }
                 // Target probabilities for rejection-sampling acceptance.
                 // Full-vocab softmax by default; top-k approximation when
                 // AX_MLX_MTP_TARGET_SOFTMAX_MODE is set (e.g. topk_128).
@@ -9097,9 +9256,13 @@ impl MlxRunner {
                 // probs / lazy drafts). Materialising the full verify cache
                 // on a complete miss wastes the reject path; adopt/partial
                 // eval it after the decision.
+                let split_verify_hidden_eval =
+                    crate::fastpath::mtp_split_verify_hidden_eval_enabled();
                 let mut accept_targets: Vec<&MlxArray> = Vec::with_capacity(4);
                 accept_targets.push(predicted_arr.as_ref().unwrap());
-                accept_targets.push(&post_norm_all);
+                if !split_verify_hidden_eval {
+                    accept_targets.push(&post_norm_all);
+                }
                 if let Some(ref ltp) = lazy_target_probs {
                     ltp.push_eval_targets(&mut accept_targets);
                 }
@@ -9109,6 +9272,15 @@ impl MlxRunner {
                     }
                 }
                 let verify_eval_started = Instant::now();
+                if split_verify_hidden_eval {
+                    // MTPLX's lazy-logits verifier deliberately fences the
+                    // target trunk before the vocabulary projection. Besides
+                    // keeping capture/state side outputs lazy until the
+                    // acceptance decision, this prevents the large LM-head
+                    // graph from competing with attention/GDN work in one
+                    // scheduler batch.
+                    eval(&[&post_norm_all]);
+                }
                 eval(&accept_targets);
                 mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
                 if let Some(lazy) = deferred_lazy_draft.take() {
@@ -9181,14 +9353,17 @@ impl MlxRunner {
                         token_offset,
                     ))
                 } else if all_accepted {
-                    // Cache was left lazy during accept. Materialise the
-                    // adopted state now so the next step does not grow an
-                    // unevaluated S=2 graph.
-                    let adopt_eval_started = Instant::now();
-                    eval(&kv_refs);
-                    mtp_timings.verify_eval_wall_us = mtp_timings
-                        .verify_eval_wall_us
-                        .saturating_add(elapsed_us(adopt_eval_started));
+                    // Keep the accepted cache lazy in the opt-in scheduling
+                    // trial. The next target forward consumes these arrays,
+                    // and its normal acceptance barrier materialises the
+                    // dependency chain without an extra host-side fence.
+                    if !crate::fastpath::mtp_lazy_adopt_state_enabled() {
+                        let adopt_eval_started = Instant::now();
+                        eval(&kv_refs);
+                        mtp_timings.verify_eval_wall_us = mtp_timings
+                            .verify_eval_wall_us
+                            .saturating_add(elapsed_us(adopt_eval_started));
+                    }
                     drop(kv_refs);
                     if verify_cache.trim_to(token_offset + 1 + ac) {
                         verify_cache.clear_linear_prefix_checkpoint();
@@ -9207,10 +9382,34 @@ impl MlxRunner {
                 } else if ac == 0 {
                     // The capture point is the committed prefix (after the
                     // last committed token), so a complete miss restores it
-                    // at any draft depth inside the exact contract.
-                    if verify_cache.restore_linear_prefix_checkpoint()
-                        && verify_cache.trim_to(token_offset + 1)
-                    {
+                    // at any draft depth inside the exact contract. A whole
+                    // verifier carries a compact delta tape instead of full
+                    // prefix checkpoints; replay one row from the unchanged
+                    // source state in that case.
+                    drop(kv_refs);
+                    let restored = verify_cache.restore_linear_prefix_checkpoint();
+                    let tape_replayed = if restored {
+                        false
+                    } else if crate::fastpath::mtp_linear_projected_replay_enabled() {
+                        self.weights
+                            .layers
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, layer)| layer.linear_attn.is_some())
+                            .all(|(layer_idx, layer)| {
+                                replay_linear_attention_mtp_prefix(
+                                    &self.cfg,
+                                    layer,
+                                    &state.cache,
+                                    &mut verify_cache,
+                                    layer_idx,
+                                    1,
+                                )
+                            })
+                    } else {
+                        false
+                    };
+                    if (restored || tape_replayed) && verify_cache.trim_to(token_offset + 1) {
                         // Keep the restored checkpoint lazy. The next target
                         // forward consumes these recurrent states and its
                         // normal eval barrier materialises them in dependency
@@ -9254,11 +9453,13 @@ impl MlxRunner {
                     if replayed && verify_cache.trim_to(token_offset + keep) {
                         verify_cache.clear_linear_prefix_checkpoint();
                         let replay_refs = verify_cache.collect_eval_refs();
-                        let replay_eval_started = Instant::now();
-                        eval(&replay_refs);
-                        mtp_timings.verify_eval_wall_us = mtp_timings
-                            .verify_eval_wall_us
-                            .saturating_add(elapsed_us(replay_eval_started));
+                        if !crate::fastpath::mtp_lazy_adopt_state_enabled() {
+                            let replay_eval_started = Instant::now();
+                            eval(&replay_refs);
+                            mtp_timings.verify_eval_wall_us = mtp_timings
+                                .verify_eval_wall_us
+                                .saturating_add(elapsed_us(replay_eval_started));
+                        }
                         drop(replay_refs);
                         state.cache = verify_cache;
                         None
@@ -9284,6 +9485,7 @@ impl MlxRunner {
                 };
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                mtp_refold_hidden = Some(post_norm_all.clone());
                 let verifier_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
                 let correction_token = select_linear_mtp_correction_token(
                     sampling.temperature,
@@ -9974,8 +10176,109 @@ impl MlxRunner {
             }
         };
 
-        // For linear attention with rejection, trim MTP cache too.
-        if has_linear_attention && !all_accepted {
+        // A depth-D head chain has D new cache entries, but they represent the
+        // committed main token followed by drafts 1..D-1. Keep the main entry,
+        // remove every head-chained draft entry, then rebuild accepted drafts
+        // from the verifier's target hidden rows. This matches the head's
+        // training pairs and fixes the legacy one-position rollback shift.
+        let pure_qwen_mtp_pending = !pending.is_empty()
+            && state.mtp_pending_draft_sources.len() == pending.len()
+            && state
+                .mtp_pending_draft_sources
+                .iter()
+                .all(|source| *source == MtpDraftSource::Mtp);
+        // The MTP cache owns the committed/speculative timeline. Do not infer
+        // this rollback boundary from `mtp_decode_count`: confidence gating
+        // and hybrid proposal paths can trim the cache independently.
+        let refold_base_len = state
+            .mtp_cache
+            .as_ref()
+            .and_then(|cache| cache.seq_len().checked_sub(pending.len().saturating_sub(1)));
+        let mut committed_fold_lazy: Option<crate::mtp::MtpLazyDraft> = None;
+        let refolded_history = if has_linear_attention
+            && pure_qwen_mtp_pending
+            && crate::fastpath::mtp_refold_accepted_history_enabled()
+        {
+            if let (Some(hidden), Some(head), Some(cache), Some(retain_len)) = (
+                mtp_refold_hidden.as_ref(),
+                self.weights.mtp.as_ref(),
+                state.mtp_cache.as_mut(),
+                refold_base_len,
+            ) {
+                let combined_fold = crate::fastpath::mtp_batched_committed_fold_enabled()
+                    && sampling.temperature <= 0.0
+                    && crate::fastpath::mtp_async_draft_enabled()
+                    && qwen_linear_mtp_async_draft_allowed(
+                        true,
+                        crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                        crate::fastpath::mtp_linear_projected_replay_enabled(),
+                    )
+                    && !self.mtp_skip_state
+                    && crate::mtp::mtp_draft_mode_from_env() == crate::mtp::MtpDraftMode::Greedy
+                    && crate::mtp::mtp_draft_min_confidence_from_env() == 0.0;
+                if combined_fold {
+                    let next_depth = mtp_next_adaptive_depth(
+                        state.mtp_adaptive_max_depth,
+                        self.mtp_max_depth(),
+                        pending.len(),
+                        ewma_accept_count.unwrap_or(accept_count),
+                        state.mtp_consecutive_misses,
+                        false,
+                    );
+                    let committed_hidden = slice(
+                        hidden,
+                        &[0, 0, 0],
+                        &[1, (accept_count + 1) as i32, self.cfg.hidden_size as i32],
+                        &[1, 1, 1],
+                        None,
+                    );
+                    let mut committed = Vec::with_capacity(accept_count + 1);
+                    committed.extend_from_slice(&pending[..accept_count]);
+                    committed.push(correction_argmax_tok);
+                    committed_fold_lazy = crate::mtp::mtp_refold_committed_draft_greedy_async(
+                        &self.weights,
+                        &self.cfg,
+                        &committed_hidden,
+                        &committed,
+                        cache,
+                        retain_len,
+                        Some(next_depth),
+                    );
+                    committed_fold_lazy.is_some()
+                } else {
+                    let accepted_hidden = slice(
+                        hidden,
+                        &[0, 0, 0],
+                        &[1, accept_count as i32, self.cfg.hidden_size as i32],
+                        &[1, 1, 1],
+                        None,
+                    );
+                    crate::mtp::mtp_refold_accepted_cache_kv_batched(
+                        head,
+                        &accepted_hidden,
+                        &pending[..accept_count],
+                        &self.weights,
+                        cache,
+                        &self.cfg,
+                        retain_len,
+                    )
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if refolded_history {
+            state.mtp_decode_count = state
+                .mtp_cache
+                .as_ref()
+                .map(MlxKVCache::seq_len)
+                .unwrap_or(0);
+        } else if has_linear_attention && !all_accepted {
+            // Legacy path: remove rejected cache entries using the historical
+            // count contract. Retained as the default-off fallback while the
+            // shifted committed-history route is being admitted.
             let rollback_started = Instant::now();
             let rejected_count = pending.len() - accept_count;
             if rejected_count > 0 {
@@ -10683,19 +10986,27 @@ impl MlxRunner {
                     );
                     state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
                     state.mtp_draft_gate_source = src.route_code();
-                    // Async draft (`AX_MLX_MTP_ASYNC_DRAFT`): only in the
-                    // regime where the synchronous greedy path computes no
+                    // Async draft (`AX_MLX_MTP_ASYNC_DRAFT`): only in a
+                    // linear verifier regime where the synchronous greedy path computes no
                     // log-probs or distributions, so the deferred extraction
                     // reconstructs the identical pending state. Skip-state
                     // capture below keys off an empty pending draft, so the
                     // two features are mutually exclusive.
                     let async_qualified = crate::fastpath::mtp_async_draft_enabled()
-                        && crate::fastpath::qwen_linear_mtp_exact_enabled()
+                        && qwen_linear_mtp_async_draft_allowed(
+                            self.cfg.linear_attention.is_some(),
+                            crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                            crate::fastpath::mtp_linear_projected_replay_enabled(),
+                        )
                         && !self.mtp_skip_state
                         && gate == 0.0
                         && crate::mtp::mtp_draft_mode_from_env()
                             != crate::mtp::MtpDraftMode::Stochastic;
-                    if async_qualified
+                    if let Some(lazy) = committed_fold_lazy.take() {
+                        state.mtp_pending_draft_distributions = Vec::new();
+                        state.mtp_pending_draft_lazy = Some(lazy);
+                        (Vec::new(), Vec::new(), Vec::new())
+                    } else if async_qualified
                         && let Some(lazy) = crate::mtp::mtp_draft_tokens_greedy_async(
                             &self.weights,
                             &self.cfg,
@@ -10902,6 +11213,36 @@ impl MlxRunner {
                 .record_submitted(gemma4_assistant_submitted, mtp_timings.draft_wall_us);
         }
         state.mtp_telemetry.record_timings(mtp_timings);
+        if std::env::var_os("AX_MLX_MTP_DEBUG_FINAL_SUMMARY").is_some()
+            && ctx.is_some_and(|ctx| {
+                ctx.generated_len
+                    .saturating_add(saturating_u32(result.len()))
+                    >= ctx.max_output_tokens
+            })
+        {
+            let telemetry = &state.mtp_telemetry;
+            eprintln!(
+                "AX_MTP_FINAL steps={} drafted={} accepted={} emitted={} verify_tokens={} full={} partial={} miss={} clone_us={} verify_forward_us={} verify_eval_us={} accept_us={} rollback_us={} tail_us={} draft_us={} softmax_us={} depth_accepted={:?} depth_drafted={:?}",
+                telemetry.decode_steps,
+                telemetry.draft_tokens,
+                telemetry.accepted_tokens,
+                telemetry.emitted_tokens,
+                telemetry.verify_tokens,
+                telemetry.full_accept_steps,
+                telemetry.partial_reject_steps,
+                telemetry.complete_miss_steps,
+                telemetry.cache_clone_wall_us,
+                telemetry.verify_forward_wall_us,
+                telemetry.verify_eval_wall_us,
+                telemetry.accept_wall_us,
+                telemetry.rollback_wall_us,
+                telemetry.tail_sample_wall_us,
+                telemetry.draft_wall_us,
+                telemetry.target_softmax_wall_us,
+                telemetry.accepted_by_depth,
+                telemetry.drafted_by_depth,
+            );
+        }
 
         result
     }
@@ -11038,7 +11379,7 @@ impl MlxRunner {
                 .unwrap_or_default()
                 .max(0) as usize;
             let total = available_rows.min(history_tokens.len());
-            let cap = mtp_warmup_cap();
+            let cap = crate::fastpath::mtp_warmup_cap();
             let warmup_len = if cap > 0 { total.min(cap) } else { total };
             let start_offset = total.saturating_sub(warmup_len);
             // Absolute RoPE base: final-chunk history is only the last
@@ -11094,7 +11435,7 @@ impl MlxRunner {
                 .unwrap_or_default()
                 .max(0) as usize;
             let total = available_rows.min(history_tokens.len());
-            let cap = mtp_warmup_cap();
+            let cap = crate::fastpath::mtp_warmup_cap();
             let warmup_len = if cap > 0 { total.min(cap) } else { total };
             let start_offset = total.saturating_sub(warmup_len);
             let rope_start =
@@ -11994,6 +12335,17 @@ fn mtp_next_adaptive_depth(
         return 0;
     }
 
+    if let Some(fixed_depth) = crate::fastpath::mtp_fixed_draft_depth() {
+        return fixed_depth.min(max_depth);
+    }
+
+    if crate::fastpath::mtp_depth3_miss_backoff_enabled() && max_depth == 3 {
+        if pending_len == 0 {
+            return if current_depth == 0 { 3 } else { current_depth };
+        }
+        return if accept_count == 0 { 2 } else { 3 };
+    }
+
     let current_depth = if current_depth == 0 {
         max_depth
     } else {
@@ -12006,6 +12358,14 @@ fn mtp_next_adaptive_depth(
 
     if accept_count >= pending_len {
         return current_depth.saturating_add(1).min(max_depth);
+    }
+
+    if crate::fastpath::mtp_depth3_hysteresis_enabled()
+        && current_depth == 3
+        && pending_len == 3
+        && accept_count == 2
+    {
+        return 3.min(max_depth);
     }
 
     // Short-gen stop-loss: complete miss, or half-or-worse accept rate on the
@@ -12050,6 +12410,12 @@ fn mtp_next_adaptive_depth(
 /// 35B-A3B variant has `native_depth=1` (the `.min(head_max_depth)` clamp
 /// keeps it safe).  All other families start at `head_max_depth`.
 fn mtp_initial_adaptive_depth(model_family: &str, head_max_depth: usize) -> usize {
+    if let Some(fixed_depth) = crate::fastpath::mtp_fixed_draft_depth() {
+        return fixed_depth.min(head_max_depth);
+    }
+    if crate::fastpath::mtp_depth3_miss_backoff_enabled() && head_max_depth == 3 {
+        return 3;
+    }
     match model_family {
         "qwen3_next" | "qwen3_5" => 2.min(head_max_depth),
         // vLLM Gemma 4 MTP docs recommend starting with
@@ -12492,6 +12858,19 @@ const fn qwen_linear_mtp_exact_scope_for_request(
     mtp_requested: bool,
 ) -> bool {
     resolved_profile_enabled && mtp_requested
+}
+
+/// A deferred Qwen draft is valid whenever the linear-attention verifier is
+/// allowed to consume the same lazy token arrays. The exact profile supplies
+/// that contract automatically; projected replay supplies the equivalent
+/// explicit opt-in for the stock-arithmetic verifier. Other architectures stay
+/// excluded because their verify/rollback paths do not consume this lazy chain.
+const fn qwen_linear_mtp_async_draft_allowed(
+    has_linear_attention: bool,
+    exact_profile_enabled: bool,
+    projected_replay_enabled: bool,
+) -> bool {
+    has_linear_attention && (exact_profile_enabled || projected_replay_enabled)
 }
 
 /// Emit the stable runner contract separately from the per-step arithmetic
@@ -14404,6 +14783,15 @@ mod tests {
         assert!(!qwen_linear_mtp_exact_scope_for_request(true, false));
         assert!(!qwen_linear_mtp_exact_scope_for_request(false, true));
         assert!(!qwen_linear_mtp_exact_scope_for_request(false, false));
+    }
+
+    #[test]
+    fn qwen_linear_mtp_async_draft_requires_linear_verifier_opt_in() {
+        assert!(qwen_linear_mtp_async_draft_allowed(true, true, false));
+        assert!(qwen_linear_mtp_async_draft_allowed(true, false, true));
+        assert!(qwen_linear_mtp_async_draft_allowed(true, true, true));
+        assert!(!qwen_linear_mtp_async_draft_allowed(true, false, false));
+        assert!(!qwen_linear_mtp_async_draft_allowed(false, true, true));
     }
 
     #[test]

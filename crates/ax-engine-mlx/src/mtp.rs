@@ -1,21 +1,24 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add, argmax,
     astype, broadcast_to, concatenate, eval, multiply, random_categorical, reshape, rms_norm,
-    rope_dynamic, scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take,
+    rope_dynamic, scaled_dot_product_attention_with_mask, sigmoid, slice, slice_update_dynamic,
+    softmax, take,
 };
 
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::model::shared::{
-    apply_final_logit_softcap, ffn_swiglu, flatten_attention_output_bhsd,
-    glm_mla_attention_forward, moe_experts_forward, moe_router_deepseek_v3, moe_router_glm,
-    moe_router_qwen3, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj, qw, rms_norm_opt, shared_expert_forward,
+    apply_final_logit_softcap, ffn_swiglu, fixed_capacity_causal_mask,
+    flatten_attention_output_bhsd, glm_mla_attention_forward, moe_experts_forward,
+    moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
+    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj, qw, rms_norm_opt, shared_expert_forward,
 };
 use crate::model::{ModelConfig, deepseek_v4_family, embed_tokens_arr};
 use crate::sampling::{TokenDistribution, Xorshift64};
 use crate::weights::{DeepseekV4NextnWeights, GlmMtpWeights, ModelWeights, MtpWeights};
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::thread::ThreadId;
 
 /// Draft sampling mode for MTP speculative decoding.
 ///
@@ -262,7 +265,15 @@ fn lazy_random_sample(logits: &MlxArray, temperature: f32, vocab: i32) -> MlxArr
 /// the final K/V back out after the chain to commit to the cache.
 enum MtpKvStep<'a> {
     Cache(&'a mut MlxKVCache),
-    Threaded { k: MlxArray, v: MlxArray },
+    Threaded {
+        k: MlxArray,
+        v: MlxArray,
+    },
+    Fixed {
+        k: MlxArray,
+        v: MlxArray,
+        write_offset: MlxArray,
+    },
 }
 
 impl MtpKvStep<'_> {
@@ -271,7 +282,7 @@ impl MtpKvStep<'_> {
     fn rope_base_offset(&self) -> usize {
         match self {
             MtpKvStep::Cache(cache) => cache.seq_len() + cache.rope_offset,
-            MtpKvStep::Threaded { .. } => {
+            MtpKvStep::Threaded { .. } | MtpKvStep::Fixed { .. } => {
                 unreachable!("threaded MTP step requires an explicit rope_offset_override")
             }
         }
@@ -279,12 +290,12 @@ impl MtpKvStep<'_> {
 
     /// Append this step's `k_rope`/`v` and return the K/V to feed SDPA
     /// (the full context including the new token).
-    fn append(&mut self, k_rope: MlxArray, v: MlxArray) -> (MlxArray, MlxArray) {
+    fn append(&mut self, k_rope: MlxArray, v: MlxArray) -> (MlxArray, MlxArray, Option<MlxArray>) {
         match self {
             MtpKvStep::Cache(cache) => {
                 let cached = cache.append(0, k_rope, v);
                 cache.advance(1);
-                cached
+                (cached.0, cached.1, None)
             }
             MtpKvStep::Threaded { k, v: running_v } => {
                 // Sequence axis is dim 2 of [1, n_kv_heads, S, head_dim].
@@ -292,7 +303,29 @@ impl MtpKvStep<'_> {
                 let new_v = concatenate(&[running_v, &v], 2, None);
                 *k = new_k.clone();
                 *running_v = new_v.clone();
-                (new_k, new_v)
+                (new_k, new_v, None)
+            }
+            MtpKvStep::Fixed {
+                k,
+                v: running_v,
+                write_offset,
+            } => {
+                let query_offset = write_offset.clone();
+                let new_k = slice_update_dynamic(k, &k_rope, &query_offset, &[2], None);
+                let new_v = slice_update_dynamic(running_v, &v, &query_offset, &[2], None);
+                let capacity = new_k.shape()[2];
+                let mask = fixed_capacity_causal_mask(&query_offset, 1, capacity);
+                *k = new_k.clone();
+                *running_v = new_v.clone();
+                let one = 1_i32;
+                let one = MlxArray::from_raw_data(
+                    (&one as *const i32).cast(),
+                    std::mem::size_of::<i32>(),
+                    &[1],
+                    MlxDtype::Int32,
+                );
+                *write_offset = add(write_offset, &one, None);
+                (new_k, new_v, Some(mask))
             }
         }
     }
@@ -386,6 +419,299 @@ pub fn mtp_warmup_cache_kv_batched(
         rope_freqs_ref,
     );
     cache.set_layer_kv_logical(0, k_rope, v, seq_len);
+}
+
+/// Replace speculative Qwen MTP-head entries with committed target-history K/V.
+///
+/// A depth-D draft chain appends K/V for the committed main token followed by
+/// drafts 1..D-1; the final proposed draft has not entered the head cache yet.
+/// `retain_len` therefore keeps the main-token entry and removes only the
+/// head-chained draft entries. Accepted drafts are then rebuilt from the target
+/// backbone hidden rows before the next correction/bonus token is appended by
+/// the normal draft call.
+pub fn mtp_refold_accepted_cache_kv_batched(
+    head: &MtpWeights,
+    main_hidden: &MlxArray,
+    accepted_tokens: &[u32],
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    retain_len: usize,
+) -> bool {
+    // The cache is the source of truth. Host-side draft counters can diverge
+    // after confidence-gate or hybrid proposal trimming; refuse an impossible
+    // boundary rather than appending committed rows at a shifted position.
+    if retain_len > cache.seq_len() || !cache.trim_to(retain_len) {
+        return false;
+    }
+    debug_assert_eq!(cache.seq_len(), retain_len);
+    if cache.seq_len() != retain_len {
+        return false;
+    }
+    let folded_kv = if accepted_tokens.is_empty() {
+        None
+    } else {
+        let rope_offset = cache.seq_len().saturating_add(cache.rope_offset);
+        let mut folded = MlxKVCache::new(1);
+        mtp_warmup_cache_kv_batched(
+            head,
+            main_hidden,
+            accepted_tokens,
+            weights,
+            &mut folded,
+            cfg,
+            rope_offset,
+        );
+        folded.logical_layer_kv(0)
+    };
+    if !accepted_tokens.is_empty() && folded_kv.is_none() {
+        return false;
+    }
+    if let Some((k, v)) = folded_kv {
+        let _ = cache.append(0, k, v);
+        cache.advance(accepted_tokens.len());
+    }
+    true
+}
+
+/// Fold one cycle's committed Qwen tokens in a single head pass and schedule
+/// the next greedy draft chain.
+///
+/// `main_hidden[:, i]` is the target-backbone hidden immediately preceding
+/// `committed_tokens[i]`. The last folded row therefore produces the first
+/// draft logits for the next cycle. Earlier committed rows contribute K/V
+/// history but do not project vocabulary logits. The persistent head cache is
+/// trimmed to `retain_len` before the fold and ends with committed history plus
+/// the speculative K/V entries for draft depths `1..max_depth-1`.
+#[allow(clippy::too_many_arguments)]
+pub fn mtp_refold_committed_draft_greedy_async(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    main_hidden: &MlxArray,
+    committed_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    retain_len: usize,
+    max_depth_cap: Option<usize>,
+) -> Option<MtpLazyDraft> {
+    let head = weights.mtp.as_ref()?;
+    let max_depth = max_depth_cap.unwrap_or(head.max_depth).min(head.max_depth);
+    let seq_len = committed_tokens.len();
+    if max_depth == 0
+        || seq_len == 0
+        || seq_len > 4
+        || main_hidden.shape() != vec![1, seq_len as i32, cfg.hidden_size as i32]
+        || retain_len > cache.seq_len()
+        || !cache.trim_to(retain_len)
+    {
+        return None;
+    }
+
+    let rope_offset = cache.seq_len().saturating_add(cache.rope_offset);
+    let (mut prev_hidden, first_logits) = mtp_fold_committed_last_row(
+        head,
+        main_hidden,
+        committed_tokens,
+        weights,
+        cache,
+        cfg,
+        rope_offset,
+    )?;
+    let mut lazy_tokens = Vec::with_capacity(max_depth);
+    let first = lazy_argmax_logits(&first_logits);
+    lazy_tokens.push(first.clone());
+    let mut prev_token_arr = first;
+
+    for _ in 1..max_depth {
+        let new_hidden = mtp_head_forward(
+            head,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
+        let logits = mtp_post_norm_to_logits(&post_norm_hidden, head, weights, cfg);
+        let token = lazy_argmax_logits(&logits);
+        lazy_tokens.push(token.clone());
+        prev_hidden = post_norm_hidden;
+        prev_token_arr = token;
+    }
+
+    let refs: Vec<&MlxArray> = lazy_tokens.iter().collect();
+    mlx_sys::async_eval(&refs);
+    Some(MtpLazyDraft {
+        tokens: lazy_tokens,
+    })
+}
+
+/// Batched committed-history fold whose only material output is the final
+/// row's post-norm hidden and vocabulary logits.
+#[allow(clippy::too_many_arguments)]
+fn mtp_fold_committed_last_row(
+    head: &MtpWeights,
+    main_hidden: &MlxArray,
+    committed_tokens: &[u32],
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    rope_offset: usize,
+) -> Option<(MlxArray, MlxArray)> {
+    let seq_len = committed_tokens.len();
+    let seq = i32::try_from(seq_len).ok()?;
+    let last = seq.checked_sub(1)?;
+    let prev_token_arr = MlxArray::from_raw_data(
+        committed_tokens.as_ptr() as *const u8,
+        std::mem::size_of_val(committed_tokens),
+        &[seq],
+        MlxDtype::Uint32,
+    );
+    let embed = embed_tokens_arr(&prev_token_arr, &weights.token_embedding, cfg.hidden_size);
+    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+    let enormed = rms_norm(
+        &embed,
+        Some(&head.pre_fc_norm_embedding),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let hnormed = rms_norm(
+        main_hidden,
+        Some(&head.pre_fc_norm_hidden),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let combined = concatenate(&[&enormed, &hnormed], -1, None);
+    let h_all = qw(&combined, &head.fc);
+    let normed_all = rms_norm(&h_all, Some(&head.attn_norm), cfg.rms_norm_eps, None);
+
+    let n_h = head.n_heads as i32;
+    let hd = head.head_dim as i32;
+    let q_half = n_h.checked_mul(hd)?;
+    let query_input = if fastpath::mtp_last_committed_query_enabled() {
+        slice(
+            &normed_all,
+            &[0, last, 0],
+            &[1, seq, cfg.hidden_size as i32],
+            &[1, 1, 1],
+            None,
+        )
+    } else {
+        normed_all.clone()
+    };
+    let query_seq = query_input.shape()[1];
+    let qg_raw = qw(&query_input, &head.q_proj);
+    let qg_heads = reshape(&qg_raw, &[1, query_seq, n_h, 2 * hd], None);
+    let query_last = query_seq - 1;
+    let q_last = slice(
+        &qg_heads,
+        &[0, query_last, 0, 0],
+        &[1, query_seq, n_h, hd],
+        &[1, 1, 1, 1],
+        None,
+    );
+    let gate_last = slice(
+        &qg_heads,
+        &[0, query_last, 0, hd],
+        &[1, query_seq, n_h, 2 * hd],
+        &[1, 1, 1, 1],
+        None,
+    );
+    let q_raw = reshape(&q_last, &[1, 1, q_half], None);
+    let gate = reshape(&gate_last, &[1, 1, q_half], None);
+
+    let k_raw = qw(&normed_all, &head.k_proj);
+    let v_raw = qw(&normed_all, &head.v_proj);
+    let v = prepare_value_bhsd_from_proj(
+        &v_raw,
+        false,
+        head.n_kv_heads,
+        head.head_dim,
+        seq_len,
+        cfg.rms_norm_eps,
+    );
+    let (rope_base, rope_freqs_ref) = if let Some(freqs) = cfg.rope_freqs.as_ref() {
+        (None, Some(freqs))
+    } else {
+        (Some(cfg.rope_theta), None)
+    };
+    let q_rope = qk_norm_rope_bhsd_from_proj(
+        &q_raw,
+        head.q_norm.as_ref(),
+        head.n_heads,
+        head.head_dim,
+        1,
+        cfg.rms_norm_eps,
+        cfg.rope_dims,
+        rope_base,
+        rope_offset.saturating_add(seq_len - 1),
+        rope_freqs_ref,
+    );
+    let k_rope = qk_norm_rope_bhsd_from_proj(
+        &k_raw,
+        head.k_norm.as_ref(),
+        head.n_kv_heads,
+        head.head_dim,
+        seq_len,
+        cfg.rms_norm_eps,
+        cfg.rope_dims,
+        rope_base,
+        rope_offset,
+        rope_freqs_ref,
+    );
+    let (cached_k, cached_v) = cache.append(0, k_rope, v);
+    cache.advance(seq_len);
+    let query_scale = 1.0 / (head.head_dim as f32).sqrt();
+    let attn_out = scaled_dot_product_attention_with_mask(
+        &q_rope,
+        &cached_k,
+        &cached_v,
+        query_scale,
+        ScaledDotProductAttentionMask::None,
+        None,
+    );
+    let attn_flat = flatten_attention_output_bhsd(&attn_out, 1, head.n_heads, head.head_dim);
+    let gated = multiply(&attn_flat, &sigmoid(&gate, None), None);
+    let attn_proj = qw(&gated, &head.o_proj);
+    let h_last = slice(
+        &h_all,
+        &[0, last, 0],
+        &[1, seq, cfg.hidden_size as i32],
+        &[1, 1, 1],
+        None,
+    );
+    let (mut h, ffn_normed) =
+        mlx_sys::add_rms_norm_pair(&h_last, &attn_proj, &head.ffn_norm, cfg.rms_norm_eps, None);
+    let ffn_out = if head.ffn_layer.router_proj.is_some() {
+        let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
+            moe_router_glm(cfg, &head.ffn_layer, &ffn_normed)
+        } else if cfg.moe_sigmoid_routing {
+            moe_router_deepseek_v3(cfg, &head.ffn_layer, &ffn_normed)
+        } else {
+            moe_router_qwen3(cfg, &head.ffn_layer, &ffn_normed)
+        };
+        let mut out = moe_experts_forward(
+            cfg,
+            &head.ffn_layer,
+            &ffn_normed,
+            &top_k_indices,
+            &top_k_weights,
+        );
+        if head.ffn_layer.shared_gate_proj.is_some() {
+            out = add(
+                &out,
+                &shared_expert_forward(cfg, &head.ffn_layer, &ffn_normed),
+                None,
+            );
+        }
+        out
+    } else {
+        ffn_swiglu(cfg, &head.ffn_layer, &ffn_normed, None, usize::MAX)
+    };
+    h = add(&h, &ffn_out, None);
+    let post_norm_hidden = mtp_hidden_post_norm(&h, head, cfg);
+    let logits = mtp_post_norm_to_logits(&post_norm_hidden, head, weights, cfg);
+    Some((post_norm_hidden, logits))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -553,15 +879,19 @@ fn mtp_head_forward_inner(
             (q_r, k_r)
         };
 
-        let (cached_k, cached_v) = kv.append(k_rope, v);
+        let (cached_k, cached_v, fixed_mask) = kv.append(k_rope, v);
 
         let query_scale = 1.0 / (head.head_dim as f32).sqrt();
+        let mask = fixed_mask
+            .as_ref()
+            .map(ScaledDotProductAttentionMask::Array)
+            .unwrap_or(ScaledDotProductAttentionMask::None);
         let attn_out = scaled_dot_product_attention_with_mask(
             &q_rope,
             &cached_k,
             &cached_v,
             query_scale,
-            ScaledDotProductAttentionMask::None,
+            mask,
             None,
         );
 
@@ -689,6 +1019,10 @@ pub fn mtp_head_step(
 // Compiled MTP draft head
 // ---------------------------------------------------------------------------
 
+type FixedDraftCompileKey = (u64, usize, u32, i32, ThreadId);
+type FixedDraftCompileCache = Mutex<HashMap<FixedDraftCompileKey, Option<MlxClosure>>>;
+static FIXED_DRAFT_COMPILE_CACHE: OnceLock<FixedDraftCompileCache> = OnceLock::new();
+
 /// Build a compiled closure that runs the full multi-depth Qwen MTP draft
 /// chain in a single `mlx_compile`-fused dispatch.
 ///
@@ -726,6 +1060,7 @@ fn build_compiled_mtp_draft(
     cfg: &ModelConfig,
     max_depth: usize,
     temperature: f32,
+    fixed_kv: bool,
 ) -> Option<MlxClosure> {
     if !fastpath::mtp_compiled_head_enabled() {
         return None;
@@ -747,9 +1082,17 @@ fn build_compiled_mtp_draft(
 
         let mut prev_hidden = inputs.get(0);
         let mut prev_token_arr = inputs.get(1);
-        let mut kv = MtpKvStep::Threaded {
-            k: inputs.get(2),
-            v: inputs.get(3),
+        let mut kv = if fixed_kv {
+            MtpKvStep::Fixed {
+                k: inputs.get(2),
+                v: inputs.get(3),
+                write_offset: inputs.get(5),
+            }
+        } else {
+            MtpKvStep::Threaded {
+                k: inputs.get(2),
+                v: inputs.get(3),
+            }
         };
         // Input 4: RoPE base offset as an array scalar (int32).  Flows through
         // the computation graph so the compiled closure is reusable across decode
@@ -800,9 +1143,12 @@ fn build_compiled_mtp_draft(
         }
         // Emit the final threaded K/V so the caller can commit it to the cache
         // (the closure never touched the cache itself).
-        if let MtpKvStep::Threaded { k, v } = kv {
-            outputs.push(k);
-            outputs.push(v);
+        match kv {
+            MtpKvStep::Threaded { k, v } | MtpKvStep::Fixed { k, v, .. } => {
+                outputs.push(k);
+                outputs.push(v);
+            }
+            MtpKvStep::Cache(_) => {}
         }
         outputs
     });
@@ -848,13 +1194,24 @@ fn run_compiled_mtp_draft(
     if max_depth <= 1 || !fastpath::mtp_compiled_head_enabled() {
         return None;
     }
-    // Seed the closure with the existing logical KV as explicit inputs.  When
-    // the layer is empty (first step) fall back to the imperative path so the
-    // pure closure never has to special-case a zero-length context.
-    let (init_k, init_v) = cache.logical_layer_kv(0)?;
     let seq_len_before = cache.seq_len();
     let base_offset = seq_len_before + cache.rope_offset;
-    let compiled = build_compiled_mtp_draft(head, weights, cfg, max_depth, sample_temperature)?;
+    // The admitted path historically passes tight logical K/V and concatenates
+    // at each depth. The fixed-capacity experiment instead reserves a stable
+    // backing pair once and threads an explicit physical write offset through
+    // the compiled graph.
+    let fixed_kv = fastpath::mtp_compiled_head_fixed_kv_enabled();
+    const FIXED_KV_RESERVE_TOKENS: usize = 512;
+    let (init_k, init_v) = if fixed_kv {
+        cache.prepare_whole_verify_layer_kv(
+            0,
+            seq_len_before.checked_add(FIXED_KV_RESERVE_TOKENS)?,
+        )?
+    } else {
+        // When the layer is empty (first step), fall back to the imperative
+        // path so the pure closure never special-cases a zero-length context.
+        cache.logical_layer_kv(0)?
+    };
 
     let first_token_data = [first_token];
     let first_token_arr = MlxArray::from_raw_data(
@@ -872,15 +1229,52 @@ fn run_compiled_mtp_draft(
         &[1_i32],
         MlxDtype::Int32,
     );
-    let outputs = compiled
-        .try_apply(&[
-            first_hidden,
-            &first_token_arr,
-            &init_k,
-            &init_v,
-            &offset_arr,
-        ])
-        .ok()?;
+    let write_offset_val = seq_len_before as i32;
+    let write_offset_arr = MlxArray::from_raw_data(
+        (&write_offset_val as *const i32).cast(),
+        std::mem::size_of::<i32>(),
+        &[1_i32],
+        MlxDtype::Int32,
+    );
+    let base_inputs = [
+        first_hidden,
+        &first_token_arr,
+        &init_k,
+        &init_v,
+        &offset_arr,
+    ];
+    let outputs = if fixed_kv {
+        let capacity = init_k.shape().get(2).copied()?;
+        let key = (
+            cfg.compile_cache_identity,
+            max_depth,
+            sample_temperature.to_bits(),
+            capacity,
+            std::thread::current().id(),
+        );
+        let store = FIXED_DRAFT_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut guard = store.lock().ok()?;
+        if !guard.contains_key(&key) {
+            let compiled =
+                build_compiled_mtp_draft(head, weights, cfg, max_depth, sample_temperature, true);
+            guard.insert(key, compiled);
+        }
+        let compiled = guard.get(&key)?.as_ref()?;
+        compiled
+            .try_apply(&[
+                base_inputs[0],
+                base_inputs[1],
+                base_inputs[2],
+                base_inputs[3],
+                base_inputs[4],
+                &write_offset_arr,
+            ])
+            .ok()?
+    } else {
+        build_compiled_mtp_draft(head, weights, cfg, max_depth, sample_temperature, false)?
+            .try_apply(&base_inputs)
+            .ok()?
+    };
 
     // outputs = [hidden_d, logits_d, tok_d, ...]*D, final_k, final_v.
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);

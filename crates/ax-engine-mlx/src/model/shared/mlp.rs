@@ -7,7 +7,7 @@ use mlx_sys::{
     gelu_approx_mul_quantized_matmul, log1p, maximum, minimum, multiply, negative, power,
     quantized_matmul_rms_norm, quantized_matmul_with_mode, reshape, rms_norm,
     rms_norm_quantized_matmul, silu_mul, silu_mul_quantized_matmul, slice, slice_last_dim, softmax,
-    softmax_precise, sum_axis, take, take_along_axis, topk_axis, transpose, zeros,
+    softmax_precise, sum_axis, swiglu_oai, take, take_along_axis, topk_axis, transpose, zeros,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -734,6 +734,10 @@ pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
 }
 
 pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxArray) -> MlxArray {
+    if cfg.model_family == "minimax_m3" {
+        // MiniMax M3 / GPT-OSS SwiGLU-OAI: clip + alpha=1.702 + (up+1).
+        return swiglu_oai(up, gate, None);
+    }
     if let Some(limit) = deepseek_v4_swiglu_limit(cfg) {
         return deepseek_v4_clamped_swiglu(gate, up, limit);
     }
@@ -814,9 +818,10 @@ fn packed_ffn_activation(
     gate_up: &MlxArray,
     hidden_dim: i32,
 ) -> Option<MlxArray> {
-    if deepseek_v4_swiglu_limit(cfg).is_some() {
-        // The fused packed kernels apply no clamp; fall back to the split
-        // path so `dense_ffn_activation` applies the V4 clamped SwiGLU.
+    if deepseek_v4_swiglu_limit(cfg).is_some() || cfg.model_family == "minimax_m3" {
+        // Fused packed kernels apply SiLU/GeGLU with no SwiGLU-OAI clamp
+        // or (up+1) term. MiniMax dense/shared experts must stay on the
+        // split `dense_ffn_activation` path.
         return None;
     }
     if cfg.uses_geglu {
@@ -4048,13 +4053,13 @@ fn ffn_swiglu_with_policy_inner(
             (gate, up)
         }
     };
-    // Opt-in: co-submit dual gate/up before GEGLU (AX_MLX_ASYNC_DUAL_GATE_UP).
-    // Profile residual gate_up ~3.26s; mlxcel builds both qmm then activation.
-    // Qwen p2048: default-ON async_eval of the pair at seq>=1024 (not dual-stream).
+    // Co-submit dual gate/up before GEGLU when explicitly requested, for the
+    // admitted Gemma p128 probe, or inside a short relaxed Qwen MTP verifier.
     qwen_prefill_maybe_async_gate_up(&gate_out, &up_out, qwen_dense_ffn, seq);
     if seq > 1
         && (fastpath::async_dual_gate_up_enabled()
-            || fastpath::should_gemma4_async_dual_gate_up_p128(&cfg.model_family, seq))
+            || fastpath::should_gemma4_async_dual_gate_up_p128(&cfg.model_family, seq)
+            || fastpath::should_mtp_async_dual_gate_up(&cfg.model_family, seq))
     {
         async_eval(&[&gate_out, &up_out]);
     }
@@ -4417,6 +4422,66 @@ fn qwen_compiled_split_verify_ffn(
 /// Distinct compile-cache salt so residual+FFN graphs never share a key
 /// with the FFN-only S=2 verify compile.
 const VERIFY_FFN_RESIDUAL_COMPILE_SALT: u64 = 0x5245_5349_4446_464E;
+const VERIFY_PACKED_FFN_RESIDUAL_COMPILE_SALT: u64 = 0x5650_4646_4E52_4553;
+
+#[derive(Clone, Copy)]
+struct CompiledPackedVerifyResidualSchema {
+    gate_up: QuantInputSlot,
+    down: QuantInputSlot,
+}
+
+fn qwen_compiled_packed_verify_ffn_plus_residual(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    attn_proj: &MlxArray,
+    leading_elements: i64,
+) -> Option<MlxArray> {
+    let gate_up = w.gate_up_packed.as_ref()?;
+    let down = w.down_proj.as_ref()?;
+    if gate_up.scales.is_none() || down.scales.is_none() {
+        return None;
+    }
+    let packed_dim = gate_up.weight.shape().first().copied()?;
+    if packed_dim <= 0 || packed_dim % 2 != 0 {
+        return None;
+    }
+    let mut inputs = vec![hidden.clone(), attn_proj.clone(), w.ffn_norm.clone()];
+    let gate_up_slot = push_quant_inputs(&mut inputs, Some(gate_up))?;
+    let down_slot = push_quant_inputs(&mut inputs, Some(down))?;
+    let schema = CompiledPackedVerifyResidualSchema {
+        gate_up: gate_up_slot,
+        down: down_slot,
+    };
+    let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+    let eps = cfg.rms_norm_eps;
+    let half = packed_dim / 2;
+    let body = move |inputs: &MlxVectorArray| {
+        let hidden = inputs.get(0);
+        let attn = inputs.get(1);
+        let ffn_norm = inputs.get(2);
+        let (residual, normed) = add_rms_norm_pair(&hidden, &attn, &ffn_norm, eps, None);
+        let gate_up = schema.gate_up.rebuild(inputs);
+        let packed = qw_with_policy(&normed, &gate_up, ProjectionBatchPolicy::Shared);
+        let gate = slice_last_dim(&packed, 0, half, None);
+        let up = slice_last_dim(&packed, half, packed_dim, None);
+        let act = silu_mul(&gate, &up, None);
+        let down = schema.down.rebuild(inputs);
+        let ffn = qw_with_policy(&act, &down, ProjectionBatchPolicy::Shared);
+        vec![add(&residual, &ffn, None)]
+    };
+    apply_layer_dense_ffn_prefill_min(
+        cfg.compile_cache_identity
+            ^ VERIFY_PACKED_FFN_RESIDUAL_COMPILE_SALT
+            ^ compile_quant_contract_salt(&[gate_up, down]),
+        SHARED_VERIFY_COMPILE_LAYER,
+        leading_elements,
+        2,
+        &input_refs,
+        body,
+    )
+    .and_then(|r| r.into_iter().next())
+}
 
 #[derive(Clone, Copy)]
 struct CompiledSplitVerifyResidualSchema {
@@ -4460,7 +4525,7 @@ pub(crate) fn qwen_compiled_split_verify_ffn_plus_residual(
     attn_proj: &MlxArray,
     _layer_idx: usize,
 ) -> Option<MlxArray> {
-    if !fastpath::qwen_linear_mtp_exact_enabled() || cfg.uses_geglu {
+    if !fastpath::qwen_linear_mtp_layer_compile_enabled() || cfg.uses_geglu {
         return None;
     }
     if !cfg.model_family.starts_with("qwen") {
@@ -4478,6 +4543,17 @@ pub(crate) fn qwen_compiled_split_verify_ffn_plus_residual(
         .try_fold(1_i64, |acc, dim| acc.checked_mul(i64::from(*dim)))?;
     if !(2..=4).contains(&leading_elements) {
         return None;
+    }
+    if fastpath::mtp_packed_verify_ffn_enabled()
+        && let Some(out) = qwen_compiled_packed_verify_ffn_plus_residual(
+            cfg,
+            w,
+            hidden,
+            attn_proj,
+            leading_elements,
+        )
+    {
+        return Some(out);
     }
     let gate = w.gate_proj.as_ref()?;
     let up = w.up_proj.as_ref()?;
@@ -4730,7 +4806,7 @@ pub(crate) fn qwen_compiled_split_verify_fa_o_proj_ffn(
     n_heads: usize,
     head_dim: usize,
 ) -> Option<MlxArray> {
-    if !fastpath::qwen_linear_mtp_exact_enabled() || cfg.uses_geglu {
+    if !fastpath::qwen_linear_mtp_layer_compile_enabled() || cfg.uses_geglu {
         return None;
     }
     if !cfg.model_family.starts_with("qwen") {
@@ -6181,7 +6257,13 @@ pub(crate) fn moe_router_deepseek_v3(
         .router_proj
         .as_ref()
         .expect("DeepSeek V3 MoE layer must have router_proj");
-    let logits = qw(x, router_proj);
+    // MiniMax-M3 mlx-vlm / mlxcel run the gate in f32 (`x.astype(float32)` then
+    // Linear). DeepSeek keeps the activation dtype for the matmul.
+    let logits = if cfg.model_family == "minimax_m3" {
+        qw(&astype(x, MlxDtype::Float32, None), router_proj)
+    } else {
+        qw(x, router_proj)
+    };
     let last_axis = logits.ndim() as i32 - 1;
 
     // sigmoid scores kept in f32 throughout all router arithmetic.
@@ -6211,8 +6293,15 @@ pub(crate) fn moe_router_deepseek_v3(
     let top_k_weights = take_along_axis(&orig_scores, &top_k_indices, last_axis, None);
 
     // Optionally normalise top-k weights to sum to 1 (done in f32 for precision).
+    // MiniMax-M3 mlx-vlm `_minimax_moe_select` and mlxcel `route` add 1e-20
+    // to the denominator.
     let top_k_weights = if cfg.moe_experts_per_token > 1 && cfg.moe_norm_topk_prob {
         let denominator = sum_axis(&top_k_weights, last_axis, true, None);
+        let denominator = if cfg.model_family == "minimax_m3" {
+            add(&denominator, &MlxArray::from_f32_slice(&[1e-20_f32]), None)
+        } else {
+            denominator
+        };
         divide(&top_k_weights, &denominator, None)
     } else {
         top_k_weights
@@ -7261,6 +7350,7 @@ fn moe_experts_forward_impl(
     // activation-fusing Metal fast path must stay off so the clamped split
     // path in `dense_ffn_activation` runs.
     let v4_swiglu_clamp = deepseek_v4_swiglu_limit(cfg).is_some();
+    let skip_fused_silu = v4_swiglu_clamp || cfg.model_family == "minimax_m3";
 
     // SSD expert streaming: when the layer's fused expert stack is not
     // resident, page it in here. Every kernel path below then runs unchanged
@@ -7304,7 +7394,7 @@ fn moe_experts_forward_impl(
     // Falls back to the standard multi-dispatch path when ineligible.
     if seq == 1
         && batch == 1
-        && !v4_swiglu_clamp
+        && !skip_fused_silu
         && let Some(out) = try_moe_deep_expert_block_metal(
             cfg,
             gate_up_exps_packed,
@@ -7364,13 +7454,13 @@ fn moe_experts_forward_impl(
             packed_geglu_metal_impl(&out, half)
         } else if !cfg.uses_geglu
             && (seq == 1 || seq <= fastpath::moe_packed_swiglu_prefill_max_seq())
-            && !v4_swiglu_clamp
+            && !skip_fused_silu
             && fastpath::moe_swiglu_packed_metal_enabled()
         {
             packed_swiglu_metal_impl(&out, half)
         } else if seq == 1
             && batch == 1
-            && !v4_swiglu_clamp
+            && !skip_fused_silu
             && !gather_inputs.sorted_indices
             && fastpath::moe_fused_expert_block_enabled()
         {

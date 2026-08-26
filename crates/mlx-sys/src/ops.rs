@@ -2582,6 +2582,68 @@ pub fn slice_update(
     }
 }
 
+/// Slice `a` at array-valued starting indices while keeping a static output
+/// shape. `start[i]` applies to `axes[i]`; every other axis starts at zero.
+///
+/// This is the graph-safe counterpart of [`slice`] for compiled state machines:
+/// the start position can change between calls without changing leaf shapes.
+pub fn slice_dynamic(
+    a: &MlxArray,
+    start: &MlxArray,
+    axes: &[i32],
+    slice_size: &[i32],
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        checked_ffi!(
+            "mlx_slice_dynamic",
+            ffi::mlx_slice_dynamic(
+                &mut res.inner,
+                a.inner,
+                start.inner,
+                axes.as_ptr(),
+                axes.len(),
+                slice_size.as_ptr(),
+                slice_size.len(),
+                stream,
+            )
+        );
+        res
+    }
+}
+
+/// Return `src` with `update` written at array-valued starting indices.
+/// `start[i]` applies to `axes[i]`; the update shape determines the extent.
+pub fn slice_update_dynamic(
+    src: &MlxArray,
+    update: &MlxArray,
+    start: &MlxArray,
+    axes: &[i32],
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        checked_ffi!(
+            "mlx_slice_update_dynamic",
+            ffi::mlx_slice_update_dynamic(
+                &mut res.inner,
+                src.inner,
+                update.inner,
+                start.inner,
+                axes.as_ptr(),
+                axes.len(),
+                stream,
+            )
+        );
+        res
+    }
+}
+
 pub fn contiguous(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     crate::op_count::bump();
     unsafe {
@@ -5664,6 +5726,24 @@ mod tests {
         eval(&[&b]);
         assert_eq!(b.shape(), vec![5]);
         assert_eq!(b.data_f32(), &[0.0, 99.0, 98.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn dynamic_slice_and_update_use_array_start() {
+        let src = MlxArray::from_f32_slice(&[0.0, 1.0, 2.0, 3.0, 4.0]);
+        let start_value = [2_i32];
+        let start = MlxArray::from_raw_data(
+            start_value.as_ptr().cast(),
+            std::mem::size_of_val(&start_value),
+            &[1],
+            MlxDtype::Int32,
+        );
+        let selected = slice_dynamic(&src, &start, &[0], &[2], None);
+        let update = MlxArray::from_f32_slice(&[90.0, 91.0]);
+        let replaced = slice_update_dynamic(&src, &update, &start, &[0], None);
+        eval(&[&selected, &replaced]);
+        assert_eq!(selected.data_f32(), &[2.0, 3.0]);
+        assert_eq!(replaced.data_f32(), &[0.0, 1.0, 90.0, 91.0, 4.0]);
     }
 
     #[test]

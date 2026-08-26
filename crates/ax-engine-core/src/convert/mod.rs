@@ -145,7 +145,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper, minimax_m3, minimax_m3_vl"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -383,6 +383,11 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         attn_temperature_floor: arch_f64(&config, &model_type, "floor_scale").and_then(f64_to_u32),
         attn_temperature_scale: arch_f64(&config, &model_type, "attn_scale").map(|v| v as f32),
         intermediate_size_mlp: arch_u64(&config, &model_type, "intermediate_size_mlp")
+            .or_else(|| {
+                is_minimax_m3(&model_type)
+                    .then(|| arch_u64(&config, &model_type, "dense_intermediate_size"))
+                    .flatten()
+            })
             .and_then(u64_to_u32)
             .unwrap_or(0),
         query_pre_attn_scalar,
@@ -418,8 +423,12 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         } else {
             None
         },
-        moe_norm_topk_prob: arch_bool(&config, &model_type, "norm_topk_prob")
-            .unwrap_or(default_moe_norm_topk_prob(&model_type)),
+        moe_norm_topk_prob: if is_minimax_m3(&model_type) {
+            true
+        } else {
+            arch_bool(&config, &model_type, "norm_topk_prob")
+                .unwrap_or(default_moe_norm_topk_prob(&model_type))
+        },
         hidden_size_per_layer_input,
         vocab_size_per_layer_input,
         linear_attention,
@@ -432,7 +441,9 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         // the doctor command when REQ-L4 lands). EmbeddingGemma's mlx-community
         // weights store raw Gemma `gamma` norms (mlx-lm applies `1 + weight` at
         // runtime), so lift the `+1` into the norm weights at load.
-        weight_sanitize: if is_embeddinggemma_model_type(&model_type) {
+        weight_sanitize: if is_embeddinggemma_model_type(&model_type)
+            || is_minimax_m3(&model_type)
+        {
             WeightSanitize::HfNormOnly
         } else if is_muse_glimmer_model_type(&model_type) {
             // Muse checkpoints store the four per-layer sandwich norms as
@@ -1142,6 +1153,17 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         && (name.starts_with("vision_tower.")
             || name.starts_with("visual.")
             || name.starts_with("model.visual."))
+    {
+        return Some((NativeTensorRole::Other, None));
+    }
+
+    if family.family_name == "minimax_m3"
+        && (name.starts_with("vision_tower.")
+            || name.starts_with("visual.")
+            || name.starts_with("model.visual.")
+            || name.starts_with("multi_modal_projector.")
+            || name.starts_with("language_model.vision_tower.")
+            || name.contains("vision_model"))
     {
         return Some((NativeTensorRole::Other, None));
     }

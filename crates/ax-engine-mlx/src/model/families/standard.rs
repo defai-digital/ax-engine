@@ -1,5 +1,6 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxVectorArray, add, add_rms_norm_pair, rms_norm, rope, rope_dynamic, slice,
+    MlxArray, MlxDtype, MlxVectorArray, add, add_rms_norm_pair, astype, rms_norm, rope,
+    rope_dynamic, slice, slice_update_dynamic,
 };
 use std::time::Instant;
 
@@ -53,19 +54,20 @@ use super::super::profile::{
     profile_eval_elapsed, record_gemma4_moe_decode_layer,
 };
 use super::super::shared::{
-    Gemma4PrefillSkipLastFfnPackedGuard, KVConcatBuffer, add_then_multiply_scalar,
-    attention_mask_array, attention_output_projection_batched,
-    attention_output_projection_with_post_norm, attention_output_projection_with_post_norm_policy,
-    bidirectional_attention, direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu,
-    ffn_swiglu_batched, ffn_swiglu_plus_residual, ffn_swiglu_row_exact,
-    flatten_attention_output_bhsd, flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs,
-    full_precision_attention, full_precision_attention_with_window,
-    gemma4_prefill_maybe_async_first_kv, linear_attention_forward_batched, moe_experts_forward,
-    moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
-    moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
-    moe_router_qwen3, packed_qkv_kv_head_count, per_layer_input_gate_project,
-    prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route,
-    qkv_project, qkv_project_batched, qkv_project_last_query, qkv_project_pos0_exact_rest_shared,
+    Gemma4PrefillSkipLastFfnPackedGuard, KVConcatBuffer, ProjectionBatchPolicy,
+    add_then_multiply_scalar, apply_neox_rope_cos_sin, attention_mask_array,
+    attention_output_projection_batched, attention_output_projection_with_post_norm,
+    attention_output_projection_with_post_norm_policy, bidirectional_attention,
+    direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, ffn_swiglu_batched,
+    ffn_swiglu_plus_residual, ffn_swiglu_row_exact, flatten_attention_output_bhsd,
+    flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs, full_precision_attention,
+    full_precision_attention_with_window, gemma4_prefill_maybe_async_first_kv,
+    linear_attention_forward_batched, moe_experts_forward, moe_experts_forward_gemma4,
+    moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared,
+    moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm, moe_router_qwen3,
+    packed_qkv_kv_head_count, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
+    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project,
+    qkv_project_batched, qkv_project_last_query, qkv_project_pos0_exact_rest_shared,
     qkv_project_row_exact, qkv_project_with_input_norm, qw,
     qwen_compiled_split_verify_fa_o_proj_ffn, qwen_compiled_split_verify_ffn_plus_residual,
     qwen_prefill_maybe_async_sdpa, qwen_prefill_maybe_last_query_q,
@@ -758,6 +760,100 @@ fn layer_shell_post_attention(
 /// layer** in a prefill pass. Setting either on a non-terminal layer breaks
 /// correctness: the next layer would receive a wrong-shaped residual or the
 /// residual stream would skip an FFN.
+pub(crate) struct FullAttentionVerifyLayerOutput {
+    pub hidden: MlxArray,
+    pub k: MlxArray,
+    pub v: MlxArray,
+}
+
+/// Pure dense-Qwen full-attention layer for the whole target-verifier graph.
+///
+/// Logical K/V and the current RoPE offset are explicit graph inputs. The
+/// offset remains array-valued, while the manual NeoX RoPE path avoids the
+/// tensor-indexed table slice that MLX shapeless compilation cannot infer.
+pub(crate) fn layer_forward_verify_functional(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    layer_idx: usize,
+    rope_offset: &MlxArray,
+    cached_k: &MlxArray,
+    cached_v: &MlxArray,
+    rope_cos: &MlxArray,
+    rope_sin: &MlxArray,
+) -> Option<FullAttentionVerifyLayerOutput> {
+    let (head_dim, rope_theta, rope_dims, layer_rope_freqs, sliding_window, kv_source, v_norm) =
+        layer_params(cfg, layer_idx);
+    if sliding_window.is_some()
+        || kv_source.is_some()
+        || w.router_proj.is_some()
+        || w.ffn_post_norm.is_some()
+        || w.per_layer_gate.is_some()
+        || w.layer_scalar.is_some()
+        || cfg.uses_geglu
+    {
+        return None;
+    }
+    let seq = hidden.shape().get(1).copied()? as usize;
+    if !(2..=4).contains(&seq) {
+        return None;
+    }
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    let (q_raw, k_raw, v_raw, attn_gate) = qkv_project(cfg, w, &normed, head_dim);
+    let kv_heads = (k_raw.shape().get(2).copied()? as usize).checked_div(head_dim)?;
+    let v_new =
+        prepare_value_bhsd_from_proj(&v_raw, v_norm, kv_heads, head_dim, seq, cfg.rms_norm_eps);
+    let q = qk_norm_bhsd_from_proj(
+        &q_raw,
+        w.q_norm.as_ref(),
+        cfg.n_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+    let k = qk_norm_bhsd_from_proj(
+        &k_raw,
+        w.k_norm.as_ref(),
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+    let _ = (rope_theta, layer_rope_freqs);
+    let q_rope = astype(
+        &apply_neox_rope_cos_sin(&q, rope_dims as i32, rope_cos, rope_sin),
+        q.dtype(),
+        None,
+    );
+    let k_new = astype(
+        &apply_neox_rope_cos_sin(&k, rope_dims as i32, rope_cos, rope_sin),
+        k.dtype(),
+        None,
+    );
+    let k_all = slice_update_dynamic(cached_k, &k_new, rope_offset, &[2], None);
+    let v_all = slice_update_dynamic(cached_v, &v_new, rope_offset, &[2], None);
+    let capacity = k_all.shape().get(2).copied()?;
+    let mask = super::super::shared::fixed_capacity_causal_mask(rope_offset, seq as i32, capacity);
+    let attn = full_precision_attention(&q_rope, &k_all, &v_all, cfg.query_scale, seq, &Some(mask));
+    let flat = flatten_attention_output_bhsd(&attn, seq, cfg.n_heads, head_dim);
+    let attn_proj = attention_output_projection_with_post_norm_policy(
+        &flat,
+        attn_gate.as_ref(),
+        w.o_proj.as_ref()?,
+        w.attn_post_norm.as_ref(),
+        cfg.rms_norm_eps,
+        ProjectionBatchPolicy::Shared,
+    );
+    let (residual, normed2) =
+        add_rms_norm_pair(hidden, &attn_proj, &w.ffn_norm, cfg.rms_norm_eps, None);
+    let hidden = ffn_swiglu_plus_residual(cfg, w, &normed2, None, layer_idx, &residual);
+    Some(FullAttentionVerifyLayerOutput {
+        hidden,
+        k: k_all,
+        v: v_all,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layer_forward(
     cfg: &ModelConfig,

@@ -38,6 +38,8 @@ pub enum ChatTemplateKind {
     DeepSeekChat,
     /// DeepSeek V4 canonical encoding_dsv4 framing (Jinja-equivalent path).
     DeepSeekV4Chat,
+    /// MiniMax M3 hub jinja (`]~b]user` / `]~b]ai` / `[e~[` / `</mm:think>`).
+    MiniMaxM3,
     /// Families without a verified AX chat fixture use plain role prefixes.
     PlainRolePrefix,
     /// Registered but chat-unsupported today; the renderer rejects with
@@ -228,6 +230,10 @@ mod tests {
         assert_eq!(
             chat_contract_for_family("unlimited_ocr").unwrap().template,
             ChatTemplateKind::PlainRolePrefix
+        );
+        assert_eq!(
+            chat_contract_for_family("minimax_m3").unwrap().template,
+            ChatTemplateKind::MiniMaxM3
         );
     }
 

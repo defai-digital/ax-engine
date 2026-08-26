@@ -8,27 +8,29 @@ pub(super) mod mlp;
 pub(super) mod norm;
 pub(super) mod rope;
 pub(super) mod utils;
+pub(crate) mod verify_qmm;
 
 // Re-exports for model/mod.rs and families/ modules.
 #[cfg(test)]
 pub(crate) use attention::build_layer_masks;
 pub(crate) use attention::{
-    KVConcatBuffer, attention_mask_array, attention_with_sinks, bidirectional_attention,
-    build_layer_masks_for_forward, build_layer_masks_with_media_ranges,
-    direct_qk_norm_rope_route_enabled_for_family, flatten_attention_output_bhsd,
-    full_precision_attention, full_precision_attention_with_window,
-    gemma4_prefill_maybe_async_first_kv, prepare_value_bhsd, prepare_value_bhsd_from_proj,
-    prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj_flat, qk_norm_rope_bhsd_from_proj_with_route,
-    qwen_prefill_maybe_async_sdpa, qwen_prefill_maybe_eval_attn_input,
-    qwen_prefill_maybe_last_query_q, qwen_prefill_maybe_last_token_bsh,
-    qwen_prefill_maybe_last_token_flat, qwen_prefill_query_seq, rope_bhsd_batch_offset_safe,
-    set_qwen_prefill_reuse_rope_active,
+    KVConcatBuffer, apply_neox_rope_cos_sin, attention_mask_array, attention_with_sinks,
+    bidirectional_attention, build_layer_masks_for_forward, build_layer_masks_with_media_ranges,
+    build_neox_rope_cos_sin, direct_qk_norm_rope_route_enabled_for_family,
+    fixed_capacity_causal_mask, flatten_attention_output_bhsd, full_precision_attention,
+    full_precision_attention_with_window, gemma4_prefill_maybe_async_first_kv, prepare_value_bhsd,
+    prepare_value_bhsd_from_proj, prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_flat,
+    qk_norm_rope_bhsd_from_proj_with_route, qwen_prefill_maybe_async_sdpa,
+    qwen_prefill_maybe_eval_attn_input, qwen_prefill_maybe_last_query_q,
+    qwen_prefill_maybe_last_token_bsh, qwen_prefill_maybe_last_token_flat, qwen_prefill_query_seq,
+    rope_bhsd_batch_offset_safe, set_qwen_prefill_reuse_rope_active,
 };
 pub(crate) use deepseek_v4_attention::deepseek_v4_attention_forward;
 pub(crate) use hyper_connection::{hc_head, hc_post, hc_pre};
 pub(crate) use linear_attention::{
-    linear_attention_forward, linear_attention_forward_batched, replay_linear_attention_mtp_prefix,
+    LinearAttentionVerifyOutput, linear_attention_forward, linear_attention_forward_batched,
+    linear_attention_forward_verify_functional, replay_linear_attention_mtp_prefix,
     set_qwen_la_exact_attn_norm, set_qwen_la_norm_qkvz_fuse_weights,
 };
 pub(crate) use mla::glm_mla_attention_forward;

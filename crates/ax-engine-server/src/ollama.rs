@@ -1566,6 +1566,7 @@ fn ollama_template_hint(live: &LiveState) -> String {
         ChatPromptTemplate::GptOssHarmony => "gpt-oss-harmony".to_string(),
         ChatPromptTemplate::MuseGlimmerAtem => "muse-glimmer-atem".to_string(),
         ChatPromptTemplate::DeepSeekChat => "deepseek".to_string(),
+        ChatPromptTemplate::MiniMaxM3 => "minimax-m3".to_string(),
         ChatPromptTemplate::Unsupported(family) => family.label().to_string(),
         ChatPromptTemplate::PlainRolePrefix => "plain".to_string(),
     }

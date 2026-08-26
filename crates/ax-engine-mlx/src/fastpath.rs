@@ -20,6 +20,49 @@
 use std::cell::Cell;
 use std::sync::OnceLock;
 
+/// Maximum number of committed prompt transitions retained in the Qwen MTP
+/// head cache. `0` means unlimited. Keeping this reader beside the other
+/// process-cached fast-path knobs lets prefill capture and decode warmup share
+/// one value instead of independently interpreting the environment.
+pub fn mtp_warmup_cap() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_WARMUP_CAP")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(256)
+    })
+}
+
+/// Optional fixed MTP proposal depth used for controlled admission trials.
+/// Unset keeps the adaptive controller; positive values are clamped to the
+/// model head's advertised maximum.
+pub fn mtp_fixed_draft_depth() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_positive_usize_env("AX_MLX_MTP_FIXED_DRAFT_DEPTH"))
+}
+
+/// `AX_MLX_MTP_DEPTH3_HYSTERESIS` — keep a three-token proposal window after
+/// accepting its first two drafts. This avoids alternating 3→2→3 on
+/// high-acceptance Qwen MTP streams while still backing off after a zero- or
+/// one-token accept.
+///
+/// **Default: OFF** pending matched M5 admission.
+pub fn mtp_depth3_hysteresis_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_HYSTERESIS"))
+}
+
+/// `AX_MLX_MTP_DEPTH3_MISS_BACKOFF` — for a three-token Qwen head, start deep
+/// and back off to two drafts only after a complete miss. Any accepted draft
+/// restores depth three on the next cycle.
+///
+/// **Default: OFF** pending matched M5 admission.
+pub fn mtp_depth3_miss_backoff_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_MISS_BACKOFF"))
+}
+
 fn parse_bool_value(raw: &str) -> bool {
     let trimmed = raw.trim();
     trimmed.eq_ignore_ascii_case("1")
@@ -538,6 +581,21 @@ thread_local! {
     /// Runner-scoped selection. `None` preserves the legacy explicit-env
     /// behavior for standalone probes that call model functions directly.
     static QWEN_LINEAR_MTP_EXACT_SCOPE: Cell<Option<bool>> = const { Cell::new(None) };
+    /// Runner-scoped marker for an oMLX-style relaxed target verifier. This is
+    /// deliberately separate from the singleton-exact arithmetic profile:
+    /// verify-only fused preprocessing/native causal SDPA are safe here, while
+    /// row-exact projection and residual routes must remain disabled.
+    static QWEN_LINEAR_MTP_TARGET_VERIFY_SCOPE: Cell<bool> = const { Cell::new(false) };
+    /// Runner-scoped marker for one relaxed Qwen MTP request call. Unlike the
+    /// target-forward marker, this remains active during the matching cold
+    /// prefill, drafting, and accepted-history refold, but is disabled for
+    /// ordinary/direct sessions.
+    static QWEN_LINEAR_MTP_RELAXED_SESSION_SCOPE: Cell<bool> = const { Cell::new(false) };
+    /// Graph-construction marker for the whole Qwen target-verifier closure.
+    /// Nested per-layer closures and eager/async submit hints must stay out of
+    /// an enclosing `mlx_compile` trace, while arithmetic fast paths remain
+    /// available to the traced body.
+    static QWEN_LINEAR_MTP_WHOLE_VERIFY_TRACE_SCOPE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Restores the previous thread-local exact-profile selection on drop.
@@ -580,6 +638,202 @@ pub fn qwen_linear_mtp_exact_enabled() -> bool {
     })
 }
 
+/// Restores the previous relaxed target-verifier marker on drop.
+#[must_use]
+pub(crate) struct QwenLinearMtpTargetVerifyScope {
+    previous: bool,
+}
+
+impl Drop for QwenLinearMtpTargetVerifyScope {
+    fn drop(&mut self) {
+        QWEN_LINEAR_MTP_TARGET_VERIFY_SCOPE.with(|current| current.set(self.previous));
+    }
+}
+
+/// Mark one target-model forward as a short Qwen linear-MTP verifier.
+pub(crate) fn scoped_qwen_linear_mtp_target_verify(
+    enabled: bool,
+) -> QwenLinearMtpTargetVerifyScope {
+    let previous = QWEN_LINEAR_MTP_TARGET_VERIFY_SCOPE.with(|current| {
+        let previous = current.get();
+        current.set(enabled);
+        previous
+    });
+    QwenLinearMtpTargetVerifyScope { previous }
+}
+
+/// Whether verify-only fast kernels may use their multi-token forms.
+///
+/// The exact profile historically implied this permission. Relaxed target
+/// verification now carries it independently so turning row-exact arithmetic
+/// off does not accidentally restore full-history f32 casts, array masks, and
+/// portable GDN preprocessing.
+pub fn qwen_linear_mtp_verify_fast_kernels_enabled() -> bool {
+    qwen_linear_mtp_exact_enabled()
+        || QWEN_LINEAR_MTP_TARGET_VERIFY_SCOPE.with(|current| current.get())
+}
+
+/// Whether the current model call is the relaxed Qwen linear-MTP target
+/// verifier rather than ordinary prefill/decode or row-exact replay.
+pub fn qwen_linear_mtp_target_verify_enabled() -> bool {
+    QWEN_LINEAR_MTP_TARGET_VERIFY_SCOPE.with(|current| current.get())
+}
+
+env_flag!(
+    /// `AX_MLX_MTP_TARGET_LAYER_COMPILE` — allow the existing fixed-shape
+    /// Qwen S=2..=4 layer closures inside the relaxed target verifier. The
+    /// row-exact profile retains its historical behavior independently.
+    ///
+    /// **Default: OFF** pending matched M5 verifier admission.
+    mtp_target_layer_compile_enabled,
+    "AX_MLX_MTP_TARGET_LAYER_COMPILE"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_PACKED_VERIFY_FFN` — use the prepacked gate/up projection
+    /// inside the fixed-shape Qwen target-verifier FFN closure. This keeps the
+    /// verifier's relaxed arithmetic contract while removing one skinny QMM
+    /// dispatch per eligible dense layer.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_packed_verify_ffn_enabled,
+    "AX_MLX_MTP_PACKED_VERIFY_FFN"
+);
+
+/// Whether fixed-shape Qwen verifier layer closures may engage.
+pub fn qwen_linear_mtp_layer_compile_enabled() -> bool {
+    !qwen_linear_mtp_whole_verify_trace_enabled()
+        && (qwen_linear_mtp_exact_enabled()
+            || (qwen_linear_mtp_target_verify_enabled() && mtp_target_layer_compile_enabled()))
+}
+
+env_flag!(
+    /// `AX_MLX_MTP_WHOLE_VERIFY_COMPILE` — compile the complete dense
+    /// Qwen3.5 target-verifier step with explicit full-attention and
+    /// gated-delta cache tensor inputs/outputs. Exact target semantics are
+    /// preserved; failure falls back to the ordinary verifier.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_whole_verify_compile_enabled,
+    "AX_MLX_MTP_WHOLE_VERIFY_COMPILE"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_LINEAR_LAYER_COMPILE` — compile each complete gated-delta
+    /// layer in a short Qwen3.5 target-verifier step while leaving the
+    /// full-attention layers on their existing paged route. The closure
+    /// threads conv/recurrent state and the compact replay tape explicitly.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_linear_layer_compile_enabled,
+    "AX_MLX_MTP_LINEAR_LAYER_COMPILE"
+);
+
+/// Restores the previous whole-verifier trace marker on drop.
+#[must_use]
+pub(crate) struct QwenLinearMtpWholeVerifyTraceScope {
+    previous: bool,
+}
+
+impl Drop for QwenLinearMtpWholeVerifyTraceScope {
+    fn drop(&mut self) {
+        QWEN_LINEAR_MTP_WHOLE_VERIFY_TRACE_SCOPE.with(|current| current.set(self.previous));
+    }
+}
+
+/// Mark synchronous graph construction for one whole target-verifier closure.
+pub(crate) fn scoped_qwen_linear_mtp_whole_verify_trace(
+    enabled: bool,
+) -> QwenLinearMtpWholeVerifyTraceScope {
+    let previous = QWEN_LINEAR_MTP_WHOLE_VERIFY_TRACE_SCOPE.with(|current| {
+        let previous = current.get();
+        current.set(enabled);
+        previous
+    });
+    QwenLinearMtpWholeVerifyTraceScope { previous }
+}
+
+/// Whether the current thread is tracing the enclosing whole verifier graph.
+pub fn qwen_linear_mtp_whole_verify_trace_enabled() -> bool {
+    QWEN_LINEAR_MTP_WHOLE_VERIFY_TRACE_SCOPE.with(|current| current.get())
+}
+
+/// Restores the previous relaxed Qwen MTP session marker on drop.
+#[must_use]
+pub(crate) struct QwenLinearMtpRelaxedSessionScope {
+    previous: bool,
+}
+
+impl Drop for QwenLinearMtpRelaxedSessionScope {
+    fn drop(&mut self) {
+        QWEN_LINEAR_MTP_RELAXED_SESSION_SCOPE.with(|current| current.set(self.previous));
+    }
+}
+
+/// Mark one runner call as relaxed Qwen MTP request work.
+pub(crate) fn scoped_qwen_linear_mtp_relaxed_session(
+    enabled: bool,
+) -> QwenLinearMtpRelaxedSessionScope {
+    let previous = QWEN_LINEAR_MTP_RELAXED_SESSION_SCOPE.with(|current| {
+        let previous = current.get();
+        current.set(enabled);
+        previous
+    });
+    QwenLinearMtpRelaxedSessionScope { previous }
+}
+
+/// Whether the current runner call belongs to a relaxed Qwen MTP request.
+pub fn qwen_linear_mtp_relaxed_session_enabled() -> bool {
+    QWEN_LINEAR_MTP_RELAXED_SESSION_SCOPE.with(|current| current.get())
+}
+
+env_flag_default_on!(
+    /// `AX_MLX_MTP_ASYNC_DUAL_GATE_UP` — co-submit the two dense FFN
+    /// projections during relaxed Qwen MTP request work. Ordinary direct
+    /// sessions and row-exact verification are unchanged.
+    ///
+    /// **Default: ON inside the relaxed MTP session scope only**
+    /// (kill-switch via `AX_MLX_MTP_ASYNC_DUAL_GATE_UP=0`).
+    mtp_async_dual_gate_up_enabled,
+    "AX_MLX_MTP_ASYNC_DUAL_GATE_UP"
+);
+
+/// Whether one short Qwen MTP FFN should co-submit gate/up qmm.
+pub fn should_mtp_async_dual_gate_up(model_family: &str, seq: i32) -> bool {
+    should_mtp_async_dual_gate_up_for(
+        mtp_async_dual_gate_up_enabled(),
+        qwen_linear_mtp_relaxed_session_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_mtp_async_dual_gate_up`].
+pub fn should_mtp_async_dual_gate_up_for(
+    enabled: bool,
+    relaxed_session: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled
+        && relaxed_session
+        && !qwen_linear_mtp_whole_verify_trace_enabled()
+        && (2..=4).contains(&seq)
+        && model_family.eq_ignore_ascii_case("qwen3_5")
+}
+
+env_flag_default_on!(
+    /// `AX_MLX_MTP_LA_OUT_PROJ_SILU_MUL_QMM` — fuse gated RMS output
+    /// preparation into the quantized linear-attention output projection
+    /// during relaxed Qwen MTP request work. Ordinary direct sessions and
+    /// row-exact verification retain their existing arithmetic.
+    ///
+    /// **Default: ON inside the relaxed MTP session scope only**
+    /// (kill-switch via `AX_MLX_MTP_LA_OUT_PROJ_SILU_MUL_QMM=0`).
+    mtp_la_out_proj_silu_mul_qmm_enabled,
+    "AX_MLX_MTP_LA_OUT_PROJ_SILU_MUL_QMM"
+);
+
 env_flag!(
     /// `AX_MLX_MTP_LINEAR_PROJECTED_REPLAY` — let a Qwen gated-delta MTP
     /// verifier adopt/restore its clone and, after a partial accept, reuse the
@@ -593,6 +847,140 @@ env_flag!(
     /// direct decode. Default OFF until matched M5 admission completes.
     mtp_linear_projected_replay_enabled,
     "AX_MLX_MTP_LINEAR_PROJECTED_REPLAY"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_RELAXED_TARGET_VERIFY` — keep the exact Qwen MTP draft
+    /// head active while building the target verifier with stock MLX
+    /// arithmetic. Requires projected replay so accepted recurrent state is
+    /// derived from the same verifier graph. This is an explicit oMLX-style
+    /// non-bit-exact performance experiment and is OFF by default.
+    mtp_relaxed_target_verify_enabled,
+    "AX_MLX_MTP_RELAXED_TARGET_VERIFY"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_SPLIT_VERIFY_HIDDEN_EVAL` — materialize the target trunk's
+    /// post-norm hidden rows before scheduling the verify-window LM head and
+    /// argmax. This mirrors MTPLX's lazy-logits boundary and can reduce mixed
+    /// graph co-residency on short Qwen verifier windows.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_split_verify_hidden_eval_enabled,
+    "AX_MLX_MTP_SPLIT_VERIFY_HIDDEN_EVAL"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_LAZY_ADOPT_STATE` — leave an accepted relaxed Qwen MTP
+    /// verifier cache lazy until the next target forward consumes it. The
+    /// acceptance barrier has already materialized the verifier logits; an
+    /// immediate second eval of cache side outputs can serialize otherwise
+    /// adjacent verifier graphs.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_lazy_adopt_state_enabled,
+    "AX_MLX_MTP_LAZY_ADOPT_STATE"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_REBIND_VERIFY_FA` — after a relaxed Qwen verifier has
+    /// produced replacement full-attention K/V buffers, rebind the rollback
+    /// source cache to those outputs before the evaluation fence.  The source
+    /// retains its pre-verify gated-delta states and logical length, so partial
+    /// replay and fallback recompute remain valid, while the superseded K/V
+    /// handles no longer prevent MLX from donating `slice_update` inputs.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_rebind_verify_fa_enabled,
+    "AX_MLX_MTP_REBIND_VERIFY_FA"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_LINEAR_TAPE_CAPTURE` — record the compact gated-delta
+    /// recurrence tape during a relaxed Qwen verifier instead of writing a
+    /// second full recurrent-state checkpoint for every linear layer. Misses
+    /// and partial accepts reconstruct only their committed prefix from the
+    /// unchanged source state.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_linear_tape_capture_enabled,
+    "AX_MLX_MTP_LINEAR_TAPE_CAPTURE"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT` — retain the verifier's projected
+    /// QKV/A/B inputs but do not write a full recurrent-state checkpoint at
+    /// the confirmed row. Accepted cycles pay no recovery cost; rejected
+    /// cycles replay only their committed prefix from the unchanged source
+    /// state, matching the oMLX/MTPLX rollback shape.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_skip_prefix_checkpoint_enabled,
+    "AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_REUSE_PROCESSED_GDN` — retain the verifier's already
+    /// materialized normalized Q/K/V rows and reuse their accepted prefix
+    /// during gated-delta rollback. This avoids repeating depthwise conv and
+    /// Q/K normalization on misses and partial accepts; the recurrent update
+    /// still runs from the unchanged pre-verify state.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_reuse_processed_gdn_enabled,
+    "AX_MLX_MTP_REUSE_PROCESSED_GDN"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_GDN_PREWORK_SIMD32` — use a SIMD-width, four-values-per-lane
+    /// conv/SiLU/QK-normalization kernel for short Qwen target-verifier blocks.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_gdn_prework_simd32_enabled,
+    "AX_MLX_MTP_GDN_PREWORK_SIMD32"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_FUSED_GDN_VERIFY` — fuse the short Qwen verifier's
+    /// depthwise conv, Q/K normalization, and gated-delta recurrence into one
+    /// Metal dispatch. The kernel preserves activation-dtype rounding and the
+    /// recurrent update order, and falls back on any unsupported shape.
+    ///
+    /// **Default: OFF** pending matched token-hash and M5 throughput admission.
+    mtp_fused_gated_delta_verify_enabled,
+    "AX_MLX_MTP_FUSED_GDN_VERIFY"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_REFOLD_ACCEPTED_HISTORY` — rebuild committed Qwen MTP-head
+    /// history from target-backbone hidden rows after each verify cycle. The
+    /// draft cache is one position behind the proposed token list, so this also
+    /// fixes the legacy rejection trim's shifted-entry accounting. OFF by
+    /// default until matched acceptance and throughput admission completes.
+    mtp_refold_accepted_history_enabled,
+    "AX_MLX_MTP_REFOLD_ACCEPTED_HISTORY"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_BATCHED_COMMITTED_FOLD` — fold accepted drafts plus the
+    /// correction/bonus token through the Qwen MTP head in one batched pass,
+    /// then seed the next greedy draft chain from the final folded row. This
+    /// mirrors oMLX's committed-history cycle and avoids a second first-depth
+    /// read of the MTP-head weights.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_batched_committed_fold_enabled,
+    "AX_MLX_MTP_BATCHED_COMMITTED_FOLD"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_LAST_COMMITTED_QUERY` — during a batched committed-history
+    /// fold, project the attention query/gate only for the final row. Earlier
+    /// rows contribute K/V history but their attention outputs are discarded.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_last_committed_query_enabled,
+    "AX_MLX_MTP_LAST_COMMITTED_QUERY"
 );
 
 /// Widest sequence shape the exact verifier contract covers: S=1 singleton
@@ -738,10 +1126,10 @@ env_flag!(
     /// **Default: OFF** (opt-in via `AX_MLX_MTP_ASYNC_DRAFT=1`).
     ///
     /// Exactness-preserving: the identical lazy draft graph is evaluated;
-    /// only the synchronization point moves. Engages only under the exact
-    /// profile with the confidence gate disabled, non-stochastic drafting,
-    /// and skip-state off — the regime where the synchronous greedy path
-    /// computes no log-probs or distributions.
+    /// only the synchronization point moves. Engages under the exact profile
+    /// or the explicit projected-replay profile, with the confidence gate
+    /// disabled, non-stochastic drafting, and skip-state off — the regime
+    /// where the synchronous greedy path computes no log-probs or distributions.
     mtp_async_draft_enabled,
     "AX_MLX_MTP_ASYNC_DRAFT"
 );
@@ -2690,7 +3078,9 @@ env_flag!(
 /// Whether Qwen linear-attn prefill should fuse gated RMS into out_proj qmm.
 pub fn should_qwen_la_out_proj_silu_mul_qmm(model_family: &str, seq: i32) -> bool {
     should_qwen_la_out_proj_silu_mul_qmm_for(
-        qwen_la_out_proj_silu_mul_qmm_enabled(),
+        qwen_la_out_proj_silu_mul_qmm_enabled()
+            || (mtp_la_out_proj_silu_mul_qmm_enabled()
+                && qwen_linear_mtp_relaxed_session_enabled()),
         model_family,
         seq,
     )
@@ -5356,6 +5746,17 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MTP_COMPILED_HEAD_FIXED_KV` — give the compiled multi-depth Qwen
+    /// draft head a fixed-capacity K/V buffer and an explicit tensor write
+    /// offset. This avoids concatenating the complete MTP history at every
+    /// draft depth and makes one compiled closure reusable across steps.
+    ///
+    /// **Default: OFF** pending matched M5 admission.
+    mtp_compiled_head_fixed_kv_enabled,
+    "AX_MTP_COMPILED_HEAD_FIXED_KV"
+);
+
+env_flag!(
     /// `AX_DIFFUSION_NO_SKIP_COMMIT` — opt-out of the causal commit
     /// skip that is enabled by default on convergence with high
     /// acceptance. When set to `1`, the causal commit pass always runs.
@@ -5570,6 +5971,59 @@ mod tests {
             assert!(qwen_linear_mtp_exact_enabled());
         }
         assert_eq!(qwen_linear_mtp_exact_enabled(), baseline);
+    }
+
+    #[test]
+    fn relaxed_target_verify_enables_only_verify_fast_kernel_marker() {
+        let exact_baseline = qwen_linear_mtp_exact_enabled();
+        let fast_baseline = qwen_linear_mtp_verify_fast_kernels_enabled();
+        let target_baseline = qwen_linear_mtp_target_verify_enabled();
+        {
+            let _exact = scoped_qwen_linear_mtp_exact(false);
+            assert!(!qwen_linear_mtp_exact_enabled());
+            assert!(!qwen_linear_mtp_verify_fast_kernels_enabled());
+            assert!(!qwen_linear_mtp_target_verify_enabled());
+            {
+                let _verify = scoped_qwen_linear_mtp_target_verify(true);
+                assert!(!qwen_linear_mtp_exact_enabled());
+                assert!(qwen_linear_mtp_verify_fast_kernels_enabled());
+                assert!(qwen_linear_mtp_target_verify_enabled());
+            }
+            assert!(!qwen_linear_mtp_verify_fast_kernels_enabled());
+            assert!(!qwen_linear_mtp_target_verify_enabled());
+        }
+        assert_eq!(qwen_linear_mtp_exact_enabled(), exact_baseline);
+        assert_eq!(qwen_linear_mtp_verify_fast_kernels_enabled(), fast_baseline);
+        assert_eq!(qwen_linear_mtp_target_verify_enabled(), target_baseline);
+    }
+
+    #[test]
+    fn relaxed_mtp_async_dual_gate_up_is_scope_family_and_window_gated() {
+        assert!(should_mtp_async_dual_gate_up_for(true, true, "qwen3_5", 3));
+        assert!(should_mtp_async_dual_gate_up_for(true, true, "QWEN3_5", 4));
+        assert!(!should_mtp_async_dual_gate_up_for(
+            false, true, "qwen3_5", 3
+        ));
+        assert!(!should_mtp_async_dual_gate_up_for(
+            true, false, "qwen3_5", 3
+        ));
+        assert!(!should_mtp_async_dual_gate_up_for(true, true, "qwen3_5", 1));
+        assert!(!should_mtp_async_dual_gate_up_for(true, true, "gemma4", 3));
+    }
+
+    #[test]
+    fn relaxed_mtp_session_scope_restores_nested_state() {
+        let baseline = qwen_linear_mtp_relaxed_session_enabled();
+        {
+            let _outer = scoped_qwen_linear_mtp_relaxed_session(true);
+            assert!(qwen_linear_mtp_relaxed_session_enabled());
+            {
+                let _inner = scoped_qwen_linear_mtp_relaxed_session(false);
+                assert!(!qwen_linear_mtp_relaxed_session_enabled());
+            }
+            assert!(qwen_linear_mtp_relaxed_session_enabled());
+        }
+        assert_eq!(qwen_linear_mtp_relaxed_session_enabled(), baseline);
     }
 
     #[test]

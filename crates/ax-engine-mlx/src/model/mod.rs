@@ -127,6 +127,9 @@ use shared::*;
 pub(crate) use shared::{replay_linear_attention_mtp_prefix, scale_hidden_pub};
 
 mod families;
+mod whole_verify;
+
+pub(crate) use whole_verify::{clear_whole_verify_compile_cache, try_whole_compiled_qwen_verify};
 
 pub(crate) use families::standard::layer_forward_bidirectional;
 // The MTP module drives the nextn block directly (`mtp.rs`); the family owns
@@ -1828,6 +1831,13 @@ fn lm_head_verify_window_projection(
     hidden_size: i32,
 ) -> MlxArray {
     if (2..=4).contains(&seq) {
+        // The relaxed target verifier is explicitly allowed to use oMLX-style
+        // lane-strided arithmetic. Its armed large-vocabulary kernel reads the
+        // quantized head once for all verify rows; exact-profile calls remain
+        // unarmed and retain the singleton-identity path below.
+        if let Some(verify) = shared::verify_qmm::try_qwen_mtp_verify_qmm(normed, lm_head) {
+            return verify;
+        }
         // Dense heads with a prepared `[in, out]` buffer: one batched
         // multi-row GEMV reads the head once for the whole window, and its
         // per-row k-ascending accumulation is bit-identical across Leading —
@@ -1941,6 +1951,7 @@ pub fn forward_all_positions_with_post_norm(
         token_ids.len(),
         cache,
         token_offset,
+        false,
     )
 }
 
@@ -1959,6 +1970,7 @@ pub fn forward_all_positions_with_post_norm_ids(
     seq: usize,
     cache: &mut MlxKVCache,
     token_offset: usize,
+    native_greedy_logits: bool,
 ) -> (MlxArray, MlxArray) {
     // DI-VL-001: async-draft verify and MTP multi-token path share this entry.
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
@@ -2053,9 +2065,19 @@ pub fn forward_all_positions_with_post_norm_ids(
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits =
         lm_head_verify_window_projection(&normed, &weights.lm_head, seq_i, cfg.hidden_size as i32);
-    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
-    let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
-    let logits_out = reshape(&logits_f32, &[seq_i, cfg.vocab_size as i32], None);
+    // Plain greedy acceptance only consumes argmax indices. Casting the
+    // verify-window vocabulary tensor to f32 (and then applying a monotonic
+    // softcap) cannot change those indices, but it does write another
+    // multi-megabyte tensor every speculative cycle. Keep native logits for
+    // that narrow caller contract; sampled and processor-bearing requests
+    // retain the established f32 surface.
+    let logits_out = if native_greedy_logits {
+        reshape(&logits, &[seq_i, cfg.vocab_size as i32], None)
+    } else {
+        let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+        let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+        reshape(&logits_f32, &[seq_i, cfg.vocab_size as i32], None)
+    };
     // When chunked submit is active, also kick the lm_head/norm tail so GPU
     // work continues while the caller builds argmax + cache-ref eval targets.
     // Exactness-preserving: only schedules already-built arrays.

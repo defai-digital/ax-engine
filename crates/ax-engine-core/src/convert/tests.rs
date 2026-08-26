@@ -7655,3 +7655,137 @@ fn muse_glimmer_manifest_requires_per_layer_attention_gate() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn converts_minimax_m3_vl_language_moe_directory() {
+    let dir = unique_test_dir("minimax-m3");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "minimax_m3_vl",
+            "text_config": {
+                "hidden_size": 8,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "head_dim": 2,
+                "num_hidden_layers": 4,
+                "intermediate_size": 6,
+                "dense_intermediate_size": 12,
+                "vocab_size": 16,
+                "num_local_experts": 4,
+                "num_experts_per_tok": 2,
+                "n_shared_experts": 1,
+                "moe_layer_freq": [0, 0, 1, 1],
+                "routed_scaling_factor": 2.0,
+                "scoring_func": "sigmoid",
+                "use_gemma_norm": true,
+                "rms_norm_eps": 1e-6,
+                "rope_theta": 10000
+            },
+            "quantization": {"group_size": 32, "bits": 2, "mode": "affine"}
+        }),
+    );
+    let mut tensors: Vec<(String, &str, Vec<u64>)> = vec![
+        (
+            "language_model.model.embed_tokens.weight".into(),
+            "U32",
+            vec![16, 8],
+        ),
+        ("language_model.model.norm.weight".into(), "BF16", vec![8]),
+        ("language_model.lm_head.weight".into(), "U32", vec![16, 8]),
+        ("vision_tower.patch_embed.weight".into(), "BF16", vec![8, 3]),
+    ];
+    for layer in 0..4u64 {
+        let p = format!("language_model.model.layers.{layer}");
+        tensors.push((format!("{p}.input_layernorm.weight"), "BF16", vec![8]));
+        tensors.push((
+            format!("{p}.post_attention_layernorm.weight"),
+            "BF16",
+            vec![8],
+        ));
+        tensors.push((format!("{p}.self_attn.q_proj.weight"), "U32", vec![8, 8]));
+        tensors.push((format!("{p}.self_attn.k_proj.weight"), "U32", vec![4, 8]));
+        tensors.push((format!("{p}.self_attn.v_proj.weight"), "U32", vec![4, 8]));
+        tensors.push((format!("{p}.self_attn.o_proj.weight"), "U32", vec![8, 8]));
+        if layer < 2 {
+            tensors.push((format!("{p}.mlp.gate_proj.weight"), "U32", vec![12, 8]));
+            tensors.push((format!("{p}.mlp.up_proj.weight"), "U32", vec![12, 8]));
+            tensors.push((format!("{p}.mlp.down_proj.weight"), "U32", vec![8, 12]));
+        } else {
+            tensors.push((
+                format!("{p}.block_sparse_moe.gate.weight"),
+                "U32",
+                vec![4, 8],
+            ));
+            tensors.push((
+                format!("{p}.block_sparse_moe.switch_mlp.gate_proj.weight"),
+                "U32",
+                vec![4, 6, 8],
+            ));
+            tensors.push((
+                format!("{p}.block_sparse_moe.switch_mlp.up_proj.weight"),
+                "U32",
+                vec![4, 6, 8],
+            ));
+            tensors.push((
+                format!("{p}.block_sparse_moe.switch_mlp.down_proj.weight"),
+                "U32",
+                vec![4, 8, 6],
+            ));
+            tensors.push((
+                format!("{p}.block_sparse_moe.shared_experts.gate_proj.weight"),
+                "U32",
+                vec![6, 8],
+            ));
+            tensors.push((
+                format!("{p}.block_sparse_moe.shared_experts.up_proj.weight"),
+                "U32",
+                vec![6, 8],
+            ));
+            tensors.push((
+                format!("{p}.block_sparse_moe.shared_experts.down_proj.weight"),
+                "U32",
+                vec![8, 6],
+            ));
+        }
+    }
+    let borrowed: Vec<(&str, &str, &[u64])> = tensors
+        .iter()
+        .map(|(n, d, s)| (n.as_str(), *d, s.as_slice()))
+        .collect();
+    write_fake_safetensors(&dir, "model.safetensors", &borrowed);
+    let manifest = convert_hf_model_dir(&dir).expect("minimax_m3 convert");
+    assert_eq!(manifest.model_family, "minimax_m3");
+    assert_eq!(manifest.moe.expert_count, Some(4));
+    assert_eq!(manifest.moe.experts_per_token, Some(2));
+    assert_eq!(manifest.moe.shared_expert_count, Some(1));
+    assert_eq!(manifest.moe.first_dense_layers, Some(2));
+    assert!(manifest.moe.sigmoid_routing);
+    assert_eq!(manifest.moe.routed_scaling_factor, Some(2.0));
+    assert!(
+        manifest.moe_norm_topk_prob,
+        "MiniMax M3 always L1-normalizes selected expert scores"
+    );
+    assert!(manifest.tensors.iter().any(|t| {
+        t.role == NativeTensorRole::FfnGateExps && t.layer_index == Some(2)
+    }));
+    assert!(manifest.tensors.iter().any(|t| {
+        t.role == NativeTensorRole::FfnSharedExpertGate && t.layer_index == Some(3)
+    }));
+    assert!(
+        !manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::FfnSharedExpertGateInp),
+        "MiniMax shared experts are ungated (no ffn_shared_expert_gate_inp)"
+    );
+    assert_eq!(manifest.intermediate_size_mlp, 12);
+    assert_eq!(manifest.weight_sanitize, WeightSanitize::HfNormOnly);
+    assert!(
+        manifest
+            .tensors
+            .iter()
+            .any(|t| t.role == NativeTensorRole::Other && t.name.contains("vision_tower"))
+    );
+    let _ = fs::remove_dir_all(dir);
+}

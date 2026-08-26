@@ -7,10 +7,10 @@ use super::super::profile::{
     prefill_profile_enabled,
 };
 use super::super::shared::{
-    ffn_swiglu, ffn_swiglu_plus_residual, flatten_compiled_moe_inputs, linear_attention_forward,
-    moe_experts_forward, moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared,
-    moe_router_qwen3, qwen_compiled_split_verify_ffn_plus_residual, rms_norm_opt,
-    shared_expert_forward,
+    LinearAttentionVerifyOutput, ffn_swiglu, ffn_swiglu_plus_residual, flatten_compiled_moe_inputs,
+    linear_attention_forward, linear_attention_forward_verify_functional, moe_experts_forward,
+    moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared, moe_router_qwen3,
+    qwen_compiled_split_verify_ffn_plus_residual, rms_norm_opt, shared_expert_forward,
 };
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
@@ -31,6 +31,77 @@ pub(crate) fn clear_qwen_prefill_pending_ffn() {
 
 fn take_qwen_prefill_pending_ffn() -> Option<MlxArray> {
     PENDING_PREFILL_FFN.with(|slot| slot.borrow_mut().take())
+}
+
+pub(crate) struct QwenLinearVerifyLayerOutput {
+    pub hidden: MlxArray,
+    pub state: LinearAttentionVerifyOutput,
+}
+
+/// Pure short-verifier layer used by the enclosing whole-model MLX closure.
+///
+/// This follows the ordinary dense Qwen3.5 layer arithmetic but returns every
+/// gated-delta state leaf instead of mutating a request cache. MoE and
+/// post-normalized FFNs are intentionally rejected by the caller's eligibility
+/// gate; keeping this function dense-only makes fallback unambiguous.
+pub(crate) fn layer_forward_verify_functional(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    layer_idx: usize,
+    conv_state: &MlxArray,
+    recurrent_state: &MlxArray,
+) -> Option<QwenLinearVerifyLayerOutput> {
+    if w.router_proj.is_some() || w.ffn_post_norm.is_some() || cfg.uses_geglu {
+        return None;
+    }
+    let seq = hidden.shape().get(1).copied()?;
+    if !(2..=4).contains(&seq) {
+        return None;
+    }
+
+    let fuse_la_norm = fastpath::should_qwen_la_norm_qkvz_fuse(&cfg.model_family, seq);
+    let fold_exact_attn_norm = !fuse_la_norm && fastpath::qwen_linear_mtp_exact_enabled();
+    if fuse_la_norm {
+        crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(Some((
+            w.attn_norm.clone(),
+            cfg.rms_norm_eps,
+        )));
+    } else if fold_exact_attn_norm {
+        crate::model::shared::set_qwen_la_exact_attn_norm(Some((
+            w.attn_norm.clone(),
+            cfg.rms_norm_eps,
+        )));
+    }
+    let normed = if fuse_la_norm || fold_exact_attn_norm {
+        hidden.clone()
+    } else {
+        rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None)
+    };
+    let state = linear_attention_forward_verify_functional(
+        cfg,
+        w,
+        &normed,
+        layer_idx,
+        conv_state,
+        recurrent_state,
+    );
+    if fuse_la_norm {
+        crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(None);
+    } else if fold_exact_attn_norm {
+        crate::model::shared::set_qwen_la_exact_attn_norm(None);
+    }
+    let state = state?;
+
+    let (residual, normed2) = qwen_linear_attn_residual_ffn_norm(
+        hidden,
+        &state.output,
+        &w.ffn_norm,
+        cfg.rms_norm_eps,
+        false,
+    );
+    let hidden = ffn_swiglu_plus_residual(cfg, w, &normed2, None, layer_idx, &residual);
+    Some(QwenLinearVerifyLayerOutput { hidden, state })
 }
 
 fn stash_qwen_prefill_pending_ffn(ffn: MlxArray) {
@@ -77,6 +148,11 @@ pub(crate) fn layer_forward(
     skip_post_attention_ffn: bool,
 ) -> MlxArray {
     let seq = hidden.shape()[1] as usize;
+    if let Some(compiled) = super::super::whole_verify::try_compiled_qwen_linear_verify_layer(
+        cfg, w, hidden, cache, layer_idx,
+    ) {
+        return compiled;
+    }
     crate::model::shared::set_qwen_prefill_dequant_dense_family(matches!(
         cfg.model_family.to_ascii_lowercase().as_str(),
         "qwen3_5" | "qwen3_next"
@@ -138,7 +214,6 @@ pub(crate) fn layer_forward(
     } else if fold_exact_attn_norm {
         crate::model::shared::set_qwen_la_exact_attn_norm(None);
     }
-
     let residual_norm_started = profile_forward_layer.then(Instant::now);
 
     // Cache-only terminal layer: linear state already in cache; residual discarded.
@@ -172,6 +247,7 @@ pub(crate) fn layer_forward(
             cfg.is_linear_attention_layer(layer_idx.saturating_add(1)),
             skip_post_attention_ffn,
         );
+
     // Exact S=2..=4: one compiled residual-add + pre-FFN RMS + FFN + residual.
     // Portable attention RMS+SiLU stays outside. Compiling out_proj into this
     // closure (bbcc72ad) reproduced factory `f4b5490d` and is unhooked.

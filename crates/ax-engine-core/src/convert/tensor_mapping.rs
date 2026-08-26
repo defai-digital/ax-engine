@@ -34,6 +34,68 @@ pub(crate) const QWEN3_MOE_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// MiniMax M3 language MoE (`block_sparse_moe.*`) plus MSA indexer tensors.
+/// Indexer weights are preserved as [`NativeTensorRole::Other`] so short-context
+/// language decode can use dense GQA (MSA is exact when seq ≤ block size).
+pub(crate) const MINIMAX_M3_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "block_sparse_moe.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "block_sparse_moe.gate",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "block_sparse_moe.e_score_correction_bias",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpCorrectionBias),
+    ),
+    (
+        "block_sparse_moe.gate.e_score_correction_bias",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpCorrectionBias),
+    ),
+    (
+        "block_sparse_moe.switch_mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "block_sparse_moe.switch_mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "block_sparse_moe.switch_mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "block_sparse_moe.shared_experts.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "block_sparse_moe.shared_experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "block_sparse_moe.shared_experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
+    (
+        "self_attn.index_q_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Other),
+    ),
+    (
+        "self_attn.index_k_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Other),
+    ),
+    (
+        "self_attn.index_q_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Other),
+    ),
+    (
+        "self_attn.index_k_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Other),
+    ),
+];
+
 /// Extra per-layer tensor patterns for GLM4MoELite.
 ///
 /// These roles intentionally make the manifest graph-specific instead of

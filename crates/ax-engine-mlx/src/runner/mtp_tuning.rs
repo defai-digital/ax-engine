@@ -19,20 +19,6 @@ use super::{
     NGRAM_DRAFT_LEN_LOW_CONFIDENCE, NGRAM_DRAFT_LEN_SHRINK_THRESHOLD, POST_THINK_MIN_NGRAM_SUPPORT,
 };
 
-/// Maximum number of history tokens to warm up the MTP KV cache.
-/// The most recent tokens dominate the MTP head's attention context for
-/// speculative decoding; older tokens have diminishing returns.
-/// Override with `AX_MLX_MTP_WARMUP_CAP` (0 = unlimited, default 256).
-pub(super) fn mtp_warmup_cap() -> usize {
-    static CACHED: OnceLock<usize> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("AX_MLX_MTP_WARMUP_CAP")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(256)
-    })
-}
-
 /// Minimum EWMA samples before n-gram saturation gating can activate.
 /// 4 samples allows the gate to fire within the first ~12 generated tokens
 /// (4 steps × depth-3 drafts), preventing early n-gram overhead when MTP

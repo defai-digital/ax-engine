@@ -124,7 +124,35 @@ pub(crate) fn uses_text_config(model_type: &str) -> bool {
             | "deepseekocr"
             | "muse_glimmer"
             | "muse_glimmer_text"
+            | "minimax_m3"
+            | "minimax_m3_vl"
     )
+}
+
+pub(crate) fn is_minimax_m3(model_type: &str) -> bool {
+    matches!(model_type, "minimax_m3" | "minimax_m3_vl")
+}
+
+/// Count leading dense (0) entries in MiniMax `moe_layer_freq`.
+pub(crate) fn minimax_first_dense_layers(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> Option<u32> {
+    let freq = config.get("moe_layer_freq").or_else(|| {
+        if uses_text_config(model_type) {
+            config
+                .get("text_config")
+                .and_then(|tc| tc.get("moe_layer_freq"))
+        } else {
+            None
+        }
+    })?;
+    if let Some(n) = freq.as_u64().and_then(u64_to_u32) {
+        return Some(n);
+    }
+    let arr = freq.as_array()?;
+    let n = arr.iter().take_while(|v| v.as_u64() == Some(0)).count();
+    u32::try_from(n).ok()
 }
 
 pub(crate) fn is_muse_glimmer_model_type(model_type: &str) -> bool {
@@ -346,9 +374,12 @@ pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
     // (qwen3_5 MoE and qwen3_next / Qwen3.6-35B-A3B). Nemotron-H likewise.
     // Omitting qwen3_next left converted 35B manifests with false and wrong
     // expert routing weights when config.json had no explicit field.
+    // MiniMax M3's mlx-vlm router always L1-normalizes the selected sigmoid
+    // scores before `routed_scaling_factor`, even when config omits the field.
     is_qwen3_5_family(model_type)
         || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
         || is_nemotron_h(model_type)
+        || is_minimax_m3(model_type)
 }
 
 pub(crate) fn runtime_status_for_model_type(_model_type: &str) -> NativeRuntimeStatus {
@@ -588,6 +619,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     let is_gpt_oss = model_type == "gpt_oss";
     let is_nemotron = is_nemotron_h(model_type);
     let is_ocr = is_unlimited_ocr(model_type);
+    let is_minimax = is_minimax_m3(model_type);
     if !is_gemma4_moe
         && !is_diffusion_gemma_moe
         && !is_qwen3_moe
@@ -600,6 +632,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         && !is_gpt_oss
         && !is_nemotron
         && !is_ocr
+        && !is_minimax
     {
         return NativeMoeConfig::default();
     }
@@ -625,11 +658,14 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
 
     let first_dense_layers = if is_deepseek_v3 || is_ocr {
         arch_u64(config, model_type, "first_k_dense_replace").and_then(u64_to_u32)
+    } else if is_minimax {
+        minimax_first_dense_layers(config, model_type)
     } else {
         None
     };
 
-    let shared_expert_count = if is_deepseek_v3 || is_deepseek_v4 || is_nemotron || is_ocr {
+    let shared_expert_count = if is_deepseek_v3 || is_deepseek_v4 || is_nemotron || is_ocr || is_minimax
+    {
         arch_u64(config, model_type, "n_shared_experts").and_then(u64_to_u32)
     } else if is_llama4 {
         // LLaMA 4 always has 1 shared expert when MoE is active
@@ -642,7 +678,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     // width rather than a separate `moe_intermediate_size`.
     let expert_intermediate_size = arch_u64(config, model_type, "moe_intermediate_size")
         .or_else(|| {
-            if is_gpt_oss || is_llama4 {
+            if is_gpt_oss || is_llama4 || is_minimax {
                 arch_u64(config, model_type, "intermediate_size")
             } else {
                 None
@@ -660,8 +696,8 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         // Nemotron-H MoE gate matches DeepSeek-style sigmoid + correction bias.
         // DeepSeek V4 routes via `scoring_func` (see NativeDeepseekV4Config),
         // not sigmoid routing, so it must not set this flag.
-        sigmoid_routing: is_deepseek_v3 || is_nemotron,
-        routed_scaling_factor: if is_deepseek_v3 || is_deepseek_v4 || is_nemotron {
+        sigmoid_routing: is_deepseek_v3 || is_nemotron || is_minimax,
+        routed_scaling_factor: if is_deepseek_v3 || is_deepseek_v4 || is_nemotron || is_minimax {
             arch_f64(config, model_type, "routed_scaling_factor").map(|v| v as f32)
         } else {
             None

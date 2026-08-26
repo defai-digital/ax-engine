@@ -603,9 +603,10 @@ pub(crate) fn qwen_prefill_maybe_flat_qmm_for(
     reshape(&out, &[batch, seq, out_last], None)
 }
 
-/// Exact verify is S=2..=4 `[1,S,H]`. Flatten to `[S,H]` so MLX qmm uses
-/// the 2-D M=S path instead of a 3-D leading dim of 1. Covers MXFP4
-/// attn/MLP and the affine 8-bit lm_head. Singleton decode stays `[1,1,H]`.
+/// Short verify is S=2..=4 `[1,S,H]`. Flatten to `[S,H]` so MLX qmm uses
+/// the 2-D M=S path instead of a 3-D leading dim of 1. Exact verification
+/// always keeps its historical route; relaxed verification is separately
+/// admitted. Singleton decode stays `[1,1,H]`.
 fn exact_mxfp4_short_qmm(
     x: &MlxArray,
     _mode: mlx_sys::MlxQuantizationMode,
@@ -919,6 +920,8 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
         && let Some(invariant) = invariant_projection_metal_impl(x, qw)
     {
         invariant
+    } else if let Some(verify) = super::verify_qmm::try_qwen_mtp_verify_qmm(x, qw) {
+        verify
     } else if qwen_prefill_dequant_dense_applies(x)
         && let Some(weight_t) = cached_prefill_dequant_weight_t(qw)
     {

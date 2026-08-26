@@ -1901,10 +1901,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     // are streamed. Their resident expert fields stay None; the MoE forward
     // resolves them through the handle, which pages the layer stack in.
     let expert_stream_pager = expert_stream_manifest.as_ref().map(|manifest| {
-        let pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new(
+        let pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new_with_fuse(
             std::sync::Arc::new(manifest.clone()),
             root.clone(),
             crate::expert_stream::expert_layer_budget(),
+            // Resident load fuses split experts only for DeepSeek V4. MiniMax-M3
+            // mlxcel keeps split SwitchLinear; these Super-class packs stream.
+            artifacts.manifest().model_family == "deepseek_v4",
         ));
         let streamed_layers: std::collections::HashSet<u32> =
             manifest.layer_indices().into_iter().collect();

@@ -6,15 +6,15 @@ use ax_engine_core::gemma4_unified::Gemma4UnifiedRuntimeInputs;
 use ax_engine_core::minicpm_v::MiniCpmV46RuntimeInputs;
 use ax_engine_core::nemotron_omni::NemotronOmniRuntimeInputs;
 use ax_engine_core::qwen3_vl::Qwen3VlRuntimeInputs;
-use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
+use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, concatenate, eval, slice};
 
 use crate::gemma4_unified::build_chunk_embeddings;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
     FinalLogitsMode, ModelConfig, deepseek_v4_forward_all_positions_with_packed, forward,
-    forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_final_hidden,
-    forward_argmax, forward_cache_only, forward_lazy_single_argmax, forward_qwen_visual_prefill,
+    forward_all_positions_post_norm_last_lm_head, forward_argmax, forward_cache_only,
+    forward_lazy_single_argmax, forward_qwen_visual_prefill,
     forward_with_initial_hidden_and_media_ranges,
 };
 use crate::sampling::{
@@ -974,95 +974,57 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> (u32, MlxArray, Vec<u32>) {
-    use mlx_sys::MlxDtype;
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
 
-    // cache_only_prefix_len fast path: no final-hidden support (short path).
-    // Fall back to the normal chunked_prefill for this case and return a
-    // placeholder hidden (zero-shaped).  MTP warmup skips None returns;
-    // this case is rare for MTP-benchmark runs (all tokens processed as a
-    // single mlx-lm-style batch).
+    // Retain exactly the prompt suffix requested by the MTP warmup policy.
+    // Previously the mlx-lm-style n-1 cache-only path returned only the last
+    // prompt row, so AX_MLX_MTP_WARMUP_CAP=0 did not actually preserve full
+    // committed history on prompts longer than one prefill chunk. MTPLX and
+    // oMLX both stream committed history across chunk boundaries.
+    let history_cap = crate::fastpath::mtp_warmup_cap();
+    let history_start = if history_cap == 0 {
+        0
+    } else {
+        total.saturating_sub(history_cap)
+    };
     let cache_only_prefix_len =
         if crate::fastpath::skip_cache_only_split_for_family(&cfg.model_family, total) {
             0
         } else {
             mlx_lm_style_cache_only_prefix_len(total, sampling)
         };
-    if cache_only_prefix_len > 0 {
-        let mut offset = 0;
-        while offset < cache_only_prefix_len {
-            let end = (offset + chunk_size).min(cache_only_prefix_len);
-            let chunk = &prompt_tokens[offset..end];
-            // Cache-only: skip lm_head projection (hidden×vocab_size).
-            let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
-            cache.advance(chunk.len());
-            // See chunked_prefill_with_sampling_buffers: default last-chunk-only
-            // eval; opt-in every-chunk eval via AX_MLX_CACHE_ONLY_CHUNK_EVAL;
-            // optional async intermediate submit via ASYNC_EVAL.
-            if end == cache_only_prefix_len || crate::fastpath::cache_only_chunk_eval_enabled() {
-                let is_final = end == cache_only_prefix_len;
-                if crate::fastpath::cache_only_chunk_should_async_eval(is_final) {
-                    async_eval_kv_refs(cache);
-                } else {
-                    eval_kv_refs(cache);
-                }
+    // Preserve the existing fast cache-only prefix, but stop it at the first
+    // hidden row the MTP history needs. The retained suffix then takes the
+    // full post-norm path in bounded chunks; this keeps the default 256-token
+    // cost bounded while making the explicit unlimited setting truthful.
+    let cache_only_end = cache_only_prefix_len.min(history_start);
+    let mut offset = 0usize;
+    while offset < cache_only_end {
+        let end = (offset + chunk_size).min(cache_only_end);
+        let chunk = &prompt_tokens[offset..end];
+        let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
+        cache.advance(chunk.len());
+        if end == cache_only_end || crate::fastpath::cache_only_chunk_eval_enabled() {
+            let is_final = end == cache_only_end;
+            if crate::fastpath::cache_only_chunk_should_async_eval(is_final) {
+                async_eval_kv_refs(cache);
+            } else {
+                eval_kv_refs(cache);
             }
-            offset = end;
         }
-        // Completing step: full forward for the last prompt token so MTP gets
-        // post-norm hidden. Sample when temperature>0; argmax when greedy.
-        let last_tok = prompt_tokens[cache_only_prefix_len];
-        let last_offset = cache.seq_len();
-        let (logits_all, final_hidden) =
-            forward_all_positions_with_final_hidden(cfg, weights, &[last_tok], cache, last_offset);
-        cache.advance(1);
-        let logits_row = {
-            use mlx_sys::{astype, reshape, slice};
-            let lv = slice(
-                &logits_all,
-                &[0, 0],
-                &[1, cfg.vocab_size as i32],
-                &[1, 1],
-                None,
-            );
-            let lv = astype(&lv, MlxDtype::Float32, None);
-            reshape(&lv, &[cfg.vocab_size as i32], None)
-        };
-        let tok = if sampling.temperature > 0.0 {
-            eval_with_kv_refs(&logits_row, cache);
-            sample_prefill_token_gpu_first(
-                &logits_row,
-                sampling,
-                sampling_request.repetition_tokens,
-                rng,
-                || eval(&[&logits_row, &final_hidden]),
-                sampling_probs_buf,
-                sampling_logits_buf,
-                sampling_candidates_buf,
-            )
-        } else {
-            let token_arr = argmax(&logits_row, None);
-            eval_kv_refs(cache);
-            eval(&[&token_arr, &final_hidden]);
-            token_arr.data_u32()[0]
-        };
-        if sampling.temperature > 0.0 {
-            eval(&[&final_hidden]);
-        }
-        clear_cache();
-        return (tok, final_hidden, vec![tok]);
+        offset = end;
     }
 
-    let mut offset = 0;
+    let mut retained_hidden_chunks: Vec<MlxArray> = Vec::new();
     loop {
         let end = (offset + chunk_size).min(total);
         let chunk = &prompt_tokens[offset..end];
         let is_final_chunk = end == total;
         let chunk_offset = cache.seq_len();
 
-        if is_final_chunk {
+        if is_final_chunk || end > history_start {
             // Use last-position-only lm_head to avoid seq×vocab matmul on
             // all positions; returns logits as [vocab] directly.
             let (last_logits, post_norm_all) = forward_all_positions_post_norm_last_lm_head(
@@ -1073,6 +1035,27 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
                 chunk_offset,
             );
             cache.advance(chunk.len());
+
+            let keep_from = history_start.max(offset);
+            let retained_hidden = if keep_from == offset {
+                post_norm_all
+            } else {
+                let local_start = (keep_from - offset) as i32;
+                slice(
+                    &post_norm_all,
+                    &[0, local_start, 0],
+                    &[1, chunk.len() as i32, cfg.hidden_size as i32],
+                    &[1, 1, 1],
+                    None,
+                )
+            };
+            retained_hidden_chunks.push(retained_hidden);
+
+            if !is_final_chunk {
+                maybe_async_eval_intermediate_qwen_prefill(cfg, cache, false);
+                offset = end;
+                continue;
+            }
 
             let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
                 eval_with_kv_refs(&last_logits, cache);
@@ -1091,16 +1074,24 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
                 eval_with_kv_refs(&token_arr, cache);
                 token_arr.data_u32()[0]
             };
-            // Materialize post_norm_all before clear_cache() so the MTP warmup
-            // consumer can safely slice into it after the pool is cleared.
-            let mut history_tokens = Vec::with_capacity(chunk.len());
-            if chunk.len() > 1 {
-                history_tokens.extend_from_slice(&chunk[1..]);
-            }
+            let retained_hidden = if retained_hidden_chunks.len() == 1 {
+                retained_hidden_chunks.swap_remove(0)
+            } else {
+                let refs: Vec<&MlxArray> = retained_hidden_chunks.iter().collect();
+                concatenate(&refs, 1, None)
+            };
+            let mut history_tokens = Vec::with_capacity(total - history_start);
+            history_tokens.extend_from_slice(&prompt_tokens[history_start + 1..]);
             history_tokens.push(tok);
-            eval(&[&post_norm_all]);
+            debug_assert_eq!(
+                retained_hidden.shape().get(1).copied().unwrap_or_default() as usize,
+                history_tokens.len()
+            );
+            // Materialize retained history before clear_cache() so decode can
+            // slice it safely while priming the MTP head cache.
+            eval(&[&retained_hidden]);
             clear_cache();
-            return (tok, post_norm_all, history_tokens);
+            return (tok, retained_hidden, history_tokens);
         } else {
             // Non-final chunk: skip lm_head. Qwen 3.6 27B p2048 is two 1024
             // chunks under skip_cache_only_split — async-submit KV so GPU

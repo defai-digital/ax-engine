@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -66,18 +67,37 @@ class SingleClientServingBenchmarkTests(unittest.TestCase):
             mtplx = benchmark.EngineSpec("mtplx", root / "mtplx")
 
             ax_command = benchmark.engine_command(ax, model=model, port=31910)
-            peer_command = benchmark.engine_command(peer, model=model, port=31910)
+            peer_command = benchmark.engine_command(
+                peer,
+                model=model,
+                port=31910,
+                mlxcel_draft_model=root / "mtp-drafter",
+            )
             omlx_command = benchmark.engine_command(omlx, model=model, port=31910)
-            mtplx_command = benchmark.engine_command(mtplx, model=model, port=31910)
+            mtplx_command = benchmark.engine_command(
+                mtplx,
+                model=model,
+                port=31910,
+                mtplx_force_unverified=True,
+            )
 
         self.assertIn("--max-concurrent-requests", ax_command)
         self.assertIn("--max-concurrent-requests-per-model", ax_command)
         self.assertIn("--parallel", peer_command)
         self.assertIn("--max-batch-prefill", peer_command)
+        self.assertIn("--no-prompt-cache", peer_command)
+        self.assertEqual(
+            peer_command[peer_command.index("--model-draft") + 1],
+            str(root / "mtp-drafter"),
+        )
+        self.assertEqual(peer_command[peer_command.index("--draft-kind") + 1], "mtp")
+        self.assertEqual(peer_command[peer_command.index("--draft-block-size") + 1], "3")
         self.assertIn("--memory-guard", omlx_command)
         self.assertIn("--no-cache", omlx_command)
         self.assertIn("--scheduler-mode", mtplx_command)
         self.assertIn("--ssd-session-cache", mtplx_command)
+        self.assertIn("--unsafe-force-unverified", mtplx_command)
+        self.assertIn("--yes", mtplx_command)
 
     def test_three_engine_order_rotates_first_position(self) -> None:
         engines = ("ax-engine", "omlx", "mtplx")
@@ -100,6 +120,18 @@ class SingleClientServingBenchmarkTests(unittest.TestCase):
             canonical,
         )
 
+    def test_configure_omlx_mtp_persists_isolated_model_toggle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = benchmark.ModelSpec("qwen", root / "models" / "local")
+
+            settings_path = benchmark.configure_omlx_mtp(model)
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(settings_path, root / ".omlx-benchmark-state/model_settings.json")
+        self.assertTrue(settings["models"]["local"]["mtp_enabled"])
+        self.assertEqual(settings["models"]["local"]["mtp_num_draft_tokens"], 3)
+
     def test_hardware_profile_omits_machine_identifiers(self) -> None:
         profile = """Hardware:
       Model Name: MacBook Pro
@@ -119,6 +151,97 @@ class SingleClientServingBenchmarkTests(unittest.TestCase):
     def test_fixed_generation_rejects_early_eos(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "expected 256.*observed 42"):
             benchmark.require_complete_generation({"completion_tokens": 42}, 256)
+
+    def test_prometheus_metrics_capture_unlabelled_delta_and_latest_gauge(self) -> None:
+        parsed = benchmark.parse_unlabelled_prometheus_metrics(
+            """# HELP ignored comment
+ax_engine_steps_total{model=\"local\"} 19
+ax_engine_steps_total 20
+ax_engine_mtp_draft_tokens_total 30
+ax_engine_mtp_accepted_tokens_total 21
+ax_engine_mtp_accept_rate_ewma_x1000 777
+not_a_number nope
+"""
+        )
+        self.assertEqual(parsed["ax_engine_steps_total"], 20.0)
+        self.assertNotIn('ax_engine_steps_total{model="local"}', parsed)
+
+        delta = benchmark.ax_metric_delta(
+            {
+                "ax_engine_steps_total": 5.0,
+                "ax_engine_mtp_draft_tokens_total": 7.0,
+                "ax_engine_mtp_accepted_tokens_total": 4.0,
+            },
+            parsed,
+        )
+        self.assertEqual(delta["ax_engine_steps_total"], 15.0)
+        self.assertEqual(delta["ax_engine_mtp_draft_tokens_total"], 23.0)
+        self.assertEqual(delta["ax_engine_mtp_accepted_tokens_total"], 17.0)
+        self.assertEqual(delta["ax_engine_mtp_accept_rate_ewma_x1000"], 777.0)
+
+    def test_quality_smoke_suite_has_general_and_coding_objective_checks(self) -> None:
+        dataset = (
+            MODULE_PATH.parents[1]
+            / "benchmarks/datasets/cross-runtime-quality-smoke-v1.jsonl"
+        )
+
+        tasks = benchmark.load_quality_tasks(dataset)
+
+        self.assertEqual(
+            {task.profile for task in tasks},
+            {"agent-coding", "general"},
+        )
+        general = next(task for task in tasks if task.profile == "general")
+        coding = next(task for task in tasks if task.profile == "agent-coding")
+        general_score, general_checks = benchmark.score_quality_task(
+            general, "</think>\n5<|eot|>ignored"
+        )
+        coding_score, coding_checks = benchmark.score_quality_task(
+            coding, "```json\n[3, 1, 2]\n```"
+        )
+        self.assertEqual(general_score, 1.0)
+        self.assertEqual(general_checks, {"exact:0": 1.0})
+        self.assertEqual(coding_score, 1.0)
+        self.assertEqual(coding_checks, {"json-valid:0": 1.0, "json-equals:1": 1.0})
+
+    def test_quality_summary_tracks_passes_and_output_determinism(self) -> None:
+        measurements = [
+            {
+                "engine": "ax-engine",
+                "model": "qwen",
+                "profile": "general",
+                "task_id": "general-01",
+                "score": 1.0,
+                "passed": True,
+                "content_sha256": "same",
+            },
+            {
+                "engine": "ax-engine",
+                "model": "qwen",
+                "profile": "general",
+                "task_id": "general-01",
+                "score": 1.0,
+                "passed": True,
+                "content_sha256": "same",
+            },
+            {
+                "engine": "omlx",
+                "model": "qwen",
+                "profile": "general",
+                "task_id": "general-01",
+                "score": 1.0,
+                "passed": True,
+                "content_sha256": "different-format",
+            },
+        ]
+
+        summary = benchmark.summarize_quality_measurements(measurements)
+        consensus = benchmark.summarize_quality_consensus(measurements)
+
+        self.assertTrue(summary[0]["all_pass"])
+        self.assertTrue(summary[0]["deterministic_across_repetitions"])
+        self.assertTrue(consensus[0]["all_runtimes_pass"])
+        self.assertFalse(consensus[0]["exact_output_match"])
 
 
 if __name__ == "__main__":

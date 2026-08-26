@@ -2050,7 +2050,12 @@ pub(crate) fn validate_native_model_manifest(
             if has_any_shared_expert || moe_requires_shared_expert(manifest) {
                 if !matches!(
                     manifest.model_family.as_str(),
-                    "glm4_moe_lite" | "deepseek_v3" | "deepseek_v32" | "llama4" | "unlimited_ocr"
+                    "glm4_moe_lite"
+                        | "deepseek_v3"
+                        | "deepseek_v32"
+                        | "llama4"
+                        | "unlimited_ocr"
+                        | "minimax_m3"
                 ) {
                     require_layer_role(
                         roles,
