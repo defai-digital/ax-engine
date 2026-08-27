@@ -114,10 +114,17 @@ pub(super) fn mtp_bypass_min_samples() -> u32 {
 pub(super) fn mtp_min_remaining_tokens() -> u32 {
     static CACHED: OnceLock<u32> = OnceLock::new();
     *CACHED.get_or_init(|| {
-        std::env::var("AX_MLX_MTP_MIN_REMAINING_TOKENS")
+        if let Some(parsed) = std::env::var("AX_MLX_MTP_MIN_REMAINING_TOKENS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(16)
+        {
+            return parsed;
+        }
+        if crate::fastpath::qwen_linear_throughput_mtp_enabled() {
+            0
+        } else {
+            16
+        }
     })
 }
 
@@ -137,6 +144,12 @@ pub(super) fn mtp_min_remaining_tokens() -> u32 {
 pub(super) fn mtp_bypass_threshold() -> f32 {
     static CACHED: OnceLock<f32> = OnceLock::new();
     *CACHED.get_or_init(|| cached_env_f32("AX_MLX_MTP_BYPASS_THRESHOLD", 0.50, 0.0, 1.0))
+}
+
+/// EWMA low-accept latch. Throughput MTP keeps speculating; the 0.50 latch
+/// is for exact depth-one packs where a losing head is a net loss vs AR.
+pub(super) fn mtp_ewma_bypass_enabled() -> bool {
+    !crate::fastpath::qwen_linear_throughput_mtp_enabled() && mtp_bypass_threshold() > 0.0
 }
 
 pub(super) fn cached_env_u32(name: &str, default: u32) -> u32 {
@@ -736,9 +749,19 @@ pub(crate) fn mtp_runtime_certification(root: &std::path::Path) -> MtpRuntimeCer
 #[cfg(test)]
 mod tests {
     use super::{
-        MtpNgramStackingEnv, MtpRuntimeCertification, mtp_ngram_stacking_allowed,
-        mtp_runtime_certification,
+        MtpNgramStackingEnv, MtpRuntimeCertification, mtp_ewma_bypass_enabled,
+        mtp_ngram_stacking_allowed, mtp_runtime_certification,
     };
+
+    #[test]
+    fn throughput_mtp_does_not_latch_off_on_low_ewma() {
+        if crate::fastpath::qwen_linear_throughput_mtp_enabled() {
+            assert!(
+                !mtp_ewma_bypass_enabled(),
+                "throughput MTP must keep drafting instead of latching to 1-token direct"
+            );
+        }
+    }
 
     #[test]
     fn certification_defaults_closed_without_mtp_block() {

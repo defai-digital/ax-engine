@@ -135,6 +135,8 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) qwen_linear_certification_env_opt_in: bool,
     /// Publisher-declared MTP certification from `axquant_runtime.json`.
     pub(super) runtime_certification: MtpRuntimeCertification,
+    /// Product default-on for Qwen linear sidecar packs (throughput MTP).
+    pub(super) qwen_linear_throughput_default: bool,
 }
 
 /// Immutable policy snapshot owned by one [`super::MlxRunner`].
@@ -144,6 +146,7 @@ pub(super) struct MtpModelPolicy {
     max_depth: usize,
     qwen_linear_certification_env_opt_in: bool,
     runtime_certification: MtpRuntimeCertification,
+    qwen_linear_throughput_default: bool,
 }
 
 impl MtpModelPolicy {
@@ -154,6 +157,7 @@ impl MtpModelPolicy {
             max_depth,
             qwen_linear_certification_env_opt_in: inputs.qwen_linear_certification_env_opt_in,
             runtime_certification: inputs.runtime_certification,
+            qwen_linear_throughput_default: inputs.qwen_linear_throughput_default,
         }
     }
 
@@ -183,18 +187,16 @@ impl MtpModelPolicy {
         }
 
         if let Some(max_depth) = inputs.qwen_depth {
+            let qwen_linear_candidate =
+                inputs.qwen_linear_certification_candidate || inputs.qwen_linear_throughput_default;
+            let qwen_linear_verify = inputs.qwen_linear_exact_enabled
+                || inputs.qwen_linear_projected_replay_enabled
+                || inputs.qwen_linear_throughput_default;
             let kind = if !inputs.qwen_linear_attention {
                 MtpModelPolicyKind::QwenCalibrated
-            } else if (inputs.qwen_linear_exact_enabled
-                || inputs.qwen_linear_projected_replay_enabled)
-                && inputs.qwen_linear_certification_candidate
-                && max_depth == 1
-            {
+            } else if qwen_linear_verify && qwen_linear_candidate && max_depth == 1 {
                 MtpModelPolicyKind::QwenLinearCertificationCandidateDepthOne
-            } else if (inputs.qwen_linear_exact_enabled
-                || inputs.qwen_linear_projected_replay_enabled)
-                && inputs.qwen_linear_certification_candidate
-            {
+            } else if qwen_linear_verify && qwen_linear_candidate {
                 MtpModelPolicyKind::QwenLinearCertificationCandidateMultiDepth
             } else {
                 // Tensor eligibility does not prove that the batched verifier
@@ -278,7 +280,10 @@ impl MtpModelPolicy {
         match self.kind {
             MtpModelPolicyKind::QwenLinearCertificationCandidateDepthOne
             | MtpModelPolicyKind::QwenLinearCertificationCandidateMultiDepth => {
-                self.runtime_certification.default_on || self.qwen_linear_certification_env_opt_in
+                self.runtime_certification.default_on
+                    || self.qwen_linear_certification_env_opt_in
+                    || (self.qwen_linear_throughput_default
+                        && self.runtime_certification.enabled_by_default)
             }
             _ => true,
         }
@@ -337,6 +342,10 @@ impl MtpModelPolicy {
                 MtpModelPolicyKind::QwenLinearCertificationCandidateDepthOne,
                 GateResolverFamily::Qwen,
             ) => Some(CERTIFICATION_DEPTH_ONE_GATE),
+            (
+                MtpModelPolicyKind::QwenLinearCertificationCandidateMultiDepth,
+                GateResolverFamily::Qwen,
+            ) if self.qwen_linear_throughput_default => Some(CERTIFICATION_DEPTH_ONE_GATE),
             _ => None,
         }
     }
@@ -416,6 +425,10 @@ impl MtpModelPolicy {
             self.runtime_certification
                 .measured_speedup_x1000
                 .unwrap_or(0),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_qwen_linear_throughput_mtp",
+            u32::from(self.qwen_linear_throughput_default),
         );
     }
 }
@@ -610,6 +623,68 @@ mod tests {
         assert!(candidate.is_qwen_linear_certification_candidate());
         assert!(candidate.has_attached_drafter());
         assert_eq!(candidate.max_depth(), 1);
+    }
+
+    #[test]
+    fn qwen38_axq_throughput_pack_defaults_on_and_is_not_direct_fallback() {
+        let policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_depth: Some(3),
+            qwen_linear_attention: true,
+            qwen_linear_exact_enabled: false,
+            qwen_linear_projected_replay_enabled: true,
+            qwen_linear_certification_candidate: true,
+            qwen_linear_throughput_default: true,
+            runtime_certification: MtpRuntimeCertification {
+                enabled_by_default: true,
+                optimized: false,
+                measured_speedup_x1000: None,
+                default_on: false,
+            },
+            ..Default::default()
+        });
+        assert!(!policy.is_qwen_linear_direct_fallback());
+        assert!(policy.route_safe());
+        assert!(policy.certified_default_on());
+        assert_eq!(policy.max_depth(), 3);
+        assert!(policy.max_depth() > 0);
+        assert_eq!(policy.qwen_gate_default(), Some(0.0));
+
+        let blocked = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_depth: Some(3),
+            qwen_linear_attention: true,
+            qwen_linear_exact_enabled: false,
+            qwen_linear_projected_replay_enabled: true,
+            qwen_linear_certification_candidate: true,
+            qwen_linear_throughput_default: false,
+            runtime_certification: MtpRuntimeCertification {
+                enabled_by_default: true,
+                optimized: false,
+                measured_speedup_x1000: None,
+                default_on: false,
+            },
+            ..Default::default()
+        });
+        assert!(!blocked.certified_default_on());
+
+        let mixed = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_depth: Some(3),
+            qwen_linear_attention: true,
+            qwen_linear_exact_enabled: false,
+            qwen_linear_projected_replay_enabled: false,
+            qwen_linear_certification_candidate: false,
+            qwen_linear_throughput_default: true,
+            runtime_certification: MtpRuntimeCertification {
+                enabled_by_default: true,
+                optimized: false,
+                measured_speedup_x1000: None,
+                default_on: false,
+            },
+            ..Default::default()
+        });
+        assert!(!mixed.is_qwen_linear_direct_fallback());
+        assert!(mixed.route_safe());
+        assert!(mixed.certified_default_on());
+        assert!(mixed.max_depth() > 0);
     }
 
     #[test]

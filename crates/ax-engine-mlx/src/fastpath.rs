@@ -43,24 +43,20 @@ pub fn mtp_fixed_draft_depth() -> Option<usize> {
 }
 
 /// `AX_MLX_MTP_DEPTH3_HYSTERESIS` — keep a three-token proposal window after
-/// accepting its first two drafts. This avoids alternating 3→2→3 on
-/// high-acceptance Qwen MTP streams while still backing off after a zero- or
-/// one-token accept.
-///
-/// **Default: OFF** pending matched M5 admission.
+/// accepting its first two drafts. Also engaged by throughput MTP.
 pub fn mtp_depth3_hysteresis_enabled() -> bool {
-    static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_HYSTERESIS"))
+    static ENV: OnceLock<bool> = OnceLock::new();
+    *ENV.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_HYSTERESIS"))
+        || qwen_linear_throughput_mtp_enabled()
 }
 
 /// `AX_MLX_MTP_DEPTH3_MISS_BACKOFF` — for a three-token Qwen head, start deep
 /// and back off to two drafts only after a complete miss. Any accepted draft
-/// restores depth three on the next cycle.
-///
-/// **Default: OFF** pending matched M5 admission.
+/// restores depth three on the next cycle. Also engaged by throughput MTP.
 pub fn mtp_depth3_miss_backoff_enabled() -> bool {
-    static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_MISS_BACKOFF"))
+    static ENV: OnceLock<bool> = OnceLock::new();
+    *ENV.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_MISS_BACKOFF"))
+        || qwen_linear_throughput_mtp_enabled()
 }
 
 fn parse_bool_value(raw: &str) -> bool {
@@ -540,7 +536,7 @@ impl QwenLinearMtpExactSelection {
     }
 }
 
-fn qwen_linear_mtp_exact_env_override() -> Option<bool> {
+pub(crate) fn qwen_linear_mtp_exact_env_override() -> Option<bool> {
     static CACHED: OnceLock<Option<bool>> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var(QWEN_LINEAR_MTP_EXACT_ENV)
@@ -549,7 +545,7 @@ fn qwen_linear_mtp_exact_env_override() -> Option<bool> {
     })
 }
 
-fn resolve_qwen_linear_mtp_exact_with_override(
+pub(crate) fn resolve_qwen_linear_mtp_exact_with_override(
     model_eligible: bool,
     explicit: Option<bool>,
 ) -> (bool, QwenLinearMtpExactSelection) {
@@ -835,53 +831,74 @@ env_flag_default_on!(
     "AX_MLX_MTP_LA_OUT_PROJ_SILU_MUL_QMM"
 );
 
+/// Recurrent Qwen MTP draft width used when the pack sidecar publishes
+/// `mtp_depth_max=1` but the head is applied recurrently. Matches the
+/// existing exact-verifier window (`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS`).
+pub const QWEN_LINEAR_THROUGHPUT_MTP_DEPTH: usize = 3;
+
+env_flag_default_on!(
+    /// `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP` — default-on product path for
+    /// Qwen3.5/3.8 linear packs that ship an MTP sidecar: Auto MTP, recurrent
+    /// depth 3, projected-replay rollback, and stock (relaxed) target verify.
+    ///
+    /// **Default: ON** (kill-switch `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP=0`
+    /// restores DirectFallback unless the pack is publisher-certified).
+    qwen_linear_throughput_mtp_enabled,
+    "AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP"
+);
+
 env_flag!(
     /// `AX_MLX_MTP_LINEAR_PROJECTED_REPLAY` — let a Qwen gated-delta MTP
     /// verifier adopt/restore its clone and, after a partial accept, reuse the
     /// projected QKV/A/B tensors to rebuild only recurrent state.
     ///
-    /// This is the narrowly scoped oMLX 0.6.2 rollback design: full-attention
-    /// KV is trimmed normally, while each linear layer replays its accepted
-    /// prefix from the unchanged pre-verify state. When the exact profile is
-    /// explicitly disabled this also opts into oMLX-style verifier arithmetic,
-    /// which is target-verified but not guaranteed bit-identical to singleton
-    /// direct decode. Default OFF until matched M5 admission completes.
-    mtp_linear_projected_replay_enabled,
+    /// Also engaged by [`qwen_linear_throughput_mtp_enabled`].
+    mtp_linear_projected_replay_env,
     "AX_MLX_MTP_LINEAR_PROJECTED_REPLAY"
 );
+
+/// Projected-replay rollback for Qwen linear MTP.
+pub fn mtp_linear_projected_replay_enabled() -> bool {
+    mtp_linear_projected_replay_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_RELAXED_TARGET_VERIFY` — keep the exact Qwen MTP draft
     /// head active while building the target verifier with stock MLX
-    /// arithmetic. Requires projected replay so accepted recurrent state is
-    /// derived from the same verifier graph. This is an explicit oMLX-style
-    /// non-bit-exact performance experiment and is OFF by default.
-    mtp_relaxed_target_verify_enabled,
+    /// arithmetic. Also engaged by [`qwen_linear_throughput_mtp_enabled`].
+    mtp_relaxed_target_verify_env,
     "AX_MLX_MTP_RELAXED_TARGET_VERIFY"
 );
+
+/// Stock-arithmetic Qwen linear MTP target verifier.
+pub fn mtp_relaxed_target_verify_enabled() -> bool {
+    mtp_relaxed_target_verify_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_SPLIT_VERIFY_HIDDEN_EVAL` — materialize the target trunk's
     /// post-norm hidden rows before scheduling the verify-window LM head and
-    /// argmax. This mirrors MTPLX's lazy-logits boundary and can reduce mixed
-    /// graph co-residency on short Qwen verifier windows.
-    ///
-    /// **Default: OFF** pending matched M5 admission.
-    mtp_split_verify_hidden_eval_enabled,
+    /// argmax.
+    mtp_split_verify_hidden_eval_env,
     "AX_MLX_MTP_SPLIT_VERIFY_HIDDEN_EVAL"
 );
 
+/// Split hidden/LM-head eval. Also engaged by throughput MTP.
+pub fn mtp_split_verify_hidden_eval_enabled() -> bool {
+    mtp_split_verify_hidden_eval_env() || qwen_linear_throughput_mtp_enabled()
+}
+
 env_flag!(
     /// `AX_MLX_MTP_LAZY_ADOPT_STATE` — leave an accepted relaxed Qwen MTP
-    /// verifier cache lazy until the next target forward consumes it. The
-    /// acceptance barrier has already materialized the verifier logits; an
-    /// immediate second eval of cache side outputs can serialize otherwise
-    /// adjacent verifier graphs.
-    ///
-    /// **Default: OFF** pending matched M5 admission.
-    mtp_lazy_adopt_state_enabled,
+    /// verifier cache lazy until the next target forward consumes it.
+    mtp_lazy_adopt_state_env,
     "AX_MLX_MTP_LAZY_ADOPT_STATE"
 );
+
+/// Lazy adopt of relaxed verifier cache. Also engaged by throughput MTP.
+pub fn mtp_lazy_adopt_state_enabled() -> bool {
+    mtp_lazy_adopt_state_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_REBIND_VERIFY_FA` — after a relaxed Qwen verifier has
@@ -899,38 +916,43 @@ env_flag!(
 env_flag!(
     /// `AX_MLX_MTP_LINEAR_TAPE_CAPTURE` — record the compact gated-delta
     /// recurrence tape during a relaxed Qwen verifier instead of writing a
-    /// second full recurrent-state checkpoint for every linear layer. Misses
-    /// and partial accepts reconstruct only their committed prefix from the
-    /// unchanged source state.
-    ///
-    /// **Default: OFF** pending matched M5 admission.
-    mtp_linear_tape_capture_enabled,
+    /// second full recurrent-state checkpoint for every linear layer.
+    mtp_linear_tape_capture_env,
     "AX_MLX_MTP_LINEAR_TAPE_CAPTURE"
 );
+
+/// Linear-attention tape capture. Kept env-only: it disables the fused GDN
+/// verifier, which is the throughput-MTP default.
+pub fn mtp_linear_tape_capture_enabled() -> bool {
+    mtp_linear_tape_capture_env()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT` — retain the verifier's projected
     /// QKV/A/B inputs but do not write a full recurrent-state checkpoint at
-    /// the confirmed row. Accepted cycles pay no recovery cost; rejected
-    /// cycles replay only their committed prefix from the unchanged source
-    /// state, matching the oMLX/MTPLX rollback shape.
-    ///
-    /// **Default: OFF** pending matched M5 admission.
-    mtp_skip_prefix_checkpoint_enabled,
+    /// the confirmed row.
+    mtp_skip_prefix_checkpoint_env,
     "AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT"
 );
+
+/// Skip the confirmed-row recurrent checkpoint. Kept env-only: it disables
+/// the fused GDN verifier used by throughput MTP.
+pub fn mtp_skip_prefix_checkpoint_enabled() -> bool {
+    mtp_skip_prefix_checkpoint_env()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_REUSE_PROCESSED_GDN` — retain the verifier's already
     /// materialized normalized Q/K/V rows and reuse their accepted prefix
-    /// during gated-delta rollback. This avoids repeating depthwise conv and
-    /// Q/K normalization on misses and partial accepts; the recurrent update
-    /// still runs from the unchanged pre-verify state.
-    ///
-    /// **Default: OFF** pending matched M5 admission.
-    mtp_reuse_processed_gdn_enabled,
+    /// during gated-delta rollback.
+    mtp_reuse_processed_gdn_env,
     "AX_MLX_MTP_REUSE_PROCESSED_GDN"
 );
+
+/// Reuse processed GDN rows on rollback. Also engaged by throughput MTP.
+pub fn mtp_reuse_processed_gdn_enabled() -> bool {
+    mtp_reuse_processed_gdn_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_GDN_PREWORK_SIMD32` — use a SIMD-width, four-values-per-lane
@@ -946,11 +968,14 @@ env_flag!(
     /// depthwise conv, Q/K normalization, and gated-delta recurrence into one
     /// Metal dispatch. The kernel preserves activation-dtype rounding and the
     /// recurrent update order, and falls back on any unsupported shape.
-    ///
-    /// **Default: OFF** pending matched token-hash and M5 throughput admission.
-    mtp_fused_gated_delta_verify_enabled,
+    mtp_fused_gated_delta_verify_env,
     "AX_MLX_MTP_FUSED_GDN_VERIFY"
 );
+
+/// Fused GDN verifier. Also engaged by throughput MTP.
+pub fn mtp_fused_gated_delta_verify_enabled() -> bool {
+    mtp_fused_gated_delta_verify_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_REFOLD_ACCEPTED_HISTORY` — rebuild committed Qwen MTP-head

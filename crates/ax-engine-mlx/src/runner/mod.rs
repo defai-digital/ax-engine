@@ -1327,11 +1327,11 @@ impl MlxRunner {
     }
 
     /// Whether this pack is certified for *default-on* model MTP
-    /// (`MlxMtpPolicy::Auto`). True unless the loaded target is the
-    /// default-on QwenCalibrated route and its `axquant_runtime.json`
-    /// `"mtp"` block lacks publisher certification. Explicit
-    /// `MlxMtpPolicy::Required` and `AX_MLX_MTP_FORCE_REQUESTED` bypass
-    /// this gate; route safety and speculation kill switches do not.
+    /// (`MlxMtpPolicy::Auto`). Dense QwenCalibrated still requires publisher
+    /// certification. Qwen linear sidecar packs default on via throughput MTP
+    /// when `enabled_by_default` is set. Explicit `MlxMtpPolicy::Required` and
+    /// `AX_MLX_MTP_FORCE_REQUESTED` bypass this gate; route safety and
+    /// speculation kill switches do not.
     pub fn mtp_certified_default_on(&self) -> bool {
         self.mtp_model_policy.certified_default_on() || crate::fastpath::mtp_force_requested()
     }
@@ -1648,8 +1648,21 @@ impl MlxRunner {
             weights.mtp.as_ref().map_or(0, |head| head.max_depth),
             artifacts.tensor_specs(),
         );
+        let qwen_linear_throughput_default = cfg.model_family == "qwen3_5"
+            && cfg.linear_attention.is_some()
+            && weights.mtp.as_ref().is_some_and(|head| head.max_depth > 0)
+            && crate::fastpath::qwen_linear_throughput_mtp_enabled();
         let (qwen_linear_mtp_exact_enabled, qwen_linear_mtp_exact_selection) =
-            crate::fastpath::resolve_qwen_linear_mtp_exact(qwen_linear_mtp_exact_eligible);
+            if qwen_linear_throughput_default
+                && crate::fastpath::qwen_linear_mtp_exact_env_override() != Some(true)
+            {
+                crate::fastpath::resolve_qwen_linear_mtp_exact_with_override(
+                    qwen_linear_mtp_exact_eligible,
+                    Some(false),
+                )
+            } else {
+                crate::fastpath::resolve_qwen_linear_mtp_exact(qwen_linear_mtp_exact_eligible)
+            };
         // Cover load-time JIT warm-up with the same arithmetic contract used
         // by production decode. The scope is runner-local and restores on
         // every early return.
@@ -1685,18 +1698,20 @@ impl MlxRunner {
             // fail-closed. Env opt-in still wins for formal harnesses.
             // MXFP4 is exact-capable but not auto-promoted. Formal candidate
             // env still opts in; checkpoint adopt is the measured exact path.
-            qwen_linear_certification_candidate: resolve_qwen_linear_certification_candidate(
-                qwen_linear_certification_env_opt_in,
-                qwen_linear_mtp_exact_eligible
-                    && (qwen_linear_mtp_exact_enabled || qwen_linear_projected_replay_enabled)
-                    && !has_mxfp4_linears,
-            ),
+            qwen_linear_certification_candidate: qwen_linear_throughput_default
+                || resolve_qwen_linear_certification_candidate(
+                    qwen_linear_certification_env_opt_in,
+                    qwen_linear_mtp_exact_eligible
+                        && (qwen_linear_mtp_exact_enabled || qwen_linear_projected_replay_enabled)
+                        && !has_mxfp4_linears,
+                ),
             qwen_linear_certification_env_opt_in,
             // DeepSeek V4 nextn: same fail-closed product default until Tier 2.
             deepseek_v4_certification_candidate: deepseek_v4_mtp_certification_candidate_from_env(),
             // Publisher-declared default-on certification from the pack's
             // axquant_runtime.json "mtp" block; fail-closed when absent.
             runtime_certification: mtp_runtime_certification(artifacts.root_dir()),
+            qwen_linear_throughput_default,
         });
 
         let expert_streaming_active = weights.expert_stream.is_some();
@@ -1941,6 +1956,29 @@ impl MlxRunner {
             .filter(|&c| c >= 1)
             .unwrap_or(8);
         let batched_session = Mutex::new(BatchedDecodeSession::new(cfg.layer_count, batched_cap));
+        // Session-level n-gram disable is the pure direct contract used by
+        // AX-only README benches (`--ax-direct` / `AX_NO_SPEC`). Leave MTP
+        // requested only when speculation remains enabled so greedy direct
+        // decode keeps the double-buffer pipeline instead of falling into
+        // `run_non_ngram_decode` → single-decode. Default-on additionally
+        // requires the pack's publisher certification (fail-closed);
+        // explicit requests re-enter through `set_mtp_requested`.
+        let mtp_requested = !disable_ngram_acceleration
+            && mtp_model_route_safe
+            && (mtp_model_policy.certified_default_on() || crate::fastpath::mtp_force_requested());
+        tracing::info!(
+            target: "ax_engine_mlx::runner",
+            model_family = %cfg.model_family,
+            mtp_depth = mtp_model_policy.max_depth(),
+            throughput_default = qwen_linear_throughput_default,
+            certified_default_on = mtp_model_policy.certified_default_on(),
+            route_safe = mtp_model_route_safe,
+            disable_ngram = disable_ngram_acceleration,
+            mtp_requested,
+            linear_candidate = mtp_model_policy.is_qwen_linear_certification_candidate(),
+            linear_direct_fallback = mtp_model_policy.is_qwen_linear_direct_fallback(),
+            "MTP admission at runner construction"
+        );
         let fa_block_pool_config = if fa_kv_block_pool_enabled() {
             Some(default_fa_block_pool_config())
         } else {
@@ -2014,17 +2052,7 @@ impl MlxRunner {
             batched_session,
             _stream: stream,
             disable_ngram_acceleration,
-            // Session-level n-gram disable is the pure direct contract used by
-            // AX-only README benches (`--ax-direct` / `AX_NO_SPEC`). Leave MTP
-            // requested only when speculation remains enabled so greedy direct
-            // decode keeps the double-buffer pipeline instead of falling into
-            // `run_non_ngram_decode` → single-decode. Default-on additionally
-            // requires the pack's publisher certification (fail-closed);
-            // explicit requests re-enter through `set_mtp_requested`.
-            mtp_requested: !disable_ngram_acceleration
-                && mtp_model_route_safe
-                && (mtp_model_policy.certified_default_on()
-                    || crate::fastpath::mtp_force_requested()),
+            mtp_requested,
             mtp_model_policy,
             qwen_linear_mtp_exact_eligible,
             qwen_linear_mtp_exact_enabled,
@@ -10563,6 +10591,7 @@ impl MlxRunner {
         // MTP on the basis of n-gram quality incorrectly disables a beneficial
         // speculation source (observed as a uniform regression on 35B-A3B).
         if !state.mtp_bypassed
+            && mtp_ewma_bypass_enabled()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= mtp_bypass_min_samples()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma < mtp_bypass_threshold()
         {
@@ -10625,11 +10654,13 @@ impl MlxRunner {
             // skips n-gram. Unset + exact Qwen linear MTP allows
             // stacking — official Qwen38 --full leaves the var unset and
             // general-long ignore_eos is a special-token loop n-gram can hit.
-            let mut ngram_max = if !mtp_ngram_stacking_allowed(
-                mtp_ngram_stacking_env(),
-                crate::fastpath::qwen_linear_mtp_exact_enabled(),
-                self.disable_mtp_ngram_stacking,
-            ) {
+            let mut ngram_max = if (self.mtp_requested
+                && crate::fastpath::qwen_linear_throughput_mtp_enabled())
+                || !mtp_ngram_stacking_allowed(
+                    mtp_ngram_stacking_env(),
+                    crate::fastpath::qwen_linear_mtp_exact_enabled(),
+                    self.disable_mtp_ngram_stacking,
+                ) {
                 0
             } else {
                 mtp_ngram_stack_len(
@@ -12415,6 +12446,11 @@ fn mtp_initial_adaptive_depth(model_family: &str, head_max_depth: usize) -> usiz
     }
     if crate::fastpath::mtp_depth3_miss_backoff_enabled() && head_max_depth == 3 {
         return 3;
+    }
+    if crate::fastpath::qwen_linear_throughput_mtp_enabled()
+        && matches!(model_family, "qwen3_next" | "qwen3_5")
+    {
+        return crate::fastpath::QWEN_LINEAR_THROUGHPUT_MTP_DEPTH.min(head_max_depth);
     }
     match model_family {
         "qwen3_next" | "qwen3_5" => 2.min(head_max_depth),
@@ -21125,12 +21161,18 @@ mod tests {
 
     #[test]
     fn mtp_initial_adaptive_depth_starts_qwen3_5_at_depth_2() {
-        // Qwen3.6 dense 27B (qwen3_5) has the same linear-attention hybrid
-        // architecture as qwen3_next; depth 2 is the throughput optimum.
-        assert_eq!(mtp_initial_adaptive_depth("qwen3_5", 8), 2);
+        // Throughput MTP (default-on) starts Qwen linear packs at recurrent
+        // depth 3. The historical depth-2 start remains for the kill-switch
+        // path; this process has the product default engaged.
+        if crate::fastpath::qwen_linear_throughput_mtp_enabled() {
+            assert_eq!(mtp_initial_adaptive_depth("qwen3_5", 8), 3);
+            assert_eq!(mtp_initial_adaptive_depth("qwen3_5", 3), 3);
+            assert_eq!(mtp_initial_adaptive_depth("qwen3_next", 8), 3);
+        } else {
+            assert_eq!(mtp_initial_adaptive_depth("qwen3_5", 8), 2);
+            assert_eq!(mtp_initial_adaptive_depth("qwen3_next", 8), 2);
+        }
         assert_eq!(mtp_initial_adaptive_depth("qwen3_5", 1), 1);
-        // MoE variant still starts at 2.
-        assert_eq!(mtp_initial_adaptive_depth("qwen3_next", 8), 2);
         assert_eq!(mtp_initial_adaptive_depth("qwen3_next", 1), 1);
         // Other families start at head_max_depth.
         assert_eq!(mtp_initial_adaptive_depth("standard", 8), 8);
@@ -21142,8 +21184,13 @@ mod tests {
         // Default min_samples is 8: enough EWMA stabilization without
         // excessive warm-up delay.
         assert_eq!(mtp_bypass_min_samples(), 8);
-        // ADR-020 default short remaining-budget floor (formal harnesses use 0).
-        assert_eq!(mtp_min_remaining_tokens(), 16);
+        // ADR-020 default short remaining-budget floor is 16; throughput MTP
+        // keeps drafting through the tail unless the env override is set.
+        if crate::fastpath::qwen_linear_throughput_mtp_enabled() {
+            assert_eq!(mtp_min_remaining_tokens(), 0);
+        } else {
+            assert_eq!(mtp_min_remaining_tokens(), 16);
+        }
         // Default threshold is 0.50: MTP is bypassed only when acceptance
         // is clearly worse than break-even.
         let threshold = mtp_bypass_threshold();

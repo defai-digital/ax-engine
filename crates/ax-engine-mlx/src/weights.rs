@@ -3533,8 +3533,27 @@ fn apply_mtp_depth_policy(depth: usize, sidecar_bits: Option<i32>) -> usize {
     default_mtp_depth_without_env(depth, sidecar_bits)
 }
 
-fn default_mtp_depth_without_env(depth: usize, _sidecar_bits: Option<i32>) -> usize {
-    depth
+fn default_mtp_depth_without_env(depth: usize, sidecar_bits: Option<i32>) -> usize {
+    default_mtp_depth_without_env_with_throughput(
+        depth,
+        sidecar_bits,
+        crate::fastpath::qwen_linear_throughput_mtp_enabled(),
+    )
+}
+
+pub(crate) fn default_mtp_depth_without_env_with_throughput(
+    depth: usize,
+    _sidecar_bits: Option<i32>,
+    throughput: bool,
+) -> usize {
+    if depth == 0 {
+        return 0;
+    }
+    if throughput {
+        crate::fastpath::QWEN_LINEAR_THROUGHPUT_MTP_DEPTH
+    } else {
+        depth
+    }
 }
 
 fn apply_mtp_max_depth_cap(depth: usize) -> usize {
@@ -8988,6 +9007,23 @@ mod tests {
             parse_mtp_sidecar_bits_hint(&serde_json::json!({"mtp_sidecar_bits": 3})),
             None
         );
+    }
+
+    #[test]
+    fn qwen_sidecar_depth_one_raises_to_throughput_depth_three() {
+        assert_eq!(
+            default_mtp_depth_without_env_with_throughput(1, None, true),
+            crate::fastpath::QWEN_LINEAR_THROUGHPUT_MTP_DEPTH
+        );
+        assert_eq!(
+            default_mtp_depth_without_env_with_throughput(1, None, false),
+            1
+        );
+        assert_eq!(
+            default_mtp_depth_without_env_with_throughput(0, None, true),
+            0
+        );
+        assert!(default_mtp_depth_without_env_with_throughput(1, None, true) > 0);
     }
 
     #[test]
