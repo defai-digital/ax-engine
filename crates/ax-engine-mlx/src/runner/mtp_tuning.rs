@@ -764,6 +764,18 @@ mod tests {
     }
 
     #[test]
+    fn throughput_mtp_refolds_and_compiles_the_qwen_verifier() {
+        if crate::fastpath::qwen_linear_throughput_mtp_enabled() {
+            assert!(crate::fastpath::mtp_refold_accepted_history_enabled());
+            assert!(crate::fastpath::mtp_batched_committed_fold_enabled());
+            assert!(crate::fastpath::mtp_packed_verify_ffn_enabled());
+            assert!(crate::fastpath::mtp_target_layer_compile_enabled());
+            assert!(crate::fastpath::mtp_linear_layer_compile_enabled());
+            assert!(crate::fastpath::mtp_async_draft_enabled());
+        }
+    }
+
+    #[test]
     fn certification_defaults_closed_without_mtp_block() {
         let v: serde_json::Value = serde_json::json!({"quantization": {"bits": 6}});
         assert_eq!(

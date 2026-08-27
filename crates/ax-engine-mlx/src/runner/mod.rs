@@ -10243,7 +10243,10 @@ impl MlxRunner {
                     )
                     && !self.mtp_skip_state
                     && crate::mtp::mtp_draft_mode_from_env() == crate::mtp::MtpDraftMode::Greedy
-                    && crate::mtp::mtp_draft_min_confidence_from_env() == 0.0;
+                    && qwen_batched_committed_fold_gate_ok(
+                        crate::mtp::mtp_draft_min_confidence_from_env(),
+                        state.mtp_draft_gate_x1000,
+                    );
                 if combined_fold {
                     let next_depth = mtp_next_adaptive_depth(
                         state.mtp_adaptive_max_depth,
@@ -12909,6 +12912,12 @@ const fn qwen_linear_mtp_async_draft_allowed(
     has_linear_attention && (exact_profile_enabled || projected_replay_enabled)
 }
 
+/// Batched committed-history fold is the ungated greedy regime. Throughput MTP
+/// resolves the draft gate to 0 even when the process env still holds 0.90.
+const fn qwen_batched_committed_fold_gate_ok(env_gate: f32, resolved_gate_x1000: u32) -> bool {
+    env_gate == 0.0 || resolved_gate_x1000 == 0
+}
+
 /// Emit the stable runner contract separately from the per-step arithmetic
 /// scope. A terminal short-budget or latched-bypass step can legitimately drop
 /// the scope after earlier MTP verification work; it must not rewrite the
@@ -14876,6 +14885,14 @@ mod tests {
         assert!(!linear_mtp_projected_replay_allowed(2, false, false, false));
         assert!(!linear_mtp_projected_replay_allowed(2, true, true, false));
         assert!(!linear_mtp_projected_replay_allowed(2, true, false, true));
+    }
+
+    #[test]
+    fn batched_committed_fold_honors_resolved_zero_gate() {
+        assert!(!qwen_batched_committed_fold_gate_ok(0.90, 900));
+        assert!(qwen_batched_committed_fold_gate_ok(0.0, 900));
+        assert!(qwen_batched_committed_fold_gate_ok(0.90, 0));
+        assert!(qwen_batched_committed_fold_gate_ok(0.0, 0));
     }
 
     #[test]

@@ -681,10 +681,14 @@ env_flag!(
     /// Qwen S=2..=4 layer closures inside the relaxed target verifier. The
     /// row-exact profile retains its historical behavior independently.
     ///
-    /// **Default: OFF** pending matched M5 verifier admission.
-    mtp_target_layer_compile_enabled,
+    mtp_target_layer_compile_env,
     "AX_MLX_MTP_TARGET_LAYER_COMPILE"
 );
+
+/// Relaxed-verifier layer closures. Also engaged by throughput MTP.
+pub fn mtp_target_layer_compile_enabled() -> bool {
+    mtp_target_layer_compile_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_PACKED_VERIFY_FFN` — use the prepacked gate/up projection
@@ -692,10 +696,14 @@ env_flag!(
     /// verifier's relaxed arithmetic contract while removing one skinny QMM
     /// dispatch per eligible dense layer.
     ///
-    /// **Default: OFF** pending matched M5 admission.
-    mtp_packed_verify_ffn_enabled,
+    mtp_packed_verify_ffn_env,
     "AX_MLX_MTP_PACKED_VERIFY_FFN"
 );
+
+/// Packed verifier FFN. Also engaged by throughput MTP.
+pub fn mtp_packed_verify_ffn_enabled() -> bool {
+    mtp_packed_verify_ffn_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 /// Whether fixed-shape Qwen verifier layer closures may engage.
 pub fn qwen_linear_mtp_layer_compile_enabled() -> bool {
@@ -721,10 +729,14 @@ env_flag!(
     /// full-attention layers on their existing paged route. The closure
     /// threads conv/recurrent state and the compact replay tape explicitly.
     ///
-    /// **Default: OFF** pending matched M5 admission.
-    mtp_linear_layer_compile_enabled,
+    mtp_linear_layer_compile_env,
     "AX_MLX_MTP_LINEAR_LAYER_COMPILE"
 );
+
+/// Compiled gated-delta verifier layers. Also engaged by throughput MTP.
+pub fn mtp_linear_layer_compile_enabled() -> bool {
+    mtp_linear_layer_compile_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 /// Restores the previous whole-verifier trace marker on drop.
 #[must_use]
@@ -982,10 +994,14 @@ env_flag!(
     /// history from target-backbone hidden rows after each verify cycle. The
     /// draft cache is one position behind the proposed token list, so this also
     /// fixes the legacy rejection trim's shifted-entry accounting. OFF by
-    /// default until matched acceptance and throughput admission completes.
-    mtp_refold_accepted_history_enabled,
+    mtp_refold_accepted_history_env,
     "AX_MLX_MTP_REFOLD_ACCEPTED_HISTORY"
 );
+
+/// Rebuild MTP-head KV from target hidden rows. Also engaged by throughput MTP.
+pub fn mtp_refold_accepted_history_enabled() -> bool {
+    mtp_refold_accepted_history_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_BATCHED_COMMITTED_FOLD` — fold accepted drafts plus the
@@ -994,20 +1010,28 @@ env_flag!(
     /// mirrors oMLX's committed-history cycle and avoids a second first-depth
     /// read of the MTP-head weights.
     ///
-    /// **Default: OFF** pending matched M5 admission.
-    mtp_batched_committed_fold_enabled,
+    mtp_batched_committed_fold_env,
     "AX_MLX_MTP_BATCHED_COMMITTED_FOLD"
 );
+
+/// Batched committed-history MTP fold. Also engaged by throughput MTP.
+pub fn mtp_batched_committed_fold_enabled() -> bool {
+    mtp_batched_committed_fold_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 env_flag!(
     /// `AX_MLX_MTP_LAST_COMMITTED_QUERY` — during a batched committed-history
     /// fold, project the attention query/gate only for the final row. Earlier
     /// rows contribute K/V history but their attention outputs are discarded.
     ///
-    /// **Default: OFF** pending matched M5 admission.
-    mtp_last_committed_query_enabled,
+    mtp_last_committed_query_env,
     "AX_MLX_MTP_LAST_COMMITTED_QUERY"
 );
+
+/// Last-row query during committed-history fold. Also engaged by throughput MTP.
+pub fn mtp_last_committed_query_enabled() -> bool {
+    mtp_last_committed_query_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 /// Widest sequence shape the exact verifier contract covers: S=1 singleton
 /// replay plus S=2..=4 verify (`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS` = 3
@@ -1155,10 +1179,14 @@ env_flag!(
     /// only the synchronization point moves. Engages under the exact profile
     /// or the explicit projected-replay profile, with the confidence gate
     /// disabled, non-stochastic drafting, and skip-state off — the regime
-    /// where the synchronous greedy path computes no log-probs or distributions.
-    mtp_async_draft_enabled,
+    mtp_async_draft_env,
     "AX_MLX_MTP_ASYNC_DRAFT"
 );
+
+/// Overlap greedy MTP draft with host work. Also engaged by throughput MTP.
+pub fn mtp_async_draft_enabled() -> bool {
+    mtp_async_draft_env() || qwen_linear_throughput_mtp_enabled()
+}
 
 env_flag!(
     /// `AX_MLX_GEMMA_DUAL_GATE_UP_METAL` — multi-token Gemma dense FFN dual
