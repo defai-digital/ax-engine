@@ -1788,21 +1788,28 @@ mod tests {
     }
 
     #[test]
-    fn nax_qwen_offset_chunk_skips_array_mask_gemma_does_not() {
+    fn nax_llama_offset_chunk_skips_array_mask_gemma_does_not() {
         use crate::model::shared::utils::QwenPrefillNativeOffsetCausalGuard;
         let _hw =
             crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m5_na());
         let guard = QwenPrefillNativeOffsetCausalGuard::arm(
-            crate::fastpath::should_qwen_prefill_native_offset_causal("qwen3_5", 1024),
+            crate::fastpath::should_prefill_native_offset_causal("llama3", 1024),
         );
         assert!(
             super::attention_mask_array(1024, 2048, None).is_none(),
-            "M5 NAX Qwen offset chunk must use native causal"
+            "M5 NAX Llama offset chunk must use native causal"
+        );
+        assert!(
+            super::attention_mask_array(1024, 2048, Some(1024)).is_some(),
+            "sliding-window layers must keep their explicit mask"
         );
         drop(guard);
+        assert!(!crate::fastpath::should_prefill_native_offset_causal(
+            "gemma4", 1024
+        ));
         assert!(
             super::attention_mask_array(1024, 2048, None).is_some(),
-            "Gemma/full-attn without the Qwen guard still materializes the offset array"
+            "Gemma without the Qwen/NA guard still materializes the offset array"
         );
     }
 

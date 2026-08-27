@@ -4437,8 +4437,8 @@ env_flag!(
 
 env_flag_default_on!(
     /// `AX_MLX_NAX_ATTENTION` — allow Neural Accelerator attention policy
-    /// (Qwen full-attn native `mask="causal"` at `seq >= 1024`) on M5+
-    /// running macOS 26.2+.
+    /// (allowlisted full-attn native `mask="causal"` at `seq >= 1024`) on
+    /// M5+ running macOS 26.2+.
     ///
     /// **Default: ON** when [`crate::hardware::neural_accelerator_active`]
     /// is true. Kill-switch via `AX_MLX_NAX_ATTENTION=0`. Off-switch only:
@@ -4458,6 +4458,28 @@ pub fn nax_attention_enabled() -> bool {
 /// Pure helper for [`nax_attention_enabled`].
 pub fn nax_attention_enabled_for(allowed: bool, neural_accelerator_active: bool) -> bool {
     allowed && neural_accelerator_active
+}
+
+/// Whether a model family may use native offset-causal SDPA on NAX hosts.
+pub fn nax_native_offset_causal_family(model_family: &str) -> bool {
+    matches!(
+        model_family.to_ascii_lowercase().as_str(),
+        "qwen3"
+            | "qwen3_5"
+            | "qwen3_next"
+            | "qwen3_vl"
+            | "qwen3_vl_moe"
+            | "llama3"
+            | "llama4"
+            | "mistral3"
+            | "mixtral"
+            | "glm4_moe_lite"
+            | "gpt_oss"
+            | "muse_glimmer"
+            | "minimax_m3"
+            | "minicpmv4_6"
+            | "nemotron_h"
+    )
 }
 
 env_flag!(
@@ -4497,16 +4519,10 @@ pub fn should_qwen_prefill_skip_unused_swiglu_compile_for(
         )
 }
 
-/// Whether Qwen prefill should use native offset causal SDPA.
-///
-/// The explicit env opt-in stays available on every host. On M5+ with
-/// macOS 26.2+ the same predicate is also armed by [`nax_attention_enabled`]
-/// so offset chunks (`seq >= 1024`) skip the O(seq×key) array mask and let
-/// MLX pick NAX fused causal SDPA. Gemma and sliding-window layers are
-/// unchanged.
+/// Whether the Qwen env opt-in permits native offset-causal SDPA.
 pub fn should_qwen_prefill_native_offset_causal(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_native_offset_causal_for(
-        qwen_prefill_native_offset_causal_enabled() || nax_attention_enabled(),
+        qwen_prefill_native_offset_causal_enabled(),
         model_family,
         seq,
     )
@@ -4524,6 +4540,33 @@ pub fn should_qwen_prefill_native_offset_causal_for(
             model_family.to_ascii_lowercase().as_str(),
             "qwen3_5" | "qwen3_next"
         )
+}
+
+/// Whether prefill should use native offset-causal SDPA.
+///
+/// The Qwen env opt-in is host-independent and Qwen-only. NAX hosts extend
+/// the route to the explicit full-attention family allowlist. Sliding-window
+/// layers continue to materialize their required masks.
+pub fn should_prefill_native_offset_causal(model_family: &str, seq: i32) -> bool {
+    should_prefill_native_offset_causal_for(
+        qwen_prefill_native_offset_causal_enabled(),
+        nax_attention_enabled(),
+        model_family,
+        seq,
+    )
+}
+
+/// Pure helper for [`should_prefill_native_offset_causal`].
+pub fn should_prefill_native_offset_causal_for(
+    qwen_opt_in_enabled: bool,
+    nax_enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    should_qwen_prefill_native_offset_causal_for(qwen_opt_in_enabled, model_family, seq)
+        || (nax_enabled
+            && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+            && nax_native_offset_causal_family(model_family))
 }
 
 /// Whether Qwen prefill should dequant embeddings directly to BF16.
@@ -7558,6 +7601,62 @@ mod tests {
     }
 
     #[test]
+    fn nax_native_offset_causal_family_uses_explicit_allowlist() {
+        let allowed = [
+            "qwen3",
+            "qwen3_5",
+            "qwen3_next",
+            "qwen3_vl",
+            "qwen3_vl_moe",
+            "llama3",
+            "llama4",
+            "mistral3",
+            "mixtral",
+            "glm4_moe_lite",
+            "gpt_oss",
+            "muse_glimmer",
+            "minimax_m3",
+            "minicpmv4_6",
+            "nemotron_h",
+        ];
+        for family in allowed {
+            assert!(
+                nax_native_offset_causal_family(family),
+                "expected {family} to be allowlisted"
+            );
+            assert!(
+                nax_native_offset_causal_family(&family.to_ascii_uppercase()),
+                "expected {family} matching to be case-insensitive"
+            );
+        }
+
+        let denied = [
+            "gemma4",
+            "gemma4_vl",
+            "gemma4_unified",
+            "gemma4_assistant",
+            "embeddinggemma",
+            "diffusion_gemma",
+            "gemma_future",
+            "unlimited_ocr",
+            "whisper",
+            "nemotron_embed",
+            "deepseek_v3",
+            "deepseek_v4",
+        ];
+        for family in denied {
+            assert!(
+                !nax_native_offset_causal_family(family),
+                "expected {family} to be denied"
+            );
+            assert!(
+                !nax_native_offset_causal_family(&family.to_ascii_uppercase()),
+                "expected {family} denial to be case-insensitive"
+            );
+        }
+    }
+
+    #[test]
     fn qwen_prefill_native_offset_causal_is_seq_and_family_gated() {
         assert!(should_qwen_prefill_native_offset_causal_for(
             true, "qwen3_5", 1024
@@ -7576,6 +7675,12 @@ mod tests {
         assert!(!should_qwen_prefill_native_offset_causal_for(
             false, "qwen3_5", 1024
         ));
+        assert!(should_prefill_native_offset_causal_for(
+            true, false, "qwen3_5", 1024
+        ));
+        assert!(!should_prefill_native_offset_causal_for(
+            true, false, "llama3", 1024
+        ));
     }
 
     #[test]
@@ -7587,30 +7692,32 @@ mod tests {
     }
 
     #[test]
-    fn nax_attention_arms_qwen_native_offset_causal_on_m5() {
+    fn nax_attention_arms_allowlisted_native_offset_causal_on_m5() {
         let _hw =
             crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m5_na());
         assert!(nax_attention_enabled_for(
             true,
             crate::hardware::neural_accelerator_active()
         ));
-        assert!(should_qwen_prefill_native_offset_causal_for(
-            nax_attention_enabled(),
-            "qwen3_5",
-            1024
-        ));
-        assert!(should_qwen_prefill_native_offset_causal("qwen3_5", 1024));
-        assert!(should_qwen_prefill_native_offset_causal("qwen3_next", 2048));
-        assert!(!should_qwen_prefill_native_offset_causal("qwen3_5", 512));
-        assert!(!should_qwen_prefill_native_offset_causal("gemma4", 1024));
+        for family in ["llama3", "mistral3", "qwen3", "qwen3_vl"] {
+            assert!(
+                should_prefill_native_offset_causal(family, 1024),
+                "M5 NAX should arm native offset causal for {family}"
+            );
+        }
+        assert!(should_prefill_native_offset_causal("qwen3_5", 1024));
+        assert!(should_prefill_native_offset_causal("qwen3_next", 2048));
+        assert!(!should_prefill_native_offset_causal("llama3", 512));
+        assert!(!should_prefill_native_offset_causal("gemma4", 1024));
     }
 
     #[test]
     fn nax_attention_does_not_arm_on_m4() {
         let _hw = crate::hardware::override_hardware(crate::hardware::HardwareCapabilities::m4());
         assert!(!nax_attention_enabled());
+        assert!(!should_prefill_native_offset_causal("llama3", 1024));
         if !qwen_prefill_native_offset_causal_enabled() {
-            assert!(!should_qwen_prefill_native_offset_causal("qwen3_5", 1024));
+            assert!(!should_prefill_native_offset_causal("qwen3_5", 1024));
         }
     }
 
@@ -7630,10 +7737,12 @@ mod tests {
             "kill-switch AND hardware must both be true to arm NAX attention"
         );
         if nax_attention_enabled() {
-            assert!(should_qwen_prefill_native_offset_causal("qwen3_5", 1024));
-            assert!(should_qwen_prefill_native_offset_causal("qwen3_next", 2048));
-            assert!(!should_qwen_prefill_native_offset_causal("qwen3_5", 512));
-            assert!(!should_qwen_prefill_native_offset_causal("gemma4", 1024));
+            assert!(should_prefill_native_offset_causal("qwen3_5", 1024));
+            assert!(should_prefill_native_offset_causal("qwen3_next", 2048));
+            assert!(should_prefill_native_offset_causal("llama3", 1024));
+            assert!(should_prefill_native_offset_causal("qwen3_vl", 1024));
+            assert!(!should_prefill_native_offset_causal("qwen3_5", 512));
+            assert!(!should_prefill_native_offset_causal("gemma4", 1024));
         }
     }
 

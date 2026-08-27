@@ -1099,7 +1099,7 @@ fn forward_and_logits_mode(
         ),
     );
     let _native_offset = shared::utils::QwenPrefillNativeOffsetCausalGuard::arm(
-        crate::fastpath::should_qwen_prefill_native_offset_causal(
+        crate::fastpath::should_prefill_native_offset_causal(
             &cfg.model_family,
             token_ids.len() as i32,
         ),

@@ -121,8 +121,8 @@ the only family with a measured M5 server-path decode win. Other eligible
 families keep MLX defaults so Neural Accelerator GEMM/SDPA stay on the
 upstream command-buffer policy. Pre-M5 hosts still use the family exclusions
 above. Kill switch `AX_MLX_AUTO_BUFFER_CAPS=0` still wins. Related:
-`AX_MLX_NAX_ATTENTION=0` disables the Qwen native-causal SDPA policy on those
-same hosts.
+NA native causal covers the allowlisted full-attention families (excluding
+Gemma); `AX_MLX_NAX_ATTENTION=0` disables it.
 
 ### MLX 0.32 / M5 Max exception: Unlimited-OCR
 

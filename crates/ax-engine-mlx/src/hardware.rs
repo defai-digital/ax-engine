@@ -7,8 +7,8 @@
 //! cached capability to:
 //! - leave Metal command-buffer caps at MLX defaults on M5+ except families
 //!   with measured M5 wins (`qwen3_next`);
-//! - prefer native `mask="causal"` SDPA on Qwen full-attn prefill chunks
-//!   (`seq >= 1024`) so MLX can take NAX fused attention.
+//! - prefer native `mask="causal"` SDPA on allowlisted full-attn prefill
+//!   chunks (`seq >= 1024`) so MLX can take NAX fused attention.
 //!
 //! Detection is `silicon_generation >= 5` and running macOS 26.2+. It does
 //! not inspect the linked `libmlx` for NAX symbols. Results are process-
