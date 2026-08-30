@@ -332,6 +332,8 @@ serving, MTP, direct, or embedding rows, and do not mix **M3 Max** vs
 | **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | Exact 6-bit MTP: **14/15 wins**, **1.68× GM**; peer: AX trails MTPLX, beats lightning-mlx **2/3** | M5 Max · 2026-08-06/07 |
 | **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) | AX **30/30** decode wins vs separate-run mlx-lm · **+4.6% GM** | M5 Max · 2026-08-07 · separate runs |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Qwen **18/18** wins, **+1.56% GM**; EmbeddingGemma **6/6**, **+7.99% GM** | M5 Max · 2026-08-07 · same-session paired |
+| **Qwen3.8 direct refresh** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) | AXQ 6-bit AX direct decode **34.04–34.59 tok/s** across p128–p2048 | M5 Max 128 GB · 2026-08-30 · v7.2.0 refresh |
+| **Qwen3.8 same-package MTP refresh** | AX direct · AX exact sampled MTP | **1.32–1.36×** MTP/direct decode across the three workload suites | M5 Max 128 GB · 2026-08-30 · v7.2.0 refresh |
 
 Full tables, charts, and methodology:
 [Performance Results](docs/PERFORMANCE-RESULTS.md) ·
@@ -401,6 +403,37 @@ Qwen3.6 35B-A3B `python_modules_long` at **0.88×**; Qwen3.6 35B-A3B reaches
 <img width="100%" src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit exact sampled-MTP acceleration vs same-package direct">
 
 Per-suite tables: [Performance Results: MTP](docs/PERFORMANCE-RESULTS.md#session-mode-mtp-generation).
+
+### Qwen3.8 27B AXQ 6-bit refresh (2026-08-30)
+
+The default Qwen3.8 package was rerun on `df-macbookpro-m5` (Apple M5 Max,
+128 GB) using
+[`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP),
+pinned to snapshot `3e290738e96972307c6aeb9934ab170ca0eae1c1`. Direct rows use
+the `mlx_lm.benchmark`-compatible random-token contract with 128 generated
+tokens; MTP rows use the real `flappy`, `long_code`, and `python_modules_long`
+workload suites with 1,000 generated tokens.
+
+| Prompt / workload | AX direct decode | AX direct prefill | AX direct TTFT |
+| --- | ---: | ---: | ---: |
+| 128 prompt tokens | 34.59 tok/s | 617.3 tok/s | 207.4 ms |
+| 512 prompt tokens | 34.45 tok/s | 876.2 tok/s | 584.3 ms |
+| 2,048 prompt tokens | 34.04 tok/s | 953.8 tok/s | 2,147.1 ms |
+
+| Workload suite | AX direct decode | AX exact sampled MTP decode | MTP/direct |
+| --- | ---: | ---: | ---: |
+| `flappy` | 32.06 tok/s | 43.27 tok/s | **1.35×** |
+| `long_code` | 31.97 tok/s | 43.38 tok/s | **1.36×** |
+| `python_modules_long` | 32.10 tok/s | 42.50 tok/s | **1.32×** |
+
+All 11 MTP rows were correctness-eligible, with no direct fallback or
+optimistic verification steps recorded. The refresh was captured from the
+v7.2.0 release binary at commit `3cea9def`, but the benchmark host recorded
+tracked runtime changes in its worktree; treat these numbers as refresh
+evidence pending a clean-build rerun. Raw artifacts:
+[`mlx-lm` reference](benchmarks/results/inference/mlx-lm-reference/2026-08-30-qwen38-27b-axq-6bit-m5-readme-refresh/),
+[AX direct](benchmarks/results/inference/ax-direct/2026-08-30-v7.2.0-qwen38-27b-axq-6bit-m5-readme-refresh/),
+[AX MTP](benchmarks/results/speculative/mtp-6bit/2026-08-30-v7.2.0-qwen38-27b-axq-6bit-m5-readme-refresh/).
 
 ### Direct generation, embeddings, and archives
 
