@@ -1153,7 +1153,7 @@ impl IncrementalDecoder {
 
 /// Diff the decoded window prefix against the full window decode.
 ///
-/// `prefix` is always a complete (non-`�`-terminated) decode of the
+/// `prefix` is normally a complete (non-`�`-terminated) decode of the
 /// already-emitted tokens, so `whole` extends it byte-for-byte. Returns the
 /// newly completed suffix to emit, or `None` when the trailing codepoint is
 /// still incomplete (decoded as U+FFFD) and must be held back.
@@ -1161,9 +1161,13 @@ fn incremental_delta(prefix: &str, whole: &str) -> Option<String> {
     if whole.len() <= prefix.len() || whole.ends_with('\u{FFFD}') {
         return None;
     }
-    // `prefix` is complete, so `whole` starts with it and `prefix.len()` lands on
-    // a char boundary. The boundary check keeps the slice panic-free even if a
-    // tokenizer ever violated that assumption.
+    // Tokenizer non-monotonic decode or a corrupted cursor: skip rather than
+    // re-emit the whole string. The final non-stream decode remains correct.
+    if !whole.starts_with(prefix) {
+        return None;
+    }
+    // `whole` starts with `prefix`, so `prefix.len()` lands on a char boundary;
+    // the check keeps the slice panic-free even under future decode changes.
     if !whole.is_char_boundary(prefix.len()) {
         return None;
     }
@@ -1604,6 +1608,16 @@ mod incremental_decode_tests {
         // is held back entirely until the tail completes.
         assert_eq!(incremental_delta("你", "你好\u{FFFD}"), None);
         assert_eq!(incremental_delta("你", "你好世"), Some("好世".to_string()));
+    }
+
+    #[test]
+    fn never_reemits_full_string_on_prefix_mismatch() {
+        // If a tokenizer decode is ever non-monotonic (`whole` does not extend
+        // `prefix` byte-for-byte), the old code sliced on `prefix.len()`
+        // regardless and streamed a garbled/duplicated suffix. Holding back
+        // instead of re-emitting keeps SSE output correct-or-silent.
+        assert_eq!(incremental_delta("abc", "xyz"), None);
+        assert_eq!(incremental_delta("hello", "goodbye world"), None);
     }
 }
 

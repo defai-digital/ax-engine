@@ -3768,7 +3768,10 @@ impl ExecutionRunner for MlxRunner {
                 );
                 request_updates.extend(updates);
                 batched_forward_rows = group.len();
-                batched_idx = group.into_iter().collect();
+                // Extend, not overwrite: `batched_idx` may already hold rows
+                // suppressed by the assistant-MTP coalesced group above (3541);
+                // replacing it here would re-execute those rows this step.
+                batched_idx.extend(group);
             }
         }
 
