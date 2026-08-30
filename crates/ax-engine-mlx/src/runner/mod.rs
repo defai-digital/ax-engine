@@ -9785,6 +9785,18 @@ impl MlxRunner {
                     // projections with its materialized S=1 baseline; no
                     // accepted KV is replayed or rewritten mid-stream.
                     let verify_forward_started = Instant::now();
+                    let sensitive_f32 = self.cfg.moe_expert_count == 0
+                        && token_offset.saturating_add(verify_len) >= 512
+                        && crate::fastpath::gemma4_assistant_mtp_sensitive_f32_enabled();
+                    let sensitive_range = sensitive_f32
+                        .then(|| gemma_sensitive_f32_layer_range(self.cfg.layer_count))
+                        .flatten();
+                    if sensitive_range.is_some() {
+                        state.mtp_telemetry.record_gemma_sensitive_f32();
+                    }
+                    let _sensitive_fold_scope = sensitive_range.map(|(start, count)| {
+                        crate::fastpath::scoped_dense_long_mt_f32_range(start, count)
+                    });
                     state.pending_direct = None;
                     let (logits_mt, post_norm_all) = forward_all_positions_with_post_norm_greedy(
                         &self.cfg,

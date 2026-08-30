@@ -940,6 +940,7 @@ fn layer_forward_internal(
     skip_post_attention_ffn: bool,
     mrope: Option<&crate::qwen3_vl::QwenMropeCosSin>,
 ) -> MlxArray {
+    let _dense_long_mt_layer_scope = fastpath::scoped_dense_long_mt_layer(layer_idx);
     let (
         head_dim,
         rope_theta,

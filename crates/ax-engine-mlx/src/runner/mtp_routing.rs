@@ -350,6 +350,16 @@ pub(super) fn draft_continues_committed_cycle(history: &[u32], draft: &[u32]) ->
     false
 }
 
+/// Layer band whose long-context attention stays in f32 for dense Gemma MTP.
+pub(super) fn gemma_sensitive_f32_layer_range(layer_count: usize) -> Option<(usize, usize)> {
+    if layer_count == 0 {
+        return None;
+    }
+    let start = layer_count.saturating_mul(7) / 12;
+    let count = layer_count.div_ceil(6).min(layer_count - start).max(1);
+    Some((start, count))
+}
+
 /// Build a short cycle-history view ending with `last_token` (the verify root).
 ///
 /// `generated_tokens` may already include `last_token` (after emission) or may
@@ -455,6 +465,14 @@ mod tests {
         assert!(!gemma_early_gen_pure_direct_force(true, 32, 32));
         assert!(!gemma_early_gen_pure_direct_force(true, 100, 32));
         assert!(!gemma_early_gen_pure_direct_force(false, 0, 32));
+    }
+
+    #[test]
+    fn gemma_sensitive_f32_layer_range_scales_with_depth() {
+        assert_eq!(gemma_sensitive_f32_layer_range(0), None);
+        assert_eq!(gemma_sensitive_f32_layer_range(1), Some((0, 1)));
+        assert_eq!(gemma_sensitive_f32_layer_range(48), Some((28, 8)));
+        assert_eq!(gemma_sensitive_f32_layer_range(62), Some((36, 11)));
     }
 
     #[test]

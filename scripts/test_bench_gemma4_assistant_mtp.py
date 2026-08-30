@@ -118,6 +118,9 @@ class Gemma4AssistantMtpBenchTests(unittest.TestCase):
         self.assertEqual(direct.env, mtp.env)
         self.assertEqual(direct.depth, mtp.depth)
         self.assertEqual(direct.env["AX_MLX_ROTATING_SLIDING_DECODE"], "0")
+        self.assertEqual(
+            direct.env["AX_MLX_GEMMA4_ASSISTANT_MTP_SENSITIVE_F32"], "1"
+        )
 
     def test_select_bench_profiles_exposes_ngram_policy_ablation_profiles(self) -> None:
         profiles = bench.select_bench_profiles(

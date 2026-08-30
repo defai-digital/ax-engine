@@ -633,6 +633,7 @@ AX_MLX_GEMMA4_ASSISTANT_MTP_KEYS = [
     "ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us",
     "ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us",
     "ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us",
+    "ax_mtp_gemma_sensitive_f32_steps",
 ]
 
 AX_MLX_LINEAR_ATTENTION_PROFILE_KEYS = [

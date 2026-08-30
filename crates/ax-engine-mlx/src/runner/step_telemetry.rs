@@ -101,6 +101,8 @@ pub(super) struct MtpTelemetry {
     /// Gemma assistant-MTP steps forced onto sequential oracle by the
     /// cycle-continuation guard under formal multi-token verify.
     pub(super) gemma_cycle_guard_steps: u32,
+    /// Dense Gemma assistant-MTP steps using the selective f32 attention band.
+    pub(super) gemma_sensitive_f32_steps: u32,
     pub(super) ngram_skipped_mtp_steps: u32,
     pub(super) ngram_skipped_mtp_tokens: u32,
     pub(super) ngram_hybrid_tail_steps: u32,
@@ -414,6 +416,10 @@ impl MtpTelemetry {
         self.gemma_cycle_guard_steps = self.gemma_cycle_guard_steps.saturating_add(1);
     }
 
+    pub(super) fn record_gemma_sensitive_f32(&mut self) {
+        self.gemma_sensitive_f32_steps = self.gemma_sensitive_f32_steps.saturating_add(1);
+    }
+
     pub(super) fn record_ngram_stack_hit(&mut self, draft_len: usize, skipped_mtp: bool) {
         self.ngram_hit_steps = self.ngram_hit_steps.saturating_add(1);
         if skipped_mtp {
@@ -695,6 +701,9 @@ impl MtpTelemetry {
         self.gemma_cycle_guard_steps = self
             .gemma_cycle_guard_steps
             .saturating_add(other.gemma_cycle_guard_steps);
+        self.gemma_sensitive_f32_steps = self
+            .gemma_sensitive_f32_steps
+            .saturating_add(other.gemma_sensitive_f32_steps);
         self.ngram_skipped_mtp_steps = self
             .ngram_skipped_mtp_steps
             .saturating_add(other.ngram_skipped_mtp_steps);
@@ -1011,6 +1020,10 @@ impl MtpTelemetry {
             (
                 "ax_mtp_gemma_cycle_guard_steps",
                 self.gemma_cycle_guard_steps,
+            ),
+            (
+                "ax_mtp_gemma_sensitive_f32_steps",
+                self.gemma_sensitive_f32_steps,
             ),
             (
                 "ax_mtp_ngram_skipped_mtp_steps",
