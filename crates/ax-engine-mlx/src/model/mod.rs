@@ -1824,6 +1824,10 @@ fn lm_head_rows_singleton(
 
 /// Verify windows (2..=4 rows) must match singleton decode token-for-token;
 /// larger multi-token windows (MTP warmup) keep the batched projection.
+fn is_gemma4_text_target_family(model_family: &str) -> bool {
+    matches!(model_family, "gemma4" | "gemma4_unified")
+}
+
 fn lm_head_verify_window_projection(
     normed: &MlxArray,
     lm_head: &crate::weights::QuantizedWeight,
@@ -1832,7 +1836,7 @@ fn lm_head_verify_window_projection(
     hidden_size: i32,
 ) -> MlxArray {
     if (2..=4).contains(&seq) {
-        let _gemma_verify_qmm = (model_family == "gemma4"
+        let _gemma_verify_qmm = (is_gemma4_text_target_family(model_family)
             && crate::fastpath::gemma4_verify_qmm_lm_head_enabled())
         .then(|| shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true));
         // The relaxed target verifier is explicitly allowed to use oMLX-style
@@ -2353,7 +2357,9 @@ pub fn gemma4_assistant_forward_one(
     constant_position: usize,
 ) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
     use Gemma4AssistantForwardError as E;
-    if assistant_cfg.model_family != "gemma4_assistant" || target_cfg.model_family != "gemma4" {
+    if assistant_cfg.model_family != "gemma4_assistant"
+        || !is_gemma4_text_target_family(&target_cfg.model_family)
+    {
         return Err(E::ModelFamilyMismatch);
     }
     gemma4_assistant_forward_one_validated(
@@ -2531,7 +2537,9 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
         target_shared_layers: Gemma4AssistantSharedKvLayers,
     ) -> Result<Self, Gemma4AssistantForwardError> {
         use Gemma4AssistantForwardError as E;
-        if assistant_cfg.model_family != "gemma4_assistant" || target_cfg.model_family != "gemma4" {
+        if assistant_cfg.model_family != "gemma4_assistant"
+            || !is_gemma4_text_target_family(&target_cfg.model_family)
+        {
             return Err(E::ModelFamilyMismatch);
         }
         let pre_projection = assistant_weights
@@ -5928,6 +5936,14 @@ mod tests {
     }
 
     #[test]
+    fn gemma4_text_target_family_includes_unified() {
+        assert!(is_gemma4_text_target_family("gemma4"));
+        assert!(is_gemma4_text_target_family("gemma4_unified"));
+        assert!(!is_gemma4_text_target_family("gemma4_assistant"));
+        assert!(!is_gemma4_text_target_family("qwen3"));
+    }
+
+    #[test]
     fn gemma4_assistant_forward_one_compiled_disabled_returns_none() {
         // Default flag is OFF (opt-in). Disabled path must not claim a result.
         assert!(
@@ -6063,6 +6079,21 @@ mod tests {
                 &assistant_cfg,
                 &weights,
                 &target_cfg,
+                &weights,
+                shared,
+            )
+            .is_ok()
+        );
+
+        let unified_target_cfg = ModelConfig {
+            model_family: "gemma4_unified".into(),
+            ..cfg(false)
+        };
+        assert!(
+            Gemma4AssistantDraftSession::open(
+                &assistant_cfg,
+                &weights,
+                &unified_target_cfg,
                 &weights,
                 shared,
             )
