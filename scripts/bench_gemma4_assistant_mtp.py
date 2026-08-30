@@ -455,6 +455,10 @@ def build_ax_cmd(
     sampling: dict[str, Any],
     depth: int,
     no_build: bool,
+    max_load_average: float | None = None,
+    max_top_process_cpu_percent: float | None = None,
+    load_average_wait_timeout: float = 0.0,
+    load_average_poll_interval: float = 30.0,
 ) -> list[str]:
     """Build the bench_mlx_inference_stack invocation for one suite row.
 
@@ -499,6 +503,20 @@ def build_ax_cmd(
             cmd.append("--ax-mtp-disable-ngram-stacking")
     if no_build:
         cmd.append("--no-build-ax-engine")
+    if max_load_average is not None:
+        cmd += ["--max-load-average", str(max_load_average)]
+    if max_top_process_cpu_percent is not None:
+        cmd += [
+            "--max-top-process-cpu-percent",
+            str(max_top_process_cpu_percent),
+        ]
+    if max_load_average is not None or max_top_process_cpu_percent is not None:
+        cmd += [
+            "--load-average-wait-timeout",
+            str(load_average_wait_timeout),
+            "--load-average-poll-interval",
+            str(load_average_poll_interval),
+        ]
     return cmd
 
 
@@ -518,6 +536,10 @@ def run_ax_suite(
     depth: int,
     no_build: bool,
     env_overrides: dict[str, str],
+    max_load_average: float | None = None,
+    max_top_process_cpu_percent: float | None = None,
+    load_average_wait_timeout: float = 0.0,
+    load_average_poll_interval: float = 30.0,
 ) -> Path:
     cmd = build_ax_cmd(
         python=python,
@@ -533,6 +555,10 @@ def run_ax_suite(
         sampling=sampling,
         depth=depth,
         no_build=no_build,
+        max_load_average=max_load_average,
+        max_top_process_cpu_percent=max_top_process_cpu_percent,
+        load_average_wait_timeout=load_average_wait_timeout,
+        load_average_poll_interval=load_average_poll_interval,
     )
     run_subprocess(
         cmd,
@@ -1237,6 +1263,28 @@ def main() -> None:
     parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--inter-case-cooldown", type=float, default=10.0)
     parser.add_argument(
+        "--max-load-average",
+        type=float,
+        help="Require the one-minute host load average to be at or below this value.",
+    )
+    parser.add_argument(
+        "--max-top-process-cpu-percent",
+        type=float,
+        help="Require the highest-CPU competing process to be at or below this percent.",
+    )
+    parser.add_argument(
+        "--load-average-wait-timeout",
+        type=float,
+        default=0.0,
+        help="Seconds to wait for the configured performance-condition gates.",
+    )
+    parser.add_argument(
+        "--load-average-poll-interval",
+        type=float,
+        default=30.0,
+        help="Seconds between performance-condition gate checks.",
+    )
+    parser.add_argument(
         "--sampling",
         type=json.loads,
         default={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
@@ -1324,6 +1372,10 @@ def main() -> None:
                         depth=row_depth,
                         no_build=args.no_build_ax_engine,
                         env_overrides=profile_env,
+                        max_load_average=args.max_load_average,
+                        max_top_process_cpu_percent=args.max_top_process_cpu_percent,
+                        load_average_wait_timeout=args.load_average_wait_timeout,
+                        load_average_poll_interval=args.load_average_poll_interval,
                     )
                 row = summarize_artifact(artifact_path, expected_engine=ENGINE_KEYS[mode])
                 row.update(
@@ -1354,6 +1406,10 @@ def main() -> None:
         "repetitions": args.repetitions,
         "cooldown": args.cooldown,
         "inter_case_cooldown": args.inter_case_cooldown,
+        "max_load_average": args.max_load_average,
+        "max_top_process_cpu_percent": args.max_top_process_cpu_percent,
+        "load_average_wait_timeout": args.load_average_wait_timeout,
+        "load_average_poll_interval": args.load_average_poll_interval,
         "rows": rows,
         "comparison": comparison,
         "optimized_scenarios": build_optimized_scenarios(comparison["comparisons"]),

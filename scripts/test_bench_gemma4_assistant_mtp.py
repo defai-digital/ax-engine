@@ -384,6 +384,37 @@ class BuildAxCmdTests(unittest.TestCase):
         self.assertIn("--ax-gemma4-assistant-mtp", cmd)
         self.assertNotIn("--ax-mtp-disable-ngram-stacking", cmd)
 
+    def test_performance_condition_gates_are_forwarded(self) -> None:
+        cmd = bench.build_ax_cmd(
+            python=Path("/usr/bin/python3"),
+            suite_file=Path("/suites/flappy.jsonl"),
+            output_path=Path("/out/row.json"),
+            model_dir=Path("/models/g12"),
+            model_repo_id="AutomatosX/AX-gemma-4-12b-MTP",
+            mode="direct",
+            max_tokens=1000,
+            repetitions=5,
+            cooldown=30.0,
+            inter_case_cooldown=10.0,
+            sampling={"temperature": 0.0},
+            depth=2,
+            no_build=True,
+            max_load_average=4.0,
+            max_top_process_cpu_percent=50.0,
+            load_average_wait_timeout=1800.0,
+            load_average_poll_interval=30.0,
+        )
+
+        expected = {
+            "--max-load-average": "4.0",
+            "--max-top-process-cpu-percent": "50.0",
+            "--load-average-wait-timeout": "1800.0",
+            "--load-average-poll-interval": "30.0",
+        }
+        for flag, value in expected.items():
+            self.assertIn(flag, cmd)
+            self.assertEqual(cmd[cmd.index(flag) + 1], value)
+
     def test_direct_profile_is_selectable(self) -> None:
         profiles = bench.select_bench_profiles(modes=["direct"], profile_keys=[])
         self.assertEqual([profile.key for profile in profiles], ["direct"])
