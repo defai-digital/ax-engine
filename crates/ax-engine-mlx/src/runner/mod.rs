@@ -2917,6 +2917,8 @@ impl MlxRunner {
                 self.gemma4_assistant_mtp.is_some()
                     && row.state.cache.seq_len() < 512
                     && row.state.generated_tokens.len() < 24,
+                crate::fastpath::mtp_depth3_miss_backoff_enabled(),
+                crate::fastpath::mtp_depth3_hysteresis_enabled(),
             );
             if accept_count == 0 {
                 row.state.mtp_consecutive_misses =
@@ -10255,6 +10257,8 @@ impl MlxRunner {
                         ewma_accept_count.unwrap_or(accept_count),
                         state.mtp_consecutive_misses,
                         false,
+                        crate::fastpath::mtp_depth3_miss_backoff_enabled(),
+                        crate::fastpath::mtp_depth3_hysteresis_enabled(),
                     );
                     let committed_hidden = slice(
                         hidden,
@@ -10508,6 +10512,8 @@ impl MlxRunner {
             self.gemma4_assistant_mtp.is_some()
                 && state.cache.seq_len() < 512
                 && state.generated_tokens.len() < 24,
+            crate::fastpath::mtp_depth3_miss_backoff_enabled(),
+            crate::fastpath::mtp_depth3_hysteresis_enabled(),
         );
         if adaptive_depth_accept == 0 && !pending.is_empty() {
             state.mtp_consecutive_misses = state.mtp_consecutive_misses.saturating_add(1);
@@ -12352,6 +12358,7 @@ fn update_ngram_think_state(cfg: &ModelConfig, in_think: &mut bool, token: u32) 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mtp_next_adaptive_depth(
     current_depth: usize,
     max_depth: usize,
@@ -12364,6 +12371,8 @@ fn mtp_next_adaptive_depth(
     // tokens use empty pure path (~1.0×). Agent coding keeps high accept so
     // this rarely trips on long winning trials.
     aggressive_miss_to_zero: bool,
+    depth3_miss_backoff_enabled: bool,
+    depth3_hysteresis_enabled: bool,
 ) -> usize {
     if max_depth == 0 {
         return 0;
@@ -12373,7 +12382,7 @@ fn mtp_next_adaptive_depth(
         return fixed_depth.min(max_depth);
     }
 
-    if crate::fastpath::mtp_depth3_miss_backoff_enabled() && max_depth == 3 {
+    if depth3_miss_backoff_enabled && max_depth == 3 {
         if pending_len == 0 {
             return if current_depth == 0 { 3 } else { current_depth };
         }
@@ -12394,11 +12403,7 @@ fn mtp_next_adaptive_depth(
         return current_depth.saturating_add(1).min(max_depth);
     }
 
-    if crate::fastpath::mtp_depth3_hysteresis_enabled()
-        && current_depth == 3
-        && pending_len == 3
-        && accept_count == 2
-    {
+    if depth3_hysteresis_enabled && current_depth == 3 && pending_len == 3 && accept_count == 2 {
         return 3.min(max_depth);
     }
 
@@ -15982,34 +15987,82 @@ mod tests {
     #[test]
     fn mtp_adaptive_depth_shrinks_on_partial_reject_and_recovers_on_full_accept() {
         // consecutive_misses=0 for all non-complete-miss cases.
-        assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0, 0, false), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2, 0, false), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1, 0, false), 2);
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1, 0, false), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2, 0, false), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3, 0, false), 0);
+        assert_eq!(
+            mtp_next_adaptive_depth(0, 3, 0, 0, 0, false, false, false),
+            3
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth(3, 3, 3, 2, 0, false, false, false),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth(2, 3, 2, 1, 0, false, false, false),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth(1, 3, 1, 1, 0, false, false, false),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth(2, 3, 2, 2, 0, false, false, false),
+            3
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth(3, 0, 3, 3, 0, false, false, false),
+            0
+        );
     }
 
     #[test]
     fn mtp_adaptive_depth_progressive_floor_on_consecutive_misses() {
         // First complete miss (consecutive_misses=0): floor = 2.
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0, 0, false), 2);
+        assert_eq!(
+            mtp_next_adaptive_depth(3, 3, 3, 0, 0, false, false, false),
+            2
+        );
         // Second consecutive miss (consecutive_misses=1): floor = 1.
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 0, 1, false), 1);
+        assert_eq!(
+            mtp_next_adaptive_depth(2, 3, 2, 0, 1, false, false, false),
+            1
+        );
         // Third+ consecutive miss (consecutive_misses=2): floor = 0.
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 2, false), 0);
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 5, false), 0);
+        assert_eq!(
+            mtp_next_adaptive_depth(1, 3, 1, 0, 2, false, false, false),
+            0
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth(1, 3, 1, 0, 5, false, false, false),
+            0
+        );
         // Partial accept resets to normal floor logic (not complete miss path).
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 1, 3, false), 2);
+        assert_eq!(
+            mtp_next_adaptive_depth(3, 3, 3, 1, 3, false, false, false),
+            2
+        );
         // Gemma assistant: first complete miss ends drafting (gen median stop-loss).
-        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 0, 0, true), 0);
-        assert_eq!(mtp_next_adaptive_depth(1, 2, 1, 0, 3, true), 0);
+        assert_eq!(
+            mtp_next_adaptive_depth(2, 2, 2, 0, 0, true, false, false),
+            0
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth(1, 2, 1, 0, 3, true, false, false),
+            0
+        );
         // Half-or-worse accept on the aggressive short-gen path also stops
         // (1/3 and the common Gemma depth-2 case 1/2).
-        assert_eq!(mtp_next_adaptive_depth(2, 2, 3, 1, 0, true), 0);
-        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 1, 0, true), 0);
+        assert_eq!(
+            mtp_next_adaptive_depth(2, 2, 3, 1, 0, true, false, false),
+            0
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth(2, 2, 2, 1, 0, true, false, false),
+            0
+        );
         // Better than half (2/3) keeps progressive floor / clamp logic.
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 3, 2, 0, true), 2);
+        assert_eq!(
+            mtp_next_adaptive_depth(2, 3, 3, 2, 0, true, false, false),
+            2
+        );
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {

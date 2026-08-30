@@ -455,8 +455,7 @@ pub(crate) fn gated_delta_fused_verify_from_qkv(
         || value_heads <= 0
         || value_heads % key_heads != 0
         || key_dim != value_dim
-        || key_dim < 32
-        || key_dim > 256
+        || !(32..=256).contains(&key_dim)
         || !(key_dim as u32).is_power_of_two()
         || key_dim % 32 != 0
         || value_dim % TGY != 0

@@ -9100,11 +9100,26 @@ mod tests {
 
     #[test]
     fn default_mtp_depth_passes_through_configured_depth() {
-        assert_eq!(default_mtp_depth_without_env(3, Some(8)), 3);
-        assert_eq!(default_mtp_depth_without_env(1, Some(8)), 1);
-        assert_eq!(default_mtp_depth_without_env(0, Some(8)), 0);
-        assert_eq!(default_mtp_depth_without_env(3, Some(4)), 3);
-        assert_eq!(default_mtp_depth_without_env(3, None), 3);
+        assert_eq!(
+            default_mtp_depth_without_env_with_throughput(3, Some(8), false),
+            3
+        );
+        assert_eq!(
+            default_mtp_depth_without_env_with_throughput(1, Some(8), false),
+            1
+        );
+        assert_eq!(
+            default_mtp_depth_without_env_with_throughput(0, Some(8), false),
+            0
+        );
+        assert_eq!(
+            default_mtp_depth_without_env_with_throughput(3, Some(4), false),
+            3
+        );
+        assert_eq!(
+            default_mtp_depth_without_env_with_throughput(3, None, false),
+            3
+        );
     }
 
     #[test]
