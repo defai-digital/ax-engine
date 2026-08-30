@@ -12366,15 +12366,46 @@ fn mtp_next_adaptive_depth(
     // this rarely trips on long winning trials.
     aggressive_miss_to_zero: bool,
 ) -> usize {
+    mtp_next_adaptive_depth_with_policy(
+        current_depth,
+        max_depth,
+        pending_len,
+        accept_count,
+        consecutive_misses,
+        aggressive_miss_to_zero,
+        MtpAdaptiveDepthPolicy {
+            fixed_depth: crate::fastpath::mtp_fixed_draft_depth(),
+            depth3_miss_backoff: crate::fastpath::mtp_depth3_miss_backoff_enabled(),
+            depth3_hysteresis: crate::fastpath::mtp_depth3_hysteresis_enabled(),
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct MtpAdaptiveDepthPolicy {
+    fixed_depth: Option<usize>,
+    depth3_miss_backoff: bool,
+    depth3_hysteresis: bool,
+}
+
+fn mtp_next_adaptive_depth_with_policy(
+    current_depth: usize,
+    max_depth: usize,
+    pending_len: usize,
+    accept_count: usize,
+    consecutive_misses: u32,
+    aggressive_miss_to_zero: bool,
+    policy: MtpAdaptiveDepthPolicy,
+) -> usize {
     if max_depth == 0 {
         return 0;
     }
 
-    if let Some(fixed_depth) = crate::fastpath::mtp_fixed_draft_depth() {
+    if let Some(fixed_depth) = policy.fixed_depth {
         return fixed_depth.min(max_depth);
     }
 
-    if crate::fastpath::mtp_depth3_miss_backoff_enabled() && max_depth == 3 {
+    if policy.depth3_miss_backoff && max_depth == 3 {
         if pending_len == 0 {
             return if current_depth == 0 { 3 } else { current_depth };
         }
@@ -12395,11 +12426,7 @@ fn mtp_next_adaptive_depth(
         return current_depth.saturating_add(1).min(max_depth);
     }
 
-    if crate::fastpath::mtp_depth3_hysteresis_enabled()
-        && current_depth == 3
-        && pending_len == 3
-        && accept_count == 2
-    {
+    if policy.depth3_hysteresis && current_depth == 3 && pending_len == 3 && accept_count == 2 {
         return 3.min(max_depth);
     }
 
@@ -15993,35 +16020,124 @@ mod tests {
 
     #[test]
     fn mtp_adaptive_depth_shrinks_on_partial_reject_and_recovers_on_full_accept() {
+        let policy = MtpAdaptiveDepthPolicy {
+            fixed_depth: None,
+            depth3_miss_backoff: false,
+            depth3_hysteresis: false,
+        };
         // consecutive_misses=0 for all non-complete-miss cases.
-        assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0, 0, false), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2, 0, false), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1, 0, false), 2);
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1, 0, false), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2, 0, false), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3, 0, false), 0);
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(0, 3, 0, 0, 0, false, policy),
+            3
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 2, 0, false, policy),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 3, 2, 1, 0, false, policy),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(1, 3, 1, 1, 0, false, policy),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 3, 2, 2, 0, false, policy),
+            3
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 0, 3, 3, 0, false, policy),
+            0
+        );
     }
 
     #[test]
     fn mtp_adaptive_depth_progressive_floor_on_consecutive_misses() {
+        let policy = MtpAdaptiveDepthPolicy {
+            fixed_depth: None,
+            depth3_miss_backoff: false,
+            depth3_hysteresis: false,
+        };
         // First complete miss (consecutive_misses=0): floor = 2.
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0, 0, false), 2);
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 0, 0, false, policy),
+            2
+        );
         // Second consecutive miss (consecutive_misses=1): floor = 1.
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 0, 1, false), 1);
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 3, 2, 0, 1, false, policy),
+            1
+        );
         // Third+ consecutive miss (consecutive_misses=2): floor = 0.
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 2, false), 0);
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 5, false), 0);
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(1, 3, 1, 0, 2, false, policy),
+            0
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(1, 3, 1, 0, 5, false, policy),
+            0
+        );
         // Partial accept resets to normal floor logic (not complete miss path).
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 1, 3, false), 2);
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 1, 3, false, policy),
+            2
+        );
         // Gemma assistant: first complete miss ends drafting (gen median stop-loss).
-        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 0, 0, true), 0);
-        assert_eq!(mtp_next_adaptive_depth(1, 2, 1, 0, 3, true), 0);
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 2, 2, 0, 0, true, policy),
+            0
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(1, 2, 1, 0, 3, true, policy),
+            0
+        );
         // Half-or-worse accept on the aggressive short-gen path also stops
         // (1/3 and the common Gemma depth-2 case 1/2).
-        assert_eq!(mtp_next_adaptive_depth(2, 2, 3, 1, 0, true), 0);
-        assert_eq!(mtp_next_adaptive_depth(2, 2, 2, 1, 0, true), 0);
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 2, 3, 1, 0, true, policy),
+            0
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 2, 2, 1, 0, true, policy),
+            0
+        );
         // Better than half (2/3) keeps progressive floor / clamp logic.
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 3, 2, 0, true), 2);
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 3, 3, 2, 0, true, policy),
+            2
+        );
+    }
+
+    #[test]
+    fn mtp_adaptive_depth_applies_explicit_throughput_policy() {
+        let throughput = MtpAdaptiveDepthPolicy {
+            fixed_depth: None,
+            depth3_miss_backoff: true,
+            depth3_hysteresis: true,
+        };
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 0, 0, false, throughput),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 3, 2, 1, 0, false, throughput),
+            3
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 2, 0, false, throughput),
+            3
+        );
+
+        let fixed = MtpAdaptiveDepthPolicy {
+            fixed_depth: Some(4),
+            depth3_miss_backoff: false,
+            depth3_hysteresis: false,
+        };
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(1, 3, 1, 0, 0, false, fixed),
+            3
+        );
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {

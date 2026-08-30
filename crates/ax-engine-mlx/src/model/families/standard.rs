@@ -780,6 +780,7 @@ pub(crate) struct FullAttentionVerifyLayerOutput {
 /// Logical K/V and the current RoPE offset are explicit graph inputs. The
 /// offset remains array-valued, while the manual NeoX RoPE path avoids the
 /// tensor-indexed table slice that MLX shapeless compilation cannot infer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn layer_forward_verify_functional(
     cfg: &ModelConfig,
     w: &LayerWeights,
