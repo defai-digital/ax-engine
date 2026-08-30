@@ -1247,9 +1247,9 @@ def main() -> None:
         type=int,
         default=None,
         help="Override the assistant draft depth for every profile (default: each "
-        "profile's own depth). The runtime caps this by the prepared bundle's "
-        "contract max_depth, so the bundle must be prepared with --max-depth >= "
-        "this value for it to take effect.",
+        "profile's own depth). Gemma recurrent drafting is a runtime capability "
+        "of the same assistant weights, so this may exceed the historical bundle "
+        "contract max_depth=1 up to the admitted runtime cap.",
     )
     parser.add_argument(
         "--resume",
