@@ -33,9 +33,9 @@ EXTRA_HUB_ROOTS: list[Path] = []
 
 # Factory / host-local AXQ pack roots (complete weights, not the stub Hub cache).
 AXQ_LOCAL_ROOTS = (
-    Path("/Volumes/Ext4T/axquant/axq-canonical-v2"),
-    Path("/Volumes/Ext4T/axquant/axq-publish"),
-    Path("/Volumes/Ext4T/axquant/axq-assistant-composites-v1"),
+    Path("/Volumes/Ext16TR0/axquant/axq-canonical-v2"),
+    Path("/Volumes/Ext16TR0/axquant/axq-publish"),
+    Path("/Volumes/Ext16TR0/axquant/axq-assistant-composites-v1"),
 )
 
 WAVE1 = {
