@@ -109,6 +109,16 @@ class Gemma4AssistantMtpBenchTests(unittest.TestCase):
         self.assertEqual(profiles[2].mode, "mtp-ngram")
         self.assertTrue(profiles[2].experimental)
 
+    def test_mlx0322_candidate_has_matched_direct_environment(self) -> None:
+        direct = bench.BENCH_PROFILES["direct_mlx0322_candidate"]
+        mtp = bench.BENCH_PROFILES["assistant_mtp_mlx0322_candidate"]
+
+        self.assertEqual(direct.mode, "direct")
+        self.assertEqual(mtp.mode, "mtp")
+        self.assertEqual(direct.env, mtp.env)
+        self.assertEqual(direct.depth, mtp.depth)
+        self.assertEqual(direct.env["AX_MLX_ROTATING_SLIDING_DECODE"], "0")
+
     def test_select_bench_profiles_exposes_ngram_policy_ablation_profiles(self) -> None:
         profiles = bench.select_bench_profiles(
             modes=[],
@@ -341,6 +351,7 @@ class BuildAxCmdTests(unittest.TestCase):
             suite_file=Path("/suites/flappy.jsonl"),
             output_path=Path("/out/row.json"),
             model_dir=Path("/models/g12"),
+            model_repo_id="AutomatosX/AX-gemma-4-12b-MTP",
             mode=mode,
             max_tokens=1000,
             repetitions=5,
@@ -353,6 +364,10 @@ class BuildAxCmdTests(unittest.TestCase):
 
     def test_direct_mode_omits_all_mtp_flags(self) -> None:
         cmd = self._cmd("direct")
+        self.assertEqual(
+            cmd[cmd.index("--model-repo-id") + 1],
+            "AutomatosX/AX-gemma-4-12b-MTP",
+        )
         self.assertNotIn("--ax-gemma4-assistant-mtp", cmd)
         self.assertNotIn("--ax-mtp-max-depth", cmd)
         self.assertNotIn("--ax-mtp-disable-ngram-stacking", cmd)
@@ -444,6 +459,7 @@ class ComparisonTests(unittest.TestCase):
         max_bits: int,
         eightbit: int,
         drafted: int,
+        profile_env: dict[str, str] | None = None,
     ) -> dict:
         return {
             "model": "12b-4bit",
@@ -451,6 +467,7 @@ class ComparisonTests(unittest.TestCase):
             "suite": suite,
             "mode": mode,
             "profile": profile,
+            "profile_env": profile_env or {},
             "depth": 1,
             "decode_tok_s_median": decode,
             "assistant_accept_rate": 0.9,
@@ -502,6 +519,75 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(direct_cmp["classification"], "keep-default")
         self.assertTrue(direct_cmp["drafted"])
         self.assertAlmostEqual(direct_cmp["delta_vs_baseline"], 0.06)
+
+    def test_build_comparisons_requires_identical_profile_environment(self) -> None:
+        rows = [
+            self._row(
+                profile="direct",
+                mode="direct",
+                suite="flappy",
+                decode=100.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=0,
+            ),
+            self._row(
+                profile="assistant_mtp_mlx0322_candidate",
+                mode="mtp",
+                suite="flappy",
+                decode=130.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=100,
+                profile_env={"AX_MLX_GEMMA4_MOE_LONG_MT": "1"},
+            ),
+        ]
+
+        result = bench.build_comparisons(rows)
+
+        self.assertFalse(result["parity_ok"])
+        self.assertFalse(result["comparisons"])
+        self.assertTrue(any("identical profile_env" in item for item in result["warnings"]))
+
+    def test_build_comparisons_selects_direct_with_matching_environment(self) -> None:
+        candidate_env = {"AX_MLX_GEMMA4_MOE_LONG_MT": "1"}
+        rows = [
+            self._row(
+                profile="direct",
+                mode="direct",
+                suite="flappy",
+                decode=100.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=0,
+            ),
+            self._row(
+                profile="direct_mlx0322_candidate",
+                mode="direct",
+                suite="flappy",
+                decode=80.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=0,
+                profile_env=candidate_env,
+            ),
+            self._row(
+                profile="assistant_mtp_mlx0322_candidate",
+                mode="mtp",
+                suite="flappy",
+                decode=96.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=100,
+                profile_env=candidate_env,
+            ),
+        ]
+
+        result = bench.build_comparisons(rows)
+
+        comparison = result["comparisons"][0]
+        self.assertEqual(comparison["baseline_profile"], "direct_mlx0322_candidate")
+        self.assertAlmostEqual(comparison["delta_vs_baseline"], 0.20)
 
     def test_build_comparisons_ngram_vs_mtp_baseline(self) -> None:
         rows = []

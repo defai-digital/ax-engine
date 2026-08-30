@@ -919,6 +919,51 @@ pub(crate) fn full_precision_attention_with_window(
                 && k_shape.first().copied() == Some(1)
                 && position_mask.shape() == vec![seq as i32, key_len as i32]
             {
+                if let Some(window) = sliding_window
+                    .filter(|window| ring_layout.is_none() && key_len.saturating_add(seq) > *window)
+                {
+                    // Near the window transition, a padded masked row can make
+                    // MLX 0.32.2 select a different BF16 reduction than direct
+                    // decode's shorter K/V. Use each query's direct-sized
+                    // ordered view only in this narrow boundary guard band.
+                    let mut rows: Vec<MlxArray> = Vec::with_capacity(seq);
+                    for t_idx in 0..seq {
+                        let q_t = slice(
+                            q_rope,
+                            &[0, 0, t_idx as i32, 0],
+                            &[b, hq, (t_idx + 1) as i32, d],
+                            &[1, 1, 1, 1],
+                            None,
+                        );
+                        let allow = hist + t_idx + 1;
+                        let keep_start = allow.saturating_sub(window) as i32;
+                        let allow = allow as i32;
+                        let k_t = slice(
+                            cached_k,
+                            &[0, 0, keep_start, 0],
+                            &[b, hk, allow, d],
+                            &[1, 1, 1, 1],
+                            None,
+                        );
+                        let v_t = slice(
+                            cached_v,
+                            &[0, 0, keep_start, 0],
+                            &[b, hk, allow, d],
+                            &[1, 1, 1, 1],
+                            None,
+                        );
+                        rows.push(scaled_dot_product_attention_with_mask(
+                            &q_t,
+                            &k_t,
+                            &v_t,
+                            query_scale,
+                            ScaledDotProductAttentionMask::None,
+                            None,
+                        ));
+                    }
+                    let refs: Vec<&MlxArray> = rows.iter().collect();
+                    return concatenate(&refs, 2, None);
+                }
                 let q_singletons = reshape(
                     &transpose(q_rope, &[0, 2, 1, 3], None),
                     &[seq as i32, hq, 1, d],

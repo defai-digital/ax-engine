@@ -249,6 +249,7 @@ fn qwen_whole_verify_body(
     let logits = super::lm_head_verify_window_projection(
         &normed,
         &weights.lm_head,
+        &cfg.model_family,
         seq_i32,
         cfg.hidden_size as i32,
     );

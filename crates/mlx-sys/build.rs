@@ -228,7 +228,7 @@ fn mlx_root_from_python(python: &std::ffi::OsStr) -> Option<PathBuf> {
 /// The admitted MLX runtime, pinned in `mlx.version` at the repo root.
 ///
 /// Two formats are accepted:
-///   - `0.32.1`               — a published wheel (install via pip);
+///   - `0.32.2`               — a published wheel (install via pip);
 ///   - `git:<sha>@<version>`  — an admitted source build of upstream MLX at
 ///     `<sha>` whose `mlx/version.h` reports `<version>` (build recipe and
 ///     admission evidence: docs/performance/mlx-main-admission-2026-07-28.md).

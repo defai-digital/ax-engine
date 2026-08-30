@@ -184,7 +184,7 @@ echo "product_ok=1"
 
             # Use an intentionally higher simulated product floor so this
             # remains a below-floor vendor fixture when the pinned MLX wheel's
-            # own minos advances (0.32.1 moved it to 26.2).
+            # own minos advances (0.32.2 moved it to 26.2).
             result = self._run_step5c_on_inspect_dir(root, "99.0")
             combined = result.stdout + result.stderr
             self.assertEqual(

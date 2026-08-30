@@ -58,7 +58,7 @@ class CheckMlxVersionPathTests(unittest.TestCase):
             0,
         )
         self.assertEqual(
-            self._classify("/opt/homebrew/Cellar/mlx/0.32.1/lib/libmlx.dylib"),
+            self._classify("/opt/homebrew/Cellar/mlx/0.32.2/lib/libmlx.dylib"),
             0,
         )
         self.assertEqual(
@@ -75,7 +75,7 @@ class CheckMlxVersionPathTests(unittest.TestCase):
     def test_file_symlink_cannot_disguise_homebrew_dylib(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            cellar_dylib = root / "Cellar" / "mlx" / "0.32.1" / "lib" / "libmlx.dylib"
+            cellar_dylib = root / "Cellar" / "mlx" / "0.32.2" / "lib" / "libmlx.dylib"
             cellar_dylib.parent.mkdir(parents=True)
             cellar_dylib.touch()
             custom_dylib = root / "custom" / "lib" / "libmlx.dylib"
@@ -204,7 +204,7 @@ class CheckMlxVersionScriptTests(unittest.TestCase):
         mlx_root = Path(probe.stdout.strip())
 
         with tempfile.TemporaryDirectory() as tmp:
-            formula = Path(tmp) / "Cellar" / "mlx" / "0.32.1"
+            formula = Path(tmp) / "Cellar" / "mlx" / "0.32.2"
             formula.mkdir(parents=True)
             (formula / "lib").symlink_to(mlx_root / "lib", target_is_directory=True)
             (formula / "include").symlink_to(mlx_root / "include", target_is_directory=True)

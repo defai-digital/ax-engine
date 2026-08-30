@@ -1827,10 +1827,14 @@ fn lm_head_rows_singleton(
 fn lm_head_verify_window_projection(
     normed: &MlxArray,
     lm_head: &crate::weights::QuantizedWeight,
+    model_family: &str,
     seq: i32,
     hidden_size: i32,
 ) -> MlxArray {
     if (2..=4).contains(&seq) {
+        let _gemma_verify_qmm = (model_family == "gemma4"
+            && crate::fastpath::gemma4_verify_qmm_lm_head_enabled())
+        .then(|| shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true));
         // The relaxed target verifier is explicitly allowed to use oMLX-style
         // lane-strided arithmetic. Its armed large-vocabulary kernel reads the
         // quantized head once for all verify rows; exact-profile calls remain
@@ -1924,8 +1928,13 @@ pub fn forward_all_positions_with_post_norm_greedy(
     }
     let seq_i = seq as i32;
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
-    let logits =
-        lm_head_verify_window_projection(&normed, &weights.lm_head, seq_i, cfg.hidden_size as i32);
+    let logits = lm_head_verify_window_projection(
+        &normed,
+        &weights.lm_head,
+        &cfg.model_family,
+        seq_i,
+        cfg.hidden_size as i32,
+    );
     // ArgmaxOnly: no softcap / no f32 cast (matches pure-direct greedy).
     let logits_out = reshape(&logits, &[seq_i, cfg.vocab_size as i32], None);
     (logits_out, normed)
@@ -2063,8 +2072,13 @@ pub fn forward_all_positions_with_post_norm_ids(
 
     let seq_i = seq as i32;
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
-    let logits =
-        lm_head_verify_window_projection(&normed, &weights.lm_head, seq_i, cfg.hidden_size as i32);
+    let logits = lm_head_verify_window_projection(
+        &normed,
+        &weights.lm_head,
+        &cfg.model_family,
+        seq_i,
+        cfg.hidden_size as i32,
+    );
     // Plain greedy acceptance only consumes argmax indices. Casting the
     // verify-window vocabulary tensor to f32 (and then applying a monotonic
     // softcap) cannot change those indices, but it does write another

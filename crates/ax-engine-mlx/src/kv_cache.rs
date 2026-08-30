@@ -2092,6 +2092,13 @@ impl MlxKVCache {
         if self.seq_len + seq <= window {
             return None;
         }
+        // Do not change an ordered cache into a capacity-wide ring halfway
+        // through a multi-token verify. Keep one ordered SDPA geometry for the
+        // crossing chunk, then rotate on the next forward. A cold append at
+        // position zero may still initialize a ring directly.
+        if seq > 1 && self.seq_len > 0 && self.seq_len < window {
+            return None;
+        }
         let eligible = seq == 1 || (self.rotating_slack > 0 && seq <= self.rotating_slack);
         if !eligible {
             return None;
@@ -5886,6 +5893,9 @@ mod tests {
         // Not yet crossing the window, and no window at all: ordered path.
         cache.seq_len = 2;
         assert_eq!(cache.sliding_ring_layout(Some(4), 2), None);
+        assert_eq!(cache.sliding_ring_layout(Some(4), 3), None);
+        cache.seq_len = 4;
+        assert!(cache.sliding_ring_layout(Some(4), 3).is_some());
         cache.seq_len = 10;
         assert_eq!(cache.sliding_ring_layout(None, 1), None);
     }

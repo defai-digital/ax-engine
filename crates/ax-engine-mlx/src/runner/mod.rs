@@ -8496,9 +8496,9 @@ impl MlxRunner {
         }
 
         // Gated greedy recurrent drafting (the default). Each position d feeds the
-        // assistant's `post_projection` "backbone hidden" estimate of position d
-        // back in as the next step's hidden — the same signal the production verify
-        // forward provides at depth 0 — and advances the RoPE position by one.
+        // assistant's `post_projection` "backbone hidden" estimate back in as the
+        // next step's hidden. Gemma assistant KV is frozen for the entire block, so
+        // every recurrent query uses the bonus token's constant absolute position.
         // Confidence gates stop drafting early (correctness-preserving).
         let deep_gate =
             resolve_gemma4_assistant_mtp_deep_gate(speculation_profile, Some(sampling.temperature))
@@ -8532,8 +8532,9 @@ impl MlxRunner {
         let deep_needs_first_conf =
             crate::fastpath::gemma4_assistant_deep_needs_first_conf_enabled();
         for d in 0..max_depth {
+            let draft_position = gemma4_assistant_draft_rope_position(base_position, d);
             let Ok((logits, projected_hidden)) =
-                session.forward_one(cur_token, &cur_hidden, base_position + d)
+                session.forward_one(cur_token, &cur_hidden, draft_position)
             else {
                 break;
             };
@@ -13274,8 +13275,9 @@ fn gemma4_assistant_draft_token_lazy_multi_depth(
     let mut cur_hidden = last_backbone_hidden.clone();
 
     for d in 0..max_depth {
+        let draft_position = gemma4_assistant_draft_rope_position(base_position, d);
         let Ok((logits, projected_hidden)) =
-            session.forward_one_from_token_arr(&prev_token_arr, &cur_hidden, base_position + d)
+            session.forward_one_from_token_arr(&prev_token_arr, &cur_hidden, draft_position)
         else {
             break;
         };
@@ -13323,6 +13325,16 @@ fn gemma4_assistant_draft_token_lazy_multi_depth(
         drafts.push(token);
     }
     (drafts, vec![], vec![])
+}
+
+/// Gemma assistant queries share one frozen target KV view for a draft block.
+///
+/// The recurrent depth changes the proposed token and projected hidden state,
+/// but not the query position. Advancing this offset by depth misaligns the
+/// drafter from the position invariant used during training and by the reference
+/// candidate generator.
+const fn gemma4_assistant_draft_rope_position(base_position: usize, _draft_depth: usize) -> usize {
+    base_position
 }
 
 /// Top token of a logit row plus its `softmax` probability at temperature 1.0 —
@@ -17227,6 +17239,17 @@ mod tests {
         assert_eq!(parse_gemma4_assistant_mtp_confidence_mode("approx"), None);
         assert_eq!(Gemma4AssistantMtpConfidenceMode::ExactCpu.route_code(), 0);
         assert_eq!(Gemma4AssistantMtpConfidenceMode::GpuExact.route_code(), 1);
+    }
+
+    #[test]
+    fn gemma4_assistant_draft_rope_position_is_constant_across_depths() {
+        let base_position = 257;
+        for draft_depth in 0..8 {
+            assert_eq!(
+                gemma4_assistant_draft_rope_position(base_position, draft_depth),
+                base_position
+            );
+        }
     }
 
     #[test]

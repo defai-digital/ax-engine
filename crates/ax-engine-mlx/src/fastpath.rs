@@ -1867,6 +1867,14 @@ pub(crate) fn moe_mt_bf16_identity_enabled() -> bool {
 }
 
 env_flag!(
+    /// `AX_MLX_GEMMA4_VERIFY_QMM_LM_HEAD` — route an eligible affine Gemma 4
+    /// verifier language head through the skinny multi-row verify kernel.
+    /// Admission-only until exactness and throughput are proven on the pin.
+    gemma4_verify_qmm_lm_head_enabled,
+    "AX_MLX_GEMMA4_VERIFY_QMM_LM_HEAD"
+);
+
+env_flag!(
     /// `AX_MLX_GEMMA_MT_PERPOS_FFN` — per-position dense FFN on short multi-token
     /// verify (seq 2..8). Improves 4-bit greedy exactness vs pure-direct but
     /// collapses multi-token speed (smokef12/17). Opt-in for 4-bit identity
