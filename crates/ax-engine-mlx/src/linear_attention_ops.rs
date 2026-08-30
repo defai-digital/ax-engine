@@ -2822,6 +2822,13 @@ const GATED_DELTA_PREFILL_STREAMING_KERNEL_SOURCE: &str = r#"
       k_ += Hk * Dk;
       v_ += Hv * Dv;
       y += Hv * Dv;
+
+      // g_t/beta_t are single threadgroup-shared scalars reused every
+      // iteration (unlike the cached-array kernel below). Without this
+      // barrier a fast SIMD-group can race into the next iteration's
+      // leader-thread write while a slower SIMD-group is still reading
+      // this iteration's values, corrupting its state update.
+      threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     for (int i = 0; i < n_per_t; ++i) {
@@ -3688,6 +3695,82 @@ mod tests {
             fastpath::should_qwen_gd_prefill_chunkwise_for(true, 1024),
             "shipped chunkwise gate must accept the p2048 chunk length"
         );
+    }
+
+    #[test]
+    fn gated_delta_prefill_streaming_matches_cpu_reference() {
+        // Regression test: the streaming kernel reuses a single
+        // threadgroup-shared g_t/beta_t scalar across loop iterations
+        // (unlike the cached-array kernels above), which needs a barrier
+        // both after the leader-thread write and after every thread's
+        // read, or a fast SIMD-group can race into the next iteration's
+        // write while a slower one is still reading. VALUE_HEAD_DIM=4
+        // matches the kernel's fixed (32, 4, 1) threadgroup so all four
+        // SIMD-groups in the threadgroup are exercised, and SEQ is long
+        // enough to give real divergence opportunity across iterations.
+        const SEQ: usize = 128;
+        const KEY_HEAD_DIM: usize = 32;
+        const VALUE_HEAD_DIM: usize = 4;
+        let q_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data: Vec<f32> = (0..SEQ * VALUE_HEAD_DIM)
+            .map(|idx| ((idx % 3) as f32 - 1.0) * 0.04)
+            .collect();
+        let a_log_data = vec![-0.2];
+        let a_raw_data: Vec<f32> = (0..SEQ).map(|i| (i as f32) * 0.01 - 0.05).collect();
+        let dt_bias_data = vec![0.05];
+        let b_raw_data: Vec<f32> = (0..SEQ).map(|i| (i as f32) * 0.02 - 0.1).collect();
+        let state_data: Vec<f32> = (0..VALUE_HEAD_DIM * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+            .collect();
+        let q = f32_array(&q_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let k = f32_array(&k_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let v = f32_array(&v_data, &[1, SEQ as i32, 1, VALUE_HEAD_DIM as i32]);
+        let a_log = f32_array(&a_log_data, &[1]);
+        let a_raw = f32_array(&a_raw_data, &[1, SEQ as i32, 1]);
+        let dt_bias = f32_array(&dt_bias_data, &[1]);
+        let b_raw = f32_array(&b_raw_data, &[1, SEQ as i32, 1]);
+        let state = f32_array(
+            &state_data,
+            &[1, 1, VALUE_HEAD_DIM as i32, KEY_HEAD_DIM as i32],
+        );
+        let (want_y, want_state) = gated_delta_cpu_reference(
+            &q_data,
+            &k_data,
+            &v_data,
+            &a_log_data,
+            &a_raw_data,
+            &dt_bias_data,
+            &b_raw_data,
+            &state_data,
+            SEQ,
+            KEY_HEAD_DIM,
+            VALUE_HEAD_DIM,
+        );
+        let (got_y, got_state) = gated_delta_prefill_streaming_kernel(
+            &q,
+            &k,
+            &v,
+            &a_log,
+            &a_raw,
+            &dt_bias,
+            &b_raw,
+            &state,
+            1,
+            SEQ as i32,
+            1,
+            KEY_HEAD_DIM as i32,
+            1,
+            VALUE_HEAD_DIM as i32,
+            vec![1, 1, VALUE_HEAD_DIM as i32, KEY_HEAD_DIM as i32],
+        );
+        mlx_sys::eval(&[&got_y, &got_state]);
+        assert_close("y", got_y.data_f32(), &want_y, 1e-4);
+        assert_close("state", got_state.data_f32(), &want_state, 1e-4);
     }
 
     #[test]
