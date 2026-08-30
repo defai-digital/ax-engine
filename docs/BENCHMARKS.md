@@ -392,9 +392,11 @@ build. The published v6.9.0 rows were measured on **MLX 0.31.2**; the affected
 Homebrew 0.32.0 bottle and source builds targeting macOS below 26.2 omit the
 M5 neural-accelerator GEMM path. The historical PyPI MLX 0.32.0 wheel was not
 affected by that packaging defect and passed at 56.3 TFLOP/s. The current repo
-pin, PyPI **MLX 0.32.1**, passed at 56.35 TFLOP/s on 2026-08-21 and is the
-admitted build for new sessions; see the
-[MLX 0.32.1 admission record](performance/mlx-0.32.1-admission-2026-08-21.md).
+pin, PyPI **MLX 0.32.2**, passed at 16.12 TFLOP/s on the factory M2 Ultra on
+2026-08-29 and is the admitted build for new sessions; see the
+[MLX 0.32.2 admission record](performance/mlx-0.32.2-admission-2026-08-29.md).
+The 56 TFLOP/s expectation below is specific to M5 Max; do not use it as an M2
+Ultra gate.
 Never mix prefill or TTFT rows across different resolved `libmlx` builds, even
 if their package version matches.
 
