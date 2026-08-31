@@ -140,6 +140,16 @@ def aggregate_scenario(
     candidate_lifecycle_errors = [
         int(artifact.get("lifecycle", {}).get("error_events", 1)) for artifact in candidate
     ]
+    baseline_error_rates = [
+        float(artifact.get("availability", {}).get("request_error_rate", 1.0))
+        for artifact in baseline
+    ]
+    baseline_http_503 = [
+        int(artifact.get("availability", {}).get("request_http_503", 1)) for artifact in baseline
+    ]
+    baseline_lifecycle_errors = [
+        int(artifact.get("lifecycle", {}).get("error_events", 1)) for artifact in baseline
+    ]
 
     gates: list[dict[str, Any]] = []
     add_gate(
@@ -189,6 +199,18 @@ def aggregate_scenario(
             f"max_error_rate={max(candidate_error_rates):.4f}, "
             f"max_http_503={max(candidate_http_503)}, "
             f"max_lifecycle_errors={max(candidate_lifecycle_errors)}"
+        ),
+    )
+    add_gate(
+        gates,
+        "baseline_availability",
+        max(baseline_error_rates) == 0.0
+        and max(baseline_http_503) == 0
+        and max(baseline_lifecycle_errors) == 0,
+        (
+            f"max_error_rate={max(baseline_error_rates):.4f}, "
+            f"max_http_503={max(baseline_http_503)}, "
+            f"max_lifecycle_errors={max(baseline_lifecycle_errors)}"
         ),
     )
     failed = [gate["name"] for gate in gates if not gate["passed"]]

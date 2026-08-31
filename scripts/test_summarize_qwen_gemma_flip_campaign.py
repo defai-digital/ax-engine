@@ -103,6 +103,46 @@ class QwenGemmaFlipCampaignSummaryTests(unittest.TestCase):
         self.assertFalse(row["passed"])
         self.assertIn("median_throughput_ratio", row["failed_required_gates"])
 
+    def test_aggregate_scenario_fails_closed_on_degraded_baseline(self) -> None:
+        # Regression test: the availability gate only checked the
+        # candidate's error rate/HTTP 503/lifecycle-error counts, never the
+        # baseline's. A degraded mlxcel baseline run (crashes, timeouts,
+        # 503s) can drag its own median throughput/TTFT down, artificially
+        # inflating the ratios in AX's favor and passing every ratio gate —
+        # a "flip" decision based on a broken baseline run rather than a
+        # fair comparison.
+        candidate = []
+        baseline = []
+        for index in range(3):
+            cand = fixtures._artifact()
+            base = fixtures._artifact()
+            cand["summary"]["output_token_throughput_tok_s"] = 120.0 + index  # type: ignore[index]
+            base["summary"]["output_token_throughput_tok_s"] = 100.0 + index  # type: ignore[index]
+            cand["summary"]["ttft_ms"] = fixtures._dist(80.0 + index)  # type: ignore[index]
+            base["summary"]["ttft_ms"] = fixtures._dist(100.0 + index)  # type: ignore[index]
+            cand["interactive_stream_gap_ms"] = fixtures._dist(16.0 + index)  # type: ignore[index]
+            base["interactive_stream_gap_ms"] = fixtures._dist(20.0 + index)  # type: ignore[index]
+            base["availability"] = {  # type: ignore[index]
+                "request_http_503": 3,
+                "request_http_5xx": 3,
+                "request_error_rate": 0.1,
+            }
+            candidate.append(cand)
+            baseline.append(base)
+
+        row = summary.aggregate_scenario(
+            scenario_id="s3",
+            candidate=candidate,
+            baseline=baseline,
+            min_throughput_ratio=1.15,
+            max_ttft_p95_ratio=0.90,
+            max_stream_gap_p95_ratio=0.90,
+            max_stream_gap_p95_ms=50.0,
+        )
+
+        self.assertFalse(row["passed"])
+        self.assertIn("baseline_availability", row["failed_required_gates"])
+
 
 if __name__ == "__main__":
     unittest.main()
