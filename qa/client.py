@@ -64,6 +64,7 @@ def _post_json(url: str, payload: dict, timeout: int = 120) -> dict:
 
 
 def _stream_sse(url: str, payload: dict, timeout: int = 120) -> QaResponse:
+    start = time.monotonic()
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -76,7 +77,6 @@ def _stream_sse(url: str, payload: dict, timeout: int = 120) -> QaResponse:
     finish_reason = None
     prompt_tokens = 0
     completion_tokens = 0
-    start = time.monotonic()
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -488,6 +488,7 @@ def _stream_generate_sse(
     model_id: str = "",
 ) -> QaResponse:
     """Stream from /v1/generate endpoint with token-level SSE."""
+    start = time.monotonic()
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -500,7 +501,6 @@ def _stream_generate_sse(
     response_text: Optional[str] = None
     ttft_ms = 0.0
     finish_reason = None
-    start = time.monotonic()
     first_chunk = True
 
     try:
