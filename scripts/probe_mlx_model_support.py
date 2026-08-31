@@ -128,7 +128,11 @@ def probe_glm4_moe_lite(model_dir: Path, keys: list[str]) -> dict[str, Any]:
         "routed_expert_stack": _has_any(keys, ".mlp.experts.gate_up_proj.weight")
         or _has_any(keys, ".mlp.switch_mlp.gate_proj.weight"),
     }
-    reference_ready = all(item["exists"] for item in reference_files) and all(features.values())
+    reference_ready = (
+        all(item["exists"] for item in reference_files)
+        and all(all(item.get("markers", {}).values()) for item in reference_files)
+        and all(features.values())
+    )
 
     blockers = []
     if manifest_ready is None:

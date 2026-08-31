@@ -170,6 +170,57 @@ class MlxModelSupportProbeTests(unittest.TestCase):
         self.assertTrue(report["draft_manifest_features"]["runtime_ready"])
         self.assertEqual(report["blockers"], [])
 
+    def test_glm_is_not_runtime_ready_when_reference_file_missing_a_marker(self) -> None:
+        # Regression test: reference_ready used to check only reference-file
+        # existence and checkpoint features, never the file's marker
+        # strings (item["markers"]). A stale local reference file that
+        # exists but is missing a marker (e.g. predates a feature landing
+        # upstream) was silently treated as complete, contradicting this
+        # probe's stated purpose of failing closed on incomplete local
+        # reference material.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            mlx_lm = repo / ".internal/reference/mlx-lm/mlx_lm/models"
+            swift = repo / ".internal/reference/mlx-swift-lm/Libraries/MLXLLM/Models"
+            mlx_lm.mkdir(parents=True)
+            swift.mkdir(parents=True)
+            # Missing "e_score_correction_bias" marker: a stale reference
+            # file predating that upstream feature.
+            (mlx_lm / "glm4_moe_lite.py").write_text("q_a_proj kv_a_proj_with_mqa")
+            (swift / "GLM4MOELite.swift").write_text(
+                "GLM4MoELiteAttention GLM4MoELiteGate eScoreCorrectionBias"
+            )
+            model_dir = write_model(
+                root,
+                "glm4_moe_lite",
+                [
+                    "model.layers.0.self_attn.q_a_proj.weight",
+                    "model.layers.0.self_attn.q_b_proj.weight",
+                    "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
+                    "model.layers.0.self_attn.embed_q.weight",
+                    "model.layers.0.self_attn.unembed_out.weight",
+                    "model.layers.1.mlp.gate.e_score_correction_bias",
+                    "model.layers.1.mlp.experts.gate_up_proj.weight",
+                ],
+            )
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "mla_attention": {"q_lora_rank": 768},
+                        "glm_router": {"routed_scaling_factor": 1.8},
+                    }
+                )
+            )
+
+            with patch.object(probe, "REPO_ROOT", repo):
+                report = probe.probe_model(model_dir)
+
+        self.assertNotEqual(report["support_decision"], "repo_owned_runtime_ready")
+        self.assertFalse(report["can_implement_repo_owned_runtime"])
+        self.assertEqual(report["reference_support"], "incomplete")
+        self.assertNotEqual(report["blockers"], [])
+
     def test_deepseek_v4_fails_closed_while_native_runtime_in_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
