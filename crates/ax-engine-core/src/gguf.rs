@@ -295,6 +295,14 @@ impl GgufTensorInfo {
         }
     }
 
+    /// Absolute file offset of this tensor's data; `None` when the untrusted
+    /// `data_offset` overflows u64 added to `data_section_offset` (a wrapped
+    /// offset would otherwise pass downstream bounds checks by coincidence
+    /// and cause the loader to silently read the wrong file bytes).
+    fn abs_offset(&self, data_section_offset: u64) -> Option<u64> {
+        data_section_offset.checked_add(self.data_offset)
+    }
+
     /// Logical shape (reversed from GGUF order = [out_rows, in_cols] for 2D).
     fn logical_shape(&self) -> Vec<u64> {
         if self.dims.len() <= 1 {
@@ -631,7 +639,9 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
     let mut has_lm_head = false;
 
     for info in &header.tensors {
-        let abs_offset = header.data_section_offset + info.data_offset;
+        let abs_offset = info
+            .abs_offset(header.data_section_offset)
+            .ok_or(GgufError::Malformed("tensor data offset overflowed"))?;
         let length_bytes = match info.byte_length() {
             Some(l) => l,
             None => {
@@ -946,6 +956,31 @@ mod tests {
         let parsed = read_kv_value(&mut Cursor::new(payload), GGUF_TYPE_ARRAY, 0)
             .expect("flat array must parse");
         assert!(parsed.is_none(), "arrays are skipped, not stored");
+    }
+
+    #[test]
+    fn tensor_abs_offset_overflow_is_detected() {
+        // A corrupted/adversarial data_offset near u64::MAX must not wrap to
+        // a small, plausible-looking offset that would silently pass a
+        // downstream `offset + length <= file_len` bounds check.
+        let info = GgufTensorInfo {
+            name: "t".to_string(),
+            dims: vec![1],
+            ggml_type: GGML_TYPE_F32,
+            data_offset: u64::MAX - 100,
+        };
+        assert_eq!(info.abs_offset(4_096), None);
+    }
+
+    #[test]
+    fn tensor_abs_offset_adds_normally_within_bounds() {
+        let info = GgufTensorInfo {
+            name: "t".to_string(),
+            dims: vec![1],
+            ggml_type: GGML_TYPE_F32,
+            data_offset: 128,
+        };
+        assert_eq!(info.abs_offset(4_096), Some(4_224));
     }
 
     #[test]
