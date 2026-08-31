@@ -2289,9 +2289,9 @@ def find_latest_ngram_artifact(repo_root: Path) -> Path | None:
     candidates = sorted(
         (
             p
-            for p in (repo_root / "benchmarks" / "results" / "ngram-compare").glob(
-                "*/artifact.json"
-            )
+            for p in (
+                repo_root / "benchmarks" / "results" / "speculative" / "ngram-compare"
+            ).glob("*/artifact.json")
             if p.is_file()
         ),
         key=lambda p: p.parent.name,
@@ -2676,7 +2676,7 @@ NGRAM_MODEL_ORDER = [
 
 def find_ngram_artifacts_by_model(repo_root: Path) -> dict[str, dict]:
     """Return {model_slug: artifact_dict} using the latest `-ngram` run per slug."""
-    base = repo_root / "benchmarks" / "results" / "ngram-compare"
+    base = repo_root / "benchmarks" / "results" / "speculative" / "ngram-compare"
     result: dict[str, dict] = {}
     for slug in NGRAM_MODEL_ORDER:
         # Prefer the `-ngram` suffixed run, fall back to any run containing the slug.

@@ -748,5 +748,53 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             )
 
 
+    def test_find_latest_ngram_artifact_uses_speculative_results_tree(self) -> None:
+        # Regression test: both ngram-artifact finders hardcoded the
+        # pre-reorg path benchmarks/results/ngram-compare. Commit 347db58a
+        # ("Reorganize benchmarks/results into categorized structure")
+        # moved it to benchmarks/results/speculative/ngram-compare without
+        # updating this renderer, so both finders always returned
+        # None/{} on the real repo and their call sites silently skipped
+        # regenerating the ngram charts with no warning.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            run_dir = (
+                repo_root
+                / "benchmarks"
+                / "results"
+                / "speculative"
+                / "ngram-compare"
+                / "2026-08-01-run"
+            )
+            run_dir.mkdir(parents=True)
+            (run_dir / "artifact.json").write_text(
+                json.dumps({"ax_direct": {"a": 1}, "lightning": {"b": 2}})
+            )
+
+            found = charts.find_latest_ngram_artifact(repo_root)
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found, run_dir / "artifact.json")
+
+    def test_find_ngram_artifacts_by_model_uses_speculative_results_tree(self) -> None:
+        slug = charts.NGRAM_MODEL_ORDER[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            run_dir = (
+                repo_root
+                / "benchmarks"
+                / "results"
+                / "speculative"
+                / "ngram-compare"
+                / f"2026-08-01-{slug}-ngram"
+            )
+            run_dir.mkdir(parents=True)
+            (run_dir / "artifact.json").write_text(json.dumps({"ax_direct": {"a": 1}}))
+
+            found = charts.find_ngram_artifacts_by_model(repo_root)
+
+        self.assertIn(slug, found)
+
+
 if __name__ == "__main__":
     unittest.main()
