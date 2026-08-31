@@ -294,6 +294,7 @@ impl App {
             self.serve_idx,
             list_active,
             &self.content_list_rect,
+            &self.content_list_offset,
         );
     }
 

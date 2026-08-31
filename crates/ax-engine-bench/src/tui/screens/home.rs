@@ -368,6 +368,9 @@ impl App {
         let mut state = ratatui::widgets::ListState::default();
         state.select(Some(self.home_idx));
         frame.render_stateful_widget(list, area, &mut state);
+        // See `content_list_offset` doc comment: click handling must add this
+        // back to a raw within-panel row once the action list scrolls.
+        self.content_list_offset.set(state.offset());
     }
 
     fn draw_home_installed(&self, frame: &mut Frame, area: Rect) {

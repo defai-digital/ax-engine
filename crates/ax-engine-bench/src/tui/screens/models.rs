@@ -605,6 +605,7 @@ impl App {
             selected,
             active,
             &self.content_list_rect,
+            &self.content_list_offset,
         );
     }
 
@@ -663,6 +664,7 @@ impl App {
             self.precision_idx,
             true,
             &self.content_list_rect,
+            &self.content_list_offset,
         );
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -868,6 +870,7 @@ impl App {
             picker.selected,
             true,
             &self.content_list_rect,
+            &self.content_list_offset,
         );
     }
 }

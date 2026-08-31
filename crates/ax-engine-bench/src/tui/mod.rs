@@ -489,6 +489,11 @@ struct App {
     // Click-target rects recorded during the last draw (immediate-mode hit-testing).
     tab_hits: Cell<Vec<(Rect, usize)>>,
     pub content_list_rect: Cell<Rect>,
+    /// Scroll offset (`ListState::offset` after render) of the content list
+    /// during the last draw — a click's within-panel row must be added to
+    /// this to land on the item ratatui actually drew there, since the
+    /// panel's first visible row is not always item 0 once the list scrolls.
+    pub content_list_offset: Cell<usize>,
     /// Rect of the job-log pane on Downloads / Serve (wheel-scroll routing).
     pub log_rect: Cell<Rect>,
     /// Rect of the wizard step header row (for breadcrumb clicks).
@@ -553,6 +558,7 @@ impl App {
             auto_chat_after_serve: false,
             tab_hits: Cell::new(Vec::new()),
             content_list_rect: Cell::new(Rect::default()),
+            content_list_offset: Cell::new(0),
             log_rect: Cell::new(Rect::default()),
             step_header_rect: Cell::new(Rect::default()),
             banner_rect: Cell::new(Rect::default()),
@@ -1472,7 +1478,11 @@ impl App {
             }
         }
         // Content-list click selects the row (and drills in for the wizard).
-        if let Some(idx) = widgets::row_in_rect(self.content_list_rect.get(), col, row) {
+        // `row_in_rect` returns a position within the visible window only;
+        // add the list's last-drawn scroll offset to get the real item index.
+        if let Some(idx) = widgets::row_in_rect(self.content_list_rect.get(), col, row)
+            .map(|raw| raw + self.content_list_offset.get())
+        {
             match self.screen {
                 Screen::Home => {
                     if idx < self.home_actions().len() {
@@ -1975,6 +1985,7 @@ impl App {
         }
         // Cleared each frame; the active content list re-records it.
         self.content_list_rect.set(Rect::default());
+        self.content_list_offset.set(0);
         self.log_rect.set(Rect::default());
         self.banner_rect.set(Rect::default());
         self.hero_rect.set(Rect::default());

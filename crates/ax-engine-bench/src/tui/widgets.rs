@@ -276,6 +276,7 @@ pub(super) fn render_list(
     selected: usize,
     active: bool,
     click_target: &std::cell::Cell<Rect>,
+    click_offset: &std::cell::Cell<usize>,
 ) {
     // Only the focused list is clickable; inactive side panels must not steal
     // (or mis-map) hit-testing — they use thinner left-only chrome.
@@ -295,13 +296,22 @@ pub(super) fn render_list(
     let mut state = ListState::default();
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
+    // `render_stateful_widget` mutates `state.offset` to the first visible
+    // item index once the list scrolls to keep `selected` on screen; a click
+    // handler must add that same offset to a raw within-panel row, or it
+    // resolves to the wrong item as soon as the list has scrolled.
+    if active {
+        click_offset.set(state.offset());
+    }
 }
 
 /// Inner row index of a click inside a list panel, if it landed on a content row.
 ///
 /// Active lists use a 1-cell full border; inactive lists use a left bar only
 /// (title sits on the first row). Callers pass `active` to match `render_list`.
-/// No vertical scroll offset — lists are short enough to always fit.
+/// Returns the row's position within the *visible window* only — callers
+/// must add the list's current scroll offset (see `render_list`) to get the
+/// actual item index once the list has scrolled.
 pub(super) fn row_in_rect(rect: Rect, col: u16, row: u16) -> Option<usize> {
     row_in_rect_ex(rect, col, row, true)
 }

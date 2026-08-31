@@ -313,6 +313,7 @@ impl App {
             self.download_idx,
             true,
             &self.content_list_rect,
+            &self.content_list_offset,
         );
     }
 

@@ -1314,6 +1314,36 @@ fn click_on_family_row_drills_into_precision() {
 }
 
 #[test]
+fn click_on_scrolled_family_row_selects_the_visible_family() {
+    // Regression test: ratatui's List widget auto-scrolls to keep the
+    // selected item on screen, so once a list scrolls, the panel's first
+    // rendered row is no longer item 0. A click handler that ignores this
+    // (as `row_in_rect` alone does — it only reports a within-panel row)
+    // would select whatever item happens to sit at that raw index instead
+    // of the item actually drawn there.
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    let last = app.families.len() - 1;
+    app.family_idx = last;
+    // A short terminal keeps the families panel well under the full list
+    // height, forcing ratatui to scroll to keep `family_idx` visible.
+    let _ = render_sized(&app, 100, 15);
+    let rect = app.content_list_rect.get();
+    let offset = app.content_list_offset.get();
+    assert!(
+        offset > 0,
+        "fixture must actually force a scroll to exercise this bug; got offset {offset}"
+    );
+    // Click the first visible row (raw index 0 within the panel).
+    app.on_click(rect.x + 2, rect.y + 1);
+    assert_eq!(
+        app.family_idx, offset,
+        "click on the first visible row must select the family actually drawn there \
+         (index `offset`), not family 0 as a naive unscrolled row index would"
+    );
+}
+
+#[test]
 fn click_on_completed_step_header_navigates_back() {
     let mut app = new_app();
     app.screen = Screen::Models;
