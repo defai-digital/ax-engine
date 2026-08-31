@@ -104,6 +104,52 @@ class GenerateCandidateQuantizationManifestsTests(unittest.TestCase):
         self.assertIsNotNone(candidate["byte_estimate"]["estimated_bytes"])
         self.assertGreater(candidate["byte_estimate"]["estimated_bytes"], 0)
 
+    def test_byte_estimate_uses_actual_source_bit_width(self) -> None:
+        # Regression test: estimate_candidate_bytes hardcoded a 16-bit
+        # (fp16/bf16) source bit-width when backing out the element count
+        # from length_bytes, regardless of the base model's real
+        # quantization. Almost every real model directory in this repo is
+        # already quantized (4-bit/8-bit on disk), so the hardcoded divisor
+        # undercounted the element count (and thus every derived byte
+        # estimate) whenever the source wasn't genuinely fp16.
+        tensors = [
+            {"role": "attention_q", "length_bytes": 1_000_000},
+            {"role": "ffn_gate", "length_bytes": 2_000_000},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fp16_root = Path(tmp) / "fp16_model"
+            _write_model(
+                fp16_root,
+                config={"model_type": "qwen3"},
+                manifest={
+                    "schema_version": "ax.native_model_manifest.v1",
+                    "model_family": "qwen3",
+                    "tensors": tensors,
+                },
+            )
+            fp16_result = mod.build_candidates(fp16_root, recipe_ids=["uniform_3bit_g64"])
+
+            quantized_root = Path(tmp) / "quantized_model"
+            _write_model(
+                quantized_root,
+                config={"model_type": "qwen3", "quantization": {"bits": 4}},
+                manifest={
+                    "schema_version": "ax.native_model_manifest.v1",
+                    "model_family": "qwen3",
+                    "tensors": tensors,
+                },
+            )
+            quantized_result = mod.build_candidates(
+                quantized_root, recipe_ids=["uniform_3bit_g64"]
+            )
+
+        fp16_bytes = fp16_result["candidates"][0]["byte_estimate"]["estimated_bytes"]
+        quantized_bytes = quantized_result["candidates"][0]["byte_estimate"]["estimated_bytes"]
+        # The already-4-bit source has 4x the element count for the same
+        # length_bytes, so its 3-bit-target byte estimate must be ~4x larger.
+        self.assertGreater(quantized_bytes, fp16_bytes * 3)
+
     def test_no_manifest_no_estimate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "model"

@@ -105,6 +105,7 @@ def read_manifest(model_dir: Path) -> dict[str, Any]:
 def estimate_candidate_bytes(
     manifest: dict[str, Any],
     recipe: dict[str, Any],
+    current_bits: int = 16,
 ) -> dict[str, Any]:
     tensors = manifest.get("tensors", [])
     if not tensors:
@@ -127,8 +128,7 @@ def estimate_candidate_bytes(
         ):
             bits = ffn_bits
 
-        original_bits = length_bytes * 8
-        quantized_elements = length_bytes * 8 // 16
+        quantized_elements = length_bytes * 8 // current_bits
         quantized_bytes = (quantized_elements * bits + 7) // 8
         scales_bytes = (quantized_elements // group_size) * 2
         total_bits += (quantized_bytes + scales_bytes) * 8
@@ -161,7 +161,8 @@ def build_candidate_manifest(
     if recipe.get("ffn_bits"):
         quantization["ffn_bits"] = recipe["ffn_bits"]
 
-    byte_estimate = estimate_candidate_bytes(manifest, recipe)
+    current_bits = config.get("quantization", {}).get("bits") or 16
+    byte_estimate = estimate_candidate_bytes(manifest, recipe, current_bits)
 
     return {
         "recipe_id": recipe["recipe_id"],
