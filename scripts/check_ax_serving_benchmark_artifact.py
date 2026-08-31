@@ -96,7 +96,16 @@ def validate_distribution(value: Any, owner: str, *, allow_null: bool = False) -
     for key in PERCENTILE_KEYS:
         require_number(dist.get(key), f"{owner}.{key}")
     count = require_int(dist.get("count"), f"{owner}.count", positive=True)
-    if dist["min"] > dist["p50"] or dist["p50"] > dist["p95"] or dist["p95"] > dist["max"]:
+    ordered = (
+        dist["min"],
+        dist["p50"],
+        dist["p75"],
+        dist["p90"],
+        dist["p95"],
+        dist["p99"],
+        dist["max"],
+    )
+    if any(a > b for a, b in zip(ordered, ordered[1:])):
         raise ArtifactCheckError(f"{owner} percentiles are not monotonic")
     if count < 1:
         raise ArtifactCheckError(f"{owner}.count must be at least 1")

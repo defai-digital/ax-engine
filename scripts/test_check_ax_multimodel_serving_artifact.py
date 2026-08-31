@@ -142,6 +142,24 @@ def _artifact() -> dict[str, object]:
 
 
 class MultiModelArtifactCheckerTests(unittest.TestCase):
+    def test_validate_distribution_rejects_non_monotonic_middle_percentiles(self) -> None:
+        # Regression test: the monotonicity check only compared
+        # min<=p50<=p95<=max, silently accepting p75/p90/p99 values that
+        # violate a genuine percentile ordering as long as those three
+        # outer checkpoints still held. This fixture deliberately keeps
+        # min<=p50<=p95<=max true (0.0<=10.0<=15.0<=30.0) while p75 and p99
+        # both violate their neighbors, so it only fails under the fixed,
+        # full-chain check.
+        dist = _dist(10.0)
+        dist.update(min=0.0, p50=10.0, p75=5.0, p90=20.0, p95=15.0, p99=25.0, max=30.0)
+        with self.assertRaisesRegex(checker.ArtifactCheckError, "not monotonic"):
+            checker.validate_distribution(dist, "test")
+
+    def test_validate_distribution_accepts_genuinely_monotonic_percentiles(self) -> None:
+        dist = _dist(10.0)
+        dist.update(min=1.0, p50=10.0, p75=20.0, p90=30.0, p95=40.0, p99=50.0, max=60.0)
+        self.assertEqual(checker.validate_distribution(dist, "test"), dist)
+
     def test_accepts_focus_pair_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "artifact.json"
