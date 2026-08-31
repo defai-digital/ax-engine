@@ -109,6 +109,11 @@ def _classify_tensor(t: dict[str, Any]) -> tuple[str, str]:
         # checkpoint was never quantized for this role.  Flag for documentation.
         if source_quantized is None:
             return "intentional_dense", "document"
+        # source_quantized=True but the tensor is stored dense (not u32): the
+        # manifest claims this came from a quantized source but it was never
+        # actually packed. Mirrors the u32-without-metadata converter gap.
+        if source_quantized is True:
+            return "converter_metadata_gap", "fix_converter"
 
     # Fallback for unknown or unclassified roles.
     return "intentional_dense", "document"

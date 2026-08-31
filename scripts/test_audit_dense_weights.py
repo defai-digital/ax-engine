@@ -44,6 +44,24 @@ class ClassifyTensorTest(unittest.TestCase):
         self.assertEqual(cls, "non_gemv")
         self.assertEqual(action, "none")
 
+    def test_dense_projection_with_source_quantized_true_is_converter_gap(self):
+        # Regression test: a projection tensor stored dense (not u32) but
+        # whose manifest claims source_quantized=True (i.e. it came from a
+        # quantized source checkpoint but was never actually packed) fell
+        # through to the generic "intentional_dense"/"document" fallback,
+        # silently swallowing exactly the converter inconsistency this
+        # audit exists to catch. Mirrors the u32-without-metadata case.
+        t = {
+            "role": "ffn_down",
+            "dtype": "bf16",
+            "shape": [8960, 1536],
+            "source_quantized": True,
+            "quantization": {"bits": 4},
+        }
+        cls, action = self._cls(t)
+        self.assertEqual(cls, "converter_metadata_gap")
+        self.assertEqual(action, "fix_converter")
+
     def test_large_bf16_projection_no_source_quantized_is_document(self):
         t = {"role": "per_layer_model_projection", "dtype": "bf16", "shape": [8960, 1536]}
         cls, action = self._cls(t)
