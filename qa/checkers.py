@@ -310,10 +310,19 @@ def _match_candidate(hay: str, needle: str, mode: str) -> bool:
         r"[A-Za-z0-9/+.-]+", stripped_needle
     ):
         return _match_candidate(hay, stripped_needle, "token")
+    # Word-boundary match, not raw substring: expected "list" must not
+    # match because the text happens to contain "checklist" (same shape as
+    # the "total" vs. "Subtotal" collision in check_invoice_total). This
+    # does not solve the harder case of the expected word genuinely
+    # appearing standalone but in a wrong-answer aside (e.g. "...unlike a
+    # list, dict comprehensions...") — that needs answer-position
+    # awareness, not string matching. Prefer the last line, then fall back
+    # to the full text, both under the same guard.
+    pattern = r"(?<!\w)" + re.escape(stripped_needle) + r"(?!\w)"
     last = _normalize_spaces(_last_nonempty_line(hay))
-    if stripped_needle.lower() in last.lower():
+    if re.search(pattern, last, flags=re.IGNORECASE):
         return True
-    return stripped_needle.lower() in hay_n.lower()
+    return re.search(pattern, hay_n, flags=re.IGNORECASE) is not None
 
 
 def check_exact_answer(text: str, prompt: QaPrompt) -> CheckResult:
