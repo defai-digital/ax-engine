@@ -705,6 +705,50 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
                     require_sweep_ok=True,
                 )
 
+    def test_sweep_rejects_fewer_rows_than_planned(self) -> None:
+        # Regression test: the planned_row_count check only used to catch
+        # MORE rows than planned (planned_row_count < len(rows)), never
+        # FEWER -- so a sweep interrupted or crashed partway through,
+        # silently missing rows entirely rather than recording them as
+        # running/interrupted/failed, passed the gate undetected.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": True,
+                        "failed_row_count": 0,
+                        "planned_row_count": 5,
+                        "completed_row_count": 1,
+                        "status_counts": {"ok": 1},
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.GateError, "planned_row_count=5 but found 1"
+            ):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
     def test_sweep_rejects_malformed_benchmark_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

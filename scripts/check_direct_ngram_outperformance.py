@@ -412,7 +412,12 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
                 planned_row_count, bool
             ):
                 failures.append("planned_row_count must be an integer when present")
-            elif planned_row_count < len(rows):
+            elif planned_row_count != len(rows):
+                # Catches both directions: more rows than planned (extra/
+                # duplicate rows) AND fewer rows than planned (a sweep
+                # interrupted or crashed partway through, silently missing
+                # rows entirely rather than recording them as
+                # running/interrupted/failed).
                 failures.append(
                     f"planned_row_count={planned_row_count} but found {len(rows)} row(s)"
                 )
