@@ -355,6 +355,7 @@ def run_benchmark(
                 top_p=args.top_p,
                 top_k=args.top_k,
                 seed=args.seed,
+                ignore_eos=args.ignore_eos,
                 scheduled_offset_s=event.at_s,
                 benchmark_started=benchmark_started,
                 timeout=args.timeout,
@@ -521,6 +522,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help="force fixed-length native generations by ignoring terminal token IDs",
+    )
     parser.add_argument("--slo-ttft-ms", type=optional_positive_float)
     parser.add_argument("--slo-tpot-ms", type=optional_positive_float)
     parser.add_argument("--slo-e2e-ms", type=optional_positive_float)

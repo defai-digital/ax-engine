@@ -59,6 +59,7 @@ class MultiModelServingBenchmarkTests(unittest.TestCase):
                 top_p=1.0,
                 top_k=0,
                 seed=0,
+                ignore_eos=False,
                 slo_ttft_ms=100.0,
                 slo_tpot_ms=100.0,
                 slo_e2e_ms=1000.0,
@@ -121,6 +122,110 @@ class MultiModelServingBenchmarkTests(unittest.TestCase):
         self.assertEqual(artifact["availability"]["request_http_503"], 0)
         self.assertIn("request_error_rate", artifact["availability"])
         self.assertTrue(artifact["route_contract"]["passed"])
+
+    def test_run_forwards_ignore_eos_to_request_runner(self) -> None:
+        # Regression test: run_benchmark's `run()` closure omitted
+        # ignore_eos from its call to request_runner. serving.run_one_request
+        # (the real default) declares ignore_eos as a mandatory
+        # keyword-only argument with no default, so every real invocation
+        # crashed with TypeError before writing any artifact. A fake with
+        # the same mandatory-keyword-only shape reproduces that failure
+        # mode without needing a real request_runner or network access
+        # (the existing fake_request_runner accepts **kwargs and so cannot
+        # catch a missing-argument regression by construction).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scenario = Path(temp_dir) / "scenario.jsonl"
+            scenario.write_text(
+                json.dumps(
+                    {
+                        "id": "qwen",
+                        "kind": "request",
+                        "at_ms": 0,
+                        "model": "qwen",
+                        "input_tokens": [1, 2],
+                        "max_output_tokens": 2,
+                    }
+                )
+                + "\n"
+            )
+            args = argparse.Namespace(
+                scenario=scenario,
+                base_url="http://127.0.0.1:1",
+                workers=1,
+                input_kind="auto",
+                timeout=1.0,
+                temperature=0.0,
+                top_p=1.0,
+                top_k=0,
+                seed=0,
+                ignore_eos=True,
+                slo_ttft_ms=100.0,
+                slo_tpot_ms=100.0,
+                slo_e2e_ms=1000.0,
+            )
+
+            def strict_request_runner(
+                *,
+                prompt: object,
+                model_id: str,
+                base_url: str,
+                input_kind: str,
+                temperature: float,
+                top_p: float,
+                top_k: int,
+                seed: int,
+                ignore_eos: bool,
+                scheduled_offset_s: float,
+                benchmark_started: float,
+                timeout: float,
+            ) -> dict[str, object]:
+                return {
+                    "prompt_id": prompt.id,  # type: ignore[attr-defined]
+                    "category": prompt.category,  # type: ignore[attr-defined]
+                    "phase": "measured",
+                    "status": 200,
+                    "ok": True,
+                    "error": None,
+                    "scheduled_at_s": scheduled_offset_s,
+                    "started_at_s": scheduled_offset_s,
+                    "queue_delay_ms": 0.0,
+                    "e2e_latency_ms": 10.0,
+                    "ttft_ms": 2.0,
+                    "client_tpot_ms": 3.0,
+                    "stream_step_interval_ms": [3.0],
+                    "input_tokens": prompt.input_tokens_count,  # type: ignore[attr-defined]
+                    "max_output_tokens": prompt.max_output_tokens,  # type: ignore[attr-defined]
+                    "output_tokens": 2,
+                    "output_chunks": 2,
+                    "events": 3,
+                    "route_decisions": {},
+                    "metadata": {},
+                }
+
+            def fake_control_runner(
+                event: benchmark.ScenarioEvent, **_: object
+            ) -> dict[str, object]:
+                return {
+                    "event_id": event.id,
+                    "kind": event.kind,
+                    "model_id": event.model_id,
+                    "category": event.category,
+                    "scheduled_at_s": event.at_s,
+                    "started_at_s": event.at_s,
+                    "latency_ms": 4.0,
+                    "status": 200,
+                    "ok": True,
+                    "error": None,
+                    "response": {},
+                }
+
+            artifact = benchmark.run_benchmark(
+                args,
+                request_runner=strict_request_runner,
+                control_runner=fake_control_runner,
+            )
+
+        self.assertEqual(artifact["summary"]["requests"], 1)
 
     def test_route_contract_fails_closed(self) -> None:
         contract = benchmark.route_contract(
