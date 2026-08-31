@@ -2697,6 +2697,31 @@ fn validate_native_model_tensor_shapes(
             hidden_size,
             "assistant_post_projection",
         )?;
+        // assistant_post_projection's row count is never column-packed
+        // (quantization packing only compresses columns), so it is the
+        // trustworthy logical backbone_hidden_size at runtime: the assistant
+        // MTP draft loop feeds this tensor's output back in as the next
+        // depth's `last_backbone_hidden`, concatenated ahead of
+        // assistant_pre_projection's matmul (see
+        // Gemma4AssistantDraftSession::forward_one_from_token_arr and its
+        // depth-loop caller in ax-engine-mlx). Cross-check
+        // assistant_pre_projection's (possibly column-packed) column count
+        // against `2 * post_rows` via `expect_matrix_shape`, which already
+        // knows how to compare a logical column count against packed
+        // storage, instead of assuming pre_cols is unpacked.
+        let doubled_backbone_hidden_size = post_rows.checked_mul(2).ok_or_else(|| {
+            NativeModelError::InvalidManifest {
+                message: format!(
+                    "assistant_post_projection row count {post_rows} overflowed doubling for assistant_pre_projection cross-check"
+                ),
+            }
+        })?;
+        expect_matrix_shape(
+            pre_projection,
+            hidden_size,
+            doubled_backbone_hidden_size,
+            "assistant_pre_projection",
+        )?;
     }
     validate_per_layer_input_tensor_shapes(manifest, hidden_size, vocab_size)?;
 
@@ -5436,6 +5461,27 @@ mod tests {
         manifest
     }
 
+    fn gemma4_assistant_manifest() -> NativeModelManifest {
+        // gemma4_assistant layers always reuse the target model's external
+        // KV cache, so every layer must provide attention_q only (no
+        // attention_qkv_packed / attention_k / attention_v).
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "gemma4_assistant".to_string();
+        for layer_index in [0u32, 1u32] {
+            manifest.tensors.retain(|tensor| {
+                !(tensor.layer_index == Some(layer_index)
+                    && tensor.role == NativeTensorRole::AttentionQkvPacked)
+            });
+            manifest.tensors.push(tensor(
+                &format!("model.layers.{layer_index}.self_attn.q_proj.weight"),
+                NativeTensorRole::AttentionQ,
+                Some(layer_index),
+                vec![2048, 2048],
+            ));
+        }
+        manifest
+    }
+
     fn nemotron_attention_manifest() -> NativeModelManifest {
         let mut manifest = packed_layer_manifest();
         manifest.model_family = "nemotron_h".to_string();
@@ -6321,6 +6367,74 @@ mod tests {
 
         NativeModelArtifacts::from_dir(&dir)
             .expect("Gemma4 dense manifests should not require MoE-only norm roles");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_gemma4_assistant_matching_projection_pair() {
+        // pre_projection: [hidden_size, 2 * backbone_hidden_size] = [2048, 3072]
+        // (backbone_hidden_size = 1536); post_projection must round-trip the
+        // same backbone_hidden_size as its row count: [1536, 2048].
+        let mut manifest = gemma4_assistant_manifest();
+        manifest.tensors.push(tensor(
+            "assistant.pre_projection.weight",
+            NativeTensorRole::AssistantPreProjection,
+            None,
+            vec![2048, 3072],
+        ));
+        manifest.tensors.push(tensor(
+            "assistant.post_projection.weight",
+            NativeTensorRole::AssistantPostProjection,
+            None,
+            vec![1536, 2048],
+        ));
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("matching pre/post assistant projection pair should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_gemma4_assistant_mismatched_projection_pair() {
+        // Same pre_projection as the matching-pair test above (implied
+        // backbone_hidden_size = 1536), but post_projection's row count
+        // (1024) disagrees. post_projection's own column count (2048) still
+        // matches hidden_size, so checking post_projection only against
+        // itself would wrongly pass this; pre_projection's column count must
+        // be cross-checked against post_projection's row count too. At
+        // runtime, forward_one's depth>0 step feeds post_projection's output
+        // back in as the next depth's `last_backbone_hidden`, concatenated
+        // ahead of pre_projection's matmul — a mismatch here fails or
+        // corrupts multi-depth MTP drafts that this shape check is supposed
+        // to catch at load time.
+        let mut manifest = gemma4_assistant_manifest();
+        manifest.tensors.push(tensor(
+            "assistant.pre_projection.weight",
+            NativeTensorRole::AssistantPreProjection,
+            None,
+            vec![2048, 3072],
+        ));
+        manifest.tensors.push(tensor(
+            "assistant.post_projection.weight",
+            NativeTensorRole::AssistantPostProjection,
+            None,
+            vec![1024, 2048],
+        ));
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir).expect_err(
+            "post_projection row count must match pre_projection's implied backbone_hidden_size",
+        );
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("assistant_pre_projection"),
+            "unexpected error: {message}"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
