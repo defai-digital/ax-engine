@@ -85,6 +85,27 @@ class MlxFastpathEnvControlTests(unittest.TestCase):
             ):
                 checker.check_mlx_fastpath_env_controls(root)
 
+    def test_rejects_owner_declaration_renamed_with_shared_prefix(self) -> None:
+        # Regression test: a substring containment check would treat
+        # "AX_DISABLE_MLA_PREFIX_RESTORE_LEGACY" as satisfying the
+        # requirement for "AX_DISABLE_MLA_PREFIX_RESTORE", even though the
+        # exact control name is no longer declared anywhere in fastpath.rs.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root / checker.FASTPATH_OWNER,
+                owner_with_required_envs().replace(
+                    '"AX_DISABLE_MLA_PREFIX_RESTORE"',
+                    '"AX_DISABLE_MLA_PREFIX_RESTORE_LEGACY"',
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                checker.MlxFastpathEnvControlError,
+                "AX_DISABLE_MLA_PREFIX_RESTORE",
+            ):
+                checker.check_mlx_fastpath_env_controls(root)
+
 
 if __name__ == "__main__":
     unittest.main()

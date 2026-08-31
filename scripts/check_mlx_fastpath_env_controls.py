@@ -93,7 +93,11 @@ def find_missing_owner_declarations(root: Path) -> list[str]:
     if not owner.exists():
         return sorted(FASTPATH_CONTROL_ENVS)
     text = owner.read_text(encoding="utf-8")
-    return sorted(env_name for env_name in FASTPATH_CONTROL_ENVS if env_name not in text)
+    return sorted(
+        env_name
+        for env_name in FASTPATH_CONTROL_ENVS
+        if re.search(rf"\b{re.escape(env_name)}\b", text) is None
+    )
 
 
 def check_mlx_fastpath_env_controls(root: Path) -> None:
