@@ -362,6 +362,40 @@ class Qwen36MtpFairTests(unittest.TestCase):
             row["ratios"]["ax_engine_tuned_vs_mtplx_tuned"], 1.25
         )
 
+    def test_run_ax_suite_forwards_warmup_repetitions(self) -> None:
+        # Regression test: run_mtplx_suite and run_rapid_mlx_suite both
+        # forward config.warmup_repetitions to their subprocess command
+        # line, but run_ax_suite silently dropped it, so the AX-engine arm
+        # ran with bench_mlx_inference_stack.py's own default (2) instead of
+        # whatever --warmup-repetitions the user requested on this script,
+        # breaking the apples-to-apples comparison across engines.
+        config = fair.diff.RunConfig(
+            mode="sampled",
+            depth=3,
+            max_tokens=64,
+            repetitions=1,
+            warmup_repetitions=5,
+            cooldown_s=0.0,
+            sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+            enable_thinking=False,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(fair, "run_subprocess") as run_subprocess:
+                fair.run_ax_suite(
+                    python=Path("python"),
+                    suite="flappy",
+                    suite_file=root / "suite.jsonl",
+                    output_path=root / "direct.json",
+                    model_dir=root / "model",
+                    config=config,
+                    no_build=True,
+                    ax_policy="direct",
+                )
+            cmd = run_subprocess.call_args[0][0]
+            self.assertIn("--warmup-repetitions", cmd)
+            self.assertEqual(cmd[cmd.index("--warmup-repetitions") + 1], "5")
+
     def test_run_ax_suite_maps_policy_flags(self) -> None:
         config = fair.diff.RunConfig(
             mode="sampled",

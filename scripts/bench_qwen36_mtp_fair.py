@@ -347,6 +347,8 @@ def run_ax_suite(
         str(config.cooldown_s),
         "--inter-case-cooldown",
         str(inter_case_cooldown_s),
+        "--warmup-repetitions",
+        str(config.warmup_repetitions),
         "--ax-sampling",
         json.dumps(config.sampling, sort_keys=True),
         "--skip-mlx-lm",
