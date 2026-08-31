@@ -236,6 +236,34 @@ def compare_pair(baseline: list[int], tested: list[int]) -> dict:
     }
 
 
+def aggregate_comparisons(per_prompt: list[dict]) -> dict:
+    """Aggregate per-prompt compare_pair() results into the ratio/verdict.
+
+    The denominator per prompt is max(baseline, tested) token count, not
+    tested alone: a tested (rotation-enabled) decode that degenerates to a
+    short or empty output must count as a near-total mismatch, not silently
+    shrink both the numerator and denominator to ~0 and disappear from the
+    aggregate ratio.
+    """
+    shared_prefix_total = 0
+    tested_total = 0
+    prompts_matching = 0
+    for cmp in per_prompt:
+        if cmp["tokens_match"]:
+            prompts_matching += 1
+        shared_prefix_total += cmp["shared_prefix_len"]
+        tested_total += max(cmp["tested_token_count"], cmp["baseline_token_count"])
+    shared_prefix_ratio = shared_prefix_total / tested_total if tested_total > 0 else 0.0
+    verdict = "PASS" if shared_prefix_ratio >= PASS_THRESHOLD else "FAIL"
+    return {
+        "prompts_matching": prompts_matching,
+        "shared_prefix_total": shared_prefix_total,
+        "tested_total": tested_total,
+        "shared_prefix_ratio": shared_prefix_ratio,
+        "verdict": verdict,
+    }
+
+
 def main() -> int:
     args = parse_args()
     if not args.mlx_artifacts_dir.is_dir():
@@ -246,9 +274,6 @@ def main() -> int:
     print(f"corpus: {corpus_source} ({len(corpus)} prompts)")
 
     per_prompt = []
-    shared_prefix_total = 0
-    tested_total = 0
-    prompts_matching = 0
 
     for entry in corpus:
         pid = entry["id"]
@@ -263,17 +288,15 @@ def main() -> int:
         cmp["id"] = pid
         cmp["prompt_preview"] = text[:60]
         per_prompt.append(cmp)
-        if cmp["tokens_match"]:
-            prompts_matching += 1
-        shared_prefix_total += cmp["shared_prefix_len"]
-        tested_total += cmp["tested_token_count"]
         status = "MATCH" if cmp["tokens_match"] else f"DIVERGE@{cmp['first_divergence_index']}"
         print(f"[{pid}] {status} (shared={cmp['shared_prefix_len']}/{cmp['tested_token_count']})")
 
-    shared_prefix_ratio = (
-        shared_prefix_total / tested_total if tested_total > 0 else 0.0
-    )
-    verdict = "PASS" if shared_prefix_ratio >= PASS_THRESHOLD else "FAIL"
+    aggregate = aggregate_comparisons(per_prompt)
+    prompts_matching = aggregate["prompts_matching"]
+    shared_prefix_total = aggregate["shared_prefix_total"]
+    tested_total = aggregate["tested_total"]
+    shared_prefix_ratio = aggregate["shared_prefix_ratio"]
+    verdict = aggregate["verdict"]
 
     artifact = {
         "schema_version": SCHEMA_VERSION,
