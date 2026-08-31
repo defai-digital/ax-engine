@@ -95,18 +95,36 @@ def native_prefill_rows(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     return measured
 
 
+def _ax_openai_chat_e2e_rows_by_case(rows: list[Any]) -> dict[str, dict[str, Any]]:
+    """Index measured ax_engine(_mlx) openai_chat_e2e rows by case_id.
+
+    Fails loudly on a duplicate case_id rather than silently keeping
+    whichever row happens to come last, since that would discard a real
+    measurement without a trace in the rendered chart.
+    """
+    ax_by_case: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not (
+            isinstance(row, dict)
+            and row.get("status") == "measured"
+            and row.get("engine") in {"ax_engine", "ax_engine_mlx"}
+            and row.get("layer") == "openai_chat_e2e"
+        ):
+            continue
+        case_id = row.get("case_id")
+        if case_id in ax_by_case:
+            raise ValueError(
+                f"duplicate openai_chat_e2e ax row for case_id={case_id!r}"
+            )
+        ax_by_case[case_id] = row
+    return ax_by_case
+
+
 def peer_comparison_series(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     rows = artifact.get("rows")
     if not isinstance(rows, list):
         return []
-    ax_by_case = {
-        row.get("case_id"): row
-        for row in rows
-        if isinstance(row, dict)
-        and row.get("status") == "measured"
-        and row.get("engine") in {"ax_engine", "ax_engine_mlx"}
-        and row.get("layer") == "openai_chat_e2e"
-    }
+    ax_by_case = _ax_openai_chat_e2e_rows_by_case(rows)
     series = []
     for row in rows:
         if (
@@ -159,14 +177,7 @@ def peer_exclusions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     rows = artifact.get("rows")
     if not isinstance(rows, list):
         return []
-    ax_by_case = {
-        row.get("case_id"): row
-        for row in rows
-        if isinstance(row, dict)
-        and row.get("status") == "measured"
-        and row.get("engine") in {"ax_engine", "ax_engine_mlx"}
-        and row.get("layer") == "openai_chat_e2e"
-    }
+    ax_by_case = _ax_openai_chat_e2e_rows_by_case(rows)
     exclusions: list[dict[str, Any]] = []
     for row in rows:
         if (
