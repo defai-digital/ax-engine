@@ -156,11 +156,17 @@ def build_rows(
 
 
 def attach_ratios(rows: list[dict[str, Any]]) -> None:
-    baselines = {
-        (int(row["context_tokens"]), int(row["generation_tokens"])): row
-        for row in rows
-        if row.get("engine") == "mlx_lm"
-    }
+    baselines: dict[tuple[int, int], dict[str, Any]] = {}
+    for row in rows:
+        if row.get("engine") != "mlx_lm":
+            continue
+        key = (int(row["context_tokens"]), int(row["generation_tokens"]))
+        if key in baselines:
+            raise PrefillScalingBuildError(
+                f"duplicate mlx_lm baseline for context_tokens={key[0]} "
+                f"generation_tokens={key[1]}"
+            )
+        baselines[key] = row
     for row in rows:
         if row.get("engine") != "ax_engine_mlx":
             continue

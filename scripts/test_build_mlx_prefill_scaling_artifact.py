@@ -149,6 +149,26 @@ class BuildPrefillScalingArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(builder.PrefillScalingBuildError, "peak_memory_gb"):
             builder.build_prefill_scaling_artifact(source)
 
+    def test_duplicate_mlx_lm_baseline_fails_closed(self) -> None:
+        # Regression test: two mlx_lm rows sharing the same
+        # (context_tokens, generation_tokens) key used to be silently
+        # collapsed by a dict comprehension, keeping only whichever row
+        # came last and discarding the other measurement with no error.
+        payload = source_artifact()
+        duplicate = source_row(
+            engine="mlx_lm",
+            prompt_tokens=1024,
+            prompt_hash=HASH_1K,
+            prefill_tok_s=9999.0,
+            prefill_s=0.1,
+            memory_gb=1.0,
+        )
+        payload["results"].append(duplicate)
+        source = self.write_source(payload)
+
+        with self.assertRaisesRegex(builder.PrefillScalingBuildError, "duplicate mlx_lm baseline"):
+            builder.build_prefill_scaling_artifact(source)
+
     def test_min_context_filter_requires_remaining_baseline(self) -> None:
         payload = source_artifact()
         payload["results"] = [
