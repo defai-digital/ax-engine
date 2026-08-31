@@ -384,6 +384,11 @@ def suite_warnings(
         warnings.append(
             f"{suite}: MTPLX repetitions={mtplx_reps} does not match contract={config.repetitions}"
         )
+    ax_warmup = ax_artifact.get("warmup_repetitions")
+    if ax_warmup is not None and int(ax_warmup) != config.warmup_repetitions:
+        warnings.append(
+            f"{suite}: AX warmup={ax_warmup} does not match contract={config.warmup_repetitions}"
+        )
     mtplx_warmup = mtplx_artifact.get("warmup_repetitions")
     if mtplx_warmup is not None and int(mtplx_warmup) != config.warmup_repetitions:
         warnings.append(
@@ -623,6 +628,8 @@ def run_ax_suite(
         str(config.max_tokens),
         "--repetitions",
         str(config.repetitions),
+        "--warmup-repetitions",
+        str(config.warmup_repetitions),
         "--cooldown",
         str(config.cooldown_s),
         "--ax-ngram-accel",
@@ -785,14 +792,6 @@ def main() -> int:
     mtplx_artifact_overrides = parse_name_path_map(args.mtplx_artifact, "--mtplx-artifact")
 
     suites = list(dict.fromkeys(args.suites))
-    if args.warmup_repetitions != DEFAULT_WARMUP_REPETITIONS:
-        suites_without_ax_artifact = [suite for suite in suites if suite not in ax_artifact_overrides]
-        if suites_without_ax_artifact:
-            raise ValueError(
-                "AX bench_mlx_inference_stack.py has an implicit 1 warmup repetition; "
-                "--warmup-repetitions must be 1 when running AX. "
-                f"Suites without --ax-artifact: {', '.join(suites_without_ax_artifact)}"
-            )
     suite_files = {
         suite: suite_path_for(suite, args.suites_dir, suite_file_overrides)
         for suite in suites

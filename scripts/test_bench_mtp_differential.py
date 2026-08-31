@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT_PATH = Path(__file__).with_name("bench_mtp_differential.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("bench_mtp_differential", SCRIPT_PATH)
@@ -115,6 +116,79 @@ class MtpDifferentialTests(unittest.TestCase):
         joined = "\n".join(artifact["warnings"])
         self.assertIn("dirty tracked worktree", joined)
         self.assertIn("AX repetitions=3", joined)
+
+    def test_ax_warmup_mismatch_emits_warning(self) -> None:
+        # Regression test: suite_warnings checked MTPLX's recorded
+        # warmup_repetitions against the contract but had no corresponding
+        # check for AX's -- a gap that let run_ax_suite silently omit
+        # --warmup-repetitions entirely (AX always ran with the underlying
+        # script's own default instead of the configured contract) go
+        # undetected.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            suite = write_jsonl(root / "flappy.jsonl")
+            ax = fake_ax_artifact()
+            ax["warmup_repetitions"] = 2
+            ax_path = write_json(root / "ax.json", ax)
+            mtplx_path = write_json(root / "mtplx.json", fake_mtplx_artifact())
+            config = diff.RunConfig(
+                mode="sampled",
+                depth=3,
+                max_tokens=4,
+                repetitions=2,
+                warmup_repetitions=1,
+                cooldown_s=1.0,
+                sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+                enable_thinking=False,
+            )
+
+            artifact = diff.build_differential_artifact(
+                config=config,
+                suites=["flappy"],
+                suite_files={"flappy": suite},
+                ax_artifacts={"flappy": ax_path},
+                mtplx_artifacts={"flappy": mtplx_path},
+            )
+
+        joined = "\n".join(artifact["warnings"])
+        self.assertIn("AX warmup=2", joined)
+
+    def test_run_ax_suite_forwards_warmup_repetitions(self) -> None:
+        # Regression test: run_ax_suite used to never pass
+        # --warmup-repetitions to the AX subprocess at all, so the AX side
+        # of this "fair" differential comparison always ran with
+        # bench_mlx_inference_stack.py's own default (2) regardless of the
+        # contract, while run_mtplx_suite already forwarded it correctly.
+        captured: dict[str, list[str]] = {}
+
+        def fake_run_subprocess(cmd: list[str]) -> None:
+            captured["cmd"] = cmd
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            suite = write_jsonl(root / "flappy.jsonl")
+            config = diff.RunConfig(
+                mode="sampled",
+                depth=3,
+                max_tokens=4,
+                repetitions=2,
+                warmup_repetitions=5,
+                cooldown_s=1.0,
+                sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+                enable_thinking=False,
+            )
+            with mock.patch.object(diff, "run_subprocess", fake_run_subprocess):
+                diff.run_ax_suite(
+                    suite="flappy",
+                    suite_file=suite,
+                    output_path=root / "ax_out.json",
+                    ax_model_dir=root / "model",
+                    config=config,
+                )
+
+        cmd = captured["cmd"]
+        self.assertIn("--warmup-repetitions", cmd)
+        self.assertEqual(cmd[cmd.index("--warmup-repetitions") + 1], "5")
 
     def test_ax_cases_accepts_pure_mtp_engine_key(self) -> None:
         artifact = fake_ax_artifact()
