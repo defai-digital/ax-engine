@@ -104,7 +104,12 @@ def quantize_safetensors(
     for key, sf in weight_map.items():
         shard_keys[sf].append(key)
 
-    quant_config: dict[str, Any] = {"group_size": GROUP_SIZE, "bits": high_bits, "mode": "affine"}
+    # The top-level "bits" is the dominant/default bit width (mlx_lm
+    # convention: per-tensor entries below are the exceptions to it), so it
+    # must be low_bits — high_bits only applies to the small set of
+    # sensitive layers in HIGH_BITS_LAYER_SUFFIXES, each of which gets its
+    # own explicit per-tensor override regardless of this default.
+    quant_config: dict[str, Any] = {"group_size": GROUP_SIZE, "bits": low_bits, "mode": "affine"}
     new_weight_map: dict[str, str] = {}
     total_quant = 0
     total_kept = 0
