@@ -178,6 +178,11 @@ def _validate_baseline(baseline: dict[str, Any], target: str) -> None:
     backend = _route_selected_backend(route, "baseline.route")
     if target in RUNTIME_POLICY_TARGETS:
         _require(backend == "mlx", "baseline.route.selected_backend must be mlx")
+    _require(
+        backend not in DELEGATED_BACKENDS,
+        f"baseline.route.selected_backend {backend!r} is delegated evidence, "
+        "not AX-owned policy evidence",
+    )
     _integer(baseline.get("prompt_tokens"), "baseline.prompt_tokens")
     _integer(baseline.get("generation_tokens"), "baseline.generation_tokens")
 

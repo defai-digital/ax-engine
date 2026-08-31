@@ -249,6 +249,23 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
         ):
             checker.validate_offline_policy_search_artifact(path)
 
+    def test_baseline_delegated_route_fails_closed_outside_runtime_policy_target(self) -> None:
+        # Regression test: _validate_baseline had no DELEGATED_BACKENDS check
+        # at all (unlike the top-level route and every candidate row), so a
+        # baseline built on delegated (non-AX-owned) evidence silently passed
+        # whenever target wasn't in RUNTIME_POLICY_TARGETS (the only case
+        # where the baseline `== "mlx"` check doesn't already catch it).
+        payload = artifact(selected_backend="mlx")
+        payload["target"] = "kv_compression_policy"
+        payload["baseline"]["route"]["selected_backend"] = "llama_cpp"  # type: ignore[index]
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            r"baseline\.route\.selected_backend 'llama_cpp' is delegated evidence",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
     def test_missing_baseline_fails_closed(self) -> None:
         payload = artifact()
         del payload["baseline"]
