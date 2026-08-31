@@ -46,7 +46,9 @@ def validate_quality_metrics(metrics: dict[str, Any]) -> list[str]:
     failures: list[str] = []
 
     cosine = metrics.get("cosine_similarity")
-    if cosine is not None and cosine < MIN_COSINE_SIMILARITY:
+    if cosine is None:
+        failures.append("cosine_similarity missing from quality_metrics")
+    elif cosine < MIN_COSINE_SIMILARITY:
         failures.append(f"cosine_similarity {cosine:.6f} < {MIN_COSINE_SIMILARITY}")
 
     mean_abs = metrics.get("mean_abs_diff")

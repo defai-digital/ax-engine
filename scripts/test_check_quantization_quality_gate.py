@@ -71,14 +71,34 @@ class CheckQuantizationQualityGateTests(unittest.TestCase):
                 artifact,
                 {
                     "schema_version": "ax.quantization_quality_gate.v1",
-                    "quality_metrics": {"mean_abs_diff": 0.10},
+                    "quality_metrics": {"cosine_similarity": 0.999, "mean_abs_diff": 0.10},
                     "speed_metrics": {},
                 },
             )
             result = mod.validate_artifact(artifact)
 
         self.assertEqual(result["decision"], "reject")
+        self.assertEqual(len(result["quality_failures"]), 1)
         self.assertIn("mean_abs_diff", result["quality_failures"][0])
+
+    def test_reject_missing_cosine_similarity(self) -> None:
+        # Regression test: quality_metrics with no cosine_similarity field at
+        # all (not just an out-of-range value) must fail closed rather than
+        # silently skip the check and approve on absent evidence.
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "quality.json"
+            _write_artifact(
+                artifact,
+                {
+                    "schema_version": "ax.quantization_quality_gate.v1",
+                    "quality_metrics": {},
+                    "speed_metrics": {},
+                },
+            )
+            result = mod.validate_artifact(artifact)
+
+        self.assertEqual(result["decision"], "reject")
+        self.assertIn("cosine_similarity missing", result["quality_failures"][0])
 
     def test_reject_slow_decode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
