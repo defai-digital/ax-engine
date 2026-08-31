@@ -1,5 +1,9 @@
 # Qwen3.6 MTP Peer Benchmark
 
+> Historical artifact from 2026-08-07. The active AXQ comparison now uses
+> AX Engine 7.2.0, MTPLX 2.9.0, and OMLX 0.6.4; see the
+> [2026-08-31 campaign](../../benchmarks/results/mtp-axq-peer/2026-08-31-df-macbookpro-m5/).
+
 This page holds the full Qwen3.6 MTP peer benchmark results for AX Engine,
 MTPLX, and lightning-mlx. This page keeps only the decode-throughput view
 because decode is the closest comparable metric across the three engines. The
@@ -68,8 +72,6 @@ AX rows are strict and all supported lanes pass the output-degeneracy gate.
 | Qwen3.6 27B 6-bit | 44.8 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
 | Qwen3.6 35B-A3B 4-bit | 140.9 tok/s | **145.1 tok/s** | 124.2 tok/s | AX trails MTPLX 2.9%; leads lightning-mlx 13.4% |
 | Qwen3.6 35B-A3B 6-bit | 120.5 tok/s | **125.2 tok/s** | 102.0 tok/s | AX trails MTPLX 3.7%; leads lightning-mlx 18.2% |
-
-![Qwen3.6 MTP peer decode comparison](../assets/perf-mtp-peer-comparison-apples-to-apples.svg)
 
 Across the three comparable rows, AX is 4.3% lower than MTPLX and 9.5%
 higher than lightning-mlx by geometric mean. AX therefore loses all three

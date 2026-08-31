@@ -3093,8 +3093,16 @@ def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     for key, values in values_by_key.items():
         kind = telemetry_aggregation_kind(key)
         if kind == "median_gauge":
-            if any(value < 0 or value > 1000 for value in values):
-                raise ValueError(f"{key} must stay within 0..=1000; got {values}")
+            # Acceptance gauges are ratios in per-mille, but the profitability
+            # estimator is an unconstrained speedup ratio in the same unit and
+            # may legitimately exceed 1.000x.
+            upper_bound = (
+                100_000
+                if key == "ax_mtp_profitability_estimated_speedup_x1000"
+                else 1000
+            )
+            if any(value < 0 or value > upper_bound for value in values):
+                raise ValueError(f"{key} must stay within 0..={upper_bound}; got {values}")
             totals[key] = int(round(statistics.median(values)))
         elif kind == "stable_gauge":
             if len(values) != len(runs):

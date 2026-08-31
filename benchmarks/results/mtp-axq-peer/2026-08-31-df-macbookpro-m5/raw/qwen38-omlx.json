@@ -1,0 +1,211 @@
+{
+  "schema_version": "ax.mtp_peer_omlx.v1",
+  "host_label": "df-macbookpro-m5",
+  "runtime": {
+    "name": "OMLX",
+    "version": "0.6.4",
+    "mlx": "0.32.0",
+    "model_settings": {
+      "mtp_enabled": true,
+      "mtp_num_draft_tokens": 1,
+      "enable_thinking": false
+    }
+  },
+  "model_repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+  "model_stage": "qwen38",
+  "model_stage_note": "Text-only OMLX staging imported the AXQ mtp.safetensors sidecar as model-mtp.safetensors; AXQ vision sidecar excluded because OMLX VLM loader does not accept this AXQ vision-key layout.",
+  "prompt_suite": "flappy",
+  "prompt_source": "benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "prompt_token_source": "AX Engine generated token artifacts",
+  "warmup_repetitions": 2,
+  "repetitions": 5,
+  "generation_tokens": 256,
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "seed": 0
+  },
+  "results": [
+    {
+      "prompt_case_id": "flappy_collision_checks",
+      "prompt_tokens": 432,
+      "prompt_text_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+      "generation_tokens": 256,
+      "trials": [
+        {
+          "elapsed_s": 6.651204457972199,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.48926936731826
+        },
+        {
+          "elapsed_s": 6.700583249970805,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.20562933847817
+        },
+        {
+          "elapsed_s": 6.741357334016357,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.974548346257244
+        },
+        {
+          "elapsed_s": 6.979686165985186,
+          "completion_tokens": 256,
+          "decode_tok_s": 36.67786687137752
+        },
+        {
+          "elapsed_s": 7.178112541965675,
+          "completion_tokens": 256,
+          "decode_tok_s": 35.663971343906546
+        }
+      ],
+      "decode_tok_s": {
+        "mean": 37.402257053467544,
+        "median": 37.974548346257244,
+        "min": 35.663971343906546,
+        "max": 38.48926936731826
+      },
+      "completion_tokens": [
+        256
+      ],
+      "output_text_sha256": [
+        "8cfe43104fb4d4db87281d35f49038804513302191380e48876b500f7ab84e17"
+      ]
+    },
+    {
+      "prompt_case_id": "flappy_pipes",
+      "prompt_tokens": 273,
+      "prompt_text_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+      "generation_tokens": 256,
+      "trials": [
+        {
+          "elapsed_s": 7.2589349579648115,
+          "completion_tokens": 256,
+          "decode_tok_s": 35.26688164068834
+        },
+        {
+          "elapsed_s": 7.240731416968629,
+          "completion_tokens": 256,
+          "decode_tok_s": 35.35554424792845
+        },
+        {
+          "elapsed_s": 7.264305500022601,
+          "completion_tokens": 256,
+          "decode_tok_s": 35.24080863603596
+        },
+        {
+          "elapsed_s": 7.217699583037756,
+          "completion_tokens": 256,
+          "decode_tok_s": 35.46836454673495
+        },
+        {
+          "elapsed_s": 7.116185542021412,
+          "completion_tokens": 256,
+          "decode_tok_s": 35.974329012124244
+        }
+      ],
+      "decode_tok_s": {
+        "mean": 35.46118561670239,
+        "median": 35.35554424792845,
+        "min": 35.24080863603596,
+        "max": 35.974329012124244
+      },
+      "completion_tokens": [
+        256
+      ],
+      "output_text_sha256": [
+        "7031a7d9a5a08760cddff999eda723f11289bba5e0698be457e285cefd9fefd3"
+      ]
+    },
+    {
+      "prompt_case_id": "flappy_score_gates",
+      "prompt_tokens": 374,
+      "prompt_text_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+      "generation_tokens": 256,
+      "trials": [
+        {
+          "elapsed_s": 7.05847716704011,
+          "completion_tokens": 256,
+          "decode_tok_s": 36.26844628688522
+        },
+        {
+          "elapsed_s": 6.999318041023798,
+          "completion_tokens": 256,
+          "decode_tok_s": 36.57499180628097
+        },
+        {
+          "elapsed_s": 6.955342625034973,
+          "completion_tokens": 256,
+          "decode_tok_s": 36.80623857098812
+        },
+        {
+          "elapsed_s": 6.910799083998427,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.04347310468826
+        },
+        {
+          "elapsed_s": 6.874213917006273,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.240621704639686
+        }
+      ],
+      "decode_tok_s": {
+        "mean": 36.78675429469645,
+        "median": 36.80623857098812,
+        "min": 36.26844628688522,
+        "max": 37.240621704639686
+      },
+      "completion_tokens": [
+        256
+      ],
+      "output_text_sha256": [
+        "91d999668dcd39ac37cfbf0b8eaf612c740b07d68c1bd13e00cb445e8419b392"
+      ]
+    },
+    {
+      "prompt_case_id": "flappy_sound_channels",
+      "prompt_tokens": 264,
+      "prompt_text_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+      "generation_tokens": 256,
+      "trials": [
+        {
+          "elapsed_s": 6.648852999962401,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.5028816250634
+        },
+        {
+          "elapsed_s": 6.637749582994729,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.56728802421941
+        },
+        {
+          "elapsed_s": 6.630590499960817,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.608929325602716
+        },
+        {
+          "elapsed_s": 6.608290040981956,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.73921973950765
+        },
+        {
+          "elapsed_s": 6.572497749992181,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.95018450182118
+        }
+      ],
+      "decode_tok_s": {
+        "mean": 38.67370064324287,
+        "median": 38.608929325602716,
+        "min": 38.5028816250634,
+        "max": 38.95018450182118
+      },
+      "completion_tokens": [
+        256
+      ],
+      "output_text_sha256": [
+        "0f5c81288e448289926fc1f6d74f6ef87cf8626c0b700f4cb5351a2d6ab4e75d"
+      ]
+    }
+  ]
+}

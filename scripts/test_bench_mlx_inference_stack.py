@@ -2613,6 +2613,24 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mtp_accept_rate_depth0_x1000"], 1000)
         self.assertEqual(summary["ax_mtp_correctness_mode"], 1)
 
+    def test_ax_mtp_profitability_speedup_gauge_allows_values_above_one_x(self) -> None:
+        summary = bench.summarize_telemetry(
+            [
+                {
+                    "ngram_acceleration_telemetry": {
+                        "ax_mtp_profitability_estimated_speedup_x1000": 1455,
+                    }
+                },
+                {
+                    "ngram_acceleration_telemetry": {
+                        "ax_mtp_profitability_estimated_speedup_x1000": 1460,
+                    }
+                },
+            ]
+        )
+
+        self.assertEqual(summary["ax_mtp_profitability_estimated_speedup_x1000"], 1458)
+
     def test_ax_mtp_telemetry_rejects_mixed_effective_modes(self) -> None:
         with self.assertRaisesRegex(ValueError, "changed across repetitions"):
             bench.summarize_telemetry(
