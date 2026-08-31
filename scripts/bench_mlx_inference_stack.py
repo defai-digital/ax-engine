@@ -4286,7 +4286,11 @@ def ax_prefill_work_contract(
         return "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
     temperature = float(sampler.get("temperature") or 0.0)
     repetition_penalty = float(sampler.get("repetition_penalty") or 1.0)
-    if abs(repetition_penalty - 1.0) > 1e-6:
+    no_repeat_ngram_size = int(sampler.get("no_repeat_ngram_size") or 0)
+    # Mirror `MlxSamplingParams::uses_logits_processors` exactly: it's
+    # repetition-penalty OR no-repeat-ngram, not repetition-penalty alone.
+    # Either one forces the historical (non-cache-only) prefill path.
+    if abs(repetition_penalty - 1.0) > 1e-6 or no_repeat_ngram_size > 0:
         return "historical_full_logits_prefill_or_sampler_required"
     if temperature <= 0.0 or prompt_tokens >= 512:
         return "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
@@ -4510,7 +4514,7 @@ def bench_axengine(
             if not prefix_cache_enabled
             else "prefix_cache_enabled_prefill_metrics_invalidated_on_hit"
         ),
-        "prefill_work_contract": ax_prefill_work_contract(len(tokens), sampler=None),
+        "prefill_work_contract": ax_prefill_work_contract(len(tokens), sampler=sampler),
         "ax_decode_claim_status": _claim_status,
         "ax_ngram_outcome_tier": ax_ngram_outcome_tier(
             direct_mode=direct_mode,

@@ -1215,6 +1215,20 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "historical_full_logits_prefill_or_sampler_required",
         )
 
+    def test_ax_prefill_work_contract_no_repeat_ngram_forces_historical(self) -> None:
+        # Regression test: MlxSamplingParams::uses_logits_processors() in
+        # crates/ax-engine-mlx/src/sampling.rs is repetition_penalty OR
+        # no_repeat_ngram_size, not repetition_penalty alone. A sampler with
+        # repetition_penalty==1.0 but no_repeat_ngram_size>0 must still force
+        # the historical (non-cache-only) prefill label, matching the
+        # already-fixed check_readme_performance_artifacts.py twin function.
+        self.assertEqual(
+            bench.ax_prefill_work_contract(
+                2048, sampler={"temperature": 0.0, "no_repeat_ngram_size": 3}
+            ),
+            "historical_full_logits_prefill_or_sampler_required",
+        )
+
     def test_axengine_one_run_records_client_wall_ttft_from_first_output(self) -> None:
         class FakeResponse:
             status = 200
@@ -1333,6 +1347,42 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         body = json.loads(captured["body"])
         self.assertEqual(body["sampling"]["temperature"], 0.6)
         self.assertEqual(body["sampling"]["seed"], 44)
+
+    def test_bench_axengine_prefill_work_contract_reflects_actual_sampler(self) -> None:
+        # Regression test: bench_axengine built the row's
+        # prefill_work_contract field with a hardcoded sampler=None instead
+        # of the real, in-scope `sampler` argument, so it always reported
+        # the cache-only label regardless of what sampler was actually used.
+        # Here a short prompt (< 512 tokens) with temperature > 0 must
+        # report the historical (full-logits) label, not cache-only.
+        run = {
+            "prefill_s": 0.3,
+            "decode_s": 0.1,
+            "ttft_ms": 300.0,
+            "client_wall_total_ms": 420.0,
+            "prefill_tok_s": 10.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[dict(run), dict(run)]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+                seed=44,
+                prompt_source="real",
+                sampler={"temperature": 0.6},
+            )
+
+        self.assertEqual(
+            row["prefill_work_contract"],
+            "historical_full_logits_prefill_or_sampler_required",
+        )
 
     def test_axengine_one_run_decode_rate_matches_mlx_lm_generation_contract(
         self,
