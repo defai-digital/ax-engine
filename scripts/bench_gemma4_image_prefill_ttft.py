@@ -124,6 +124,7 @@ def is_prefill_step(step: dict[str, Any], *, seen_prefill: bool) -> bool:
 def run_one(url: str, model: str, request: PreparedImageRequest, max_output_tokens: int) -> dict[str, Any]:
     parsed = urllib.parse.urlsplit(url.rstrip("/"))
     conn = http.client.HTTPConnection(parsed.hostname or "127.0.0.1", parsed.port or 80, timeout=300)
+    started = time.perf_counter()
     payload = json.dumps(
         {
             "model": model,
@@ -133,7 +134,6 @@ def run_one(url: str, model: str, request: PreparedImageRequest, max_output_toke
             "sampling": {"temperature": 0.0, "ignore_eos": True},
         }
     ).encode("utf-8")
-    started = time.perf_counter()
     first_output_wall_s: float | None = None
     try:
         conn.request(
