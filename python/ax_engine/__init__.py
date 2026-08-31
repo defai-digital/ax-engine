@@ -111,6 +111,14 @@ def _import_native_module() -> None:
     wheel's copy lets dyld satisfy the dependency by install name instead of
     the rpath search. Release wheels vendor a delocated libmlx and never take
     this path.
+
+    libmlx.dylib itself carries no LC_RPATH of its own and links
+    `@rpath/libjaccl.dylib`, so a bare `dlopen(libmlx)` on an absolute path
+    resolves that dependency using whichever rpaths the *calling* process
+    happens to already have (e.g. a conda-based venv's own paths) rather than
+    anything relative to the mlx package — which fails outside that specific
+    layout. Preload libjaccl the same way, from the same directory, before
+    libmlx, so its dependency is already satisfied by install name too.
     """
     import importlib
 
@@ -126,7 +134,11 @@ def _import_native_module() -> None:
 
     spec = importlib.util.find_spec("mlx")
     for base in list(spec.submodule_search_locations or []) if spec else []:
-        libmlx = Path(base) / "lib" / "libmlx.dylib"
+        lib_dir = Path(base) / "lib"
+        libjaccl = lib_dir / "libjaccl.dylib"
+        if libjaccl.is_file():
+            ctypes.CDLL(str(libjaccl))
+        libmlx = lib_dir / "libmlx.dylib"
         if libmlx.is_file():
             ctypes.CDLL(str(libmlx))
             break
