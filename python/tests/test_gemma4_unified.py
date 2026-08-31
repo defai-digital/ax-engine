@@ -239,6 +239,44 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
         self.assertEqual(audio_input["frame_count"], 2)
         self.assertEqual(audio_input["feature_count"], 2)
 
+    def test_prepare_audio_request_accepts_matching_sampling_rate_hint_for_wav(self) -> None:
+        # A sampling_rates hint that agrees with the WAV's own declared rate
+        # must not change the result versus supplying no hint at all.
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+
+            request = module.prepare_gemma4_unified_audio_request(
+                model_dir,
+                [7, 200, 8],
+                [tiny_wav_bytes([0, 16384, -16384], 4)],
+                sampling_rates=[4],
+            )
+
+        audio_input = request.multimodal_inputs["gemma4_unified"]["audios"][0]
+        self.assertEqual(audio_input["input_features"], [0.0, 0.5, -0.5, 0.0])
+
+    def test_prepare_audio_request_rejects_sampling_rate_hint_conflicting_with_wav(
+        self,
+    ) -> None:
+        # Regression test: a sampling_rates hint that disagrees with a WAV
+        # file's own declared rate used to silently win, so _resample_waveform
+        # ran with the wrong source rate and corrupted the audio's pitch/speed
+        # with no error. It must now be rejected instead of silently trusted.
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+
+            with self.assertRaisesRegex(ValueError, "conflicts with"):
+                module.prepare_gemma4_unified_audio_request(
+                    model_dir,
+                    [7, 200, 8],
+                    [tiny_wav_bytes([0, 16384, -16384], 4)],
+                    sampling_rates=[8],
+                )
+
     def test_prepare_audio_request_decodes_data_uri_source(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

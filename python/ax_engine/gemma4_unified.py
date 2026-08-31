@@ -478,9 +478,24 @@ def _process_audios(
         raise ValueError("Gemma4 unified audio sampling_rates length must match audio count")
     processed = []
     for idx, audio in enumerate(audios):
-        waveform, sampling_rate = _load_audio_waveform(audio, config.sampling_rate)
-        if sampling_rates is not None:
-            sampling_rate = int(sampling_rates[idx])
+        waveform, detected_rate = _load_audio_waveform(audio)
+        hint = int(sampling_rates[idx]) if sampling_rates is not None else None
+        if detected_rate is None:
+            # Raw sample array: the source carries no rate of its own, so
+            # the caller's hint (or the config default) is authoritative.
+            sampling_rate = config.sampling_rate if hint is None else hint
+        elif hint is not None and hint != detected_rate:
+            # The source (WAV bytes/file/URL/tuple) already declares its
+            # own real rate; silently overriding it with a caller-supplied
+            # hint that disagrees would resample from the wrong source
+            # rate, corrupting the audio's pitch/speed with no error.
+            raise ValueError(
+                f"Gemma4 unified audio at index {idx} has a detected sampling_rate "
+                f"{detected_rate}, which conflicts with the supplied "
+                f"sampling_rates[{idx}]={hint}"
+            )
+        else:
+            sampling_rate = detected_rate
         if sampling_rate != config.sampling_rate:
             waveform = _resample_waveform(waveform, sampling_rate, config.sampling_rate)
             sampling_rate = config.sampling_rate
@@ -575,7 +590,11 @@ def _load_pil_image(image: Any):
         return opened.copy()
 
 
-def _load_audio_waveform(audio: Any, default_sampling_rate: int) -> tuple[list[float], int]:
+def _load_audio_waveform(audio: Any) -> tuple[list[float], int | None]:
+    """Return (waveform, sampling_rate). `sampling_rate` is None only when
+    the source carries no rate of its own (a raw sample array) and the
+    caller must supply one; every other source declares its own real rate.
+    """
     if isinstance(audio, dict):
         audio = _audio_source_from_dict(audio)
     if isinstance(audio, tuple) and len(audio) == 2:
@@ -593,7 +612,7 @@ def _load_audio_waveform(audio: Any, default_sampling_rate: int) -> tuple[list[f
     if isinstance(audio, (Path, str)):
         with Path(audio).open("rb") as handle:
             return _load_wav(handle)
-    return _flatten_audio_values(audio), default_sampling_rate
+    return _flatten_audio_values(audio), None
 
 
 def _load_wav(handle: Any) -> tuple[list[float], int]:
