@@ -84,6 +84,20 @@ class EmbeddingInferTests(unittest.TestCase):
         )
         self.assertEqual(default_batch_threshold("Qwen3-Embedding-0.6B-8bit"), 0.999)
 
+    def test_default_batch_threshold_ignores_8b_inside_snapshot_hash(self) -> None:
+        # Regression test: a plain substring check for "8b" matched
+        # incidentally inside a HuggingFace-cache snapshot hash embedded in
+        # artifacts_hint (both hex digits), silently loosening the gate for
+        # an unrelated 0.6B model. Mirrors the fix already applied to
+        # scripts/verify_embedding_models.py.
+        self.assertEqual(
+            default_batch_threshold(
+                "Qwen3-Embedding-0.6B-4bit",
+                artifacts_hint="/models/.../snapshots/a8b3f9e2c1",
+            ),
+            0.999,
+        )
+
     def test_resolve_eos_prefers_im_end_over_legacy_s(self) -> None:
         """Regression: Qwen configs use <|im_end|>; </s> must not win first."""
 

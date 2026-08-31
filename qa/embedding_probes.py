@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import time
 import urllib.error
 import urllib.request
@@ -309,9 +310,19 @@ def infer_model_kind(model_id: str, artifacts_hint: str = "") -> str:
 
 
 def default_batch_threshold(model_id: str, artifacts_hint: str = "") -> float:
-    """Match verify_embedding_models: large Qwen 4-bit/DWQ needs a looser gate."""
+    """Match verify_embedding_models: large Qwen 4-bit/DWQ needs a looser gate.
+
+    Word-bounded, not a plain substring check: "8b" is two valid hex
+    digits, so a raw `"8b" in blob` can match incidentally inside a
+    HuggingFace-cache snapshot hash embedded in artifacts_hint, silently
+    loosening the tolerance for an unrelated model size.
+    """
     blob = f"{model_id} {artifacts_hint}".lower()
-    if "8b" in blob and ("4bit" in blob or "dwq" in blob):
+    has_8b = re.search(r"\b8b\b", blob) is not None
+    has_quant_tag = (
+        re.search(r"\b4bit\b", blob) is not None or re.search(r"\bdwq\b", blob) is not None
+    )
+    if has_8b and has_quant_tag:
         return 0.996
     return 0.999
 
