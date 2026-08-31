@@ -54,6 +54,10 @@ def extract_row_metrics(row: dict[str, Any]) -> dict[int, dict[str, float]] | No
         if cell.get("engine") != "llama_cpp_metal":
             continue
         pt = int(cell["prompt_tokens"])
+        if pt in out:
+            raise RuntimeError(
+                f"duplicate llama_cpp_metal result for prompt_tokens={pt}"
+            )
         prefill = cell["prefill_tok_s"].get("median")
         decode = cell["decode_tok_s"].get("median")
         ttft_raw = cell.get("ttft_ms")

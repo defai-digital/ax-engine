@@ -127,6 +127,26 @@ class UpdateReadmeLlamaCppTests(unittest.TestCase):
         self.assertEqual(once, twice)
         self.assertEqual(once.count(upd.SECTION_HEADER), 1)
 
+    def test_duplicate_prompt_tokens_fails_closed(self) -> None:
+        # Regression test: two llama_cpp_metal cells sharing the same
+        # prompt_tokens used to be silently collapsed (the second
+        # overwrote the first in the {prompt_tokens: metrics} dict), so a
+        # rerun whose raw sweep output wasn't deduplicated upstream would
+        # publish an arbitrary one of the two measurements with no trace
+        # of the other.
+        row = _ok_row("gemma-4-e2b-it-4bit", "Gemma 4 E2B", "4-bit")
+        row["result_doc"]["results"].append(
+            {
+                "engine": "llama_cpp_metal",
+                "prompt_tokens": 128,
+                "prefill_tok_s": {"median": 9999.0},
+                "decode_tok_s": {"median": 9999.0},
+                "ttft_ms": {"median": 9999.0},
+            }
+        )
+        with self.assertRaisesRegex(RuntimeError, "duplicate llama_cpp_metal result"):
+            upd.extract_row_metrics(row)
+
     def test_splice_section_refuses_without_anchor(self) -> None:
         readme = "# Title\n\nno embedding section here\n"
         doc = _make_sweep_doc([_ok_row("gemma-4-e2b-it-4bit", "Gemma 4 E2B", "4-bit")])
