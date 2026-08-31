@@ -198,6 +198,7 @@ def _chat_request(
             "max_tokens": max_tokens,
             "temperature": SAMPLING["temperature"],
             "top_p": SAMPLING["top_p"],
+            "top_k": SAMPLING["top_k"],
             "stream": False,
         }
     ).encode()
