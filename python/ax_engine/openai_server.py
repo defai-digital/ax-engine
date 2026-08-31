@@ -18,6 +18,34 @@ class OpenAiShimError(ValueError):
     pass
 
 
+def _escape_qwen_chatml_content(content: str) -> str:
+    """Escape literal ChatML turn-boundary tokens inside message content.
+
+    Mirrors ``escape_qwen_chatml_content`` in the server's chat.rs (and
+    ``ax_engine._escape_qwen_chatml_content``): a message whose content
+    happens to contain ``<|im_start|>``/``<|im_end|>`` (pasted ChatML docs,
+    or a deliberate attempt) must not be read by the model as a real role
+    switch.
+    """
+    return content.replace("<|im_start|>", "&lt;|im_start|>").replace(
+        "<|im_end|>", "&lt;|im_end|>"
+    )
+
+
+def _escape_llama3_content(content: str) -> str:
+    """Escape literal Llama 3.x header/turn-boundary tokens inside content.
+
+    Mirrors ``escape_llama3_content`` in the server's chat.rs (and
+    ``ax_engine._escape_llama3_content``), for the same reason as
+    ``_escape_qwen_chatml_content``.
+    """
+    return (
+        content.replace("<|start_header_id|>", "&lt;|start_header_id|>")
+        .replace("<|end_header_id|>", "&lt;|end_header_id|>")
+        .replace("<|eot_id|>", "&lt;|eot_id|>")
+    )
+
+
 def render_chat_prompt(
     messages: list[dict[str, Any]],
     model_id: str,
@@ -76,19 +104,21 @@ def render_chat_prompt(
     qwen_tool_response_open = False
     for role, content in rendered_messages:
         if template == "qwen_chatml":
+            escaped = _escape_qwen_chatml_content(content)
             if role in {"tool", "function"}:
                 if not qwen_tool_response_open:
                     prompt_parts.append("<|im_start|>user\n")
                     qwen_tool_response_open = True
-                prompt_parts.append(f"<tool_response>\n{content}\n</tool_response>\n")
+                prompt_parts.append(f"<tool_response>\n{escaped}\n</tool_response>\n")
             else:
                 if qwen_tool_response_open:
                     prompt_parts.append("<|im_end|>\n")
                     qwen_tool_response_open = False
-                prompt_parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
+                prompt_parts.append(f"<|im_start|>{role}\n{escaped}<|im_end|>\n")
         elif template == "llama3":
             prompt_parts.append(
-                f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
+                f"<|start_header_id|>{role}<|end_header_id|>\n\n"
+                f"{_escape_llama3_content(content)}<|eot_id|>"
             )
         else:
             safe_content = content.replace("\\", "\\\\").replace("\n", "\\n")

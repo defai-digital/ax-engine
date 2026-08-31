@@ -1297,10 +1297,13 @@ def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]], model_id: 
         role = _normalize_chat_role(normalized.role)
         content = normalized.content
         if template == "qwen_chatml":
-            prompt_parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
+            prompt_parts.append(
+                f"<|im_start|>{role}\n{_escape_qwen_chatml_content(content)}<|im_end|>\n"
+            )
         elif template == "llama3":
             prompt_parts.append(
-                f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
+                f"<|start_header_id|>{role}<|end_header_id|>\n\n"
+                f"{_escape_llama3_content(content)}<|eot_id|>"
             )
         else:
             safe_content = content.replace("\\", "\\\\").replace("\n", "\\n")
@@ -1313,6 +1316,32 @@ def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]], model_id: 
     else:
         prompt_parts.append("assistant:")
     return "".join(prompt_parts)
+
+
+def _escape_qwen_chatml_content(content: str) -> str:
+    """Escape literal ChatML turn-boundary tokens inside message content.
+
+    Mirrors ``escape_qwen_chatml_content`` in the server's chat.rs: a message
+    whose content happens to contain ``<|im_start|>``/``<|im_end|>`` (pasted
+    ChatML docs, or a deliberate attempt) must not be read by the model as a
+    real role switch.
+    """
+    return content.replace("<|im_start|>", "&lt;|im_start|>").replace(
+        "<|im_end|>", "&lt;|im_end|>"
+    )
+
+
+def _escape_llama3_content(content: str) -> str:
+    """Escape literal Llama 3.x header/turn-boundary tokens inside content.
+
+    Mirrors ``escape_llama3_content`` in the server's chat.rs, for the same
+    reason as ``_escape_qwen_chatml_content``.
+    """
+    return (
+        content.replace("<|start_header_id|>", "&lt;|start_header_id|>")
+        .replace("<|end_header_id|>", "&lt;|end_header_id|>")
+        .replace("<|eot_id|>", "&lt;|eot_id|>")
+    )
 
 
 def _chat_prompt_template(model_id: str) -> str:
