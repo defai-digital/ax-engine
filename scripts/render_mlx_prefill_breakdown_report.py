@@ -209,7 +209,9 @@ def sort_rows(rows: list[PrefillBreakdownRow]) -> list[PrefillBreakdownRow]:
         rows,
         key=lambda row: (
             row.ax_to_llama_cpp is None,
-            row.ax_to_llama_cpp if row.ax_to_llama_cpp is not None else row.ax_to_mlx_lm or 999.0,
+            row.ax_to_llama_cpp
+            if row.ax_to_llama_cpp is not None
+            else (row.ax_to_mlx_lm if row.ax_to_mlx_lm is not None else 999.0),
             row.model,
             row.prompt_tokens,
         ),

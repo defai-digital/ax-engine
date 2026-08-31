@@ -160,5 +160,43 @@ class PrefillBreakdownReportTests(unittest.TestCase):
                 reporter.build_rows(artifact)
 
 
+    def _row(self, *, model: str, ax_prefill_tok_s: float, mlx_lm_prefill_tok_s: float | None) -> "reporter.PrefillBreakdownRow":
+        return reporter.PrefillBreakdownRow(
+            model=model,
+            artifact=Path("artifact.json"),
+            prompt_tokens=128,
+            ax_prefill_tok_s=ax_prefill_tok_s,
+            mlx_lm_prefill_tok_s=mlx_lm_prefill_tok_s,
+            mlx_swift_lm_prefill_tok_s=None,
+            llama_cpp_prefill_tok_s=None,
+            prefill_wall_ms=1.0,
+            forward_ms=1.0,
+            prefix_cache_ms=0.0,
+            generation_state_ms=0.0,
+            other_ms=0.0,
+            forward_share=1.0,
+            eval_barriers=0,
+            drain_async_evals=0,
+        )
+
+    def test_sort_rows_does_not_hide_a_genuine_zero_ratio(self) -> None:
+        # Regression test: with no llama_cpp comparison available, sort_rows
+        # fell back to `row.ax_to_mlx_lm or 999.0`. A genuine 0.0
+        # ax_to_mlx_lm ratio (AX prefill measured 0 tok/s against a valid
+        # mlx_lm baseline — a catastrophic result) is falsy, so it was
+        # sorted as if no comparison data existed (999.0) instead of as the
+        # worst possible ratio.
+        worst_but_hidden = self._row(
+            model="broken", ax_prefill_tok_s=0.0, mlx_lm_prefill_tok_s=500.0
+        )
+        middling = self._row(
+            model="middling", ax_prefill_tok_s=400.0, mlx_lm_prefill_tok_s=500.0
+        )
+
+        sorted_rows = reporter.sort_rows([middling, worst_but_hidden])
+
+        self.assertEqual(sorted_rows[0].model, "broken")
+
+
 if __name__ == "__main__":
     unittest.main()
