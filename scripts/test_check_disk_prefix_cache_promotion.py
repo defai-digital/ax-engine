@@ -91,6 +91,25 @@ class CheckDiskPrefixCachePromotionTest(unittest.TestCase):
             checker.check_disk_prefix_cache_promotion(path)
         self.assertEqual(ctx.exception.exit_code, 4)
 
+    def test_unrecognized_bucket_label_fails_closed(self) -> None:
+        # Regression test: an unrecognized/mistyped prefix_bucket label used
+        # to be silently skipped (continue) instead of rejected, exempting
+        # the row from both the loss check and the 25%-gain check. Here the
+        # row is a clear regression (l2 hit slower than cold prefill) but
+        # must still be caught because the label itself is invalid.
+        art = base_artifact()
+        art["performance_gates"]["admitted_bucket_improvements"] = [
+            {
+                "prefix_bucket": "16k",
+                "cold_prefill_p95_ttft_ms": 100.0,
+                "l2_hit_p95_ttft_ms": 150.0,
+            }
+        ]
+        path = self.write("bad_bucket.json", art)
+        with self.assertRaises(checker.DiskPrefixCachePromotionError) as ctx:
+            checker.check_disk_prefix_cache_promotion(path)
+        self.assertEqual(ctx.exception.exit_code, 4)
+
     def test_wrong_schema_fails(self) -> None:
         path = self.write("bad.json", base_artifact(schema="wrong"))
         with self.assertRaises(checker.DiskPrefixCachePromotionError):

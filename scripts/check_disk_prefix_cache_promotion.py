@@ -140,7 +140,10 @@ def check_performance_gates(artifact: dict[str, Any], *, path: Path) -> None:
             raise DiskPrefixCachePromotionError(f"{path}: improvement row must be object")
         bucket = str(row.get("prefix_bucket", ""))
         if bucket not in ("8k", "8k_32k", "32k", "gte_32k") and bucket not in PREFIX_BUCKETS:
-            continue
+            raise DiskPrefixCachePromotionError(
+                f"{path}: admitted bucket has unrecognized prefix_bucket {bucket!r}",
+                exit_code=4,
+            )
         cold = row.get("cold_prefill_p95_ttft_ms")
         warm = row.get("l2_hit_p95_ttft_ms")
         if cold is None or warm is None:
