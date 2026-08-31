@@ -92,7 +92,15 @@ def generate_summary_html(reports: list[dict]) -> str:
         mtp_link, mtp_detail = cell_link(mtp)
 
         if direct and ngram:
-            parity = "Identical" if direct["passed"] == ngram["passed"] else "Differs"
+            # parse_report_info only has aggregate passed/failed counts
+            # scraped from each report's HTML, not per-prompt-id results, so
+            # a matching count does not prove the two runs failed the same
+            # prompts. Label honestly rather than claiming "Identical".
+            parity = (
+                "Same pass count"
+                if direct["passed"] == ngram["passed"]
+                else "Different pass count"
+            )
         else:
             parity = "-"
 
