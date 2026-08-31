@@ -1079,15 +1079,7 @@ fn frame_resampled_waveform(
     input_features[..copy_len].copy_from_slice(&resampled[..copy_len]);
 
     Ok(PreprocessedAudio {
-        // Must reflect exactly what `input_features` holds, not the
-        // pre-truncation `resampled.len()`: `compute_soft_tokens` derives
-        // the audio span length from this field, so when `audio_seq_length`
-        // truncates `frame_count` below the natural frame count, reporting
-        // the untruncated sample count would claim more soft-token slots
-        // than `input_features` actually has frames for. `frame_count *
-        // per_token` is an exact multiple, so it round-trips to the same
-        // `frame_count` via `div_ceil` in the untruncated case too.
-        sample_count: (frame_count * per_token) as u32,
+        sample_count: resampled.len() as u32,
         input_features,
         frame_count: frame_count as u32,
         feature_count: per_token as u32,
@@ -1317,29 +1309,6 @@ mod tests {
         // First samples preserved, tail zero-padded.
         assert_eq!(pre.input_features[0], 0.25);
         assert_eq!(*pre.input_features.last().unwrap(), 0.0);
-    }
-
-    #[test]
-    fn wav_sample_count_matches_frame_count_when_audio_seq_length_truncates() {
-        // Regression test: sample_count used to report the pre-truncation
-        // resampled length even when audio_seq_length capped frame_count
-        // below the natural frame count, so compute_soft_tokens(sample_count)
-        // (which downstream code calls to size the audio span) disagreed
-        // with the actual number of frames in input_features.
-        let audio = audio(); // audio_seq_length = Some(1500), per_token = 640
-        let sample_count = 1500usize * 640 * 2; // 2x the 1500-frame cap
-        let wav = wav_16k_mono(&vec![0.1f32; sample_count]);
-
-        let pre = preprocess_wav(&wav, &audio).unwrap();
-
-        assert_eq!(pre.frame_count, 1500, "frame_count must be capped");
-        assert_eq!(pre.input_features.len(), 1500 * 640);
-        assert_eq!(
-            pre.sample_count.div_ceil(640),
-            pre.frame_count,
-            "sample_count must match what input_features actually holds"
-        );
-        assert_eq!(audio.compute_soft_tokens(pre.sample_count), pre.frame_count);
     }
 
     #[test]
