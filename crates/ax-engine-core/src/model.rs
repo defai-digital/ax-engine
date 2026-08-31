@@ -2808,6 +2808,28 @@ fn validate_native_model_tensor_shapes(
                 "attn_sink",
             )?;
         }
+        // Muse Glimmer's sigmoid attention output gate projects the
+        // (unnormed-attention-input) hidden state to the same width as Q —
+        // `[num_heads * head_dim, hidden_size]` — and its output is reshaped
+        // to `[.., num_heads, head_dim]` at runtime with a fixed target shape
+        // (`muse_glimmer::layer_forward`). A width mismatch here does not
+        // fail this validator today; it instead panics mid-generation on the
+        // reshape or matmul. Catch it at manifest load like every other
+        // per-layer projection.
+        if let Some(attn_out_gate) = manifest_tensor(
+            manifest,
+            NativeTensorRole::AttentionOutputGate,
+            Some(layer_index),
+        ) {
+            let gate_output_rows = u64::from(manifest.attention_head_count)
+                * configured_attention_head_dim(manifest, layer_index);
+            expect_matrix_shape(
+                attn_out_gate,
+                gate_output_rows,
+                hidden_size,
+                "attn_out_gate",
+            )?;
+        }
         // Attention O shape validation — only for layers that have attention tensors.
         // The output projection maps from attention output dim back to hidden_size.
         // For standard attention: o_proj shape is [hidden_size, num_heads * head_dim].
@@ -5518,6 +5540,90 @@ mod tests {
         manifest
     }
 
+    fn muse_glimmer_manifest() -> NativeModelManifest {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "muse_glimmer".to_string();
+        manifest.rms_norm_eps = Some(1e-6);
+        manifest.post_norm_eps = Some(1e-8);
+        manifest.attention_scale_multiplier = Some(1.0);
+        manifest.final_logits_scale = Some(1.0);
+        manifest.final_logit_softcapping = Some(30.0);
+        manifest.rope_theta = Some(500_000);
+        manifest.rope_theta_swa = Some(500_000);
+        manifest.sliding_window_size = Some(2048);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ];
+        manifest.tensors.retain(|tensor| {
+            !matches!(
+                tensor.role,
+                NativeTensorRole::AttentionQkvPacked | NativeTensorRole::FfnGateUpPacked
+            )
+        });
+        // Base fixture names FfnNorm `post_attention_layernorm.weight`; free
+        // that name for the new AttentionPostNorm tensor below.
+        for tensor in &mut manifest.tensors {
+            if tensor.role == NativeTensorRole::FfnNorm {
+                let layer = tensor.layer_index.expect("fixture layer tensor");
+                tensor.name = format!("model.layers.{layer}.pre_feedforward_layernorm.weight");
+            }
+        }
+        for layer_index in [0u32, 1u32] {
+            manifest.tensors.extend([
+                tensor(
+                    &format!("model.layers.{layer_index}.self_attn.q_proj.weight"),
+                    NativeTensorRole::AttentionQ,
+                    Some(layer_index),
+                    vec![2048, 2048],
+                ),
+                tensor(
+                    &format!("model.layers.{layer_index}.self_attn.k_proj.weight"),
+                    NativeTensorRole::AttentionK,
+                    Some(layer_index),
+                    vec![1024, 2048],
+                ),
+                tensor(
+                    &format!("model.layers.{layer_index}.self_attn.v_proj.weight"),
+                    NativeTensorRole::AttentionV,
+                    Some(layer_index),
+                    vec![1024, 2048],
+                ),
+                tensor(
+                    &format!("model.layers.{layer_index}.self_attn.gate_proj.weight"),
+                    NativeTensorRole::AttentionOutputGate,
+                    Some(layer_index),
+                    vec![2048, 2048],
+                ),
+                tensor(
+                    &format!("model.layers.{layer_index}.post_attention_layernorm.weight"),
+                    NativeTensorRole::AttentionPostNorm,
+                    Some(layer_index),
+                    vec![2048],
+                ),
+                tensor(
+                    &format!("model.layers.{layer_index}.post_feedforward_layernorm.weight"),
+                    NativeTensorRole::FfnPostNorm,
+                    Some(layer_index),
+                    vec![2048],
+                ),
+                tensor(
+                    &format!("model.layers.{layer_index}.mlp.gate_proj.weight"),
+                    NativeTensorRole::FfnGate,
+                    Some(layer_index),
+                    vec![4096, 2048],
+                ),
+                tensor(
+                    &format!("model.layers.{layer_index}.mlp.up_proj.weight"),
+                    NativeTensorRole::FfnUp,
+                    Some(layer_index),
+                    vec![4096, 2048],
+                ),
+            ]);
+        }
+        manifest
+    }
+
     fn packed_linear_attention_manifest() -> NativeModelManifest {
         let mut manifest = packed_layer_manifest();
         manifest.model_family = "qwen3_5".to_string();
@@ -6322,6 +6428,41 @@ mod tests {
                 .moe_config()
                 .and_then(|config| config.expert_count),
             Some(128)
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_load_valid_muse_glimmer_manifest() {
+        let manifest = muse_glimmer_manifest();
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir).expect("muse_glimmer manifest should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_bad_muse_glimmer_attn_out_gate_shape() {
+        let mut manifest = muse_glimmer_manifest();
+        for t in &mut manifest.tensors {
+            if t.role == NativeTensorRole::AttentionOutputGate && t.layer_index == Some(0) {
+                // Should be [2048, 2048] (num_heads * head_dim, hidden_size);
+                // corrupt the output width so it no longer matches Q's width.
+                t.shape = vec![1024, 2048];
+            }
+        }
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("mismatched attn_out_gate shape must be rejected at manifest load");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("attn_out_gate"),
+            "unexpected error: {message}"
         );
 
         let _ = fs::remove_dir_all(dir);
