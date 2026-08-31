@@ -112,9 +112,9 @@ def main():
             lm_p  = get_prefill_median(lm)
             ax_p  = get_prefill_median(ax)  if ax  else None
 
-            lm_s  = fmt(lm_p)  if lm_p  else "—"
-            ax_s  = f"{fmt(ax_p)} ({pct(ax_p, lm_p)})"  if ax_p  and lm_p else "—"
-            if ax_p and lm_p and ax_p > lm_p:
+            lm_s  = fmt(lm_p)  if lm_p is not None  else "—"
+            ax_s  = f"{fmt(ax_p)} ({pct(ax_p, lm_p)})"  if ax_p is not None  and lm_p is not None else "—"
+            if ax_p is not None and lm_p is not None and ax_p > lm_p:
                 ax_s = f"**{ax_s}**"
 
             if first:
@@ -147,10 +147,10 @@ def main():
             lm_d   = get_decode_median(lm)
             ax_d   = get_decode_median(ax)    if ax    else None
 
-            lm_s   = fmt(lm_d)  if lm_d  else "—"
-            ax_s   = f"{fmt(ax_d)} ({pct(ax_d, lm_d)})"    if ax_d   and lm_d else "—"
+            lm_s   = fmt(lm_d)  if lm_d is not None  else "—"
+            ax_s   = f"{fmt(ax_d)} ({pct(ax_d, lm_d)})"    if ax_d is not None   and lm_d is not None else "—"
 
-            if ax_d and lm_d:
+            if ax_d is not None and lm_d is not None:
                 ax_s = bold_if_better(ax_s, ax_d > lm_d)
 
             if first:
@@ -182,11 +182,11 @@ def main():
             lm_p  = get_prefill_median(lm)
             ax_t  = get_ttft(ax) if ax else None
 
-            lm_ttft  = (pt / lm_p * 1000)  if lm_p  else None
+            lm_ttft  = (pt / lm_p * 1000)  if lm_p is not None and lm_p != 0  else None
 
-            lm_s  = fmt(lm_ttft, 1)  if lm_ttft  else "—"
-            ax_s  = f"{fmt(ax_t, 1)} ({pct(ax_t, lm_ttft)})"         if ax_t     and lm_ttft else "—"
-            if ax_t and lm_ttft and ax_t < lm_ttft:
+            lm_s  = fmt(lm_ttft, 1)  if lm_ttft is not None  else "—"
+            ax_s  = f"{fmt(ax_t, 1)} ({pct(ax_t, lm_ttft)})"         if ax_t is not None     and lm_ttft is not None else "—"
+            if ax_t is not None and lm_ttft is not None and ax_t < lm_ttft:
                 ax_s = f"**{ax_s}**"
 
             if first:

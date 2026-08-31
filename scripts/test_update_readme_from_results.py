@@ -88,6 +88,61 @@ class UpdateReadmeFromResultsTests(unittest.TestCase):
         self.assertIn("|        |        | 512 | 100.0 | 80.0 (-20.0%) |", prefill_table)
         self.assertNotIn("**80.0 (-20.0%)**", prefill_table)
 
+    def test_zero_median_is_not_rendered_as_missing(self) -> None:
+        # Regression test: a genuine 0.0 median (e.g. a completely stalled
+        # decode) used to be treated as falsy, indistinguishable from
+        # missing data ("—"), silently hiding a real, alarming result.
+        with tempfile.TemporaryDirectory() as tmp:
+            results_dir = Path(tmp)
+            (results_dir / "gemma-4-e2b-it-4bit.json").write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "engine": "mlx_lm",
+                                "prompt_tokens": 128,
+                                "prefill_tok_s": metric(100.0),
+                                "decode_tok_s": metric(10.0),
+                            },
+                            {
+                                "engine": "ax_engine_mlx",
+                                "prompt_tokens": 128,
+                                "prefill_tok_s": metric(0.0),
+                                "decode_tok_s": metric(0.0),
+                                "ttft_ms": metric(0.0),
+                            },
+                        ]
+                    }
+                )
+                + "\n"
+            )
+
+            stdout = io.StringIO()
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "update_readme_from_results.py",
+                        "--results-dir",
+                        str(results_dir),
+                    ],
+                ),
+                contextlib.redirect_stdout(stdout),
+            ):
+                updater.main()
+
+        output = stdout.getvalue()
+        prefill_table = output.split("DECODE TABLE", maxsplit=1)[0]
+        decode_table = output.split("DECODE TABLE", maxsplit=1)[1].split("TTFT TABLE", maxsplit=1)[0]
+        ttft_table = output.split("TTFT TABLE", maxsplit=1)[1]
+
+        self.assertIn("0.0 (-100.0%)", prefill_table)
+        self.assertNotIn("| 128 | 100.0 | — |", prefill_table)
+        self.assertIn("0.0 (-100.0%)", decode_table)
+        self.assertNotIn("| 128 | 10.0 | — |", decode_table)
+        self.assertIn("0.0 (-100.0%)", ttft_table)
+
     def test_extract_rows_rejects_duplicate_engine_prompt_rows(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "duplicate benchmark row"):
             updater.extract_rows(
