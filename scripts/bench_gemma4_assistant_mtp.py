@@ -894,18 +894,27 @@ def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 continue
             if direct is not None:
                 result = compare_suite_decodes(entry["suites"], direct["suites"])
-                parity = (entry["affine_max_bits"], entry["affine_8bit_count"]) == (
-                    direct["affine_max_bits"],
-                    direct["affine_8bit_count"],
+                parity_fields = (
+                    "affine_max_bits",
+                    "affine_8bit_count",
+                    "affine_4bit_count",
+                    "affine_tensor_count",
+                )
+                parity = tuple(entry[key] for key in parity_fields) == tuple(
+                    direct[key] for key in parity_fields
                 )
                 if not parity:
                     parity_ok = False
                     warnings.append(
                         f"{model}/{profile_key}: artifact parity mismatch vs direct "
                         f"(direct max_bits={direct['affine_max_bits']} "
-                        f"8bit={direct['affine_8bit_count']}, profile "
+                        f"8bit={direct['affine_8bit_count']} "
+                        f"4bit={direct['affine_4bit_count']} "
+                        f"tensors={direct['affine_tensor_count']}, profile "
                         f"max_bits={entry['affine_max_bits']} "
-                        f"8bit={entry['affine_8bit_count']}); same-artifact survival "
+                        f"8bit={entry['affine_8bit_count']} "
+                        f"4bit={entry['affine_4bit_count']} "
+                        f"tensors={entry['affine_tensor_count']}); same-artifact survival "
                         "verdict is not valid (PRD R2)."
                     )
                 if not entry["drafted"]:
@@ -928,6 +937,8 @@ def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
                         "drafted": entry["drafted"],
                         "affine_max_bits": entry["affine_max_bits"],
                         "affine_8bit_count": entry["affine_8bit_count"],
+                        "affine_4bit_count": entry["affine_4bit_count"],
+                        "affine_tensor_count": entry["affine_tensor_count"],
                         "classification": classify_vs_direct(
                             result["delta"],
                             result["worst_suite_delta"],

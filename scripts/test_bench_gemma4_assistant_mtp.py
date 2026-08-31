@@ -485,6 +485,40 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(direct_cmp["classification"], "retest")
         self.assertTrue(any("parity mismatch" in w for w in result["warnings"]))
 
+    def test_build_comparisons_parity_mismatch_on_4bit_count_marks_retest(self) -> None:
+        # Regression test: the parity check compared only affine_max_bits and
+        # affine_8bit_count, ignoring affine_4bit_count/affine_tensor_count
+        # even though _index_rows_by_profile tracks all four specifically to
+        # "gate the same-artifact parity check (PRD R2)". Two artifacts can
+        # share max_bits/8bit_count while differing in their 4-bit tensor mix
+        # or total tensor count (a different quantization package), and the
+        # old check would wrongly report parity_ok.
+        rows = []
+        for suite in ("flappy", "long_code"):
+            row = self._row(
+                profile="direct", mode="direct", suite=suite, decode=68.0, max_bits=4, eightbit=0, drafted=0
+            )
+            row["affine_4bit_count"] = 332
+            row["affine_tensor_count"] = 332
+            rows.append(row)
+            mtp_row = self._row(
+                profile="assistant_mtp_default",
+                mode="mtp",
+                suite=suite,
+                decode=80.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=500,
+            )
+            mtp_row["affine_4bit_count"] = 200
+            mtp_row["affine_tensor_count"] = 332
+            rows.append(mtp_row)
+        result = bench.build_comparisons(rows)
+        self.assertFalse(result["parity_ok"])
+        direct_cmp = next(c for c in result["comparisons"] if c["baseline"] == "direct")
+        self.assertEqual(direct_cmp["classification"], "retest")
+        self.assertTrue(any("parity mismatch" in w for w in result["warnings"]))
+
     def test_build_comparisons_keep_default_on_parity(self) -> None:
         rows = []
         for suite in ("flappy", "long_code"):
