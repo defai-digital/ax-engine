@@ -483,13 +483,15 @@ class _AXNgramDrafter:
         context for the next step.
         """
         draft: list[int] = []
-        # Working buffer: last AX_NGRAM_TAIL_SIZE tokens + pending_token
-        buf = list(self._tail)
+        # Working buffer: last AX_NGRAM_TAIL_SIZE tokens + pending_token.
+        # The caller (run_speculative) calls predict_next(curr) BEFORE
+        # feed(curr) -- self._tail does not yet contain pending_token, so it
+        # must be appended here or every lookup uses context stale by one
+        # token (mirrors _LightningDrafter/_RapidMLXSuffixDrafter, both of
+        # which append pending_token into their own query context).
+        buf = [*self._tail, int(pending_token)]
         if len(buf) < 2:
             return []
-        # The pending_token is the last committed token; it's already in the
-        # tail from the caller's feed(curr) before predict_next(curr).
-        # We use the current tail state directly.
 
         for _ in range(self.max_len):
             n = len(buf)

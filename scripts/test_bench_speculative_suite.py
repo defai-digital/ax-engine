@@ -51,6 +51,13 @@ class SpeculativeSuiteTests(unittest.TestCase):
         self.assertIsNone(bench._median_valid_tps([{"tps": None}]))
 
     def test_drafters_use_pending_token_without_double_feeding_current(self) -> None:
+        # run_speculative always calls predict_next(curr) BEFORE feed(curr),
+        # so every drafter must fold pending_token into its own lookup
+        # context itself -- it is never already present in what feed() has
+        # recorded. Covers all three drafters compared in this benchmark;
+        # _AXNgramDrafter previously relied on a (false) comment claiming
+        # the caller had already fed pending_token, so its lookups were
+        # stale by one token on every call.
         history = [1, 2, 3, 4, 1, 2]
 
         lightning = bench._LightningDrafter(ngram_size=3, num_draft_tokens=4)
@@ -64,6 +71,10 @@ class SpeculativeSuiteTests(unittest.TestCase):
         )
         suffix.feed_many(history)
         self.assertEqual(suffix.predict_next(3), [4, 1, 2])
+
+        ax_ngram = bench._AXNgramDrafter()
+        ax_ngram.feed_many(history)
+        self.assertEqual(ax_ngram.predict_next(3), [4, 1, 2, 3])
 
     def test_build_cases_defaults_to_rapid_workloads(self) -> None:
         cases = bench.build_cases(
