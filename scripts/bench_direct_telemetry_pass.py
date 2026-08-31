@@ -146,19 +146,21 @@ def run_telemetry_pass(args: argparse.Namespace) -> dict[str, Any]:
 def extract_telemetry_summary(ax_results: list[dict[str, Any]]) -> dict[str, Any]:
     total_decode_s = 0.0
     total_prefill_s = 0.0
-    count = 0
+    decode_count = 0
+    prefill_count = 0
 
     for r in ax_results:
         decode_s = r.get("decode_s", 0)
         prefill_s = r.get("prefill_s", 0)
         if decode_s > 0:
             total_decode_s += decode_s
-            count += 1
+            decode_count += 1
         if prefill_s > 0:
             total_prefill_s += prefill_s
+            prefill_count += 1
 
-    avg_decode_s = total_decode_s / count if count > 0 else 0
-    avg_prefill_s = total_prefill_s / count if count > 0 else 0
+    avg_decode_s = total_decode_s / decode_count if decode_count > 0 else 0
+    avg_prefill_s = total_prefill_s / prefill_count if prefill_count > 0 else 0
 
     telemetry_keys = set()
     for r in ax_results:

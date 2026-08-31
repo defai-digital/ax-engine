@@ -60,6 +60,23 @@ class BenchDirectTelemetryPassTests(unittest.TestCase):
         self.assertIn("ax_mlx_decode_steps", summary["telemetry_keys"])
         self.assertIn("ax_mlx_prefix_cache_hits", summary["telemetry_keys"])
 
+    def test_extract_telemetry_summary_divides_by_own_valid_row_count(self) -> None:
+        # Regression test: avg_decode_s and avg_prefill_s used to share a
+        # single denominator (the decode>0 row count), so a row with a valid
+        # prefill but a zero/dropped decode measurement (or vice versa)
+        # skewed the averages. Here 2 rows have decode>0 but 3 rows have
+        # prefill>0, so each average must divide by its own valid count.
+        ax_results = [
+            {"engine": "ax_engine_mlx", "decode_s": 1.0, "prefill_s": 1.0},
+            {"engine": "ax_engine_mlx", "decode_s": 1.0, "prefill_s": 0},
+            {"engine": "ax_engine_mlx", "decode_s": 0, "prefill_s": 3.0},
+            {"engine": "ax_engine_mlx", "decode_s": 0, "prefill_s": 5.0},
+        ]
+        summary = mod.extract_telemetry_summary(ax_results)
+
+        self.assertAlmostEqual(summary["avg_decode_s"], 1.0, places=4)
+        self.assertAlmostEqual(summary["avg_prefill_s"], 3.0, places=4)
+
     def test_extract_telemetry_summary_empty(self) -> None:
         summary = mod.extract_telemetry_summary([])
         self.assertEqual(summary["ax_row_count"], 0)
