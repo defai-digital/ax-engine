@@ -246,7 +246,14 @@ def http_sse_events(
     url: str,
     payload: dict[str, Any],
     timeout: float,
+    started: float | None = None,
 ) -> Iterator[tuple[str | None, Any, float]]:
+    """Yield (event_name, data, elapsed_s) with elapsed_s relative to
+    `started` if given -- the caller's client-request-start clock, captured
+    before payload construction, so TTFT genuinely measures from client
+    request start as documented (not from after json.dumps()/Request()
+    overhead). Other scripts share this function without passing `started`;
+    for them elapsed_s keeps its prior meaning, relative to this call."""
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -254,7 +261,8 @@ def http_sse_events(
         headers={"content-type": "application/json"},
         method="POST",
     )
-    started = time.perf_counter()
+    if started is None:
+        started = time.perf_counter()
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             yield "__http_status__", {"status": response.status}, 0.0
@@ -483,7 +491,7 @@ def run_one_request(
     )
     url = f"{base_url.rstrip('/')}/v1/generate/stream"
     try:
-        events = list(stream_func(url, payload, timeout))
+        events = list(stream_func(url, payload, timeout, started))
         completed = time.perf_counter()
         return observe_stream(
             events,

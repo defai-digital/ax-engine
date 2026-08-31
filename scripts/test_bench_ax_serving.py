@@ -10,8 +10,10 @@ import io
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT_PATH = Path(__file__).with_name("bench_ax_serving.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("bench_ax_serving", SCRIPT_PATH)
@@ -33,8 +35,8 @@ def prompt() -> object:
     )
 
 
-def fake_stream(url: str, payload: dict[str, object], timeout: float):
-    del url, timeout
+def fake_stream(url: str, payload: dict[str, object], timeout: float, started: float):
+    del url, timeout, started
     assert payload["input_tokens"] == [1, 2, 3]
     yield "__http_status__", {"status": 200}, 0.0
     yield "request", {"request": {"request_id": 1}}, 0.01
@@ -133,7 +135,7 @@ class AxServingBenchTests(unittest.TestCase):
 
     def test_observe_stream_computes_ttft_tpot_and_intervals(self) -> None:
         observation = bench.observe_stream(
-            fake_stream("http://unused", {"input_tokens": [1, 2, 3]}, 1.0),
+            fake_stream("http://unused", {"input_tokens": [1, 2, 3]}, 1.0, 0.0),
             prompt=prompt(),
             scheduled_at_s=0.0,
             started_at_s=0.0,
@@ -165,6 +167,47 @@ class AxServingBenchTests(unittest.TestCase):
         )
         self.assertFalse(observation["ok"])
         self.assertIn("terminal response", observation["error"])
+
+    def test_run_one_request_ttft_includes_payload_build_time(self) -> None:
+        # Regression test: TTFT/TPOT must be measured from client-request
+        # start (before build_payload()/json.dumps()/Request() overhead), not
+        # from a later clock started only once the request stream begins.
+        # A slow build_payload() must show up in ttft_ms, not get silently
+        # excluded from it (and folded into client_tpot_ms instead).
+        real_build_payload = bench.build_payload
+
+        def slow_build_payload(*args, **kwargs):
+            time.sleep(0.05)
+            return real_build_payload(*args, **kwargs)
+
+        def timed_stream(url, payload, timeout, started):
+            del url, payload, timeout
+            self.assertIsNotNone(started)
+            yield "__http_status__", {"status": 200}, 0.0
+            yield "step", {"delta_tokens": [10]}, time.perf_counter() - started
+            yield "response", {
+                "response": {"output_token_count": 1},
+            }, time.perf_counter() - started
+
+        with mock.patch.object(bench, "build_payload", side_effect=slow_build_payload):
+            result = bench.run_one_request(
+                prompt=prompt(),
+                model_id="m",
+                base_url="http://unused",
+                input_kind="tokens",
+                temperature=0.0,
+                top_p=1.0,
+                top_k=0,
+                seed=0,
+                ignore_eos=False,
+                scheduled_offset_s=0.0,
+                benchmark_started=time.perf_counter(),
+                timeout=1.0,
+                stream_func=timed_stream,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertGreaterEqual(result["ttft_ms"], 45.0)
 
     def test_summary_computes_percentiles_and_goodput(self) -> None:
         observations = [
