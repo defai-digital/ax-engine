@@ -832,6 +832,7 @@ def run_native_one(
     timeout_s: int,
 ) -> dict[str, Any]:
     conn, base_path = http_connection(url, timeout=timeout_s)
+    started = time.perf_counter()
     payload = json.dumps(
         {
             "model": model,
@@ -841,7 +842,6 @@ def run_native_one(
             "sampling": {"temperature": 0.0, "ignore_eos": True},
         }
     ).encode("utf-8")
-    started = time.perf_counter()
     first_output_wall_s: float | None = None
     try:
         conn.request(
@@ -918,6 +918,7 @@ def run_chat_one(
     timeout_s: int,
 ) -> dict[str, Any]:
     conn, base_path = http_connection(url, timeout=timeout_s)
+    started = time.perf_counter()
     payload = json.dumps(
         {
             "model": model,
@@ -927,7 +928,6 @@ def run_chat_one(
             "stream": False,
         }
     ).encode("utf-8")
-    started = time.perf_counter()
     try:
         conn.request(
             "POST",
