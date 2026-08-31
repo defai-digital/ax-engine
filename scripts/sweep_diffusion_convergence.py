@@ -266,6 +266,21 @@ def sweep_grid_point(
     }
 
 
+def select_best_config(pt_results: list[dict]) -> dict:
+    """Pick the best convergence-threshold config for one prompt length.
+
+    Ranked by convergence reliability first, step count second: a config
+    with a loose threshold can report a low step count purely from spurious
+    early "convergence", which is the exact failure mode convergence_rate
+    exists to catch. Picking by step count alone would surface the config
+    most prone to premature convergence, not the fastest reliable one.
+    """
+    return min(
+        pt_results,
+        key=lambda r: (-r["convergence_rate"], r["denoise_steps"]["median"]),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -410,7 +425,7 @@ def main() -> None:
     # Print best configurations per prompt length.
     for pt in args.prompt_tokens:
         pt_results = [r for r in results if r["prompt_tokens"] == pt]
-        best = min(pt_results, key=lambda r: r["denoise_steps"]["median"])
+        best = select_best_config(pt_results)
         log(
             f"best for p{pt}: steps={best['denoise_steps']['median']:.0f} "
             f"conv={best['convergence_rate']:.0%} "
