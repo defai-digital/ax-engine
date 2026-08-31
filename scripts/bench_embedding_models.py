@@ -669,6 +669,17 @@ def print_summary(results: dict[str, dict]) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+def required_backend_failed(errors: list[str]) -> bool:
+    """True if a required backend (mlx_lm, ax_engine_py) is among the failures.
+
+    Matches each error's own "{backend}: {message}" label rather than
+    substring-searching the stringified list, so an optional backend whose
+    name or message merely contains a required backend's name (e.g. the
+    optional mlx_lm_batched failing) does not falsely count as required.
+    """
+    return any(err.split(":", 1)[0] in ("mlx_lm", "ax_engine_py") for err in errors)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Benchmark embedding models")
     parser.add_argument("--model-dir", type=Path, required=True,
@@ -834,8 +845,7 @@ def main() -> int:
     out_path.write_text(json.dumps(output, indent=2) + "\n")
     print(f"\nWrote results to {out_path}", file=sys.stderr)
 
-    required_failed = any(k in str(errors) for k in ("mlx_lm", "ax_engine_py"))
-    return 2 if required_failed else 0
+    return 2 if required_backend_failed(errors) else 0
 
 
 if __name__ == "__main__":
