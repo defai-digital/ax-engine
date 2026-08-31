@@ -198,6 +198,26 @@ class EmbeddingPublishGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.PublishGateError, "Homebrew / pip"):
             gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
 
+    def test_homebrew_on_both_sides_rejects_paired_even_with_matching_hash(self) -> None:
+        # Regression test: the "different Homebrew / pip sources" check alone
+        # missed the case where AX and the reference are BOTH linked to the
+        # same Homebrew libmlx (same source_class, same hash) -- ax_sources
+        # == ref_sources there, and the hash-equality check trivially passes
+        # (same file), so the artifact used to sail through with only a
+        # warning despite the ~3x false-delta artifact this exact scenario
+        # historically produced.
+        payload = _paired_fair_artifact()
+        homebrew_entry = {
+            "install_name": "/opt/homebrew/opt/mlx/lib/libmlx.dylib",
+            "source_class": "homebrew",
+            "sha256": "same-homebrew-hash",
+        }
+        payload["runtime_identity"]["ax_engine_native"]["linked_mlx"] = [dict(homebrew_entry)]
+        payload["runtime_identity"]["reference_runtime"]["linked_mlx"] = [dict(homebrew_entry)]
+        path = self._write(payload)
+        with self.assertRaisesRegex(gate.PublishGateError, "Homebrew"):
+            gate.validate_artifact(path, claim=gate.CLAIM_PAIRED)
+
     def test_different_pip_mlx_hashes_reject_paired(self) -> None:
         payload = _paired_fair_artifact()
         payload["runtime_identity"]["reference_runtime"]["linked_mlx"][0]["sha256"] = "different"

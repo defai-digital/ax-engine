@@ -201,10 +201,16 @@ def validate_runtime_identity(
             f"{path}: paired_delta requires linked MLX fingerprints for both AX and the reference",
         )
         ref_sources = set(_linked_sources(identity, "reference_runtime"))
-        if ax_sources != ref_sources and ("homebrew" in ax_sources or "homebrew" in ref_sources):
+        if "homebrew" in ax_sources or "homebrew" in ref_sources:
+            # Reject whenever *either* side is Homebrew-linked, not only when
+            # the two sides' sources differ: two Homebrew-linked libmlx
+            # binaries can share one identical file (same source_class, same
+            # hash), which the "different sources" check alone would miss —
+            # and Homebrew's build historically produced the same ~3x false
+            # paired-delta gap regardless of whether the reference matches.
             raise PublishGateError(
-                f"{path}: AX and reference use different Homebrew / pip "
-                "libmlx sources — reject paired_delta publication"
+                f"{path}: AX and/or reference use Homebrew / pip libmlx "
+                "sources that include Homebrew — reject paired_delta publication"
             )
         ax_hashes = _linked_hashes(identity, "ax_engine_native")
         ref_hashes = _linked_hashes(identity, "reference_runtime")
