@@ -2506,8 +2506,10 @@ def expected_ax_prefill_work_contract(row: dict[str, Any]) -> str:
     """Mirror ``generate.rs::mlx_lm_style_cache_only_prefix_len`` for claim gates.
 
     Greedy (or missing sampler) with ``prompt_tokens > 1`` uses the
-    mlx-lm-style cache-only prefix. Sampling without repetition penalty uses
-    cache-only only when ``prompt_tokens >= 512``.
+    mlx-lm-style cache-only prefix. Sampling that uses a logits processor
+    (repetition penalty or no-repeat-ngram — ``MlxSamplingParams::
+    uses_logits_processors``) always stays historical; otherwise cache-only
+    only when ``prompt_tokens >= 512``.
     """
     sampler = row.get("sampler_settings")
     prompt_tokens = int(row.get("prompt_tokens", -1))
@@ -2518,7 +2520,11 @@ def expected_ax_prefill_work_contract(row: dict[str, Any]) -> str:
     if isinstance(sampler, dict):
         temperature = float(sampler.get("temperature") or 0.0)
         repetition_penalty = float(sampler.get("repetition_penalty") or 1.0)
-        if abs(repetition_penalty - 1.0) > 1e-6:
+        no_repeat_ngram_size = int(sampler.get("no_repeat_ngram_size") or 0)
+        # Mirror `MlxSamplingParams::uses_logits_processors` exactly: it's
+        # repetition-penalty OR no-repeat-ngram, not repetition-penalty alone.
+        # Either one forces the historical (non-cache-only) prefill path.
+        if abs(repetition_penalty - 1.0) > 1e-6 or no_repeat_ngram_size > 0:
             return HISTORICAL_PREFILL_WORK_CONTRACT
         if temperature <= 0.0 or prompt_tokens >= 512:
             return MLX_LM_STYLE_PREFILL_WORK_CONTRACT

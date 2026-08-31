@@ -1146,6 +1146,29 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             row=row,
         )
 
+    def test_phase0_ax_row_accepts_historical_contract_for_no_repeat_ngram(self) -> None:
+        # Regression test: expected_ax_prefill_work_contract must mirror
+        # MlxSamplingParams::uses_logits_processors (repetition_penalty OR
+        # no_repeat_ngram_size), not repetition_penalty alone. A row sampled
+        # with no_repeat_ngram_size > 0, repetition_penalty == 1.0, and a
+        # long enough prompt to otherwise qualify for the cache-only path
+        # must still expect the historical contract.
+        row = {
+            "engine": "ax_engine_mlx",
+            "prompt_tokens": 2048,
+            "sampler_settings": {
+                "temperature": 0.7,
+                "repetition_penalty": 1.0,
+                "no_repeat_ngram_size": 4,
+            },
+            "prefill_work_contract": checker.HISTORICAL_PREFILL_WORK_CONTRACT,
+        }
+
+        checker.validate_ax_prefill_work_contract(
+            artifact_path=Path("artifact.json"),
+            row=row,
+        )
+
     def test_phase0_pure_mtp_row_accepts_mtp_only_contract(self) -> None:
         prompt_hash = checker.token_sha256([1, 2, 3, 4])
         row = {
