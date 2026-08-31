@@ -1,13 +1,14 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
-    MlxVectorArray, add, add_rms_norm_pair, argpartition_axis, argsort_axis, astype, async_eval,
-    compiled_dual_gate_up_qmm, compiled_dual_gate_up_qmm_forced, compiled_gelu_approx_split_mlp,
-    concatenate, contiguous, divide, dual_affine_qmm, dual_affine_qmm_forced, dual_qmm_geglu,
-    dual_qmm_swiglu, dual_stream_affine_qmm, exp, expand_dims, expand_dims_axes, gelu_approx_mul,
-    gelu_approx_mul_quantized_matmul, log1p, maximum, minimum, multiply, negative, power,
-    quantized_matmul_rms_norm, quantized_matmul_with_mode, reshape, rms_norm,
-    rms_norm_quantized_matmul, silu_mul, silu_mul_quantized_matmul, slice, slice_last_dim, softmax,
-    softmax_precise, sum_axis, swiglu_oai, take, take_along_axis, topk_axis, transpose, zeros,
+    MlxVectorArray, add, add_rms_norm_pair, arange, argpartition_axis, argsort_axis, astype,
+    async_eval, compiled_dual_gate_up_qmm, compiled_dual_gate_up_qmm_forced,
+    compiled_gelu_approx_split_mlp, concatenate, contiguous, divide, dual_affine_qmm,
+    dual_affine_qmm_forced, dual_qmm_geglu, dual_qmm_swiglu, dual_stream_affine_qmm, exp,
+    expand_dims, expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, log1p,
+    maximum, minimum, multiply, negative, power, quantized_matmul_rms_norm,
+    quantized_matmul_with_mode, reshape, rms_norm, rms_norm_quantized_matmul, silu_mul,
+    silu_mul_quantized_matmul, slice, slice_last_dim, softmax, softmax_precise, sum_axis,
+    swiglu_oai, take, take_along_axis, topk_axis, transpose, zeros,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -2537,6 +2538,21 @@ const MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE: &str = r#"
 
     out[idx] = static_cast<OutT>(activated);
 "#;
+
+/// Identity unsort order for an already-unsorted `SwitchGatherInputs` gather.
+///
+/// `switch_gather_inputs` only ever produces `inv_order: None` together with
+/// `sorted_indices: false` — nothing was permuted, so the gate/up buffer's
+/// `top_k` rows are already in original expert-selection order. The correct
+/// "unsort" mapping there is the identity `[0, 1, .., top_k)`. Passing the
+/// caller's expert-id array instead (as a `.unwrap_or(top_k_indices)`
+/// fallback previously did) is wrong: `inv_order[k]` must select a row in
+/// `[0, top_k)` of the `top_k`-row gate/up buffer, but expert IDs range over
+/// `moe_expert_count` — far larger than `top_k` on any real MoE model — so
+/// that fallback produced an out-of-bounds Metal buffer read.
+fn identity_moe_unsort_order(top_k: i32) -> MlxArray {
+    arange(0.0, top_k as f64, 1.0, MlxDtype::Uint32, None)
+}
 
 /// Fused activation + squeeze + unsort for MoE decode (seq==1).
 ///
@@ -7284,9 +7300,13 @@ fn try_moe_deep_expert_block_metal(
     );
     let half = cfg.moe_expert_intermediate_size as i32;
     let top_k = top_k_indices.shape().last().copied().unwrap_or(0);
+    let inv_order = gather_inputs
+        .inv_order
+        .clone()
+        .unwrap_or_else(|| identity_moe_unsort_order(top_k));
     let activated = moe_fused_activation_unsort_metal(
         &gate_up,
-        gather_inputs.inv_order.as_ref().unwrap_or(top_k_indices),
+        &inv_order,
         half,
         top_k,
         gate_up.dtype(),
@@ -7465,9 +7485,13 @@ fn moe_experts_forward_impl(
             && fastpath::moe_fused_expert_block_enabled()
         {
             let top_k = top_k_indices.shape().last().copied().unwrap_or(0);
+            let inv_order = gather_inputs
+                .inv_order
+                .clone()
+                .unwrap_or_else(|| identity_moe_unsort_order(top_k));
             moe_fused_activation_unsort_metal(
                 &out,
-                gather_inputs.inv_order.as_ref().unwrap_or(top_k_indices),
+                &inv_order,
                 half,
                 top_k,
                 out.dtype(),
@@ -10859,6 +10883,78 @@ mod tests {
 
         assert_eq!(metal.shape(), vec![top_k, hidden_dim]);
         assert_close(metal.data_f32(), direct.data_f32(), 1.0e-2);
+    }
+
+    #[test]
+    fn identity_moe_unsort_order_is_the_natural_ordering() {
+        let ids: Vec<u32> = (0..5u32).collect();
+        let order = identity_moe_unsort_order(5);
+        assert_eq!(order.dtype(), MlxDtype::Uint32);
+        assert_eq!(order.shape(), vec![5]);
+        eval(&[&order]);
+        assert_eq!(order.data_u32(), ids.as_slice());
+    }
+
+    #[test]
+    fn moe_fused_activation_unsort_metal_with_identity_order_matches_unpermuted_gather() {
+        // Regression test: `switch_gather_inputs` only ever pairs
+        // `sorted_indices: false` with `inv_order: None` (an unsorted
+        // gather leaves the top_k rows in original expert-selection
+        // order). The two call sites in this file used to fall back to
+        // the caller's expert-id array instead of a real identity order
+        // when `inv_order` was `None` — `inv_order[k]` must select a row
+        // in `[0, top_k)` of the top_k-row gate/up buffer, but expert IDs
+        // range far past `top_k` on any real model, so that was an
+        // out-of-bounds Metal buffer read. This proves the fix's
+        // `identity_moe_unsort_order(top_k)` correctly leaves an
+        // already-unpermuted gather's rows in place: activating in place
+        // must equal activating then "unsorting" through the identity.
+        let hidden_dim = 8;
+        let top_k = 3;
+        let gate_data: Vec<f32> = (0..hidden_dim * top_k)
+            .map(|i| ((i as f32) - 12.0) * 0.083)
+            .collect();
+        let up_data: Vec<f32> = (0..hidden_dim * top_k)
+            .map(|i| ((i as f32) + 1.0) * 0.037)
+            .collect();
+        let gate = astype(
+            &array_f32(&gate_data, &[top_k, hidden_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let up = astype(
+            &array_f32(&up_data, &[top_k, hidden_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let packed_unsorted = concatenate(&[&gate, &up], -1, None);
+        let packed = reshape(&packed_unsorted, &[1, 1, top_k, hidden_dim * 2], None);
+
+        // Reference: activate in place, no permutation.
+        let direct = astype(&geglu(&gate, &up), MlxDtype::Float32, None);
+
+        let metal = moe_fused_activation_unsort_metal(
+            &packed,
+            &identity_moe_unsort_order(top_k),
+            hidden_dim,
+            top_k,
+            MlxDtype::Bfloat16,
+            true,
+        )
+        .expect("MoE fused activation+unsort Metal kernel should support the identity order");
+        let metal = astype(
+            &reshape(&metal, &[top_k, hidden_dim], None),
+            MlxDtype::Float32,
+            None,
+        );
+        eval(&[&direct, &metal]);
+
+        assert_eq!(metal.shape(), vec![top_k, hidden_dim]);
+        assert_eq!(
+            metal.data_f32(),
+            direct.data_f32(),
+            "identity unsort order must leave an already-unpermuted gather unchanged"
+        );
     }
 
     #[test]
