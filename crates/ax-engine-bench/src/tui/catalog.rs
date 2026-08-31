@@ -368,22 +368,51 @@ pub(super) fn dir_size(dir: &Path) -> u64 {
 }
 
 pub(super) fn build_families() -> Vec<Family> {
+    build_families_with(|profile| {
+        let installed = repo_is_installed(profile.repo_id);
+        // Require a usable snapshot (config/manifest/safetensors), not merely
+        // an HF wrapper dir left by a cancelled or incomplete download.
+        let size = if installed {
+            dir_size(&repo_cache_dir(profile.repo_id))
+        } else {
+            0
+        };
+        (installed, size)
+    })
+}
+
+/// Catalog shape (grouping/sorting/labels) without touching disk for
+/// installed/size state. Every downloadable profile reports `installed:
+/// false, size: 0` unconditionally.
+///
+/// `build_families()` walks the real HF cache on disk (`repo_is_installed`,
+/// `dir_size`) for every downloadable profile, which is appropriately real
+/// work for production use but is unrelated, environment-dependent I/O for
+/// tests that only assert on catalog shape (grouping, labels, precision,
+/// support tier) — on a developer machine with many real cached model
+/// downloads this made the TUI test suite take tens of seconds to minutes
+/// instead of running near-instantly.
+#[cfg(test)]
+pub(super) fn build_families_uninstalled() -> Vec<Family> {
+    build_families_with(|_profile| (false, 0))
+}
+
+fn build_families_with(
+    installed_state: impl Fn(&'static crate::ModelProfile) -> (bool, u64),
+) -> Vec<Family> {
     let mut families: Vec<Family> = Vec::new();
     for profile in crate::MODEL_PROFILES
         .iter()
         .filter(|profile| profile.is_downloadable())
     {
         let key = family_key(profile.label);
-        let cache = repo_cache_dir(profile.repo_id);
-        // Require a usable snapshot (config/manifest/safetensors), not merely
-        // an HF wrapper dir left by a cancelled or incomplete download.
-        let installed = repo_is_installed(profile.repo_id);
+        let (installed, size) = installed_state(profile);
         let variant = Variant {
             profile,
             bits: quant_bits(profile.repo_id),
             mtp_included: profile.repo_id.to_ascii_lowercase().contains("-mtp"),
             installed,
-            size: if installed { dir_size(&cache) } else { 0 },
+            size,
         };
         match families.iter_mut().find(|f| f.key == key) {
             Some(f) => f.variants.push(variant),

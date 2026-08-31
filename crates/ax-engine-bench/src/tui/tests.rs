@@ -2,7 +2,9 @@
 //! are fine per the workspace lint convention (see [workspace.lints.clippy]).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use super::catalog::{self, RamFit, build_families, family_key, most_recent_subdir, quant_bits};
+use super::catalog::{
+    self, RamFit, build_families_uninstalled, family_key, most_recent_subdir, quant_bits,
+};
 use super::hardware::{HardwareInfo, parse_df_available_kib};
 use super::jobs::{
     DownloadStatus, DownloadTask, Job, format_eta, parse_output_path_from_log, parse_progress_event,
@@ -26,17 +28,12 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 fn new_app() -> App {
-    let mut app = App::with_hardware(HardwareInfo::for_tests());
-    // Hermetic fixture: the developer machine may have real HF-cache
-    // installs of catalog repos (the AutomatosX packs especially). Tests
-    // that need install state set it explicitly.
-    for family in &mut app.families {
-        for variant in &mut family.variants {
-            variant.installed = false;
-            variant.size = 0;
-        }
-    }
-    app
+    // Hermetic fixture: App::with_hardware_for_tests builds the catalog
+    // shape without touching the real HF cache on disk, so this never
+    // depends on (or pays the cost of scanning) whatever models happen to
+    // be installed on the developer machine. Tests that need install state
+    // set it explicitly.
+    App::with_hardware_for_tests(HardwareInfo::for_tests())
 }
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -109,7 +106,7 @@ fn test_task(job: Option<Job>) -> DownloadTask {
 
 #[test]
 fn grouping_collapses_variants_into_families() {
-    let families = build_families();
+    let families = build_families_uninstalled();
     let keys: Vec<&str> = families.iter().map(|f| f.key.as_str()).collect();
     let mut sorted = keys.clone();
     sorted.sort_unstable();
@@ -225,7 +222,7 @@ fn catalog_families_map_to_registry_support_tiers() {
     // Unknown catalog keys pass through and resolve to Compatible.
     assert_eq!(catalog::registry_family_label("mystery-7b"), "mystery-7b");
 
-    let families = build_families();
+    let families = build_families_uninstalled();
     for family in &families {
         let tier = family.support_tier();
         if family.key == "ax-qwen3.6-27b-axq" || family.key == "ax-qwen3-vl-30b-a3b-axq" {
@@ -254,7 +251,7 @@ fn catalog_families_map_to_registry_support_tiers() {
 
 #[test]
 fn automatosx_packs_are_primary_families_with_recipe_precisions() {
-    let families = build_families();
+    let families = build_families_uninstalled();
     for key in [
         "ax-qwen3.5-9b",
         "ax-qwen3.6-27b",
@@ -323,7 +320,7 @@ fn legacy_profiles_stay_serve_aliases_but_leave_the_download_catalog() {
     // Managed downloads are restricted to the AutomatosX org; the older
     // mlx-community-backed profiles disappear from the TUI catalog but keep
     // resolving as serve aliases for already-downloaded artifacts.
-    let families = build_families();
+    let families = build_families_uninstalled();
     for key in [
         "qwen3.5-9b",
         "glm4.7-flash",

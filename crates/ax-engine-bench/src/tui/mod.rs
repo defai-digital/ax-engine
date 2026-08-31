@@ -512,12 +512,27 @@ impl App {
     }
 
     pub fn with_hardware(hardware: HardwareInfo) -> App {
+        Self::with_hardware_and_families(hardware, build_families())
+    }
+
+    /// Like [`Self::with_hardware`], but for tests: builds the catalog
+    /// shape without `build_families()`'s real HF-cache disk scan
+    /// (`repo_is_installed`/`dir_size` per downloadable profile), which is
+    /// environment-dependent I/O unrelated to what TUI tests assert on and
+    /// can take tens of seconds to minutes on a machine with many real
+    /// cached model downloads.
+    #[cfg(test)]
+    pub(super) fn with_hardware_for_tests(hardware: HardwareInfo) -> App {
+        Self::with_hardware_and_families(hardware, catalog::build_families_uninstalled())
+    }
+
+    fn with_hardware_and_families(hardware: HardwareInfo, families: Vec<Family>) -> App {
         let total_ram = hardware.total_ram_bytes;
         App {
             quit: false,
             screen: Screen::Home,
             hardware,
-            families: build_families(),
+            families,
             modal: None,
             toasts: Vec::new(),
             show_help: false,
