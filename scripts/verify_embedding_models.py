@@ -21,6 +21,7 @@ is not invariant for mixed-length batches.
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass
 import json
 import math
@@ -145,8 +146,17 @@ def infer_model_kind(model_dir: Path, requested: str) -> str:
 
 def default_cosine_threshold(model_dir: Path, model_kind: str) -> float:
     if model_kind == "qwen3":
+        # Word-bounded, not a plain substring check: "8b" is two valid hex
+        # digits, so a raw `"8b" in str(model_dir)` can match incidentally
+        # inside a HuggingFace-cache snapshot hash (e.g. ".../a8b3f9e2.../")
+        # for an unrelated model size, silently loosening the tolerance.
         lowered = str(model_dir).lower()
-        if "8b" in lowered and ("4bit" in lowered or "dwq" in lowered):
+        has_8b = re.search(r"\b8b\b", lowered) is not None
+        has_quant_tag = (
+            re.search(r"\b4bit\b", lowered) is not None
+            or re.search(r"\bdwq\b", lowered) is not None
+        )
+        if has_8b and has_quant_tag:
             return QWEN_8B_4BIT_COSINE_THRESHOLD
     return DEFAULT_COSINE_THRESHOLD
 

@@ -51,6 +51,19 @@ class VerifyEmbeddingModelsTests(unittest.TestCase):
             verify.QWEN_8B_4BIT_COSINE_THRESHOLD,
         )
 
+    def test_incidental_8b_inside_snapshot_hash_does_not_trigger_tolerant_threshold(
+        self,
+    ) -> None:
+        # Regression test: a plain substring check for "8b" matched
+        # incidentally inside a HuggingFace-cache snapshot hash (both hex
+        # digits), silently loosening the cosine-similarity gate for an
+        # unrelated 0.6B model whose snapshot hash happens to contain "8b".
+        model_dir = Path("/models/Qwen3-Embedding-0.6B-4bit/snapshots/a8b3f9e2c1")
+        self.assertEqual(
+            verify.default_cosine_threshold(model_dir, "qwen3"),
+            verify.DEFAULT_COSINE_THRESHOLD,
+        )
+
     def test_embeddinggemma_contract_uses_reference_single_oracle(self) -> None:
         contract = verify.build_contract(
             Path("/models/embeddinggemma-300m-8bit"),
