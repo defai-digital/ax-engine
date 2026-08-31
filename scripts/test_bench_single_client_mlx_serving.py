@@ -204,6 +204,33 @@ not_a_number nope
         self.assertEqual(coding_score, 1.0)
         self.assertEqual(coding_checks, {"json-valid:0": 1.0, "json-equals:1": 1.0})
 
+    def test_contains_check_does_not_match_inside_an_unrelated_word(self) -> None:
+        # Regression test: a "contains" check must be a word-boundary match,
+        # not a raw substring search -- expected value "list" must not count
+        # as contained just because the (wrong) response says "checklist"
+        # (same collision shape already found and fixed twice in
+        # qa/checkers.py's invoice_total/exact_answer checks).
+        task = benchmark.QualityTask(
+            task_id="t",
+            profile="general",
+            category="c",
+            prompt="p",
+            max_tokens=8,
+            checks=({"kind": "contains", "value": "list"},),
+        )
+
+        wrong_score, wrong_checks = benchmark.score_quality_task(
+            task, "Please see the checklist for details; the actual answer is dict."
+        )
+        self.assertEqual(wrong_score, 0.0)
+        self.assertEqual(wrong_checks, {"contains:0": 0.0})
+
+        right_score, right_checks = benchmark.score_quality_task(
+            task, "The type created by [1, 2, 3] is: list"
+        )
+        self.assertEqual(right_score, 1.0)
+        self.assertEqual(right_checks, {"contains:0": 1.0})
+
     def test_quality_summary_tracks_passes_and_output_determinism(self) -> None:
         measurements = [
             {

@@ -364,7 +364,12 @@ def score_quality_task(task: QualityTask, output: str) -> tuple[float, dict[str,
         if kind == "exact":
             passed = normalized_text(scored) == normalized_text(str(value))
         elif kind == "contains":
-            passed = normalized_text(str(value)) in normalized_text(scored)
+            # Word-boundary match, not raw substring: an expected word like
+            # "list" must not count as contained just because the response
+            # says "checklist" (same collision shape already found and
+            # fixed in qa/checkers.py's invoice_total/exact_answer checks).
+            pattern = r"(?<!\w)" + re.escape(normalized_text(str(value))) + r"(?!\w)"
+            passed = re.search(pattern, normalized_text(scored)) is not None
         elif kind == "python-syntax":
             try:
                 ast.parse(python_source(output))
