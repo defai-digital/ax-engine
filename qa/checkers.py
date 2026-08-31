@@ -379,7 +379,12 @@ def check_invoice_total(text: str, prompt: QaPrompt) -> CheckResult:
             )
 
     for match in re.finditer(
-        r'["\']?total["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)', text, flags=re.IGNORECASE
+        # Word-boundary guard before "total": without it, "Subtotal: 45.00"
+        # matches at the "total" substring, so a model's correct subtotal
+        # could be mistaken for its (possibly wrong) total.
+        r'(?<!\w)["\']?total["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)',
+        text,
+        flags=re.IGNORECASE,
     ):
         actual = float(match.group(1))
         seen_totals.append(actual)
