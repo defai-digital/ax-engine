@@ -280,13 +280,15 @@ def safetensors_weight_bytes(model_dir: Path) -> int:
     return sum(path.stat().st_size for path in files)
 
 
-def add_bandwidth_estimates(rows: list[dict[str, Any]], *, model_weight_bytes: int) -> None:
+def add_bandwidth_estimates(
+    rows: list[dict[str, Any]], *, model_weight_bytes: int, canvas_size: int
+) -> None:
     if model_weight_bytes <= 0:
         return
     model_weight_gb = model_weight_bytes / 1_000_000_000.0
     for row in rows:
         denoise_steps = float(row["diffusion_denoise_steps"]["median"])
-        block_wall_s = 256.0 / float(row["block_decode_tok_s"]["median"])
+        block_wall_s = float(canvas_size) / float(row["block_decode_tok_s"]["median"])
         estimated_bytes_per_block = model_weight_bytes * (denoise_steps + 1.0)
         estimated_gb_per_block = estimated_bytes_per_block / 1_000_000_000.0
         effective_gb_s = estimated_gb_per_block / block_wall_s
@@ -793,7 +795,9 @@ def main() -> None:
             row["prompt_sha256"] = token_hash(tokens)
             row["warmup_runs"] = len(warmups)
             rows.append(row)
-        add_bandwidth_estimates(rows, model_weight_bytes=model_weight_bytes)
+        add_bandwidth_estimates(
+            rows, model_weight_bytes=model_weight_bytes, canvas_size=args.canvas_size
+        )
         artifact = {
             "schema_version": BENCH_SCHEMA,
             "model": {
@@ -855,7 +859,11 @@ def main() -> None:
             artifact["model"].get("safetensors_weight_bytes") or safetensors_weight_bytes(model_dir)
         )
         rows = artifact["rows"]
-        add_bandwidth_estimates(rows, model_weight_bytes=model_weight_bytes)
+        add_bandwidth_estimates(
+            rows,
+            model_weight_bytes=model_weight_bytes,
+            canvas_size=int(artifact["model"]["canvas_size"]),
+        )
         artifact["model"]["safetensors_weight_bytes"] = model_weight_bytes
         artifact["bandwidth_model"] = {
             "schema": "ax.estimated_weight_bandwidth.v1",
