@@ -51,6 +51,28 @@ class FlipTargetBenchmarkTests(unittest.TestCase):
             "http://127.0.0.1:31418",
         )
 
+    def test_build_multimodel_args_includes_ignore_eos(self) -> None:
+        # Regression test: multimodel.run_benchmark's run() closure reads
+        # args.ignore_eos unconditionally (fixed earlier this session in
+        # bench_ax_multimodel_serving.py), but this script's benchmark_args
+        # Namespace didn't set it, so every real invocation crashed with
+        # AttributeError before any request completed.
+        args = flip.build_parser().parse_args(
+            [
+                "--target",
+                "target.json",
+                "--scenario",
+                "scenario.jsonl",
+                "--output",
+                "out.json",
+            ]
+        )
+
+        benchmark_args = flip.build_multimodel_args(args, base_url="http://127.0.0.1:1")
+
+        self.assertTrue(hasattr(benchmark_args, "ignore_eos"))
+        self.assertFalse(benchmark_args.ignore_eos)
+
     def test_managed_mlxcel_command_is_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

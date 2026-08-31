@@ -1065,6 +1065,32 @@ def target_artifact_metadata(
     }
 
 
+def build_multimodel_args(args: argparse.Namespace, *, base_url: str) -> argparse.Namespace:
+    """Build the Namespace passed to multimodel.run_benchmark.
+
+    Must supply every attribute run_benchmark's run() closure reads off
+    args (including ignore_eos, which run_benchmark forwards unconditionally
+    to request_runner), or run_benchmark raises AttributeError before any
+    request completes.
+    """
+    return argparse.Namespace(
+        scenario=args.scenario,
+        base_url=base_url,
+        workers=args.workers,
+        input_kind="text",
+        timeout=args.timeout,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        seed=args.seed,
+        ignore_eos=False,
+        slo_ttft_ms=args.slo_ttft_ms,
+        slo_tpot_ms=args.slo_tpot_ms,
+        slo_e2e_ms=args.slo_e2e_ms,
+        require_route_counter=[],
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", type=Path, required=True)
@@ -1121,21 +1147,7 @@ def main() -> int:
                 single_supervisor.stop()
                 raise SystemExit(f"failed to preload {model_id}: {response.get('error', response)}")
 
-    benchmark_args = argparse.Namespace(
-        scenario=args.scenario,
-        base_url=control_base_url(target),
-        workers=args.workers,
-        input_kind="text",
-        timeout=args.timeout,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        top_k=args.top_k,
-        seed=args.seed,
-        slo_ttft_ms=args.slo_ttft_ms,
-        slo_tpot_ms=args.slo_tpot_ms,
-        slo_e2e_ms=args.slo_e2e_ms,
-        require_route_counter=[],
-    )
+    benchmark_args = build_multimodel_args(args, base_url=control_base_url(target))
 
     def request_runner(**kwargs: Any) -> dict[str, Any]:
         return run_openai_request(target=target, **kwargs)
