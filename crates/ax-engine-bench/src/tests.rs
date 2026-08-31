@@ -5704,6 +5704,61 @@ fn decode_tok_s_uses_runner_timing_when_available() {
 }
 
 #[test]
+fn prefill_tok_s_stays_zero_for_llama_cpp_step_observations() {
+    // The llama.cpp delegated adapter never populates
+    // `total_prefill_runner_time_us` (it only sees request-level prompt
+    // progress deltas, not per-step runner execution time). Regression for
+    // a bug where `observe_llama_cpp_session_step` incremented
+    // `prefill_steps` on every step with prompt progress, which made
+    // `prefill_tok_s()` fall through to its step-count fallback formula
+    // (`prefill_tokens * 1000 / prefill_steps`) — a number with no real
+    // time unit — instead of the `0.0` its own doc comment promises for
+    // "blocking delegated adapters [that] only expose request round-trip
+    // time".
+    let mut observation = RuntimeObservation::default();
+    let request_id = RequestId(1);
+
+    let report_before = SessionRequestReport {
+        request_id: request_id.0,
+        model_id: "test-model".to_string(),
+        state: SessionRequestState::Running,
+        prompt_tokens: Vec::new(),
+        processed_prompt_tokens: 0,
+        output_tokens: Vec::new(),
+        output_token_logprobs: Vec::new(),
+        prompt_len: 32,
+        output_len: 0,
+        max_output_tokens: 16,
+        cancel_requested: false,
+        execution_plan_ref: None,
+        route: GenerateRouteReport::default(),
+        finish_reason: None,
+        terminal_stop_reason: None,
+        last_error: None,
+    };
+    let mut report_after = report_before.clone();
+    report_after.processed_prompt_tokens = 32;
+
+    let reports_before = BTreeMap::from([(request_id, report_before)]);
+    let reports_after = BTreeMap::from([(request_id, report_after.clone())]);
+
+    observation.observe_llama_cpp_session_step(
+        &reports_before,
+        &reports_after,
+        &EngineStepReport::default(),
+        10,
+    );
+    observation.finalize_llama_cpp(
+        vec![(test_request_spec(request_id.0, 16), report_after)],
+        10,
+    );
+
+    assert_eq!(observation.prefill_steps, 0);
+    assert!(observation.prefill_tokens > 0);
+    assert_eq!(observation.prefill_tok_s(), 0.0);
+}
+
+#[test]
 fn correctness_fails_finished_requests_with_zero_output_tokens() {
     let manifest = llama_cpp_scenario_manifest("http://127.0.0.1:1");
     let observation = RuntimeObservation {

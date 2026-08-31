@@ -722,7 +722,6 @@ impl RuntimeObservation {
         let mut selected_request_ids = Vec::new();
         let mut items = Vec::new();
         let mut step_route_metadata = RouteMetadata::empty();
-        let mut saw_prefill_progress = false;
         let live_request_ids = reports_after
             .iter()
             .filter_map(|(request_id, report)| {
@@ -751,9 +750,6 @@ impl RuntimeObservation {
             }
 
             selected_request_ids.push(*request_id);
-            if prompt_delta > 0 {
-                saw_prefill_progress = true;
-            }
             if output_delta > 0 {
                 items.push(StepTraceItem::capture_llama_cpp_decode(
                     *request_id,
@@ -767,9 +763,15 @@ impl RuntimeObservation {
             merge_step_route_metadata(&mut step_route_metadata, &route_metadata);
         }
 
-        if saw_prefill_progress {
-            self.prefill_steps += 1;
-        }
+        // Deliberately not incrementing `prefill_steps` here: this delegated
+        // (llama.cpp) adapter never populates `total_prefill_runner_time_us`
+        // (it only observes request-level prompt-progress deltas, not
+        // per-step runner execution time), so `prefill_tok_s()`'s step-count
+        // fallback would divide total prompt tokens by a count of polling
+        // steps that has no fixed real-world duration, fabricating a
+        // "tokens/sec" number with no actual time unit. Leaving
+        // `prefill_steps` at 0 for this adapter makes `prefill_tok_s()` fall
+        // through to its documented `0.0` for blocking delegated backends.
         let selected_request_set = selected_request_ids
             .iter()
             .copied()
