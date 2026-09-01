@@ -51,10 +51,12 @@ drafts depth-3. The cap was conservative, not fundamental:
   projection exists for exactly one purpose: to seed the next recurrent draft.
 
 Depth-2 drafting feeds that estimate back as the next step's backbone hidden
-(token = draft-1, RoPE position + 1, same frozen target cache) and advances one
-position. The 2nd-token query cannot attend draft-1's position (no KV exists for
-it), but draft-1's signal flows through the residual stream — and the benchmark
-confirms that is enough to keep the 2nd token at ~97% accept.
+(token = draft-1, the same bonus-token RoPE position, and the same frozen target
+cache). Recurrent depth changes the proposed token and hidden state but does not
+advance the query position, matching the assistant training contract. The
+2nd-token query cannot attend draft-1's position (no KV exists for it), but
+draft-1's signal flows through the residual stream — and the benchmark confirms
+that is enough to keep the 2nd token at ~97% accept.
 
 Gemma is **dense** attention (sliding + full), so a partial-reject rollback is a
 cheap recompute of the committed prefix — unlike the 27B linear-attention path

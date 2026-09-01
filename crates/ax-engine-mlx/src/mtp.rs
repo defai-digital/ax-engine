@@ -134,7 +134,7 @@ pub fn resolve_mtp_draft_min_confidence(
 /// 99%+, but that over-truncates: it only proposes near-certain tokens, so the
 /// draft is shorter than it needs to be and decode leaves speed on the table. A
 /// Qwen3.6 27B (MTP) depth-throughput sweep on the fair-MTP suites
-/// (`docs/MTP-DRAFT-GATE-THROUGHPUT.md`) shows 0.90 is the throughput optimum:
+/// (`docs/mtp/draft-gate-throughput.md`) shows 0.90 is the throughput optimum:
 /// it proposes slightly longer drafts that are still almost always accepted,
 /// while the rare extra rejection costs only one cheap recompute forward (the
 /// `fwds/step` count stays near 1.03 even on the hardest suite). Measured
@@ -1434,7 +1434,7 @@ pub fn qwen_mtp_draft_log_prob_temperature_from_env(
 ///
 /// This lets a caller vary the gate per request/step (e.g. an adaptive
 /// throughput controller that loosens the gate on hard content and tightens it
-/// on easy content — see `docs/MTP-DRAFT-GATE-THROUGHPUT.md`). The gate is always
+/// on easy content — see `docs/mtp/draft-gate-throughput.md`). The gate is always
 /// correctness-preserving: it only changes how many speculative tokens are
 /// proposed for verification, never the committed output.
 #[allow(clippy::too_many_arguments)]

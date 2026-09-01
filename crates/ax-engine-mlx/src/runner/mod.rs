@@ -75,10 +75,10 @@ use crate::model::{
     LinearAttentionProfileSnapshot, ModelConfig, MoeProfileSnapshot, PrefillProfileSnapshot,
     forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_post_norm,
     forward_all_positions_with_post_norm_greedy, forward_all_positions_with_post_norm_ids,
-    replay_linear_attention_mtp_prefix, take_decode_profile_snapshot,
-    take_dense_ffn_fastpath_snapshot, take_gemma4_moe_profile_snapshot,
-    take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
-    take_prefill_profile_snapshot, try_whole_compiled_qwen_verify,
+    gemma4_assistant_draft_rope_position, replay_linear_attention_mtp_prefix,
+    take_decode_profile_snapshot, take_dense_ffn_fastpath_snapshot,
+    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
+    take_moe_profile_snapshot, take_prefill_profile_snapshot, try_whole_compiled_qwen_verify,
 };
 use crate::model::{prefill_batched_forward, supports_batched_prefill};
 use crate::mtp::{
@@ -1099,7 +1099,7 @@ fn load_gemma4_assistant_mtp_runtime(
     // SAME weights support recurrent multi-token drafting. The runtime env cap
     // (default 2) drives the draft depth — the canonical T=0.6 26B benchmark
     // measured depth-2 at 1.10-1.20x decode while holding accept >97%. See
-    // gemma4_assistant_mtp.rs and docs/GEMMA4-ASSISTANT-MULTI-DEPTH.md.
+    // gemma4_assistant_mtp.rs and docs/mtp/gemma4-assistant-multi-depth.md.
     config.max_depth = gemma4_assistant_mtp_max_depth_cap();
 
     let disabled = |config: Gemma4AssistantMtpConfig, message: &str| {
@@ -9790,9 +9790,12 @@ impl MlxRunner {
                     // projections with its materialized S=1 baseline; no
                     // accepted KV is replayed or rewritten mid-stream.
                     let verify_forward_started = Instant::now();
-                    let sensitive_f32 = self.cfg.moe_expert_count == 0
-                        && token_offset.saturating_add(verify_len) >= 512
-                        && crate::fastpath::gemma4_assistant_mtp_sensitive_f32_enabled();
+                    let sensitive_f32 = gemma_sensitive_f32_active(
+                        self.cfg.moe_expert_count == 0,
+                        token_offset.saturating_add(verify_len),
+                        crate::fastpath::dense_long_mt_bf16_fold_enabled(),
+                        crate::fastpath::gemma4_assistant_mtp_sensitive_f32_enabled(),
+                    );
                     let sensitive_range = sensitive_f32
                         .then(|| gemma_sensitive_f32_layer_range(self.cfg.layer_count))
                         .flatten();
@@ -13376,16 +13379,6 @@ fn gemma4_assistant_draft_token_lazy_multi_depth(
         drafts.push(token);
     }
     (drafts, vec![], vec![])
-}
-
-/// Gemma assistant queries share one frozen target KV view for a draft block.
-///
-/// The recurrent depth changes the proposed token and projected hidden state,
-/// but not the query position. Advancing this offset by depth misaligns the
-/// drafter from the position invariant used during training and by the reference
-/// candidate generator.
-const fn gemma4_assistant_draft_rope_position(base_position: usize, _draft_depth: usize) -> usize {
-    base_position
 }
 
 /// Top token of a logit row plus its `softmax` probability at temperature 1.0 —
@@ -17379,17 +17372,6 @@ mod tests {
         assert_eq!(parse_gemma4_assistant_mtp_confidence_mode("approx"), None);
         assert_eq!(Gemma4AssistantMtpConfidenceMode::ExactCpu.route_code(), 0);
         assert_eq!(Gemma4AssistantMtpConfidenceMode::GpuExact.route_code(), 1);
-    }
-
-    #[test]
-    fn gemma4_assistant_draft_rope_position_is_constant_across_depths() {
-        let base_position = 257;
-        for draft_depth in 0..8 {
-            assert_eq!(
-                gemma4_assistant_draft_rope_position(base_position, draft_depth),
-                base_position
-            );
-        }
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::weights::{LayerWeights, ModelWeights, PipelineStageWeights, Quantized
 /// Typed error for Gemma4 assistant MTP forward-path failures.
 #[derive(Debug, Error)]
 pub enum Gemma4AssistantForwardError {
-    #[error("Gemma4 Assistant MTP requires gemma4_assistant draft and gemma4 target")]
+    #[error("Gemma4 Assistant MTP requires a gemma4_assistant draft and Gemma 4 text target")]
     ModelFamilyMismatch,
     #[error("Gemma4 assistant missing pre_projection")]
     MissingPreProjection,
@@ -2342,6 +2342,18 @@ pub fn gemma4_assistant_accepted_draft_depth(
             gemma4_assistant_draft_position_accepted(*d, **c, first_gate, deep_gate)
         })
         .count()
+}
+
+/// Return the absolute RoPE position for a recurrent Gemma assistant draft.
+///
+/// Every depth shares one frozen target KV view for the draft block. Recurrent
+/// depth changes the proposed token and projected hidden state, but the query
+/// remains at the bonus token's position.
+pub const fn gemma4_assistant_draft_rope_position(
+    base_position: usize,
+    _draft_depth: usize,
+) -> usize {
+    base_position
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6110,6 +6122,17 @@ mod tests {
         assert_eq!(arr.nbytes(), 4);
         let value = unsafe { *(arr.data_raw() as *const i32) };
         assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn gemma4_assistant_draft_rope_position_is_constant_across_depths() {
+        let base_position = 257;
+        for draft_depth in 0..8 {
+            assert_eq!(
+                gemma4_assistant_draft_rope_position(base_position, draft_depth),
+                base_position
+            );
+        }
     }
 
     #[test]

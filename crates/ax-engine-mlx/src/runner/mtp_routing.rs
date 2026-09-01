@@ -360,6 +360,15 @@ pub(super) fn gemma_sensitive_f32_layer_range(layer_count: usize) -> Option<(usi
     Some((start, count))
 }
 
+pub(super) fn gemma_sensitive_f32_active(
+    dense_model: bool,
+    verify_end_position: usize,
+    bf16_fold_enabled: bool,
+    sensitive_f32_enabled: bool,
+) -> bool {
+    dense_model && verify_end_position >= 512 && bf16_fold_enabled && sensitive_f32_enabled
+}
+
 /// Build a short cycle-history view ending with `last_token` (the verify root).
 ///
 /// `generated_tokens` may already include `last_token` (after emission) or may
@@ -473,6 +482,15 @@ mod tests {
         assert_eq!(gemma_sensitive_f32_layer_range(1), Some((0, 1)));
         assert_eq!(gemma_sensitive_f32_layer_range(48), Some((28, 8)));
         assert_eq!(gemma_sensitive_f32_layer_range(62), Some((36, 11)));
+    }
+
+    #[test]
+    fn gemma_sensitive_f32_requires_bf16_fold() {
+        assert!(gemma_sensitive_f32_active(true, 512, true, true));
+        assert!(!gemma_sensitive_f32_active(true, 511, true, true));
+        assert!(!gemma_sensitive_f32_active(false, 512, true, true));
+        assert!(!gemma_sensitive_f32_active(true, 512, false, true));
+        assert!(!gemma_sensitive_f32_active(true, 512, true, false));
     }
 
     #[test]

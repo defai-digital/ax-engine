@@ -27,7 +27,7 @@
 //! decode throughput and changed greedy output (bf16 reduction-order drift). The
 //! microbench's isolated per-dispatch win did not survive the real graph, where
 //! MLX already overlaps the weighted-sum tail with surrounding ops. See
-//! `docs/PERFORMANCE-MOE-FUSED-DOWNPROJ.md` for the full investigation. Kept as
+//! `docs/performance/moe-fused-downproj.md` for the full investigation. Kept as
 //! a reusable microbench, not a production path.
 //!
 //! Decode is batch=1 => this is a quantized matrix-VECTOR multiply (GEMV). The

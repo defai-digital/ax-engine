@@ -39,7 +39,7 @@ use ax_engine_mlx::{
     kv_cache::MlxKVCache,
     model::{
         Gemma4AssistantSharedKvLayers, ModelConfig, forward_all_positions_with_post_norm,
-        gemma4_assistant_forward_one,
+        gemma4_assistant_draft_rope_position, gemma4_assistant_forward_one,
     },
     sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64},
     weights::load_weights,
@@ -241,7 +241,7 @@ fn run() -> Result<(), String> {
                     shared_layers,
                     d1_argmax,
                     &cur_hidden,
-                    base_position + 1,
+                    gemma4_assistant_draft_rope_position(base_position, 1),
                 )
                 .map_err(|error| {
                     format!("assistant depth-2 draft failed at step {committed}: {error}")

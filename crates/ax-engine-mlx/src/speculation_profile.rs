@@ -25,7 +25,7 @@
 //! (the greedy drafter is so peaked that the shipped default and a lower gate
 //! propose the same drafts at the same accept). So `coding`/`agentic` DEFER to
 //! the shipped Gemma default rather than override it. For Qwen, the gate-throughput
-//! sweep (`docs/MTP-DRAFT-GATE-THROUGHPUT.md`) shows the optimum varies by
+//! sweep (`docs/mtp/draft-gate-throughput.md`) shows the optimum varies by
 //! workload: `coding` lowers to 0.85, `agentic` to 0.80 (vs the 0.90 default).
 //! Only the diversity regime (`chatbot` / high-temperature `auto`) raises the
 //! gate, to preserve sampled-chat diversity.
@@ -98,7 +98,7 @@ pub const AUTO_DIVERSITY_TEMPERATURE: f32 = 0.5;
 const CHATBOT_GEMMA_FIRST_GATE: f32 = 0.999;
 const CHATBOT_GEMMA_DEEP_GATE: f32 = 0.999;
 /// Qwen's shipped default (0.90) is the throughput sweet spot for repetitive
-/// workloads (`docs/MTP-DRAFT-GATE-THROUGHPUT.md`). `coding` lowers the gate to
+/// workloads (`docs/mtp/draft-gate-throughput.md`). `coding` lowers the gate to
 /// 0.85 (the `python_modules_long` optimum, +13.6% tok/fwd); `agentic` lowers
 /// to 0.80 (the `long_code` optimum, +17.6% tok/fwd). No regime raises the gate
 /// above 0.90: the Qwen fused path accepts via rejection sampling, so the gate
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn qwen_workload_optimal_gates_for_coding_and_agentic() {
-        // `docs/MTP-DRAFT-GATE-THROUGHPUT.md`: coding → 0.85 (python_modules_long
+        // `docs/mtp/draft-gate-throughput.md`: coding → 0.85 (python_modules_long
         // optimum), agentic → 0.80 (long_code optimum). Chatbot defers to the
         // shipped 0.90 default (no diversity rationale on the exact path).
         assert_eq!(SpeculationProfile::Coding.qwen_gate(Some(0.0)), Some(0.85));
