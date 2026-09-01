@@ -31,9 +31,10 @@ The shared host for the current headline local benchmark rows is:
 - 128 GB memory
 - macOS 26.x
 - Admitted MLX builds: the local MLX 0.31.2 build (behind the published v6.9.0
-  rows), the historical PyPI MLX 0.32.0 wheel, and the current PyPI MLX 0.32.1
-  wheel. MLX 0.32.1 measured 56.35 TFLOP/s at the M=2048 qmm admission shape on
-  2026-08-21; see the [MLX 0.32.1 admission record](performance/mlx-0.32.1-admission-2026-08-21.md).
+  rows), the historical PyPI MLX 0.32.0 and 0.32.1 wheels, and the current PyPI
+  MLX 0.32.2 wheel. The 0.32.2 factory admission measured 16.12 TFLOP/s at the
+  M=2048 qmm shape on an M2 Ultra; see the
+  [MLX 0.32.2 admission record](performance/mlx-0.32.2-admission-2026-08-29.md).
   A Homebrew MLX 0.32.0 bottle or a source build targeting macOS below 26.2 can
   omit M5 matrix–matrix (GEMM / quantized-matmul) acceleration; this is a
   packaging/build issue, not a universal MLX result. Prefill and TTFT rows are

@@ -8,6 +8,7 @@ decide which result table, method, or investigation note applies to a claim.
 | Need | Read |
 | --- | --- |
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
+| Current MLX runtime admission | [MLX 0.32.2 admission](mlx-0.32.2-admission-2026-08-29.md) |
 | Root README headline numbers | [README Performance](../../README.md#performance) |
 | AX vs peer MLX single-client serving (2026-08-06) | [AX vs peer MLX serving (Qwen 3.6)](ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |
 | Interpretation and claim context | [Performance](../PERFORMANCE.md) |

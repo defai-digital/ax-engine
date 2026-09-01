@@ -73,17 +73,17 @@ class ArtifactBuildIdentity:
 
 
 def _resolve_mtp_model_dir(*candidates: str) -> Path:
-    """Prefer Ext4T publication paths; fall back to local HF hub cache.
+    """Prefer the Ext16TR0 HF cache; fall back to the user cache symlink.
 
     mbp-m5 hosts often keep the same `models--ax-local--*` packages under
-    ``~/.cache/huggingface/hub`` without mounting Ext4T.
+    ``~/.cache/huggingface/hub`` without mounting Ext16TR0.
     """
     home_hub = Path.home() / ".cache" / "huggingface" / "hub"
     expanded: list[Path] = []
     for raw in candidates:
         path = Path(raw).expanduser()
         expanded.append(path)
-        # Also try HF hub cache sibling when given an Ext4T hub path.
+        # Also try the user-cache sibling when given an Ext16TR0 hub path.
         # If path looks like .../models--X/snapshots/v1, try hub/models--X/snapshots/*
         parts = path.parts
         if "models--" in str(path):
@@ -120,7 +120,7 @@ SUPPORTED_TARGETS = (
         label="Qwen3.6 27B",
         mode="Qwen fused sidecar",
         model_dir=_resolve_mtp_model_dir(
-            "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1"
+            "/Volumes/Ext16TR0/huggingface/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1"
         ),
         mtp_depth=3,
     ),
@@ -129,7 +129,7 @@ SUPPORTED_TARGETS = (
         label="Qwen3.8 27B AXQ",
         mode="Qwen fused sidecar",
         model_dir=_resolve_mtp_model_dir(
-            "/Volumes/Ext4T/models/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1",
+            "/Volumes/Ext16TR0/huggingface/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1",
             str(
                 Path.home()
                 / ".cache/huggingface/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1"
@@ -142,7 +142,7 @@ SUPPORTED_TARGETS = (
         label="Qwen3.6 35B-A3B",
         mode="Qwen fused sidecar",
         model_dir=_resolve_mtp_model_dir(
-            "/Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-35B-A3B-6bit-MTP/snapshots/v1"
+            "/Volumes/Ext16TR0/huggingface/hub/models--ax-local--mlx-community--Qwen3.6-35B-A3B-6bit-MTP/snapshots/v1"
         ),
         mtp_depth=1,
     ),
@@ -151,7 +151,7 @@ SUPPORTED_TARGETS = (
         label="Gemma 4 12B",
         mode="Gemma assistant-MTP",
         model_dir=_resolve_mtp_model_dir(
-            "/Volumes/Ext4T/models/hub/models--ax-local--gemma-4-12b-it-assistant-mtp/snapshots/v1"
+            "/Volumes/Ext16TR0/huggingface/hub/models--ax-local--gemma-4-12b-it-assistant-mtp/snapshots/v1"
         ),
         mtp_depth=2,
         assistant_mtp=True,
@@ -161,7 +161,7 @@ SUPPORTED_TARGETS = (
         label="Gemma 4 26B",
         mode="Gemma assistant-MTP",
         model_dir=_resolve_mtp_model_dir(
-            "/Volumes/Ext4T/models/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
+            "/Volumes/Ext16TR0/huggingface/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
         ),
         mtp_depth=2,
         assistant_mtp=True,
@@ -171,7 +171,7 @@ SUPPORTED_TARGETS = (
         label="Gemma 4 31B",
         mode="Gemma assistant-MTP",
         model_dir=_resolve_mtp_model_dir(
-            "/Volumes/Ext4T/models/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
+            "/Volumes/Ext16TR0/huggingface/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
         ),
         mtp_depth=2,
         assistant_mtp=True,

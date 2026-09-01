@@ -8501,9 +8501,9 @@ impl MlxRunner {
         }
 
         // Gated greedy recurrent drafting (the default). Each position d feeds the
-        // assistant's `post_projection` "backbone hidden" estimate of position d
-        // back in as the next step's hidden — the same signal the production verify
-        // forward provides at depth 0 — and advances the RoPE position by one.
+        // assistant's `post_projection` "backbone hidden" estimate back in as the
+        // next step's hidden. Gemma assistant KV is frozen for the entire block, so
+        // every recurrent query uses the bonus token's constant absolute position.
         // Confidence gates stop drafting early (correctness-preserving).
         let deep_gate =
             resolve_gemma4_assistant_mtp_deep_gate(speculation_profile, Some(sampling.temperature))
@@ -8537,8 +8537,9 @@ impl MlxRunner {
         let deep_needs_first_conf =
             crate::fastpath::gemma4_assistant_deep_needs_first_conf_enabled();
         for d in 0..max_depth {
+            let draft_position = gemma4_assistant_draft_rope_position(base_position, d);
             let Ok((logits, projected_hidden)) =
-                session.forward_one(cur_token, &cur_hidden, base_position + d)
+                session.forward_one(cur_token, &cur_hidden, draft_position)
             else {
                 break;
             };
@@ -9789,6 +9790,18 @@ impl MlxRunner {
                     // projections with its materialized S=1 baseline; no
                     // accepted KV is replayed or rewritten mid-stream.
                     let verify_forward_started = Instant::now();
+                    let sensitive_f32 = self.cfg.moe_expert_count == 0
+                        && token_offset.saturating_add(verify_len) >= 512
+                        && crate::fastpath::gemma4_assistant_mtp_sensitive_f32_enabled();
+                    let sensitive_range = sensitive_f32
+                        .then(|| gemma_sensitive_f32_layer_range(self.cfg.layer_count))
+                        .flatten();
+                    if sensitive_range.is_some() {
+                        state.mtp_telemetry.record_gemma_sensitive_f32();
+                    }
+                    let _sensitive_fold_scope = sensitive_range.map(|(start, count)| {
+                        crate::fastpath::scoped_dense_long_mt_f32_range(start, count)
+                    });
                     state.pending_direct = None;
                     let (logits_mt, post_norm_all) = forward_all_positions_with_post_norm_greedy(
                         &self.cfg,
@@ -12377,15 +12390,46 @@ fn mtp_next_adaptive_depth(
     depth3_miss_backoff_enabled: bool,
     depth3_hysteresis_enabled: bool,
 ) -> usize {
+    mtp_next_adaptive_depth_with_policy(
+        current_depth,
+        max_depth,
+        pending_len,
+        accept_count,
+        consecutive_misses,
+        aggressive_miss_to_zero,
+        MtpAdaptiveDepthPolicy {
+            fixed_depth: crate::fastpath::mtp_fixed_draft_depth(),
+            depth3_miss_backoff: depth3_miss_backoff_enabled,
+            depth3_hysteresis: depth3_hysteresis_enabled,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct MtpAdaptiveDepthPolicy {
+    fixed_depth: Option<usize>,
+    depth3_miss_backoff: bool,
+    depth3_hysteresis: bool,
+}
+
+fn mtp_next_adaptive_depth_with_policy(
+    current_depth: usize,
+    max_depth: usize,
+    pending_len: usize,
+    accept_count: usize,
+    consecutive_misses: u32,
+    aggressive_miss_to_zero: bool,
+    policy: MtpAdaptiveDepthPolicy,
+) -> usize {
     if max_depth == 0 {
         return 0;
     }
 
-    if let Some(fixed_depth) = crate::fastpath::mtp_fixed_draft_depth() {
+    if let Some(fixed_depth) = policy.fixed_depth {
         return fixed_depth.min(max_depth);
     }
 
-    if depth3_miss_backoff_enabled && max_depth == 3 {
+    if policy.depth3_miss_backoff && max_depth == 3 {
         if pending_len == 0 {
             return if current_depth == 0 { 3 } else { current_depth };
         }
@@ -12406,7 +12450,7 @@ fn mtp_next_adaptive_depth(
         return current_depth.saturating_add(1).min(max_depth);
     }
 
-    if depth3_hysteresis_enabled && current_depth == 3 && pending_len == 3 && accept_count == 2 {
+    if policy.depth3_hysteresis && current_depth == 3 && pending_len == 3 && accept_count == 2 {
         return 3.min(max_depth);
     }
 
@@ -13282,8 +13326,9 @@ fn gemma4_assistant_draft_token_lazy_multi_depth(
     let mut cur_hidden = last_backbone_hidden.clone();
 
     for d in 0..max_depth {
+        let draft_position = gemma4_assistant_draft_rope_position(base_position, d);
         let Ok((logits, projected_hidden)) =
-            session.forward_one_from_token_arr(&prev_token_arr, &cur_hidden, base_position + d)
+            session.forward_one_from_token_arr(&prev_token_arr, &cur_hidden, draft_position)
         else {
             break;
         };
@@ -13331,6 +13376,16 @@ fn gemma4_assistant_draft_token_lazy_multi_depth(
         drafts.push(token);
     }
     (drafts, vec![], vec![])
+}
+
+/// Gemma assistant queries share one frozen target KV view for a draft block.
+///
+/// The recurrent depth changes the proposed token and projected hidden state,
+/// but not the query position. Advancing this offset by depth misaligns the
+/// drafter from the position invariant used during training and by the reference
+/// candidate generator.
+const fn gemma4_assistant_draft_rope_position(base_position: usize, _draft_depth: usize) -> usize {
+    base_position
 }
 
 /// Top token of a logit row plus its `softmax` probability at temperature 1.0 —
@@ -15989,82 +16044,123 @@ mod tests {
 
     #[test]
     fn mtp_adaptive_depth_shrinks_on_partial_reject_and_recovers_on_full_accept() {
+        let policy = MtpAdaptiveDepthPolicy {
+            fixed_depth: None,
+            depth3_miss_backoff: false,
+            depth3_hysteresis: false,
+        };
         // consecutive_misses=0 for all non-complete-miss cases.
         assert_eq!(
-            mtp_next_adaptive_depth(0, 3, 0, 0, 0, false, false, false),
+            mtp_next_adaptive_depth_with_policy(0, 3, 0, 0, 0, false, policy),
             3
         );
         assert_eq!(
-            mtp_next_adaptive_depth(3, 3, 3, 2, 0, false, false, false),
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 2, 0, false, policy),
             2
         );
         assert_eq!(
-            mtp_next_adaptive_depth(2, 3, 2, 1, 0, false, false, false),
+            mtp_next_adaptive_depth_with_policy(2, 3, 2, 1, 0, false, policy),
             2
         );
         assert_eq!(
-            mtp_next_adaptive_depth(1, 3, 1, 1, 0, false, false, false),
+            mtp_next_adaptive_depth_with_policy(1, 3, 1, 1, 0, false, policy),
             2
         );
         assert_eq!(
-            mtp_next_adaptive_depth(2, 3, 2, 2, 0, false, false, false),
+            mtp_next_adaptive_depth_with_policy(2, 3, 2, 2, 0, false, policy),
             3
         );
         assert_eq!(
-            mtp_next_adaptive_depth(3, 0, 3, 3, 0, false, false, false),
+            mtp_next_adaptive_depth_with_policy(3, 0, 3, 3, 0, false, policy),
             0
         );
     }
 
     #[test]
     fn mtp_adaptive_depth_progressive_floor_on_consecutive_misses() {
+        let policy = MtpAdaptiveDepthPolicy {
+            fixed_depth: None,
+            depth3_miss_backoff: false,
+            depth3_hysteresis: false,
+        };
         // First complete miss (consecutive_misses=0): floor = 2.
         assert_eq!(
-            mtp_next_adaptive_depth(3, 3, 3, 0, 0, false, false, false),
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 0, 0, false, policy),
             2
         );
         // Second consecutive miss (consecutive_misses=1): floor = 1.
         assert_eq!(
-            mtp_next_adaptive_depth(2, 3, 2, 0, 1, false, false, false),
+            mtp_next_adaptive_depth_with_policy(2, 3, 2, 0, 1, false, policy),
             1
         );
         // Third+ consecutive miss (consecutive_misses=2): floor = 0.
         assert_eq!(
-            mtp_next_adaptive_depth(1, 3, 1, 0, 2, false, false, false),
+            mtp_next_adaptive_depth_with_policy(1, 3, 1, 0, 2, false, policy),
             0
         );
         assert_eq!(
-            mtp_next_adaptive_depth(1, 3, 1, 0, 5, false, false, false),
+            mtp_next_adaptive_depth_with_policy(1, 3, 1, 0, 5, false, policy),
             0
         );
         // Partial accept resets to normal floor logic (not complete miss path).
         assert_eq!(
-            mtp_next_adaptive_depth(3, 3, 3, 1, 3, false, false, false),
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 1, 3, false, policy),
             2
         );
         // Gemma assistant: first complete miss ends drafting (gen median stop-loss).
         assert_eq!(
-            mtp_next_adaptive_depth(2, 2, 2, 0, 0, true, false, false),
+            mtp_next_adaptive_depth_with_policy(2, 2, 2, 0, 0, true, policy),
             0
         );
         assert_eq!(
-            mtp_next_adaptive_depth(1, 2, 1, 0, 3, true, false, false),
+            mtp_next_adaptive_depth_with_policy(1, 2, 1, 0, 3, true, policy),
             0
         );
         // Half-or-worse accept on the aggressive short-gen path also stops
         // (1/3 and the common Gemma depth-2 case 1/2).
         assert_eq!(
-            mtp_next_adaptive_depth(2, 2, 3, 1, 0, true, false, false),
+            mtp_next_adaptive_depth_with_policy(2, 2, 3, 1, 0, true, policy),
             0
         );
         assert_eq!(
-            mtp_next_adaptive_depth(2, 2, 2, 1, 0, true, false, false),
+            mtp_next_adaptive_depth_with_policy(2, 2, 2, 1, 0, true, policy),
             0
         );
         // Better than half (2/3) keeps progressive floor / clamp logic.
         assert_eq!(
-            mtp_next_adaptive_depth(2, 3, 3, 2, 0, true, false, false),
+            mtp_next_adaptive_depth_with_policy(2, 3, 3, 2, 0, true, policy),
             2
+        );
+    }
+
+    #[test]
+    fn mtp_adaptive_depth_applies_explicit_throughput_policy() {
+        let throughput = MtpAdaptiveDepthPolicy {
+            fixed_depth: None,
+            depth3_miss_backoff: true,
+            depth3_hysteresis: true,
+        };
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 0, 0, false, throughput),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 3, 2, 1, 0, false, throughput),
+            3
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 2, 0, false, throughput),
+            3
+        );
+
+        let fixed = MtpAdaptiveDepthPolicy {
+            fixed_depth: Some(4),
+            depth3_miss_backoff: false,
+            depth3_hysteresis: false,
+        };
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(1, 3, 1, 0, 0, false, fixed),
+            3
         );
     }
 
@@ -17283,6 +17379,17 @@ mod tests {
         assert_eq!(parse_gemma4_assistant_mtp_confidence_mode("approx"), None);
         assert_eq!(Gemma4AssistantMtpConfidenceMode::ExactCpu.route_code(), 0);
         assert_eq!(Gemma4AssistantMtpConfidenceMode::GpuExact.route_code(), 1);
+    }
+
+    #[test]
+    fn gemma4_assistant_draft_rope_position_is_constant_across_depths() {
+        let base_position = 257;
+        for draft_depth in 0..8 {
+            assert_eq!(
+                gemma4_assistant_draft_rope_position(base_position, draft_depth),
+                base_position
+            );
+        }
     }
 
     #[test]

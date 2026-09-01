@@ -118,7 +118,10 @@ pub fn load_gemma4_assistant_mtp_status(
     target_root: &Path,
     target_manifest: &NativeModelManifest,
 ) -> Gemma4AssistantMtpStatus {
-    if target_manifest.model_family != "gemma4" {
+    if !matches!(
+        target_manifest.model_family.as_str(),
+        "gemma4" | "gemma4_unified"
+    ) {
         return Gemma4AssistantMtpStatus::disabled(
             Gemma4AssistantMtpDisableReason::NotGemma4Target,
             false,
@@ -734,6 +737,18 @@ mod tests {
         assert_eq!(config.assistant_hidden_size, 8);
         assert_eq!(config.backbone_hidden_size, 16);
         assert_eq!(config.assistant_layer_count, 2);
+    }
+
+    #[test]
+    fn valid_contract_is_validated_for_unified_target() {
+        let root = temp_root("valid_unified");
+        write_valid_fixture(&root);
+        let status = load_gemma4_assistant_mtp_status(&root, &manifest("gemma4_unified"));
+
+        assert!(status.configured);
+        assert!(status.validated);
+        assert!(!status.enabled);
+        assert_eq!(status.disable_reason, Gemma4AssistantMtpDisableReason::None);
     }
 
     #[test]

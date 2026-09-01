@@ -1824,13 +1824,21 @@ fn lm_head_rows_singleton(
 
 /// Verify windows (2..=4 rows) must match singleton decode token-for-token;
 /// larger multi-token windows (MTP warmup) keep the batched projection.
+fn is_gemma4_text_target_family(model_family: &str) -> bool {
+    matches!(model_family, "gemma4" | "gemma4_unified")
+}
+
 fn lm_head_verify_window_projection(
     normed: &MlxArray,
     lm_head: &crate::weights::QuantizedWeight,
+    model_family: &str,
     seq: i32,
     hidden_size: i32,
 ) -> MlxArray {
     if (2..=4).contains(&seq) {
+        let _gemma_verify_qmm = (is_gemma4_text_target_family(model_family)
+            && crate::fastpath::gemma4_verify_qmm_lm_head_enabled())
+        .then(|| shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true));
         // The relaxed target verifier is explicitly allowed to use oMLX-style
         // lane-strided arithmetic. Its armed large-vocabulary kernel reads the
         // quantized head once for all verify rows; exact-profile calls remain
@@ -1924,8 +1932,13 @@ pub fn forward_all_positions_with_post_norm_greedy(
     }
     let seq_i = seq as i32;
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
-    let logits =
-        lm_head_verify_window_projection(&normed, &weights.lm_head, seq_i, cfg.hidden_size as i32);
+    let logits = lm_head_verify_window_projection(
+        &normed,
+        &weights.lm_head,
+        &cfg.model_family,
+        seq_i,
+        cfg.hidden_size as i32,
+    );
     // ArgmaxOnly: no softcap / no f32 cast (matches pure-direct greedy).
     let logits_out = reshape(&logits, &[seq_i, cfg.vocab_size as i32], None);
     (logits_out, normed)
@@ -2063,8 +2076,13 @@ pub fn forward_all_positions_with_post_norm_ids(
 
     let seq_i = seq as i32;
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
-    let logits =
-        lm_head_verify_window_projection(&normed, &weights.lm_head, seq_i, cfg.hidden_size as i32);
+    let logits = lm_head_verify_window_projection(
+        &normed,
+        &weights.lm_head,
+        &cfg.model_family,
+        seq_i,
+        cfg.hidden_size as i32,
+    );
     // Plain greedy acceptance only consumes argmax indices. Casting the
     // verify-window vocabulary tensor to f32 (and then applying a monotonic
     // softcap) cannot change those indices, but it does write another
@@ -2339,7 +2357,9 @@ pub fn gemma4_assistant_forward_one(
     constant_position: usize,
 ) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
     use Gemma4AssistantForwardError as E;
-    if assistant_cfg.model_family != "gemma4_assistant" || target_cfg.model_family != "gemma4" {
+    if assistant_cfg.model_family != "gemma4_assistant"
+        || !is_gemma4_text_target_family(&target_cfg.model_family)
+    {
         return Err(E::ModelFamilyMismatch);
     }
     gemma4_assistant_forward_one_validated(
@@ -2517,7 +2537,9 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
         target_shared_layers: Gemma4AssistantSharedKvLayers,
     ) -> Result<Self, Gemma4AssistantForwardError> {
         use Gemma4AssistantForwardError as E;
-        if assistant_cfg.model_family != "gemma4_assistant" || target_cfg.model_family != "gemma4" {
+        if assistant_cfg.model_family != "gemma4_assistant"
+            || !is_gemma4_text_target_family(&target_cfg.model_family)
+        {
             return Err(E::ModelFamilyMismatch);
         }
         let pre_projection = assistant_weights
@@ -5914,6 +5936,14 @@ mod tests {
     }
 
     #[test]
+    fn gemma4_text_target_family_includes_unified() {
+        assert!(is_gemma4_text_target_family("gemma4"));
+        assert!(is_gemma4_text_target_family("gemma4_unified"));
+        assert!(!is_gemma4_text_target_family("gemma4_assistant"));
+        assert!(!is_gemma4_text_target_family("qwen3"));
+    }
+
+    #[test]
     fn gemma4_assistant_forward_one_compiled_disabled_returns_none() {
         // Default flag is OFF (opt-in). Disabled path must not claim a result.
         assert!(
@@ -6049,6 +6079,21 @@ mod tests {
                 &assistant_cfg,
                 &weights,
                 &target_cfg,
+                &weights,
+                shared,
+            )
+            .is_ok()
+        );
+
+        let unified_target_cfg = ModelConfig {
+            model_family: "gemma4_unified".into(),
+            ..cfg(false)
+        };
+        assert!(
+            Gemma4AssistantDraftSession::open(
+                &assistant_cfg,
+                &weights,
+                &unified_target_cfg,
                 &weights,
                 shared,
             )

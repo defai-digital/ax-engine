@@ -60,6 +60,7 @@ class Gemma4Profile:
     target_ref: str
     assistant_ref: str
     prepared_slug: str
+    evidence_repo_id: str | None = None
     depth: int = 1
 
 
@@ -73,12 +74,43 @@ class BenchProfile:
     depth: int | None = None
 
 
+MLX0322_EXACT_CANDIDATE_ENV = {
+    "AX_MLX_DENSE_LONG_MT_BF16_FOLD": "1",
+    "AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH": "1",
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD": "1",
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE": "0.0001",
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE": "0.0001",
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_SENSITIVE_F32": "1",
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_SEQUENTIAL_ORACLE": "0",
+    "AX_MLX_GEMMA4_MOE_LONG_MT": "1",
+    "AX_MLX_GEMMA4_VERIFY_QMM_LM_HEAD": "1",
+    # Ordered sliding-KV views are required for direct/MTP token identity.
+    # A bounded rotating ring can select a different BF16 SDPA reduction when
+    # a three-token verify straddles the 1024-token Gemma window.
+    "AX_MLX_ROTATING_SLIDING_DECODE": "0",
+    "AX_MLX_MTP_BYPASS_MIN_SAMPLES": "1000",
+    "AX_MLX_MTP_DRAFT_MIN_CONFIDENCE": "0",
+    "AX_MLX_MTP_FIXED_DRAFT_DEPTH": "2",
+    "AX_MLX_MTP_MIN_REMAINING_TOKENS": "0",
+    "AX_MLX_MTP_VERIFY_QMM_MIN_N": "0",
+    "AX_MLX_MTP_VERIFY_QMM_MSG_SIMDGROUPS": "4",
+}
+
+
 BENCH_PROFILES = {
     "direct": BenchProfile(
         key="direct",
         label="direct decode (no assistant MTP / no n-gram)",
         mode="direct",
         env={},
+    ),
+    "direct_mlx0322_candidate": BenchProfile(
+        key="direct_mlx0322_candidate",
+        label="direct decode with MLX 0.32.2 candidate environment",
+        mode="direct",
+        env=dict(MLX0322_EXACT_CANDIDATE_ENV),
+        experimental=True,
+        depth=2,
     ),
     "assistant_mtp_default": BenchProfile(
         key="assistant_mtp_default",
@@ -172,6 +204,14 @@ BENCH_PROFILES = {
         env={},
         depth=2,
     ),
+    "assistant_mtp_mlx0322_candidate": BenchProfile(
+        key="assistant_mtp_mlx0322_candidate",
+        label="assistant MTP MLX 0.32.2 exact candidate",
+        mode="mtp",
+        env=dict(MLX0322_EXACT_CANDIDATE_ENV),
+        experimental=True,
+        depth=2,
+    ),
     "assistant_mtp_gpu_confidence": BenchProfile(
         key="assistant_mtp_gpu_confidence",
         label="assistant MTP GPU-exact confidence",
@@ -258,6 +298,17 @@ GEMMA4_PROFILES = {
         target_ref="mlx-community/gemma-4-26b-a4b-it-4bit",
         assistant_ref="google/gemma-4-26b-a4b-it-assistant",
         prepared_slug="models--ax-local--gemma-4-26b-a4b-it-assistant-mtp",
+    ),
+    "26b-a4b-6bit": Gemma4Profile(
+        key="26b-a4b-6bit",
+        label="Gemma 4 26B A4B AXQ 6-bit",
+        target_model_id="gemma-4-26b-a4b-it",
+        assistant_model_id="gemma-4-26b-a4b-it-assistant",
+        target_ref="AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit",
+        assistant_ref="google/gemma-4-26b-a4b-it-assistant",
+        prepared_slug="models--ax-local--gemma-4-26b-a4b-it-axq-6bit-assistant-mtp",
+        evidence_repo_id="AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
+        depth=2,
     ),
     "31b-4bit": Gemma4Profile(
         key="31b-4bit",
@@ -396,6 +447,7 @@ def build_ax_cmd(
     suite_file: Path,
     output_path: Path,
     model_dir: Path,
+    model_repo_id: str,
     mode: str,
     max_tokens: int,
     repetitions: int,
@@ -404,6 +456,10 @@ def build_ax_cmd(
     sampling: dict[str, Any],
     depth: int,
     no_build: bool,
+    max_load_average: float | None = None,
+    max_top_process_cpu_percent: float | None = None,
+    load_average_wait_timeout: float = 0.0,
+    load_average_poll_interval: float = 30.0,
 ) -> list[str]:
     """Build the bench_mlx_inference_stack invocation for one suite row.
 
@@ -421,6 +477,8 @@ def build_ax_cmd(
         str(AX_BENCH_SCRIPT),
         "--model-dir",
         str(model_dir),
+        "--model-repo-id",
+        model_repo_id,
         "--prompt-source",
         "real",
         "--real-prompt-suite",
@@ -446,6 +504,20 @@ def build_ax_cmd(
             cmd.append("--ax-mtp-disable-ngram-stacking")
     if no_build:
         cmd.append("--no-build-ax-engine")
+    if max_load_average is not None:
+        cmd += ["--max-load-average", str(max_load_average)]
+    if max_top_process_cpu_percent is not None:
+        cmd += [
+            "--max-top-process-cpu-percent",
+            str(max_top_process_cpu_percent),
+        ]
+    if max_load_average is not None or max_top_process_cpu_percent is not None:
+        cmd += [
+            "--load-average-wait-timeout",
+            str(load_average_wait_timeout),
+            "--load-average-poll-interval",
+            str(load_average_poll_interval),
+        ]
     return cmd
 
 
@@ -455,6 +527,7 @@ def run_ax_suite(
     suite_file: Path,
     output_path: Path,
     model_dir: Path,
+    model_repo_id: str,
     mode: str,
     max_tokens: int,
     repetitions: int,
@@ -464,12 +537,17 @@ def run_ax_suite(
     depth: int,
     no_build: bool,
     env_overrides: dict[str, str],
+    max_load_average: float | None = None,
+    max_top_process_cpu_percent: float | None = None,
+    load_average_wait_timeout: float = 0.0,
+    load_average_poll_interval: float = 30.0,
 ) -> Path:
     cmd = build_ax_cmd(
         python=python,
         suite_file=suite_file,
         output_path=output_path,
         model_dir=model_dir,
+        model_repo_id=model_repo_id,
         mode=mode,
         max_tokens=max_tokens,
         repetitions=repetitions,
@@ -478,6 +556,10 @@ def run_ax_suite(
         sampling=sampling,
         depth=depth,
         no_build=no_build,
+        max_load_average=max_load_average,
+        max_top_process_cpu_percent=max_top_process_cpu_percent,
+        load_average_wait_timeout=load_average_wait_timeout,
+        load_average_poll_interval=load_average_poll_interval,
     )
     run_subprocess(
         cmd,
@@ -827,10 +909,12 @@ def _index_rows_by_profile(rows: list[dict[str, Any]]) -> dict[str, dict[str, di
         model = row["model"]
         profile = row["profile"]
         profiles = index.setdefault(model, {})
+        profile_env = dict(row.get("profile_env") or {})
         entry = profiles.setdefault(
             profile,
             {
                 "mode": row["mode"],
+                "profile_env": profile_env,
                 "suites": {},
                 "affine_max_bits": None,
                 "affine_8bit_count": None,
@@ -840,6 +924,8 @@ def _index_rows_by_profile(rows: list[dict[str, Any]]) -> dict[str, dict[str, di
                 "model_dir": row.get("model_dir"),
             },
         )
+        if entry["profile_env"] != profile_env:
+            raise ValueError(f"{model}/{profile}: profile_env differs between suites")
         entry["suites"][row["suite"]] = row.get("decode_tok_s_median")
         if (row.get("assistant_draft_tokens") or 0) > 0:
             entry["drafted"] = True
@@ -879,11 +965,11 @@ def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
     parity_ok = True
     for model in sorted(index):
         profiles = index[model]
-        direct = next(
-            (entry for entry in profiles.values() if entry["mode"] == "direct"), None
-        )
+        direct_profiles = {
+            key: entry for key, entry in profiles.items() if entry["mode"] == "direct"
+        }
         mtp_baseline_key = _select_mtp_baseline(profiles)
-        if direct is None:
+        if not direct_profiles:
             warnings.append(
                 f"{model}: no direct-decode row; assistant-MTP cannot be judged "
                 "against same-artifact direct decode (PRD R1/R3)."
@@ -892,7 +978,26 @@ def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
             entry = profiles[profile_key]
             if entry["mode"] == "direct":
                 continue
-            if direct is not None:
+            direct_matches = [
+                (key, candidate)
+                for key, candidate in direct_profiles.items()
+                if candidate["profile_env"] == entry["profile_env"]
+            ]
+            if len(direct_matches) != 1:
+                parity_ok = False
+                if not direct_matches:
+                    warnings.append(
+                        f"{model}/{profile_key}: no direct-decode row has identical "
+                        "profile_env; speed comparison is invalid."
+                    )
+                else:
+                    names = ", ".join(key for key, _candidate in direct_matches)
+                    warnings.append(
+                        f"{model}/{profile_key}: multiple direct-decode rows have identical "
+                        f"profile_env ({names}); speed comparison is ambiguous."
+                    )
+            else:
+                direct_profile_key, direct = direct_matches[0]
                 result = compare_suite_decodes(entry["suites"], direct["suites"])
                 parity_fields = (
                     "affine_max_bits",
@@ -928,6 +1033,7 @@ def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
                         "profile": profile_key,
                         "mode": entry["mode"],
                         "baseline": "direct",
+                        "baseline_profile": direct_profile_key,
                         "decode_tok_s_agg": result["profile_agg"],
                         "baseline_tok_s_agg": result["baseline_agg"],
                         "delta_vs_baseline": result["delta"],
@@ -1169,6 +1275,28 @@ def main() -> None:
     parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--inter-case-cooldown", type=float, default=10.0)
     parser.add_argument(
+        "--max-load-average",
+        type=float,
+        help="Require the one-minute host load average to be at or below this value.",
+    )
+    parser.add_argument(
+        "--max-top-process-cpu-percent",
+        type=float,
+        help="Require the highest-CPU competing process to be at or below this percent.",
+    )
+    parser.add_argument(
+        "--load-average-wait-timeout",
+        type=float,
+        default=0.0,
+        help="Seconds to wait for the configured performance-condition gates.",
+    )
+    parser.add_argument(
+        "--load-average-poll-interval",
+        type=float,
+        default=30.0,
+        help="Seconds between performance-condition gate checks.",
+    )
+    parser.add_argument(
         "--sampling",
         type=json.loads,
         default={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
@@ -1179,9 +1307,9 @@ def main() -> None:
         type=int,
         default=None,
         help="Override the assistant draft depth for every profile (default: each "
-        "profile's own depth). The runtime caps this by the prepared bundle's "
-        "contract max_depth, so the bundle must be prepared with --max-depth >= "
-        "this value for it to take effect.",
+        "profile's own depth). Gemma recurrent drafting is a runtime capability "
+        "of the same assistant weights, so this may exceed the historical bundle "
+        "contract max_depth=1 up to the admitted runtime cap.",
     )
     parser.add_argument(
         "--resume",
@@ -1246,6 +1374,7 @@ def main() -> None:
                         suite_file=suite_file,
                         output_path=artifact_path,
                         model_dir=model_dir,
+                        model_repo_id=profile.evidence_repo_id or profile.target_ref,
                         mode=mode,
                         max_tokens=args.max_tokens,
                         repetitions=args.repetitions,
@@ -1255,6 +1384,10 @@ def main() -> None:
                         depth=row_depth,
                         no_build=args.no_build_ax_engine,
                         env_overrides=profile_env,
+                        max_load_average=args.max_load_average,
+                        max_top_process_cpu_percent=args.max_top_process_cpu_percent,
+                        load_average_wait_timeout=args.load_average_wait_timeout,
+                        load_average_poll_interval=args.load_average_poll_interval,
                     )
                 row = summarize_artifact(artifact_path, expected_engine=ENGINE_KEYS[mode])
                 row.update(
@@ -1285,6 +1418,10 @@ def main() -> None:
         "repetitions": args.repetitions,
         "cooldown": args.cooldown,
         "inter_case_cooldown": args.inter_case_cooldown,
+        "max_load_average": args.max_load_average,
+        "max_top_process_cpu_percent": args.max_top_process_cpu_percent,
+        "load_average_wait_timeout": args.load_average_wait_timeout,
+        "load_average_poll_interval": args.load_average_poll_interval,
         "rows": rows,
         "comparison": comparison,
         "optimized_scenarios": build_optimized_scenarios(comparison["comparisons"]),

@@ -416,13 +416,17 @@ fn layer_shell_post_attention(
                             &[1, 1, 1],
                             None,
                         );
-                        h1_rows.push(ffn_swiglu_row_exact(
-                            cfg,
-                            w,
-                            &n2,
-                            w.ffn_post_norm1.as_ref(),
-                            layer_idx,
-                        ));
+                        let h1 = {
+                            // The invariant projection combines verify rows in
+                            // its reduction contract. Gemma's dense MoE branch
+                            // must retain singleton arithmetic for exact greedy
+                            // verification; router and expert paths stay batched.
+                            let _singleton_projection =
+                                crate::fastpath::qwen_linear_mtp_exact_enabled()
+                                    .then(|| crate::fastpath::scoped_qwen_linear_mtp_exact(false));
+                            ffn_swiglu_row_exact(cfg, w, &n2, w.ffn_post_norm1.as_ref(), layer_idx)
+                        };
+                        h1_rows.push(h1);
                         let h2_norm = w
                             .ffn_norm2
                             .as_ref()
@@ -466,7 +470,12 @@ fn layer_shell_post_attention(
                     concatenate(&refs, 1, None)
                 } else {
                     let dense_started = profile_gemma4_moe_decode.then(Instant::now);
-                    let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
+                    let h1 = {
+                        let _singleton_projection =
+                            crate::fastpath::qwen_linear_mtp_exact_enabled()
+                                .then(|| crate::fastpath::scoped_qwen_linear_mtp_exact(false));
+                        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx)
+                    };
                     if let Some(started) = dense_started {
                         profile_eval_elapsed(
                             profile_gemma4_moe_decode,
@@ -931,6 +940,7 @@ fn layer_forward_internal(
     skip_post_attention_ffn: bool,
     mrope: Option<&crate::qwen3_vl::QwenMropeCosSin>,
 ) -> MlxArray {
+    let _dense_long_mt_layer_scope = fastpath::scoped_dense_long_mt_layer(layer_idx);
     let (
         head_dim,
         rope_theta,

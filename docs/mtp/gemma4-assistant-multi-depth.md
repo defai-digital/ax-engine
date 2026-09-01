@@ -6,10 +6,31 @@ estimate. **1.10–1.20x decode throughput** on the 26B model while holding
 assistant accept **>97%** on every fair-MTP suite. Default ships as depth-2 with
 a **0.85** first-token / **0.999** deep confidence gate; correctness-preserving.
 
-Files: `crates/ax-engine-mlx/src/runner.rs`
+Files: `crates/ax-engine-mlx/src/runner/mod.rs`
 (`load_gemma4_assistant_mtp_runtime`, `gemma4_assistant_draft_token`),
 `crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs` (gate + depth constants).
 Probe: `crates/ax-engine-mlx/src/bin/gemma_depth_probe.rs`.
+
+## MLX 0.32.2 long-context verifier compatibility
+
+Dense Gemma 4 assistant-MTP verification needs a selective numerical guard on
+MLX 0.32.2. An all-BF16 singleton-query fold can accumulate a different
+long-context KV trajectory from direct decode and flip a near-tied greedy
+token. AX Engine keeps the fast BF16 fold for most layers while using f32
+attention for the middle-upper one-sixth layer band once the verify window
+reaches 512 tokens. This path is default-on and records
+`ax_mtp_gemma_sensitive_f32_steps`.
+
+The guard is deliberately narrow: it applies only to dense Gemma assistant-MTP
+multi-token verification. Gemma 26B A4B MoE and non-Gemma MTP routes do not
+enter it. `AX_MLX_GEMMA4_ASSISTANT_MTP_SENSITIVE_F32=0` is an ablation
+kill-switch, not a supported production setting for dense long-context Gemma
+MTP.
+
+Differential diagnostics must compare complete greedy token sequences against
+same-artifact direct decode. A functional exactness pass is not a Tier 2 speed
+certificate; certification still requires the immutable model revision,
+approved idle factory host, and the profile's throughput threshold.
 
 ## Why depth > 1 works (and was blocked)
 
@@ -91,6 +112,10 @@ above 0.999.
 - `AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE` — deep-position
   (2nd token+) gate (default 0.999; loosen toward 0.99 to trade accept for
   speculation on easy content).
+- `AX_MLX_GEMMA4_ASSISTANT_MTP_SENSITIVE_F32` — keep the numerically sensitive
+  dense long-context verifier layer band in f32 (default **ON**). Disable only
+  for controlled diagnostics; the setting does not affect Gemma MoE or other
+  model families.
 - `AX_MLX_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH` — fuse multi-depth drafting into a
   **single materialize** (lazy argmax token chain + GPU-exact confidences).
   **Default OFF** (opt-in `=1`). Host gates still apply after materialisation

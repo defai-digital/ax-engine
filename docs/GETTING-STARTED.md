@@ -242,7 +242,7 @@ activated, so a bare `cargo build` on a dev machine cannot silently drift to
 another MLX install. `scripts/check-mlx-version.sh` verifies the same
 contract without compiling: pinned version, wheel-bundled `libmlx.dylib`, and
 non-Homebrew provenance. It reports `LC_BUILD_VERSION` for diagnosis, but does
-not use `minos` as a NAX proxy: the admitted PyPI MLX 0.32.1 wheel reports
+not use `minos` as a NAX proxy: the admitted PyPI MLX 0.32.2 wheel reports
 `minos 26.2`; older admitted wheels reported lower deployment targets while
 still containing certified kernels. Bumping the pin is deliberate: update
 `mlx.version`, rerun the qmm microbench parity gate and the bit-exactness

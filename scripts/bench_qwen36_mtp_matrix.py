@@ -43,7 +43,7 @@ HF_CACHE = Path(
 )
 DEFAULT_PEER_CACHES = tuple(
     path
-    for path in (HF_CACHE, Path("/Volumes/Ext4T/models/hub"))
+    for path in (HF_CACHE, Path("/Volumes/Ext16TR0/huggingface/hub"))
     if path.exists()
 )
 

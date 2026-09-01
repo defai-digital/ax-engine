@@ -1254,10 +1254,12 @@ fn run_compiled_mtp_draft(
         );
         let store = FIXED_DRAFT_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         let mut guard = store.lock().ok()?;
-        let compiled = guard.entry(key).or_insert_with(|| {
-            build_compiled_mtp_draft(head, weights, cfg, max_depth, sample_temperature, true)
-        });
-        let compiled = compiled.as_ref()?;
+        let compiled = guard
+            .entry(key)
+            .or_insert_with(|| {
+                build_compiled_mtp_draft(head, weights, cfg, max_depth, sample_temperature, true)
+            })
+            .as_ref()?;
         compiled
             .try_apply(&[
                 base_inputs[0],

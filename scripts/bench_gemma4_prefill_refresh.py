@@ -20,7 +20,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 BENCH = REPO / "scripts" / "bench_mlx_inference_stack.py"
-HF = Path(os.environ.get("AX_HF_CACHE", "/Volumes/Ext4T/models"))
+HF = Path(os.environ.get("AX_HF_CACHE", "/Volumes/Ext16TR0/models"))
 MODELS = [
     {
         "name": "gemma-4-12b-it-ffn4",

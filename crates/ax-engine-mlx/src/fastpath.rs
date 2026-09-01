@@ -376,6 +376,20 @@ env_flag_default_on!(
     "AX_MLX_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_MTP_SENSITIVE_F32` — use f32 long-context
+    /// attention for the numerically sensitive middle-upper layer band of a
+    /// dense Gemma assistant-MTP verifier while retaining the BF16 fold on the
+    /// remaining layers.
+    ///
+    /// **Default: ON.** Four-prompt differential testing on immutable 12B and
+    /// 31B packs found that all-BF16 cache drift can flip long-context near
+    /// ties. The selective band restores direct-token identity without the
+    /// full-f32 verifier cost. The kill-switch is diagnostic only.
+    gemma4_assistant_mtp_sensitive_f32_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_MTP_SENSITIVE_F32"
+);
+
 env_flag!(
     /// `AX_MLX_GEMMA4_ASSISTANT_MTP_EARLY_GEN_PURE_DIRECT` — experimental:
     /// under formal multi-token verify (`SEQUENTIAL_ORACLE=0`), force the
@@ -1867,6 +1881,14 @@ pub(crate) fn moe_mt_bf16_identity_enabled() -> bool {
 }
 
 env_flag!(
+    /// `AX_MLX_GEMMA4_VERIFY_QMM_LM_HEAD` — route an eligible affine Gemma 4
+    /// verifier language head through the skinny multi-row verify kernel.
+    /// Admission-only until exactness and throughput are proven on the pin.
+    gemma4_verify_qmm_lm_head_enabled,
+    "AX_MLX_GEMMA4_VERIFY_QMM_LM_HEAD"
+);
+
+env_flag!(
     /// `AX_MLX_GEMMA_MT_PERPOS_FFN` — per-position dense FFN on short multi-token
     /// verify (seq 2..8). Improves 4-bit greedy exactness vs pure-direct but
     /// collapses multi-token speed (smokef12/17). Opt-in for 4-bit identity
@@ -2235,9 +2257,78 @@ env_flag_default_on!(
     /// was exact under f32 fold at ~0.91× weighted). Kill-switch via
     /// `AX_MLX_DENSE_LONG_MT_BF16_FOLD=0` restores the prior f32 long fold.
     /// Short multi-token still uses f32 batched SDPA for general exactness.
-    dense_long_mt_bf16_fold_enabled,
+    dense_long_mt_bf16_fold_enabled_env,
     "AX_MLX_DENSE_LONG_MT_BF16_FOLD"
 );
+
+thread_local! {
+    static DENSE_LONG_MT_LAYER_SCOPE: Cell<Option<usize>> = const { Cell::new(None) };
+    static DENSE_LONG_MT_F32_RANGE_SCOPE: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+}
+
+#[must_use]
+pub(crate) struct DenseLongMtLayerScope {
+    previous: Option<usize>,
+}
+
+impl Drop for DenseLongMtLayerScope {
+    fn drop(&mut self) {
+        DENSE_LONG_MT_LAYER_SCOPE.with(|current| current.set(self.previous));
+    }
+}
+
+pub(crate) fn scoped_dense_long_mt_layer(layer_idx: usize) -> DenseLongMtLayerScope {
+    let previous = DENSE_LONG_MT_LAYER_SCOPE.with(|current| {
+        let previous = current.get();
+        current.set(Some(layer_idx));
+        previous
+    });
+    DenseLongMtLayerScope { previous }
+}
+
+#[must_use]
+pub(crate) struct DenseLongMtF32RangeScope {
+    previous: Option<(usize, usize)>,
+}
+
+impl Drop for DenseLongMtF32RangeScope {
+    fn drop(&mut self) {
+        DENSE_LONG_MT_F32_RANGE_SCOPE.with(|current| current.set(self.previous));
+    }
+}
+
+pub(crate) fn scoped_dense_long_mt_f32_range(
+    start: usize,
+    count: usize,
+) -> DenseLongMtF32RangeScope {
+    let previous = DENSE_LONG_MT_F32_RANGE_SCOPE.with(|current| {
+        let previous = current.get();
+        current.set(Some((start, count)));
+        previous
+    });
+    DenseLongMtF32RangeScope { previous }
+}
+
+fn dense_long_mt_bf16_fold_enabled_for(
+    enabled: bool,
+    layer_idx: Option<usize>,
+    f32_range: Option<(usize, usize)>,
+) -> bool {
+    enabled
+        && !layer_idx.is_some_and(|layer_idx| {
+            f32_range.is_some_and(|(start, count)| {
+                layer_idx >= start && layer_idx < start.saturating_add(count)
+            })
+        })
+}
+
+pub fn dense_long_mt_bf16_fold_enabled() -> bool {
+    dense_long_mt_bf16_fold_enabled_for(
+        dense_long_mt_bf16_fold_enabled_env(),
+        DENSE_LONG_MT_LAYER_SCOPE.with(Cell::get),
+        DENSE_LONG_MT_F32_RANGE_SCOPE.with(Cell::get),
+    )
+}
 
 env_flag!(
     /// `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` — opt-in direct C++ route for
@@ -9218,6 +9309,17 @@ mod tests {
     fn reuse_la_initial_state_zeros_is_flag_gated() {
         assert!(should_reuse_la_initial_state_zeros_for(true));
         assert!(!should_reuse_la_initial_state_zeros_for(false));
+    }
+
+    #[test]
+    fn dense_long_mt_sensitive_f32_range_only_disables_selected_layers() {
+        let range = Some((28, 8));
+        assert!(dense_long_mt_bf16_fold_enabled_for(true, Some(27), range));
+        assert!(!dense_long_mt_bf16_fold_enabled_for(true, Some(28), range));
+        assert!(!dense_long_mt_bf16_fold_enabled_for(true, Some(35), range));
+        assert!(dense_long_mt_bf16_fold_enabled_for(true, Some(36), range));
+        assert!(!dense_long_mt_bf16_fold_enabled_for(false, Some(27), range));
+        assert!(dense_long_mt_bf16_fold_enabled_for(true, None, range));
     }
 
     #[test]

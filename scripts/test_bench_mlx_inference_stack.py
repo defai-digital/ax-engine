@@ -4065,6 +4065,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us": 100,
                     "ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us": 40,
                     "ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us": 80,
+                    "ax_mtp_gemma_sensitive_f32_steps": 3,
                     "unrelated": 99,
                 }
             }
@@ -4073,6 +4074,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_gemma4_assistant_mtp_enabled"], 1)
         self.assertEqual(telemetry["ax_mlx_gemma4_assistant_mtp_confidence_mode"], 1)
         self.assertEqual(telemetry["ax_mlx_gemma4_assistant_mtp_draft_tokens"], 4)
+        self.assertEqual(telemetry["ax_mtp_gemma_sensitive_f32_steps"], 3)
         self.assertNotIn("unrelated", telemetry)
 
         summary = bench.summarize_ax_mlx_gemma4_assistant_mtp(
@@ -4090,6 +4092,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us": 50,
                         "ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us": 20,
                         "ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us": 60,
+                        "ax_mtp_gemma_sensitive_f32_steps": 2,
                     }
                 },
             ]
@@ -4102,6 +4105,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_rejected_tokens"], 2)
         self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_corrections"], 2)
         self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"], 666)
+        self.assertEqual(summary["ax_mtp_gemma_sensitive_f32_steps"], 5)
 
     def test_ax_mlx_linear_attention_profile_is_extracted_and_summarized(self) -> None:
         profile = bench.extract_ax_mlx_linear_attention_profile(

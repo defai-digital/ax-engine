@@ -648,7 +648,7 @@ extern "C" int mlx_fast_rope_dynamic(mlx_array* r, const mlx_array x, int dims, 
 extern "C" int mlx_fast_scaled_dot_product_attention(mlx_array* r,
     const mlx_array q, const mlx_array k, const mlx_array v,
     float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, const mlx_stream s) {
-  AX_TRY { aset(r, mx::fast::scaled_dot_product_attention(aref(q), aref(k), aref(v), scale, safe_str(mask_mode), opt_arr(mask_arr), opt_arr(sinks), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::fast::scaled_dot_product_attention(aref(q), aref(k), aref(v), scale, safe_str(mask_mode), opt_arr(mask_arr), opt_arr(sinks), false, sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_fast_layer_norm(mlx_array* r, const mlx_array x, const mlx_array w, const mlx_array b, float eps, const mlx_stream s) {
   AX_TRY { aset(r, mx::fast::layer_norm(aref(x), opt_arr(w), opt_arr(b), eps, sd(s))); return 0; } AX_CATCH }
 

@@ -5531,7 +5531,7 @@ fn hf_hub_snapshot_for_repo(repo_id: &str) -> Option<PathBuf> {
         roots.push(PathBuf::from(home).join(".cache/huggingface/hub"));
     }
     // Common operator override used for large AutomatosX packs on this host.
-    let ext = PathBuf::from("/Volumes/Ext4T/models/hub");
+    let ext = PathBuf::from("/Volumes/Ext16TR0/huggingface/hub");
     if ext.is_dir() {
         roots.push(ext);
     }
