@@ -590,6 +590,12 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
             return "missing required tensor role assistant_post_projection"
 
     is_nemotron_h = model_family == "nemotron_h"
+    value_from_key_layers = manifest.get("attention_value_from_key_layers", [])
+    if not isinstance(value_from_key_layers, list) or any(
+        not isinstance(layer_index, int) or isinstance(layer_index, bool)
+        for layer_index in value_from_key_layers
+    ):
+        return "invalid attention_value_from_key_layers"
     for layer_index in range(layer_count):
         roles = layer_roles.get(layer_index)
         if not roles:
@@ -687,7 +693,10 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
             has_split_qkv = (
                 "attention_q" in roles
                 and "attention_k" in roles
-                and "attention_v" in roles
+                and (
+                    "attention_v" in roles
+                    or layer_index in value_from_key_layers
+                )
             )
             has_mla = any(
                 role in roles
@@ -831,6 +840,12 @@ def manifest_needs_media_rebuild(model_dir: Path) -> bool:
         required_prefix_groups = (
             ("vision_tower.", "model.vision_tower."),
             ("embed_vision.", "model.embed_vision."),
+        )
+    elif model_type in {"gemma4_unified", "gemma4_unified_text"}:
+        required_prefix_groups = (
+            ("vision_embedder.", "model.vision_embedder."),
+            ("embed_vision.", "model.embed_vision."),
+            ("embed_audio.", "model.embed_audio."),
         )
     else:
         return False

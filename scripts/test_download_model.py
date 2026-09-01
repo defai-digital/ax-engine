@@ -1356,6 +1356,31 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             self.assertTrue(download_model.manifest_needs_media_rebuild(model_dir))
 
+    def test_gemma_unified_visual_manifest_is_marked_for_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "gemma4_unified", "vision_config": {}})
+            )
+            (model_dir / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "language_model.model.embed_tokens.weight": "model.safetensors",
+                            "vision_embedder.patch_dense.weight": "optiq/optiq_vision.safetensors",
+                            "embed_vision.embedding_projection.weight": (
+                                "optiq/optiq_vision.safetensors"
+                            ),
+                        }
+                    }
+                )
+            )
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps({"tensors": [{"name": "language_model.model.embed_tokens.weight"}]})
+            )
+
+            self.assertTrue(download_model.manifest_needs_media_rebuild(model_dir))
+
     def test_embedding_repos_use_standard_download_flow(self) -> None:
         repo_id = "AutomatosX/AX-Qwen3-Embedding-0.6B-MLX-8bit"
         with tempfile.TemporaryDirectory() as tmp:
@@ -2210,6 +2235,21 @@ class ManifestHeaderBindingTest(unittest.TestCase):
             self._write_bound_fixture(model_dir, include_unrelated=True)
 
             self.assertFalse(download_model._manifest_needs_rebuild(model_dir))
+
+    def test_manifest_readiness_allows_value_from_key_attention_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            manifest = self._write_bound_fixture(model_dir)
+            packed = next(
+                tensor
+                for tensor in manifest["tensors"]
+                if tensor["role"] == "attention_qkv_packed"
+            )
+            packed["role"] = "attention_q"
+            manifest["tensors"].append({**packed, "role": "attention_k"})
+            manifest["attention_value_from_key_layers"] = [0]
+
+            self.assertIsNone(download_model._manifest_missing_required_roles(manifest))
 
     def test_supported_safetensors_dtypes_bind_to_manifest_names(self) -> None:
         supported_dtypes = {
