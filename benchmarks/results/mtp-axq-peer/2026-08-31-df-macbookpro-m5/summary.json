@@ -1,0 +1,96 @@
+{
+  "schema_version": "ax.mtp_axq_peer_campaign.v1",
+  "campaign_date": "2026-08-31",
+  "host": {
+    "label": "df-macbookpro-m5",
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os": "macOS 26.6.2"
+  },
+  "contract": {
+    "prompt_suite": "benchmarks/prompts/mtp-suites/flappy.jsonl",
+    "prompt_cases": 4,
+    "prompt_tokens": "AX Engine-generated token artifacts reused by all compatible rows",
+    "generation_tokens": 256,
+    "warmup_repetitions": 2,
+    "measured_repetitions": 5,
+    "cooldown_seconds": 3,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "thinking": false,
+    "prefix_cache": "disabled",
+    "ngram_stacking": "disabled",
+    "aggregate_metric": "median decode tok/s over 20 measured runs"
+  },
+  "runtimes": {
+    "ax_engine": {
+      "version": "7.2.0",
+      "artifact": "raw/qwen38-ax.json, raw/qwen36-ax.json, raw/gemma31-ax.json, raw/gemma26-ax.json",
+      "build_note": "The remote benchmark binary was built from a tracked-dirty 7.2.0 worktree; raw artifacts retain the build identity."
+    },
+    "mtplx": {
+      "version": "2.9.0",
+      "artifact": "raw/qwen38-mtplx.json, raw/qwen36-mtplx.json",
+      "note": "Qwen rows used the MTPLX MTP runner at depth 1 with unverified AXQ compatibility diagnostics."
+    },
+    "omlx": {
+      "version": "0.6.4",
+      "mlx_version": "0.32.0",
+      "artifact": "raw/qwen38-omlx.json, raw/qwen36-omlx.json",
+      "note": "OMLX used BatchedEngine with mtp_enabled and one draft token. The AXQ vision sidecar was excluded from the text-only staging because the OMLX VLM loader rejected its vision-key layout."
+    }
+  },
+  "model_mapping": {
+    "requested_qwen36_25b": "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
+    "requested_gemma4_35b": "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP"
+  },
+  "rows": [
+    {
+      "model": "Qwen3.8 27B",
+      "model_repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+      "ax_engine_decode_tok_s": 45.05,
+      "mtplx_decode_tok_s": 46.68,
+      "omlx_decode_tok_s": 37.04,
+      "mtplx_accept_rate": 1.0,
+      "ax_engine_mtp": "greedy_exact",
+      "omlx_mtp": "enabled"
+    },
+    {
+      "model": "Qwen3.6 27B",
+      "requested_label": "Qwen3.6 25B",
+      "model_repo_id": "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
+      "ax_engine_decode_tok_s": 45.53,
+      "mtplx_decode_tok_s": 46.86,
+      "omlx_decode_tok_s": 38.39,
+      "mtplx_accept_rate": 0.9951,
+      "ax_engine_mtp": "greedy_exact",
+      "omlx_mtp": "enabled"
+    },
+    {
+      "model": "Gemma4 31B",
+      "requested_label": "Gemma4 35B",
+      "model_repo_id": "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP",
+      "ax_engine_decode_tok_s": 22.49,
+      "mtplx_decode_tok_s": null,
+      "omlx_decode_tok_s": null,
+      "peer_status": {
+        "mtplx": "unsupported: AXQ pack declares an MTP layer but ships no MTPLX-compatible root MTP weights",
+        "omlx": "unsupported: OMLX 0.6.4 VLM loader rejected the AXQ vision-key layout"
+      },
+      "ax_engine_mtp": "assistant_mtp_greedy_exact"
+    },
+    {
+      "model": "Gemma4 26B-A4B",
+      "model_repo_id": "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP",
+      "ax_engine_decode_tok_s": 112.70,
+      "mtplx_decode_tok_s": null,
+      "omlx_decode_tok_s": null,
+      "peer_status": {
+        "mtplx": "unsupported: AXQ pack declares an MTP layer but ships no MTPLX-compatible root MTP weights",
+        "omlx": "unsupported: OMLX 0.6.4 VLM loader rejected the AXQ vision-key layout"
+      },
+      "ax_engine_mtp": "assistant_mtp_greedy_exact_with_one_incomplete_telemetry_row"
+    }
+  ]
+}

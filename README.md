@@ -4,7 +4,7 @@ AX Engine is a **Mac-first** LLM inference runtime for Apple Silicon. Install
 with Homebrew, download a curated model, and serve OpenAI-compatible endpoints
 locally — with a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP,
 multi-model serving with exact-prompt prefix reuse, and peer-backed benchmarks
-against `mlx-lm`, MTPLX, and lightning-mlx.
+against `mlx-lm`, MTPLX, and OMLX.
 
 NVIDIA/CUDA fleet serving lives in
 [AX Serving](https://github.com/defai-digital/ax-serving). AX Engine remains the
@@ -29,8 +29,9 @@ headroom. For multi-model serving, longer contexts, and larger packs
   sidecar or assistant weights, so one standard download is serve-ready; AX
   speeds up **14 of 15** exact same-package 6-bit MTP rows (**1.68×**
   geometric mean; **0.88×–2.56×** range). In the newest Qwen3.6 peer campaign,
-  AX beats lightning-mlx on both 35B-A3B rows but trails MTPLX on all three
-  comparable rows
+  The latest AXQ MTP campaign compares AX Engine with MTPLX 2.9.0 and OMLX
+  0.6.4 on Qwen3.8/Qwen3.6; Gemma4 assistant-MTP peer lanes are unsupported
+  where the peers reject the AXQ contract
 - **Faster single-model serving** — on the path users actually measure
   (streaming OpenAI chat), AX Engine **6.13.1** leads a peer MLX serving
   engine **0.4.3** in **8/8** Qwen 3.6 decode cells, with **+12.9%**
@@ -329,7 +330,7 @@ serving, MTP, direct, or embedding rows, and do not mix **M3 Max** vs
 | --- | --- | --- | --- |
 | **Single-client serving** | AX Engine · peer MLX serving engine **0.4.3** | **8/8** decode wins · MoE **~21–24%** faster · GM decode **+12.9%** | M5 Max · 2026-08-06 · AX **6.13.1** |
 | **Multi-model (S1)** | AX one process · multi-process peer MLX server | **All locked gates** · thr **5.03×** | M5 Max · 2026-08-06 |
-| **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [lightning-mlx](https://github.com/samuelfaj/lightning-mlx) | Exact 6-bit MTP: **14/15 wins**, **1.68× GM**; peer: AX trails MTPLX, beats lightning-mlx **2/3** | M5 Max · 2026-08-06/07 |
+| **MTP generation** | AX · [MTPLX](https://github.com/youssofal/MTPLX) · [OMLX](https://github.com/moxin-org/omlx) | Latest AXQ campaign: AX exact MTP vs MTPLX 2.9.0 and OMLX 0.6.4 on Qwen3.8/Qwen3.6; Gemma4 assistant-MTP peer lanes are unsupported | M5 Max · 2026-08-31 · AX 7.2.0 |
 | **Direct generation** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) | AX **30/30** decode wins vs separate-run mlx-lm · **+4.6% GM** | M5 Max · 2026-08-07 · separate runs |
 | Embeddings | AX · mlx-lm / mlx-embeddings | Qwen **18/18** wins, **+1.56% GM**; EmbeddingGemma **6/6**, **+7.99% GM** | M5 Max · 2026-08-07 · same-session paired |
 | **Qwen3.8 direct refresh** | AX · [mlx-lm](https://github.com/ml-explore/mlx-lm) | AXQ 6-bit AX direct decode **34.04–34.59 tok/s** across p128–p2048 | M5 Max 128 GB · 2026-08-30 · v7.2.0 refresh |
@@ -376,33 +377,35 @@ exact-prompt **prefix reuse** against a multi-process peer MLX server
 throughput ratio **5.03×** (TTFT and stream-gap p95 also win). Detail:
 [S1 results](docs/PERFORMANCE-RESULTS.md#session-mode-multi-model-serving-s1-single-process-vs-multi-process-peer).
 
-### MTP: AX Engine vs MTPLX vs lightning-mlx
+### MTP: AX Engine vs MTPLX vs OMLX
 
-Qwen3.6 peer decode (closest fair metric across engines). 27B 4-bit uses the
-**same** AX sidecar on all three; 35B-A3B rows are production-configuration
-packages. All rows come from one clean, serialized physical-host campaign.
-Fairness notes: [Qwen3.6 MTP peer comparison](docs/mtp/qwen36-peer-comparison.md).
+This is the current AXQ campaign on `df-macbookpro-m5` (Apple M5 Max, 128 GB,
+macOS 26.6.2). It uses the repository `flappy` prompt suite, four prompt
+cases, 256 generated tokens, greedy sampling, two warmups, five measured
+repetitions, three-second cooldowns, and disabled prefix-cache/n-gram
+stacking. Values are the median decode throughput over 20 measured runs.
 
-<img width="100%" src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison: AX Engine, MTPLX, and lightning-mlx decode throughput">
+The requested Qwen3.6 25B and Gemma4 35B labels do not correspond to published
+AutomatosX AXQ packs. The measured pack mappings are Qwen3.6 27B and Gemma4
+31B, respectively. Exact raw artifacts and runtime caveats are in
+[the campaign result](benchmarks/results/mtp-axq-peer/2026-08-31-df-macbookpro-m5/).
 
-| Target | AX Engine | MTPLX | lightning-mlx | Readout |
+<img width="100%" src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="AXQ MTP decode throughput on Apple M5 Max comparing AX Engine, MTPLX, and OMLX">
+
+| AXQ model | AX Engine 7.2.0 | MTPLX 2.9.0 | OMLX 0.6.4 | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 56.1 tok/s | **59.9** tok/s | 57.3 tok/s | Same sidecar; AX trails MTPLX 6.3% and lightning-mlx 2.0% |
-| Qwen3.6 27B 6-bit | 44.8 tok/s | — | — | No official peer 27B 6-bit MTP artifact |
-| Qwen3.6 35B-A3B 4-bit | 140.9 tok/s | **145.1** tok/s | 124.2 tok/s | AX trails MTPLX 2.9%; leads lightning-mlx 13.4% |
-| Qwen3.6 35B-A3B 6-bit | 120.5 tok/s | **125.2** tok/s | 102.0 tok/s | AX trails MTPLX 3.7%; leads lightning-mlx 18.2% |
+| Qwen3.8 27B 6-bit | **45.05 tok/s** | 46.68 tok/s | 37.04 tok/s | AX exact MTP; MTPLX accepted 100% of drafted tokens; OMLX text-only staging |
+| Qwen3.6 27B 6-bit *(requested 25B)* | **45.53 tok/s** | 46.86 tok/s | 38.39 tok/s | AX exact MTP; MTPLX accepted 99.51% of drafted tokens; OMLX text-only staging |
+| Gemma4 31B 6-bit *(requested 35B)* | **22.49 tok/s** | unsupported | unsupported | AX assistant-MTP depth 2; peers rejected the AXQ vision/assistant contract |
+| Gemma4 26B-A4B 6-bit | **112.70 tok/s** | unsupported | unsupported | AX assistant-MTP depth 2; one AX telemetry row was incomplete |
 
-**Same-package AX acceleration** (exact sampled MTP, v6.13.1, M5 Max — not a
-peer leaderboard): **14 of 15** target/suite rows speed up decode, with a
-**1.68×** geometric mean and **0.88×–2.56×** range over AX direct on the same
-6-bit package. Every row has 100% MTP step coverage. The one regression is
-Qwen3.6 35B-A3B `python_modules_long` at **0.88×**; Qwen3.6 35B-A3B reaches
-**1.01×–1.09×** on the other two suites, while Gemma 4 12B reaches
-**2.02×–2.54×**.
+The OMLX Qwen rows use `BatchedEngine` with `mtp_enabled` and an imported AXQ
+MTP sidecar; its VLM loader rejected this AXQ vision-key layout, so these are
+text-only OMLX measurements. MTPLX rejected both Gemma packs because they
+declare an MTP layer but do not ship MTPLX-compatible root MTP weights. No
+unsupported lane is replaced with direct-mode throughput.
 
-<img width="100%" src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit exact sampled-MTP acceleration vs same-package direct">
-
-Per-suite tables: [Performance Results: MTP](docs/PERFORMANCE-RESULTS.md#session-mode-mtp-generation).
+Per-runtime raw artifacts and the full contract: [AXQ MTP peer campaign](benchmarks/results/mtp-axq-peer/2026-08-31-df-macbookpro-m5/).
 
 ### Qwen3.8 27B AXQ 6-bit refresh (2026-08-30)
 
