@@ -27,10 +27,9 @@ ALLOWED_PREFIXES = (
     ".internal/",
     "benchmarks/results/",
     "docs/designs/",
-    # Historical release/migration notes may keep the retirement record.
+    # Historical release notes may keep the retirement record.
     # Public changelog is GitHub Releases only (see docs/releases/README.md).
     "docs/releases/",
-    "docs/MIGRATION.md",
     # This checker and its unit test name the needle by design.
     "scripts/check_no_turboquant_references.py",
     "scripts/test_check_no_turboquant_references.py",

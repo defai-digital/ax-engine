@@ -2209,6 +2209,53 @@ class WrapperContractTests(unittest.TestCase):
                 calls, [[str(bundled), "generate-manifest", "--validate", str(model_dir)]]
             )
 
+    def test_bundled_binary_ignores_stale_source_checkout_staging(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package_dir = root / "python" / "ax_engine"
+            binary = package_dir / "_bin" / "ax-engine-bench"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("stale wheel staging")
+            binary.chmod(0o755)
+            (root / "Cargo.toml").write_text("[workspace]\n")
+
+            with patch.object(self.ax_engine, "__file__", str(package_dir / "__init__.py")):
+                self.assertIsNone(self.ax_engine._bundled_binary("ax-engine-bench"))
+
+    def test_bundled_binary_accepts_installed_wheel_payload(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "site-packages" / "ax_engine"
+            binary = package_dir / "_bin" / "ax-engine-bench"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("wheel payload")
+            binary.chmod(0o755)
+
+            with patch.object(self.ax_engine, "__file__", str(package_dir / "__init__.py")):
+                self.assertEqual(
+                    self.ax_engine._bundled_binary("ax-engine-bench"), binary.resolve()
+                )
+
+    def test_bundled_binary_accepts_workspace_local_wheel_payload(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package_dir = root / ".venv" / "lib" / "site-packages" / "ax_engine"
+            binary = package_dir / "_bin" / "ax-engine-bench"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("wheel payload")
+            binary.chmod(0o755)
+            (root / "Cargo.toml").write_text("[workspace]\n")
+
+            with patch.object(self.ax_engine, "__file__", str(package_dir / "__init__.py")):
+                self.assertEqual(
+                    self.ax_engine._bundled_binary("ax-engine-bench"), binary.resolve()
+                )
+
     def test_try_validate_manifest_preserves_hub_symlink(self) -> None:
         import subprocess
         import tempfile

@@ -56,6 +56,13 @@ class NoTurboquantReferencesTest(unittest.TestCase):
         ):
             checker.check_no_turboquant_references(self.root)
 
+    def test_removed_migration_path_is_not_allowlisted(self) -> None:
+        self.write("docs/MIGRATION.md", "Restore TurboQuant support\n")
+        with self.assertRaisesRegex(
+            checker.NoTurboquantReferencesError, r"docs/MIGRATION\.md:1"
+        ):
+            checker.check_no_turboquant_references(self.root)
+
     def test_allowlisted_locations_are_ignored(self) -> None:
         self.write(
             "benchmarks/results/profiling/turboquant/README.md",

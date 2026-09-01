@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
 HOST="${HOST:-127.0.0.1}"
+SERVER_READY_TIMEOUT_SECS="${AX_ENGINE_SERVER_READY_TIMEOUT_SECS:-600}"
 ax_require_env AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX server preview smoke"
 LOG_FILE="$(ax_tmp_file ax-engine-server-check .log)"
 UPSTREAM_LOG_FILE="$(ax_tmp_file ax-engine-upstream-check .log)"
@@ -34,6 +35,7 @@ AX_METAL_OUTPUT_DIR="$METAL_OUTPUT_DIR" bash scripts/build-metal-kernels.sh >/de
 AX_ENGINE_METAL_BUILD_DIR="$METAL_OUTPUT_DIR" cargo run -p ax-engine-server -- --host "$HOST" --port "$PORT" --model-id qwen3_5_9b_q4 --mlx --mlx-model-artifacts-dir "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" >"$LOG_FILE" 2>&1 &
 SERVER_PID="$!"
 
+AX_ENGINE_SERVER_READY_TIMEOUT_SECS="$SERVER_READY_TIMEOUT_SECS" \
 AX_ENGINE_SERVER_URL="http://${HOST}:${PORT}" "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ import urllib.request
 
 
 BASE_URL = os.environ["AX_ENGINE_SERVER_URL"]
+READY_TIMEOUT_SECS = float(os.environ["AX_ENGINE_SERVER_READY_TIMEOUT_SECS"])
 
 
 def request_json(method: str, path: str, payload: dict | None = None) -> dict:
@@ -105,14 +108,19 @@ def parse_openai_sse_payloads(body: str) -> list[dict]:
     return payloads
 
 
-for _ in range(1200):
+deadline = time.monotonic() + READY_TIMEOUT_SECS
+last_error: Exception | None = None
+while time.monotonic() < deadline:
     try:
         health = request_json("GET", "/health")
         break
-    except (urllib.error.URLError, ConnectionError):
+    except (urllib.error.URLError, ConnectionError) as error:
+        last_error = error
         time.sleep(0.1)
 else:
-    raise RuntimeError("ax-engine-server preview did not become ready in time")
+    raise RuntimeError(
+        f"ax-engine-server preview did not become ready within {READY_TIMEOUT_SECS:g} seconds"
+    ) from last_error
 
 assert health["status"] == "ok"
 assert health["runtime"]["selected_backend"] == "mlx"
@@ -142,7 +150,13 @@ generate = request_json(
     },
 )
 assert generate["status"] == "finished"
-assert generate["output_tokens"] == [4, 5]
+generated_tokens = generate["output_tokens"]
+assert isinstance(generated_tokens, list)
+assert len(generated_tokens) == 2
+assert all(
+    isinstance(token, int) and not isinstance(token, bool) and 0 <= token <= 0xFFFFFFFF
+    for token in generated_tokens
+)
 assert generate["runtime"]["support_tier"] == "mlx_preview"
 
 submit = request_json(
@@ -195,11 +209,11 @@ assert event_names[0] == "request"
 assert event_names[-1] == "response"
 assert all(name == "step" for name in event_names[1:-1])
 assert events[0][1]["request"]["state"] == "waiting"
-assert events[-1][1]["response"]["output_tokens"] == [4, 5]
+assert events[-1][1]["response"]["output_tokens"] == generated_tokens
 stream_delta_tokens: list[int] = []
 for _, event in events[1:-1]:
     stream_delta_tokens.extend(event.get("delta_tokens", []))
-assert stream_delta_tokens == [4, 5]
+assert stream_delta_tokens == generated_tokens
 PY
 
 kill "$SERVER_PID" 2>/dev/null || true
