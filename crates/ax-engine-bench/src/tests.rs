@@ -645,6 +645,37 @@ fn replay_step_guard_preserves_timeline_offset_without_summing_batch_budget() {
 }
 
 #[test]
+fn shared_prefix_churn_cancel_target_outlives_max_ngram_speculative_window() {
+    let manifest = load_test_manifest(
+        repo_manifest_path("benchmarks/manifests/replay/shared_prefix_long_churn.json").as_str(),
+    );
+    let events = replay_events_from_manifest(&manifest).expect("replay events should build");
+    let (submit_time, output_budget) = events
+        .iter()
+        .find_map(|event| match event {
+            ReplayEvent::Submit { t_ms, spec } if spec.request_id == RequestId(1) => {
+                Some((*t_ms, u64::from(spec.max_output_tokens)))
+            }
+            _ => None,
+        })
+        .expect("request 1 submit should exist");
+    let cancel_time = events
+        .iter()
+        .find_map(|event| match event {
+            ReplayEvent::Cancel { t_ms, request_id } if *request_id == RequestId(1) => Some(*t_ms),
+            _ => None,
+        })
+        .expect("request 1 cancel should exist");
+    let max_outputs_per_step = ax_engine_mlx::ngram_accel::MAX_DRAFT_LEN as u64 + 1;
+
+    assert!(manifest.sampling.ignore_eos);
+    assert!(
+        output_budget > cancel_time.saturating_sub(submit_time) * max_outputs_per_step,
+        "cancel target must remain live through the scheduled cancellation tick"
+    );
+}
+
+#[test]
 fn create_unique_result_dir_does_not_reuse_same_component_directory() {
     let root = unique_test_dir("unique-result-dir");
     fs::create_dir_all(&root).expect("result root should create");

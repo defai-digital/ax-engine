@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(test)]
 pub(crate) fn percentile_f64(values: &[f64], quantile: f64) -> Option<f64> {
@@ -54,5 +54,22 @@ pub(crate) fn tokens_per_second_from_micros(tokens: u64, elapsed_us: u64) -> f64
 }
 
 pub(crate) fn elapsed_ms_since(started: Instant) -> u64 {
-    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64 + 1
+    nonzero_elapsed_ms(started.elapsed())
+}
+
+fn nonzero_elapsed_ms(elapsed: Duration) -> u64 {
+    (elapsed.as_millis().min(u128::from(u64::MAX)) as u64).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonzero_elapsed_ms_does_not_bias_whole_milliseconds() {
+        assert_eq!(nonzero_elapsed_ms(Duration::ZERO), 1);
+        assert_eq!(nonzero_elapsed_ms(Duration::from_micros(999)), 1);
+        assert_eq!(nonzero_elapsed_ms(Duration::from_millis(1)), 1);
+        assert_eq!(nonzero_elapsed_ms(Duration::from_millis(120)), 120);
+    }
 }

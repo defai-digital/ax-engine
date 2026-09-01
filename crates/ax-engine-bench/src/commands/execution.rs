@@ -186,7 +186,7 @@ pub(crate) fn run_llama_cpp_scenario_workload(
 
     loop {
         if !llama_cpp_session_has_live_requests(&session, &request_ids)? {
-            let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            let elapsed_ms = elapsed_ms_since(started);
             let final_reports = specs
                 .iter()
                 .map(|spec| {
@@ -199,7 +199,7 @@ pub(crate) fn run_llama_cpp_scenario_workload(
                     Ok((spec.clone(), report))
                 })
                 .collect::<Result<Vec<_>, CliError>>()?;
-            observation.finalize_llama_cpp(final_reports, elapsed_ms.max(1));
+            observation.finalize_llama_cpp(final_reports, elapsed_ms);
             return Ok(observation);
         }
 
@@ -209,7 +209,7 @@ pub(crate) fn run_llama_cpp_scenario_workload(
                 "llama.cpp benchmark step failed through the SDK contract: {error}"
             ))
         })?;
-        let current_time_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64 + 1;
+        let current_time_ms = elapsed_ms_since(started);
         let reports_after = llama_cpp_reports_for_session(&session, &request_ids)?;
         observation.observe_llama_cpp_session_step(
             &reports_before,
@@ -260,11 +260,7 @@ pub(crate) fn run_llama_cpp_blocking_scenario_workload(
                     "blocking llama.cpp benchmark request failed through the SDK contract: {error}"
                 ))
             })?;
-        let elapsed_ms = request_started
-            .elapsed()
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64
-            + 1;
+        let elapsed_ms = elapsed_ms_since(request_started);
         let prompt_token_count = response
             .known_prompt_token_count()
             .unwrap_or(spec.prompt_token_target);
@@ -344,8 +340,8 @@ pub(crate) fn run_llama_cpp_blocking_scenario_workload(
         ));
     }
 
-    observation.e2e_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64 + 1;
-    observation.finalize_llama_cpp(final_reports, observation.e2e_latency_ms.max(1));
+    observation.e2e_latency_ms = elapsed_ms_since(started);
+    observation.finalize_llama_cpp(final_reports, observation.e2e_latency_ms);
     Ok(observation)
 }
 

@@ -262,6 +262,7 @@ def effective_profile_env(profile: BenchProfile) -> dict[str, str]:
         env.setdefault("AX_MLX_MTP_DISABLE_NGRAM_STACKING", "0")
     return env
 
+
 DEFAULT_PROFILE_BY_MODE = {
     "direct": "direct",
     "mtp": "assistant_mtp_default",
@@ -415,9 +416,7 @@ def run_subprocess(
 ) -> None:
     print("+ " + " ".join(cmd), flush=True)
     if env_overrides:
-        env_text = " ".join(
-            f"{key}={value}" for key, value in sorted(env_overrides.items())
-        )
+        env_text = " ".join(f"{key}={value}" for key, value in sorted(env_overrides.items()))
         print(f"  env: {env_text}", flush=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -588,9 +587,7 @@ def row_metric(row: dict[str, Any], key: str) -> float | None:
 
 def summarize_artifact(path: Path, *, expected_engine: str) -> dict[str, Any]:
     payload = json.loads(path.read_text())
-    rows = [
-        row for row in payload.get("results", []) if row.get("engine") == expected_engine
-    ]
+    rows = [row for row in payload.get("results", []) if row.get("engine") == expected_engine]
     if not rows:
         raise ValueError(f"{path}: no rows for expected engine {expected_engine}")
 
@@ -658,9 +655,7 @@ def summarize_artifact(path: Path, *, expected_engine: str) -> dict[str, Any]:
             affine_8bit_count, telemetry_int(mlx_telemetry, "ax_mlx_affine_8bit_count")
         )
         assistant = row.get("ax_mlx_gemma4_assistant_mtp") or {}
-        assistant_drafted += int(
-            assistant.get("ax_mlx_gemma4_assistant_mtp_draft_tokens", 0) or 0
-        )
+        assistant_drafted += int(assistant.get("ax_mlx_gemma4_assistant_mtp_draft_tokens", 0) or 0)
         assistant_accepted += int(
             assistant.get("ax_mlx_gemma4_assistant_mtp_accepted_tokens", 0) or 0
         )
@@ -769,9 +764,7 @@ def summarize_artifact(path: Path, *, expected_engine: str) -> dict[str, Any]:
         "mtp_draft_tokens": generic_mtp_drafted,
         "mtp_accepted_tokens": generic_mtp_accepted,
         "mtp_accept_rate": (
-            generic_mtp_accepted / generic_mtp_drafted
-            if generic_mtp_drafted > 0
-            else None
+            generic_mtp_accepted / generic_mtp_drafted if generic_mtp_drafted > 0 else None
         ),
         "ngram_draft_tokens": ngram_drafted,
         "ngram_accepted_tokens": ngram_accepted,
@@ -871,9 +864,7 @@ def compare_suite_decodes(
     common = sorted(
         suite
         for suite, value in profile_suites.items()
-        if suite in baseline_suites
-        and value is not None
-        and baseline_suites[suite] is not None
+        if suite in baseline_suites and value is not None and baseline_suites[suite] is not None
     )
     if not common:
         return {
@@ -915,6 +906,7 @@ def _index_rows_by_profile(rows: list[dict[str, Any]]) -> dict[str, dict[str, di
             {
                 "mode": row["mode"],
                 "profile_env": profile_env,
+                "depth": row.get("depth"),
                 "suites": {},
                 "affine_max_bits": None,
                 "affine_8bit_count": None,
@@ -926,6 +918,8 @@ def _index_rows_by_profile(rows: list[dict[str, Any]]) -> dict[str, dict[str, di
         )
         if entry["profile_env"] != profile_env:
             raise ValueError(f"{model}/{profile}: profile_env differs between suites")
+        if entry["depth"] != row.get("depth"):
+            raise ValueError(f"{model}/{profile}: depth differs between suites")
         entry["suites"][row["suite"]] = row.get("decode_tok_s_median")
         if (row.get("assistant_draft_tokens") or 0) > 0:
             entry["drafted"] = True
@@ -942,13 +936,28 @@ def _index_rows_by_profile(rows: list[dict[str, Any]]) -> dict[str, dict[str, di
     return index
 
 
-def _select_mtp_baseline(profiles: dict[str, dict[str, Any]]) -> str | None:
-    if "assistant_mtp_default" in profiles:
-        return "assistant_mtp_default"
-    for key in sorted(profiles):
-        if profiles[key]["mode"] == "mtp":
-            return key
-    return None
+def _non_ngram_profile_env(profile_env: dict[str, str]) -> dict[str, str]:
+    """Remove settings whose only treatment is n-gram policy."""
+    return {
+        key: value
+        for key, value in profile_env.items()
+        if key != "AX_MLX_MTP_DISABLE_NGRAM_STACKING"
+        and not key.startswith("AX_MLX_MTP_NGRAM_")
+        and not key.startswith("AX_MLX_NGRAM_")
+    }
+
+
+def _matching_mtp_baselines(
+    profiles: dict[str, dict[str, Any]], entry: dict[str, Any]
+) -> list[tuple[str, dict[str, Any]]]:
+    expected_env = _non_ngram_profile_env(entry["profile_env"])
+    return [
+        (key, candidate)
+        for key, candidate in sorted(profiles.items())
+        if candidate["mode"] == "mtp"
+        and candidate["depth"] == entry["depth"]
+        and _non_ngram_profile_env(candidate["profile_env"]) == expected_env
+    ]
 
 
 def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -968,7 +977,6 @@ def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
         direct_profiles = {
             key: entry for key, entry in profiles.items() if entry["mode"] == "direct"
         }
-        mtp_baseline_key = _select_mtp_baseline(profiles)
         if not direct_profiles:
             warnings.append(
                 f"{model}: no direct-decode row; assistant-MTP cannot be judged "
@@ -981,20 +989,21 @@ def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
             direct_matches = [
                 (key, candidate)
                 for key, candidate in direct_profiles.items()
-                if candidate["profile_env"] == entry["profile_env"]
+                if _non_ngram_profile_env(candidate["profile_env"])
+                == _non_ngram_profile_env(entry["profile_env"])
             ]
             if len(direct_matches) != 1:
                 parity_ok = False
                 if not direct_matches:
                     warnings.append(
-                        f"{model}/{profile_key}: no direct-decode row has identical "
-                        "profile_env; speed comparison is invalid."
+                        f"{model}/{profile_key}: no direct-decode row has matching "
+                        "non-ngram profile_env; speed comparison is invalid."
                     )
                 else:
                     names = ", ".join(key for key, _candidate in direct_matches)
                     warnings.append(
-                        f"{model}/{profile_key}: multiple direct-decode rows have identical "
-                        f"profile_env ({names}); speed comparison is ambiguous."
+                        f"{model}/{profile_key}: multiple direct-decode rows have matching "
+                        f"non-ngram profile_env ({names}); speed comparison is ambiguous."
                     )
             else:
                 direct_profile_key, direct = direct_matches[0]
@@ -1053,12 +1062,31 @@ def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
                         ),
                     }
                 )
-            if (
-                entry["mode"] == "mtp-ngram"
-                and mtp_baseline_key is not None
-                and mtp_baseline_key != profile_key
-            ):
-                base = profiles[mtp_baseline_key]
+            if entry["mode"] == "mtp-ngram":
+                mtp_matches = _matching_mtp_baselines(profiles, entry)
+                default_match = next(
+                    (match for match in mtp_matches if match[0] == "assistant_mtp_default"),
+                    None,
+                )
+                selected_match = default_match or (
+                    mtp_matches[0] if len(mtp_matches) == 1 else None
+                )
+                if selected_match is None:
+                    parity_ok = False
+                    if not mtp_matches:
+                        warnings.append(
+                            f"{model}/{profile_key}: no assistant-MTP baseline has matching "
+                            "non-ngram profile_env and depth; n-gram comparison is invalid."
+                        )
+                    else:
+                        names = ", ".join(key for key, _candidate in mtp_matches)
+                        warnings.append(
+                            f"{model}/{profile_key}: multiple assistant-MTP baselines have "
+                            f"matching non-ngram profile_env and depth ({names}); n-gram "
+                            "comparison is ambiguous."
+                        )
+                    continue
+                mtp_baseline_key, base = selected_match
                 result = compare_suite_decodes(entry["suites"], base["suites"])
                 comparisons.append(
                     {
@@ -1220,8 +1248,12 @@ def write_summary(output_dir: Path, summary: dict[str, Any]) -> None:
                     baseline_decode=fmt_number(entry.get("baseline_tok_s_agg")),
                     delta=fmt_delta(entry.get("delta_vs_baseline")),
                     worst=fmt_delta(entry.get("worst_suite_delta")),
-                    parity="—" if "parity_ok" not in entry else ("yes" if entry["parity_ok"] else "NO"),
-                    drafted="—" if "drafted" not in entry else ("yes" if entry["drafted"] else "NO"),
+                    parity="—"
+                    if "parity_ok" not in entry
+                    else ("yes" if entry["parity_ok"] else "NO"),
+                    drafted="—"
+                    if "drafted" not in entry
+                    else ("yes" if entry["drafted"] else "NO"),
                     cls=entry["classification"],
                 )
             )

@@ -40,7 +40,7 @@ replays = [
     {
         "name": "shared_prefix_long_churn",
         "manifest": repo / "benchmarks/manifests/replay/shared_prefix_long_churn.json",
-        "route": "live_request_share",
+        "route": "mixed_live_and_retained",
         "replay_status": "pass",
     },
     {
