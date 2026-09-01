@@ -532,13 +532,16 @@ class ReadmePerformanceChartTests(unittest.TestCase):
             )
         )
 
-    def test_mtp_peer_summary_resolves_from_performance_results(self) -> None:
+    def test_mtp_peer_summary_returns_none_for_current_performance_results(
+        self,
+    ) -> None:
+        # docs/PERFORMANCE-RESULTS.md's AXQ MTP peer section now links
+        # benchmarks/results/mtp-axq-peer/.../summary.json (schema
+        # ax.mtp_axq_peer_campaign.v1), which find_mtp_peer_summary's regex
+        # and load_mtp_peer_rows's validation target the legacy
+        # mtp-qwen36-matrix apples-to-apples v2 campaign and do not parse.
         performance_results = charts.REPO_ROOT / "docs/PERFORMANCE-RESULTS.md"
-        self.assertEqual(
-            charts.find_mtp_peer_summary(performance_results),
-            charts.REPO_ROOT
-            / "benchmarks/results/mtp-qwen36-matrix/2026-08-07-peer-comparison-apples-to-apples-refresh/summary.json",
-        )
+        self.assertIsNone(charts.find_mtp_peer_summary(performance_results))
 
     def test_mtp_peer_chart_uses_measured_engine_identities(self) -> None:
         with tempfile.TemporaryDirectory() as root_name:
