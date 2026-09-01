@@ -254,7 +254,7 @@ def _weight_tensor_names(model_dir: Path) -> set[str]:
             return set()
 
     names: set[str] = set()
-    for path in model_dir.glob("*.safetensors"):
+    for path in _safetensors_files(model_dir):
         try:
             with path.open("rb") as handle:
                 header_size_bytes = handle.read(8)
@@ -271,6 +271,19 @@ def _weight_tensor_names(model_dir: Path) -> set[str]:
         except (OSError, ValueError, TypeError):
             continue
     return names
+
+
+def _safetensors_files(model_dir: Path) -> list[Path]:
+    """Return main-model safetensors recursively, excluding the assistant drafter."""
+    try:
+        return sorted(
+            path
+            for path in model_dir.rglob("*.safetensors")
+            if path.is_file()
+            and path.relative_to(model_dir).parts[:1] != ("assistant",)
+        )
+    except OSError:
+        return []
 
 
 _SAFETENSORS_DTYPE_BYTES = {
@@ -410,9 +423,9 @@ def _root_safetensors_header_metadata(
     ]
     | None
 ):
-    """Read bindable tensor metadata from root safetensors files, failing closed."""
+    """Read bindable tensor metadata from model safetensors, failing closed."""
     try:
-        paths = sorted(model_dir.glob("*.safetensors"))
+        paths = _safetensors_files(model_dir)
     except OSError:
         return None
     if not paths:
@@ -489,12 +502,13 @@ def _root_safetensors_header_metadata(
             )
             if expected_length is None or end - start != expected_length:
                 return None
-            source_key = (path.name, name)
+            source_file = path.relative_to(model_dir).as_posix()
+            source_key = (source_file, name)
             if source_key in metadata:
                 return None
             metadata[source_key] = (
                 name,
-                path.name,
+                source_file,
                 manifest_dtype,
                 tuple(shape),
                 data_base_offset + start,
@@ -915,7 +929,7 @@ def _destination_has_model_markers(dest: Path) -> bool:
     try:
         if (dest / MODEL_MANIFEST_FILE).is_file():
             return True
-        return any(path.is_file() for path in dest.glob("*.safetensors"))
+        return bool(_safetensors_files(dest))
     except OSError:
         return False
 
@@ -1118,7 +1132,7 @@ def _snapshot_weight_progress(snapshot: Path) -> tuple[int, int] | None:
         except (OSError, ValueError, TypeError):
             total = 0
     downloaded = 0
-    for path in snapshot.glob("*.safetensors"):
+    for path in _safetensors_files(snapshot):
         with suppress(OSError):
             downloaded += path.stat().st_size
     if total <= 0 and downloaded > 0:
@@ -1674,7 +1688,7 @@ def download(
                 + (f" at revision {revision}" if revision else "")
                 + "; choose an empty destination or pass --force to replace it"
             )
-        safetensors = list(dest.glob("*.safetensors"))
+        safetensors = _safetensors_files(dest)
         # Only trust a destination whose contents actually validate; a partial
         # or corrupted copy (interrupted older-version download) is recopied.
         validation_ok = bool(safetensors) and not _validation_errors(dest)
@@ -1975,7 +1989,7 @@ def _print_manifest_hint(dest: Path) -> None:
 
 def _validation_errors(dest: Path) -> list[str]:
     errors = []
-    safetensors = list(dest.glob("*.safetensors"))
+    safetensors = _safetensors_files(dest)
     if not safetensors:
         errors.append(f"no .safetensors files found in {dest}")
     else:
@@ -1999,7 +2013,9 @@ def _validation_errors(dest: Path) -> list[str]:
                     expected = {
                         filename for filename in weight_map.values() if isinstance(filename, str)
                     }
-                    present = {path.name for path in safetensors if path.is_file()}
+                    present = {
+                        path.relative_to(dest).as_posix() for path in safetensors if path.is_file()
+                    }
                     # Some MLX community conversions retain the source checkpoint's
                     # stale index while publishing a differently sharded artifact.
                     # Enforce an index only when it refers to at least one local shard.
@@ -2110,7 +2126,7 @@ def _summary(
     except OSError:
         manifest_present = False
     try:
-        safetensors_count = sum(1 for _ in dest.glob("*.safetensors"))
+        safetensors_count = len(_safetensors_files(dest))
     except OSError:
         safetensors_count = 0
     try:
@@ -2270,7 +2286,7 @@ def main() -> int:
                 print(f"warning: {error}", file=sys.stderr)
         return 1
     if not machine_json:
-        print(f"  safetensors shards: {len(list(dest.glob('*.safetensors')))}")
+        print(f"  safetensors shards: {len(_safetensors_files(dest))}")
 
     rebuild_needed, force_rebuild = _manifest_rebuild_plan(dest, quiet=machine_json)
     if rebuild_needed:

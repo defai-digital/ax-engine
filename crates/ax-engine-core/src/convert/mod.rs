@@ -829,26 +829,57 @@ struct SafetensorHeaderEntry {
 }
 
 fn find_safetensors_files(model_dir: &Path) -> Result<Vec<PathBuf>, ConvertError> {
-    let mut files: Vec<PathBuf> = fs::read_dir(model_dir)
-        .map_err(|source| ConvertError::ReadFile {
-            path: model_dir.to_path_buf(),
+    fn collect_safetensors(
+        dir: &Path,
+        model_dir: &Path,
+        files: &mut Vec<PathBuf>,
+    ) -> Result<(), ConvertError> {
+        for entry in fs::read_dir(dir).map_err(|source| ConvertError::ReadFile {
+            path: dir.to_path_buf(),
             source,
-        })?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
+        })? {
+            let entry = entry.map_err(|source| ConvertError::ReadFile {
+                path: dir.to_path_buf(),
+                source,
+            })?;
             let path = entry.path();
+            // Do not follow directory symlinks: model snapshots may contain
+            // file links into the Hub blob store, but a directory link could
+            // otherwise make conversion walk outside the model directory.
+            if entry
+                .file_type()
+                .map_err(|source| ConvertError::ReadFile {
+                    path: path.clone(),
+                    source,
+                })?
+                .is_dir()
+            {
+                collect_safetensors(&path, model_dir, files)?;
+                continue;
+            }
             if path.extension().and_then(|e| e.to_str()) == Some("safetensors")
+                // The assistant drafter is a separate model and must not be
+                // merged into the target manifest. Other nested safetensors
+                // files (notably optiq/optiq_vision.safetensors) are model
+                // inputs and must be included.
+                && path
+                    .strip_prefix(model_dir)
+                    .ok()
+                    .and_then(|relative| relative.components().next())
+                    .is_none_or(|component| component.as_os_str() != "assistant")
                 // Converter-generated artifacts (DeepSeek V4 FP8/FP4 repack)
                 // are outputs, never source inputs — a re-run regenerates them.
                 && path.file_name().and_then(|n| n.to_str())
                     != Some(DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE)
             {
-                Some(path)
-            } else {
-                None
+                files.push(path);
             }
-        })
-        .collect();
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    collect_safetensors(model_dir, model_dir, &mut files)?;
 
     if files.is_empty() {
         return Err(ConvertError::NoSafetensors {
@@ -859,7 +890,10 @@ fn find_safetensors_files(model_dir: &Path) -> Result<Vec<PathBuf>, ConvertError
     Ok(files)
 }
 
-fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, ConvertError> {
+fn parse_safetensors_header(
+    path: &Path,
+    model_dir: &Path,
+) -> Result<Vec<SafetensorEntry>, ConvertError> {
     const MAX_SAFETENSORS_HEADER_SIZE: usize = 64 * 1024 * 1024;
 
     let mut file = fs::File::open(path).map_err(|source| ConvertError::ReadFile {
@@ -896,9 +930,9 @@ fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, Convert
 
     let data_base_offset = 8 + header_size as u64;
     let file_name = path
-        .file_name()
+        .strip_prefix(model_dir)
         .map(PathBuf::from)
-        .unwrap_or_else(|| path.to_path_buf());
+        .unwrap_or_else(|_| path.to_path_buf());
 
     let mut entries = Vec::new();
     for (name, value) in &header {
@@ -942,12 +976,12 @@ fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, Convert
 }
 
 fn parse_all_safetensors_headers(
-    _model_dir: &Path,
+    model_dir: &Path,
     files: &[PathBuf],
 ) -> Result<Vec<SafetensorEntry>, ConvertError> {
     let mut all = Vec::new();
     for file in files {
-        all.extend(parse_safetensors_header(file)?);
+        all.extend(parse_safetensors_header(file, model_dir)?);
     }
     Ok(all)
 }

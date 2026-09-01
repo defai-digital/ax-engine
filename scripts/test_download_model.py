@@ -1686,6 +1686,24 @@ class DownloadModelScriptTest(unittest.TestCase):
                 [f"missing safetensors shard model-00002-of-00002.safetensors in {model_dir}"],
             )
 
+    def test_safetensors_files_include_nested_optiq_and_skip_assistant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_safetensors(model_dir / "model.safetensors")
+            (model_dir / "optiq").mkdir()
+            write_safetensors(model_dir / "optiq" / "optiq_vision.safetensors")
+            (model_dir / "assistant").mkdir()
+            write_safetensors(model_dir / "assistant" / "model.safetensors")
+
+            relative = [
+                path.relative_to(model_dir).as_posix()
+                for path in download_model._safetensors_files(model_dir)
+            ]
+            self.assertEqual(
+                relative,
+                ["model.safetensors", "optiq/optiq_vision.safetensors"],
+            )
+
     def test_validation_ignores_stale_index_for_differently_sharded_conversion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)

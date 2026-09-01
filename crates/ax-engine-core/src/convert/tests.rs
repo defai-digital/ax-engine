@@ -73,6 +73,50 @@ fn unique_test_dir(label: &str) -> PathBuf {
     dir
 }
 
+#[test]
+fn finds_nested_optiq_weights_without_merging_assistant_drafter() {
+    let dir = unique_test_dir("nested-safetensors");
+    fs::create_dir_all(dir.join("optiq")).unwrap();
+    fs::create_dir_all(dir.join("assistant")).unwrap();
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[("language_model.model.norm.weight", "BF16", &[8])],
+    );
+    write_fake_safetensors(
+        &dir.join("optiq"),
+        "optiq_vision.safetensors",
+        &[("vision_embedder.pos_embedding", "BF16", &[1])],
+    );
+    write_fake_safetensors(
+        &dir.join("assistant"),
+        "model.safetensors",
+        &[("model.embed_tokens.weight", "BF16", &[8, 8])],
+    );
+
+    let files = super::find_safetensors_files(&dir).expect("nested model files should be found");
+    let relative: Vec<PathBuf> = files
+        .iter()
+        .map(|path| path.strip_prefix(&dir).unwrap().to_path_buf())
+        .collect();
+    assert_eq!(
+        relative,
+        vec![
+            PathBuf::from("model.safetensors"),
+            PathBuf::from("optiq/optiq_vision.safetensors")
+        ]
+    );
+
+    let entries = super::parse_safetensors_header(&files[1], &dir)
+        .expect("nested safetensors header should parse");
+    assert_eq!(
+        entries[0].file,
+        PathBuf::from("optiq/optiq_vision.safetensors")
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
 fn write_test_manifest(model_family: &str) -> crate::model::NativeModelManifest {
     serde_json::from_value(serde_json::json!({
         "schema_version": crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
@@ -6714,7 +6758,7 @@ fn write_safetensors_with_data(
 /// Read one tensor's raw payload back from a safetensors file.
 fn read_safetensors_tensor(dir: &Path, filename: &str, name: &str) -> (String, Vec<u64>, Vec<u8>) {
     let path = dir.join(filename);
-    let entries = super::parse_safetensors_header(&path).expect("header should parse");
+    let entries = super::parse_safetensors_header(&path, dir).expect("header should parse");
     let entry = entries
         .iter()
         .find(|entry| entry.name == name)

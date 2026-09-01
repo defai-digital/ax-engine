@@ -1408,6 +1408,19 @@ _DOWNLOAD_PROVENANCE_SCHEMA_VERSION = "ax.download_provenance.v1"
 _MAX_SAFETENSORS_HEADER_BYTES = 64 * 1024 * 1024
 
 
+def _safetensors_files(model_dir: Path) -> list[Path]:
+    """Return main-model safetensors recursively, excluding the assistant drafter."""
+    try:
+        return sorted(
+            path
+            for path in model_dir.rglob("*.safetensors")
+            if path.is_file()
+            and path.relative_to(model_dir).parts[:1] != ("assistant",)
+        )
+    except OSError:
+        return []
+
+
 def _weight_tensor_names(model_dir: Path) -> set[str]:
     """Read tensor names without loading model payloads."""
     import json
@@ -1423,7 +1436,7 @@ def _weight_tensor_names(model_dir: Path) -> set[str]:
             return set()
 
     names: set[str] = set()
-    for path in model_dir.glob("*.safetensors"):
+    for path in _safetensors_files(model_dir):
         try:
             with path.open("rb") as handle:
                 header_size_bytes = handle.read(8)
@@ -1706,7 +1719,7 @@ def _validate_forced_model_destination(dest: Path) -> None:
 
     has_download_provenance = _has_valid_download_provenance(dest)
     has_manifest = (dest / _MODEL_MANIFEST_FILE).is_file()
-    has_weights = any(path.is_file() for path in dest.glob("*.safetensors"))
+    has_weights = bool(_safetensors_files(dest))
     if has_download_provenance or has_manifest or has_weights:
         return
     raise RuntimeError(
@@ -1927,7 +1940,7 @@ def _replace_with_staged_snapshot(
 
 def _validate_downloaded_model_dir(dest: Path) -> None:
     errors = []
-    if not list(dest.glob("*.safetensors")):
+    if not _safetensors_files(dest):
         errors.append(f"no .safetensors files found in {dest}")
     if not (dest / "config.json").exists():
         errors.append(f"config.json missing in {dest}")
