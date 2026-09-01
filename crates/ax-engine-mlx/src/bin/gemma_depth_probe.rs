@@ -1,20 +1,17 @@
 //! Gemma 4 assistant-MTP draft-depth probe.
 //!
-//! Goal: measure whether drafting MORE THAN ONE token per step with the Gemma 4
-//! assistant drafter is a net win. Production hard-caps the assistant at
-//! `max_depth = 1` (runner.rs `config.max_depth = config.max_depth.min(1)`), so
-//! Gemma's speculative speedup is structurally capped at ~2x (1 draft + 1 verify),
-//! while the Qwen MTP head drafts depth-3. This probe lifts that cap and drives the
-//! REAL assistant forward (`gemma4_assistant_forward_one`) recurrently.
+//! Goal: measure the throughput and acceptance tradeoff of recurrent Gemma 4
+//! assistant drafts at several depths and confidence schedules. Production
+//! defaults to depth 2; this probe drives the real assistant forward
+//! (`gemma4_assistant_forward_one`) with the same fixed-position contract.
 //!
 //! The architectural question: the assistant has NO key/value projection of its
 //! own — it attends the TARGET's frozen KV cache (`peek_layer_kv`) and receives the
 //! drafted token only through the residual stream (the token embedding plus the
-//! assistant's `post_projection` estimate of the target backbone hidden, which the
-//! production draft path computes and then DISCARDS as `_projected_hidden`). So a
+//! assistant's `post_projection` estimate of the target backbone hidden). So a
 //! depth-2 draft query attends the committed prefix but NOT the depth-1 drafted
-//! position. This probe wires that discarded `projected_hidden` back in as the next
-//! step's backbone hidden and measures the resulting accept rate.
+//! position. The projected hidden state carries the recurrent signal into the next
+//! step while all depths retain the bonus token's absolute RoPE position.
 //!
 //! Faithfulness: both arms drive the real assistant draft, the real target verify
 //! forward (`forward_all_positions_with_post_norm`, correct RoPE / sliding-window
@@ -51,7 +48,8 @@ use ax_engine_mlx::{
     kv_cache::MlxKVCache,
     model::{
         Gemma4AssistantSharedKvLayers, ModelConfig, forward_all_positions_update_cache,
-        forward_all_positions_with_post_norm, gemma4_assistant_forward_one,
+        forward_all_positions_with_post_norm, gemma4_assistant_draft_rope_position,
+        gemma4_assistant_forward_one,
     },
     sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64},
     weights::{ModelWeights, load_weights},
@@ -287,7 +285,7 @@ fn assistant_draft_safe(
             shared_layers,
             cur_token,
             &cur_hidden,
-            base_position + d,
+            gemma4_assistant_draft_rope_position(base_position, d),
         ) else {
             break;
         };

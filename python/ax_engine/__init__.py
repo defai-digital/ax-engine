@@ -2342,11 +2342,15 @@ def _bundled_binary(name: str) -> Path | None:
     """Return the path to a binary bundled inside the installed wheel, if present.
 
     Release wheels stage ``ax-engine-server`` and ``ax-engine-bench`` under
-    ``ax_engine/_bin/`` so they always match the installed package version. Editable
-    and source-checkout installs have no ``_bin`` directory, so this returns ``None``
-    and callers fall back to a PATH lookup or ``cargo run``.
+    ``ax_engine/_bin/`` so they always match the installed package version. Ignore
+    that staging directory in editable and source-checkout installs: an interrupted
+    or earlier wheel build can leave binaries linked against a stale MLX runtime.
     """
-    candidate = Path(__file__).resolve().parent / "_bin" / name
+    package_dir = Path(__file__).resolve().parent
+    source_root = _source_workspace_root()
+    if source_root is not None and package_dir == (source_root / "python" / "ax_engine").resolve():
+        return None
+    candidate = package_dir / "_bin" / name
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return candidate
     return None

@@ -132,3 +132,7 @@ warn_unused_ignores = true
 # __init__.pyi provides the public surface. Third-party optional deps
 # (tokenizers, fastapi) ship without py.typed markers.
 ignore_missing_imports = true
+# Keep type-checking deterministic across developer environments. Optional
+# site packages are not part of AX Engine's public type surface, and their
+# stubs may target a newer Python than the package's 3.11 floor.
+no_site_packages = true

@@ -118,9 +118,7 @@ class Gemma4AssistantMtpBenchTests(unittest.TestCase):
         self.assertEqual(direct.env, mtp.env)
         self.assertEqual(direct.depth, mtp.depth)
         self.assertEqual(direct.env["AX_MLX_ROTATING_SLIDING_DECODE"], "0")
-        self.assertEqual(
-            direct.env["AX_MLX_GEMMA4_ASSISTANT_MTP_SENSITIVE_F32"], "1"
-        )
+        self.assertEqual(direct.env["AX_MLX_GEMMA4_ASSISTANT_MTP_SENSITIVE_F32"], "1")
 
     def test_select_bench_profiles_exposes_ngram_policy_ablation_profiles(self) -> None:
         profiles = bench.select_bench_profiles(
@@ -494,6 +492,7 @@ class ComparisonTests(unittest.TestCase):
         eightbit: int,
         drafted: int,
         profile_env: dict[str, str] | None = None,
+        depth: int = 1,
     ) -> dict:
         return {
             "model": "12b-4bit",
@@ -502,7 +501,7 @@ class ComparisonTests(unittest.TestCase):
             "mode": mode,
             "profile": profile,
             "profile_env": profile_env or {},
-            "depth": 1,
+            "depth": depth,
             "decode_tok_s_median": decode,
             "assistant_accept_rate": 0.9,
             "mtp_accept_rate": 0.9 if mode != "direct" else None,
@@ -522,12 +521,26 @@ class ComparisonTests(unittest.TestCase):
         rows = []
         for suite in ("flappy", "long_code"):
             rows.append(
-                self._row(profile="direct", mode="direct", suite=suite, decode=68.0, max_bits=4, eightbit=0, drafted=0)
+                self._row(
+                    profile="direct",
+                    mode="direct",
+                    suite=suite,
+                    decode=68.0,
+                    max_bits=4,
+                    eightbit=0,
+                    drafted=0,
+                )
             )
             # MTP runs the mixed 4/8-bit target: faster-looking but unfair.
             rows.append(
                 self._row(
-                    profile="assistant_mtp_default", mode="mtp", suite=suite, decode=80.0, max_bits=8, eightbit=144, drafted=500
+                    profile="assistant_mtp_default",
+                    mode="mtp",
+                    suite=suite,
+                    decode=80.0,
+                    max_bits=8,
+                    eightbit=144,
+                    drafted=500,
                 )
             )
         result = bench.build_comparisons(rows)
@@ -547,7 +560,13 @@ class ComparisonTests(unittest.TestCase):
         rows = []
         for suite in ("flappy", "long_code"):
             row = self._row(
-                profile="direct", mode="direct", suite=suite, decode=68.0, max_bits=4, eightbit=0, drafted=0
+                profile="direct",
+                mode="direct",
+                suite=suite,
+                decode=68.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=0,
             )
             row["affine_4bit_count"] = 332
             row["affine_tensor_count"] = 332
@@ -574,11 +593,25 @@ class ComparisonTests(unittest.TestCase):
         rows = []
         for suite in ("flappy", "long_code"):
             rows.append(
-                self._row(profile="direct", mode="direct", suite=suite, decode=100.0, max_bits=4, eightbit=0, drafted=0)
+                self._row(
+                    profile="direct",
+                    mode="direct",
+                    suite=suite,
+                    decode=100.0,
+                    max_bits=4,
+                    eightbit=0,
+                    drafted=0,
+                )
             )
             rows.append(
                 self._row(
-                    profile="assistant_mtp_default", mode="mtp", suite=suite, decode=106.0, max_bits=4, eightbit=0, drafted=500
+                    profile="assistant_mtp_default",
+                    mode="mtp",
+                    suite=suite,
+                    decode=106.0,
+                    max_bits=4,
+                    eightbit=0,
+                    drafted=500,
                 )
             )
         result = bench.build_comparisons(rows)
@@ -661,26 +694,188 @@ class ComparisonTests(unittest.TestCase):
         rows = []
         for suite in ("flappy", "long_code"):
             rows.append(
-                self._row(profile="direct", mode="direct", suite=suite, decode=100.0, max_bits=4, eightbit=0, drafted=0)
-            )
-            rows.append(
                 self._row(
-                    profile="assistant_mtp_default", mode="mtp", suite=suite, decode=110.0, max_bits=4, eightbit=0, drafted=500
+                    profile="direct",
+                    mode="direct",
+                    suite=suite,
+                    decode=100.0,
+                    max_bits=4,
+                    eightbit=0,
+                    drafted=0,
                 )
             )
             rows.append(
                 self._row(
-                    profile="assistant_mtp_ngram_default", mode="mtp-ngram", suite=suite, decode=99.0, max_bits=4, eightbit=0, drafted=500
+                    profile="assistant_mtp_default",
+                    mode="mtp",
+                    suite=suite,
+                    decode=110.0,
+                    max_bits=4,
+                    eightbit=0,
+                    drafted=500,
+                )
+            )
+            rows.append(
+                self._row(
+                    profile="assistant_mtp_ngram_default",
+                    mode="mtp-ngram",
+                    suite=suite,
+                    decode=99.0,
+                    max_bits=4,
+                    eightbit=0,
+                    drafted=500,
                 )
             )
         result = bench.build_comparisons(rows)
         ngram_cmp = next(
-            c for c in result["comparisons"]
+            c
+            for c in result["comparisons"]
             if c["profile"] == "assistant_mtp_ngram_default" and c["baseline"] == "assistant_mtp"
         )
         self.assertEqual(ngram_cmp["baseline_profile"], "assistant_mtp_default")
         # 99 vs 110 is a regression -> n-gram should not be a default.
         self.assertEqual(ngram_cmp["classification"], "remove-claim")
+
+    def test_build_comparisons_ignores_ngram_only_environment_for_baselines(self) -> None:
+        ngram_env = {
+            "AX_MLX_MTP_DISABLE_NGRAM_STACKING": "0",
+            "AX_MLX_MTP_NGRAM_HURT_MARGIN": "0.15",
+        }
+        rows = [
+            self._row(
+                profile="direct",
+                mode="direct",
+                suite="flappy",
+                decode=100.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=0,
+            ),
+            self._row(
+                profile="assistant_mtp_default",
+                mode="mtp",
+                suite="flappy",
+                decode=110.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=100,
+            ),
+            self._row(
+                profile="assistant_mtp_ngram_hurt_margin_015",
+                mode="mtp-ngram",
+                suite="flappy",
+                decode=115.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=100,
+                profile_env=ngram_env,
+            ),
+        ]
+
+        result = bench.build_comparisons(rows)
+
+        ngram_comparisons = [
+            item
+            for item in result["comparisons"]
+            if item["profile"] == "assistant_mtp_ngram_hurt_margin_015"
+        ]
+        self.assertEqual(
+            {item["baseline"] for item in ngram_comparisons},
+            {"direct", "assistant_mtp"},
+        )
+        self.assertTrue(result["parity_ok"])
+
+    def test_build_comparisons_rejects_mismatched_mtp_baseline_environment(self) -> None:
+        candidate_env = {"AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE": "0.90"}
+        rows = [
+            self._row(
+                profile="direct_candidate",
+                mode="direct",
+                suite="flappy",
+                decode=100.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=0,
+                profile_env=candidate_env,
+            ),
+            self._row(
+                profile="assistant_mtp_default",
+                mode="mtp",
+                suite="flappy",
+                decode=110.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=100,
+            ),
+            self._row(
+                profile="combined_speed_experimental",
+                mode="mtp-ngram",
+                suite="flappy",
+                decode=120.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=100,
+                profile_env={
+                    **candidate_env,
+                    "AX_MLX_MTP_DISABLE_NGRAM_STACKING": "0",
+                },
+            ),
+        ]
+
+        result = bench.build_comparisons(rows)
+
+        self.assertFalse(result["parity_ok"])
+        self.assertFalse(
+            any(
+                item["profile"] == "combined_speed_experimental"
+                and item["baseline"] == "assistant_mtp"
+                for item in result["comparisons"]
+            )
+        )
+        self.assertTrue(
+            any("matching non-ngram profile_env and depth" in item for item in result["warnings"])
+        )
+
+    def test_build_comparisons_rejects_mismatched_mtp_baseline_depth(self) -> None:
+        rows = [
+            self._row(
+                profile="direct",
+                mode="direct",
+                suite="flappy",
+                decode=100.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=0,
+            ),
+            self._row(
+                profile="assistant_mtp_depth1",
+                mode="mtp",
+                suite="flappy",
+                decode=110.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=100,
+                depth=1,
+            ),
+            self._row(
+                profile="assistant_mtp_ngram_default",
+                mode="mtp-ngram",
+                suite="flappy",
+                decode=115.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=100,
+                profile_env={"AX_MLX_MTP_DISABLE_NGRAM_STACKING": "0"},
+                depth=2,
+            ),
+        ]
+
+        result = bench.build_comparisons(rows)
+
+        self.assertFalse(result["parity_ok"])
+        self.assertTrue(
+            any("matching non-ngram profile_env and depth" in item for item in result["warnings"])
+        )
 
     def test_build_optimized_scenarios_picks_fastest_surviving_profile(self) -> None:
         scenarios = bench.build_optimized_scenarios(
@@ -715,7 +910,13 @@ class ComparisonTests(unittest.TestCase):
     def test_build_comparisons_warns_when_no_direct_row(self) -> None:
         rows = [
             self._row(
-                profile="assistant_mtp_default", mode="mtp", suite="flappy", decode=60.0, max_bits=4, eightbit=0, drafted=500
+                profile="assistant_mtp_default",
+                mode="mtp",
+                suite="flappy",
+                decode=60.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=500,
             )
         ]
         result = bench.build_comparisons(rows)

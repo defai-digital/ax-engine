@@ -398,7 +398,7 @@ fn gemma4_assistant_mtp_env_enabled() -> bool {
 /// 97%). Depth-3 could not hold 97% accept on the hardest suite (~0.937 in the
 /// greedy probe), so 2 is the constrained optimum. Probe + methodology:
 /// `crates/ax-engine-mlx/src/bin/gemma_depth_probe.rs`,
-/// `docs/GEMMA4-ASSISTANT-MULTI-DEPTH.md`.
+/// `docs/mtp/gemma4-assistant-multi-depth.md`.
 pub const DEFAULT_GEMMA4_ASSISTANT_MTP_MAX_DEPTH: usize = 2;
 
 /// Runtime ceiling on the assistant draft depth, from
