@@ -1,6 +1,9 @@
 """Release-signing and standalone-runtime contract tests."""
 
 import os
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,11 +77,90 @@ class ReleaseSigningTests(unittest.TestCase):
 
         self.assertIn("[App Store Connect API credentials redacted]", text)
         self.assertNotIn("${NOTARY_ARGS[*]}", text)
+        self.assertIn("App Store Connect API credentials failed notarization validation", text)
         self.assertIn('grep -F "Authority=Developer ID Application:"', text)
         self.assertNotIn(
             'Authority=Developer ID Application: DEFAI PRIVATE LIMITED', text
         )
         self.assertIn("TeamIdentifier=$EXPECTED_APPLE_TEAM_ID", text)
+
+    def test_publisher_validates_notary_credentials_before_tagging(self):
+        with open(PUBLISH_SCRIPT, encoding="utf-8") as fh:
+            text = fh.read()
+
+        resolve_call = text.rindex("\nresolve_notary_args\n")
+        validate_call = text.rindex("\nvalidate_notary_credentials\n")
+        tag_creation = text.index('run git tag -a "$TAG"')
+
+        self.assertIn("xcrun notarytool history", text)
+        self.assertIn("notarization Keychain profile is unavailable", text)
+        self.assertLess(resolve_call, validate_call)
+        self.assertLess(validate_call, tag_creation)
+
+    def test_publisher_fails_before_tagging_when_notary_profile_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_bin = Path(tmp_dir)
+            for command in (
+                "cargo",
+                "codesign",
+                "file",
+                "gh",
+                "git",
+                "install_name_tool",
+                "lipo",
+                "otool",
+                "python3",
+                "shasum",
+                "tar",
+                "zip",
+            ):
+                stub = fake_bin / command
+                stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                stub.chmod(0o755)
+
+            xcrun = fake_bin / "xcrun"
+            xcrun.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "notarytool" ] && [ "$2" = "--help" ]; then\n'
+                "  exit 0\n"
+                "fi\n"
+                'if [ "$1" = "notarytool" ] && [ "$2" = "history" ]; then\n'
+                "  exit 69\n"
+                "fi\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            xcrun.chmod(0o755)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+            result = subprocess.run(
+                [
+                    PUBLISH_SCRIPT,
+                    "v7.2.1",
+                    "--dry-run",
+                    "--skip-checks",
+                    "--skip-build",
+                    "--allow-dirty",
+                    "--no-minisign",
+                    "--sign-identity",
+                    "TEST-CERTIFICATE",
+                    "--notary-profile",
+                    "missing-profile",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "notarization Keychain profile is unavailable: missing-profile",
+            result.stderr,
+        )
+        self.assertNotIn("git tag", result.stdout)
 
     def test_legacy_brew_publisher_cannot_mutate_releases(self):
         with open(BREW_RELEASE_SCRIPT, encoding="utf-8") as fh:

@@ -295,6 +295,22 @@ resolve_notary_args() {
     fi
 }
 
+validate_notary_credentials() {
+    if [[ "$SKIP_NOTARIZATION" = true || -z "$SIGN_IDENTITY" ]]; then
+        return
+    fi
+
+    if ! xcrun notarytool history \
+        "${NOTARY_ARGS[@]}" \
+        --output-format json >/dev/null 2>&1; then
+        if [[ "${NOTARY_ARGS[0]:-}" == "--keychain-profile" ]]; then
+            die "notarization Keychain profile is unavailable: ${NOTARY_ARGS[1]}"
+        fi
+        die "App Store Connect API credentials failed notarization validation"
+    fi
+    echo "Notarization credentials verified."
+}
+
 notary_args_for_log() {
     if [[ "${NOTARY_ARGS[0]:-}" == "--keychain-profile" ]]; then
         printf -- '--keychain-profile %q' "${NOTARY_ARGS[1]}"
@@ -927,6 +943,7 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     fi
 fi
 resolve_notary_args
+validate_notary_credentials
 
 if [[ "$DRY_RUN" = false ]]; then
     gh auth status >/dev/null || die "gh is not authenticated - run: gh auth login"
