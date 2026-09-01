@@ -251,7 +251,10 @@ assert scenario_metrics["correctness"]["passed"] is True
 assert scenario_metrics["determinism"]["passed"] is True
 assert scenario_metrics["replay_status"] == "not_applicable"
 assert scenario_metrics["step_count"] == 2
-assert scenario_metrics["metrics"]["prefill_tok_s"] > 0.0
+# llama.cpp is a blocking delegated adapter: it never populates
+# total_prefill_runner_time_us, so prefill_tok_s() correctly reports 0.0
+# here instead of fabricating a rate from polling-step counts (28ce2080).
+assert scenario_metrics["metrics"]["prefill_tok_s"] == 0.0
 assert "delegated_llama_cpp" not in scenario_metrics
 assert scenario_metrics["metrics"]["delegated_llama_cpp"]["kv_usage_blocks"] == 0
 assert scenario_metrics["metrics"]["delegated_llama_cpp"]["requests_processing_events"] >= 1
@@ -272,7 +275,9 @@ assert shared_prefix_environment["route"]["backend_reported_cached_prompt_tokens
 assert shared_prefix_metrics["correctness"]["passed"] is True
 assert shared_prefix_metrics["determinism"]["passed"] is True
 assert shared_prefix_metrics["metrics"]["prefix_hit_rate"] > 0.0
-assert shared_prefix_metrics["metrics"]["prefill_tok_s"] > 0.0
+# See the scenario_metrics prefill_tok_s note above: llama.cpp never
+# reports real per-step runner time, so this stays 0.0 by design.
+assert shared_prefix_metrics["metrics"]["prefill_tok_s"] == 0.0
 assert "delegated_llama_cpp" not in shared_prefix_metrics
 assert shared_prefix_metrics["metrics"]["delegated_llama_cpp"]["backend_reported_cached_prompt_tokens"] == 64
 assert shared_prefix_metrics["metrics"]["delegated_llama_cpp"]["cache_reuse_observed"] is True
