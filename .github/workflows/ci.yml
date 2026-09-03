@@ -155,7 +155,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
 
       - name: Cache Rust build artifacts
@@ -216,7 +216,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.12", "3.13"]
     timeout-minutes: 20
     env:
       AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
@@ -353,7 +353,7 @@ jobs:
         if: steps.mlx-artifacts.outputs.available == 'true'
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
 
       - name: Cache Rust build artifacts

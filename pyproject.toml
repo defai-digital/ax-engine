@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "ax-engine"
 version = "7.2.1"
 description = "Python bindings for AX Engine"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 readme = "crates/ax-engine-py/README.md"
 license = "Apache-2.0"
 keywords = ["llm", "inference", "mlx", "apple-silicon", "local-ai"]
@@ -16,7 +16,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Rust",
@@ -121,7 +120,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 "python/ax_engine/__init__.py" = ["E402", "SIM102"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 # Scope: runtime package only. Scripts/tests are out of scope.
 files = ["python/ax_engine"]
 exclude = ['python/ax_engine/_ax_engine/|python/ax_engine/_metal/build/']
@@ -134,5 +133,5 @@ warn_unused_ignores = true
 ignore_missing_imports = true
 # Keep type-checking deterministic across developer environments. Optional
 # site packages are not part of AX Engine's public type surface, and their
-# stubs may target a newer Python than the package's 3.11 floor.
+# stubs may target a newer Python than the package's 3.12 floor.
 no_site_packages = true
