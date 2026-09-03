@@ -28,23 +28,22 @@ class VersionSyncTests(unittest.TestCase):
                 (
                     "[project]",
                     f'version = "{version}"',
-                    'requires-python = ">=3.11"',
+                    'requires-python = ">=3.12"',
                     "classifiers = [",
-                    '  "Programming Language :: Python :: 3.11",',
                     '  "Programming Language :: Python :: 3.12",',
                     '  "Programming Language :: Python :: 3.13",',
                     "]",
                     "[tool.ruff]",
-                    'target-version = "py311"',
+                    'target-version = "py312"',
                     "[tool.mypy]",
-                    'python_version = "3.11"',
+                    'python_version = "3.12"',
                     "",
                 )
             ),
         )
         self._write(
             "crates/ax-engine-py/Cargo.toml",
-            'pyo3 = { version = "0.29", features = ["abi3-py311"] }\n',
+            'pyo3 = { version = "0.29", features = ["abi3-py312"] }\n',
         )
         self._write(
             "sdk/javascript/package.json",
@@ -83,7 +82,7 @@ class VersionSyncTests(unittest.TestCase):
             check_version_sync.verify_versions(self.root, "v1.2.3"),
             "1.2.3",
         )
-        self.assertEqual(check_version_sync.verify_python_policy(self.root), "3.11")
+        self.assertEqual(check_version_sync.verify_python_policy(self.root), "3.12")
 
     def test_rejects_misaligned_python_abi_floor(self):
         self._write(
@@ -93,7 +92,7 @@ class VersionSyncTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             check_version_sync.VersionSyncError,
-            "abi3-py311",
+            "abi3-py312",
         ):
             check_version_sync.verify_python_policy(self.root)
 

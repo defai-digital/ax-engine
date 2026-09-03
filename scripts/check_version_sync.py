@@ -19,9 +19,9 @@ class VersionSyncError(ValueError):
 INSTALL_REQUIREMENT_PATTERN = re.compile(
     r"ax-engine(?:\[[^\]]+\])?>=(\d+\.\d+\.\d+),<\d+"
 )
-PYTHON_MIN_VERSION = "3.11"
+PYTHON_MIN_VERSION = "3.12"
 PYTHON_REQUIRES = f">={PYTHON_MIN_VERSION}"
-PYTHON_ABI3_FEATURE = "abi3-py311"
+PYTHON_ABI3_FEATURE = "abi3-py312"
 
 
 def _required_match(root: pathlib.Path, relative_path: str, pattern: str) -> str:
@@ -111,7 +111,7 @@ def verify_python_policy(root: pathlib.Path) -> str:
     classifiers = set(project.get("classifiers", []))
     expected_classifiers = {
         f"Programming Language :: Python :: {version}"
-        for version in ("3.11", "3.12", "3.13")
+        for version in ("3.12", "3.13")
     }
     problems: list[str] = []
 
@@ -125,18 +125,21 @@ def verify_python_policy(root: pathlib.Path) -> str:
         problems.append(
             "pyproject.toml missing classifiers: " + ", ".join(sorted(missing_classifiers))
         )
-    if "Programming Language :: Python :: 3.10" in classifiers:
-        problems.append("pyproject.toml still advertises Python 3.10")
-    if pyproject.get("tool", {}).get("ruff", {}).get("target-version") != "py311":
-        problems.append("pyproject.toml Ruff target-version must be py311")
+    if classifiers & {
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+    }:
+        problems.append("pyproject.toml still advertises a Python version below 3.12")
+    if pyproject.get("tool", {}).get("ruff", {}).get("target-version") != "py312":
+        problems.append("pyproject.toml Ruff target-version must be py312")
     if pyproject.get("tool", {}).get("mypy", {}).get("python_version") != PYTHON_MIN_VERSION:
-        problems.append("pyproject.toml mypy python_version must be 3.11")
+        problems.append("pyproject.toml mypy python_version must be 3.12")
 
     py_crate = (root / "crates/ax-engine-py/Cargo.toml").read_text(encoding="utf-8")
     if PYTHON_ABI3_FEATURE not in py_crate:
         problems.append(f"Python extension must enable {PYTHON_ABI3_FEATURE}")
-    if "abi3-py310" in py_crate:
-        problems.append("Python extension still enables abi3-py310")
+    if "abi3-py310" in py_crate or "abi3-py311" in py_crate:
+        problems.append("Python extension still enables an ABI floor below 3.12")
 
     if problems:
         raise VersionSyncError("Python compatibility policy mismatch: " + "; ".join(problems))

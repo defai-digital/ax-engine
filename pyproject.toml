@@ -108,7 +108,7 @@ exclude = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 extend-exclude = ["scripts", "python/tests", "python/ax_engine/_ax_engine"]
 
 [tool.ruff.lint]

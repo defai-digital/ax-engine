@@ -21,24 +21,24 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn('push:\n    branches:\n      - "**"', workflow)
         self.assertNotIn("push:\n    tags:", workflow)
 
-    def test_python_311_is_the_release_floor_and_newer_versions_are_smoked(self) -> None:
+    def test_python_312_is_the_release_floor_and_newer_versions_are_smoked(self) -> None:
         workflows = {path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")}
         ci = workflows["ci.yml"]
 
-        self.assertIn('python-version: ["3.11", "3.12", "3.13"]', ci)
+        self.assertIn('python-version: ["3.12", "3.13"]', ci)
         self.assertIn("python-version: ${{ matrix.python-version }}", ci)
         self.assertIn("ci-python-package-${{ matrix.python-version }}-logs", ci)
 
         for workflow in ("coverage.yml", "pypi.yml", "release-candidate.yml"):
             self.assertIn(
-                'python-version: "3.11"',
+                'python-version: "3.12"',
                 workflows[workflow],
                 f"{workflow} must exercise the minimum supported Python",
             )
             self.assertNotIn(
-                'python-version: "3.12"',
+                'python-version: "3.13"',
                 workflows[workflow],
-                f"{workflow} must not build releases only on Python 3.12",
+                f"{workflow} must not build releases only on Python 3.13",
             )
 
     def test_model_smoke_is_required_on_release_and_explicit_runs(self) -> None:
