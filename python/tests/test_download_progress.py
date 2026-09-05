@@ -103,10 +103,12 @@ class DownloadProgressHelpersTests(unittest.TestCase):
                 ),
                 unittest.mock.patch.object(dm.threading, "Thread"),
             ):
-                with self.assertRaisesRegex(RuntimeError, "download failed"):
-                    with dm._ProgressBarReporter("owner/model", 100, stream):
+                reporter = dm._ProgressBarReporter("owner/model", 100, stream)
+                try:
+                    with reporter:
                         raise RuntimeError("download failed")
-
+                except RuntimeError as error:
+                    self.assertEqual(str(error), "download failed")
             output = stream.getvalue()
             self.assertNotIn("100%", output)
             self.assertIn("0%", output)

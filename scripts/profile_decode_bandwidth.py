@@ -345,7 +345,6 @@ def run_profile(args: argparse.Namespace) -> dict:
     decode_tokens_observed = 0
     last_event_wall = time.monotonic()
     crossover_decisions: dict[str, int] = {}
-    final_response = None
 
     for event in session.stream_generate(
         input_tokens=prompt_tokens,
