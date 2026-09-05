@@ -6,9 +6,7 @@ Usage:
   python3 benchmarks/results/mlx-inference/2026-05-09-thermal-fix/analyze.py
 """
 import json
-import glob
 import os
-import sys
 
 Q_DIR = "benchmarks/results/mlx-inference/2026-05-09-q-slice-fix"
 T_DIR = "benchmarks/results/mlx-inference/2026-05-09-thermal-fix"

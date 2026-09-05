@@ -12,7 +12,6 @@ script's job.
 Re-run after every `maturin develop` to catch a stale extension; a
 clean build should pass this in <100 ms.
 """
-import inspect
 import os
 import sys
 import unittest
@@ -134,7 +133,7 @@ class EmbeddingApiSurfaceTests(unittest.TestCase):
             try:
                 session.close()
             except Exception:
-                pass
+                pass  # Session may already be closed.
 
 
 if __name__ == "__main__":

@@ -36,7 +36,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import gc
 import http.client
 import json
 import os
@@ -45,7 +44,6 @@ import socket
 import statistics
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import date
 from pathlib import Path
@@ -166,7 +164,7 @@ def _wait_for_server(port: int, timeout: int = 120) -> bool:
             if resp.status == 200:
                 return True
         except OSError:
-            pass
+            pass  # Optional host command or socket is unavailable.
         time.sleep(1)
     return False
 
@@ -235,7 +233,7 @@ def _ngram_telemetry(port: int) -> dict:
         if resp.status == 200:
             return json.loads(resp.read())
     except OSError:
-        pass
+        pass  # Optional host command or socket is unavailable.
     return {}
 
 

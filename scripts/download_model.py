@@ -19,6 +19,7 @@ For raw HuggingFace checkpoints (not from mlx-community), convert first:
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
 import json
 import os
@@ -68,14 +69,9 @@ def _trim_standalone_reference(value: str) -> str:
     return value[start:end]
 
 
-_REPO_REF_MODULE: ModuleType | None | bool = False
-
-
+@functools.lru_cache(maxsize=1)
 def _load_repo_ref_module() -> ModuleType | None:
     """Load the packaged parser without importing the native ``ax_engine`` package."""
-    global _REPO_REF_MODULE
-    if _REPO_REF_MODULE is not False:
-        return _REPO_REF_MODULE
     candidates = (
         REPO_ROOT / "python" / "ax_engine" / "_repo_ref.py",
         REPO_ROOT / "ax_engine" / "_repo_ref.py",
@@ -88,9 +84,7 @@ def _load_repo_ref_module() -> ModuleType | None:
             continue
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        _REPO_REF_MODULE = module
         return module
-    _REPO_REF_MODULE = None
     return None
 
 
@@ -1535,14 +1529,12 @@ def _copy_snapshot_to_dest(
                     f"{backup}: {cleanup_error}",
                     file=sys.stderr,
                 )
-            backup = None
     except BaseException:
         if not activated:
             shutil.rmtree(tmp, ignore_errors=True)
         if backup is not None and not _path_exists(dest):
             try:
                 backup.rename(dest)
-                backup = None
             except OSError:
                 # Keep the uniquely named backup: never delete the only copy.
                 pass

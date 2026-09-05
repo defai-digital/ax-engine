@@ -103,7 +103,7 @@ def _resolve_base_dir(base: str) -> Path:
     snap = _find_snapshot(_repo_slug(base))
     if snap is not None:
         return snap.resolve()
-    sys.exit(
+    raise SystemExit(
         f"ERROR: base model '{base}' not found.\n"
         f"  Looked for a local dir and for {_repo_slug(base)} in {HF_CACHE}.\n"
         f"  Download it first:  python3 scripts/download_model.py {base}"

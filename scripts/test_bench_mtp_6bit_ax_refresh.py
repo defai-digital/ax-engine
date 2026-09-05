@@ -6,7 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 from scripts import bench_mtp_6bit_ax_refresh as bench
 
@@ -296,7 +296,7 @@ class BenchMtpRefreshTests(unittest.TestCase):
             approximate_speed_ceiling=False,
         )
 
-        with mock.patch.object(bench, "run_logged") as run_logged:
+        with unittest.mock.patch.object(bench, "run_logged") as run_logged:
             bench.maybe_run_case(
                 target=target,
                 suite="sample",

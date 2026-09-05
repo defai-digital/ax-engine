@@ -757,17 +757,17 @@ def probe_remote_media_rejected(
             "remote image URL was accepted (expected fail-closed 4xx)",
             elapsed_ms=elapsed,
         )
-    if 400 <= status < 500:
+    if status < 400:
         return SurfaceProbeResult(
             name,
-            True,
-            f"remote media rejected HTTP {status}",
+            False,
+            f"unexpected HTTP {status}: {str(body)[:160]}",
             elapsed_ms=elapsed,
         )
     return SurfaceProbeResult(
         name,
-        False,
-        f"unexpected HTTP {status}: {str(body)[:160]}",
+        True,
+        f"remote media rejected HTTP {status}",
         elapsed_ms=elapsed,
     )
 
@@ -817,17 +817,17 @@ def probe_video_rejected(
             "video_url accepted on public chat route (expected reject)",
             elapsed_ms=elapsed,
         )
-    if 400 <= status < 500:
+    if status < 400:
         return SurfaceProbeResult(
             name,
-            True,
-            f"video rejected HTTP {status}",
+            False,
+            f"unexpected HTTP {status}: {str(body)[:160]}",
             elapsed_ms=elapsed,
         )
     return SurfaceProbeResult(
         name,
-        False,
-        f"unexpected HTTP {status}: {str(body)[:160]}",
+        True,
+        f"video rejected HTTP {status}",
         elapsed_ms=elapsed,
     )
 

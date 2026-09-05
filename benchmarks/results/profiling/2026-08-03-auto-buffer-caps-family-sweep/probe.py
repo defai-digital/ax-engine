@@ -25,7 +25,7 @@ def iter_sse(lines):
                 try:
                     yield event, json.loads("\n".join(data))
                 except json.JSONDecodeError:
-                    pass
+                    pass  # Skip malformed JSON.
             event, data = "", []
             continue
         if line.startswith("event:"):
@@ -37,7 +37,7 @@ def iter_sse(lines):
         try:
             yield event, json.loads("\n".join(data))
         except json.JSONDecodeError:
-            pass
+            pass  # Skip malformed JSON.
 
 
 def one_run(port, tokens, gen_tokens, sampler, seed=1234, text=None):
@@ -107,7 +107,7 @@ def wait_ready(port, proc, timeout=600):
             if r.status < 500:
                 return
         except OSError:
-            pass
+            pass  # Optional host command or socket is unavailable.
         time.sleep(2)
     raise RuntimeError("server did not become ready")
 

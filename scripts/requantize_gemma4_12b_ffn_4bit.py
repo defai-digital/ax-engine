@@ -75,12 +75,14 @@ def main() -> None:
             shutil.copy2(f, os.path.join(out, bn))
 
     # Strip the per-layer 8-bit FFN overrides so the artifact is uniformly 4-bit.
-    cfg = json.load(open(os.path.join(base, "config.json")))
+    with open(os.path.join(base, "config.json")) as config_in:
+        cfg = json.load(config_in)
     q = cfg.get("quantization", {})
     removed = [k for k in list(q) if isinstance(q[k], dict) and ".mlp." in k]
     for k in removed:
         del q[k]
-    json.dump(cfg, open(os.path.join(out, "config.json"), "w"), indent=2)
+    with open(os.path.join(out, "config.json"), "w") as config_out:
+        json.dump(cfg, config_out, indent=2)
     print(f"config: removed {len(removed)} per-layer 8-bit FFN overrides -> uniform 4-bit")
     print(f"done: {total_requant} FFN tensors re-quantized; artifact at {out}")
 

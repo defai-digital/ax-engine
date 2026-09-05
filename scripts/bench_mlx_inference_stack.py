@@ -767,7 +767,7 @@ def collect_performance_condition_metadata() -> dict[str, Any]:
             "fifteen_minutes": round(load_15m, 3),
         }
     except Exception:
-        pass
+        pass  # Host load average is unavailable.
 
     battery_lines = _command_output_lines(["pmset", "-g", "batt"])
     if battery_lines:
@@ -990,7 +990,7 @@ def collect_host_metadata(
             ["sw_vers", "-productVersion"], text=True
         ).strip()
     except Exception:
-        pass
+        pass  # Best-effort; continue.
     os_build = _command_output(["sw_vers", "-buildVersion"])
 
     metadata: dict[str, Any] = {
@@ -1060,7 +1060,7 @@ def collect_build_metadata() -> dict[str, Any]:
             stderr=subprocess.DEVNULL,
         ).strip()
     except Exception:
-        pass
+        pass  # Optional version metadata is unavailable.
     try:
         cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
         match = re.search(
@@ -1071,7 +1071,7 @@ def collect_build_metadata() -> dict[str, Any]:
         if match is not None:
             engine_version = match.group(1)
     except OSError:
-        pass
+        pass  # Optional host command or socket is unavailable.
     try:
         status = subprocess.check_output(
             [
@@ -1087,7 +1087,7 @@ def collect_build_metadata() -> dict[str, Any]:
         )
         tracked_status = [line for line in status.splitlines() if line.strip()]
     except Exception:
-        pass
+        pass  # Best-effort; continue.
 
     linked_libraries = [
         line
@@ -1926,7 +1926,7 @@ def kill_proc(proc: subprocess.Popen[Any]) -> None:
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                pass
+                pass  # Process did not exit before the wait timeout.
 
 
 def process_rss_gb(pid: int | None) -> float | None:

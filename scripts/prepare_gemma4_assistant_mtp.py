@@ -107,7 +107,7 @@ def _resolve_model_dir(ref: str, *, what: str) -> Path:
     snap = _latest_snapshot(HF_CACHE / _repo_slug(ref))
     if snap is not None:
         return snap.resolve()
-    sys.exit(
+    raise SystemExit(
         f"ERROR: {what} model '{ref}' not found.\n"
         f"  Looked for a local dir and for {_repo_slug(ref)} in {HF_CACHE}.\n"
         f"  Download it first:  python3 scripts/download_model.py {ref}"

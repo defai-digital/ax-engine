@@ -328,7 +328,7 @@ def _run_oracle_prompt(
         try:
             mx.clear_cache()
         except Exception:
-            pass
+            pass  # MLX cache flush is best-effort.
 
         prompt_arr = mx.array(prompt_ids, mx.uint32)
         kv = mlx_cache.make_prompt_cache(model)
@@ -410,7 +410,7 @@ def run_oracle_path(
         import mlx.core as mx
         mx.clear_cache()
     except Exception:
-        pass
+        pass  # MLX cache flush is best-effort.
 
     results = []
     for pid, category, prompt in PROMPTS:
@@ -437,7 +437,7 @@ def run_oracle_path(
         gc.collect()
         mx.clear_cache()
     except Exception:
-        pass
+        pass  # MLX cache flush is best-effort.
 
     return results
 
@@ -506,7 +506,7 @@ def _run_lightning_speculative_prompt(
         try:
             mx.clear_cache()
         except Exception:
-            pass
+            pass  # MLX cache flush is best-effort.
 
         kv = mlx_cache.make_prompt_cache(model)
 
@@ -630,7 +630,7 @@ def run_lightning_path(
         import mlx.core as mx
         mx.clear_cache()
     except Exception:
-        pass
+        pass  # MLX cache flush is best-effort.
 
     results = []
     for pid, category, prompt in PROMPTS:
@@ -656,7 +656,7 @@ def run_lightning_path(
         gc.collect()
         mx.clear_cache()
     except Exception:
-        pass
+        pass  # MLX cache flush is best-effort.
 
     return results
 
@@ -687,7 +687,7 @@ def _wait_for_server(port: int, timeout: int = 180) -> bool:
             if conn.getresponse().status == 200:
                 return True
         except OSError:
-            pass
+            pass  # Optional host command or socket is unavailable.
         time.sleep(1)
     return False
 

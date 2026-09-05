@@ -199,7 +199,7 @@ def write_box_whisker_svg(
         max_span = max(0.0, group_w - box_w)
         span = min(max(preferred_span, minimum_span), max_span)
         start_x = group_x + (group_w - span) / 2
-        step = span / (count - 1) if count > 1 else 0.0
+        step = span / (count - 1)
         return [start_x + step * i for i in range(count)]
 
     direction_fill = "#dc2626"

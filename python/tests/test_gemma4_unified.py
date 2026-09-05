@@ -9,7 +9,7 @@ import unittest
 import wave
 from io import BytesIO
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 try:
     from PIL import Image
@@ -135,11 +135,11 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
     @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
     def test_rejects_oversized_image_before_decoding_pixels(self) -> None:
         module = load_module()
-        opened = mock.MagicMock()
+        opened = unittest.mock.MagicMock()
         opened.size = (module._MAX_IMAGE_DIMENSION + 1, 1)
 
         with (
-            mock.patch("PIL.Image.open", return_value=opened),
+            unittest.mock.patch("PIL.Image.open", return_value=opened),
             self.assertRaisesRegex(ValueError, "dimensions must not exceed"),
         ):
             module._load_pil_image("oversized.png")
@@ -153,10 +153,10 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
             write_tiny_config(model_dir)
             config = module._load_config(model_dir)
 
-        image = mock.MagicMock()
+        image = unittest.mock.MagicMock()
         image.width = 10_000
         image.height = 10_000
-        pixels = mock.MagicMock()
+        pixels = unittest.mock.MagicMock()
         pixels.__getitem__.return_value = (1, 2, 3)
         image.load.return_value = pixels
 

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "qa"))
@@ -83,7 +83,7 @@ class CapabilityAndPolicyTests(unittest.TestCase):
         )
 
     def test_multimodal_soft_skip_only_without_require(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json", return_value=(400, {"error": "no vision"})
         ):
             soft = probe_multimodal_image(
@@ -98,12 +98,12 @@ class CapabilityAndPolicyTests(unittest.TestCase):
         self.assertFalse(hard.skipped)
 
     def test_remote_media_must_reject(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json", return_value=(400, {"error": "remote"})
         ):
             ok = probe_remote_media_rejected("http://127.0.0.1:9", "m")
         self.assertTrue(ok.passed)
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json",
             return_value=(200, {"choices": [{"message": {"content": "ok"}}]}),
         ):
@@ -111,13 +111,13 @@ class CapabilityAndPolicyTests(unittest.TestCase):
         self.assertFalse(bad.passed)
 
     def test_video_must_reject(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json",
             return_value=(400, {"error": "unsupported_modality"}),
         ):
             ok = probe_video_rejected("http://127.0.0.1:9", "m")
         self.assertTrue(ok.passed)
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json",
             return_value=(200, {"choices": [{"message": {"content": "3"}}]}),
         ):
@@ -133,7 +133,7 @@ class CapabilityAndPolicyTests(unittest.TestCase):
         self.assertEqual(normalize_answer_text("  7 \n"), "7")
 
     def test_image_color_content_match(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "multimodal_probes._post_json",
             return_value=(
                 200,
@@ -163,9 +163,9 @@ class CapabilityAndPolicyTests(unittest.TestCase):
                         }
             return 200, {"choices": [{"message": {"content": "ok"}}]}
 
-        with mock.patch("surface_probes._post_json", side_effect=fake_post), mock.patch(
+        with unittest.mock.patch("surface_probes._post_json", side_effect=fake_post), unittest.mock.patch(
             "multimodal_probes._post_json", side_effect=fake_post
-        ), mock.patch(
+        ), unittest.mock.patch(
             "multimodal_probes.fetch_model_card",
             return_value={
                 "capabilities": {"input": {"image": True, "text": True}}

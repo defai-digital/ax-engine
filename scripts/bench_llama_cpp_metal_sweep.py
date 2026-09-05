@@ -589,8 +589,6 @@ def _repo_relative(path: Path) -> str:
 
 
 def update_readme_source_marker(readme: Path, output_root: Path) -> None:
-    import re
-
     rel = _repo_relative(output_root)
     text = readme.read_text()
     marker_re = re.compile(

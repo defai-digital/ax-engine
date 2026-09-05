@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 SCRIPT_PATH = Path(__file__).with_name("bench_ax_serving.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("bench_ax_serving", SCRIPT_PATH)
@@ -189,7 +189,7 @@ class AxServingBenchTests(unittest.TestCase):
                 "response": {"output_token_count": 1},
             }, time.perf_counter() - started
 
-        with mock.patch.object(bench, "build_payload", side_effect=slow_build_payload):
+        with unittest.mock.patch.object(bench, "build_payload", side_effect=slow_build_payload):
             result = bench.run_one_request(
                 prompt=prompt(),
                 model_id="m",

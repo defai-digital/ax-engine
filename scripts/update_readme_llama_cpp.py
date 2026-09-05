@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +115,7 @@ def render_section(sweep_doc: dict[str, Any]) -> str:
     try:
         manifest_path = str(Path(manifest_path).resolve().relative_to(Path.cwd().resolve()))
     except (ValueError, OSError):
-        pass
+        pass  # Keep the original path when it is outside the repo.
     lines.append(f"- Source: `{manifest_path}`")
     lines.append(
         f"- llama-bench: `{sweep_doc.get('llama_bench', '/opt/homebrew/bin/llama-bench')}`, "

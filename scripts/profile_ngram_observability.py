@@ -108,77 +108,77 @@ DEFAULT_SEED = 1234
 # diversity does not matter for classification, only intra-prompt diversity.
 NON_REPEATING_SOURCES = [
     (
-        "Margaret turned the brass key with steady fingers and pushed open the "
+        ("Margaret turned the brass key with steady fingers and pushed open the "
         "warehouse door, which groaned on hinges that had not seen oil for at "
         "least a decade, releasing a long breath of stale air into the cold "
         "morning. The sky over the harbour was the colour of pewter and the "
-        "gulls wheeled silently above the wharves."
+        "gulls wheeled silently above the wharves.")
     ),
     (
-        "Quantum error correction codes encode logical qubits across many "
+        ("Quantum error correction codes encode logical qubits across many "
         "physical qubits so that local noise can be detected and reversed "
         "without disturbing the encoded information. Surface codes have been "
         "favoured for hardware implementations because their stabiliser checks "
-        "only involve nearest-neighbour interactions on a planar lattice."
+        "only involve nearest-neighbour interactions on a planar lattice.")
     ),
     (
-        "Bread depends on a small ecology of microbes interacting with starch "
+        ("Bread depends on a small ecology of microbes interacting with starch "
         "and gluten under controlled hydration. A long, cool fermentation lets "
         "the dough develop complex aromas while the yeast slowly inflates "
-        "the structure built by the kneaded protein matrix."
+        "the structure built by the kneaded protein matrix.")
     ),
     (
-        "The shipping forecast for sea area Viking, North Utsire, and South "
+        ("The shipping forecast for sea area Viking, North Utsire, and South "
         "Utsire reports winds south-west five to seven, occasionally gale "
         "eight later; sea state moderate or rough; weather rain at times, "
-        "fog patches; visibility good, occasionally very poor."
+        "fog patches; visibility good, occasionally very poor.")
     ),
     (
-        "A garden snail moves on a single muscular foot, propelled by waves of "
+        ("A garden snail moves on a single muscular foot, propelled by waves of "
         "contraction that travel along its underside, and lubricates its path "
         "with a mucus that doubles as a defensive barrier against predators "
-        "and as a glue when the animal anchors itself to a vertical surface."
+        "and as a glue when the animal anchors itself to a vertical surface.")
     ),
     (
-        "Index funds owe their popularity to a simple observation: most "
+        ("Index funds owe their popularity to a simple observation: most "
         "actively managed equity funds underperform their benchmark after "
         "fees over multi-decade horizons. Holding the benchmark directly "
-        "captures the underlying market return at near-zero overhead."
+        "captures the underlying market return at near-zero overhead.")
     ),
     (
-        "Late in the evening the printer started up unprompted and produced "
+        ("Late in the evening the printer started up unprompted and produced "
         "three pages of nothing but the letter Q, followed by a single blank "
         "sheet, after which it returned to its normal idle state and refused "
-        "to acknowledge that anything unusual had happened."
+        "to acknowledge that anything unusual had happened.")
     ),
     (
-        "Glacial moraines record the maximum extent of an ice sheet because "
+        ("Glacial moraines record the maximum extent of an ice sheet because "
         "the rock fragments that the glacier transported are dropped along its "
         "leading edge when the ice retreats, forming a ridge that outlasts "
         "the climate change responsible for the retreat by many thousands of "
-        "years."
+        "years.")
     ),
 ]
 
 # Source phrases for the repeating class. The classifier looks at 4-gram
 # uniqueness; short cycles guarantee the ratio is well below 0.5.
 REPEATING_TEMPLATES = [
-    "Translate to French: hello hello hello hello hello hello hello hello "
-    "hello hello hello hello hello hello hello hello hello hello hello hello.",
-    "List the numbers: one two three one two three one two three one two "
-    "three one two three one two three one two three one two three.",
-    "Repeat after me: ping pong ping pong ping pong ping pong ping pong ping "
-    "pong ping pong ping pong ping pong ping pong ping pong ping pong.",
-    "Echo: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta "
-    "gamma alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma.",
-    "Sing the chorus: la la la la la la la la la la la la la la la la la la "
-    "la la la la la la la la la la la la la la la la la la la la la la la.",
-    "Loop: red green blue red green blue red green blue red green blue red "
-    "green blue red green blue red green blue red green blue red green blue.",
-    "Pattern: dot dash dot dash dot dash dot dash dot dash dot dash dot dash "
-    "dot dash dot dash dot dash dot dash dot dash dot dash dot dash dot dash.",
-    "Drill: left right left right left right left right left right left right "
-    "left right left right left right left right left right left right.",
+    ("Translate to French: hello hello hello hello hello hello hello hello "
+    "hello hello hello hello hello hello hello hello hello hello hello hello."),
+    ("List the numbers: one two three one two three one two three one two "
+    "three one two three one two three one two three one two three."),
+    ("Repeat after me: ping pong ping pong ping pong ping pong ping pong ping "
+    "pong ping pong ping pong ping pong ping pong ping pong ping pong."),
+    ("Echo: alpha beta gamma alpha beta gamma alpha beta gamma alpha beta "
+    "gamma alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma."),
+    ("Sing the chorus: la la la la la la la la la la la la la la la la la la "
+    "la la la la la la la la la la la la la la la la la la la la la la la."),
+    ("Loop: red green blue red green blue red green blue red green blue red "
+    "green blue red green blue red green blue red green blue red green blue."),
+    ("Pattern: dot dash dot dash dot dash dot dash dot dash dot dash dot dash "
+    "dot dash dot dash dot dash dot dash dot dash dot dash dot dash dot dash."),
+    ("Drill: left right left right left right left right left right left right "
+    "left right left right left right left right left right left right."),
 ]
 
 

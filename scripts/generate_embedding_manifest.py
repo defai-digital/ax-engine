@@ -102,7 +102,6 @@ def build_tensor_specs(
             single = list(model_dir.glob("*.safetensors"))
         if not single:
             raise FileNotFoundError(f"No safetensors files in {model_dir}")
-        weight_map = {}  # will be filled from header
         shard_files = [f.name for f in sorted(single)]
 
     # Read headers from each shard

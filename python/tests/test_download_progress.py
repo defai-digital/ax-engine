@@ -5,7 +5,7 @@ import io
 import pathlib
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -77,8 +77,8 @@ class DownloadProgressHelpersTests(unittest.TestCase):
 
             stream = io.StringIO()
             with (
-                mock.patch.object(dm, "default_mlx_lm_repo_cache_dir", return_value=repo_dir),
-                mock.patch.object(dm.threading, "Thread"),
+                unittest.mock.patch.object(dm, "default_mlx_lm_repo_cache_dir", return_value=repo_dir),
+                unittest.mock.patch.object(dm.threading, "Thread"),
                 dm._ProgressBarReporter("owner/model", 1_000, stream) as reporter,
             ):
                 # A new snapshot link to an existing blob consumes no new
@@ -98,12 +98,14 @@ class DownloadProgressHelpersTests(unittest.TestCase):
             repo_dir = pathlib.Path(tmp)
             stream = io.StringIO()
             with (
-                mock.patch.object(dm, "default_mlx_lm_repo_cache_dir", return_value=repo_dir),
-                mock.patch.object(dm.threading, "Thread"),
-                self.assertRaisesRegex(RuntimeError, "download failed"),
-                dm._ProgressBarReporter("owner/model", 100, stream),
+                unittest.mock.patch.object(
+                    dm, "default_mlx_lm_repo_cache_dir", return_value=repo_dir
+                ),
+                unittest.mock.patch.object(dm.threading, "Thread"),
             ):
-                raise RuntimeError("download failed")
+                with self.assertRaisesRegex(RuntimeError, "download failed"):
+                    with dm._ProgressBarReporter("owner/model", 100, stream):
+                        raise RuntimeError("download failed")
 
             output = stream.getvalue()
             self.assertNotIn("100%", output)
@@ -115,8 +117,8 @@ class DownloadProgressHelpersTests(unittest.TestCase):
             repo_dir = pathlib.Path(tmp)
             stream = io.StringIO()
             with (
-                mock.patch.object(dm, "default_mlx_lm_repo_cache_dir", return_value=repo_dir),
-                mock.patch.object(dm.threading, "Thread"),
+                unittest.mock.patch.object(dm, "default_mlx_lm_repo_cache_dir", return_value=repo_dir),
+                unittest.mock.patch.object(dm.threading, "Thread"),
                 dm._ProgressBarReporter("owner/model", 100, stream),
             ):
                 pass

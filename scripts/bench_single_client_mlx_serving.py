@@ -647,7 +647,7 @@ def wait_for_server(port: int, process: subprocess.Popen[bytes], timeout_s: floa
                     if 200 <= response.status < 300:
                         return time.perf_counter() - started
             except (OSError, urllib.error.URLError):
-                pass
+                pass  # Retry until the server accepts connections.
         time.sleep(1)
     raise TimeoutError(f"server did not become ready on port {port} in {timeout_s:.0f}s")
 

@@ -97,8 +97,8 @@ RAPID_WORKLOADS: list[tuple[str, str, dict]] = [
                 {
                     "role": "user",
                     "content": (
-                        "Write a short, friendly explanation of why the sky appears "
-                        "blue. Two paragraphs, no bullet points."
+                        ("Write a short, friendly explanation of why the sky appears "
+                        "blue. Two paragraphs, no bullet points.")
                     ),
                 }
             ],
@@ -112,10 +112,10 @@ RAPID_WORKLOADS: list[tuple[str, str, dict]] = [
                 {
                     "role": "user",
                     "content": (
-                        "Return a JSON array of exactly 12 objects, each with the "
+                        ("Return a JSON array of exactly 12 objects, each with the "
                         "fields `id` (integer 1..12), `name` (a short fruit "
                         "name) and `color` (a CSS color name). Output JSON only, "
-                        "no commentary."
+                        "no commentary.")
                     ),
                 }
             ],
@@ -129,17 +129,17 @@ RAPID_WORKLOADS: list[tuple[str, str, dict]] = [
                 {
                     "role": "system",
                     "content": (
-                        "You are a data-pipeline assistant. Use the tools exactly "
+                        ("You are a data-pipeline assistant. Use the tools exactly "
                         "when needed. Always end with a tool call to `submit_summary` "
-                        "once data has been fetched, parsed, validated and written."
+                        "once data has been fetched, parsed, validated and written.")
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        "Build a fresh export of the `invoices` table for Q1 2026. "
+                        ("Build a fresh export of the `invoices` table for Q1 2026. "
                         "Read the latest snapshot, parse it, validate row counts, "
-                        "write the result to S3, and finalize."
+                        "write the result to S3, and finalize.")
                     ),
                 },
             ],
@@ -216,7 +216,7 @@ RAPID_WORKLOADS: list[tuple[str, str, dict]] = [
                 {
                     "role": "user",
                     "content": (
-                        "Below is a Python function. Replace the bare `except:` "
+                        ("Below is a Python function. Replace the bare `except:` "
                         "with `except Exception as e:` and log the error using "
                         "`logger.exception`. Return the entire updated function "
                         "as a fenced code block.\n\n"
@@ -226,7 +226,7 @@ RAPID_WORKLOADS: list[tuple[str, str, dict]] = [
                         "        return httpx.get(url, timeout=5).json()\n"
                         "    except:\n"
                         "        return None\n"
-                        "```"
+                        "```")
                     ),
                 }
             ],
@@ -645,7 +645,7 @@ def run_baseline(
         try:
             mx.clear_cache()
         except Exception:
-            pass
+            pass  # MLX cache flush is best-effort.
         kv = mlx_cache.make_prompt_cache(model)
         logits = _prefill(model, kv, prompt_ids)
         curr = _argmax_token(logits.squeeze(0))
@@ -720,7 +720,7 @@ def run_speculative(
         try:
             mx.clear_cache()
         except Exception:
-            pass
+            pass  # MLX cache flush is best-effort.
 
         kv = mlx_cache.make_prompt_cache(model)
         logits = _prefill(model, kv, prompt_ids)
@@ -888,7 +888,7 @@ def run_case(
     try:
         mx.clear_cache()
     except Exception:
-        pass
+        pass  # MLX cache flush is best-effort.
 
     prompt_ids = case["prompt_ids"]
     eos_id = tokenizer.eos_token_id or 0
@@ -1166,8 +1166,8 @@ def main() -> int:
         f"Sampling: greedy (T=0)  \n",
         f"Gen tokens: {args.generation_tokens}, Reps: {args.repetitions}+{args.warmup}w\n\n",
         f"Measurement gates: decode_time >= {MIN_DECODE_TIME}s, tok/s <= {TPS_CEILING}.  \n\n",
-        "All four columns share the same Python mlx_lm decode loop with argmax-only "
-        "acceptance. This is a fair algorithmic comparison of drafting strategies.\n\n",
+        ("All four columns share the same Python mlx_lm decode loop with argmax-only "
+        "acceptance. This is a fair algorithmic comparison of drafting strategies.\n\n"),
         "| Case | Category | Prompt tok | baseline (tok/s) | lightning n-gram | rapid-mlx suffix | ax-ngram (same-loop) |\n",
         "|---|---|---:|---:|---:|---:|---:|\n",
     ]

@@ -559,7 +559,7 @@ def _box_whisker_chart(
         max_span = max(0.0, group_w - box_w)
         span = min(max(preferred_span, minimum_span), max_span)
         start_x = group_x + (group_w - span) / 2
-        step = span / (count - 1) if count > 1 else 0.0
+        step = span / (count - 1)
         return [start_x + step * i for i in range(count)]
 
     direction_label = "Lower is better" if lower_is_better else "Higher is better"

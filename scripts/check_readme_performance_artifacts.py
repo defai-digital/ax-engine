@@ -3102,7 +3102,6 @@ def required_trial_count_for_row(
     *, artifact: dict[str, Any], row: dict[str, Any]
 ) -> int:
     artifact_repetitions = max(1, int(artifact.get("repetitions", 0)))
-    engine = row.get("engine")
     if row_uses_reused_reference_source(artifact=artifact, row=row):
         return min(artifact_repetitions, REUSED_REFERENCE_MIN_REPETITIONS)
     return artifact_repetitions

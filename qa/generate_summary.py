@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Generate QA summary page linking all reports."""
-import os
 import re
 import sys
 from datetime import datetime

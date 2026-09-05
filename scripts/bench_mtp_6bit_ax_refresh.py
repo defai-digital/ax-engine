@@ -988,8 +988,8 @@ def table_lines(rows: list[dict[str, Any]], *, approximate_diagnostic: bool) -> 
         return lines
 
     lines = [
-        "| Target | Suite | AX direct decode | AX MTP decode | AX MTP/direct | "
-        "AX MTP prefill | AX MTP TTFT | AX accept |",
+        ("| Target | Suite | AX direct decode | AX MTP decode | AX MTP/direct | "
+        "AX MTP prefill | AX MTP TTFT | AX accept |"),
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:

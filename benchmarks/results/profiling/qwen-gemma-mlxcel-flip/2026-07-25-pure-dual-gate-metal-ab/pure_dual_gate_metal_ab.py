@@ -114,7 +114,8 @@ results.append(run_variant("metal_off_r2", {"AX_MLX_GEMMA_DUAL_GATE_UP_METAL": "
 results.append(run_variant("metal_on_r2", {"AX_MLX_GEMMA_DUAL_GATE_UP_METAL": "1"}))
 
 out = OUT_DIR / "results.json"
-json.dump(results, open(out, "w"), indent=2)
+with open(out, "w") as out_file:
+    json.dump(results, out_file, indent=2)
 off = [r["cold_ms"] for r in results if "off" in r["name"]]
 on = [r["cold_ms"] for r in results if "on" in r["name"] and "off" not in r["name"]]
 off_mean = sum(off) / len(off)
@@ -136,5 +137,6 @@ summary = {
     "keep_if_ratio_lt": 0.925,
     "decision": "keep" if ratio < 0.925 else "default_off",
 }
-json.dump(summary, open(OUT_DIR / "summary.json", "w"), indent=2)
+with open(OUT_DIR / "summary.json", "w") as summary_file:
+    json.dump(summary, summary_file, indent=2)
 print(json.dumps(summary, indent=2), flush=True)

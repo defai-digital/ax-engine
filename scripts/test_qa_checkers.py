@@ -117,7 +117,7 @@ class JsonReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "out.json"
             path.write_text(raw)
-            self.assertTrue(path.stat().st_size > 50)
+            self.assertGreater(path.stat().st_size, 50)
 
 
 if __name__ == "__main__":

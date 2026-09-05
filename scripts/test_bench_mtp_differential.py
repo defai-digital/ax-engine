@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 SCRIPT_PATH = Path(__file__).with_name("bench_mtp_differential.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("bench_mtp_differential", SCRIPT_PATH)
@@ -177,7 +177,7 @@ class MtpDifferentialTests(unittest.TestCase):
                 sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
                 enable_thinking=False,
             )
-            with mock.patch.object(diff, "run_subprocess", fake_run_subprocess):
+            with unittest.mock.patch.object(diff, "run_subprocess", fake_run_subprocess):
                 diff.run_ax_suite(
                     suite="flappy",
                     suite_file=suite,

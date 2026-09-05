@@ -590,7 +590,7 @@ def collect_build_metadata() -> dict[str, Any]:
         )
         tracked_status = [line for line in status.splitlines() if line.strip()]
     except (OSError, subprocess.SubprocessError):
-        pass
+        pass  # Optional host command is unavailable.
     return {
         "commit": commit,
         "engine_version": engine_version,
@@ -659,7 +659,7 @@ def discover_ax_engine_native_path() -> Path | None:
         candidates.extend(sorted(package_dir.glob("_ax_engine*.so")))
         candidates.extend(sorted(package_dir.glob("_ax_engine*.dylib")))
     except Exception:
-        pass
+        pass  # Best-effort; continue.
     for path in candidates:
         if path.is_file():
             return path
@@ -843,8 +843,8 @@ def render_summary(artifact: dict[str, Any]) -> str:
             f"Output contract: `{artifact['output_contract']}`. "
             f"Engine: `ax-engine-py`, pooling: `{artifact.get('pooling', 'last')}`.",
             "",
-            "Short-query rows headline **ms/item** (lower is better). "
-            "Fixed-length rows headline tok/s.",
+            ("Short-query rows headline **ms/item** (lower is better). "
+            "Fixed-length rows headline tok/s."),
             "",
             "| Model | Workload | Batch | Max tokens | Primary | AX value | AX tok/s | AX items/s |",
             "|---|---|---:|---:|---|---:|---:|---:|",
@@ -873,8 +873,8 @@ def render_summary(artifact: dict[str, Any]) -> str:
         f"Output contract: `{artifact['output_contract']}`. "
         f"Reference: `{ref_label}`, pooling: `{artifact.get('pooling', 'last')}`.",
         "",
-        "Short-query rows headline **ms/item** (lower is better; negative % = AX faster). "
-        "Fixed-length rows headline tok/s (higher is better).",
+        ("Short-query rows headline **ms/item** (lower is better; negative % = AX faster). "
+        "Fixed-length rows headline tok/s (higher is better)."),
         "",
         f"| Model | Workload | Batch | Max tokens | Primary | {ref_label} | AX | AX vs {ref_label} |",
         "|---|---|---:|---:|---|---:|---:|---:|",

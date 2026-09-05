@@ -6,7 +6,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 import run_qwen_gemma_flip_campaign as campaign
 
@@ -30,7 +30,7 @@ class QwenGemmaFlipCampaignTests(unittest.TestCase):
     def test_build_run_command_is_cache_isolated_and_report_only(self) -> None:
         scenario = campaign.ScenarioSpec("s0", Path("/tmp/s0.jsonl"), ("qwen3",))
 
-        with mock.patch.object(campaign.sys, "executable", "/usr/bin/python3"):
+        with unittest.mock.patch.object(campaign.sys, "executable", "/usr/bin/python3"):
             command = campaign.build_run_command(
                 target_path=Path("/tmp/target.json"),
                 scenario=scenario,

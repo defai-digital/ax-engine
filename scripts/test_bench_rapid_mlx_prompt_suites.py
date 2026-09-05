@@ -225,10 +225,10 @@ class RunCaseStreamHandlingTests(unittest.TestCase):
                 yield from sse_lines
 
         class _FakeStreamCtx:
-            def __enter__(self_inner):
+            def __enter__(self):
                 return _FakeResponse()
 
-            def __exit__(self_inner, *args):
+            def __exit__(self, *args):
                 return False
 
         return patch.object(rapid.httpx, "stream", return_value=_FakeStreamCtx())
@@ -371,8 +371,8 @@ class ParseServerHeaderTests(unittest.TestCase):
             "  Features: tools: qwen3_coder_xml, reasoning: qwen3",
             "MTP: enabled, draft_tokens=3, draft_temp=0.5",
             "N-gram: enabled, K=6, n=3, min_matches=2, accept=greedy",
-            "WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested "
-            "but model has only 1 MTP layer(s). depth will be capped to 1 per verify cycle.",
+            ("WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested "
+            "but model has only 1 MTP layer(s). depth will be capped to 1 per verify cycle."),
         ]
         info = rapid.parse_server_header(log)
         self.assertIn("qwen3.6-27b", info["alias_line"])

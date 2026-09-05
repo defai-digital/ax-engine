@@ -123,7 +123,7 @@ def run_variant(name, extra):
         if ch:
             text = (ch[0].get("text") or "")[:40]
     except Exception:
-        pass
+        pass  # Response did not contain a text choice.
     proc.terminate()
     try:
         proc.wait(timeout=30)

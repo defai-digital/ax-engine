@@ -151,8 +151,8 @@ def write_mtp_exact_claim_fixture(root: Path) -> tuple[Path, Path]:
         + "\n"
     )
     table_lines = [
-        "| Target | Suite | AX direct decode | AX MTP decode | AX MTP/direct | "
-        "AX MTP prefill | AX MTP TTFT | AX accept |",
+        ("| Target | Suite | AX direct decode | AX MTP decode | AX MTP/direct | "
+        "AX MTP prefill | AX MTP TTFT | AX accept |"),
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:

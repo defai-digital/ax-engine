@@ -12,7 +12,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 SCRIPT_PATH = Path(__file__).with_name("bench_qwen36_lightning.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("bench_qwen36_lightning", SCRIPT_PATH)
@@ -50,7 +50,7 @@ class ChatRequestTests(unittest.TestCase):
         # omitted top_k as 0 (disabled), so every measured run actually
         # used unbounded sampling instead of the documented top_k=20
         # methodology.
-        with mock.patch("http.client.HTTPConnection", _FakeConnection):
+        with unittest.mock.patch("http.client.HTTPConnection", _FakeConnection):
             mod._chat_request(port=1234, prompt="hi", max_tokens=8, thinking=True)
 
         sent = json.loads(_FakeConnection.last_body)

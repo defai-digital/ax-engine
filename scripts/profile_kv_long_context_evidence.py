@@ -250,7 +250,6 @@ def run(args: argparse.Namespace) -> dict:
     }
 
     # Compute deltas / bottleneck verdict.
-    cold_tel = cold["telemetry"]
     warm_tel = warm_repeat["telemetry"]
     prefix_blocks_warm = warm_tel.get("prefix_reused_blocks", 0)
     retained_hits_warm = warm_tel.get("retained_cache_hits", 0)
@@ -261,7 +260,6 @@ def run(args: argparse.Namespace) -> dict:
     )
     extend_prefix_blocks = warm_extend["telemetry"].get("prefix_reused_blocks", 0)
 
-    bottleneck = "unknown"
     bottleneck_reason = ""
     if prefix_blocks_warm == 0 and retained_hits_warm == 0:
         bottleneck = "prefix_reuse_not_firing"

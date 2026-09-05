@@ -120,7 +120,7 @@ for rep in range(1, REPS + 1):
             try:
                 text = data["choices"][0].get("text", "")
             except Exception:
-                pass
+                pass  # Response did not contain a text choice.
             usage = data.get("usage", {})
             row = {
                 "name": f"{name}_r{rep}",

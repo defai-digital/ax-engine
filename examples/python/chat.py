@@ -4,8 +4,8 @@ import ax_engine
 def main() -> None:
     with ax_engine.Session(
         model_id="qwen3_dense",
-        compat_backend="llama_cpp",
-        compat_server_url="http://127.0.0.1:8081",
+        support_tier="llama_cpp",
+        llama_server_url="http://127.0.0.1:8081",
     ) as session:
         result = session.chat(
             [

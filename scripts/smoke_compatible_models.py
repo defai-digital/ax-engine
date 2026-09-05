@@ -397,7 +397,7 @@ def wait_for_health(
             if health.get("status") == "ok":
                 return
         except SmokeFailure:
-            pass
+            pass  # Retry until the smoke timeout.
         time.sleep(0.5)
     raise SmokeFailure(f"server did not become ready within {timeout_sec}s; see {log_path}")
 

@@ -53,7 +53,7 @@ def wait_for_health(port: int, proc: subprocess.Popen, timeout: float = 60.0) ->
                 if r.status == 200:
                     return
         except Exception:
-            pass
+            pass  # Retry until the server accepts connections.
         time.sleep(0.1)
     raise TimeoutError("server /health did not respond")
 
@@ -100,7 +100,8 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    prompt_doc = json.load(open(args.token_ids_path))
+    with open(args.token_ids_path) as prompt_file:
+        prompt_doc = json.load(prompt_file)
     token_ids = prompt_doc["token_ids"]
     print(f"prompt tokens: {len(token_ids)}", file=sys.stderr)
 

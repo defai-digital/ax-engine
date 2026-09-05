@@ -250,8 +250,8 @@ def render_markdown(summary: dict[str, Any]) -> str:
             f"{summary['repetitions']} cache-isolated repetitions."
         ),
         "",
-        "| Scenario | AX tok/s | mlxcel tok/s | Throughput ratio | TTFT ratio | "
-        "Stream-gap ratio | Result |",
+        ("| Scenario | AX tok/s | mlxcel tok/s | Throughput ratio | TTFT ratio | "
+        "Stream-gap ratio | Result |"),
         "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for row in summary["scenarios"]:

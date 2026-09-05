@@ -10,7 +10,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from unittest import mock
+import unittest.mock
 
 # Default to importing ax_engine from the source tree (for `maturin develop`
 # runs). When validating an installed wheel (AX_ENGINE_RUN_INSTALLED_TESTS=1),
@@ -598,15 +598,15 @@ class AxEngineCliTests(unittest.TestCase):
             package_dir.mkdir(parents=True)
 
             with (
-                mock.patch.object(_cli, "__file__", str(package_dir / "_cli.py")),
-                mock.patch.object(pathlib.Path, "cwd", return_value=untrusted_root),
-                mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": ""}),
+                unittest.mock.patch.object(_cli, "__file__", str(package_dir / "_cli.py")),
+                unittest.mock.patch.object(pathlib.Path, "cwd", return_value=untrusted_root),
+                unittest.mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": ""}),
             ):
                 self.assertIsNone(_cli._find_repo_script("download_model.py"))
 
             with (
-                mock.patch.object(_cli, "__file__", str(package_dir / "_cli.py")),
-                mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": str(untrusted_root)}),
+                unittest.mock.patch.object(_cli, "__file__", str(package_dir / "_cli.py")),
+                unittest.mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": str(untrusted_root)}),
             ):
                 self.assertEqual(_cli._find_repo_script("download_model.py"), untrusted_script)
 
@@ -650,7 +650,7 @@ class AxEngineCliTests(unittest.TestCase):
 
         stdout = io.StringIO()
         with (
-            mock.patch.object(_cli.subprocess, "Popen", side_effect=tracking_popen),
+            unittest.mock.patch.object(_cli.subprocess, "Popen", side_effect=tracking_popen),
             contextlib.redirect_stdout(stdout),
         ):
             result = _cli._run_streaming_capture_stdout([sys.executable, "-c", script])
@@ -672,7 +672,7 @@ class AxEngineCliTests(unittest.TestCase):
             "dest": "/tmp/model",
             "status": "ready",
         }
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             _cli,
             "_download_summary",
             return_value=(0, summary, ""),
@@ -721,9 +721,9 @@ class AxEngineCliTests(unittest.TestCase):
                 if patched_name is None:
                     patcher = contextlib.nullcontext()
                 elif isinstance(result, BaseException):
-                    patcher = mock.patch.object(_cli, patched_name, side_effect=result)
+                    patcher = unittest.mock.patch.object(_cli, patched_name, side_effect=result)
                 else:
-                    patcher = mock.patch.object(_cli, patched_name, return_value=result)
+                    patcher = unittest.mock.patch.object(_cli, patched_name, return_value=result)
                 with patcher, contextlib.redirect_stderr(stderr):
                     code, stdout = self.capture_main(argv)
 
@@ -747,7 +747,7 @@ class AxEngineCliTests(unittest.TestCase):
             commands.append(command)
             return Result()
 
-        with mock.patch.object(_cli, "_run_capture", side_effect=fake_capture):
+        with unittest.mock.patch.object(_cli, "_run_capture", side_effect=fake_capture):
             code, summary, _ = _cli._download_summary("https://huggingface.co/owner/repo/tree/v2")
 
         self.assertEqual(code, 0)
@@ -772,7 +772,7 @@ class AxEngineCliTests(unittest.TestCase):
             commands.append(command)
             return Result()
 
-        with mock.patch.object(_cli, "_run_capture", side_effect=fake_capture):
+        with unittest.mock.patch.object(_cli, "_run_capture", side_effect=fake_capture):
             _cli._download_summary("owner/repo@-release", dest="-models")
 
         self.assertIn("--revision=-release", commands[0])
@@ -783,7 +783,7 @@ class AxEngineCliTests(unittest.TestCase):
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
         with (
             tempfile.TemporaryDirectory() as cache,
-            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
         ):
             code, stdout = self.capture_main(
                 [
@@ -831,7 +831,7 @@ class AxEngineCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = pathlib.Path(tmp) / "model"
             model_dir.mkdir()
-            with mock.patch.object(_cli, "_server_bin", return_value="ax-engine-server"):
+            with unittest.mock.patch.object(_cli, "_server_bin", return_value="ax-engine-server"):
                 code, stdout = self.capture_main(["serve", str(model_dir), "--dry-run", "--json"])
 
         self.assertEqual(code, 0)
@@ -845,7 +845,7 @@ class AxEngineCliTests(unittest.TestCase):
     def test_serve_axq_dry_run_uses_pinned_candidate_snapshot(self) -> None:
         with (
             tempfile.TemporaryDirectory() as cache,
-            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
         ):
             code, stdout = self.capture_main(
                 [
@@ -911,9 +911,9 @@ class AxEngineCliTests(unittest.TestCase):
                 "status": "ready",
             }
             with (
-                mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
-                mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as run,
-                mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")),
+                unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+                unittest.mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as run,
+                unittest.mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")),
                 self.assertRaisesRegex(RuntimeError, "stop"),
             ):
                 self.capture_main(["serve", "qwen3.6-27b:axq", "--offline"])
@@ -932,7 +932,7 @@ class AxEngineCliTests(unittest.TestCase):
     def test_serve_dry_run_json_uses_gemma4_12b_server_preset(self) -> None:
         with (
             tempfile.TemporaryDirectory() as cache,
-            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
         ):
             code, stdout = self.capture_main(
                 [
@@ -1032,10 +1032,10 @@ class AxEngineCliTests(unittest.TestCase):
             raise AssertionError(f"unexpected command: {command}")
 
         with (
-            mock.patch.object(_cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"),
-            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
-            mock.patch.object(_cli, "_package_version", return_value="6.4.5"),
-            mock.patch.object(_cli, "_run_capture", side_effect=run_capture) as run_capture_mock,
+            unittest.mock.patch.object(_cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"),
+            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(_cli, "_package_version", return_value="6.4.5"),
+            unittest.mock.patch.object(_cli, "_run_capture", side_effect=run_capture) as run_capture_mock,
         ):
             code, stdout = self.capture_main(
                 [
@@ -1105,8 +1105,8 @@ class AxEngineCliTests(unittest.TestCase):
         passed_probe = {"id": "binary", "status": "pass", "detail": "ok"}
 
         with (
-            mock.patch.object(_cli, "_probe_binary", return_value=passed_probe),
-            mock.patch.object(_cli, "_host_system_summary", return_value={}),
+            unittest.mock.patch.object(_cli, "_probe_binary", return_value=passed_probe),
+            unittest.mock.patch.object(_cli, "_host_system_summary", return_value={}),
         ):
             payload = _cli._user_doctor_report(bench_report)
 
@@ -1126,8 +1126,8 @@ class AxEngineCliTests(unittest.TestCase):
 
     def test_doctor_verbose_wraps_bench_doctor(self) -> None:
         with (
-            mock.patch.object(_cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"),
-            mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+            unittest.mock.patch.object(_cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"),
+            unittest.mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
             self.assertRaisesRegex(RuntimeError, "stop"),
         ):
             self.capture_main(
@@ -1171,11 +1171,11 @@ class AxEngineCliTests(unittest.TestCase):
             "gpu_cores": 40,
         }
         with (
-            mock.patch.object(_cli, "_bench_bin", return_value="ax-engine-bench"),
-            mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
-            mock.patch.object(_cli, "_package_version", return_value="6.9.0"),
-            mock.patch.object(_cli, "_host_system_summary", return_value=host),
-            mock.patch.object(_cli, "_run_capture", side_effect=run_capture),
+            unittest.mock.patch.object(_cli, "_bench_bin", return_value="ax-engine-bench"),
+            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(_cli, "_package_version", return_value="6.9.0"),
+            unittest.mock.patch.object(_cli, "_host_system_summary", return_value=host),
+            unittest.mock.patch.object(_cli, "_run_capture", side_effect=run_capture),
         ):
             code, stdout = self.capture_main(["doctor"])
 
@@ -1222,7 +1222,7 @@ class AxEngineCliTests(unittest.TestCase):
                 )
             )
 
-            with mock.patch.dict(
+            with unittest.mock.patch.dict(
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
@@ -1270,7 +1270,7 @@ class AxEngineCliTests(unittest.TestCase):
                 )
             )
 
-            with mock.patch.dict(
+            with unittest.mock.patch.dict(
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
@@ -1314,7 +1314,7 @@ class AxEngineCliTests(unittest.TestCase):
                 )
             )
 
-            with mock.patch.dict(
+            with unittest.mock.patch.dict(
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
@@ -1361,7 +1361,7 @@ class AxEngineCliTests(unittest.TestCase):
                 )
             )
 
-            with mock.patch.dict(
+            with unittest.mock.patch.dict(
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
@@ -1376,7 +1376,7 @@ class AxEngineCliTests(unittest.TestCase):
             self.assertEqual(payload["alias"], "ax-gemma4-12b")
             self.assertEqual(payload["preset"], "gemma4-12b")
 
-            with mock.patch.dict(
+            with unittest.mock.patch.dict(
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
@@ -1430,15 +1430,15 @@ class AxEngineCliTests(unittest.TestCase):
             )
 
             with (
-                mock.patch.dict(
+                unittest.mock.patch.dict(
                     os.environ,
                     {
                         "AX_ENGINE_REPO_ROOT": str(root),
                         "FAKE_MODEL_DIR": str(model_dir),
                     },
                 ),
-                mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
-                mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+                unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+                unittest.mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
                 self.assertRaisesRegex(RuntimeError, "stop"),
             ):
                 self.capture_main(["serve", "ax-qwen3.6-35b"])
@@ -1498,7 +1498,7 @@ class AxEngineCliTests(unittest.TestCase):
                 )
             )
 
-            with mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": str(root)}):
+            with unittest.mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": str(root)}):
                 code, stdout = self.capture_main(
                     [
                         "convert-mtplx",
@@ -1565,7 +1565,7 @@ class AxEngineCliTests(unittest.TestCase):
                 )
             )
 
-            with mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": str(root)}):
+            with unittest.mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": str(root)}):
                 code, stdout = self.capture_main(
                     [
                         "convert-mtplx",
@@ -1586,8 +1586,8 @@ class AxEngineCliTests(unittest.TestCase):
 
     def test_tui_forwards_dash_led_args_to_native_binary(self) -> None:
         with (
-            mock.patch.object(_cli, "_native_bin", return_value="/opt/bin/ax-engine"),
-            mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+            unittest.mock.patch.object(_cli, "_native_bin", return_value="/opt/bin/ax-engine"),
+            unittest.mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
             self.assertRaisesRegex(RuntimeError, "stop"),
         ):
             self.capture_main(["tui", "--help"])
@@ -1600,8 +1600,8 @@ class AxEngineCliTests(unittest.TestCase):
 
     def test_tui_strips_leading_separator_before_forwarding(self) -> None:
         with (
-            mock.patch.object(_cli, "_native_bin", return_value="/opt/bin/ax-engine"),
-            mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+            unittest.mock.patch.object(_cli, "_native_bin", return_value="/opt/bin/ax-engine"),
+            unittest.mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
             self.assertRaisesRegex(RuntimeError, "stop"),
         ):
             self.capture_main(["tui", "--", "--foo"])
@@ -1631,7 +1631,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.
-        with mock.patch.object(_cli, "_run_interactive_download") as wizard:
+        with unittest.mock.patch.object(_cli, "_run_interactive_download") as wizard:
             code, stdout = self.capture_main(["download"])
 
         wizard.assert_not_called()
@@ -1640,8 +1640,8 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
 
     def test_no_interactive_flag_blocks_wizard_even_on_tty(self) -> None:
         with (
-            mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            mock.patch.object(_cli, "_run_interactive_download") as wizard,
+            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            unittest.mock.patch.object(_cli, "_run_interactive_download") as wizard,
         ):
             code, _ = self.capture_main(["download", "--no-interactive"])
 
@@ -1650,8 +1650,8 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
 
     def test_bare_download_on_tty_runs_wizard(self) -> None:
         with (
-            mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            mock.patch.object(_cli, "_run_interactive_download", return_value=0) as wizard,
+            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            unittest.mock.patch.object(_cli, "_run_interactive_download", return_value=0) as wizard,
         ):
             code, _ = self.capture_main(["download"])
 
@@ -1660,7 +1660,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
 
     def test_ui_downloader_requires_tty(self) -> None:
         with (
-            mock.patch.object(_cli, "_supports_interactive", return_value=False),
+            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=False),
             self.assertRaises(SystemExit) as raised,
         ):
             self.capture_main(["ui-downloader"])
@@ -1676,9 +1676,9 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         }
         inputs = iter(["1", "", "y"])  # select first model, default path, confirm
         with (
-            mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
+            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
+            unittest.mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 
@@ -1706,9 +1706,9 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         # There is no Direct-vs-MTP prompt: select, accept cache, confirm.
         inputs = iter([str(idx), "", "y"])
         with (
-            mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
+            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
+            unittest.mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 
@@ -1726,9 +1726,9 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         idx = self._index_of("ax-qwen3-coder-next")
         inputs = iter([str(idx), "", "y"])
         with (
-            mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
+            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
+            unittest.mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 
@@ -1740,9 +1740,9 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
 
     def test_wizard_cancel_returns_130(self) -> None:
         with (
-            mock.patch.object(_cli, "_supports_interactive", return_value=True),
-            mock.patch.object(_cli, "_wizard_input", return_value="q"),
-            mock.patch.object(_cli, "_download_summary") as download,
+            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            unittest.mock.patch.object(_cli, "_wizard_input", return_value="q"),
+            unittest.mock.patch.object(_cli, "_download_summary") as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 

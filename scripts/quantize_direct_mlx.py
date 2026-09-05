@@ -120,7 +120,7 @@ def quantize_safetensors(
         print(f"  Loading {sf_name} ...")
         # mx.load handles bfloat16 natively when path has .safetensors extension.
         # Use the source_dir path (may be a symlink) to preserve the extension.
-        weights_raw: dict[str, mx.array] = mx.load(str(source_dir / sf_name))
+        weights_raw: dict[str, mx.array] = mx.load(str(src_path))
         out_tensors: dict[str, mx.array] = {}
 
         for key in shard_keys[sf_name]:

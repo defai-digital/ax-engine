@@ -97,7 +97,7 @@ def run_variant(name, metal_on):
         if ch:
             text = (ch[0].get("text") or "")[:80]
     except Exception:
-        pass
+        pass  # Response did not contain a text choice.
     proc.terminate()
     try:
         proc.wait(timeout=30)

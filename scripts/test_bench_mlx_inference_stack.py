@@ -649,12 +649,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         parsed = bench.parse_mlx_lm_benchmark_output(
             "\n".join(
                 [
-                    "Trial 1:  prompt_tps=10.000, generation_tps=20.000, "
-                    "peak_memory=3.000, total_time=4.000",
-                    "Trial 2:  prompt_tps=14.000, generation_tps=30.000, "
-                    "peak_memory=5.000, total_time=6.000",
-                    "Averages: prompt_tps=12.000, generation_tps=25.000, "
-                    "peak_memory=4.000",
+                    ("Trial 1:  prompt_tps=10.000, generation_tps=20.000, "
+                    "peak_memory=3.000, total_time=4.000"),
+                    ("Trial 2:  prompt_tps=14.000, generation_tps=30.000, "
+                    "peak_memory=5.000, total_time=6.000"),
+                    ("Averages: prompt_tps=12.000, generation_tps=25.000, "
+                    "peak_memory=4.000"),
                 ]
             )
         )
@@ -699,14 +699,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 returncode=0,
                 stdout="\n".join(
                     [
-                        "Trial 1:  prompt_tps=10.000, generation_tps=20.000, "
-                        "peak_memory=3.000, total_time=4.000",
-                        "Trial 2:  prompt_tps=20.000, generation_tps=30.000, "
-                        "peak_memory=5.000, total_time=6.000",
-                        "Trial 3:  prompt_tps=40.000, generation_tps=50.000, "
-                        "peak_memory=7.000, total_time=8.000",
-                        "Averages: prompt_tps=23.333, generation_tps=33.333, "
-                        "peak_memory=5.000",
+                        ("Trial 1:  prompt_tps=10.000, generation_tps=20.000, "
+                        "peak_memory=3.000, total_time=4.000"),
+                        ("Trial 2:  prompt_tps=20.000, generation_tps=30.000, "
+                        "peak_memory=5.000, total_time=6.000"),
+                        ("Trial 3:  prompt_tps=40.000, generation_tps=50.000, "
+                        "peak_memory=7.000, total_time=8.000"),
+                        ("Averages: prompt_tps=23.333, generation_tps=33.333, "
+                        "peak_memory=5.000"),
                     ]
                 ),
                 stderr="",

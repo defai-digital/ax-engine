@@ -8,8 +8,8 @@ import json
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -384,7 +384,7 @@ class ReadmePerformanceChartTests(unittest.TestCase):
                 "--output-dir",
                 str(output_dir),
             ]
-            with mock.patch.object(sys, "argv", argv):
+            with unittest.mock.patch.object(sys, "argv", argv):
                 self.assertEqual(charts.main(), 0)
 
             chart = (

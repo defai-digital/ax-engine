@@ -82,7 +82,7 @@ def wait_ready(host: str, port: int, timeout: int) -> bool:
                 if resp.status == 200:
                     return True
         except Exception:
-            pass
+            pass  # Retry until the server accepts connections.
         time.sleep(1)
     return False
 
@@ -96,7 +96,7 @@ def kill_port(port: int) -> None:
         try:
             os.kill(int(pid), signal.SIGTERM)
         except Exception:
-            pass
+            pass  # Best-effort; continue.
     time.sleep(1)
     try:
         out = subprocess.check_output(["lsof", "-ti", f"tcp:{port}"], text=True)
@@ -106,7 +106,7 @@ def kill_port(port: int) -> None:
         try:
             os.kill(int(pid), signal.SIGKILL)
         except Exception:
-            pass
+            pass  # Best-effort; continue.
 
 
 def classify_engine_fail(log_text: str, qa_text: str) -> str | None:
@@ -628,7 +628,7 @@ def run_cell(
                         f"Results: {x}/{y} passed ({x / y * 100:.1f}%) [hard checks]"
                     )
             except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+                pass  # Skip malformed JSON.
         if x is None or y is None:
             m = re.search(r"Results:\s*(\d+)/(\d+)\s*passed", pass_line)
             if m:
@@ -676,7 +676,7 @@ def run_cell(
                 proc.kill()
                 proc.wait(timeout=5)
         except Exception:
-            pass
+            pass  # Best-effort; continue.
         kill_port(port)
         time.sleep(1)
 

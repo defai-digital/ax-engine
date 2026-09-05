@@ -17,7 +17,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 if "PIL" not in sys.modules:
     pil_module = types.ModuleType("PIL")
@@ -54,8 +54,8 @@ class _FakeResponse:
         return iter(
             [
                 b"event:response\n",
-                b'data: {"response": {"output_tokens": [1, 2, 3], '
-                b'"route": {"execution_plan": "prefill"}}}\n',
+                (b'data: {"response": {"output_tokens": [1, 2, 3], '
+                b'"route": {"execution_plan": "prefill"}}}\n'),
                 b"\n",
             ]
         )
@@ -99,7 +99,7 @@ class BenchGemma4ImagePrefillTtftTests(unittest.TestCase):
             image_soft_tokens=0,
         )
 
-        with mock.patch("http.client.HTTPConnection", _FakeConnection), mock.patch(
+        with unittest.mock.patch("http.client.HTTPConnection", _FakeConnection), unittest.mock.patch(
             "json.dumps", side_effect=slow_dumps
         ):
             result = mod.run_one(

@@ -116,7 +116,7 @@ def run_variant(name, extra_env, rep):
         try:
             text = (cold_data.get("choices") or [{}])[0].get("text") or ""
         except Exception:
-            pass
+            pass  # Response did not contain a text choice.
         print(f"{name}_r{rep}: cold={cold_ms:.1f} warm={warm_ms:.1f} text={text[:20]!r}", flush=True)
         return {
             "name": f"{name}_r{rep}",

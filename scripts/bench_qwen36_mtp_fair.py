@@ -1620,9 +1620,9 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
             "",
             "## Same-artifact AX survival comparison",
             "",
-            "AX direct is the same sidecar package decoded without MTP or n-gram. "
+            ("AX direct is the same sidecar package decoded without MTP or n-gram. "
             "Use this table to decide whether AX MTP should be a default and "
-            "whether AX MTP+n-gram should remain opt-in.",
+            "whether AX MTP+n-gram should remain opt-in."),
             "",
             "| Model | Engine | Baseline | Decode tok/s | Baseline tok/s | Δ vs baseline | Worst suite Δ | Drafted | Classification |",
             "|---|---|---|---:|---:|---:|---:|:---:|---|",
@@ -1871,7 +1871,7 @@ def write_mtp_box_whisker_svg(
         max_span = max(0.0, group_w - box_w)
         span = min(max(preferred_span, minimum_span), max_span)
         start_x = group_x + (group_w - span) / 2
-        step = span / (count - 1) if count > 1 else 0.0
+        step = span / (count - 1)
         return [start_x + step * i for i in range(count)]
 
     direction_fill = "#dc2626"
@@ -2166,14 +2166,14 @@ def write_decode_improvement_svg(path: Path, summary: dict[str, Any]) -> None:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
         "<title>Qwen3.6 MTP decode improvement</title>",
-        "<desc>Bar chart comparing aggregate sample-median decode improvement for AX MTP, "
-        "AX MTP plus n-gram, and n-gram over pure AX MTP.</desc>",
+        ("<desc>Bar chart comparing aggregate sample-median decode improvement for AX MTP, "
+        "AX MTP plus n-gram, and n-gram over pure AX MTP.</desc>"),
         '<rect width="100%" height="100%" fill="#f8fafc"/>',
-        '<text x="24" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" '
-        'font-size="16" font-weight="700" fill="#111827">Qwen3.6 MTP decode improvement</text>',
-        '<text x="24" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" '
+        ('<text x="24" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" '
+        'font-size="16" font-weight="700" fill="#111827">Qwen3.6 MTP decode improvement</text>'),
+        ('<text x="24" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" '
         'font-size="11" fill="#4b5563">Aggregate sample median over flappy, long_code, '
-        'and python_modules_long | higher is better</text>',
+        'and python_modules_long | higher is better</text>'),
         '<rect x="64" y="82" width="802" height="194" rx="6" fill="#ffffff" stroke="#dbe3ef"/>',
     ]
     for i in range(5):

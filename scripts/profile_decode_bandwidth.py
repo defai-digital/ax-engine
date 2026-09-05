@@ -366,7 +366,6 @@ def run_profile(args: argparse.Namespace) -> dict:
             decode_tokens_observed += len(event.delta_tokens)
             decode_ended = now
         if event.event == "response" and event.response is not None:
-            final_response = event.response
             if event.response.route and event.response.route.crossover_decisions:
                 crossover_decisions = dict(event.response.route.crossover_decisions)
         last_event_wall = now

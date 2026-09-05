@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 try:
     from PIL import Image
@@ -103,11 +103,11 @@ class UnlimitedOcrRequestTests(unittest.TestCase):
             write_model_contract(model_dir)
             image_path = model_dir / "oversized.png"
             image_path.write_bytes(b"placeholder")
-            opened = mock.MagicMock()
+            opened = unittest.mock.MagicMock()
             opened.__enter__.return_value = opened
             opened.size = (module._MAX_IMAGE_DIMENSION + 1, 1)
 
-            with mock.patch("PIL.Image.open", return_value=opened):
+            with unittest.mock.patch("PIL.Image.open", return_value=opened):
                 with self.assertRaisesRegex(ValueError, "dimensions must not exceed"):
                     module.prepare_unlimited_ocr_image_request(
                         model_dir,

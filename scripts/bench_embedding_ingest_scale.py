@@ -340,8 +340,8 @@ def render_summary(artifact: dict[str, Any]) -> str:
             f"Output contract: `{artifact['output_contract']}`. "
             f"Total chunks per trial: `{artifact['total_chunks']}`.",
             "",
-            "| Model | Chunk tokens | Batch | Batches/trial | AX tok/s | "
-            "AX chunks/s | AX p95 batch ms |",
+            ("| Model | Chunk tokens | Batch | Batches/trial | AX tok/s | "
+            "AX chunks/s | AX p95 batch ms |"),
             "|---|---:|---:|---:|---:|---:|---:|",
         ]
         for model in artifact["models"]:

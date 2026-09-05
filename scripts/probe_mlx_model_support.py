@@ -224,14 +224,14 @@ def probe_deepseek_v4(model_dir: Path, keys: list[str]) -> dict[str, Any]:
         "checkpoint_features": features,
         "blockers": blockers,
         "next_steps": [
-            "run the deepseek_v4 unit/integration tests and a synthetic-checkpoint parity "
-            "check against the vendored llama.cpp reference on a Metal host",
-            "run endurance and benchmark lanes with the real checkpoint on a 192 GB "
-            "class host for 2-bit or a 256 GB class host for 4-bit",
-            "do not route DeepSeek V4 through mlx_lm_delegated or llama_cpp as a support claim; "
-            "delegated tiers stay compatibility-only per docs/MODEL-SUPPORT-POLICY.md",
-            "land benchmark rows + docs/model-certifications evidence before any tier "
-            "promotion beyond Experimental",
+            ("run the deepseek_v4 unit/integration tests and a synthetic-checkpoint parity "
+            "check against the vendored llama.cpp reference on a Metal host"),
+            ("run endurance and benchmark lanes with the real checkpoint on a 192 GB "
+            "class host for 2-bit or a 256 GB class host for 4-bit"),
+            ("do not route DeepSeek V4 through mlx_lm_delegated or llama_cpp as a support claim; "
+            "delegated tiers stay compatibility-only per docs/MODEL-SUPPORT-POLICY.md"),
+            ("land benchmark rows + docs/model-certifications evidence before any tier "
+            "promotion beyond Experimental"),
         ],
     }
 

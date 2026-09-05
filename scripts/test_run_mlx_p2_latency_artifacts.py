@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 SCRIPT_DIR = Path(__file__).parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -40,8 +40,8 @@ class P2LatencyRunnerTests(unittest.TestCase):
     def test_build_prompt_docs_can_reuse_an_exact_shared_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                mock.patch.object(runner.bench, "model_vocab_size", return_value=100),
-                mock.patch.object(
+                unittest.mock.patch.object(runner.bench, "model_vocab_size", return_value=100),
+                unittest.mock.patch.object(
                     runner.bench,
                     "mlx_lm_reference_prompt_tokens",
                     return_value=[1, 2, 3],
@@ -65,7 +65,7 @@ class P2LatencyRunnerTests(unittest.TestCase):
             "client_wall_ttft_ms": 125.0,
             "decode_tok_s": 80.0,
         }
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             runner.bench, "axengine_one_run", return_value=result
         ) as one_run:
             observation = runner.run_one_request(19091, prompt(0), None)
@@ -81,10 +81,10 @@ class P2LatencyRunnerTests(unittest.TestCase):
         )
 
     def test_start_direct_server_passes_model_identity(self) -> None:
-        process = mock.Mock()
+        process = unittest.mock.Mock()
         with (
-            mock.patch.object(runner.bench, "start_axengine", return_value=process) as start,
-            mock.patch.object(runner.bench, "wait_for_server", return_value=True),
+            unittest.mock.patch.object(runner.bench, "start_axengine", return_value=process) as start,
+            unittest.mock.patch.object(runner.bench, "wait_for_server", return_value=True),
         ):
             returned, _spawn_ms, _ready_ms = runner.start_direct_server(
                 Path("/tmp/model"),
@@ -284,7 +284,7 @@ class P2LatencyRunnerTests(unittest.TestCase):
         self.assertNotIn("server_ready_ms", row)
 
     def test_concurrent_capture_warms_each_shape_before_measurement(self) -> None:
-        process = mock.Mock(pid=1234)
+        process = unittest.mock.Mock(pid=1234)
         trial = {
             "request_ttft_ms": 10.0,
             "total_wall_ms": 20.0,
@@ -295,17 +295,17 @@ class P2LatencyRunnerTests(unittest.TestCase):
         }
         prompt_groups = {1: [prompt(0)], 4: [prompt(index) for index in range(4)]}
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 runner,
                 "start_direct_server",
                 return_value=(process, 0.0, 0.0),
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 runner,
                 "run_concurrent_trial",
                 return_value=trial,
             ) as run_trial,
-            mock.patch.object(runner.bench, "kill_proc"),
+            unittest.mock.patch.object(runner.bench, "kill_proc"),
         ):
             artifact = runner.capture_concurrent_artifact(
                 model_dir=Path("/tmp/model"),
@@ -330,8 +330,8 @@ class P2LatencyRunnerTests(unittest.TestCase):
             "decode_tok_s": 1.0,
         }
         with (
-            mock.patch.object(runner, "run_one_request", return_value=observation),
-            mock.patch.object(
+            unittest.mock.patch.object(runner, "run_one_request", return_value=observation),
+            unittest.mock.patch.object(
                 runner.bench,
                 "process_rss_gb",
                 side_effect=[1.0, 4.0, 2.0],
@@ -347,12 +347,12 @@ class P2LatencyRunnerTests(unittest.TestCase):
 
     def test_concurrent_trial_preserves_request_errors(self) -> None:
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 runner,
                 "run_one_request",
                 side_effect=RuntimeError("pool exhausted"),
             ),
-            mock.patch.object(runner.bench, "process_rss_gb", return_value=1.0),
+            unittest.mock.patch.object(runner.bench, "process_rss_gb", return_value=1.0),
         ):
             trial = runner.run_concurrent_trial(
                 port=19091,
@@ -367,7 +367,7 @@ class P2LatencyRunnerTests(unittest.TestCase):
         )
 
     def test_concurrent_capture_records_explicit_shared_prefix_mode(self) -> None:
-        process = mock.Mock(pid=1234)
+        process = unittest.mock.Mock(pid=1234)
         trial = {
             "request_ttft_ms": 10.0,
             "total_wall_ms": 20.0,
@@ -377,18 +377,18 @@ class P2LatencyRunnerTests(unittest.TestCase):
             "observations": [],
         }
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 runner,
                 "start_direct_server",
                 return_value=(process, 0.0, 0.0),
             ) as start,
-            mock.patch.object(
+            unittest.mock.patch.object(
                 runner,
                 "run_concurrent_trial",
                 return_value=trial,
             ) as run_trial,
-            mock.patch.object(runner.bench, "process_rss_gb", return_value=0.5),
-            mock.patch.object(runner.bench, "kill_proc"),
+            unittest.mock.patch.object(runner.bench, "process_rss_gb", return_value=0.5),
+            unittest.mock.patch.object(runner.bench, "kill_proc"),
         ):
             artifact = runner.capture_concurrent_artifact(
                 model_dir=Path("/tmp/model"),

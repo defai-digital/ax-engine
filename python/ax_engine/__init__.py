@@ -49,6 +49,7 @@ def _setup_bundled_metal() -> None:
                 os.environ["AX_ENGINE_METAL_BUILD_DIR"] = str(_cache_dir)
                 return
         except Exception:
+            # Stale or unreadable cache; rebuild the report below.
             pass
 
     _manifest = json.loads(_manifest_path.read_bytes())
@@ -91,6 +92,7 @@ def _setup_bundled_metal() -> None:
         _report_path.write_text(json.dumps(_report, indent=2))
         os.environ["AX_ENGINE_METAL_BUILD_DIR"] = str(_cache_dir)
     except Exception:
+        # Best-effort cache write; generation still works without the report.
         pass
 
 
@@ -2366,6 +2368,7 @@ def _source_workspace_root() -> Path | None:
             if "[workspace]" in cargo_toml.read_text():
                 return parent
         except OSError:
+            # Unreadable Cargo.toml; keep walking toward the workspace root.
             pass
     return None
 

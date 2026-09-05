@@ -97,8 +97,8 @@ class CheckMlxVersionScriptTests(unittest.TestCase):
             [
                 str(venv_python),
                 "-c",
-                "import mlx, pathlib; "
-                "print(pathlib.Path(list(mlx.__path__)[0]) / 'lib' / 'libmlx.dylib')",
+                ("import mlx, pathlib; "
+                "print(pathlib.Path(list(mlx.__path__)[0]) / 'lib' / 'libmlx.dylib')"),
             ],
             check=False,
             capture_output=True,

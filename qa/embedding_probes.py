@@ -190,7 +190,7 @@ def resolve_eos_id(tok: Any, tokenizer_path: Optional[str] = None) -> Optional[i
         try:
             return int(eos_attr)
         except (TypeError, ValueError):
-            pass
+            pass  # Best-effort; continue.
 
     candidates: list[str] = []
     if tokenizer_path:
@@ -239,7 +239,7 @@ def load_tokenizer(tokenizer_path: str) -> Any:
         tok = Tokenizer.from_file(str(path))
         return ("tokenizers", tok, resolve_eos_id(tok, str(path)))
     except ImportError:
-        pass
+        pass  # Best-effort; continue.
     try:
         from transformers import AutoTokenizer
     except ImportError as exc:
@@ -376,7 +376,7 @@ def extract_vectors(body: dict[str, Any] | str) -> list[list[float]]:
     try:
         data = sorted(data, key=lambda d: int(d.get("index", 0)))
     except Exception:
-        pass
+        pass  # Best-effort; continue.
     out: list[list[float]] = []
     for item in data:
         emb = item.get("embedding")

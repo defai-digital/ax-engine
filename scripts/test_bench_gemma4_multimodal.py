@@ -13,7 +13,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 SCRIPT_PATH = Path(__file__).with_name("bench_gemma4_multimodal.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("bench_gemma4_multimodal", SCRIPT_PATH)
@@ -53,8 +53,8 @@ class _FakeStreamResponse:
         return iter(
             [
                 b"event:response\n",
-                b'data: {"response": {"output_tokens": [1, 2, 3], '
-                b'"route": {"execution_plan": "prefill"}}}\n',
+                (b'data: {"response": {"output_tokens": [1, 2, 3], '
+                b'"route": {"execution_plan": "prefill"}}}\n'),
                 b"\n",
             ]
         )
@@ -111,7 +111,7 @@ class ClockOriginTests(unittest.TestCase):
         # built the (potentially large multimodal) request payload,
         # silently excluding serialization time from client-wall metrics.
         real_dumps = json.dumps
-        with mock.patch("http.client.HTTPConnection", _FakeConnection), mock.patch(
+        with unittest.mock.patch("http.client.HTTPConnection", _FakeConnection), unittest.mock.patch(
             "json.dumps", side_effect=_slow_dumps(real_dumps)
         ):
             result = mod.run_native_one(
@@ -132,7 +132,7 @@ class ClockOriginTests(unittest.TestCase):
         class _JsonConnection(_FakeConnection):
             response_factory = _FakeJsonResponse
 
-        with mock.patch("http.client.HTTPConnection", _JsonConnection), mock.patch(
+        with unittest.mock.patch("http.client.HTTPConnection", _JsonConnection), unittest.mock.patch(
             "json.dumps", side_effect=_slow_dumps(real_dumps)
         ):
             result = mod.run_chat_one(

@@ -11,7 +11,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QA_DIR = REPO_ROOT / "qa"
@@ -58,8 +58,8 @@ class QaClientStreamingClockOriginTests(unittest.TestCase):
             b'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n',
             b"data: [DONE]\n\n",
         ]
-        with mock.patch("urllib.request.urlopen", return_value=_FakeResponse(lines)), \
-            mock.patch("json.dumps", side_effect=_slow_dumps(real_dumps)):
+        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeResponse(lines)), \
+            unittest.mock.patch("json.dumps", side_effect=_slow_dumps(real_dumps)):
             response = client._stream_sse("http://127.0.0.1:1/v1/chat/completions", {"a": 1})
 
         self.assertGreaterEqual(response.ttft_ms, 40.0)
@@ -70,8 +70,8 @@ class QaClientStreamingClockOriginTests(unittest.TestCase):
             b'event: response\ndata: {"response": {"output_tokens": [1], "output_text": "hi"}}\n\n',
             b"data: [DONE]\n\n",
         ]
-        with mock.patch("urllib.request.urlopen", return_value=_FakeResponse(lines)), \
-            mock.patch("json.dumps", side_effect=_slow_dumps(real_dumps)):
+        with unittest.mock.patch("urllib.request.urlopen", return_value=_FakeResponse(lines)), \
+            unittest.mock.patch("json.dumps", side_effect=_slow_dumps(real_dumps)):
             response = client._stream_generate_sse(
                 "http://127.0.0.1:1/v1/generate/stream", {"a": 1}, tokenizer=None
             )

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 MODULE_PATH = Path(__file__).with_name("bench_single_client_mlx_serving.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("bench_single_client_mlx_serving", MODULE_PATH)
@@ -40,7 +40,7 @@ class SingleClientServingBenchmarkTests(unittest.TestCase):
         self.assertEqual(first_positions.count("mlxcel"), 6)
 
     def test_sse_decoder_handles_json_and_done(self) -> None:
-        with mock.patch.object(benchmark.time, "perf_counter", side_effect=(11.5, 13.0)):
+        with unittest.mock.patch.object(benchmark.time, "perf_counter", side_effect=(11.5, 13.0)):
             frames = list(
                 benchmark.decode_sse_frames(
                     [

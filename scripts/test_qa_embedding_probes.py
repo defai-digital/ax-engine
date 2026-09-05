@@ -7,7 +7,7 @@ import math
 import sys
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "qa"))
@@ -156,7 +156,7 @@ class EmbeddingProbeMockTests(unittest.TestCase):
                 {"index": 1, "embedding": unit},
             ],
         }
-        with mock.patch(
+        with unittest.mock.patch(
             "embedding_probes._post_embeddings", return_value=(200, body)
         ):
             result, vecs = probe_api_shape(
@@ -172,7 +172,7 @@ class EmbeddingProbeMockTests(unittest.TestCase):
         self.assertFalse(probe_l2_normalized([bad]).passed)
 
     def test_empty_rejected(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "embedding_probes._post_embeddings", return_value=(400, {"error": "empty"})
         ):
             r = probe_empty_rejected("http://x", "m", pooling="last", timeout=1)
@@ -200,8 +200,8 @@ class EmbeddingProbeMockTests(unittest.TestCase):
             }
             return 200, body
 
-        with mock.patch("embedding_probes.encode_texts", side_effect=fake_encode):
-            with mock.patch("embedding_probes._post_embeddings", side_effect=fake_post):
+        with unittest.mock.patch("embedding_probes.encode_texts", side_effect=fake_encode):
+            with unittest.mock.patch("embedding_probes._post_embeddings", side_effect=fake_post):
                 r, metrics = probe_semantic_order(
                     "http://x",
                     "m",
@@ -246,8 +246,8 @@ class EmbeddingProbeMockTests(unittest.TestCase):
                 ],
             }
 
-        with mock.patch("embedding_probes.encode_texts", side_effect=fake_encode):
-            with mock.patch("embedding_probes._post_embeddings", side_effect=fake_post):
+        with unittest.mock.patch("embedding_probes.encode_texts", side_effect=fake_encode):
+            with unittest.mock.patch("embedding_probes._post_embeddings", side_effect=fake_post):
                 r, m = probe_pair_classification(
                     "http://x",
                     "m",
@@ -281,10 +281,10 @@ class EmbeddingProbeMockTests(unittest.TestCase):
                     data.append({"index": i, "embedding": [0.0, 1.0]})
             return 200, {"object": "list", "data": data}
 
-        with mock.patch("embedding_probes.encode_texts", side_effect=fake_encode):
-            with mock.patch("embedding_probes._post_embeddings", side_effect=fake_post):
+        with unittest.mock.patch("embedding_probes.encode_texts", side_effect=fake_encode):
+            with unittest.mock.patch("embedding_probes._post_embeddings", side_effect=fake_post):
                 # Override cases so gold is always 0 (first doc)
-                with mock.patch(
+                with unittest.mock.patch(
                     "embedding_probes.RETRIEVAL_CASES",
                     [
                         {

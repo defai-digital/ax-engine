@@ -320,7 +320,6 @@ def apply_rotation(args: argparse.Namespace, plan: dict) -> dict:
         full = args.mlx_artifacts_dir / file_rel
         print(f"phase 1 opening {file_rel} for {len(cs)} candidates...")
         loaded = mx.load(str(full))
-        file_keys = set(loaded.keys())
         for c in cs:
             name = c["tensor_name"]
             stem = name[: -len(".weight")] if name.endswith(".weight") else name

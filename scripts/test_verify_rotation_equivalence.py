@@ -33,7 +33,6 @@ class AggregateComparisonsTests(unittest.TestCase):
         # alone. A prompt whose tested (rotation-enabled) decode degenerates
         # to an empty output contributed (shared=0, tested=0) — invisible to
         # the aggregate ratio instead of counting as a near-total mismatch.
-        per_prompt = [mod.compare_pair([1, 2, 3, 4, 5], []) for _ in range(1)]
         # 4 perfect 64-token matches plus 1 fully-degenerate prompt.
         per_prompt = [mod.compare_pair(list(range(64)), list(range(64))) for _ in range(4)]
         per_prompt.append(mod.compare_pair([1, 2, 3, 4, 5], []))

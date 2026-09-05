@@ -2440,8 +2440,8 @@ def render_checkpoint_markdown(reason: str, summary: dict[str, Any]) -> str:
                 "",
                 "## Per-shape serving metrics",
                 "",
-                "| Shape | Successful / attempted | p95 TTFT | p05 decode | "
-                "p05 effective prefill |",
+                ("| Shape | Successful / attempted | p95 TTFT | p05 decode | "
+                "p05 effective prefill |"),
                 "| --- | ---: | ---: | ---: | ---: |",
             ]
         )
@@ -2847,8 +2847,8 @@ def prefill_progress_concerns(
     continuations_per_1k = evidence["cache_only_continuations_per_1k_tokens"]
     if steps is None or continuations is None or steps_per_1k is None:
         return [
-            "native prefill-progress telemetry was unavailable "
-            "(need ax_mlx_prefill_steps and ax_mlx_prefill_cache_only_continuations)"
+            ("native prefill-progress telemetry was unavailable "
+            "(need ax_mlx_prefill_steps and ax_mlx_prefill_cache_only_continuations)")
         ]
     if steps_per_1k > max_steps_per_1k_tokens or (
         continuations_per_1k is not None and continuations_per_1k > max_steps_per_1k_tokens

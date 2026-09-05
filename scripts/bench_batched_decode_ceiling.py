@@ -485,8 +485,8 @@ def render_summary(artifact: dict[str, Any]) -> str:
             f"{str(artifact['publication_candidate']).lower()}"
         ),
         "",
-        "| Policy | Batch | Median agg tok/s | Median per-policy scaling | "
-        "Median step µs |",
+        ("| Policy | Batch | Median agg tok/s | Median per-policy scaling | "
+        "Median step µs |"),
         "|---|---:|---:|---:|---:|",
     ]
     for policy in POLICIES:

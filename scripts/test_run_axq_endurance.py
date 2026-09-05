@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 SCRIPT_DIR = Path(__file__).parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -398,7 +398,7 @@ class AxqEnduranceTests(unittest.TestCase):
                 return "Pages wired down: 1."
             return ""
 
-        with mock.patch.object(runner, "command_output", side_effect=output):
+        with unittest.mock.patch.object(runner, "command_output", side_effect=output):
             snapshot = runner.collect_light_host_snapshot(Path("/tmp"))
 
         self.assertIn(("/usr/sbin/sysctl", "-n", "vm.swapusage"), commands)
@@ -832,7 +832,7 @@ class AxqEnduranceTests(unittest.TestCase):
                 started_monotonic=1.0,
                 server_pid=42,
             )
-            with mock.patch.object(runner, "utc_now", return_value="2026-08-06T04:00:00+00:00"):
+            with unittest.mock.patch.object(runner, "utc_now", return_value="2026-08-06T04:00:00+00:00"):
                 summary = runner.write_checkpoint(
                     output_dir=output,
                     reason="periodic",
@@ -967,7 +967,7 @@ class AxqEnduranceTests(unittest.TestCase):
 
     def test_exact_server_version_gate_accepts_only_requested_release(self) -> None:
         server = Path("/tmp/ax-engine-server")
-        with mock.patch.object(runner, "command_output", return_value="ax-engine-server 6.13.5"):
+        with unittest.mock.patch.object(runner, "command_output", return_value="ax-engine-server 6.13.5"):
             self.assertEqual(
                 runner.validate_server_version(server, "6.13.5"), "ax-engine-server 6.13.5"
             )
@@ -984,7 +984,7 @@ class AxqEnduranceTests(unittest.TestCase):
                 return ""
             return "unavailable"
 
-        with mock.patch.object(runner, "command_output", side_effect=output):
+        with unittest.mock.patch.object(runner, "command_output", side_effect=output):
             metadata = runner.source_control_metadata(SCRIPT_PATH)
 
         self.assertEqual(metadata["source_git_commit"], "a" * 40)
@@ -1060,11 +1060,11 @@ class AxqEnduranceTests(unittest.TestCase):
             installed.append((signum, handler))
 
         with (
-            mock.patch.object(runner.signal, "getsignal", return_value="previous"),
-            mock.patch.object(runner.signal, "signal", side_effect=record_signal),
-            mock.patch.object(runner, "_run_endurance", return_value=7),
+            unittest.mock.patch.object(runner.signal, "getsignal", return_value="previous"),
+            unittest.mock.patch.object(runner.signal, "signal", side_effect=record_signal),
+            unittest.mock.patch.object(runner, "_run_endurance", return_value=7),
         ):
-            result = runner.run_endurance(mock.sentinel.args)
+            result = runner.run_endurance(unittest.mock.sentinel.args)
 
         self.assertEqual(result, 7)
         self.assertEqual(installed[0][0], runner.signal.SIGTERM)

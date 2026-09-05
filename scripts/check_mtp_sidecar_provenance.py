@@ -118,7 +118,7 @@ def validate_manifest(
     base = require_object(manifest, "base")
     source = require_object(manifest, "source")
     output = require_object(manifest, "output")
-    transform = require_object(manifest, "transform")
+    require_object(manifest, "transform")
     runtime = require_object(manifest, "runtime")
 
     base_model_id = require_string(manifest, "base.model_id")

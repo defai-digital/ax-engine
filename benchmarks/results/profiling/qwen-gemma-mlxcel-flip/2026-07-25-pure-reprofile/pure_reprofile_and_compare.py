@@ -78,14 +78,7 @@ def run_ax(name, env_extra, port=31499):
     cold, d1 = once(port)
     warm, d2 = once(port)
     usage = d2.get("usage") if isinstance(d2, dict) else None
-    # scrape profile keys from response route metadata if present
     profile = {}
-    try:
-        # some paths embed profile in choices meta; also check server log
-        pass
-    except Exception:
-        pass
-    # parse log for prefill_profile lines
     text = pathlib.Path(log).read_text(errors="ignore")
     for m in re.finditer(r"ax_mlx_prefill_profile_(\w+)=([0-9.]+)", text):
         profile[m.group(1)] = float(m.group(2))
@@ -118,7 +111,8 @@ results.append(run_ax("profile_r1", {
 }))
 
 outp = OUT / "results.json"
-json.dump(results, open(outp, "w"), indent=2)
+with open(outp, "w") as out_file:
+    json.dump(results, out_file, indent=2)
 bases = [r["cold_ms"] for r in results if r["name"].startswith("base")]
 print(f"BASE cold mean={sum(bases)/len(bases):.1f} {bases}", flush=True)
 print("wrote", outp, flush=True)

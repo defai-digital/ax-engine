@@ -118,7 +118,7 @@ def run_variant(name, extra_env, rep):
         try:
             text = (cold_data.get("choices") or [{}])[0].get("text") or ""
         except Exception:
-            pass
+            pass  # Response did not contain a text choice.
         # Confirm caps policy from log if present
         log_tail = log.read_text()[-4000:]
         raised = "auto-raised MLX Metal command-buffer caps" in log_tail
@@ -133,6 +133,7 @@ def run_variant(name, extra_env, rep):
             "text": text[:80],
             "env": extra_env,
             "log_saw_auto_raise": raised,
+            "log_saw_retained": retained,
         }
         print(
             f"{name}_r{rep}: cold={cold_ms:.1f} warm={warm_ms:.1f} "

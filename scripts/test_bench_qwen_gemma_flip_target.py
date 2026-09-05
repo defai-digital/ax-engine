@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 import bench_ax_multimodel_serving as multimodel
 import bench_ax_serving as serving
@@ -273,7 +273,7 @@ class FlipTargetBenchmarkTests(unittest.TestCase):
             category="sibling_unload",
             raw={},
         )
-        supervisor = mock.Mock()
+        supervisor = unittest.mock.Mock()
         supervisor.stop.return_value = (True, {"exit_code": -15})
 
         observed = flip.run_managed_control_event(
@@ -303,13 +303,13 @@ class FlipTargetBenchmarkTests(unittest.TestCase):
     def test_wrap_command_with_process_qos_prefixes_taskpolicy(self) -> None:
         bare = ["/bin/ax-engine-server", "--port", "1"]
         self.assertEqual(flip.wrap_command_with_process_qos(bare, None), bare)
-        with mock.patch.object(flip.shutil, "which", return_value="/usr/sbin/taskpolicy"):
+        with unittest.mock.patch.object(flip.shutil, "which", return_value="/usr/sbin/taskpolicy"):
             wrapped = flip.wrap_command_with_process_qos(bare, "utility")
         self.assertEqual(
             wrapped,
             ["/usr/sbin/taskpolicy", "-c", "utility", "--", *bare],
         )
-        with mock.patch.object(flip.shutil, "which", return_value=None):
+        with unittest.mock.patch.object(flip.shutil, "which", return_value=None):
             with self.assertRaises(SystemExit):
                 flip.wrap_command_with_process_qos(bare, "utility")
 
@@ -333,7 +333,7 @@ class FlipTargetBenchmarkTests(unittest.TestCase):
             flip.wrap_command_with_process_policy(bare, qos_clamp=None, thruput_tier=None),
             bare,
         )
-        with mock.patch.object(flip.shutil, "which", return_value="/usr/sbin/taskpolicy"):
+        with unittest.mock.patch.object(flip.shutil, "which", return_value="/usr/sbin/taskpolicy"):
             thr_only = flip.wrap_command_with_process_policy(
                 bare, qos_clamp=None, thruput_tier=0
             )

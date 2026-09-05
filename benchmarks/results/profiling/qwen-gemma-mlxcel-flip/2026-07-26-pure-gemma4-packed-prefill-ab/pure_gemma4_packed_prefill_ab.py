@@ -73,7 +73,8 @@ def run_variant(name, overrides):
         else:
             raise RuntimeError(f"{name}: not ready")
         try: once(PORT)
-        except Exception: pass
+        except Exception:
+            pass  # Retry until the server accepts connections.
         times, texts = [], []
         for i in range(REPS):
             ms, text = once(PORT)

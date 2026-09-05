@@ -69,7 +69,7 @@ def run_variant(name, overrides):
         try:
             once(PORT)
         except Exception:
-            pass
+            pass  # Retry until the server accepts connections.
         times, texts = [], []
         for i in range(REPS):
             ms, text = once(PORT)

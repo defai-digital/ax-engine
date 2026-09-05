@@ -77,7 +77,7 @@ def collect_performance_condition_metadata() -> dict[str, Any]:
             "fifteen_minutes": round(load_15m, 3),
         }
     except Exception:
-        pass
+        pass  # Host load average is unavailable.
 
     battery_lines = _command_output_lines(["pmset", "-g", "batt"])
     if battery_lines:
@@ -364,7 +364,7 @@ def terminate_process_tree(proc: subprocess.Popen[Any]) -> None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
-            pass
+            pass  # Process already exited.
         except OSError:
             proc.kill()
         proc.wait()

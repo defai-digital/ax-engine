@@ -715,7 +715,7 @@ def fetch_last_mtp_accept_ratio(base_url: str) -> float | None:
                 val = entries[-1].get("mtp_acceptance_ratio")
                 return float(val) if val is not None else None
     except Exception:
-        pass
+        pass  # Retry until the server accepts connections.
     return None
 
 
@@ -734,7 +734,7 @@ def fetch_last_ngram_accept_ratio(base_url: str) -> float | None:
                 val = entries[-1].get("ngram_acceptance_ratio")
                 return float(val) if val is not None else None
     except Exception:
-        pass
+        pass  # Retry until the server accepts connections.
     return None
 
 
@@ -897,7 +897,7 @@ def parse_server_header(lines: list[str]) -> dict[str, Any]:
                     effective if prev is None else min(prev, effective)
                 )
             except (IndexError, ValueError):
-                pass
+                pass  # Trace did not contain the expected field.
     return info
 
 
@@ -1027,7 +1027,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                     break
                 server_log_head.append(line.rstrip("\n"))
     except OSError:
-        pass
+        pass  # Optional host command or socket is unavailable.
 
     lightning_identity = (
         capture_lightning_source_identity(args.lightning_source)

@@ -121,7 +121,7 @@ def run_variant(name, extra_env, rep):
         try:
             text = cold_data["choices"][0].get("text") or ""
         except Exception:
-            pass
+            pass  # Response did not contain a text choice.
         row = {
             "name": f"{name}_r{rep}",
             "cold_ms": cold_ms,

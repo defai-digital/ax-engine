@@ -9,7 +9,6 @@ Mach-O would hard-fail a correct wheel build.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess

@@ -7,7 +7,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "qa"))
@@ -62,13 +62,13 @@ class SurfaceProbeHelperTests(unittest.TestCase):
         def fake_post(url, payload, timeout=60.0):
             return 200, {"choices": [{"message": {"content": "ok"}}]}
 
-        with mock.patch("surface_probes._post_json", side_effect=fake_post):
+        with unittest.mock.patch("surface_probes._post_json", side_effect=fake_post):
             result = probe_concurrent_chat("http://127.0.0.1:9", "m", workers=2)
         self.assertTrue(result.passed)
         self.assertEqual(result.name, "concurrent_chat")
 
     def test_tools_schema_soft_skip_on_422(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json", return_value=(422, {"error": "no tools"})
         ):
             result = probe_tools_schema("http://127.0.0.1:9", "m")
@@ -77,7 +77,7 @@ class SurfaceProbeHelperTests(unittest.TestCase):
         self.assertFalse(result.hard)
 
     def test_tools_schema_fails_on_500(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json", return_value=(500, {"error": "panic"})
         ):
             result = probe_tools_schema("http://127.0.0.1:9", "m")
@@ -85,7 +85,7 @@ class SurfaceProbeHelperTests(unittest.TestCase):
         self.assertTrue(result.hard)
 
     def test_multimodal_soft_skip_on_400_without_capability(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json", return_value=(400, {"error": "no vision"})
         ):
             result = probe_multimodal_image(
@@ -94,7 +94,7 @@ class SurfaceProbeHelperTests(unittest.TestCase):
         self.assertTrue(result.skipped)
 
     def test_multimodal_hard_fail_when_capability_claimed(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json", return_value=(400, {"error": "no vision"})
         ):
             result = probe_multimodal_image(
@@ -124,7 +124,7 @@ class SurfaceProbeHelperTests(unittest.TestCase):
             def read(self):
                 return sse.encode()
 
-        with mock.patch("surface_probes._post_json", side_effect=fake_post), mock.patch(
+        with unittest.mock.patch("surface_probes._post_json", side_effect=fake_post), unittest.mock.patch(
             "surface_probes.urllib.request.urlopen", return_value=_Resp()
         ):
             result = probe_stream_and_nonstream(
@@ -155,14 +155,14 @@ class SurfaceProbeHelperTests(unittest.TestCase):
         )
 
     def test_media_policy_probes(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json", return_value=(422, {"error": "nope"})
         ):
             self.assertTrue(probe_remote_media_rejected("http://x", "m").passed)
             self.assertTrue(probe_video_rejected("http://x", "m").passed)
 
     def test_cancel_skipped_on_404(self) -> None:
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json", return_value=(404, "missing")
         ):
             result = probe_cancel_request("http://127.0.0.1:9", "m")
@@ -177,7 +177,7 @@ class SurfaceProbeHelperTests(unittest.TestCase):
         def fake_post(url, payload, timeout=60.0):
             return responses.pop(0)
 
-        with mock.patch("surface_probes._post_json", side_effect=fake_post):
+        with unittest.mock.patch("surface_probes._post_json", side_effect=fake_post):
             result = probe_cancel_request("http://127.0.0.1:9", "m")
         self.assertTrue(result.passed)
         self.assertFalse(result.skipped)
@@ -188,7 +188,7 @@ class SurfaceProbeHelperTests(unittest.TestCase):
             (201, {"request_id": 3, "state": "waiting"}),
             (200, {"state": "cancelled", "cancel_requested": True}),
         ]
-        with mock.patch(
+        with unittest.mock.patch(
             "surface_probes._post_json", side_effect=lambda *a, **k: responses.pop(0)
         ):
             result = probe_cancel_request("http://127.0.0.1:9", "m")

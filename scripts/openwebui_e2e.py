@@ -134,7 +134,7 @@ def signin_openwebui(base_url: str, timeout: float) -> str | None:
         if isinstance(token, str) and token:
             return token
     except Exception:
-        pass
+        pass  # Auth payload did not contain a token.
     return None
 
 

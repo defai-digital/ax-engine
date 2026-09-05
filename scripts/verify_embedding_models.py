@@ -42,10 +42,10 @@ SENTENCES = [
     "AX Engine runs local embeddings on Apple Silicon.",
     "What is the capital of France?",
     "A short query",
-    "This is a longer passage about vector databases, retrieval augmented "
-    "generation, and chunk indexing performance on a local machine.",
-    "Embedding models should produce stable normalized vectors for semantically "
-    "similar text.",
+    ("This is a longer passage about vector databases, retrieval augmented "
+    "generation, and chunk indexing performance on a local machine."),
+    ("Embedding models should produce stable normalized vectors for semantically "
+    "similar text."),
     "Hello world",
 ]
 

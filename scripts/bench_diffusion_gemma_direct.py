@@ -19,7 +19,6 @@ import hashlib
 import json
 import math
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -581,9 +580,9 @@ def render_bandwidth_share_chart(rows: list[dict[str, Any]]) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" '
         f'viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
         "<title>DiffusionGemma 4-bit - Estimated weight bandwidth</title>",
-        "<desc>DiffusionGemma 4-bit - Estimated weight bandwidth; 100% stacked bars show "
+        ("<desc>DiffusionGemma 4-bit - Estimated weight bandwidth; 100% stacked bars show "
         "estimated weight traffic versus theoretical headroom at 128/512/2048 prompt tokens. "
-        "This is not a measured GPU utilization counter.</desc>",
+        "This is not a measured GPU utilization counter.</desc>"),
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
         f'<text id="title" x="{LEFT}" y="24" font-family="{FONT}" font-size="16" '
         f'font-weight="700" fill="#111827">DiffusionGemma 4-bit - Estimated weight bandwidth</text>',
@@ -706,12 +705,12 @@ def write_summary(
     lines.extend(
         [
             "",
-            "Effective bandwidth estimates use local safetensors bytes times "
+            ("Effective bandwidth estimates use local safetensors bytes times "
             "`denoise_steps + 1 commit` per block, divided by measured block wall time, "
-            "against the 614.4 GB/s M5 Max theoretical unified-memory bandwidth.",
+            "against the 614.4 GB/s M5 Max theoretical unified-memory bandwidth."),
             "",
-            "Peer runtimes are intentionally N/A: current llama.cpp and mlx-lm releases "
-            "cannot load DiffusionGemma model artifacts.",
+            ("Peer runtimes are intentionally N/A: current llama.cpp and mlx-lm releases "
+            "cannot load DiffusionGemma model artifacts."),
             "",
         ]
     )
