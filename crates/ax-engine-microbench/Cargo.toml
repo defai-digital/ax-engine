@@ -61,3 +61,7 @@ path = "src/bin/batched_decode_ceiling_probe.rs"
 [[bin]]
 name = "axquant-kernel-latency-probe"
 path = "src/bin/axquant_kernel_latency_probe.rs"
+
+[[bin]]
+name = "moe-v4-clamped-swiglu-probe"
+path = "src/bin/moe_v4_clamped_swiglu_probe.rs"

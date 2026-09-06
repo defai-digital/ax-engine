@@ -5312,6 +5312,29 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_MOE_SWIGLU_CLAMPED_PACKED_METAL` — enable the clamp-aware
+    /// packed SwiGLU Metal kernel for DeepSeek V4 MoE experts.
+    ///
+    /// **Default: OFF** (opt-in). When `deepseek_v4.swiglu_limit` is active
+    /// and the expert gate_up projection is packed, the gather_qmm output is
+    /// passed to `ax_dsv4_packed_clamped_swiglu_v1`, which fuses the
+    /// last-dim split + clamp + SiLU + multiply into one dispatch instead of
+    /// slice + slice + minimum + clip + silu_mul (or the compiled-closure
+    /// equivalent). Decode and short prefill (same seq gate as the plain
+    /// packed SwiGLU). Falls back to split slices + `dense_ffn_activation`
+    /// when ineligible or off.
+    ///
+    /// **Probe evidence (2026-09-05, `moe-v4-clamped-swiglu-probe`):**
+    /// formula exact vs an all-f32 reference (sub-half-ULP), 1 bf16 ULP vs
+    /// the production op/compiled paths (rounding-level), +2.6–3.9% on
+    /// isolated decode/prefill shapes. Promotion to default requires
+    /// real-pack greedy token parity and a bench_mlx_inference_stack run
+    /// (ADR-028 Phase 1 gate).
+    moe_swiglu_clamped_packed_metal_enabled,
+    "AX_MLX_MOE_SWIGLU_CLAMPED_PACKED_METAL"
+);
+
+env_flag!(
     /// `AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL` — enable whole-layer
     /// Metal kernel for linear-attention decode.
     ///

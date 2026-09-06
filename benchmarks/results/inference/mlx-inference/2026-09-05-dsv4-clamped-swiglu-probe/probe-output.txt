@@ -1,0 +1,35 @@
+V4 clamped SwiGLU fused-kernel probe (limit=7, dtype=bf16, gates are ULP-derived)
+
+=== decode k=6 inter=512 (iters=2000) ===
+  parity: vs f32 ref 0.124641 (gate 0.286848); vs compiled bf16 0.250000 (gate 0.573696); vs ops bf16 0.250000
+  parity: ok (formula exact; bf16 delta is rounding-level)
+    current ops: 216.87 us/iter
+    current compiled: 186.39 us/iter
+    fused metal: 174.25 us/iter
+  verdict: fused is +6.5% vs best current (186.39 -> 174.25 us/iter)
+
+=== decode k=6 inter=1024 (iters=2000) ===
+  parity: vs f32 ref 0.124641 (gate 0.286848); vs compiled bf16 0.250000 (gate 0.573696); vs ops bf16 0.250000
+  parity: ok (formula exact; bf16 delta is rounding-level)
+    current ops: 213.13 us/iter
+    current compiled: 192.45 us/iter
+    fused metal: 181.73 us/iter
+  verdict: fused is +5.6% vs best current (192.45 -> 181.73 us/iter)
+
+=== decode k=8 inter=2048 (iters=2000) ===
+  parity: vs f32 ref 0.124729 (gate 0.286848); vs compiled bf16 0.250000 (gate 0.573696); vs ops bf16 0.250000
+  parity: ok (formula exact; bf16 delta is rounding-level)
+    current ops: 214.73 us/iter
+    current compiled: 191.15 us/iter
+    fused metal: 184.03 us/iter
+  verdict: fused is +3.7% vs best current (191.15 -> 184.03 us/iter)
+
+=== prefill s=128 k=6 inter=1024 (iters=300) ===
+  parity: vs f32 ref 0.124989 (gate 0.286848); vs compiled bf16 0.250000 (gate 0.573696); vs ops bf16 0.250000
+  parity: ok (formula exact; bf16 delta is rounding-level)
+    current ops: 240.55 us/iter
+    current compiled: 206.08 us/iter
+    fused metal: 201.80 us/iter
+  verdict: fused is +2.1% vs best current (206.08 -> 201.80 us/iter)
+
+RESULT: parity holds on all shapes; see per-shape verdicts for the wiring decision
