@@ -448,6 +448,14 @@ def run_profile(args: argparse.Namespace) -> dict:
         float(statistics.quantiles(step_wall_us, n=20)[-1]) if len(step_wall_us) >= 20 else 0.0
     )
     mean_runner_us = float(statistics.mean(runner_us_samples)) if runner_us_samples else None
+    if forward_pass_count <= 0:
+        raise RuntimeError(
+            f"Invalid forward_pass_count={forward_pass_count}; expected > 0 for bandwidth computation."
+        )
+    if decode_wall_s <= 0.0:
+        raise RuntimeError(
+            f"Invalid decode_wall_s={decode_wall_s}; expected > 0 for bandwidth computation."
+        )
     mean_forward_pass_us = decode_wall_s * 1_000_000 / forward_pass_count
 
     # Bytes-per-forward-pass proxy: full weight footprint, since batch=1 decode
