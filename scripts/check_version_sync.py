@@ -23,6 +23,28 @@ PYTHON_MIN_VERSION = "3.12"
 PYTHON_REQUIRES = f">={PYTHON_MIN_VERSION}"
 PYTHON_ABI3_FEATURE = "abi3-py312"
 
+TOML_VERSION_SPECS: dict[str, tuple[str, ...]] = {
+    "Cargo.toml": ("workspace", "package", "version"),
+    "pyproject.toml": ("project", "version"),
+}
+
+REGEX_VERSION_SPECS: tuple[tuple[str, str], ...] = (
+    ("sdk/ruby/lib/ax_engine/version.rb", r'\bVERSION\s*=\s*"([^"]+)"'),
+    ("sdk/go/axengine/client.go", r'\bconst\s+Version\s*=\s*"([^"]+)"'),
+    (
+        "sdk/swift/Sources/AxEngine/AxEngineClient.swift",
+        r'\bstatic\s+let\s+version\s*=\s*"([^"]+)"',
+    ),
+    ("docs/sdk/swift.md", r"\bcurrent version is `(\d+\.\d+\.\d+)`"),
+)
+
+INSTALL_VERSION_PATHS: tuple[str, ...] = (
+    "README.md",
+    "docs/GETTING-STARTED.md",
+    "crates/ax-engine-py/README.md",
+    "docs/sdk/python.md",
+)
+
 
 def _required_match(root: pathlib.Path, relative_path: str, pattern: str) -> str:
     text = (root / relative_path).read_text(encoding="utf-8")
@@ -52,39 +74,26 @@ def load_versions(root: pathlib.Path) -> dict[str, str]:
         (root / "sdk/javascript/package.json").read_text(encoding="utf-8")
     )
 
-    return {
-        "Cargo.toml": cargo["workspace"]["package"]["version"],
-        "pyproject.toml": pyproject["project"]["version"],
-        "sdk/javascript/package.json": javascript["version"],
-        "sdk/ruby/lib/ax_engine/version.rb": _required_match(
-            root,
-            "sdk/ruby/lib/ax_engine/version.rb",
-            r'\bVERSION\s*=\s*"([^"]+)"',
-        ),
-        "sdk/go/axengine/client.go": _required_match(
-            root,
-            "sdk/go/axengine/client.go",
-            r'\bconst\s+Version\s*=\s*"([^"]+)"',
-        ),
-        "sdk/swift/Sources/AxEngine/AxEngineClient.swift": _required_match(
-            root,
-            "sdk/swift/Sources/AxEngine/AxEngineClient.swift",
-            r'\bstatic\s+let\s+version\s*=\s*"([^"]+)"',
-        ),
-        "README.md": _required_install_version(root, "README.md"),
-        "docs/GETTING-STARTED.md": _required_install_version(
-            root, "docs/GETTING-STARTED.md"
-        ),
-        "crates/ax-engine-py/README.md": _required_install_version(
-            root, "crates/ax-engine-py/README.md"
-        ),
-        "docs/sdk/python.md": _required_install_version(root, "docs/sdk/python.md"),
-        "docs/sdk/swift.md": _required_match(
-            root,
-            "docs/sdk/swift.md",
-            r"\bcurrent version is `(\d+\.\d+\.\d+)`",
-        ),
+    toml_documents: dict[str, object] = {
+        "Cargo.toml": cargo,
+        "pyproject.toml": pyproject,
     }
+
+    versions: dict[str, str] = {"sdk/javascript/package.json": javascript["version"]}
+
+    for relative_path, key_path in TOML_VERSION_SPECS.items():
+        value: object = toml_documents[relative_path]
+        for key in key_path:
+            value = value[key]  # type: ignore[index]
+        versions[relative_path] = value  # type: ignore[assignment]
+
+    for relative_path, pattern in REGEX_VERSION_SPECS:
+        versions[relative_path] = _required_match(root, relative_path, pattern)
+
+    for relative_path in INSTALL_VERSION_PATHS:
+        versions[relative_path] = _required_install_version(root, relative_path)
+
+    return versions
 
 
 def verify_versions(root: pathlib.Path, expected: str | None = None) -> str:
