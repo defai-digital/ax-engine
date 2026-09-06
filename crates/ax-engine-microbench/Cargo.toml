@@ -65,3 +65,7 @@ path = "src/bin/axquant_kernel_latency_probe.rs"
 [[bin]]
 name = "moe-v4-clamped-swiglu-probe"
 path = "src/bin/moe_v4_clamped_swiglu_probe.rs"
+
+[[bin]]
+name = "dsv4-hc-pre-probe"
+path = "src/bin/dsv4_hc_pre_probe.rs"

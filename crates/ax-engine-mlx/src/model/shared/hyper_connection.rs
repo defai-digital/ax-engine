@@ -14,9 +14,12 @@
 //! input and repacked stream are cast back to the residual dtype (bf16).
 
 use mlx_sys::{
-    MlxArray, MlxDtype, add, astype, divide, matmul, multiply, power, reshape, sigmoid, slice,
-    slice_last_dim, softmax, sum_axis, transpose,
+    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype, divide,
+    matmul, multiply, power, reshape, sigmoid, slice, slice_last_dim, softmax, sum_axis, transpose,
 };
+use std::sync::OnceLock;
+
+use crate::fastpath;
 
 use super::super::config::DeepseekV4Config;
 
@@ -144,6 +147,15 @@ fn hc_mixes(
     let hc = cfg.hc_mult;
     let hc_i = hc as i32;
     let mixes = hc_rms_matmul(packed_stream, fn_weight, hc, rms_eps);
+    if fastpath::dsv4_hc_pre_metal_enabled() {
+        // ADR-028 Phase 1 F1 (default-off): the whole post-matmul chain in
+        // one Metal dispatch; `None` falls back to the op chain below.
+        if let Some((pre, post, comb)) =
+            hc_pre_mixes_metal(&mixes, base, scale, hc, cfg.hc_eps, cfg.hc_sinkhorn_iters)
+        {
+            return (post, comb, pre);
+        }
+    }
     let eps = mlx_sys::ops::cached_scalar(cfg.hc_eps, MlxDtype::Float32);
 
     // scale / base slices ([1] / [hc] / [hc*hc] broadcast against [1, seq, ...]).
@@ -248,6 +260,189 @@ fn hc_sinkhorn(comb_logits: &MlxArray, cfg: &DeepseekV4Config) -> MlxArray {
         comb = norm_src(&comb);
     }
     comb
+}
+
+static HC_PRE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+/// Fused post-matmul mHC mixing (ADR-028 Phase 1 F1): one thread per token.
+/// Reproduces the op chain bit-for-bit — `volatile` pins the separate mul/add
+/// roundings and the sequential 4-wide sums of the discrete MLX
+/// sigmoid/softmax/reduce kernels against fast-math contraction and
+/// reassociation, and the sigmoid uses `precise::exp` because MLX's own unary
+/// kernels do not fast-math-substitute `exp` while custom kernels do.
+/// Mirrored by the `dsv4-hc-pre-probe` microbench; keep the sources in sync.
+const HC_PRE_KERNEL_SOURCE: &str = r#"
+    uint tok = thread_position_in_grid.x;
+    if (tok >= (uint)SeqTokens) {
+        return;
+    }
+
+    const float eps = eps_arr[0];
+    const device float* m = mixes + tok * (2 * HC + HC * HC);
+
+    // Sigmoid gates use MLX's exact form: y = 1/(1+exp(|x|)), (x<0) ? y : 1-y.
+    // Volatile products block fma contraction so multiply and add round
+    // separately, matching the discrete MLX op kernels.
+    for (int h = 0; h < HC; ++h) {
+        volatile float prod = m[h] * scale[0];
+        float logit = prod + base[h];
+        float y = 1.0f / (1.0f + metal::precise::exp(metal::abs(logit)));
+        float sig = (logit < 0.0f) ? y : 1.0f - y;
+        pre_out[tok * HC + h] = sig + eps;
+    }
+    for (int h = 0; h < HC; ++h) {
+        volatile float prod = m[HC + h] * scale[1];
+        float logit = prod + base[HC + h];
+        float y = 1.0f / (1.0f + metal::precise::exp(metal::abs(logit)));
+        float sig = (logit < 0.0f) ? y : 1.0f - y;
+        post_out[tok * HC + h] = sig * 2.0f;
+    }
+
+    // Comb logits + softmax over dst. MLX softmax: fast::exp, sequential
+    // N_READS=4 sum, then multiply by the reciprocal (never a division).
+    float comb[HC][HC]; // [src][dst]
+    for (int s = 0; s < HC; ++s) {
+        float row[HC];
+        for (int d = 0; d < HC; ++d) {
+            volatile float prod = m[2 * HC + s * HC + d] * scale[2];
+            row[d] = prod + base[2 * HC + s * HC + d];
+        }
+        float mx = row[0];
+        for (int d = 1; d < HC; ++d) {
+            mx = (mx < row[d]) ? row[d] : mx;
+        }
+        volatile float sum = 0.0f;
+        float exps[HC];
+        for (int d = 0; d < HC; ++d) {
+            exps[d] = metal::fast::exp(row[d] - mx);
+            sum += exps[d];
+        }
+        float inv = 1.0f / sum;
+        for (int d = 0; d < HC; ++d) {
+            volatile float sm = exps[d] * inv;
+            comb[s][d] = sm + eps;
+        }
+    }
+
+    // Sinkhorn: one src-normalisation, then (iters-1) x (dst, src). Every
+    // normalisation divides by (axis sum + eps); sums are 4-wide sequential
+    // in index order like MLX's small-tensor reduce kernels.
+    for (int it = 0; it < ITERS; ++it) {
+        if (it > 0) {
+            for (int s = 0; s < HC; ++s) {
+                volatile float sum = 0.0f;
+                for (int d = 0; d < HC; ++d) {
+                    sum += comb[s][d];
+                }
+                float denom = sum + eps;
+                for (int d = 0; d < HC; ++d) {
+                    comb[s][d] = comb[s][d] / denom;
+                }
+            }
+        }
+        for (int d = 0; d < HC; ++d) {
+            volatile float sum = 0.0f;
+            for (int s = 0; s < HC; ++s) {
+                sum += comb[s][d];
+            }
+            float denom = sum + eps;
+            for (int s = 0; s < HC; ++s) {
+                comb[s][d] = comb[s][d] / denom;
+            }
+        }
+    }
+
+    for (int s = 0; s < HC; ++s) {
+        for (int d = 0; d < HC; ++d) {
+            comb_out[tok * HC * HC + s * HC + d] = comb[s][d];
+        }
+    }
+"#;
+
+/// Fused post-matmul `hc_pre` mixing for DeepSeek V4: sigmoid pre/post
+/// gates, softmax, and Sinkhorn comb in one dispatch instead of ~129 MLX
+/// ops (~119 in the Sinkhorn loop alone). `None` when ineligible — the
+/// caller falls back to the op chain.
+fn hc_pre_mixes_metal(
+    mixes: &MlxArray,
+    base: &MlxArray,
+    scale: &MlxArray,
+    hc: usize,
+    hc_eps: f32,
+    sinkhorn_iters: usize,
+) -> Option<(MlxArray, MlxArray, MlxArray)> {
+    if mixes.dtype() != MlxDtype::Float32
+        || base.dtype() != MlxDtype::Float32
+        || scale.dtype() != MlxDtype::Float32
+    {
+        return None;
+    }
+    // The kernel holds the hc x hc comb matrix in per-thread registers and is
+    // probe-validated at the V4 geometry only.
+    if hc != 4 || sinkhorn_iters < 1 || !hc_eps.is_finite() {
+        return None;
+    }
+    let hc_i = hc as i32;
+    let mixes_width = (2 + hc_i) * hc_i;
+    let shape = mixes.shape();
+    if shape.len() != 3 || shape[0] != 1 || shape[1] < 1 || shape[2] != mixes_width {
+        return None;
+    }
+    let seq = shape[1];
+    if base.shape() != vec![mixes_width] || scale.shape() != vec![3] {
+        return None;
+    }
+    let sinkhorn_iters = i32::try_from(sinkhorn_iters).ok()?;
+
+    let kernel = HC_PRE_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_dsv4_hc_pre_v1",
+            &["mixes", "base", "scale", "eps_arr"],
+            &["pre_out", "post_out", "comb_out"],
+            HC_PRE_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let eps_arr = mlx_sys::ops::cached_scalar(hc_eps, MlxDtype::Float32);
+    let mut outputs = kernel.apply_with_template(
+        &[mixes, base, scale, &eps_arr],
+        &[
+            KernelOutputSpec {
+                shape: vec![1, seq, hc_i],
+                dtype: MlxDtype::Float32,
+            },
+            KernelOutputSpec {
+                shape: vec![1, seq, hc_i],
+                dtype: MlxDtype::Float32,
+            },
+            KernelOutputSpec {
+                shape: vec![1, seq, hc_i, hc_i],
+                dtype: MlxDtype::Float32,
+            },
+        ],
+        &[
+            KernelTemplateArg::Int {
+                name: "SeqTokens",
+                value: seq,
+            },
+            KernelTemplateArg::Int {
+                name: "HC",
+                value: hc_i,
+            },
+            KernelTemplateArg::Int {
+                name: "ITERS",
+                value: sinkhorn_iters,
+            },
+        ],
+        (seq, 1, 1),
+        (seq.min(256), 1, 1),
+        None,
+    );
+    let comb = outputs.pop()?;
+    let post = outputs.pop()?;
+    let pre = outputs.pop()?;
+    Some((pre, post, comb))
 }
 
 /// `Σ_h pre[h] ⊙ stream_h` — combine the `hc` streams into one
@@ -496,5 +691,62 @@ mod tests {
                 assert!((out_data[t * HIDDEN + e] - expect).abs() < 1e-3);
             }
         }
+    }
+
+    #[test]
+    fn hc_pre_mixes_metal_matches_op_chain_bit_for_bit() {
+        // Flag-independent: the gate lives in `hc_mixes` (env_flag caches
+        // process-wide), so tests drive the fused impl directly, like the
+        // packed-clamped-SwiGLU tests.
+        for seq in [1_usize, 3] {
+            let (stream, fn_weight, base, scale) = hc_weights(seq);
+            let cfg = test_config(1e-5, 20);
+            let mixes = hc_rms_matmul(&stream, &fn_weight, HC, 1e-6);
+            let (pre, post, comb) =
+                hc_pre_mixes_metal(&mixes, &base, &scale, HC, cfg.hc_eps, cfg.hc_sinkhorn_iters)
+                    .expect("f32 hc=4 inputs must be eligible");
+            assert_eq!(pre.shape(), vec![1, seq as i32, HC as i32]);
+            assert_eq!(post.shape(), vec![1, seq as i32, HC as i32]);
+            assert_eq!(comb.shape(), vec![1, seq as i32, HC as i32, HC as i32]);
+            assert_eq!(pre.dtype(), MlxDtype::Float32);
+            assert_eq!(post.dtype(), MlxDtype::Float32);
+            assert_eq!(comb.dtype(), MlxDtype::Float32);
+
+            let (post_ref, comb_ref, pre_ref) =
+                hc_mixes(&stream, &fn_weight, &base, &scale, &cfg, 1e-6);
+            eval(&[&pre, &post, &comb, &pre_ref, &post_ref, &comb_ref]);
+            assert_eq!(
+                pre.data_f32(),
+                pre_ref.data_f32(),
+                "pre mismatch at seq {seq}"
+            );
+            assert_eq!(
+                post.data_f32(),
+                post_ref.data_f32(),
+                "post mismatch at seq {seq}"
+            );
+            assert_eq!(
+                comb.data_f32(),
+                comb_ref.data_f32(),
+                "comb mismatch at seq {seq}"
+            );
+        }
+    }
+
+    #[test]
+    fn hc_pre_mixes_metal_rejects_ineligible_inputs() {
+        let (stream, fn_weight, base, scale) = hc_weights(1);
+        let mixes = hc_rms_matmul(&stream, &fn_weight, HC, 1e-6);
+        // hc != 4 and zero Sinkhorn iterations.
+        assert!(hc_pre_mixes_metal(&mixes, &base, &scale, 8, 1e-5, 20).is_none());
+        assert!(hc_pre_mixes_metal(&mixes, &base, &scale, HC, 1e-5, 0).is_none());
+        // Non-f32 mixes.
+        let mixes_bf16 = astype(&mixes, MlxDtype::Bfloat16, None);
+        assert!(hc_pre_mixes_metal(&mixes_bf16, &base, &scale, HC, 1e-5, 20).is_none());
+        // Wrong base / scale widths.
+        let bad_base = array_f32(&fill(8, 0.5), &[8]);
+        assert!(hc_pre_mixes_metal(&mixes, &bad_base, &scale, HC, 1e-5, 20).is_none());
+        let bad_scale = array_f32(&[1.0, 1.0], &[2]);
+        assert!(hc_pre_mixes_metal(&mixes, &base, &bad_scale, HC, 1e-5, 20).is_none());
     }
 }

@@ -1,0 +1,21 @@
+V4 mHC hc_pre fused-kernel probe (hc=4, iters=20, hc_eps=0.00001, f32; gate: bit-exact, else <= ~1 f32 ULP)
+
+=== decode s=1 hc=4 iters=20 (iters=2000) ===
+  parity: pre bit-exact
+  parity: post bit-exact
+  parity: comb bit-exact
+  dispatches: op chain 140 measured wrapper calls (129 non-view: pre 4 + post 4 + comb_logits 2 + softmax+eps 2 + norm_src 3 + 19x(3+3)); fused = 1 Metal dispatch
+    op chain: 705.29 us/iter
+    fused metal: 306.04 us/iter
+  verdict: fused is +56.6% vs op chain (705.29 -> 306.04 us/iter)
+
+=== prefill s=128 hc=4 iters=20 (iters=300) ===
+  parity: pre bit-exact
+  parity: post bit-exact
+  parity: comb bit-exact
+  dispatches: op chain 140 measured wrapper calls (129 non-view: pre 4 + post 4 + comb_logits 2 + softmax+eps 2 + norm_src 3 + 19x(3+3)); fused = 1 Metal dispatch
+    op chain: 764.16 us/iter
+    fused metal: 304.60 us/iter
+  verdict: fused is +60.1% vs op chain (764.16 -> 304.60 us/iter)
+
+RESULT: parity bit-exact on all shapes; fused = 1 dispatch vs ~129 op-chain dispatches; see per-shape verdicts for the wiring decision

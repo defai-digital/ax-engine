@@ -5335,6 +5335,27 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_DSV4_HC_PRE_METAL` — enable the fused mHC `hc_pre` mixing
+    /// Metal kernel for DeepSeek V4 hyper-connections.
+    ///
+    /// **Default: OFF** (opt-in). When eligible (f32 mixes/base/scale,
+    /// hc == 4, matching post-matmul widths), the `hc_pre` post-matmul chain
+    /// (sigmoid pre/post gates + softmax + Sinkhorn comb, ~129 dispatches
+    /// per branch, ~119 in the Sinkhorn loop alone) collapses into a single
+    /// Metal kernel dispatch (`ax_dsv4_hc_pre_v1`). Falls back to the MLX op
+    /// chain when ineligible or off.
+    ///
+    /// **Probe evidence (2026-09-05, `dsv4-hc-pre-probe`):** bit-exact f32
+    /// vs the op chain on decode (s=1) and prefill (s=128) shapes, 140
+    /// measured op-wrapper calls (129 non-view) collapsed to 1 dispatch,
+    /// +56.6% decode and +60.1% prefill on isolated shapes. Promotion to
+    /// default requires real-pack greedy token parity and a
+    /// bench_mlx_inference_stack run (ADR-028 Phase 1 gate).
+    dsv4_hc_pre_metal_enabled,
+    "AX_MLX_DSV4_HC_PRE_METAL"
+);
+
+env_flag!(
     /// `AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL` — enable whole-layer
     /// Metal kernel for linear-attention decode.
     ///
