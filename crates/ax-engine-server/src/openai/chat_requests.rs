@@ -104,7 +104,9 @@ pub(crate) fn is_nemotron_omni_model_dir(model_dir: &Path) -> bool {
 /// aligned with the delegated OpenAI backends' 40-image budget. Each image
 /// costs a full decode (up to 8192x8192) before the token budget is checked,
 /// so an explicit early bound keeps a single request from monopolizing CPU.
-const MAX_INLINE_IMAGES_PER_REQUEST: usize = 40;
+/// Shared with the Ollama mapper so both surfaces reject before allocating
+/// an unbounded content-part Vec.
+pub(crate) const MAX_INLINE_IMAGES_PER_REQUEST: usize = 40;
 
 /// Fail-safe defaults for unified Qwen vision checkpoints. The renderer reads
 /// the actual processor/config files before preprocessing.

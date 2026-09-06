@@ -26,6 +26,7 @@ use crate::generation::streaming::{StreamStateSource, build_stream_state};
 use crate::metadata::{
     MODEL_OWNER, context_length, model_supports_image, model_supports_reasoning,
 };
+use crate::openai::chat_requests::MAX_INLINE_IMAGES_PER_REQUEST;
 use crate::openai::generation::{populate_native_mlx_output_text, validate_openai_response_format};
 use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
@@ -746,6 +747,14 @@ fn ollama_chat_to_openai_request(
     reject_unsupported_fields(&request.unsupported, "request")?;
     reject_unsupported_fields(&request.options.unsupported, "options")?;
     let _ = request.keep_alive;
+    let mut inline_images = 0usize;
+    for message in &request.messages {
+        let added = message.images.as_ref().map_or(0, Vec::len);
+        inline_images = inline_images
+            .checked_add(added)
+            .filter(|&total| total <= MAX_INLINE_IMAGES_PER_REQUEST)
+            .ok_or_else(too_many_inline_images)?;
+    }
     let messages = request
         .messages
         .into_iter()
@@ -1029,6 +1038,17 @@ fn ollama_message_to_openai_message(
     })
 }
 
+fn too_many_inline_images() -> (StatusCode, Json<ErrorResponse>) {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        format!(
+            "request carries more than {MAX_INLINE_IMAGES_PER_REQUEST} \
+inline images; split the conversation or drop older images"
+        ),
+    )
+}
+
 fn ollama_message_content(
     text: String,
     images: Option<Vec<String>>,
@@ -1036,7 +1056,11 @@ fn ollama_message_content(
     let Some(images) = images.filter(|images| !images.is_empty()) else {
         return Ok(OpenAiChatContent::Text(text));
     };
-    let mut parts = Vec::with_capacity(images.len() + usize::from(!text.is_empty()));
+    let added = images.len();
+    if added > MAX_INLINE_IMAGES_PER_REQUEST {
+        return Err(too_many_inline_images());
+    }
+    let mut parts = Vec::with_capacity(added + usize::from(!text.is_empty()));
     if !text.is_empty() {
         parts.push(OpenAiChatContentPart {
             part_type: "text".to_string(),
@@ -1661,6 +1685,70 @@ mod tests {
         assert_eq!(openai.response_format, Some(json!({"type": "json_object"})));
         assert!(!openai.stream);
         assert_eq!(openai.messages.len(), 1);
+    }
+
+    #[test]
+    fn ollama_chat_request_rejects_more_than_inline_image_budget() {
+        let images = vec!["x"; MAX_INLINE_IMAGES_PER_REQUEST + 1];
+        let request: OllamaChatRequest = serde_json::from_value(json!({
+            "model": "qwen3",
+            "messages": [{
+                "role": "user",
+                "content": "describe",
+                "images": images
+            }]
+        }))
+        .expect("over-budget image request should deserialize");
+
+        let error = ollama_chat_to_openai_request(request, None, None)
+            .expect_err("requests above the inline image budget must be rejected");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error
+                .1
+                .0
+                .error
+                .message
+                .contains("more than 40 inline images"),
+            "unexpected message: {}",
+            error.1.0.error.message
+        );
+    }
+
+    #[test]
+    fn ollama_chat_request_counts_inline_images_across_messages() {
+        let first = vec!["x"; 20];
+        let second = vec!["x"; 21];
+        let request: OllamaChatRequest = serde_json::from_value(json!({
+            "model": "qwen3",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "one",
+                    "images": first
+                },
+                {
+                    "role": "user",
+                    "content": "two",
+                    "images": second
+                }
+            ]
+        }))
+        .expect("split over-budget image request should deserialize");
+
+        let error = ollama_chat_to_openai_request(request, None, None)
+            .expect_err("the per-request budget applies across messages");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error
+                .1
+                .0
+                .error
+                .message
+                .contains("more than 40 inline images"),
+            "unexpected message: {}",
+            error.1.0.error.message
+        );
     }
 
     #[test]

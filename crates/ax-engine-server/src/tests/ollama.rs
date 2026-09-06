@@ -854,6 +854,33 @@ async fn ollama_chat_validates_data_uri_prefixed_images() {
 }
 
 #[tokio::test]
+async fn ollama_chat_rejects_more_than_inline_image_budget() {
+    let app = build_router(llama_cpp_state());
+    let images = vec!["x"; 41];
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "messages": [{
+                    "role": "user",
+                    "content": "describe",
+                    "images": images
+                }]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "more than 40 inline images");
+}
+
+#[tokio::test]
 async fn ollama_chat_accepts_thinking_alias_for_think() {
     // `thinking: true` must resolve through the same gate as `think: true`
     // (llama.cpp backend advertises no reasoning), not fail as an unknown
