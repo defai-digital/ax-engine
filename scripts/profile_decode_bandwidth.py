@@ -445,7 +445,7 @@ def run_profile(args: argparse.Namespace) -> dict:
 
     median_step_us = float(statistics.median(step_wall_us)) if step_wall_us else 0.0
     p95_step_us = (
-        float(statistics.quantiles(step_wall_us, n=20)[-1]) if len(step_wall_us) >= 20 else 0.0
+        float(statistics.quantiles(step_wall_us, n=20)[-1]) if len(step_wall_us) >= 20 else None
     )
     mean_runner_us = float(statistics.mean(runner_us_samples)) if runner_us_samples else None
     if forward_pass_count <= 0:
