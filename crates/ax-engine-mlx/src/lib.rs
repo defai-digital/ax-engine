@@ -10,6 +10,7 @@ pub(crate) mod diffusion;
 mod disk_page_store;
 pub mod disk_prefix_cache;
 pub mod expert_stream;
+pub mod expert_stream_slice;
 pub mod fastpath;
 pub mod gemma4_assistant_mtp;
 pub(crate) mod gemma4_unified;

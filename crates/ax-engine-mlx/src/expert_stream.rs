@@ -10,10 +10,21 @@
 //!
 //! v1 is layer-stack paging only: the existing `gather_qmm` kernel runs
 //! unchanged on the paged packed tensors. No per-expert unfused kernels.
+//!
+//! Opt-in per-expert mode (`AX_STREAM_EXPERT_GRANULARITY=expert`) pages
+//! individual experts instead: the [`ExpertRowPager`] caches `(layer, expert)`
+//! rows under a byte budget, evicts by route hotness (router selection count,
+//! decayed over time) rather than recency, preloads an optional offline
+//! hotlist, and warms the next layer's predicted experts on a loader thread.
+//! Decode assembles a compacted `[top_k, ...]` stack so the same `gather_qmm`
+//! path runs unchanged; prefill and any row-mode failure fall back to the
+//! layer-stack pager.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use ax_engine_core::{NativeTensorRole, NativeTensorSpec};
 use serde::{Deserialize, Serialize};
@@ -287,6 +298,119 @@ pub fn expert_layer_budget_from_env(value: Option<&str>) -> usize {
 
 pub fn expert_layer_budget() -> usize {
     expert_layer_budget_from_env(std::env::var(STREAM_EXPERT_LAYERS_ENV).ok().as_deref())
+}
+
+/// Per-expert paging granularity selector: `AX_STREAM_EXPERT_GRANULARITY`.
+pub const STREAM_EXPERT_GRANULARITY_ENV: &str = "AX_STREAM_EXPERT_GRANULARITY";
+/// Row-pager byte budget: `AX_STREAM_EXPERT_CACHE_BYTES`.
+pub const STREAM_EXPERT_CACHE_BYTES_ENV: &str = "AX_STREAM_EXPERT_CACHE_BYTES";
+/// Next-layer prefetch kill-switch: `AX_STREAM_EXPERT_PREFETCH=0`.
+pub const STREAM_EXPERT_PREFETCH_ENV: &str = "AX_STREAM_EXPERT_PREFETCH";
+/// Offline hotlist preload path: `AX_STREAM_EXPERT_HOTLIST`.
+pub const STREAM_EXPERT_HOTLIST_ENV: &str = "AX_STREAM_EXPERT_HOTLIST";
+/// Observed-hotness dump path: `AX_STREAM_EXPERT_HOTLIST_OUT`.
+pub const STREAM_EXPERT_HOTLIST_OUT_ENV: &str = "AX_STREAM_EXPERT_HOTLIST_OUT";
+/// Selections between hotness decay passes: `AX_STREAM_EXPERT_HOTNESS_DECAY`.
+pub const STREAM_EXPERT_HOTNESS_DECAY_ENV: &str = "AX_STREAM_EXPERT_HOTNESS_DECAY";
+
+/// Hotlist file schema (`ax.expert-hotlist.v1`): offline-measured expert
+/// popularity used to seed the row-pager cache at startup.
+pub const EXPERT_HOTLIST_SCHEMA_V1: &str = "ax.expert-hotlist.v1";
+
+/// Pager granularity for streamed expert stacks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StreamExpertGranularity {
+    /// Whole layer stacks (current behavior, product default).
+    #[default]
+    Layer,
+    /// Individual experts with route-hotness eviction (opt-in).
+    Expert,
+}
+
+impl StreamExpertGranularity {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "layer" => Some(Self::Layer),
+            "expert" => Some(Self::Expert),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Layer => "layer",
+            Self::Expert => "expert",
+        }
+    }
+}
+
+/// Granularity from `AX_STREAM_EXPERT_GRANULARITY`; empty/unset is `layer`,
+/// unknown values fail closed to `layer` with a warning.
+pub fn stream_expert_granularity_from_env(value: Option<&str>) -> StreamExpertGranularity {
+    let Some(raw) = value else {
+        return StreamExpertGranularity::Layer;
+    };
+    if raw.trim().is_empty() {
+        return StreamExpertGranularity::Layer;
+    }
+    match StreamExpertGranularity::parse(raw) {
+        Some(granularity) => granularity,
+        None => {
+            tracing::warn!(
+                target: "ax_engine_mlx",
+                value = raw,
+                "invalid {STREAM_EXPERT_GRANULARITY_ENV}; failing closed to layer-stack paging"
+            );
+            StreamExpertGranularity::Layer
+        }
+    }
+}
+
+pub fn stream_expert_granularity() -> StreamExpertGranularity {
+    stream_expert_granularity_from_env(std::env::var(STREAM_EXPERT_GRANULARITY_ENV).ok().as_deref())
+}
+
+/// Row-pager byte budget from `AX_STREAM_EXPERT_CACHE_BYTES`.
+///
+/// Default: `4 × estimated_max_layer_expert_bytes`. The floor keeps one
+/// token's working set for the current layer plus the prefetched next layer
+/// (`2 × experts_per_tok × per-expert bytes`) so decode cannot thrash inside
+/// a single token.
+pub fn expert_row_cache_bytes_from_env(
+    value: Option<&str>,
+    manifest: &ExpertStreamManifest,
+) -> usize {
+    let per_expert =
+        (manifest.estimated_max_layer_expert_bytes / u64::from(manifest.num_experts.max(1))).max(1);
+    let floor = 2u64
+        .saturating_mul(u64::from(manifest.experts_per_tok.max(1)))
+        .saturating_mul(per_expert);
+    let default = 4u64
+        .saturating_mul(manifest.estimated_max_layer_expert_bytes)
+        .max(floor);
+    let bytes = value
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .map(|v| v.max(floor))
+        .unwrap_or(default);
+    usize::try_from(bytes).unwrap_or(usize::MAX)
+}
+
+/// Whether next-layer prefetch runs in expert mode (default on; `0`/`off`/
+/// `false`/`no` disables).
+pub fn expert_prefetch_enabled_from_env(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("0") | Some("false") | Some("no") | Some("off")
+    )
+}
+
+/// Selections between hotness decay passes (default 4096, minimum 1).
+pub fn expert_hotness_decay_from_env(value: Option<&str>) -> u64 {
+    value
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(4096)
 }
 
 const STREAM_MODE_UNSET: u8 = 0;
@@ -802,25 +926,757 @@ impl ExpertStackPager {
     }
 }
 
+// ------------------------------------------------------------------
+// Per-expert (row) paging: route-hotness cache over (layer, expert) rows.
+// ------------------------------------------------------------------
+
+/// Hotlist file (`ax.expert-hotlist.v1`): offline-measured expert popularity.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ExpertHotlistFile {
+    pub schema_version: String,
+    #[serde(default)]
+    pub generated_by: String,
+    pub entries: Vec<ExpertHotlistEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ExpertHotlistEntry {
+    pub layer: u32,
+    pub expert: u32,
+    /// Selection count measured offline; higher is hotter.
+    #[serde(default)]
+    pub weight: u64,
+}
+
+/// Compacted per-token expert stacks assembled from cached rows: the same
+/// slots the resident path fills, plus the slot index each requested expert
+/// landed in. Assembly follows request order, so `remap` is `0..k`.
+#[derive(Clone)]
+pub struct CompactedExperts {
+    pub stack: LayerExpertStack,
+    pub remap: Vec<u32>,
+}
+
+struct ExpertRowEntry {
+    rows: LayerExpertStack,
+    bytes: usize,
+    tick: u64,
+    pinned: bool,
+}
+
+#[derive(Default)]
+struct RowPagerState {
+    entries: HashMap<(u32, u32), ExpertRowEntry>,
+    resident_bytes: usize,
+    hotness: HashMap<(u32, u32), u64>,
+    tick: u64,
+    selections_since_decay: u64,
+    /// Per-layer expert selection of the previous token (prefetch prediction).
+    last_ids: HashMap<u32, Vec<u32>>,
+}
+
+struct RowPagerCore {
+    manifest: Arc<ExpertStreamManifest>,
+    root: PathBuf,
+    headers: crate::expert_stream_slice::ShardHeaderCache,
+    state: Mutex<RowPagerState>,
+    budget_bytes: usize,
+}
+
+enum PrefetchMsg {
+    Warm { layer: u32, experts: Vec<u32> },
+    Stop,
+}
+
+fn expert_stack_bytes(stack: &LayerExpertStack) -> usize {
+    fn qw_bytes(qw: &QuantizedWeight) -> usize {
+        qw.weight.nbytes()
+            + qw.scales.as_ref().map_or(0, |a| a.nbytes())
+            + qw.biases.as_ref().map_or(0, |a| a.nbytes())
+            + qw.linear_bias.as_ref().map_or(0, |a| a.nbytes())
+    }
+    [
+        &stack.gate_up_exps_packed,
+        &stack.gate_exps,
+        &stack.up_exps,
+        &stack.down_exps,
+    ]
+    .into_iter()
+    .flatten()
+    .map(qw_bytes)
+    .sum()
+}
+
+/// Read `(layer, experts)` rows for every non-sidecar manifest tensor of the
+/// layer. Mirrors `ExpertStackPager::load_layer` slot semantics per expert.
+fn load_rows(
+    core: &RowPagerCore,
+    layer: u32,
+    experts: &[u32],
+) -> Result<Vec<LayerExpertStack>, ExpertStreamError> {
+    if experts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut per_expert: Vec<LayerExpertStack> = (0..experts.len())
+        .map(|_| LayerExpertStack::default())
+        .collect();
+    let mut any = false;
+    for tensor in core.manifest.tensors_for_layer(layer) {
+        if is_quantization_sidecar_name(&tensor.name) {
+            continue;
+        }
+        let proj = tensor.parsed_proj.ok_or_else(|| {
+            ExpertStreamError::Paging(format!(
+                "tensor {} lost its parsed proj; manifest must be validated before paging",
+                tensor.name
+            ))
+        })?;
+        let rows = crate::expert_stream_slice::read_expert_proj_rows(
+            &core.root,
+            &core.headers,
+            tensor,
+            experts,
+        )
+        .map_err(ExpertStreamError::Paging)?;
+        for (row, slot) in rows.into_iter().zip(per_expert.iter_mut()) {
+            slot.insert(
+                proj,
+                QuantizedWeight {
+                    weight: row.weight,
+                    scales: row.scales,
+                    biases: row.biases,
+                    group_size: tensor.group_size as i32,
+                    bits: tensor.bits as i32,
+                    mode: "affine".to_string(),
+                    linear_bias: row.linear_bias,
+                    decode_weight_t: None,
+                    decode_q2_weight: None,
+                    decode_q2_scales: None,
+                    decode_q2_biases: None,
+                },
+            );
+        }
+        any = true;
+    }
+    if !any {
+        return Err(ExpertStreamError::Paging(format!(
+            "manifest has no streamed tensors for layer {layer}"
+        )));
+    }
+    Ok(per_expert)
+}
+
+/// Concatenate per-expert rows (`[1, ...]`) into one compacted `[k, ...]`
+/// projection. Sidecars must be present on every row or none; mixed rows mean
+/// the manifest/shards disagree, which fails closed.
+fn concat_quantized_rows(
+    rows: Vec<QuantizedWeight>,
+    what: &str,
+) -> Result<QuantizedWeight, ExpertStreamError> {
+    let Some(first) = rows.first() else {
+        return Err(ExpertStreamError::Paging(format!(
+            "no expert rows to assemble for {what}"
+        )));
+    };
+    let (group_size, bits, mode) = (first.group_size, first.bits, first.mode.clone());
+    let concat_sidecar = |pick: fn(&QuantizedWeight) -> Option<&mlx_sys::MlxArray>|
+     -> Result<Option<mlx_sys::MlxArray>, ExpertStreamError> {
+        let refs: Vec<&mlx_sys::MlxArray> = rows.iter().filter_map(pick).collect();
+        if refs.is_empty() {
+            return Ok(None);
+        }
+        if refs.len() != rows.len() {
+            return Err(ExpertStreamError::Paging(format!(
+                "expert rows disagree on sidecar presence for {what}"
+            )));
+        }
+        Ok(Some(mlx_sys::concatenate(&refs, 0, None)))
+    };
+    let weight_refs: Vec<&mlx_sys::MlxArray> = rows.iter().map(|r| &r.weight).collect();
+    Ok(QuantizedWeight {
+        weight: mlx_sys::concatenate(&weight_refs, 0, None),
+        scales: concat_sidecar(|r| r.scales.as_ref())?,
+        biases: concat_sidecar(|r| r.biases.as_ref())?,
+        group_size,
+        bits,
+        mode,
+        linear_bias: concat_sidecar(|r| r.linear_bias.as_ref())?,
+        decode_weight_t: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
+    })
+}
+
+/// Assemble compacted per-token stacks from per-expert rows in request order.
+fn assemble_stack(
+    rows: &[LayerExpertStack],
+    fuse_split_experts: bool,
+) -> Result<LayerExpertStack, ExpertStreamError> {
+    fn collect(
+        rows: &[LayerExpertStack],
+        pick: impl Fn(&LayerExpertStack) -> &Option<QuantizedWeight>,
+        what: &str,
+    ) -> Result<Option<QuantizedWeight>, ExpertStreamError> {
+        let present = rows.iter().filter(|r| pick(r).is_some()).count();
+        if present == 0 {
+            return Ok(None);
+        }
+        if present != rows.len() {
+            return Err(ExpertStreamError::Paging(format!(
+                "expert rows disagree on projection presence for {what}"
+            )));
+        }
+        let picked: Vec<QuantizedWeight> = rows.iter().filter_map(|r| pick(r).clone()).collect();
+        concat_quantized_rows(picked, what).map(Some)
+    }
+    let mut stack = LayerExpertStack {
+        gate_up_exps_packed: collect(rows, |r| &r.gate_up_exps_packed, "gate_up")?,
+        gate_exps: collect(rows, |r| &r.gate_exps, "gate")?,
+        up_exps: collect(rows, |r| &r.up_exps, "up")?,
+        down_exps: collect(rows, |r| &r.down_exps, "down")?,
+    };
+    if stack.is_empty() {
+        return Err(ExpertStreamError::Paging(
+            "no expert rows were assembled".to_string(),
+        ));
+    }
+    if fuse_split_experts {
+        let (packed, gate, up) = crate::weights::try_fuse_paged_split_moe_experts(
+            stack.gate_up_exps_packed,
+            stack.gate_exps,
+            stack.up_exps,
+        )
+        .map_err(ExpertStreamError::Paging)?;
+        stack.gate_up_exps_packed = packed;
+        stack.gate_exps = gate;
+        stack.up_exps = up;
+    }
+    Ok(stack)
+}
+
+/// Evict unpinned entries by route hotness (lowest selection count first,
+/// oldest tick breaks ties) until the byte budget is met. The budget is a
+/// soft cap: when everything is pinned mid-assembly, correctness wins.
+fn evict_to_budget(state: &mut RowPagerState, budget_bytes: usize) {
+    while state.resident_bytes > budget_bytes {
+        let victim = state
+            .entries
+            .iter()
+            .filter(|(_, entry)| !entry.pinned)
+            .min_by_key(|(key, entry)| (state.hotness.get(key).copied().unwrap_or(0), entry.tick))
+            .map(|(key, _)| *key);
+        let Some(victim) = victim else {
+            break;
+        };
+        if let Some(entry) = state.entries.remove(&victim) {
+            state.resident_bytes = state.resident_bytes.saturating_sub(entry.bytes);
+        }
+    }
+}
+
+/// Synchronously warm `(layer, experts)` into the cache; returns how many
+/// experts were newly loaded. Hotness is not touched: experts that were
+/// warmed but never selected are the first eviction candidates.
+fn warm_experts(
+    core: &RowPagerCore,
+    layer: u32,
+    experts: &[u32],
+) -> Result<usize, ExpertStreamError> {
+    let num_experts = core.manifest.num_experts;
+    let missing: Vec<u32> = {
+        let state = core.state.lock().expect("expert row pager lock");
+        experts
+            .iter()
+            .copied()
+            .filter(|id| *id < num_experts && !state.entries.contains_key(&(layer, *id)))
+            .collect()
+    };
+    if missing.is_empty() {
+        return Ok(0);
+    }
+    let loaded = load_rows(core, layer, &missing)?;
+    let mut state = core.state.lock().expect("expert row pager lock");
+    let state = &mut *state;
+    let mut warmed = 0usize;
+    for (expert, rows) in missing.into_iter().zip(loaded) {
+        if state.entries.contains_key(&(layer, expert)) {
+            continue;
+        }
+        let bytes = expert_stack_bytes(&rows);
+        state.tick += 1;
+        let tick = state.tick;
+        state.resident_bytes = state.resident_bytes.saturating_add(bytes);
+        state.entries.insert(
+            (layer, expert),
+            ExpertRowEntry {
+                rows,
+                bytes,
+                tick,
+                pinned: false,
+            },
+        );
+        warmed += 1;
+    }
+    evict_to_budget(state, core.budget_bytes);
+    Ok(warmed)
+}
+
+/// Construction knobs for [`ExpertRowPager`], usually derived from env.
+#[derive(Clone, Debug)]
+pub struct ExpertRowPagerConfig {
+    pub budget_bytes: usize,
+    pub fuse_split_experts: bool,
+    pub prefetch: bool,
+    pub decay_interval: u64,
+    pub hotlist_out: Option<PathBuf>,
+}
+
+/// Per-expert pager: caches `(layer, expert)` rows under a byte budget and
+/// evicts by route hotness — the number of times the router *selected* an
+/// expert (counting selections, not cache hits, so a repeatedly selected
+/// expert that was evicted before its second hit is not punished), halved
+/// every `decay_interval` selections. Selected experts are pinned while
+/// their token's stacks are assembled.
+///
+/// Decode calls [`Self::ensure_experts`] with the router's top-k ids and gets
+/// compacted `[top_k, ...]` stacks back, so the existing `gather_qmm` path
+/// runs unchanged. A loader thread warms the next layer's predicted experts
+/// (its previous-token selection) while the GPU works on the current one.
+pub struct ExpertRowPager {
+    core: Arc<RowPagerCore>,
+    fuse_split_experts: bool,
+    decay_interval: u64,
+    prefetch_tx: Mutex<Option<Sender<PrefetchMsg>>>,
+    prefetch_worker: Mutex<Option<JoinHandle<()>>>,
+    hotlist_out: Mutex<Option<PathBuf>>,
+}
+
+impl ExpertRowPager {
+    pub fn new(
+        manifest: Arc<ExpertStreamManifest>,
+        root: PathBuf,
+        config: ExpertRowPagerConfig,
+    ) -> Self {
+        let core = Arc::new(RowPagerCore {
+            manifest,
+            root,
+            headers: crate::expert_stream_slice::ShardHeaderCache::new(),
+            state: Mutex::new(RowPagerState::default()),
+            budget_bytes: config.budget_bytes.max(1),
+        });
+        let (prefetch_tx, prefetch_worker) = if config.prefetch {
+            let (tx, rx) = mpsc::channel::<PrefetchMsg>();
+            let worker_core = core.clone();
+            let handle = std::thread::Builder::new()
+                .name("ax-expert-prefetch".to_string())
+                .spawn(move || {
+                    while let Ok(msg) = rx.recv() {
+                        match msg {
+                            PrefetchMsg::Warm { layer, experts } => {
+                                let _ = warm_experts(&worker_core, layer, &experts);
+                            }
+                            PrefetchMsg::Stop => break,
+                        }
+                    }
+                })
+                .expect("spawn expert prefetch thread");
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
+        Self {
+            core,
+            fuse_split_experts: config.fuse_split_experts,
+            decay_interval: config.decay_interval.max(1),
+            prefetch_tx: Mutex::new(prefetch_tx),
+            prefetch_worker: Mutex::new(prefetch_worker),
+            hotlist_out: Mutex::new(config.hotlist_out),
+        }
+    }
+
+    pub fn budget_bytes(&self) -> usize {
+        self.core.budget_bytes
+    }
+
+    pub fn cached_expert_count(&self) -> usize {
+        self.core
+            .state
+            .lock()
+            .expect("expert row pager lock")
+            .entries
+            .len()
+    }
+
+    /// Cached `(layer, expert)` keys in sorted order (diagnostics, tests).
+    pub fn cached_expert_keys(&self) -> Vec<(u32, u32)> {
+        let mut keys: Vec<(u32, u32)> = self
+            .core
+            .state
+            .lock()
+            .expect("expert row pager lock")
+            .entries
+            .keys()
+            .copied()
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    pub fn resident_bytes(&self) -> usize {
+        self.core
+            .state
+            .lock()
+            .expect("expert row pager lock")
+            .resident_bytes
+    }
+
+    /// Route-hotness score for `(layer, expert)` (0 when never selected).
+    pub fn hotness_of(&self, layer: u32, expert: u32) -> u64 {
+        self.core
+            .state
+            .lock()
+            .expect("expert row pager lock")
+            .hotness
+            .get(&(layer, expert))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Synchronously warm `(layer, experts)` into the cache (prefetch path).
+    pub fn warm_experts(&self, layer: u32, experts: &[u32]) -> Result<usize, ExpertStreamError> {
+        warm_experts(&self.core, layer, experts)
+    }
+
+    #[cfg(test)]
+    fn test_remove_expert(&self, layer: u32, expert: u32) {
+        let mut state = self.core.state.lock().expect("expert row pager lock");
+        if let Some(entry) = state.entries.remove(&(layer, expert)) {
+            state.resident_bytes = state.resident_bytes.saturating_sub(entry.bytes);
+        }
+    }
+
+    fn unpin(&self, layer: u32, ids: &[u32]) {
+        let mut state = self.core.state.lock().expect("expert row pager lock");
+        for id in ids {
+            if let Some(entry) = state.entries.get_mut(&(layer, *id)) {
+                entry.pinned = false;
+            }
+        }
+    }
+
+    /// Make `ids` of `layer` resident and assemble compacted `[top_k, ...]`
+    /// stacks in request order. Missing experts are read from SSD; the cache
+    /// is evicted back under the byte budget afterwards, keeping the
+    /// currently selected experts pinned until assembly completes.
+    pub fn ensure_experts(
+        &self,
+        layer: u32,
+        ids: &[u32],
+    ) -> Result<CompactedExperts, ExpertStreamError> {
+        if ids.is_empty() {
+            return Err(ExpertStreamError::Paging(
+                "no expert ids to page".to_string(),
+            ));
+        }
+        let num_experts = self.core.manifest.num_experts;
+        if let Some(bad) = ids.iter().find(|id| **id >= num_experts) {
+            return Err(ExpertStreamError::Paging(format!(
+                "expert id {bad} out of range ({num_experts} experts)"
+            )));
+        }
+        let prefetch_tx = self.prefetch_tx.lock().expect("prefetch lock").clone();
+        let missing: Vec<u32> = {
+            let mut state = self.core.state.lock().expect("expert row pager lock");
+            for id in ids {
+                *state.hotness.entry((layer, *id)).or_insert(0) += 1;
+                if let Some(entry) = state.entries.get_mut(&(layer, *id)) {
+                    entry.pinned = true;
+                }
+            }
+            state.selections_since_decay += ids.len() as u64;
+            if state.selections_since_decay >= self.decay_interval {
+                for value in state.hotness.values_mut() {
+                    *value /= 2;
+                }
+                state.selections_since_decay = 0;
+            }
+            state.last_ids.insert(layer, ids.to_vec());
+            ids.iter()
+                .copied()
+                .filter(|id| !state.entries.contains_key(&(layer, *id)))
+                .collect()
+        };
+
+        let loaded = match load_rows(&self.core, layer, &missing) {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.unpin(layer, ids);
+                return Err(error);
+            }
+        };
+
+        let snapshot: Vec<LayerExpertStack> = {
+            let mut state = self.core.state.lock().expect("expert row pager lock");
+            let state = &mut *state;
+            for (expert, rows) in missing.iter().copied().zip(loaded) {
+                let std::collections::hash_map::Entry::Vacant(slot) =
+                    state.entries.entry((layer, expert))
+                else {
+                    continue; // a racing loader filled this expert already
+                };
+                let bytes = expert_stack_bytes(&rows);
+                state.tick += 1;
+                let tick = state.tick;
+                state.resident_bytes = state.resident_bytes.saturating_add(bytes);
+                slot.insert(ExpertRowEntry {
+                    rows,
+                    bytes,
+                    tick,
+                    pinned: true,
+                });
+            }
+            evict_to_budget(state, self.core.budget_bytes);
+            let snapshot: Result<Vec<_>, _> = ids
+                .iter()
+                .map(|id| {
+                    state
+                        .entries
+                        .get(&(layer, *id))
+                        .map(|entry| entry.rows.clone())
+                        .ok_or_else(|| {
+                            ExpertStreamError::Paging(format!(
+                                "expert {id} of layer {layer} was evicted during assembly"
+                            ))
+                        })
+                })
+                .collect();
+            for id in ids {
+                if let Some(entry) = state.entries.get_mut(&(layer, *id)) {
+                    entry.pinned = false;
+                }
+            }
+            if let Some(tx) = prefetch_tx.as_ref() {
+                let next = layer + 1;
+                if self.core.manifest.tensors_for_layer(next).next().is_some()
+                    && let Some(predicted) = state.last_ids.get(&next).cloned()
+                {
+                    let _ = tx.send(PrefetchMsg::Warm {
+                        layer: next,
+                        experts: predicted,
+                    });
+                }
+            }
+            snapshot?
+        };
+
+        let stack = assemble_stack(&snapshot, self.fuse_split_experts)?;
+        Ok(CompactedExperts {
+            stack,
+            remap: (0..ids.len() as u32).collect(),
+        })
+    }
+
+    /// Preload an offline hotlist (`ax.expert-hotlist.v1`) in file order
+    /// (hottest first), seeding hotness with the measured weight so valuable
+    /// experts survive early evictions. Stops at the byte budget; returns the
+    /// number of experts warmed.
+    pub fn preload_hotlist(&self, path: &Path) -> Result<usize, ExpertStreamError> {
+        let bytes = std::fs::read(path).map_err(|e| {
+            ExpertStreamError::InvalidManifest(format!("read hotlist {}: {e}", path.display()))
+        })?;
+        let hotlist: ExpertHotlistFile = serde_json::from_slice(&bytes).map_err(|e| {
+            ExpertStreamError::InvalidManifest(format!(
+                "hotlist {}: JSON parse: {e}",
+                path.display()
+            ))
+        })?;
+        if hotlist.schema_version != EXPERT_HOTLIST_SCHEMA_V1 {
+            return Err(ExpertStreamError::InvalidManifest(format!(
+                "hotlist {}: unsupported schema_version {:?} (expected {:?})",
+                path.display(),
+                hotlist.schema_version,
+                EXPERT_HOTLIST_SCHEMA_V1
+            )));
+        }
+        let num_experts = self.core.manifest.num_experts;
+        let mut warmed = 0usize;
+        for entry in &hotlist.entries {
+            if entry.expert >= num_experts
+                || self
+                    .core
+                    .manifest
+                    .tensors_for_layer(entry.layer)
+                    .next()
+                    .is_none()
+            {
+                continue;
+            }
+            enum HotlistAction {
+                Load,
+                Skip,
+                Stop,
+            }
+            let action = {
+                let state = self.core.state.lock().expect("expert row pager lock");
+                if state.entries.contains_key(&(entry.layer, entry.expert)) {
+                    HotlistAction::Skip
+                } else if state.resident_bytes >= self.core.budget_bytes {
+                    HotlistAction::Stop
+                } else {
+                    HotlistAction::Load
+                }
+            };
+            match action {
+                HotlistAction::Skip => continue,
+                HotlistAction::Stop => break,
+                HotlistAction::Load => {}
+            }
+            let loaded = load_rows(&self.core, entry.layer, &[entry.expert])?;
+            let mut state = self.core.state.lock().expect("expert row pager lock");
+            let state = &mut *state;
+            if let Some(rows) = loaded.into_iter().next() {
+                let bytes = expert_stack_bytes(&rows);
+                state.tick += 1;
+                let tick = state.tick;
+                state.resident_bytes = state.resident_bytes.saturating_add(bytes);
+                state.entries.insert(
+                    (entry.layer, entry.expert),
+                    ExpertRowEntry {
+                        rows,
+                        bytes,
+                        tick,
+                        pinned: false,
+                    },
+                );
+                state
+                    .hotness
+                    .insert((entry.layer, entry.expert), entry.weight.max(1));
+                warmed += 1;
+            }
+        }
+        Ok(warmed)
+    }
+
+    /// Serialize the observed route-hotness histogram as an
+    /// `ax.expert-hotlist.v1` file (hottest first).
+    pub fn dump_hotlist(&self, path: &Path) -> Result<usize, ExpertStreamError> {
+        let state = self.core.state.lock().expect("expert row pager lock");
+        let mut entries: Vec<ExpertHotlistEntry> = state
+            .hotness
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|((layer, expert), count)| ExpertHotlistEntry {
+                layer: *layer,
+                expert: *expert,
+                weight: *count,
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            b.weight
+                .cmp(&a.weight)
+                .then(a.layer.cmp(&b.layer))
+                .then(a.expert.cmp(&b.expert))
+        });
+        let count = entries.len();
+        let file = ExpertHotlistFile {
+            schema_version: EXPERT_HOTLIST_SCHEMA_V1.to_string(),
+            generated_by: "ax-engine".to_string(),
+            entries,
+        };
+        let bytes = serde_json::to_vec_pretty(&file)
+            .map_err(|e| ExpertStreamError::InvalidManifest(format!("serialize hotlist: {e}")))?;
+        std::fs::write(path, bytes).map_err(|e| {
+            ExpertStreamError::InvalidManifest(format!("write hotlist {}: {e}", path.display()))
+        })?;
+        Ok(count)
+    }
+}
+
+impl Drop for ExpertRowPager {
+    fn drop(&mut self) {
+        if let Some(tx) = self.prefetch_tx.lock().expect("prefetch lock").take() {
+            let _ = tx.send(PrefetchMsg::Stop);
+        }
+        if let Some(handle) = self.prefetch_worker.lock().expect("prefetch lock").take() {
+            let _ = handle.join();
+        }
+        if let Some(path) = self.hotlist_out.lock().expect("hotlist lock").take()
+            && let Err(error) = self.dump_hotlist(&path)
+        {
+            tracing::warn!(
+                target: "ax_engine_mlx",
+                path = %path.display(),
+                %error,
+                "failed to dump expert hotlist"
+            );
+        }
+    }
+}
+
 /// Per-layer handle stashed on `LayerWeights` when the layer's expert stack
 /// is streamed instead of resident.
+enum ExpertPagerBackend {
+    LayerStack(Arc<ExpertStackPager>),
+    Rows {
+        stack: Arc<ExpertStackPager>,
+        rows: Arc<ExpertRowPager>,
+    },
+}
+
 pub struct ExpertLayerSource {
-    pager: Arc<ExpertStackPager>,
+    backend: ExpertPagerBackend,
     layer: u32,
 }
 
 impl ExpertLayerSource {
     pub fn new(pager: Arc<ExpertStackPager>, layer: u32) -> Self {
-        Self { pager, layer }
+        Self {
+            backend: ExpertPagerBackend::LayerStack(pager),
+            layer,
+        }
+    }
+
+    /// Expert-granularity handle: the row pager serves decode, the
+    /// layer-stack pager serves prefill and is the fail-closed fallback.
+    pub fn new_with_rows(
+        stack: Arc<ExpertStackPager>,
+        rows: Arc<ExpertRowPager>,
+        layer: u32,
+    ) -> Self {
+        Self {
+            backend: ExpertPagerBackend::Rows { stack, rows },
+            layer,
+        }
     }
 
     pub fn layer(&self) -> u32 {
         self.layer
     }
 
-    /// Resolve this layer's expert stack, paging it in when needed.
+    /// Whether per-expert decode paging is available for this layer.
+    pub fn is_per_expert(&self) -> bool {
+        matches!(self.backend, ExpertPagerBackend::Rows { .. })
+    }
+
+    /// Resolve this layer's full expert stack, paging it in when needed.
     pub fn stack(&self) -> Result<LayerExpertStack, ExpertStreamError> {
-        self.pager.ensure_layer(self.layer)
+        match &self.backend {
+            ExpertPagerBackend::LayerStack(pager) => pager.ensure_layer(self.layer),
+            ExpertPagerBackend::Rows { stack, .. } => stack.ensure_layer(self.layer),
+        }
+    }
+
+    /// Page only the selected experts and return compacted `[top_k, ...]`
+    /// stacks. `Err` when this layer has no row pager — callers must fall
+    /// back to [`Self::stack`].
+    pub fn experts_for_ids(&self, ids: &[u32]) -> Result<CompactedExperts, ExpertStreamError> {
+        match &self.backend {
+            ExpertPagerBackend::Rows { rows, .. } => rows.ensure_experts(self.layer, ids),
+            ExpertPagerBackend::LayerStack(_) => Err(ExpertStreamError::Paging(
+                "layer has no per-expert row pager".to_string(),
+            )),
+        }
     }
 }
 
@@ -1688,5 +2544,433 @@ mod tests {
         let expert3_offset = (3 * 2 * SYN_INTER * SYN_HIDDEN) as usize;
         assert_eq!(values[expert3_offset], 23.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // ExpertRowPager (per-expert granularity) tests.
+    // ------------------------------------------------------------------
+
+    /// gate_up row [1, 2*SYN_INTER, SYN_HIDDEN] + down row [1, SYN_HIDDEN,
+    /// SYN_INTER] in F32: (16 + 8) * 4 bytes.
+    const ROW_BYTES: usize = 96;
+
+    fn row_pager(dir: &Path, budget_bytes: usize, prefetch: bool) -> ExpertRowPager {
+        row_pager_with_decay(dir, budget_bytes, prefetch, 4096)
+    }
+
+    fn row_pager_with_decay(
+        dir: &Path,
+        budget_bytes: usize,
+        prefetch: bool,
+        decay: u64,
+    ) -> ExpertRowPager {
+        ExpertRowPager::new(
+            Arc::new(synth_manifest()),
+            dir.to_path_buf(),
+            ExpertRowPagerConfig {
+                budget_bytes,
+                fuse_split_experts: false,
+                prefetch,
+                decay_interval: decay,
+                hotlist_out: None,
+            },
+        )
+    }
+
+    fn u32_index_array(ids: &[u32]) -> mlx_sys::MlxArray {
+        let mut data = Vec::new();
+        for id in ids {
+            data.extend_from_slice(&id.to_le_bytes());
+        }
+        mlx_sys::MlxArray::from_raw_data(
+            data.as_ptr(),
+            data.len(),
+            &[1, 1, ids.len() as i32],
+            mlx_sys::MlxDtype::Uint32,
+        )
+    }
+
+    fn ones_x() -> mlx_sys::MlxArray {
+        let mut data = Vec::new();
+        for value in [1.0_f32; SYN_HIDDEN as usize] {
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+        mlx_sys::MlxArray::from_raw_data(
+            data.as_ptr(),
+            data.len(),
+            &[1, 1, SYN_HIDDEN],
+            mlx_sys::MlxDtype::Float32,
+        )
+    }
+
+    #[test]
+    fn row_pager_compacted_gather_matches_full_stack_gather() {
+        let dir = synth_fixture("row_gather");
+        let stack_pager = ExpertStackPager::new(Arc::new(synth_manifest()), dir.clone(), 4);
+        let full = stack_pager.ensure_layer(0).unwrap();
+        let rows_pager = row_pager(&dir, 1 << 20, false);
+        let compacted = rows_pager.ensure_experts(0, &[3, 1]).unwrap();
+
+        assert_eq!(compacted.remap, vec![0, 1]);
+        let full_gu = full.gate_up_exps_packed.as_ref().unwrap();
+        let row_gu = compacted.stack.gate_up_exps_packed.as_ref().unwrap();
+        assert_eq!(row_gu.weight.shape(), vec![2, 2 * SYN_INTER, SYN_HIDDEN]);
+        assert_eq!(
+            compacted.stack.down_exps.as_ref().unwrap().weight.shape(),
+            vec![2, SYN_HIDDEN, SYN_INTER]
+        );
+        // Request order is preserved: slot 0 holds expert 3, slot 1 expert 1.
+        mlx_sys::eval(&[&row_gu.weight]);
+        let row_values = row_gu.weight.data_f32();
+        assert_eq!(row_values[0], 13.0);
+        assert_eq!(row_values[(2 * SYN_INTER * SYN_HIDDEN) as usize], 11.0);
+
+        // gather_mm on the compacted stack with remapped ids must produce
+        // bit-identical output to the full stack with the original ids.
+        let x = ones_x();
+        let full_out = mlx_sys::gather_mm(
+            &x,
+            &mlx_sys::transpose(&full_gu.weight, &[0, 2, 1], None),
+            &u32_index_array(&[3, 1]),
+            false,
+            None,
+        );
+        let row_out = mlx_sys::gather_mm(
+            &x,
+            &mlx_sys::transpose(&row_gu.weight, &[0, 2, 1], None),
+            &u32_index_array(&[0, 1]),
+            false,
+            None,
+        );
+        mlx_sys::eval(&[&full_out, &row_out]);
+        assert_eq!(full_out.shape(), row_out.shape());
+        assert_eq!(full_out.data_f32(), row_out.data_f32());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_hotness_eviction_beats_recency() {
+        let dir = synth_fixture("row_hot");
+        let pager = row_pager(&dir, 2 * ROW_BYTES, false);
+        pager.ensure_experts(0, &[0]).unwrap();
+        pager.ensure_experts(0, &[0]).unwrap(); // (0,0) hot 2, but oldest
+        pager.ensure_experts(0, &[1]).unwrap(); // (0,1) hot 1, more recent
+        pager.ensure_experts(0, &[2]).unwrap(); // forces one eviction
+        // LRU would evict (0,0); route hotness evicts the colder (0,1).
+        assert_eq!(pager.cached_expert_keys(), vec![(0, 0), (0, 2)]);
+        assert_eq!(pager.hotness_of(0, 0), 2);
+        assert_eq!(pager.hotness_of(0, 1), 1); // history survives eviction
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_decay_halves_selection_counts() {
+        let dir = synth_fixture("row_decay");
+        let pager = row_pager_with_decay(&dir, 1 << 20, false, 4);
+        pager.ensure_experts(0, &[0]).unwrap();
+        pager.ensure_experts(0, &[0]).unwrap();
+        pager.ensure_experts(0, &[1]).unwrap();
+        assert_eq!(pager.hotness_of(0, 0), 2);
+        assert_eq!(pager.hotness_of(0, 1), 1);
+        pager.ensure_experts(0, &[0]).unwrap(); // 4th selection → decay pass
+        assert_eq!(pager.hotness_of(0, 0), 1); // 3 / 2
+        assert_eq!(pager.hotness_of(0, 1), 0); // 1 / 2
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_soft_budget_keeps_pinned_selection() {
+        let dir = synth_fixture("row_pinned");
+        let pager = row_pager(&dir, ROW_BYTES, false);
+        // Budget fits one expert, but the pinned two-expert selection must
+        // still assemble correctly (the budget is a soft cap).
+        let compacted = pager.ensure_experts(0, &[1, 2]).unwrap();
+        assert_eq!(
+            compacted
+                .stack
+                .gate_up_exps_packed
+                .as_ref()
+                .unwrap()
+                .weight
+                .shape(),
+            vec![2, 2 * SYN_INTER, SYN_HIDDEN]
+        );
+        // The next call evicts the now-unpinned previous selection.
+        pager.ensure_experts(0, &[0]).unwrap();
+        assert_eq!(pager.cached_expert_keys(), vec![(0, 0)]);
+        assert!(pager.resident_bytes() <= ROW_BYTES);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_hotlist_preload_and_dump_round_trip() {
+        let dir = synth_fixture("row_hotlist");
+        let hotlist_path = dir.join("hotlist.json");
+        std::fs::write(
+            &hotlist_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": "ax.expert-hotlist.v1",
+                "generated_by": "test",
+                "entries": [
+                    {"layer": 0, "expert": 0, "weight": 100},
+                    {"layer": 0, "expert": 1, "weight": 50},
+                    {"layer": 0, "expert": 2, "weight": 10},
+                    {"layer": 9, "expert": 0, "weight": 5},
+                    {"layer": 0, "expert": 7, "weight": 5}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let pager = row_pager(&dir, 2 * ROW_BYTES, false);
+        let warmed = pager.preload_hotlist(&hotlist_path).unwrap();
+        assert_eq!(warmed, 2); // the byte budget stops the third entry
+        assert_eq!(pager.cached_expert_keys(), vec![(0, 0), (0, 1)]);
+        assert_eq!(pager.hotness_of(0, 0), 100);
+        assert_eq!(pager.hotness_of(0, 1), 50);
+
+        pager.ensure_experts(0, &[3]).unwrap();
+        let dump_path = dir.join("dump.json");
+        let dumped = pager.dump_hotlist(&dump_path).unwrap();
+        assert_eq!(dumped, 3);
+        let parsed: ExpertHotlistFile =
+            serde_json::from_slice(&std::fs::read(&dump_path).unwrap()).unwrap();
+        assert_eq!(parsed.schema_version, EXPERT_HOTLIST_SCHEMA_V1);
+        assert_eq!(parsed.entries.len(), 3);
+        assert_eq!(parsed.entries[0].weight, 100);
+        assert_eq!(parsed.entries[1].weight, 50);
+        assert_eq!(parsed.entries[2].weight, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_bad_hotlist_schema_fails_closed() {
+        let dir = synth_fixture("row_bad_hotlist");
+        let hotlist_path = dir.join("hotlist.json");
+        std::fs::write(
+            &hotlist_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": "ax.expert-hotlist.v9",
+                "entries": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let pager = row_pager(&dir, 1 << 20, false);
+        assert!(matches!(
+            pager.preload_hotlist(&hotlist_path),
+            Err(ExpertStreamError::InvalidManifest(_))
+        ));
+        assert_eq!(pager.cached_expert_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_warm_experts_is_idempotent_and_hotness_neutral() {
+        let dir = synth_fixture("row_warm");
+        let pager = row_pager(&dir, 1 << 20, false);
+        assert_eq!(pager.warm_experts(1, &[2, 3]).unwrap(), 2);
+        assert_eq!(pager.warm_experts(1, &[2, 3]).unwrap(), 0);
+        assert_eq!(pager.warm_experts(1, &[9]).unwrap(), 0); // out of range filtered
+        assert_eq!(pager.cached_expert_keys(), vec![(1, 2), (1, 3)]);
+        assert_eq!(pager.hotness_of(1, 2), 0); // warming never touches hotness
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_prefetch_worker_warms_predicted_next_layer() {
+        let dir = synth_fixture("row_prefetch");
+        let pager = row_pager(&dir, 1 << 20, true);
+        pager.ensure_experts(0, &[0]).unwrap();
+        pager.ensure_experts(1, &[1]).unwrap(); // seeds layer-1 prediction
+        pager.test_remove_expert(1, 1);
+        pager.ensure_experts(0, &[0]).unwrap(); // warms layer 1 in background
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !pager.cached_expert_keys().contains(&(1, 1)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "prefetch worker did not warm (1, 1)"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(pager); // Drop must stop and join the worker cleanly.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_layer_source_fallback_contract() {
+        let dir = synth_fixture("row_source");
+        let stack = Arc::new(ExpertStackPager::new(
+            Arc::new(synth_manifest()),
+            dir.clone(),
+            1,
+        ));
+        let layer_only = ExpertLayerSource::new(stack.clone(), 0);
+        assert!(!layer_only.is_per_expert());
+        assert!(layer_only.experts_for_ids(&[0]).is_err()); // callers fall back
+        assert!(layer_only.stack().is_ok());
+
+        let rows = Arc::new(row_pager(&dir, 1 << 20, false));
+        let both = ExpertLayerSource::new_with_rows(stack, rows, 0);
+        assert!(both.is_per_expert());
+        let compacted = both.experts_for_ids(&[1]).unwrap();
+        assert_eq!(compacted.remap, vec![0]);
+        assert!(both.stack().is_ok()); // layer-stack fallback stays available
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn synth_split_fixture(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ax_expert_stream_split_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_safetensors_f32(
+            &dir,
+            "experts.safetensors",
+            &[
+                (
+                    "model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                    vec![SYN_EXPERTS, SYN_INTER, SYN_HIDDEN],
+                    synth_expert_values(0, SYN_INTER, SYN_HIDDEN),
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.up_proj.weight",
+                    vec![SYN_EXPERTS, SYN_INTER, SYN_HIDDEN],
+                    synth_expert_values(0, SYN_INTER, SYN_HIDDEN),
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    vec![SYN_EXPERTS, SYN_HIDDEN, SYN_INTER],
+                    synth_expert_values(0, SYN_HIDDEN, SYN_INTER),
+                ),
+            ],
+        );
+        dir
+    }
+
+    fn synth_split_manifest() -> ExpertStreamManifest {
+        let prefix = "model.layers.0.mlp.switch_mlp";
+        let json = serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "generated_by": "ax-engine-test",
+            "required": true,
+            "mode": "layer-stack",
+            "num_experts": SYN_EXPERTS,
+            "experts_per_tok": 2,
+            "estimated_resident_bytes": 1000,
+            "estimated_full_resident_bytes": 5000,
+            "estimated_max_layer_expert_bytes": 2000,
+            "resident_roles": ["embedding", "attention", "router", "norm", "lm_head"],
+            "streamed_roles": ["expert"],
+            "tensors": [
+                {"name": format!("{prefix}.gate_proj.weight"), "file": "experts.safetensors", "layer": 0, "proj": "gate", "expert_axis": 0, "num_experts": SYN_EXPERTS, "bits": 2, "group_size": 64},
+                {"name": format!("{prefix}.up_proj.weight"), "file": "experts.safetensors", "layer": 0, "proj": "up", "expert_axis": 0, "num_experts": SYN_EXPERTS, "bits": 2, "group_size": 64},
+                {"name": format!("{prefix}.down_proj.weight"), "file": "experts.safetensors", "layer": 0, "proj": "down", "expert_axis": 0, "num_experts": SYN_EXPERTS, "bits": 2, "group_size": 64}
+            ],
+        });
+        ExpertStreamManifest::parse(&serde_json::to_vec(&json).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn row_pager_split_projections_assemble_and_fuse() {
+        let dir = synth_split_fixture("assemble");
+        let manifest = || Arc::new(synth_split_manifest());
+
+        let plain = ExpertRowPager::new(
+            manifest(),
+            dir.clone(),
+            ExpertRowPagerConfig {
+                budget_bytes: 1 << 20,
+                fuse_split_experts: false,
+                prefetch: false,
+                decay_interval: 4096,
+                hotlist_out: None,
+            },
+        );
+        let compacted = plain.ensure_experts(0, &[0, 2]).unwrap();
+        let gate = compacted.stack.gate_exps.as_ref().unwrap();
+        assert_eq!(gate.weight.shape(), vec![2, SYN_INTER, SYN_HIDDEN]);
+        assert!(compacted.stack.up_exps.is_some());
+        assert!(compacted.stack.down_exps.is_some());
+        assert!(compacted.stack.gate_up_exps_packed.is_none());
+
+        let fused = ExpertRowPager::new(
+            manifest(),
+            dir.clone(),
+            ExpertRowPagerConfig {
+                budget_bytes: 1 << 20,
+                fuse_split_experts: true,
+                prefetch: false,
+                decay_interval: 4096,
+                hotlist_out: None,
+            },
+        );
+        let compacted = fused.ensure_experts(0, &[0, 2]).unwrap();
+        let packed = compacted
+            .stack
+            .gate_up_exps_packed
+            .as_ref()
+            .expect("split rows must fuse into a packed gate_up stack");
+        assert_eq!(packed.weight.shape(), vec![2, 2 * SYN_INTER, SYN_HIDDEN]);
+        assert!(compacted.stack.gate_exps.is_none() && compacted.stack.up_exps.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn granularity_env_parsing() {
+        assert_eq!(
+            stream_expert_granularity_from_env(None),
+            StreamExpertGranularity::Layer
+        );
+        assert_eq!(
+            stream_expert_granularity_from_env(Some("")),
+            StreamExpertGranularity::Layer
+        );
+        assert_eq!(
+            stream_expert_granularity_from_env(Some("layer")),
+            StreamExpertGranularity::Layer
+        );
+        assert_eq!(
+            stream_expert_granularity_from_env(Some("expert")),
+            StreamExpertGranularity::Expert
+        );
+        assert_eq!(
+            stream_expert_granularity_from_env(Some("EXPERT")),
+            StreamExpertGranularity::Expert
+        );
+        // Unknown values fail closed to the layer-stack default.
+        assert_eq!(
+            stream_expert_granularity_from_env(Some("bogus")),
+            StreamExpertGranularity::Layer
+        );
+    }
+
+    #[test]
+    fn row_cache_bytes_default_and_floor() {
+        let manifest = synth_manifest(); // max layer 2000 B, 4 experts, top-2
+        assert_eq!(expert_row_cache_bytes_from_env(None, &manifest), 8000);
+        // Floor: 2 × experts_per_tok × per-expert bytes = 2000.
+        assert_eq!(
+            expert_row_cache_bytes_from_env(Some("100"), &manifest),
+            2000
+        );
+        assert_eq!(
+            expert_row_cache_bytes_from_env(Some("5000"), &manifest),
+            5000
+        );
+        assert_eq!(
+            expert_row_cache_bytes_from_env(Some("junk"), &manifest),
+            8000
+        );
+    }
+
+    #[test]
+    fn prefetch_and_decay_env_parsing() {
+        assert!(expert_prefetch_enabled_from_env(None));
+        assert!(!expert_prefetch_enabled_from_env(Some("0")));
+        assert!(!expert_prefetch_enabled_from_env(Some("off")));
+        assert!(expert_prefetch_enabled_from_env(Some("1")));
+        assert_eq!(expert_hotness_decay_from_env(None), 4096);
+        assert_eq!(expert_hotness_decay_from_env(Some("0")), 4096);
+        assert_eq!(expert_hotness_decay_from_env(Some("64")), 64);
     }
 }

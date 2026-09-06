@@ -903,6 +903,105 @@ const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
     out[idx] = static_cast<T>(activated * up_v);
 "#;
 
+static PACKED_CLAMPED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+/// DeepSeek V4 variant of the packed SwiGLU kernel: adds the
+/// `silu(min(gate, limit)) * clip(up, ±limit)` clamp, which is exactly what
+/// keeps V4 off the plain packed kernel. `LIMIT_E6` carries the pack's
+/// `swiglu_limit` as int micro-units (the template API has no float arg).
+const PACKED_CLAMPED_SWIGLU_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    uint col = idx % HiddenDim;
+    uint row = idx / HiddenDim;
+    uint gate_idx = row * (HiddenDim * 2) + col;
+    uint up_idx = gate_idx + HiddenDim;
+
+    const float limit = float(LIMIT_E6) * 1.0e-6f;
+    float gate_v = min(static_cast<float>(gate_up[gate_idx]), limit);
+    float up_v = clamp(static_cast<float>(gate_up[up_idx]), -limit, limit);
+    float activated = gate_v / (1.0f + exp(-gate_v));
+    out[idx] = static_cast<T>(activated * up_v);
+"#;
+
+/// Packed clamped SwiGLU for DeepSeek V4 MoE experts: one dispatch for
+/// split + clamp + SiLU + multiply on a packed gate_up projection. `None`
+/// when ineligible — the caller falls back to split slices +
+/// `dense_ffn_activation` (compiled or imperative).
+fn packed_clamped_swiglu_metal_impl(
+    gate_up: &MlxArray,
+    hidden_dim: i32,
+    limit: f32,
+) -> Option<MlxArray> {
+    if !matches!(
+        gate_up.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    if hidden_dim <= 0 || !limit.is_finite() || limit <= 0.0 {
+        return None;
+    }
+    let limit_e6 = (f64::from(limit) * 1.0e6) as i64;
+    if limit_e6 <= 0 || limit_e6 > i64::from(i32::MAX) {
+        return None;
+    }
+    let shape = gate_up.shape();
+    let last_dim = *shape.last()?;
+    if last_dim != hidden_dim.saturating_mul(2) {
+        return None;
+    }
+    let mut out_shape = shape;
+    *out_shape.last_mut()? = hidden_dim;
+    let element_count = out_shape
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    let element_count = i32::try_from(element_count).ok()?;
+
+    let kernel = PACKED_CLAMPED_SWIGLU_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_dsv4_packed_clamped_swiglu_v1",
+            &["gate_up"],
+            &["out"],
+            PACKED_CLAMPED_SWIGLU_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[gate_up],
+        &[KernelOutputSpec {
+            shape: out_shape,
+            dtype: gate_up.dtype(),
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "T",
+                dtype: gate_up.dtype(),
+            },
+            KernelTemplateArg::Int {
+                name: "HiddenDim",
+                value: hidden_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+            KernelTemplateArg::Int {
+                name: "LIMIT_E6",
+                value: limit_e6 as i32,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
+}
+
 /// Decode matvec: affine-4bit gate/up + SwiGLU for one token.
 ///
 /// v1d: 256 threads per output row (8 simdgroups). Cross-simdgroup reduction
@@ -7332,6 +7431,66 @@ fn try_moe_deep_expert_block_metal(
     None
 }
 
+/// Paged expert weights for one MoE layer forward: either a full layer stack
+/// (layer-stack paging / prefill / fallback) or compacted per-token stacks
+/// assembled from individually paged experts (per-expert decode).
+enum PagedExpertWeights {
+    Stacks(crate::expert_stream::LayerExpertStack),
+    Compacted(crate::expert_stream::CompactedExperts),
+}
+
+impl PagedExpertWeights {
+    fn stack(&self) -> &crate::expert_stream::LayerExpertStack {
+        match self {
+            Self::Stacks(stack) => stack,
+            Self::Compacted(compacted) => &compacted.stack,
+        }
+    }
+}
+
+/// Per-expert decode paging: read the router's top-k ids back to the host and
+/// page just those experts. The readback eval is the required sync point —
+/// the compacted stacks below then run through the unchanged `gather_qmm`
+/// kernels with remapped indices.
+fn page_compacted_experts(
+    source: &crate::expert_stream::ExpertLayerSource,
+    top_k_indices: &MlxArray,
+) -> Result<crate::expert_stream::CompactedExperts, crate::expert_stream::ExpertStreamError> {
+    let ids = astype(top_k_indices, MlxDtype::Uint32, None);
+    mlx_sys::transforms::try_eval(&[&ids])
+        .map_err(crate::expert_stream::ExpertStreamError::Paging)?;
+    source.experts_for_ids(ids.data_u32())
+}
+
+fn warn_row_paging_once(layer: u32, error: &crate::expert_stream::ExpertStreamError) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            target: "ax_engine_mlx",
+            layer,
+            %error,
+            "per-expert paging failed; falling back to layer-stack paging \
+             (further occurrences logged at debug level)"
+        );
+    } else {
+        tracing::debug!(
+            target: "ax_engine_mlx",
+            layer,
+            %error,
+            "per-expert paging failed; falling back to layer-stack paging"
+        );
+    }
+}
+
+/// Build the compacted `[0..k)` index array matching `like`'s shape.
+fn remapped_moe_indices(remap: &[u32], like: &MlxArray) -> MlxArray {
+    let mut data = Vec::with_capacity(remap.len() * 4);
+    for id in remap {
+        data.extend_from_slice(&id.to_le_bytes());
+    }
+    MlxArray::from_raw_data(data.as_ptr(), data.len(), &like.shape(), MlxDtype::Uint32)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn moe_experts_forward_impl(
     cfg: &ModelConfig,
@@ -7375,39 +7534,70 @@ fn moe_experts_forward_impl(
     // SSD expert streaming: when the layer's fused expert stack is not
     // resident, page it in here. Every kernel path below then runs unchanged
     // (same gather_qmm) on the returned QuantizedWeight values.
+    //
+    // Per-expert mode (single-token decode only): page just the
+    // router-selected experts and assemble compacted [top_k, ...] stacks;
+    // the kernels below then run on remapped [0..k) indices. Prefill,
+    // batched decode, and any row-mode failure fall back to layer-stack
+    // paging.
     let paged_experts = if w.gate_up_exps_packed.is_none()
         && w.gate_exps.is_none()
         && w.up_exps.is_none()
         && w.down_exps.is_none()
     {
         w.expert_stream.as_ref().map(|source| {
-            source
-                .stack()
-                .expect("expert stream paging failed for MoE layer")
+            if seq == 1 && batch == 1 && source.is_per_expert() {
+                match page_compacted_experts(source, top_k_indices) {
+                    Ok(compacted) => PagedExpertWeights::Compacted(compacted),
+                    Err(error) => {
+                        warn_row_paging_once(source.layer(), &error);
+                        PagedExpertWeights::Stacks(
+                            source
+                                .stack()
+                                .expect("expert stream paging failed for MoE layer"),
+                        )
+                    }
+                }
+            } else {
+                PagedExpertWeights::Stacks(
+                    source
+                        .stack()
+                        .expect("expert stream paging failed for MoE layer"),
+                )
+            }
         })
     } else {
         None
     };
-    let gate_up_exps_packed = w.gate_up_exps_packed.as_ref().or_else(|| {
-        paged_experts
-            .as_ref()
-            .and_then(|stack| stack.gate_up_exps_packed.as_ref())
-    });
-    let gate_exps = w.gate_exps.as_ref().or_else(|| {
-        paged_experts
-            .as_ref()
-            .and_then(|stack| stack.gate_exps.as_ref())
-    });
-    let up_exps = w.up_exps.as_ref().or_else(|| {
-        paged_experts
-            .as_ref()
-            .and_then(|stack| stack.up_exps.as_ref())
-    });
-    let down_exps_ref = w.down_exps.as_ref().or_else(|| {
-        paged_experts
-            .as_ref()
-            .and_then(|stack| stack.down_exps.as_ref())
-    });
+    let paged_stack = paged_experts.as_ref().map(PagedExpertWeights::stack);
+    let gate_up_exps_packed = w
+        .gate_up_exps_packed
+        .as_ref()
+        .or_else(|| paged_stack.and_then(|stack| stack.gate_up_exps_packed.as_ref()));
+    let gate_exps = w
+        .gate_exps
+        .as_ref()
+        .or_else(|| paged_stack.and_then(|stack| stack.gate_exps.as_ref()));
+    let up_exps = w
+        .up_exps
+        .as_ref()
+        .or_else(|| paged_stack.and_then(|stack| stack.up_exps.as_ref()));
+    let down_exps_ref = w
+        .down_exps
+        .as_ref()
+        .or_else(|| paged_stack.and_then(|stack| stack.down_exps.as_ref()));
+
+    // Compacted per-expert stacks use [0..k) indices in request order;
+    // everything downstream (gather inputs, sort/unsort, fused kernels) sees
+    // the same shapes as the full-stack path.
+    let remapped_indices;
+    let effective_indices = match &paged_experts {
+        Some(PagedExpertWeights::Compacted(compacted)) => {
+            remapped_indices = remapped_moe_indices(&compacted.remap, top_k_indices);
+            &remapped_indices
+        }
+        _ => top_k_indices,
+    };
 
     // Tier 2A: try deep expert-block fusion (decode-only). Fuses gather_qmm
     // gate_up + SwiGLU + gather_qmm down + weighted-sum into one dispatch.
@@ -7420,7 +7610,7 @@ fn moe_experts_forward_impl(
             gate_up_exps_packed,
             down_exps_ref,
             x,
-            top_k_indices,
+            effective_indices,
             top_k_weights,
         )
     {
@@ -7430,7 +7620,7 @@ fn moe_experts_forward_impl(
     // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
-    let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
+    let gather_inputs = switch_gather_inputs(&x_exp, effective_indices);
     let down_exps = down_exps_ref.expect("MoE layer must have down_exps");
 
     // Phase 1B: when the expert gate_up is packed and the flag is on, try the
@@ -7497,6 +7687,15 @@ fn moe_experts_forward_impl(
                 out.dtype(),
                 cfg.uses_geglu,
             )
+        } else if v4_swiglu_clamp
+            && (seq == 1 || seq <= fastpath::moe_packed_swiglu_prefill_max_seq())
+            && fastpath::moe_swiglu_clamped_packed_metal_enabled()
+        {
+            // DeepSeek V4: the SwiGLU clamp keeps the plain packed kernel
+            // off; the clamp-aware variant (ADR-028 Phase 1, default-off)
+            // fuses split + clamp + SiLU + multiply in one dispatch.
+            deepseek_v4_swiglu_limit(cfg)
+                .and_then(|limit| packed_clamped_swiglu_metal_impl(&out, half, limit))
         } else {
             None
         };
@@ -11064,6 +11263,61 @@ mod tests {
 
         assert_eq!(metal.shape(), vec![1, 1, 4, 8]);
         assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
+    }
+
+    #[test]
+    fn packed_clamped_swiglu_metal_matches_v4_clamped_imperative() {
+        // Packed MoE-shaped bf16 input spanning well past ±limit so the
+        // clamp engages on a large share of lanes.
+        let half = 8_i32;
+        let gate_data: Vec<f32> = (0..32).map(|i| (i as f32 - 16.0) * 0.9).collect();
+        let up_data: Vec<f32> = (0..32).map(|i| (i as f32 - 12.0) * 1.1).collect();
+        let gate = astype(
+            &array_f32(&gate_data, &[1, 1, 4, 8]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let up = astype(
+            &array_f32(&up_data, &[1, 1, 4, 8]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let packed = concatenate(&[&gate, &up], -1, None);
+
+        let reference = astype(
+            &v4_clamped_swiglu_imperative(
+                &mlx_slice_last_dim(&packed, 0, half),
+                &mlx_slice_last_dim(&packed, half, half * 2),
+                7.0,
+            ),
+            MlxDtype::Float32,
+            None,
+        );
+        let metal = packed_clamped_swiglu_metal_impl(&packed, half, 7.0)
+            .expect("packed clamped SwiGLU must accept MoE-shaped bf16 input");
+        let metal = astype(&metal, MlxDtype::Float32, None);
+        eval(&[&reference, &metal]);
+
+        assert_eq!(metal.shape(), vec![1, 1, 4, 8]);
+        // Outputs reach ~49 (silu(7)*7), where one bf16 ULP is 0.25; the
+        // fused kernel differs from the op path only by rounding.
+        assert_close(metal.data_f32(), reference.data_f32(), 0.5);
+    }
+
+    #[test]
+    fn packed_clamped_swiglu_metal_rejects_ineligible_inputs() {
+        let half = 6_i32;
+        let packed = astype(
+            &array_f32(&[0.5_f32; 24], &[1, 1, 2, 12]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        // Valid shape but invalid limits.
+        assert!(packed_clamped_swiglu_metal_impl(&packed, half, 0.0).is_none());
+        assert!(packed_clamped_swiglu_metal_impl(&packed, half, -1.0).is_none());
+        assert!(packed_clamped_swiglu_metal_impl(&packed, half, f32::NAN).is_none());
+        // Last dim not exactly 2 * hidden_dim.
+        assert!(packed_clamped_swiglu_metal_impl(&packed, 5, 7.0).is_none());
     }
 
     /// Admission probe for shapeless compiled linear closures.
