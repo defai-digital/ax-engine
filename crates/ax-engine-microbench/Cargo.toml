@@ -73,3 +73,7 @@ path = "src/bin/dsv4_hc_pre_probe.rs"
 [[bin]]
 name = "dsv4-fused-sdpa-probe"
 path = "src/bin/dsv4_fused_sdpa_probe.rs"
+
+[[bin]]
+name = "expert-split-submit-probe"
+path = "src/bin/expert_split_submit_probe.rs"

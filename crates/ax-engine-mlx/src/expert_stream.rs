@@ -981,6 +981,7 @@ struct RowPagerCore {
     headers: crate::expert_stream_slice::ShardHeaderCache,
     state: Mutex<RowPagerState>,
     budget_bytes: usize,
+    load_delay: Option<std::time::Duration>,
 }
 
 enum PrefetchMsg {
@@ -1016,6 +1017,10 @@ fn load_rows(
 ) -> Result<Vec<LayerExpertStack>, ExpertStreamError> {
     if experts.is_empty() {
         return Ok(Vec::new());
+    }
+    // Evidence/testing hook: simulate a slow SSD for overlap measurements.
+    if let Some(delay) = core.load_delay {
+        std::thread::sleep(delay);
     }
     let mut per_expert: Vec<LayerExpertStack> = (0..experts.len())
         .map(|_| LayerExpertStack::default())
@@ -1222,6 +1227,84 @@ fn warm_experts(
     Ok(warmed)
 }
 
+/// In-flight state of a split ensure between
+/// [`ExpertRowPager::ensure_experts_split_begin`] and
+/// [`ExpertRowPager::ensure_experts_split_finish`]. Holds the selection's
+/// pins; dropping without finishing releases them and sends the pending
+/// next-layer prefetch, so an early error path can never strand a pin.
+pub struct SplitExpertsBegin {
+    core: Arc<RowPagerCore>,
+    layer: u32,
+    ids: Vec<u32>,
+    prefetch_tx: Option<Sender<PrefetchMsg>>,
+    /// Resident part, assembled in request order (`stack` is empty when the
+    /// selection is entirely missing).
+    pub resident: CompactedExperts,
+    /// Missing expert ids in request order (empty when fully resident).
+    pub missing_ids: Vec<u32>,
+    /// Request position → row index in the `[resident | missing]` row
+    /// concat (missing rows start after the resident part).
+    pub order: Vec<u32>,
+    done: bool,
+}
+
+impl SplitExpertsBegin {
+    /// Whether the whole selection was already resident (the caller uses
+    /// `resident` as the full compaction and skips the finish load).
+    pub fn fully_resident(&self) -> bool {
+        self.missing_ids.is_empty()
+    }
+
+    /// Whether nothing was resident (the finish load produces the full
+    /// compaction).
+    pub fn fully_missing(&self) -> bool {
+        self.resident.remap.is_empty()
+    }
+
+    /// Take the resident part out of the guard (drop still releases pins).
+    pub fn take_resident(&mut self) -> CompactedExperts {
+        std::mem::replace(
+            &mut self.resident,
+            CompactedExperts {
+                stack: LayerExpertStack::default(),
+                remap: Vec::new(),
+            },
+        )
+    }
+
+    /// Unpin the selection and send the (single) next-layer prefetch —
+    /// shared by the finish path and the drop path, exactly once.
+    fn release(&mut self) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        let mut state = self.core.state.lock().expect("expert row pager lock");
+        for id in &self.ids {
+            if let Some(entry) = state.entries.get_mut(&(self.layer, *id)) {
+                entry.pinned = false;
+            }
+        }
+        if let Some(tx) = self.prefetch_tx.as_ref() {
+            let next = self.layer + 1;
+            if self.core.manifest.tensors_for_layer(next).next().is_some()
+                && let Some(predicted) = state.last_ids.get(&next).cloned()
+            {
+                let _ = tx.send(PrefetchMsg::Warm {
+                    layer: next,
+                    experts: predicted,
+                });
+            }
+        }
+    }
+}
+
+impl Drop for SplitExpertsBegin {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 /// Construction knobs for [`ExpertRowPager`], usually derived from env.
 #[derive(Clone, Debug)]
 pub struct ExpertRowPagerConfig {
@@ -1230,6 +1313,9 @@ pub struct ExpertRowPagerConfig {
     pub prefetch: bool,
     pub decay_interval: u64,
     pub hotlist_out: Option<PathBuf>,
+    /// Artificial delay injected once per SSD load batch. Evidence/testing
+    /// hook for the split-submit overlap (never set by operator config).
+    pub load_delay: Option<std::time::Duration>,
 }
 
 /// Per-expert pager: caches `(layer, expert)` rows under a byte budget and
@@ -1264,6 +1350,7 @@ impl ExpertRowPager {
             headers: crate::expert_stream_slice::ShardHeaderCache::new(),
             state: Mutex::new(RowPagerState::default()),
             budget_bytes: config.budget_bytes.max(1),
+            load_delay: config.load_delay,
         });
         let (prefetch_tx, prefetch_worker) = if config.prefetch {
             let (tx, rx) = mpsc::channel::<PrefetchMsg>();
@@ -1477,6 +1564,169 @@ impl ExpertRowPager {
         })
     }
 
+    /// Split variant of [`Self::ensure_experts`] (ADR-028 Phase 1
+    /// split-submit overlap): identical hotness/pin/decay/last-ids
+    /// accounting, but the selection is partitioned into an already-resident
+    /// set — assembled and returned immediately so the caller can submit its
+    /// GPU work — and a missing set that
+    /// [`Self::ensure_experts_split_finish`] loads from SSD afterwards.
+    ///
+    /// Resident experts are pinned from this call until the guard releases
+    /// (finish or drop), so an in-flight overlap can never lose a row to
+    /// eviction; the missing experts land pinned at finish. When the
+    /// selection is fully resident or fully missing the parts degenerate to
+    /// exactly what `ensure_experts` would have returned.
+    pub fn ensure_experts_split_begin(
+        &self,
+        layer: u32,
+        ids: &[u32],
+    ) -> Result<SplitExpertsBegin, ExpertStreamError> {
+        if ids.is_empty() {
+            return Err(ExpertStreamError::Paging(
+                "no expert ids to page".to_string(),
+            ));
+        }
+        let num_experts = self.core.manifest.num_experts;
+        if let Some(bad) = ids.iter().find(|id| **id >= num_experts) {
+            return Err(ExpertStreamError::Paging(format!(
+                "expert id {bad} out of range ({num_experts} experts)"
+            )));
+        }
+        let prefetch_tx = self.prefetch_tx.lock().expect("prefetch lock").clone();
+        let (resident_rows, missing_ids, order) = {
+            let mut state = self.core.state.lock().expect("expert row pager lock");
+            for id in ids {
+                *state.hotness.entry((layer, *id)).or_insert(0) += 1;
+                if let Some(entry) = state.entries.get_mut(&(layer, *id)) {
+                    entry.pinned = true;
+                }
+            }
+            state.selections_since_decay += ids.len() as u64;
+            if state.selections_since_decay >= self.decay_interval {
+                for value in state.hotness.values_mut() {
+                    *value /= 2;
+                }
+                state.selections_since_decay = 0;
+            }
+            state.last_ids.insert(layer, ids.to_vec());
+            let mut resident_rows = Vec::new();
+            let mut missing_ids = Vec::new();
+            // Per request position: Ok(slot in the resident part) or
+            // Err(slot in the missing part).
+            let mut parts: Vec<Result<u32, u32>> = Vec::with_capacity(ids.len());
+            for id in ids {
+                match state.entries.get(&(layer, *id)) {
+                    Some(entry) => {
+                        parts.push(Ok(resident_rows.len() as u32));
+                        resident_rows.push(entry.rows.clone());
+                    }
+                    None => {
+                        parts.push(Err(missing_ids.len() as u32));
+                        missing_ids.push(*id);
+                    }
+                }
+            }
+            let resident_total = resident_rows.len() as u32;
+            let order = parts
+                .iter()
+                .map(|part| match part {
+                    Ok(slot) => *slot,
+                    Err(slot) => resident_total + *slot,
+                })
+                .collect();
+            (resident_rows, missing_ids, order)
+        };
+        let resident = if resident_rows.is_empty() {
+            CompactedExperts {
+                stack: LayerExpertStack::default(),
+                remap: Vec::new(),
+            }
+        } else {
+            match assemble_stack(&resident_rows, self.fuse_split_experts) {
+                Ok(stack) => CompactedExperts {
+                    stack,
+                    remap: (0..resident_rows.len() as u32).collect(),
+                },
+                Err(error) => {
+                    self.unpin(layer, ids);
+                    return Err(error);
+                }
+            }
+        };
+        Ok(SplitExpertsBegin {
+            core: self.core.clone(),
+            layer,
+            ids: ids.to_vec(),
+            prefetch_tx,
+            resident,
+            missing_ids,
+            order,
+            done: false,
+        })
+    }
+
+    /// Load the missing experts of a split ensure (off the state lock),
+    /// insert them pinned, evict to budget, and assemble the missing part's
+    /// compacted stack in request order. Releases the selection's pins and
+    /// sends the next-layer prefetch, completing the ensure. On error the
+    /// begin guard still releases the pins on drop.
+    pub fn ensure_experts_split_finish(
+        &self,
+        begin: &mut SplitExpertsBegin,
+    ) -> Result<CompactedExperts, ExpertStreamError> {
+        if begin.missing_ids.is_empty() {
+            begin.release();
+            return Ok(CompactedExperts {
+                stack: LayerExpertStack::default(),
+                remap: Vec::new(),
+            });
+        }
+        let loaded = load_rows(&self.core, begin.layer, &begin.missing_ids)?;
+        let missing_rows = {
+            let mut state = self.core.state.lock().expect("expert row pager lock");
+            let state = &mut *state;
+            for (expert, rows) in begin.missing_ids.iter().copied().zip(loaded) {
+                let std::collections::hash_map::Entry::Vacant(slot) =
+                    state.entries.entry((begin.layer, expert))
+                else {
+                    continue; // a racing loader filled this expert already
+                };
+                let bytes = expert_stack_bytes(&rows);
+                state.tick += 1;
+                let tick = state.tick;
+                state.resident_bytes = state.resident_bytes.saturating_add(bytes);
+                slot.insert(ExpertRowEntry {
+                    rows,
+                    bytes,
+                    tick,
+                    pinned: true,
+                });
+            }
+            evict_to_budget(state, self.core.budget_bytes);
+            let snapshot: Result<Vec<_>, _> = begin
+                .missing_ids
+                .iter()
+                .map(|id| {
+                    state
+                        .entries
+                        .get(&(begin.layer, *id))
+                        .map(|entry| entry.rows.clone())
+                        .ok_or_else(|| {
+                            ExpertStreamError::Paging(format!(
+                                "expert {id} of layer {} was evicted during assembly",
+                                begin.layer
+                            ))
+                        })
+                })
+                .collect();
+            snapshot?
+        };
+        let stack = assemble_stack(&missing_rows, self.fuse_split_experts)?;
+        let remap = (0..begin.missing_ids.len() as u32).collect();
+        begin.release();
+        Ok(CompactedExperts { stack, remap })
+    }
+
     /// Preload an offline hotlist (`ax.expert-hotlist.v1`) in file order
     /// (hottest first), seeding hotness with the measured weight so valuable
     /// experts survive early evictions. Stops at the byte budget; returns the
@@ -1673,6 +1923,34 @@ impl ExpertLayerSource {
     pub fn experts_for_ids(&self, ids: &[u32]) -> Result<CompactedExperts, ExpertStreamError> {
         match &self.backend {
             ExpertPagerBackend::Rows { rows, .. } => rows.ensure_experts(self.layer, ids),
+            ExpertPagerBackend::LayerStack(_) => Err(ExpertStreamError::Paging(
+                "layer has no per-expert row pager".to_string(),
+            )),
+        }
+    }
+
+    /// Begin a split ensure on the row pager
+    /// ([`ExpertRowPager::ensure_experts_split_begin`]); `Err` when this
+    /// layer has no row pager.
+    pub fn experts_split_begin(&self, ids: &[u32]) -> Result<SplitExpertsBegin, ExpertStreamError> {
+        match &self.backend {
+            ExpertPagerBackend::Rows { rows, .. } => {
+                rows.ensure_experts_split_begin(self.layer, ids)
+            }
+            ExpertPagerBackend::LayerStack(_) => Err(ExpertStreamError::Paging(
+                "layer has no per-expert row pager".to_string(),
+            )),
+        }
+    }
+
+    /// Finish a split ensure on the row pager
+    /// ([`ExpertRowPager::ensure_experts_split_finish`]).
+    pub fn experts_split_finish(
+        &self,
+        begin: &mut SplitExpertsBegin,
+    ) -> Result<CompactedExperts, ExpertStreamError> {
+        match &self.backend {
+            ExpertPagerBackend::Rows { rows, .. } => rows.ensure_experts_split_finish(begin),
             ExpertPagerBackend::LayerStack(_) => Err(ExpertStreamError::Paging(
                 "layer has no per-expert row pager".to_string(),
             )),
@@ -2573,6 +2851,7 @@ mod tests {
                 prefetch,
                 decay_interval: decay,
                 hotlist_out: None,
+                load_delay: None,
             },
         )
     }
@@ -2884,6 +3163,7 @@ mod tests {
                 prefetch: false,
                 decay_interval: 4096,
                 hotlist_out: None,
+                load_delay: None,
             },
         );
         let compacted = plain.ensure_experts(0, &[0, 2]).unwrap();
@@ -2902,6 +3182,7 @@ mod tests {
                 prefetch: false,
                 decay_interval: 4096,
                 hotlist_out: None,
+                load_delay: None,
             },
         );
         let compacted = fused.ensure_experts(0, &[0, 2]).unwrap();
@@ -2972,5 +3253,219 @@ mod tests {
         assert_eq!(expert_hotness_decay_from_env(None), 4096);
         assert_eq!(expert_hotness_decay_from_env(Some("0")), 4096);
         assert_eq!(expert_hotness_decay_from_env(Some("64")), 64);
+    }
+
+    // ------------------------------------------------------------------
+    // Split-submit (resident/missing overlap) tests.
+    // ------------------------------------------------------------------
+
+    /// Bit-compare the gate_up and down weight arrays of two stacks.
+    fn assert_stacks_bit_equal(a: &LayerExpertStack, b: &LayerExpertStack, what: &str) {
+        for (pa, pb, name) in [
+            (&a.gate_up_exps_packed, &b.gate_up_exps_packed, "gate_up"),
+            (&a.down_exps, &b.down_exps, "down"),
+        ] {
+            match (pa, pb) {
+                (Some(x), Some(y)) => {
+                    mlx_sys::eval(&[&x.weight, &y.weight]);
+                    assert_eq!(x.weight.shape(), y.weight.shape(), "{what}/{name} shape");
+                    assert_eq!(
+                        x.weight.data_f32(),
+                        y.weight.data_f32(),
+                        "{what}/{name} values"
+                    );
+                }
+                (None, None) => {}
+                _ => panic!("{what}/{name} presence mismatch"),
+            }
+        }
+    }
+
+    /// Recombine split parts into request order at the stack level (the same
+    /// whole-row concat + take construction the mlp split path uses).
+    fn recombine_parts(
+        resident: &CompactedExperts,
+        missing: &CompactedExperts,
+        order: &[u32],
+    ) -> LayerExpertStack {
+        fn recombine_proj(
+            r: &Option<QuantizedWeight>,
+            m: &Option<QuantizedWeight>,
+            order: &[u32],
+        ) -> Option<QuantizedWeight> {
+            let (Some(r), Some(m)) = (r, m) else {
+                return None;
+            };
+            let mut order_data = Vec::new();
+            for slot in order {
+                order_data.extend_from_slice(&slot.to_le_bytes());
+            }
+            let order_arr = mlx_sys::MlxArray::from_raw_data(
+                order_data.as_ptr(),
+                order_data.len(),
+                &[order.len() as i32],
+                mlx_sys::MlxDtype::Uint32,
+            );
+            let weight = mlx_sys::take(
+                &mlx_sys::concatenate(&[&r.weight, &m.weight], 0, None),
+                &order_arr,
+                0,
+                None,
+            );
+            Some(QuantizedWeight {
+                weight,
+                scales: None,
+                biases: None,
+                group_size: r.group_size,
+                bits: r.bits,
+                mode: r.mode.clone(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
+            })
+        }
+        LayerExpertStack {
+            gate_up_exps_packed: recombine_proj(
+                &resident.stack.gate_up_exps_packed,
+                &missing.stack.gate_up_exps_packed,
+                order,
+            ),
+            gate_exps: None,
+            up_exps: None,
+            down_exps: recombine_proj(&resident.stack.down_exps, &missing.stack.down_exps, order),
+        }
+    }
+
+    /// Pager-state equality between a sync ensure and a split begin/finish.
+    fn assert_pager_states_equal(sync: &ExpertRowPager, split: &ExpertRowPager, ids: &[u32]) {
+        assert_eq!(sync.cached_expert_keys(), split.cached_expert_keys());
+        for id in ids {
+            assert_eq!(
+                sync.hotness_of(0, *id),
+                split.hotness_of(0, *id),
+                "hotness mismatch for expert {id}"
+            );
+        }
+        assert_eq!(sync.resident_bytes(), split.resident_bytes());
+    }
+
+    #[test]
+    fn row_pager_split_matches_sync_all_resident() {
+        let dir = synth_fixture("split_resident");
+        let ids = [3u32, 1, 2, 0];
+        let sync = row_pager(&dir, 1 << 20, false);
+        sync.warm_experts(0, &ids).unwrap();
+        let reference = sync.ensure_experts(0, &ids).unwrap();
+
+        let split = row_pager(&dir, 1 << 20, false);
+        split.warm_experts(0, &ids).unwrap();
+        let mut begin = split.ensure_experts_split_begin(0, &ids).unwrap();
+        assert!(begin.fully_resident());
+        assert!(!begin.fully_missing());
+        let whole = begin.take_resident();
+        drop(begin); // releases pins without a finish load
+        assert_stacks_bit_equal(&reference.stack, &whole.stack, "all-resident");
+        assert_eq!(reference.remap, whole.remap);
+        assert_pager_states_equal(&sync, &split, &ids);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_split_matches_sync_all_missing() {
+        let dir = synth_fixture("split_missing");
+        let ids = [3u32, 1];
+        let sync = row_pager(&dir, 1 << 20, false);
+        let reference = sync.ensure_experts(0, &ids).unwrap();
+
+        let split = row_pager(&dir, 1 << 20, false);
+        let mut begin = split.ensure_experts_split_begin(0, &ids).unwrap();
+        assert!(begin.fully_missing());
+        assert!(!begin.fully_resident());
+        let missing = split.ensure_experts_split_finish(&mut begin).unwrap();
+        assert_stacks_bit_equal(&reference.stack, &missing.stack, "all-missing");
+        assert_eq!(reference.remap, missing.remap);
+        assert_pager_states_equal(&sync, &split, &ids);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_split_matches_sync_interleaved() {
+        let dir = synth_fixture("split_interleaved");
+        let ids = [3u32, 1, 2, 0];
+        let sync = row_pager(&dir, 1 << 20, false);
+        sync.warm_experts(0, &[1, 0]).unwrap();
+        let reference = sync.ensure_experts(0, &ids).unwrap();
+
+        let split = row_pager(&dir, 1 << 20, false);
+        split.warm_experts(0, &[1, 0]).unwrap();
+        let mut begin = split.ensure_experts_split_begin(0, &ids).unwrap();
+        assert!(!begin.fully_resident() && !begin.fully_missing());
+        assert_eq!(begin.missing_ids, vec![3, 2]);
+        assert_eq!(begin.order, vec![2, 0, 3, 1]);
+        let missing = split.ensure_experts_split_finish(&mut begin).unwrap();
+        let combined = recombine_parts(&begin.resident, &missing, &begin.order);
+        assert_stacks_bit_equal(&reference.stack, &combined, "interleaved");
+        assert_pager_states_equal(&sync, &split, &ids);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_split_hotness_and_decay_match_sync() {
+        let dir = synth_fixture("split_hot");
+        let ids = [0u32, 1];
+        let sync = row_pager_with_decay(&dir, 1 << 20, false, 4);
+        for round in [&ids[..], &ids[..], &[0][..], &[0][..]] {
+            sync.ensure_experts(0, round).unwrap();
+        }
+        let split = row_pager_with_decay(&dir, 1 << 20, false, 4);
+        for round in [&ids[..], &ids[..], &[0][..], &[0][..]] {
+            let mut begin = split.ensure_experts_split_begin(0, round).unwrap();
+            let _ = split.ensure_experts_split_finish(&mut begin).unwrap();
+        }
+        assert_pager_states_equal(&sync, &split, &ids);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_split_pins_protect_resident_during_overlap() {
+        let dir = synth_fixture("split_pins");
+        let pager = row_pager(&dir, ROW_BYTES, false); // budget: one expert
+        pager.warm_experts(0, &[0]).unwrap();
+        let mut begin = pager.ensure_experts_split_begin(0, &[0, 1]).unwrap();
+        // Budget pressure mid-overlap must not evict the pinned resident
+        // selection (the warm itself becomes the eviction candidate).
+        pager.warm_experts(0, &[2]).unwrap();
+        assert!(pager.cached_expert_keys().contains(&(0, 0)));
+        let _ = pager.ensure_experts_split_finish(&mut begin).unwrap();
+        // Both selected experts landed and stayed through the soft cap.
+        assert_eq!(pager.cached_expert_keys(), vec![(0, 0), (0, 1)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_split_finish_error_releases_pins() {
+        let dir = synth_fixture("split_err");
+        let pager = row_pager(&dir, ROW_BYTES, false); // budget: one expert
+        pager.warm_experts(0, &[0]).unwrap();
+        let mut begin = pager.ensure_experts_split_begin(0, &[0, 1]).unwrap();
+        std::fs::remove_file(dir.join("experts.safetensors")).unwrap();
+        assert!(
+            pager.ensure_experts_split_finish(&mut begin).is_err(),
+            "a missing shard must fail the finish load"
+        );
+        drop(begin);
+        // Restore the shard: the failed selection's pin must not strand —
+        // the next ensure evicts (0,0) under the one-expert budget.
+        let tensors = synth_tensors(0);
+        let layer1 = synth_tensors(1);
+        let mut all: Vec<(&str, Vec<i32>, Vec<f32>)> = Vec::new();
+        all.extend(tensors);
+        all.extend(layer1);
+        write_safetensors_f32(&dir, "experts.safetensors", &all);
+        pager.ensure_experts(0, &[2]).unwrap();
+        assert_eq!(pager.cached_expert_keys(), vec![(0, 2)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

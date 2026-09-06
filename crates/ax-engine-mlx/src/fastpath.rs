@@ -5356,6 +5356,33 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_STREAM_EXPERT_SPLIT_SUBMIT` — resident/missing split-submit
+    /// overlap for per-expert SSD streaming decode (ADR-028 Phase 1).
+    ///
+    /// **Default: OFF** (opt-in). When `AX_STREAM_EXPERT_GRANULARITY=expert`
+    /// is active and a decode token's router selection partitions into
+    /// resident and missing experts, the resident part's MoE trunk is
+    /// submitted to the GPU (async_eval) before the missing rows' SSD load
+    /// runs on the host, so the loads overlap GPU compute instead of
+    /// stalling the layer. The missing part is computed after it lands and
+    /// the full `down_out` is reconstructed in request order by whole-row
+    /// moves (concat + take, no arithmetic). Eligibility: seq == 1,
+    /// batch == 1, per-expert row pager attached, and the deep-expert-block
+    /// flag off (that path computes the whole trunk itself). When off or
+    /// ineligible the synchronous `ensure_experts` path runs byte-for-byte;
+    /// row-mode errors still fall back to layer-stack paging per the spec
+    /// §5/§8 matrix. Hotness/pin/eviction accounting is identical to the
+    /// synchronous path.
+    ///
+    /// **Parity (2026-09-06, synthetic fixtures):** bit-exact vs the
+    /// synchronous compaction path (unit tests: all-resident, all-missing,
+    /// interleaved). Promotion to default needs real-pack overlap evidence
+    /// and greedy token parity (ADR-028 Phase 1 gate).
+    stream_expert_split_submit_enabled,
+    "AX_STREAM_EXPERT_SPLIT_SUBMIT"
+);
+
+env_flag!(
     /// `AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL` — enable whole-layer
     /// Metal kernel for linear-attention decode.
     ///

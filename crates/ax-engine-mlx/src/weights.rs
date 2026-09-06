@@ -1967,6 +1967,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                         )
                         .ok()
                         .map(std::path::PathBuf::from),
+                        load_delay: None,
                     },
                 ));
                 if let Ok(path) = std::env::var(crate::expert_stream::STREAM_EXPERT_HOTLIST_ENV) {

@@ -1,0 +1,21 @@
+expert split-submit overlap probe (E=8, k=4, hidden=1024, inter=512, F32 dense fixture; warm [1, 2] resident)
+
+=== delay=0ms (iters=5, median) ===
+  sync : 1884.3 us median ([1967.958, 1951.7079999999999, 1873.125, 1880.7089999999998, 1884.333])
+  split: 1852.6 us median ([2081.333, 1937.75, 1852.583, 1781.125, 1842.209])
+  split ordering: R-submit at 55.8 us, load complete at 1441.5 us — R-submit BEFORE load-complete (overlap holds)
+  verdict: delay-0 delta +1.7% (positive = split faster; mechanism overhead is below the iteration noise here)
+
+=== delay=25ms (iters=5, median) ===
+  sync : 33041.6 us median ([29290.875, 32093.166999999998, 35565.125, 39178.541, 33041.625])
+  split: 33276.0 us median ([33276.041, 34731.417, 30428.083000000002, 35383.958, 29337.833000000002])
+  split ordering: R-submit at 132.9 us, load complete at 28108.5 us — R-submit BEFORE load-complete (overlap holds)
+  verdict: split is -0.7% vs sync (33041.6 -> 33276.0 us; overlap hides the resident part's GPU time behind the load)
+
+=== delay=100ms (iters=5, median) ===
+  sync : 109820.3 us median ([108421.542, 110878.916, 109820.292, 111021.791, 106113.0])
+  split: 110851.7 us median ([110862.125, 109026.459, 110851.709, 108664.75, 114586.292])
+  split ordering: R-submit at 613.8 us, load complete at 112781.7 us — R-submit BEFORE load-complete (overlap holds)
+  verdict: split is -0.9% vs sync (109820.3 -> 110851.7 us; overlap hides the resident part's GPU time behind the load)
+
+RESULT: overlap ordering holds (R-submit before load-complete on all runs); delay-0 split/sync within noise; per-delay verdicts above

@@ -7491,6 +7491,255 @@ fn remapped_moe_indices(remap: &[u32], like: &MlxArray) -> MlxArray {
     MlxArray::from_raw_data(data.as_ptr(), data.len(), &like.shape(), MlxDtype::Uint32)
 }
 
+/// Build a `[0..count)` index array shaped like `like` but with the last dim
+/// set to `count` (split-submit part indices).
+fn part_moe_indices(count: usize, like: &MlxArray) -> MlxArray {
+    let mut shape = like.shape();
+    if let Some(last) = shape.last_mut() {
+        *last = count as i32;
+    }
+    let mut data = Vec::with_capacity(count * 4);
+    for id in 0..count as u32 {
+        data.extend_from_slice(&id.to_le_bytes());
+    }
+    MlxArray::from_raw_data(data.as_ptr(), data.len(), &shape, MlxDtype::Uint32)
+}
+
+/// Whether the resident/missing split-submit overlap may drive this MoE
+/// layer's decode (ADR-028 Phase 1). `deep_block_flag` is
+/// `fastpath::moe_deep_expert_block_metal_enabled()`: the deep expert-block
+/// path computes the whole trunk plus weighted sum itself, so when it can
+/// engage the split is skipped and the synchronous branch matrix stays
+/// authoritative. Pure helper for tests.
+fn split_submit_eligible_for(enabled: bool, deep_block_flag: bool) -> bool {
+    enabled && !deep_block_flag
+}
+
+fn split_submit_eligible() -> bool {
+    split_submit_eligible_for(
+        fastpath::stream_expert_split_submit_enabled(),
+        fastpath::moe_deep_expert_block_metal_enabled(),
+    )
+}
+
+/// One split-submit part's MoE trunk: gather → activation → down → unsort on
+/// a compacted part stack, mirroring the branch chain of
+/// `moe_experts_forward_impl` (same kernels, same order). Returns the part's
+/// `down_out` rows in part order; `None` when the stack layout is not one of
+/// the mirrored forms (caller falls back to the synchronous path).
+fn split_part_down_out(
+    cfg: &ModelConfig,
+    x: &MlxArray,
+    part_indices: &MlxArray,
+    stack: &crate::expert_stream::LayerExpertStack,
+    part_count: i32,
+) -> Option<MlxArray> {
+    let seq = x.shape().get(1).copied().unwrap_or(1) as usize;
+    let batch = x.shape().first().copied().unwrap_or(1) as usize;
+    let v4_swiglu_clamp = deepseek_v4_swiglu_limit(cfg).is_some();
+    let skip_fused_silu = v4_swiglu_clamp || cfg.model_family == "minimax_m3";
+
+    let x_exp = expand_dims_axes(x, &[-2, -3], None);
+    let gather_inputs = switch_gather_inputs(&x_exp, part_indices);
+    let down_exps = stack.down_exps.as_ref()?;
+
+    let hidden = if let Some(packed) = stack.gate_up_exps_packed.as_ref() {
+        let out = qw_gather(
+            &gather_inputs.x,
+            packed,
+            &gather_inputs.indices,
+            gather_inputs.sorted_indices,
+        );
+        let half = cfg.moe_expert_intermediate_size as i32;
+        let fused = if cfg.uses_geglu
+            && fastpath::moe_geglu_packed_metal_enabled()
+            && (seq == 1 || seq <= fastpath::MOE_PACKED_GEGLU_PREFILL_MAX_SEQ)
+        {
+            packed_geglu_metal_impl(&out, half)
+        } else if !cfg.uses_geglu
+            && (seq == 1 || seq <= fastpath::moe_packed_swiglu_prefill_max_seq())
+            && !skip_fused_silu
+            && fastpath::moe_swiglu_packed_metal_enabled()
+        {
+            packed_swiglu_metal_impl(&out, half)
+        } else if seq == 1
+            && batch == 1
+            && !skip_fused_silu
+            && !gather_inputs.sorted_indices
+            && fastpath::moe_fused_expert_block_enabled()
+        {
+            let inv_order = gather_inputs
+                .inv_order
+                .clone()
+                .unwrap_or_else(|| identity_moe_unsort_order(part_count));
+            moe_fused_activation_unsort_metal(
+                &out,
+                &inv_order,
+                half,
+                part_count,
+                out.dtype(),
+                cfg.uses_geglu,
+            )
+        } else if v4_swiglu_clamp
+            && (seq == 1 || seq <= fastpath::moe_packed_swiglu_prefill_max_seq())
+            && fastpath::moe_swiglu_clamped_packed_metal_enabled()
+        {
+            deepseek_v4_swiglu_limit(cfg)
+                .and_then(|limit| packed_clamped_swiglu_metal_impl(&out, half, limit))
+        } else {
+            None
+        };
+        if let Some(fused) = fused {
+            fused
+        } else {
+            let gate = mlx_slice_last_dim(&out, 0, half);
+            let up = mlx_slice_last_dim(&out, half, half * 2);
+            dense_ffn_activation(cfg, &gate, &up)
+        }
+    } else if let Some(gate_exps) = stack.gate_exps.as_ref() {
+        let gate_out = qw_gather(
+            &gather_inputs.x,
+            gate_exps,
+            &gather_inputs.indices,
+            gather_inputs.sorted_indices,
+        );
+        let up_exps = stack.up_exps.as_ref()?;
+        let up_out = qw_gather(
+            &gather_inputs.x,
+            up_exps,
+            &gather_inputs.indices,
+            gather_inputs.sorted_indices,
+        );
+        dense_ffn_activation(cfg, &gate_out, &up_out)
+    } else {
+        let up_exps = stack.up_exps.as_ref()?;
+        let up_out = qw_gather(
+            &gather_inputs.x,
+            up_exps,
+            &gather_inputs.indices,
+            gather_inputs.sorted_indices,
+        );
+        let zero = zeros(&[], up_out.dtype(), None);
+        let relu = maximum(&up_out, &zero, None);
+        multiply(&relu, &relu, None)
+    };
+
+    let down_out = squeeze_switch_singleton(&qw_gather(
+        &hidden,
+        down_exps,
+        &gather_inputs.indices,
+        gather_inputs.sorted_indices,
+    ));
+    Some(gather_inputs.unsort(down_out))
+}
+
+/// Split-submit overlap (ADR-028 Phase 1, `AX_STREAM_EXPERT_SPLIT_SUBMIT`):
+/// compute this layer's MoE `down_out` by submitting the resident experts'
+/// trunk to the GPU before the missing experts' SSD load, then reconstruct
+/// the full `[top_k]` `down_out` in request order.
+///
+/// Overlap ordering: `async_eval(down_r)` enqueues the resident part's whole
+/// graph (stack concat + gathers + activation + down) without blocking the
+/// host, so the SSD preads inside `experts_split_finish` run while the GPU
+/// works. All MLX arrays are created and evaluated on the calling thread;
+/// the pager mutates its cache state under its own lock in both halves.
+///
+/// Parity construction: the parts are compacted in request order, the
+/// positional `concat` + `take` moves whole rows (no arithmetic), and the
+/// downstream weighted sum sees the same values as the synchronous path.
+fn split_submit_down_out(
+    cfg: &ModelConfig,
+    source: &crate::expert_stream::ExpertLayerSource,
+    x: &MlxArray,
+    top_k_indices: &MlxArray,
+) -> Result<MlxArray, crate::expert_stream::ExpertStreamError> {
+    let ids_arr = astype(top_k_indices, MlxDtype::Uint32, None);
+    mlx_sys::transforms::try_eval(&[&ids_arr])
+        .map_err(crate::expert_stream::ExpertStreamError::Paging)?;
+    let ids = ids_arr.data_u32();
+    let mut begin = source.experts_split_begin(ids)?;
+
+    // Degenerate selections: the begin/finish parts are exactly what the
+    // synchronous ensure would have assembled.
+    if begin.fully_resident() {
+        let compacted = begin.take_resident();
+        let indices = part_moe_indices(compacted.remap.len(), top_k_indices);
+        return split_part_down_out(
+            cfg,
+            x,
+            &indices,
+            &compacted.stack,
+            compacted.remap.len() as i32,
+        )
+        .ok_or_else(|| {
+            crate::expert_stream::ExpertStreamError::Paging(
+                "split trunk does not cover this expert stack layout".to_string(),
+            )
+        });
+    }
+    if begin.fully_missing() {
+        let compacted = source.experts_split_finish(&mut begin)?;
+        let indices = part_moe_indices(compacted.remap.len(), top_k_indices);
+        return split_part_down_out(
+            cfg,
+            x,
+            &indices,
+            &compacted.stack,
+            compacted.remap.len() as i32,
+        )
+        .ok_or_else(|| {
+            crate::expert_stream::ExpertStreamError::Paging(
+                "split trunk does not cover this expert stack layout".to_string(),
+            )
+        });
+    }
+
+    let resident_count = begin.resident.remap.len();
+    let down_r = split_part_down_out(
+        cfg,
+        x,
+        &part_moe_indices(resident_count, top_k_indices),
+        &begin.resident.stack,
+        resident_count as i32,
+    )
+    .ok_or_else(|| {
+        crate::expert_stream::ExpertStreamError::Paging(
+            "split trunk does not cover this expert stack layout".to_string(),
+        )
+    })?;
+    // Submit the resident part's graph before the SSD load (see doc comment).
+    mlx_sys::async_eval(&[&down_r]);
+
+    let missing = source.experts_split_finish(&mut begin)?;
+    let down_m = split_part_down_out(
+        cfg,
+        x,
+        &part_moe_indices(missing.remap.len(), top_k_indices),
+        &missing.stack,
+        missing.remap.len() as i32,
+    )
+    .ok_or_else(|| {
+        crate::expert_stream::ExpertStreamError::Paging(
+            "split trunk does not cover this expert stack layout".to_string(),
+        )
+    })?;
+
+    // Positional reconstruction of the request order (whole-row moves).
+    let mut order_data = Vec::with_capacity(begin.order.len() * 4);
+    for slot in &begin.order {
+        order_data.extend_from_slice(&slot.to_le_bytes());
+    }
+    let order_arr = MlxArray::from_raw_data(
+        order_data.as_ptr(),
+        order_data.len(),
+        &[begin.order.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let top_k_axis = down_r.ndim() as i32 - 2;
+    let cat = concatenate(&[&down_r, &down_m], top_k_axis, None);
+    Ok(take(&cat, &order_arr, top_k_axis, None))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn moe_experts_forward_impl(
     cfg: &ModelConfig,
@@ -7540,7 +7789,39 @@ fn moe_experts_forward_impl(
     // the kernels below then run on remapped [0..k) indices. Prefill,
     // batched decode, and any row-mode failure fall back to layer-stack
     // paging.
-    let paged_experts = if w.gate_up_exps_packed.is_none()
+    // Split-submit overlap (ADR-028 Phase 1, default-off): when the row pager
+    // is active and the selection mixes resident and missing experts, the
+    // resident part's trunk is GPU-submitted before the missing rows' SSD
+    // load. On success `split_down` IS this layer's down_out and the whole
+    // stack-paging/trunk path below is skipped; on error the synchronous row
+    // path (and then the layer-stack fallback) runs unchanged.
+    let split_down = if seq == 1
+        && batch == 1
+        && split_submit_eligible()
+        && w.gate_up_exps_packed.is_none()
+        && w.gate_exps.is_none()
+        && w.up_exps.is_none()
+        && w.down_exps.is_none()
+    {
+        w.expert_stream
+            .as_ref()
+            .filter(|source| source.is_per_expert())
+            .and_then(
+                |source| match split_submit_down_out(cfg, source, x, top_k_indices) {
+                    Ok(down) => Some(down),
+                    Err(error) => {
+                        warn_row_paging_once(source.layer(), &error);
+                        None
+                    }
+                },
+            )
+    } else {
+        None
+    };
+
+    let paged_experts = if split_down.is_some() {
+        None
+    } else if w.gate_up_exps_packed.is_none()
         && w.gate_exps.is_none()
         && w.up_exps.is_none()
         && w.down_exps.is_none()
@@ -7602,9 +7883,12 @@ fn moe_experts_forward_impl(
     // Tier 2A: try deep expert-block fusion (decode-only). Fuses gather_qmm
     // gate_up + SwiGLU + gather_qmm down + weighted-sum into one dispatch.
     // Falls back to the standard multi-dispatch path when ineligible.
+    // (Split-submit already produced down_out when `split_down` is Some; the
+    // split is never eligible with the deep-block flag on anyway.)
     if seq == 1
         && batch == 1
         && !skip_fused_silu
+        && split_down.is_none()
         && let Some(out) = try_moe_deep_expert_block_metal(
             cfg,
             gate_up_exps_packed,
@@ -7617,109 +7901,157 @@ fn moe_experts_forward_impl(
         return out;
     }
 
-    // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
-    // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
-    let x_exp = expand_dims_axes(x, &[-2, -3], None);
-    let gather_inputs = switch_gather_inputs(&x_exp, effective_indices);
-    let down_exps = down_exps_ref.expect("MoE layer must have down_exps");
+    let down_out = if let Some(down) = split_down {
+        down
+    } else {
+        // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
+        // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
+        let x_exp = expand_dims_axes(x, &[-2, -3], None);
+        let gather_inputs = switch_gather_inputs(&x_exp, effective_indices);
+        let down_exps = down_exps_ref.expect("MoE layer must have down_exps");
 
-    // Phase 1B: when the expert gate_up is packed and the flag is on, try the
-    // packed SwiGLU Metal kernel directly on the gather_qmm output, fusing the
-    // last-dim split + SiLU + multiply into one dispatch. Decode-only (seq==1):
-    // at prefill the tensor is large and bandwidth-bound, where the separate
-    // slice+silu_mul ops are faster than the single packed dispatch. Falls back
-    // to the split-activation path when the kernel is ineligible or at prefill.
-    let hidden = if let Some(packed) = gate_up_exps_packed {
-        let gate_up_started = Instant::now();
-        let out = qw_gather(
-            &gather_inputs.x,
-            packed,
-            &gather_inputs.indices,
-            gather_inputs.sorted_indices,
-        );
-        forward_profile_eval_elapsed(
-            profile_decode,
-            profile_prefill,
-            DecodeProfileStage::MoeExpertGateUp,
-            gate_up_started,
-            &[&out],
-        );
-        if profile_moe {
-            record_moe_profile_stage(
-                MoeProfileStage::ExpertGateUp,
-                saturating_profile_us(gate_up_started),
+        // Phase 1B: when the expert gate_up is packed and the flag is on, try the
+        // packed SwiGLU Metal kernel directly on the gather_qmm output, fusing the
+        // last-dim split + SiLU + multiply into one dispatch. Decode-only (seq==1):
+        // at prefill the tensor is large and bandwidth-bound, where the separate
+        // slice+silu_mul ops are faster than the single packed dispatch. Falls back
+        // to the split-activation path when the kernel is ineligible or at prefill.
+        let hidden = if let Some(packed) = gate_up_exps_packed {
+            let gate_up_started = Instant::now();
+            let out = qw_gather(
+                &gather_inputs.x,
+                packed,
+                &gather_inputs.indices,
+                gather_inputs.sorted_indices,
             );
-        }
-        let half = cfg.moe_expert_intermediate_size as i32;
-        // Try fused packed activation Metal kernel (decode-only, seq==1).
-        // GeGLU path: Gemma4 MoE experts — fuses split+gelu_approx+mul.
-        // SwiGLU path: Qwen3 MoE experts — fuses split+silu+mul.
-        // D2 fused-expert-block path: when the flag is on and the gather is
-        // unsorted, fuses activation + squeeze + unsort in a single dispatch.
-        // Falls back to split slice + dense_ffn_activation otherwise.
-        let moe_packed_geglu_ok = cfg.uses_geglu
-            && fastpath::moe_geglu_packed_metal_enabled()
-            && (seq == 1 || seq <= fastpath::MOE_PACKED_GEGLU_PREFILL_MAX_SEQ);
-        let fused = if moe_packed_geglu_ok {
-            packed_geglu_metal_impl(&out, half)
-        } else if !cfg.uses_geglu
-            && (seq == 1 || seq <= fastpath::moe_packed_swiglu_prefill_max_seq())
-            && !skip_fused_silu
-            && fastpath::moe_swiglu_packed_metal_enabled()
-        {
-            packed_swiglu_metal_impl(&out, half)
-        } else if seq == 1
-            && batch == 1
-            && !skip_fused_silu
-            && !gather_inputs.sorted_indices
-            && fastpath::moe_fused_expert_block_enabled()
-        {
-            let top_k = top_k_indices.shape().last().copied().unwrap_or(0);
-            let inv_order = gather_inputs
-                .inv_order
-                .clone()
-                .unwrap_or_else(|| identity_moe_unsort_order(top_k));
-            moe_fused_activation_unsort_metal(
-                &out,
-                &inv_order,
-                half,
-                top_k,
-                out.dtype(),
-                cfg.uses_geglu,
-            )
-        } else if v4_swiglu_clamp
-            && (seq == 1 || seq <= fastpath::moe_packed_swiglu_prefill_max_seq())
-            && fastpath::moe_swiglu_clamped_packed_metal_enabled()
-        {
-            // DeepSeek V4: the SwiGLU clamp keeps the plain packed kernel
-            // off; the clamp-aware variant (ADR-028 Phase 1, default-off)
-            // fuses split + clamp + SiLU + multiply in one dispatch.
-            deepseek_v4_swiglu_limit(cfg)
-                .and_then(|limit| packed_clamped_swiglu_metal_impl(&out, half, limit))
-        } else {
-            None
-        };
-        if let Some(fused) = fused {
-            let activation_started = Instant::now();
             forward_profile_eval_elapsed(
                 profile_decode,
                 profile_prefill,
-                DecodeProfileStage::MoeExpertActivation,
-                activation_started,
-                &[&fused],
+                DecodeProfileStage::MoeExpertGateUp,
+                gate_up_started,
+                &[&out],
             );
             if profile_moe {
                 record_moe_profile_stage(
-                    MoeProfileStage::ExpertActivation,
-                    saturating_profile_us(activation_started),
+                    MoeProfileStage::ExpertGateUp,
+                    saturating_profile_us(gate_up_started),
                 );
             }
-            fused
-        } else {
-            let gate = mlx_slice_last_dim(&out, 0, half);
-            let up = mlx_slice_last_dim(&out, half, half * 2);
+            let half = cfg.moe_expert_intermediate_size as i32;
+            // Try fused packed activation Metal kernel (decode-only, seq==1).
+            // GeGLU path: Gemma4 MoE experts — fuses split+gelu_approx+mul.
+            // SwiGLU path: Qwen3 MoE experts — fuses split+silu+mul.
+            // D2 fused-expert-block path: when the flag is on and the gather is
+            // unsorted, fuses activation + squeeze + unsort in a single dispatch.
+            // Falls back to split slice + dense_ffn_activation otherwise.
+            let moe_packed_geglu_ok = cfg.uses_geglu
+                && fastpath::moe_geglu_packed_metal_enabled()
+                && (seq == 1 || seq <= fastpath::MOE_PACKED_GEGLU_PREFILL_MAX_SEQ);
+            let fused = if moe_packed_geglu_ok {
+                packed_geglu_metal_impl(&out, half)
+            } else if !cfg.uses_geglu
+                && (seq == 1 || seq <= fastpath::moe_packed_swiglu_prefill_max_seq())
+                && !skip_fused_silu
+                && fastpath::moe_swiglu_packed_metal_enabled()
+            {
+                packed_swiglu_metal_impl(&out, half)
+            } else if seq == 1
+                && batch == 1
+                && !skip_fused_silu
+                && !gather_inputs.sorted_indices
+                && fastpath::moe_fused_expert_block_enabled()
+            {
+                let top_k = top_k_indices.shape().last().copied().unwrap_or(0);
+                let inv_order = gather_inputs
+                    .inv_order
+                    .clone()
+                    .unwrap_or_else(|| identity_moe_unsort_order(top_k));
+                moe_fused_activation_unsort_metal(
+                    &out,
+                    &inv_order,
+                    half,
+                    top_k,
+                    out.dtype(),
+                    cfg.uses_geglu,
+                )
+            } else if v4_swiglu_clamp
+                && (seq == 1 || seq <= fastpath::moe_packed_swiglu_prefill_max_seq())
+                && fastpath::moe_swiglu_clamped_packed_metal_enabled()
+            {
+                // DeepSeek V4: the SwiGLU clamp keeps the plain packed kernel
+                // off; the clamp-aware variant (ADR-028 Phase 1, default-off)
+                // fuses split + clamp + SiLU + multiply in one dispatch.
+                deepseek_v4_swiglu_limit(cfg)
+                    .and_then(|limit| packed_clamped_swiglu_metal_impl(&out, half, limit))
+            } else {
+                None
+            };
+            if let Some(fused) = fused {
+                let activation_started = Instant::now();
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::MoeExpertActivation,
+                    activation_started,
+                    &[&fused],
+                );
+                if profile_moe {
+                    record_moe_profile_stage(
+                        MoeProfileStage::ExpertActivation,
+                        saturating_profile_us(activation_started),
+                    );
+                }
+                fused
+            } else {
+                let gate = mlx_slice_last_dim(&out, 0, half);
+                let up = mlx_slice_last_dim(&out, half, half * 2);
+                let activation_started = Instant::now();
+                let h = dense_ffn_activation(cfg, &gate, &up);
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::MoeExpertActivation,
+                    activation_started,
+                    &[&h],
+                );
+                if profile_moe {
+                    record_moe_profile_stage(
+                        MoeProfileStage::ExpertActivation,
+                        saturating_profile_us(activation_started),
+                    );
+                }
+                h
+            }
+        } else if let Some(gate_exps) = gate_exps {
+            let gate_up_started = Instant::now();
+            let gate_out = qw_gather(
+                &gather_inputs.x,
+                gate_exps,
+                &gather_inputs.indices,
+                gather_inputs.sorted_indices,
+            );
+            let up_exps = up_exps.expect("MoE layer must have up_exps");
+            let up_out = qw_gather(
+                &gather_inputs.x,
+                up_exps,
+                &gather_inputs.indices,
+                gather_inputs.sorted_indices,
+            );
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::MoeExpertGateUp,
+                gate_up_started,
+                &[&gate_out, &up_out],
+            );
+            if profile_moe {
+                record_moe_profile_stage(
+                    MoeProfileStage::ExpertGateUp,
+                    saturating_profile_us(gate_up_started),
+                );
+            }
             let activation_started = Instant::now();
-            let h = dense_ffn_activation(cfg, &gate, &up);
+            let h = dense_ffn_activation(cfg, &gate_out, &up_out);
             forward_profile_eval_elapsed(
                 profile_decode,
                 profile_prefill,
@@ -7734,116 +8066,73 @@ fn moe_experts_forward_impl(
                 );
             }
             h
-        }
-    } else if let Some(gate_exps) = gate_exps {
-        let gate_up_started = Instant::now();
-        let gate_out = qw_gather(
-            &gather_inputs.x,
-            gate_exps,
-            &gather_inputs.indices,
-            gather_inputs.sorted_indices,
-        );
-        let up_exps = up_exps.expect("MoE layer must have up_exps");
-        let up_out = qw_gather(
-            &gather_inputs.x,
-            up_exps,
-            &gather_inputs.indices,
-            gather_inputs.sorted_indices,
-        );
-        forward_profile_eval_elapsed(
-            profile_decode,
-            profile_prefill,
-            DecodeProfileStage::MoeExpertGateUp,
-            gate_up_started,
-            &[&gate_out, &up_out],
-        );
-        if profile_moe {
-            record_moe_profile_stage(
-                MoeProfileStage::ExpertGateUp,
-                saturating_profile_us(gate_up_started),
+        } else {
+            // Nemotron-H ReLU² experts: only up (fc1) + down (fc2), no SwiGLU gate.
+            let gate_up_started = Instant::now();
+            let up_exps = up_exps.expect("ReLU2 MoE layer must have up_exps");
+            let up_out = qw_gather(
+                &gather_inputs.x,
+                up_exps,
+                &gather_inputs.indices,
+                gather_inputs.sorted_indices,
             );
-        }
-        let activation_started = Instant::now();
-        let h = dense_ffn_activation(cfg, &gate_out, &up_out);
-        forward_profile_eval_elapsed(
-            profile_decode,
-            profile_prefill,
-            DecodeProfileStage::MoeExpertActivation,
-            activation_started,
-            &[&h],
-        );
-        if profile_moe {
-            record_moe_profile_stage(
-                MoeProfileStage::ExpertActivation,
-                saturating_profile_us(activation_started),
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::MoeExpertGateUp,
+                gate_up_started,
+                &[&up_out],
             );
-        }
-        h
-    } else {
-        // Nemotron-H ReLU² experts: only up (fc1) + down (fc2), no SwiGLU gate.
-        let gate_up_started = Instant::now();
-        let up_exps = up_exps.expect("ReLU2 MoE layer must have up_exps");
-        let up_out = qw_gather(
-            &gather_inputs.x,
-            up_exps,
-            &gather_inputs.indices,
-            gather_inputs.sorted_indices,
-        );
-        forward_profile_eval_elapsed(
-            profile_decode,
-            profile_prefill,
-            DecodeProfileStage::MoeExpertGateUp,
-            gate_up_started,
-            &[&up_out],
-        );
-        if profile_moe {
-            record_moe_profile_stage(
-                MoeProfileStage::ExpertGateUp,
-                saturating_profile_us(gate_up_started),
+            if profile_moe {
+                record_moe_profile_stage(
+                    MoeProfileStage::ExpertGateUp,
+                    saturating_profile_us(gate_up_started),
+                );
+            }
+            let activation_started = Instant::now();
+            let zero = zeros(&[], up_out.dtype(), None);
+            let relu = maximum(&up_out, &zero, None);
+            let h = multiply(&relu, &relu, None);
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::MoeExpertActivation,
+                activation_started,
+                &[&h],
             );
-        }
-        let activation_started = Instant::now();
-        let zero = zeros(&[], up_out.dtype(), None);
-        let relu = maximum(&up_out, &zero, None);
-        let h = multiply(&relu, &relu, None);
-        forward_profile_eval_elapsed(
-            profile_decode,
-            profile_prefill,
-            DecodeProfileStage::MoeExpertActivation,
-            activation_started,
-            &[&h],
-        );
-        if profile_moe {
-            record_moe_profile_stage(
-                MoeProfileStage::ExpertActivation,
-                saturating_profile_us(activation_started),
-            );
-        }
-        h
-    };
+            if profile_moe {
+                record_moe_profile_stage(
+                    MoeProfileStage::ExpertActivation,
+                    saturating_profile_us(activation_started),
+                );
+            }
+            h
+        };
 
-    // Down projection: [1, seq, top_k, hidden]
-    let down_started = Instant::now();
-    let down_out = squeeze_switch_singleton(&qw_gather(
-        &hidden,
-        down_exps,
-        &gather_inputs.indices,
-        gather_inputs.sorted_indices,
-    ));
-    let down_out = gather_inputs.unsort(down_out);
-    forward_profile_eval_elapsed(
-        profile_decode,
-        profile_prefill,
-        DecodeProfileStage::MoeExpertDown,
-        down_started,
-        &[&down_out],
-    );
-    if profile_moe {
-        record_moe_profile_stage(
-            MoeProfileStage::ExpertDown,
-            saturating_profile_us(down_started),
+        // Down projection: [1, seq, top_k, hidden]
+        let down_started = Instant::now();
+        let down_out = squeeze_switch_singleton(&qw_gather(
+            &hidden,
+            down_exps,
+            &gather_inputs.indices,
+            gather_inputs.sorted_indices,
+        ));
+        let down_out = gather_inputs.unsort(down_out);
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::MoeExpertDown,
+            down_started,
+            &[&down_out],
         );
-    }
+        if profile_moe {
+            record_moe_profile_stage(
+                MoeProfileStage::ExpertDown,
+                saturating_profile_us(down_started),
+            );
+        }
+        down_out
+    };
 
     // Fresh timer for the weighted-sum stage so it does not include the down
     // projection time (which is already recorded under MoeExpertDown).
@@ -11718,5 +12007,316 @@ mod tests {
             assert_eq!(gi, ei, "hash-routed expert mismatch");
             assert!((gw - ew).abs() < 1e-4, "weight {gw} vs expected {ew}");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Split-submit (resident/missing overlap) tests.
+    // ------------------------------------------------------------------
+
+    fn split_u32_array(ids: &[u32], shape: &[i32]) -> MlxArray {
+        let mut data = Vec::new();
+        for id in ids {
+            data.extend_from_slice(&id.to_le_bytes());
+        }
+        MlxArray::from_raw_data(data.as_ptr(), data.len(), shape, MlxDtype::Uint32)
+    }
+
+    /// Dense F32 expert stacks: gate_up `[E, 2*I, H]` filled with 10+e, down
+    /// `[E, H, I]` filled with 100+e (per-expert constants make row-order
+    /// mistakes directly visible).
+    fn split_test_stack(
+        experts: i32,
+        hidden: i32,
+        inter: i32,
+    ) -> crate::expert_stream::LayerExpertStack {
+        let gate_up_values: Vec<f32> = (0..experts)
+            .flat_map(|e| vec![10.0 + e as f32; (2 * inter * hidden) as usize])
+            .collect();
+        let down_values: Vec<f32> = (0..experts)
+            .flat_map(|e| vec![100.0 + e as f32; (hidden * inter) as usize])
+            .collect();
+        crate::expert_stream::LayerExpertStack {
+            gate_up_exps_packed: Some(QuantizedWeight::new(
+                array_f32(&gate_up_values, &[experts, 2 * inter, hidden]),
+                None,
+                None,
+            )),
+            gate_exps: None,
+            up_exps: None,
+            down_exps: Some(QuantizedWeight::new(
+                array_f32(&down_values, &[experts, hidden, inter]),
+                None,
+                None,
+            )),
+        }
+    }
+
+    /// Row-slice a dense stack's projections along axis 0 (exact row moves).
+    fn split_slice_stack_rows(
+        stack: &crate::expert_stream::LayerExpertStack,
+        rows: &[u32],
+    ) -> crate::expert_stream::LayerExpertStack {
+        let idx = split_u32_array(rows, &[rows.len() as i32]);
+        let pick = |qw: &Option<QuantizedWeight>| {
+            qw.as_ref()
+                .map(|qw| QuantizedWeight::new(take(&qw.weight, &idx, 0, None), None, None))
+        };
+        crate::expert_stream::LayerExpertStack {
+            gate_up_exps_packed: pick(&stack.gate_up_exps_packed),
+            gate_exps: None,
+            up_exps: None,
+            down_exps: pick(&stack.down_exps),
+        }
+    }
+
+    /// The weighted-sum tail of `moe_experts_forward_impl`, mirrored so both
+    /// sides of a comparison take the same downstream branch.
+    fn split_test_weighted_sum(down_out: &MlxArray, wts: &MlxArray, x: &MlxArray) -> MlxArray {
+        if let Some(out) = qwen3_moe_weighted_sum_metal(down_out, wts, x.dtype()) {
+            return out;
+        }
+        let axis = down_out.ndim() as i32 - 2;
+        let scores_exp = expand_dims(wts, wts.ndim() as i32, None);
+        let weighted = multiply(down_out, &scores_exp, None);
+        let out = sum_axis(&weighted, axis, false, None);
+        astype(&out, x.dtype(), None)
+    }
+
+    #[test]
+    fn split_submit_eligible_for_matrix() {
+        assert!(split_submit_eligible_for(true, false));
+        assert!(!split_submit_eligible_for(false, false));
+        assert!(!split_submit_eligible_for(true, true));
+        assert!(!split_submit_eligible_for(false, true));
+    }
+
+    #[test]
+    fn split_part_trunk_whole_matches_moe_forward_path() {
+        let cfg = v4_test_config(4, 2);
+        let x = array_f32(&[0.25, 0.5, 0.75, 1.0], &[1, 1, 4]);
+        let idx = split_u32_array(&[3, 1], &[1, 1, 2]);
+        let wts = array_f32(&[0.7, 0.3], &[1, 1, 2]);
+        let stack = split_test_stack(4, 4, 8);
+        let mut w = v4_layer_weights(x.clone(), &x);
+        w.gate_up_exps_packed = stack.gate_up_exps_packed.clone();
+        w.down_exps = stack.down_exps.clone();
+
+        let reference = moe_experts_forward_impl(&cfg, &w, &x, &idx, &wts, None, None);
+
+        // Whole-selection trunk mirror on the compacted [3, 1] stack + the
+        // same weighted-sum tail.
+        let compacted = split_slice_stack_rows(&stack, &[3, 1]);
+        let indices = remapped_moe_indices(&[0, 1], &idx);
+        let down = split_part_down_out(&cfg, &x, &indices, &compacted, 2).expect("whole trunk");
+        let manual = split_test_weighted_sum(&down, &wts, &x);
+
+        eval(&[&reference, &manual]);
+        assert_eq!(reference.shape(), manual.shape());
+        assert_eq!(reference.data_f32(), manual.data_f32());
+    }
+
+    #[test]
+    fn split_submit_parts_reconstruct_matches_whole_trunk() {
+        let cfg = v4_test_config(4, 4);
+        let x = array_f32(&[0.25, 0.5, 0.75, 1.0], &[1, 1, 4]);
+        let idx = split_u32_array(&[3, 1, 2, 0], &[1, 1, 4]);
+        let stack = split_test_stack(4, 4, 8);
+
+        // Whole-selection trunk on the compacted [3, 1, 2, 0] stack.
+        let compacted = split_slice_stack_rows(&stack, &[3, 1, 2, 0]);
+        let whole_indices = remapped_moe_indices(&[0, 1, 2, 3], &idx);
+        let whole =
+            split_part_down_out(&cfg, &x, &whole_indices, &compacted, 4).expect("whole trunk");
+
+        // Resident request positions 1 and 3 hold experts 1 and 0; missing
+        // positions 0 and 2 hold experts 3 and 2 — the split's partition.
+        let r_stack = split_slice_stack_rows(&stack, &[1, 0]);
+        let m_stack = split_slice_stack_rows(&stack, &[3, 2]);
+        let part_indices = part_moe_indices(2, &idx);
+        let down_r = split_part_down_out(&cfg, &x, &part_indices, &r_stack, 2).expect("resident");
+        let down_m = split_part_down_out(&cfg, &x, &part_indices, &m_stack, 2).expect("missing");
+
+        // Request order [3 (M0), 1 (R0), 2 (M1), 0 (R1)] → [2, 0, 3, 1].
+        let order = split_u32_array(&[2, 0, 3, 1], &[4]);
+        let axis = down_r.ndim() as i32 - 2;
+        let cat = concatenate(&[&down_r, &down_m], axis, None);
+        let recon = take(&cat, &order, axis, None);
+
+        eval(&[&whole, &recon]);
+        assert_eq!(whole.shape(), recon.shape());
+        assert_eq!(whole.data_f32(), recon.data_f32());
+    }
+
+    /// F32 safetensors writer for the split e2e fixture (self-contained;
+    /// mirrors the expert_stream test fixtures).
+    fn split_write_safetensors(dir: &std::path::Path, tensors: &[(&str, Vec<i32>, Vec<f32>)]) {
+        let mut header = serde_json::Map::new();
+        let mut data: Vec<u8> = Vec::new();
+        for (name, shape, values) in tensors {
+            let start = data.len();
+            for value in values {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+            header.insert(
+                (*name).to_string(),
+                serde_json::json!({
+                    "dtype": "F32",
+                    "shape": shape,
+                    "data_offsets": [start, data.len()],
+                }),
+            );
+        }
+        let header_bytes = serde_json::to_vec(&serde_json::Value::Object(header)).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&header_bytes);
+        bytes.extend_from_slice(&data);
+        std::fs::write(dir.join("experts.safetensors"), &bytes).unwrap();
+    }
+
+    fn split_e2e_fixture(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ax_split_submit_e2e_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gate_up_values: Vec<f32> = (0..4).flat_map(|e| vec![10.0 + e as f32; 16 * 4]).collect();
+        let down_values: Vec<f32> = (0..4).flat_map(|e| vec![100.0 + e as f32; 4 * 8]).collect();
+        split_write_safetensors(
+            &dir,
+            &[
+                (
+                    "model.layers.0.mlp.switch_mlp.gate_up_proj.weight",
+                    vec![4, 16, 4],
+                    gate_up_values,
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    vec![4, 4, 8],
+                    down_values,
+                ),
+            ],
+        );
+        dir
+    }
+
+    fn split_e2e_manifest() -> std::sync::Arc<crate::expert_stream::ExpertStreamManifest> {
+        let json = serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "generated_by": "ax-engine-test",
+            "required": true,
+            "mode": "layer-stack",
+            "num_experts": 4,
+            "experts_per_tok": 2,
+            "estimated_resident_bytes": 1000,
+            "estimated_full_resident_bytes": 5000,
+            "estimated_max_layer_expert_bytes": 2000,
+            "resident_roles": ["embedding", "attention", "router", "norm", "lm_head"],
+            "streamed_roles": ["expert"],
+            "tensors": [
+                {
+                    "name": "model.layers.0.mlp.switch_mlp.gate_up_proj.weight",
+                    "file": "experts.safetensors",
+                    "layer": 0,
+                    "proj": "gate_up",
+                    "expert_axis": 0,
+                    "num_experts": 4,
+                    "bits": 2,
+                    "group_size": 64
+                },
+                {
+                    "name": "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    "file": "experts.safetensors",
+                    "layer": 0,
+                    "proj": "down",
+                    "expert_axis": 0,
+                    "num_experts": 4,
+                    "bits": 2,
+                    "group_size": 64
+                }
+            ]
+        });
+        std::sync::Arc::new(
+            crate::expert_stream::ExpertStreamManifest::parse(&serde_json::to_vec(&json).unwrap())
+                .unwrap(),
+        )
+    }
+
+    fn split_e2e_row_pager(
+        dir: &std::path::Path,
+    ) -> std::sync::Arc<crate::expert_stream::ExpertRowPager> {
+        std::sync::Arc::new(crate::expert_stream::ExpertRowPager::new(
+            split_e2e_manifest(),
+            dir.to_path_buf(),
+            crate::expert_stream::ExpertRowPagerConfig {
+                budget_bytes: 1 << 20,
+                fuse_split_experts: false,
+                prefetch: false,
+                decay_interval: 4096,
+                hotlist_out: None,
+                load_delay: None,
+            },
+        ))
+    }
+
+    /// End-to-end split parity: `split_submit_down_out` (row pager, flag
+    /// path) vs the production `moe_experts_forward_impl` on the layer-stack
+    /// pager, across all-resident / all-missing / interleaved selections.
+    fn assert_split_submit_e2e(tag: &str, ids: &[u32], warm: &[u32]) {
+        let dir = split_e2e_fixture(tag);
+        let k = ids.len();
+        let cfg = v4_test_config(4, k);
+        let x = array_f32(&[0.25, 0.5, 0.75, 1.0], &[1, 1, 4]);
+        let idx = split_u32_array(ids, &[1, 1, k as i32]);
+        let wts = array_f32(&vec![1.0 / k as f32; k], &[1, 1, k as i32]);
+
+        // Reference: production impl on the layer-stack pager (full stack).
+        let stack_pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new(
+            split_e2e_manifest(),
+            dir.clone(),
+            4,
+        ));
+        let source = crate::expert_stream::ExpertLayerSource::new(stack_pager, 0);
+        let mut w = v4_layer_weights(x.clone(), &x);
+        w.expert_stream = Some(std::sync::Arc::new(source));
+        let reference = moe_experts_forward_impl(&cfg, &w, &x, &idx, &wts, None, None);
+
+        // Split path on a row pager over the same fixture.
+        let rows = split_e2e_row_pager(&dir);
+        if !warm.is_empty() {
+            rows.warm_experts(0, warm).unwrap();
+        }
+        let stack_pager2 = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new(
+            split_e2e_manifest(),
+            dir.clone(),
+            4,
+        ));
+        let split_source =
+            crate::expert_stream::ExpertLayerSource::new_with_rows(stack_pager2, rows, 0);
+        let down = split_submit_down_out(&cfg, &split_source, &x, &idx)
+            .expect("split_submit_down_out must succeed");
+        let manual = split_test_weighted_sum(&down, &wts, &x);
+
+        eval(&[&reference, &manual]);
+        assert_eq!(reference.shape(), manual.shape());
+        assert_eq!(
+            reference.data_f32(),
+            manual.data_f32(),
+            "split-submit output mismatch for ids {ids:?} (warm {warm:?})"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn split_submit_down_out_matches_production_all_missing() {
+        assert_split_submit_e2e("cold", &[3, 1], &[]);
+    }
+
+    #[test]
+    fn split_submit_down_out_matches_production_all_resident() {
+        assert_split_submit_e2e("warm", &[3, 1], &[3, 1]);
+    }
+
+    #[test]
+    fn split_submit_down_out_matches_production_interleaved() {
+        assert_split_submit_e2e("mixed", &[3, 1, 2, 0], &[1, 0]);
     }
 }
