@@ -50,14 +50,24 @@ def main() -> None:
         ffn_bases = {k[: -len(".weight")] for k in tensors if is_ffn_weight(k)}
         out_tensors = {}
         for b in ffn_bases:
-            w = tensors[b + ".weight"]
-            s = tensors[b + ".scales"]
-            bi = tensors[b + ".biases"]
+            weight_key = b + ".weight"
+            scales_key = b + ".scales"
+            biases_key = b + ".biases"
+            missing = [k for k in (weight_key, scales_key, biases_key) if k not in tensors]
+            if missing:
+                raise KeyError(
+                    f"Invalid FFN quantized tensor set in shard '{name}' for base '{b}': "
+                    f"missing keys {missing}. Expected quantized triplet "
+                    f"['{weight_key}', '{scales_key}', '{biases_key}']."
+                )
+            w = tensors[weight_key]
+            s = tensors[scales_key]
+            bi = tensors[biases_key]
             full = mx.dequantize(w, scales=s, biases=bi, group_size=GROUP, bits=8)
             wq, sq, bq = mx.quantize(full, group_size=GROUP, bits=4)
-            out_tensors[b + ".weight"] = wq
-            out_tensors[b + ".scales"] = sq
-            out_tensors[b + ".biases"] = bq
+            out_tensors[weight_key] = wq
+            out_tensors[scales_key] = sq
+            out_tensors[biases_key] = bq
         for k, v in tensors.items():
             out_tensors.setdefault(k, v)
 
