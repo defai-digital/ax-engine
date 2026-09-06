@@ -96,6 +96,81 @@ class VersionSyncTests(unittest.TestCase):
         ):
             check_version_sync.verify_python_policy(self.root)
 
+    def test_rejects_misaligned_requires_python(self):
+        self._write(
+            "crates/ax-engine-py/pyproject.toml",
+            "\n".join(
+                (
+                    "[project]",
+                    'requires-python = ">=3.11"',
+                    'classifiers = ["Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13"]',
+                    "",
+                    "[tool.ruff]",
+                    'target-version = "py312"',
+                    "",
+                    "[tool.mypy]",
+                    'python_version = "3.12"',
+                )
+            )
+            + "\n",
+        )
+
+        with self.assertRaisesRegex(
+            check_version_sync.VersionSyncError,
+            "requires-python",
+        ):
+            check_version_sync.verify_python_policy(self.root)
+
+    def test_rejects_missing_python_policy_classifier(self):
+        self._write(
+            "crates/ax-engine-py/pyproject.toml",
+            "\n".join(
+                (
+                    "[project]",
+                    'requires-python = ">=3.12"',
+                    'classifiers = ["Programming Language :: Python :: 3.12"]',
+                    "",
+                    "[tool.ruff]",
+                    'target-version = "py312"',
+                    "",
+                    "[tool.mypy]",
+                    'python_version = "3.12"',
+                )
+            )
+            + "\n",
+        )
+
+        with self.assertRaisesRegex(
+            check_version_sync.VersionSyncError,
+            "classifier",
+        ):
+            check_version_sync.verify_python_policy(self.root)
+
+    def test_rejects_misaligned_ruff_and_mypy_python_policy(self):
+        self._write(
+            "crates/ax-engine-py/pyproject.toml",
+            "\n".join(
+                (
+                    "[project]",
+                    'requires-python = ">=3.12"',
+                    'classifiers = ["Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13"]',
+                    "",
+                    "[tool.ruff]",
+                    'target-version = "py311"',
+                    "",
+                    "[tool.mypy]",
+                    'python_version = "3.11"',
+                )
+            )
+            + "\n",
+        )
+
+        with self.assertRaisesRegex(
+            check_version_sync.VersionSyncError,
+            "target-version|python_version",
+        ):
+            check_version_sync.verify_python_policy(self.root)
+
     def test_rejects_a_mismatched_sdk_version(self):
         self._write(
             "sdk/go/axengine/client.go",
