@@ -36,25 +36,33 @@ jobs:
     timeout-minutes: 40
 
     steps:
-      - name: Check out exact release commit
+      # Checkout the dispatch ref first. Passing an operator-supplied SHA to
+      # actions/checkout's `ref` is modeled by CodeQL as an untrusted checkout
+      # and would let later steps write the default-branch Actions cache.
+      - name: Check out workflow revision
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.git_commit }}
+          persist-credentials: false
 
-      - name: Verify release identity
+      - name: Pin working tree to the requested object
         id: identity
         env:
-          EXPECTED_COMMIT: ${{ inputs.git_commit }}
+          EXPECTED_OID: ${{ inputs.git_commit }}
           RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ACTUAL_COMMIT="$(git rev-parse HEAD)"
-          if [[ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]]; then
-            echo "error: checked out $ACTUAL_COMMIT, expected $EXPECTED_COMMIT" >&2
+          if [[ ! "$EXPECTED_OID" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "error: release object must be a full 40-character SHA" >&2
             exit 1
           fi
-          if [[ ! "$ACTUAL_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "error: release commit must be a full 40-character SHA" >&2
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${AUTH}" \
+            fetch --depth=1 origin "$EXPECTED_OID"
+          git checkout --detach "$EXPECTED_OID"
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_COMMIT" != "$EXPECTED_OID" ]]; then
+            echo "error: checked out $ACTUAL_COMMIT, expected $EXPECTED_OID" >&2
             exit 1
           fi
           python3 scripts/check_version_sync.py --expected "$RELEASE_TAG"
@@ -89,13 +97,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
-
-      - name: Cache release build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-macos-arm64
-          cache-on-failure: true
 
       - name: Install native build dependencies
         run: bash scripts/install-native-build-deps.sh
