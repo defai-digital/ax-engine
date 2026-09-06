@@ -40,6 +40,8 @@ bash -n scripts/*.sh scripts/lib/common.sh scripts/check-qa.sh
 # Dedicated offline QA harness gate (bank + unit tests + py_compile).
 bash scripts/check-qa.sh
 "$PYTHON_BIN" -m py_compile \
+  scripts/download_model.py \
+  scripts/test_download_model.py \
   scripts/bench_ax_serving.py \
   scripts/test_bench_ax_serving.py \
   scripts/bench_single_client_mlx_serving.py \
@@ -245,6 +247,7 @@ bash scripts/check-qa.sh
   scripts/test_standalone_release.py \
   scripts/test_minisign_artifact.py
 "$PYTHON_BIN" -m unittest \
+  scripts/test_download_model.py \
   scripts/test_bench_ax_serving.py \
   scripts/test_bench_single_client_mlx_serving.py \
   scripts/test_bench_ax_multimodel_serving.py \

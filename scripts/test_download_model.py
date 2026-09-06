@@ -121,7 +121,195 @@ def write_provenance(path: Path, repo_id: str, revision: str | None = None) -> N
     download_model._write_download_provenance(path, repo_id, revision)
 
 
+def write_gemma_unified_fixture(model_dir: Path, media_file: str) -> None:
+    """Tiny synthetic checkpoint with the QAT/OptiQ layouts from issue #84."""
+    (model_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "gemma4_unified",
+                "tie_word_embeddings": False,
+                "text_config": {
+                    "model_type": "gemma4_unified_text",
+                    "hidden_size": 8,
+                    "intermediate_size": 16,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "num_global_key_value_heads": 1,
+                    "head_dim": 4,
+                    "global_head_dim": 8,
+                    "num_hidden_layers": 2,
+                    "vocab_size": 16,
+                    "sliding_window": 16,
+                    "attention_k_eq_v": True,
+                    "num_kv_shared_layers": 0,
+                    "layer_types": ["sliding_attention", "full_attention"],
+                },
+                "vision_config": {"model_type": "gemma4_unified_vision"},
+                "audio_config": {"model_type": "gemma4_unified_audio"},
+            }
+        )
+    )
+    entries = {
+        "language_model.model.embed_tokens.weight": [16, 8],
+        "language_model.model.norm.weight": [8],
+        "language_model.lm_head.weight": [16, 8],
+    }
+    for layer, head_dim in ((0, 4), (1, 8)):
+        prefix = f"language_model.model.layers.{layer}."
+        for norm in (
+            "input_layernorm",
+            "post_attention_layernorm",
+            "pre_feedforward_layernorm",
+            "post_feedforward_layernorm",
+        ):
+            entries[f"{prefix}{norm}.weight"] = [8]
+        for name, shape in {
+            "q_proj": [2 * head_dim, 8],
+            "k_proj": [head_dim, 8],
+            "o_proj": [8, 2 * head_dim],
+            "q_norm": [head_dim],
+            "k_norm": [head_dim],
+        }.items():
+            entries[f"{prefix}self_attn.{name}.weight"] = shape
+        if layer == 0:
+            entries[f"{prefix}self_attn.v_proj.weight"] = [head_dim, 8]
+        for name, shape in {
+            "gate_proj": [16, 8],
+            "up_proj": [16, 8],
+            "down_proj": [8, 16],
+        }.items():
+            entries[f"{prefix}mlp.{name}.weight"] = shape
+
+    shards = {
+        "model.safetensors": entries,
+        media_file: {
+            "vision_embedder.pos_embedding": [2, 2, 8],
+            "embed_vision.embedding_projection.weight": [8, 8],
+            "embed_audio.embedding_projection.weight": [8, 8],
+        },
+        "assistant/model.safetensors": {"drafter.weight": [1]},
+    }
+    weight_map = {}
+    for filename, tensors in shards.items():
+        header = {}
+        body = bytearray()
+        for name, shape in tensors.items():
+            size = 2
+            for dimension in shape:
+                size *= dimension
+            start = len(body)
+            body.extend(bytes(size))
+            header[name] = {"dtype": "BF16", "shape": shape, "data_offsets": [start, len(body)]}
+            if not filename.startswith("assistant/"):
+                weight_map[name] = filename
+        header_bytes = json.dumps(header).encode()
+        header_bytes += b" " * (-len(header_bytes) % 8)
+        path = model_dir / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(len(header_bytes).to_bytes(8, "little") + header_bytes + body)
+    (model_dir / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+
+
 class DownloadModelScriptTest(unittest.TestCase):
+    def test_gemma_unified_native_manifest_is_ready_without_regeneration(self) -> None:
+        for media_file in ("model-00003-of-00003.safetensors", "optiq/optiq_vision.safetensors"):
+            with self.subTest(media_file=media_file), tempfile.TemporaryDirectory() as tmp:
+                model_dir = Path(tmp)
+                write_gemma_unified_fixture(model_dir, media_file)
+                result = subprocess.run(
+                    [
+                        "cargo",
+                        "run",
+                        "-q",
+                        "-p",
+                        "ax-engine-core",
+                        "--bin",
+                        "generate-manifest",
+                        "--",
+                        "--validate",
+                        str(model_dir),
+                    ],
+                    cwd=download_model.REPO_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                manifest_path = model_dir / "model-manifest.json"
+                manifest_bytes = manifest_path.read_bytes()
+                manifest_mtime = manifest_path.stat().st_mtime_ns
+                manifest = json.loads(manifest_bytes)
+                self.assertEqual(manifest["attention_value_from_key_layers"], [1])
+                self.assertEqual(manifest["model_family"], "gemma4_unified")
+                self.assertTrue(any(tensor["file"] == media_file for tensor in manifest["tensors"]))
+                self.assertFalse(
+                    any(tensor["file"].startswith("assistant/") for tensor in manifest["tensors"])
+                )
+
+                stdout = io.StringIO()
+                with (
+                    patch.object(sys, "argv", ["download_model.py", "owner/repo", "--json"]),
+                    patch.object(download_model, "download", return_value=model_dir),
+                    patch.object(
+                        download_model,
+                        "_try_generate_manifest",
+                        wraps=download_model._try_generate_manifest,
+                    ) as generate,
+                    redirect_stdout(stdout),
+                ):
+                    code = download_model.main()
+
+                summary = json.loads(stdout.getvalue())
+                self.assertEqual(code, 0, summary)
+                self.assertEqual(summary["status"], "ready")
+                self.assertEqual(summary["safetensors_count"], 2)
+                generate.assert_not_called()
+                self.assertEqual(manifest_path.read_bytes(), manifest_bytes)
+                self.assertEqual(manifest_path.stat().st_mtime_ns, manifest_mtime)
+
+    def test_generated_manifest_rejection_reports_readiness_reason(self) -> None:
+        for staged in (False, True):
+            with self.subTest(staged=staged), tempfile.TemporaryDirectory() as tmp:
+                model_dir = Path(tmp)
+                (model_dir / "config.json").write_text('{"model_type":"qwen3"}')
+                write_safetensors(model_dir / "model.safetensors")
+
+                def generate_incomplete(dest: Path, **kwargs) -> bool:
+                    write_manifest(dest / "model-manifest.json")
+                    manifest_path = dest / "model-manifest.json"
+                    manifest = json.loads(manifest_path.read_text())
+                    manifest["tensors"] = [
+                        tensor for tensor in manifest["tensors"] if tensor["role"] != "final_norm"
+                    ]
+                    manifest_path.write_text(json.dumps(manifest))
+                    return True
+
+                stdout = io.StringIO()
+                with (
+                    patch.object(sys, "argv", ["download_model.py", "owner/repo", "--json"]),
+                    patch.object(download_model, "download", return_value=model_dir),
+                    patch.object(
+                        download_model, "_try_generate_manifest", side_effect=generate_incomplete
+                    ),
+                    redirect_stdout(stdout),
+                ):
+                    if staged:
+                        with self.assertRaisesRegex(
+                            RuntimeError, "missing required tensor role final_norm"
+                        ):
+                            download_model._prepare_staged_destination(
+                                model_dir,
+                                quiet=True,
+                                progress_json=False,
+                            )
+                    else:
+                        self.assertEqual(download_model.main(), 1)
+                        summary = json.loads(stdout.getvalue())
+                        self.assertEqual(summary["status"], "manifest_missing")
+                        self.assertIn(
+                            "missing required tensor role final_norm", summary["errors"][0]
+                        )
+
     def test_standalone_repo_parser_fallback_matches_packaged_contract(self) -> None:
         cases = {
             "owner/repo": ("owner/repo", None),
@@ -1930,6 +2118,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             summary = json.loads(stdout.getvalue())
             self.assertEqual(summary["status"], "manifest_missing")
             self.assertIn("still invalid", "\n".join(summary["errors"]))
+            self.assertIn("model-manifest.json is missing", summary["errors"][0])
 
     def test_force_staged_manifest_is_generated_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

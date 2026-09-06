@@ -2077,6 +2077,32 @@ def _manifest_rebuild_plan(dest: Path, *, quiet: bool = False) -> tuple[bool, bo
     )
 
 
+def _manifest_readiness_error(
+    dest: Path,
+    *,
+    quiet: bool,
+    validate_native: bool = True,
+) -> str | None:
+    """Explain the failed readiness gate, retaining all structural and native checks."""
+    if _manifest_needs_rebuild(dest):
+        manifest_path = dest / MODEL_MANIFEST_FILE
+        if not manifest_path.is_file():
+            return f"{MODEL_MANIFEST_FILE} is missing"
+        try:
+            manifest = json.loads(manifest_path.read_bytes())
+        except (OSError, ValueError, TypeError):
+            return f"{MODEL_MANIFEST_FILE} is unreadable or contains invalid JSON"
+        if isinstance(manifest, dict):
+            if reason := _manifest_missing_required_roles(manifest):
+                return reason
+        return "manifest metadata is invalid or does not match the source safetensors"
+    if manifest_needs_media_rebuild(dest):
+        return "manifest omits vision or audio tensors present in the source weights"
+    if validate_native and not _try_validate_manifest(dest, quiet=quiet):
+        return "native manifest validation failed"
+    return None
+
+
 def _prepare_staged_destination(
     dest: Path,
     *,
@@ -2105,13 +2131,9 @@ def _prepare_staged_destination(
             "model manifest is missing or invalid and regeneration failed; "
             "the previous destination was preserved"
         )
-    if (
-        _manifest_needs_rebuild(dest)
-        or manifest_needs_media_rebuild(dest)
-        or not _try_validate_manifest(dest, quiet=quiet)
-    ):
+    if reason := _manifest_readiness_error(dest, quiet=quiet):
         raise RuntimeError(
-            "manifest generator reported success but the staged manifest is still invalid; "
+            f"manifest generator reported success but the staged manifest is still invalid: {reason}; "
             "the previous destination was preserved"
         )
 
@@ -2329,12 +2351,12 @@ def main() -> int:
             # Return non-zero so automation/CI does not treat this as success.
             return 1
 
-    if (
-        _manifest_needs_rebuild(dest)
-        or manifest_needs_media_rebuild(dest)
-        or (rebuild_needed and not _try_validate_manifest(dest, quiet=machine_json))
+    if reason := _manifest_readiness_error(
+        dest,
+        quiet=machine_json,
+        validate_native=rebuild_needed,
     ):
-        error = "manifest generator reported success but the manifest is still invalid"
+        error = f"manifest generator reported success but the manifest is still invalid: {reason}"
         if machine_json:
             summary = _summary(
                 repo_id,
