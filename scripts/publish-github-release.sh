@@ -462,7 +462,7 @@ verify_notarization_log() {
     local payload_dir="$2"
     local submission_id="$3"
 
-    python3 - \
+    python3 "$ROOT_DIR/scripts/verify_notarization_log.py" \
         "$log_path" \
         "$payload_dir" \
         "$submission_id" \
@@ -470,18 +470,7 @@ verify_notarization_log() {
         libjaccl.dylib \
         ax-engine \
         ax-engine-server \
-        ax-engine-bench <<'PY'
-from __future__ import annotations
-
-import json
-import re
-import subprocess
-import sys
-from pathlib import Path
-
-log_path = Path(sys.argv[1])
-payload_dir = Path(sys.argv[2])
-submission_id = sys.argv[3]
+        ax-engine-bench
 expected_images = sys.argv[4:]
 notary_log = json.loads(log_path.read_text(encoding="utf-8"))
 
