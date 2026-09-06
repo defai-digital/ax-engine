@@ -569,15 +569,7 @@ notarize_release_payload() {
         "${NOTARY_ARGS[@]}" \
         --wait \
         --output-format json > "$submit_json"
-    submission_info="$(python3 - "$submit_json" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-submission = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-print(f"{submission.get('id', '')}\t{submission.get('status', '')}")
-PY
-)"
+    submission_info="$(python3 -c 'import json, sys; from pathlib import Path; submission = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")); print(f"{submission.get(\"id\", \"\")}\t{submission.get(\"status\", \"\")}")' "$submit_json")"
     IFS=$'\t' read -r NOTARIZATION_SUBMISSION_ID submission_status <<<"$submission_info"
     [[ -n "$NOTARIZATION_SUBMISSION_ID" && "$submission_status" == "Accepted" ]] || {
         die "Apple notarization submission did not finish with Accepted status"
