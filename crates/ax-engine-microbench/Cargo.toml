@@ -69,3 +69,7 @@ path = "src/bin/moe_v4_clamped_swiglu_probe.rs"
 [[bin]]
 name = "dsv4-hc-pre-probe"
 path = "src/bin/dsv4_hc_pre_probe.rs"
+
+[[bin]]
+name = "dsv4-fused-sdpa-probe"
+path = "src/bin/dsv4_fused_sdpa_probe.rs"

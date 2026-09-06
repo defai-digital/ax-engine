@@ -1,0 +1,44 @@
+V4 two-source fused decode SDPA probe (H=64, D=512, window=128, bf16 KV, f32 accum; gate: bit-exact vs production chain)
+note: at D=512 the production native SDPA runs MLX's unfused fallback op chain (verified op-for-op)
+
+=== csa-2k all-visible (N=628) (iters=300) ===
+  parity: flips=13330/32768 (40.7%) max abs diff 4.882812e-4 = 0.66 bf16 ULP@max
+  ablation scores-in (softmax+V only): flips=13328/32768 (40.67%) max abs diff 4.882812e-4
+  ablation probs-in (V-dot only): flips=4/32768 (0.012%) max abs diff 3.814697e-6
+  dispatches: production chain 3 measured wrapper calls (concat K + concat mask + SDPA); fused = 1 Metal dispatch
+    prefix (concat K + mask): 206.53 us/iter
+    production chain: 316.84 us/iter
+    fused two-source: 329.23 us/iter
+  verdict: fused is -3.9% vs production chain (316.84 -> 329.23 us/iter; concat+mask prefix 206.53 us/iter eliminated)
+
+=== hca-32k visibility (N=378) (iters=300) ===
+  parity: flips=13210/32768 (40.3%) max abs diff 4.882812e-4 = 0.48 bf16 ULP@max
+  ablation scores-in (softmax+V only): flips=13209/32768 (40.31%) max abs diff 4.882812e-4
+  ablation probs-in (V-dot only): flips=0/32768 (0.000%) max abs diff 0.000000e0
+  dispatches: production chain 3 measured wrapper calls (concat K + concat mask + SDPA); fused = 1 Metal dispatch
+    prefix (concat K + mask): 197.27 us/iter
+    production chain: 346.43 us/iter
+    fused two-source: 306.67 us/iter
+  verdict: fused is +11.5% vs production chain (346.43 -> 306.67 us/iter; concat+mask prefix 197.27 us/iter eliminated)
+
+=== csa-8k top-512 (N=2128) (iters=200) ===
+  parity: flips=13554/32768 (41.4%) max abs diff 4.882812e-4 = 0.59 bf16 ULP@max
+  ablation scores-in (softmax+V only): flips=13554/32768 (41.36%) max abs diff 4.882812e-4
+  ablation probs-in (V-dot only): flips=2/32768 (0.006%) max abs diff 6.103516e-5
+  dispatches: production chain 3 measured wrapper calls (concat K + concat mask + SDPA); fused = 1 Metal dispatch
+    prefix (concat K + mask): 219.81 us/iter
+    production chain: 338.69 us/iter
+    fused two-source: 377.66 us/iter
+  verdict: fused is -11.5% vs production chain (338.69 -> 377.66 us/iter; concat+mask prefix 219.81 us/iter eliminated)
+
+=== csa-32k top-512 (N=8128) (iters=100) ===
+  parity: flips=13726/32768 (41.9%) max abs diff 4.882812e-4 = 0.62 bf16 ULP@max
+  ablation scores-in (softmax+V only): flips=13727/32768 (41.89%) max abs diff 4.882812e-4
+  ablation probs-in (V-dot only): flips=1/32768 (0.003%) max abs diff 2.384186e-7
+  dispatches: production chain 3 measured wrapper calls (concat K + concat mask + SDPA); fused = 1 Metal dispatch
+    prefix (concat K + mask): 237.74 us/iter
+    production chain: 416.55 us/iter
+    fused two-source: 580.95 us/iter
+  verdict: fused is -39.5% vs production chain (416.55 -> 580.95 us/iter; concat+mask prefix 237.74 us/iter eliminated)
+
+RESULT: parity NOT bit-exact (see per-shape flip rates / ULP bounds) — do not wire; softmax-stage reduction order is the dominant divergence (ablations), followed by GEMM tile order
