@@ -205,11 +205,16 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         candidate = workflows["release-candidate.yml"]
         pypi = workflows["pypi.yml"]
 
-        self.assertIn("ref: ${{ inputs.git_commit }}", candidate)
+        self.assertNotIn("ref: ${{ inputs.git_commit }}", candidate)
+        self.assertIn("EXPECTED_OID: ${{ inputs.git_commit }}", candidate)
+        self.assertIn('fetch --depth=1 origin "$EXPECTED_OID"', candidate)
+        self.assertIn('git checkout --detach "$EXPECTED_OID"', candidate)
+        self.assertIn("persist-credentials: false", candidate)
         self.assertIn("Require successful CI for exact commit", candidate)
         self.assertIn("ax-engine-release-candidate-${{ steps.identity.outputs.commit }}", candidate)
         self.assertIn("ax-engine-pypi-wheel-${{ steps.identity.outputs.commit }}", candidate)
-        self.assertIn("shared-key: release-macos-arm64", candidate)
+        self.assertNotIn("Swatinem/rust-cache", candidate)
+        self.assertNotIn("cache: pip", candidate)
         self.assertIn('ARTIFACT_NAME="ax-engine-pypi-wheel-${RELEASE_SHA}"', pypi)
         self.assertIn("scripts/release_candidate.py verify", pypi)
         self.assertIn("--mlx-version", pypi)
