@@ -12410,18 +12410,21 @@ mod tests {
     fn split_e2e_row_pager(
         dir: &std::path::Path,
     ) -> std::sync::Arc<crate::expert_stream::ExpertRowPager> {
-        std::sync::Arc::new(crate::expert_stream::ExpertRowPager::new(
-            split_e2e_manifest(),
-            dir.to_path_buf(),
-            crate::expert_stream::ExpertRowPagerConfig {
-                budget_bytes: 1 << 20,
-                fuse_split_experts: false,
-                prefetch: false,
-                decay_interval: 4096,
-                hotlist_out: None,
-                load_delay: None,
-            },
-        ))
+        std::sync::Arc::new(
+            crate::expert_stream::ExpertRowPager::new(
+                split_e2e_manifest(),
+                dir.to_path_buf(),
+                crate::expert_stream::ExpertRowPagerConfig {
+                    budget_bytes: 1 << 20,
+                    fuse_split_experts: false,
+                    prefetch: false,
+                    decay_interval: 4096,
+                    hotlist_out: None,
+                    load_delay: None,
+                },
+            )
+            .unwrap(),
+        )
     }
 
     /// End-to-end split parity: `split_submit_down_out` (row pager, flag

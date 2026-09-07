@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use mlx_sys::{MlxArray, MlxDtype};
 
-use crate::expert_stream::ExpertStreamTensor;
+use crate::expert_stream::{ExpertStreamTensor, SidecarFileMap};
 
 /// Map a safetensors dtype string to the array dtype (same convention as the
 /// mlx-sys loader: FP8 payloads arrive as raw `Uint8` byte containers).
@@ -254,21 +254,40 @@ fn read_sidecar_row(
     read_row(file, meta, name, expert).map(Some)
 }
 
+/// One resolved sidecar: the tensor name plus the shard that holds it.
+struct SidecarSlot {
+    name: String,
+    path: PathBuf,
+    header: Arc<ShardHeader>,
+}
+
 /// Read the rows of `experts` (in request order) for one manifest tensor and
-/// its `.scales` / `.biases` / `.bias` sidecars from the same shard.
+/// its `.scales` / `.biases` / `.bias` sidecars. Sidecars declared as
+/// first-class manifest rows are read from their own shard — AXQuant packs
+/// may legally split a triplet across files — and a declared sidecar missing
+/// from that shard fails closed. When the manifest declares any quantization
+/// sidecar for the base it is authoritative for the whole quantized triplet:
+/// an undeclared `.scales` fails closed, and so does an undeclared `.biases`
+/// unless the tensor is a bias-free mode (4-bit, group 32 — the MXFP4-style
+/// contract `QuantizedWeight::mlx_quantization_mode` dequants without group
+/// biases). The optional dense `.bias` never triggers authority and keeps the
+/// legacy probe, as do manifests declaring no quantization sidecars at all
+/// (inferred manifests; absent in the weight's shard means no such sidecar).
+/// Every distinct shard is opened once and all row reads group by file.
 pub fn read_expert_proj_rows(
     root: &Path,
     headers: &ShardHeaderCache,
+    sidecars: &SidecarFileMap,
     tensor: &ExpertStreamTensor,
     experts: &[u32],
 ) -> Result<Vec<ExpertProjRow>, String> {
-    let path = root.join(&tensor.file);
-    let header = headers.header(&path)?;
-    let meta = header.tensor(&tensor.name).ok_or_else(|| {
+    let weight_path = root.join(&tensor.file);
+    let weight_header = headers.header(&weight_path)?;
+    let meta = weight_header.tensor(&tensor.name).ok_or_else(|| {
         format!(
             "tensor {} missing from shard {}",
             tensor.name,
-            path.display()
+            weight_path.display()
         )
     })?;
     if meta.shape.first().copied().unwrap_or(0) != tensor.num_experts as i32 {
@@ -281,17 +300,78 @@ pub fn read_expert_proj_rows(
         .name
         .strip_suffix(".weight")
         .unwrap_or(tensor.name.as_str());
-    let scales_name = format!("{base}.scales");
-    let biases_name = format!("{base}.biases");
-    let bias_name = format!("{base}.bias");
+    let sidecar_names = [
+        format!("{base}.scales"),
+        format!("{base}.biases"),
+        format!("{base}.bias"),
+    ];
+    let declared = |index: usize| sidecars.get(&(tensor.layer, sidecar_names[index].clone()));
+    let declared_any = declared(0).is_some() || declared(1).is_some();
+    let bias_free = tensor.bits == 4 && tensor.group_size == 32;
 
-    let file = std::fs::File::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut slots: Vec<Option<SidecarSlot>> = Vec::with_capacity(sidecar_names.len());
+    for (index, name) in sidecar_names.iter().enumerate() {
+        if let Some(file) = declared(index) {
+            let path = root.join(file);
+            let header = headers.header(&path)?;
+            if header.tensor(name).is_none() {
+                return Err(format!(
+                    "sidecar {name} declared by the expert stream manifest is missing \
+                     from shard {}",
+                    path.display()
+                ));
+            }
+            slots.push(Some(SidecarSlot {
+                name: name.clone(),
+                path,
+                header,
+            }));
+        } else if declared_any && (index == 0 || (index == 1 && !bias_free)) {
+            return Err(format!(
+                "sidecar {name} is not declared by the expert stream manifest, which does \
+                 declare other quantization sidecars for {base}: partial declaration, \
+                 refusing to probe shards"
+            ));
+        } else if weight_header.tensor(name).is_some() {
+            slots.push(Some(SidecarSlot {
+                name: name.clone(),
+                path: weight_path.clone(),
+                header: weight_header.clone(),
+            }));
+        } else {
+            slots.push(None);
+        }
+    }
+
+    let mut open_paths = vec![weight_path.clone()];
+    for slot in slots.iter().flatten() {
+        if !open_paths.contains(&slot.path) {
+            open_paths.push(slot.path.clone());
+        }
+    }
+    let mut files: HashMap<PathBuf, std::fs::File> = HashMap::with_capacity(open_paths.len());
+    for path in open_paths {
+        let file =
+            std::fs::File::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        files.insert(path, file);
+    }
+
     let mut rows = Vec::with_capacity(experts.len());
     for &expert in experts {
-        let weight = read_row(&file, meta, &tensor.name, expert)?;
-        let scales = read_sidecar_row(&file, &header, &scales_name, expert, tensor.num_experts)?;
-        let biases = read_sidecar_row(&file, &header, &biases_name, expert, tensor.num_experts)?;
-        let linear_bias = read_sidecar_row(&file, &header, &bias_name, expert, tensor.num_experts)?;
+        let weight = read_row(&files[&weight_path], meta, &tensor.name, expert)?;
+        let mut sidecar_rows: [Option<MlxArray>; 3] = [None, None, None];
+        for (out, slot) in sidecar_rows.iter_mut().zip(&slots) {
+            if let Some(slot) = slot {
+                *out = read_sidecar_row(
+                    &files[&slot.path],
+                    &slot.header,
+                    &slot.name,
+                    expert,
+                    tensor.num_experts,
+                )?;
+            }
+        }
+        let [scales, biases, linear_bias] = sidecar_rows;
         rows.push(ExpertProjRow {
             weight,
             scales,
@@ -382,7 +462,8 @@ mod tests {
         );
         let headers = ShardHeaderCache::new();
         let tensor = manifest_tensor("model.layers.0.mlp.switch_mlp.gate_up_proj.weight", 4);
-        let rows = read_expert_proj_rows(&dir, &headers, &tensor, &[3, 0]).unwrap();
+        let rows = read_expert_proj_rows(&dir, &headers, &SidecarFileMap::new(), &tensor, &[3, 0])
+            .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].weight.shape(), vec![1, 2, 3]);
         mlx_sys::eval(&[&rows[0].weight, &rows[1].weight]);
@@ -419,7 +500,8 @@ mod tests {
         );
         let headers = ShardHeaderCache::new();
         let tensor = manifest_tensor("model.layers.0.mlp.switch_mlp.gate_proj.weight", 4);
-        let rows = read_expert_proj_rows(&dir, &headers, &tensor, &[2]).unwrap();
+        let rows =
+            read_expert_proj_rows(&dir, &headers, &SidecarFileMap::new(), &tensor, &[2]).unwrap();
         let scales = rows[0].scales.as_ref().expect("scales row sliced");
         let biases = rows[0].biases.as_ref().expect("biases row sliced");
         assert_eq!(scales.shape(), vec![1, 2]);
@@ -443,11 +525,18 @@ mod tests {
         );
         let headers = ShardHeaderCache::new();
         let wrong_count = manifest_tensor("model.layers.0.mlp.switch_mlp.gate_up_proj.weight", 8);
-        assert!(read_expert_proj_rows(&dir, &headers, &wrong_count, &[0]).is_err());
+        assert!(
+            read_expert_proj_rows(&dir, &headers, &SidecarFileMap::new(), &wrong_count, &[0])
+                .is_err()
+        );
         let tensor = manifest_tensor("model.layers.0.mlp.switch_mlp.gate_up_proj.weight", 4);
-        assert!(read_expert_proj_rows(&dir, &headers, &tensor, &[4]).is_err());
+        assert!(
+            read_expert_proj_rows(&dir, &headers, &SidecarFileMap::new(), &tensor, &[4]).is_err()
+        );
         let missing = manifest_tensor("model.layers.0.mlp.switch_mlp.missing.weight", 4);
-        assert!(read_expert_proj_rows(&dir, &headers, &missing, &[0]).is_err());
+        assert!(
+            read_expert_proj_rows(&dir, &headers, &SidecarFileMap::new(), &missing, &[0]).is_err()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -472,7 +561,257 @@ mod tests {
         );
         let headers = ShardHeaderCache::new();
         let tensor = manifest_tensor("model.layers.0.mlp.switch_mlp.gate_proj.weight", 4);
-        assert!(read_expert_proj_rows(&dir, &headers, &tensor, &[0]).is_err());
+        assert!(
+            read_expert_proj_rows(&dir, &headers, &SidecarFileMap::new(), &tensor, &[0]).is_err()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_split_sidecars_from_their_declared_files() {
+        // Legal AXQuant layout (4-bit qwen4_exp down_proj): weight+scales
+        // co-located, biases in another shard, all declared as manifest rows.
+        let dir = fixture_dir("split_sidecars");
+        write_safetensors_f32(
+            &dir,
+            "experts.safetensors",
+            &[
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    vec![4, 2, 3],
+                    filled_expert_values(4, 2, 3),
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.scales",
+                    vec![4, 2],
+                    filled_expert_values(4, 2, 1),
+                ),
+            ],
+        );
+        write_safetensors_f32(
+            &dir,
+            "sidecars.safetensors",
+            &[(
+                "model.layers.0.mlp.switch_mlp.down_proj.biases",
+                vec![4, 2],
+                filled_expert_values(4, 2, 1),
+            )],
+        );
+        let base = "model.layers.0.mlp.switch_mlp.down_proj";
+        let sidecars = SidecarFileMap::from([
+            (
+                (0, format!("{base}.scales")),
+                PathBuf::from("experts.safetensors"),
+            ),
+            (
+                (0, format!("{base}.biases")),
+                PathBuf::from("sidecars.safetensors"),
+            ),
+        ]);
+        let headers = ShardHeaderCache::new();
+        let tensor = manifest_tensor("model.layers.0.mlp.switch_mlp.down_proj.weight", 4);
+        let rows = read_expert_proj_rows(&dir, &headers, &sidecars, &tensor, &[2]).unwrap();
+        let scales = rows[0].scales.as_ref().expect("scales row sliced");
+        let biases = rows[0].biases.as_ref().expect("biases row sliced");
+        mlx_sys::eval(&[&rows[0].weight, scales, biases]);
+        assert!(rows[0].weight.data_f32().iter().all(|v| *v == 12.0));
+        assert!(scales.data_f32().iter().all(|v| *v == 12.0));
+        assert!(biases.data_f32().iter().all(|v| *v == 12.0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_three_way_split_sidecars() {
+        // Size-based sharding may place weight, scales, and biases in three
+        // different files.
+        let dir = fixture_dir("three_way_split");
+        let base = "model.layers.0.mlp.switch_mlp.down_proj";
+        write_safetensors_f32(
+            &dir,
+            "a.safetensors",
+            &[(
+                "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                vec![4, 2, 3],
+                filled_expert_values(4, 2, 3),
+            )],
+        );
+        write_safetensors_f32(
+            &dir,
+            "b.safetensors",
+            &[(
+                "model.layers.0.mlp.switch_mlp.down_proj.scales",
+                vec![4, 2],
+                filled_expert_values(4, 2, 1),
+            )],
+        );
+        write_safetensors_f32(
+            &dir,
+            "c.safetensors",
+            &[(
+                "model.layers.0.mlp.switch_mlp.down_proj.biases",
+                vec![4, 2],
+                filled_expert_values(4, 2, 1),
+            )],
+        );
+        let sidecars = SidecarFileMap::from([
+            (
+                (0, format!("{base}.scales")),
+                PathBuf::from("b.safetensors"),
+            ),
+            (
+                (0, format!("{base}.biases")),
+                PathBuf::from("c.safetensors"),
+            ),
+        ]);
+        let headers = ShardHeaderCache::new();
+        let mut tensor = manifest_tensor("model.layers.0.mlp.switch_mlp.down_proj.weight", 4);
+        tensor.file = PathBuf::from("a.safetensors");
+        let rows = read_expert_proj_rows(&dir, &headers, &sidecars, &tensor, &[1, 3]).unwrap();
+        assert_eq!(rows.len(), 2);
+        let scales0 = rows[0].scales.as_ref().expect("scales row sliced");
+        let biases1 = rows[1].biases.as_ref().expect("biases row sliced");
+        mlx_sys::eval(&[scales0, biases1]);
+        assert!(scales0.data_f32().iter().all(|v| *v == 11.0));
+        assert!(biases1.data_f32().iter().all(|v| *v == 13.0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn declared_sidecar_missing_from_its_shard_fails_closed() {
+        // A manifest row that names a shard not holding the sidecar is a
+        // manifest/shard disagreement: fail closed instead of silently
+        // dropping the quantization channel.
+        let dir = fixture_dir("missing_declared_sidecar");
+        write_safetensors_f32(
+            &dir,
+            "experts.safetensors",
+            &[(
+                "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                vec![4, 2, 3],
+                filled_expert_values(4, 2, 3),
+            )],
+        );
+        write_safetensors_f32(
+            &dir,
+            "sidecars.safetensors",
+            &[("unrelated.tensor", vec![2], vec![1.0, 2.0])],
+        );
+        let sidecars = SidecarFileMap::from([(
+            (
+                0,
+                "model.layers.0.mlp.switch_mlp.down_proj.scales".to_string(),
+            ),
+            PathBuf::from("sidecars.safetensors"),
+        )]);
+        let headers = ShardHeaderCache::new();
+        let tensor = manifest_tensor("model.layers.0.mlp.switch_mlp.down_proj.weight", 4);
+        let Err(error) = read_expert_proj_rows(&dir, &headers, &sidecars, &tensor, &[0]) else {
+            panic!("declared-but-absent sidecar must fail closed");
+        };
+        assert!(
+            error.contains("down_proj.scales"),
+            "error must name the missing sidecar: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn partial_sidecar_declaration_fails_closed() {
+        // scales declared, biases co-located in the weight shard but
+        // undeclared: for an affine tensor the manifest is authoritative for
+        // the whole quantized triplet, so the read fails closed instead of
+        // probing (the undeclared component may exist in another shard).
+        let dir = fixture_dir("partial_declaration");
+        write_safetensors_f32(
+            &dir,
+            "experts.safetensors",
+            &[
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    vec![4, 2, 3],
+                    filled_expert_values(4, 2, 3),
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.scales",
+                    vec![4, 2],
+                    filled_expert_values(4, 2, 1),
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.biases",
+                    vec![4, 2],
+                    filled_expert_values(4, 2, 1),
+                ),
+            ],
+        );
+        let base = "model.layers.0.mlp.switch_mlp.down_proj";
+        let headers = ShardHeaderCache::new();
+        let tensor = manifest_tensor("model.layers.0.mlp.switch_mlp.down_proj.weight", 4);
+
+        let scales_only = SidecarFileMap::from([(
+            (0, format!("{base}.scales")),
+            PathBuf::from("experts.safetensors"),
+        )]);
+        let Err(error) = read_expert_proj_rows(&dir, &headers, &scales_only, &tensor, &[0]) else {
+            panic!("partial declaration must fail closed");
+        };
+        assert!(
+            error.contains("down_proj.biases"),
+            "error must name the undeclared sidecar: {error}"
+        );
+
+        let biases_only = SidecarFileMap::from([(
+            (0, format!("{base}.biases")),
+            PathBuf::from("experts.safetensors"),
+        )]);
+        let Err(error) = read_expert_proj_rows(&dir, &headers, &biases_only, &tensor, &[0]) else {
+            panic!("partial declaration must fail closed");
+        };
+        assert!(
+            error.contains("down_proj.scales"),
+            "error must name the undeclared sidecar: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bias_free_mxfp4_declaration_resolves_scales_only() {
+        // 4-bit/group-32 (the bias-free MXFP4-style contract): a manifest
+        // declaring only scales is complete for this mode — biases resolve
+        // as authoritative absence, not an error.
+        let dir = fixture_dir("bias_free");
+        write_safetensors_f32(
+            &dir,
+            "experts.safetensors",
+            &[
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    vec![4, 2, 3],
+                    filled_expert_values(4, 2, 3),
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.scales",
+                    vec![4, 2],
+                    filled_expert_values(4, 2, 1),
+                ),
+            ],
+        );
+        let sidecars = SidecarFileMap::from([(
+            (
+                0,
+                "model.layers.0.mlp.switch_mlp.down_proj.scales".to_string(),
+            ),
+            PathBuf::from("experts.safetensors"),
+        )]);
+        let headers = ShardHeaderCache::new();
+        let mut tensor = manifest_tensor("model.layers.0.mlp.switch_mlp.down_proj.weight", 4);
+        tensor.bits = 4;
+        tensor.group_size = 32;
+        let rows = read_expert_proj_rows(&dir, &headers, &sidecars, &tensor, &[2]).unwrap();
+        let scales = rows[0].scales.as_ref().expect("scales row sliced");
+        mlx_sys::eval(&[&rows[0].weight, scales]);
+        assert!(rows[0].weight.data_f32().iter().all(|v| *v == 12.0));
+        assert!(scales.data_f32().iter().all(|v| *v == 12.0));
+        assert!(rows[0].biases.is_none() && rows[0].linear_bias.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

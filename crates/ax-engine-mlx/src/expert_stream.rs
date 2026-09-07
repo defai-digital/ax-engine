@@ -11,14 +11,17 @@
 //! v1 is layer-stack paging only: the existing `gather_qmm` kernel runs
 //! unchanged on the paged packed tensors. No per-expert unfused kernels.
 //!
-//! Opt-in per-expert mode (`AX_STREAM_EXPERT_GRANULARITY=expert`) pages
+//! Per-expert mode (`AX_STREAM_EXPERT_GRANULARITY=expert`) pages
 //! individual experts instead: the [`ExpertRowPager`] caches `(layer, expert)`
 //! rows under a byte budget, evicts by route hotness (router selection count,
 //! decayed over time) rather than recency, preloads an optional offline
 //! hotlist, and warms the next layer's predicted experts on a loader thread.
 //! Decode assembles a compacted `[top_k, ...]` stack so the same `gather_qmm`
 //! path runs unchanged; prefill and any row-mode failure fall back to the
-//! layer-stack pager.
+//! layer-stack pager. An explicit env value always wins; when the env is
+//! unset, qwen4_exp packs with a file-backed `ax_expert_stream.json` default
+//! to `expert` and every other family (and inferred manifests) stays on
+//! `layer` (see [`stream_expert_granularity_for_family`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -140,6 +143,12 @@ pub struct ExpertStreamManifest {
     #[serde(default)]
     pub streamed_roles: Vec<String>,
     pub tensors: Vec<ExpertStreamTensor>,
+    /// True when this plan was inferred from native tensor roles
+    /// (`infer_layer_stack_manifest`) instead of parsed from the pack's
+    /// `ax_expert_stream.json`. Inferred plans carry weight rows only (no
+    /// sidecar rows), so the row pager must not default on for them.
+    #[serde(skip)]
+    pub inferred: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -263,6 +272,73 @@ pub fn streamed_skip_names(manifest: &ExpertStreamManifest) -> HashSet<String> {
     skip
 }
 
+/// Sidecar shard files declared by a manifest: `(layer, sidecar tensor name)`
+/// → shard path. AXQuant lists every `.scales` / `.biases` / `.bias` as a
+/// first-class row with its own `file`, and triplets may legally split across
+/// shards, so the row pager resolves each sidecar's file from this map
+/// instead of assuming co-location with the weight.
+pub type SidecarFileMap = HashMap<(u32, String), PathBuf>;
+
+/// Base name of a weight row (`{base}.weight` → `{base}`).
+fn weight_base_name(name: &str) -> &str {
+    name.strip_suffix(".weight").unwrap_or(name)
+}
+
+/// Base name of a sidecar row (strips the matched sidecar suffix). Only
+/// meaningful for names [`is_quantization_sidecar_name`] accepts.
+fn sidecar_base_name(name: &str) -> &str {
+    for suffix in [".scales", ".biases", ".bias"] {
+        if let Some(base) = name.strip_suffix(suffix) {
+            return base;
+        }
+    }
+    name
+}
+
+/// Build the sidecar file map for a manifest (sidecar rows only; weight rows
+/// resolve through their own `file`). Fails closed on duplicate `(layer,
+/// name)` sidecar rows and on a sidecar row whose base weight row is not
+/// streamed in the same layer: both are manifest structure errors, so a
+/// name/layer drift can never land in the map and silently miss at read
+/// time. The correspondence requirement is also what makes `.bias`
+/// classification exact — a `switch.bias`-style row with no same-layer
+/// `switch.weight` row is rejected, not mapped.
+pub fn sidecar_file_map(
+    manifest: &ExpertStreamManifest,
+) -> Result<SidecarFileMap, ExpertStreamError> {
+    let weight_bases: HashSet<(u32, &str)> = manifest
+        .tensors
+        .iter()
+        .filter(|tensor| !is_quantization_sidecar_name(&tensor.name))
+        .map(|tensor| (tensor.layer, weight_base_name(&tensor.name)))
+        .collect();
+    let mut map = SidecarFileMap::new();
+    for tensor in manifest
+        .tensors
+        .iter()
+        .filter(|tensor| is_quantization_sidecar_name(&tensor.name))
+    {
+        if !weight_bases.contains(&(tensor.layer, sidecar_base_name(&tensor.name))) {
+            return Err(ExpertStreamError::InvalidManifest(format!(
+                "sidecar tensor {} (layer {}) has no matching weight row in the same layer",
+                tensor.name, tensor.layer
+            )));
+        }
+        match map.entry((tensor.layer, tensor.name.clone())) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(ExpertStreamError::InvalidManifest(format!(
+                    "duplicate sidecar tensor row {} (layer {})",
+                    tensor.name, tensor.layer
+                )));
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(tensor.file.clone());
+            }
+        }
+    }
+    Ok(map)
+}
+
 #[cfg(test)]
 fn env_flag_enabled(value: Option<&str>) -> bool {
     matches!(
@@ -320,10 +396,12 @@ pub const EXPERT_HOTLIST_SCHEMA_V1: &str = "ax.expert-hotlist.v1";
 /// Pager granularity for streamed expert stacks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum StreamExpertGranularity {
-    /// Whole layer stacks (current behavior, product default).
+    /// Whole layer stacks (default for every family except qwen4_exp packs
+    /// with a file-backed manifest).
     #[default]
     Layer,
-    /// Individual experts with route-hotness eviction (opt-in).
+    /// Individual experts with route-hotness eviction (file-backed qwen4_exp
+    /// default; opt-in elsewhere via `AX_STREAM_EXPERT_GRANULARITY=expert`).
     Expert,
 }
 
@@ -368,6 +446,34 @@ pub fn stream_expert_granularity_from_env(value: Option<&str>) -> StreamExpertGr
 
 pub fn stream_expert_granularity() -> StreamExpertGranularity {
     stream_expert_granularity_from_env(std::env::var(STREAM_EXPERT_GRANULARITY_ENV).ok().as_deref())
+}
+
+/// Family-aware granularity resolution at pager construction. An explicit
+/// `AX_STREAM_EXPERT_GRANULARITY` (either value) always wins, and invalid
+/// values keep failing closed to `layer`; only an unset/empty env falls back
+/// to the family default: `expert` for qwen4_exp packs with a file-backed
+/// `ax_expert_stream.json` (the row pager resolves this family's
+/// split-sidecar triplets from the manifest), `layer` otherwise. An inferred
+/// manifest carries weight rows only, so flipping there would re-open the
+/// split-sidecar co-location class — `manifest_file_backed` locks the flip
+/// to real pack manifests. The env-global [`stream_expert_granularity`]
+/// stays family-blind so the family policy lives only here, where the caller
+/// has family context.
+pub fn stream_expert_granularity_for_family(
+    value: Option<&str>,
+    model_family: &str,
+    manifest_file_backed: bool,
+) -> StreamExpertGranularity {
+    let family_default = if model_family == "qwen4_exp" && manifest_file_backed {
+        StreamExpertGranularity::Expert
+    } else {
+        StreamExpertGranularity::Layer
+    };
+    match value {
+        None => family_default,
+        Some(raw) if raw.trim().is_empty() => family_default,
+        some => stream_expert_granularity_from_env(some),
+    }
 }
 
 /// Row-pager byte budget from `AX_STREAM_EXPERT_CACHE_BYTES`.
@@ -683,6 +789,7 @@ pub fn infer_layer_stack_manifest(
         ],
         streamed_roles: vec!["expert".into()],
         tensors,
+        inferred: true,
     })
 }
 
@@ -979,6 +1086,7 @@ struct RowPagerCore {
     manifest: Arc<ExpertStreamManifest>,
     root: PathBuf,
     headers: crate::expert_stream_slice::ShardHeaderCache,
+    sidecar_files: SidecarFileMap,
     state: Mutex<RowPagerState>,
     budget_bytes: usize,
     load_delay: Option<std::time::Duration>,
@@ -1039,6 +1147,7 @@ fn load_rows(
         let rows = crate::expert_stream_slice::read_expert_proj_rows(
             &core.root,
             &core.headers,
+            &core.sidecar_files,
             tensor,
             experts,
         )
@@ -1343,8 +1452,9 @@ impl ExpertRowPager {
         manifest: Arc<ExpertStreamManifest>,
         root: PathBuf,
         config: ExpertRowPagerConfig,
-    ) -> Self {
+    ) -> Result<Self, ExpertStreamError> {
         let core = Arc::new(RowPagerCore {
+            sidecar_files: sidecar_file_map(&manifest)?,
             manifest,
             root,
             headers: crate::expert_stream_slice::ShardHeaderCache::new(),
@@ -1372,14 +1482,14 @@ impl ExpertRowPager {
         } else {
             (None, None)
         };
-        Self {
+        Ok(Self {
             core,
             fuse_split_experts: config.fuse_split_experts,
             decay_interval: config.decay_interval.max(1),
             prefetch_tx: Mutex::new(prefetch_tx),
             prefetch_worker: Mutex::new(prefetch_worker),
             hotlist_out: Mutex::new(config.hotlist_out),
-        }
+        })
     }
 
     pub fn budget_bytes(&self) -> usize {
@@ -2854,6 +2964,7 @@ mod tests {
                 load_delay: None,
             },
         )
+        .unwrap()
     }
 
     fn u32_index_array(ids: &[u32]) -> mlx_sys::MlxArray {
@@ -3098,6 +3209,317 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ------------------------------------------------------------------
+    // Split-sidecar fixtures: the down_proj triplet is split across files
+    // and the manifest declares each sidecar as a first-class row (the
+    // published 4-bit qwen4_exp layout).
+    // ------------------------------------------------------------------
+
+    fn synth_split_sidecar_manifest() -> ExpertStreamManifest {
+        let prefix = "model.layers.0.mlp.switch_mlp";
+        let json = serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "generated_by": "ax-engine-test",
+            "required": true,
+            "mode": "layer-stack",
+            "num_experts": SYN_EXPERTS,
+            "experts_per_tok": 2,
+            "estimated_resident_bytes": 1000,
+            "estimated_full_resident_bytes": 5000,
+            "estimated_max_layer_expert_bytes": 2000,
+            "resident_roles": ["embedding", "attention", "router", "norm", "lm_head"],
+            "streamed_roles": ["expert"],
+            "tensors": [
+                {"name": format!("{prefix}.gate_up_proj.weight"), "file": "experts.safetensors", "layer": 0, "proj": "gate_up", "expert_axis": 0, "num_experts": SYN_EXPERTS, "bits": 2, "group_size": 64},
+                {"name": format!("{prefix}.down_proj.weight"), "file": "experts.safetensors", "layer": 0, "proj": "down", "expert_axis": 0, "num_experts": SYN_EXPERTS, "bits": 2, "group_size": 64},
+                {"name": format!("{prefix}.down_proj.scales"), "file": "sidecars.safetensors", "layer": 0, "proj": "down", "expert_axis": 0, "num_experts": SYN_EXPERTS, "bits": 2, "group_size": 64},
+                {"name": format!("{prefix}.down_proj.biases"), "file": "sidecars.safetensors", "layer": 0, "proj": "down", "expert_axis": 0, "num_experts": SYN_EXPERTS, "bits": 2, "group_size": 64}
+            ],
+        });
+        ExpertStreamManifest::parse(&serde_json::to_vec(&json).unwrap()).unwrap()
+    }
+
+    fn sidecar_fill_values(base: f32, rows: i32) -> Vec<f32> {
+        let mut values = Vec::with_capacity((SYN_EXPERTS * rows) as usize);
+        for expert in 0..SYN_EXPERTS {
+            values.resize(values.len() + rows as usize, base + expert as f32);
+        }
+        values
+    }
+
+    fn synth_split_sidecar_fixture(tag: &str, include_scales: bool) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ax_expert_stream_split_sidecar_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_safetensors_f32(
+            &dir,
+            "experts.safetensors",
+            &[
+                (
+                    "model.layers.0.mlp.switch_mlp.gate_up_proj.weight",
+                    vec![SYN_EXPERTS, 2 * SYN_INTER, SYN_HIDDEN],
+                    synth_expert_values(0, 2 * SYN_INTER, SYN_HIDDEN),
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    vec![SYN_EXPERTS, SYN_HIDDEN, SYN_INTER],
+                    synth_expert_values(0, SYN_HIDDEN, SYN_INTER),
+                ),
+            ],
+        );
+        let mut sidecar_tensors: Vec<(&str, Vec<i32>, Vec<f32>)> = Vec::new();
+        if include_scales {
+            sidecar_tensors.push((
+                "model.layers.0.mlp.switch_mlp.down_proj.scales",
+                vec![SYN_EXPERTS, SYN_HIDDEN],
+                sidecar_fill_values(100.0, SYN_HIDDEN),
+            ));
+        }
+        sidecar_tensors.push((
+            "model.layers.0.mlp.switch_mlp.down_proj.biases",
+            vec![SYN_EXPERTS, SYN_HIDDEN],
+            sidecar_fill_values(200.0, SYN_HIDDEN),
+        ));
+        write_safetensors_f32(&dir, "sidecars.safetensors", &sidecar_tensors);
+        dir
+    }
+
+    #[test]
+    fn sidecar_file_map_indexes_declared_rows_only() {
+        let map = sidecar_file_map(&synth_split_sidecar_manifest()).unwrap();
+        assert_eq!(map.len(), 2);
+        let prefix = "model.layers.0.mlp.switch_mlp.down_proj";
+        assert_eq!(
+            map.get(&(0, format!("{prefix}.scales"))),
+            Some(&PathBuf::from("sidecars.safetensors"))
+        );
+        assert_eq!(
+            map.get(&(0, format!("{prefix}.biases"))),
+            Some(&PathBuf::from("sidecars.safetensors"))
+        );
+        assert!(!map.contains_key(&(0, format!("{prefix}.weight"))));
+    }
+
+    /// Manifest with caller-chosen tensor rows (name, file, layer, proj).
+    fn manifest_with_rows(rows: &[(&str, &str, u32, &str)]) -> ExpertStreamManifest {
+        let tensors: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(name, file, layer, proj)| {
+                serde_json::json!({
+                    "name": name,
+                    "file": file,
+                    "layer": layer,
+                    "proj": proj,
+                    "expert_axis": 0,
+                    "num_experts": SYN_EXPERTS,
+                    "bits": 2,
+                    "group_size": 64
+                })
+            })
+            .collect();
+        let json = serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "generated_by": "ax-engine-test",
+            "required": true,
+            "mode": "layer-stack",
+            "num_experts": SYN_EXPERTS,
+            "experts_per_tok": 2,
+            "estimated_resident_bytes": 1000,
+            "estimated_full_resident_bytes": 5000,
+            "estimated_max_layer_expert_bytes": 2000,
+            "resident_roles": ["embedding", "attention", "router", "norm", "lm_head"],
+            "streamed_roles": ["expert"],
+            "tensors": tensors,
+        });
+        ExpertStreamManifest::parse(&serde_json::to_vec(&json).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn sidecar_file_map_rejects_duplicate_rows() {
+        let prefix = "model.layers.0.mlp.switch_mlp.down_proj";
+        let manifest = manifest_with_rows(&[
+            (
+                "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                "experts.safetensors",
+                0,
+                "down",
+            ),
+            (
+                "model.layers.0.mlp.switch_mlp.down_proj.scales",
+                "a.safetensors",
+                0,
+                "down",
+            ),
+            (
+                "model.layers.0.mlp.switch_mlp.down_proj.scales",
+                "a.safetensors",
+                0,
+                "down",
+            ),
+        ]);
+        let error = sidecar_file_map(&manifest).expect_err("duplicate rows must fail closed");
+        assert!(
+            matches!(&error, ExpertStreamError::InvalidManifest(msg) if msg.contains(prefix)),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn sidecar_file_map_rejects_sidecar_without_matching_weight_row() {
+        // A sidecar row whose (layer, base) matches no weight row is a
+        // name/layer drift: fail closed at map build instead of letting the
+        // lookup miss silently at read time. This is also what tightens the
+        // `.bias` classifier — a `switch.bias`-style row with no same-layer
+        // `switch.weight` never enters the map.
+        let manifest = manifest_with_rows(&[
+            (
+                "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                "experts.safetensors",
+                0,
+                "down",
+            ),
+            (
+                "model.layers.0.mlp.switch_mlp.down_proj.scales",
+                "a.safetensors",
+                1, // declared for the wrong layer
+                "down",
+            ),
+        ]);
+        let error = sidecar_file_map(&manifest)
+            .expect_err("a sidecar row with no same-layer weight row must fail closed");
+        assert!(
+            matches!(&error, ExpertStreamError::InvalidManifest(msg) if msg.contains("down_proj.scales")),
+            "unexpected error: {error}"
+        );
+
+        let dense_bias = manifest_with_rows(&[
+            (
+                "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                "experts.safetensors",
+                0,
+                "down",
+            ),
+            (
+                "model.layers.0.mlp.switch.bias",
+                "experts.safetensors",
+                0,
+                "down",
+            ),
+        ]);
+        assert!(
+            sidecar_file_map(&dense_bias).is_err(),
+            "a dangling switch.bias row must fail closed"
+        );
+    }
+
+    #[test]
+    fn row_pager_partial_sidecar_declaration_fails_closed() {
+        // scales declared, biases co-located but undeclared, affine tensor:
+        // the manifest is authoritative for the whole quantized triplet, so
+        // the row load fails with a Paging error (layer-stack fallback).
+        let dir = synth_split_sidecar_fixture("partial", true);
+        let manifest = manifest_with_rows(&[
+            (
+                "model.layers.0.mlp.switch_mlp.gate_up_proj.weight",
+                "experts.safetensors",
+                0,
+                "gate_up",
+            ),
+            (
+                "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                "experts.safetensors",
+                0,
+                "down",
+            ),
+            (
+                "model.layers.0.mlp.switch_mlp.down_proj.scales",
+                "sidecars.safetensors",
+                0,
+                "down",
+            ),
+        ]);
+        let pager = ExpertRowPager::new(
+            Arc::new(manifest),
+            dir.clone(),
+            ExpertRowPagerConfig {
+                budget_bytes: 1 << 20,
+                fuse_split_experts: false,
+                prefetch: false,
+                decay_interval: 4096,
+                hotlist_out: None,
+                load_delay: None,
+            },
+        )
+        .unwrap();
+        let Err(error) = pager.ensure_experts(0, &[1]) else {
+            panic!("partial sidecar declaration must fail closed");
+        };
+        assert!(
+            matches!(&error, ExpertStreamError::Paging(msg) if msg.contains("down_proj.biases")),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_reads_manifest_declared_split_sidecars() {
+        let dir = synth_split_sidecar_fixture("load", true);
+        let pager = ExpertRowPager::new(
+            Arc::new(synth_split_sidecar_manifest()),
+            dir.clone(),
+            ExpertRowPagerConfig {
+                budget_bytes: 1 << 20,
+                fuse_split_experts: false,
+                prefetch: false,
+                decay_interval: 4096,
+                hotlist_out: None,
+                load_delay: None,
+            },
+        )
+        .unwrap();
+        let compacted = pager.ensure_experts(0, &[1]).unwrap();
+        let down = compacted.stack.down_exps.as_ref().unwrap();
+        let scales = down.scales.as_ref().expect("split scales must attach");
+        let biases = down.biases.as_ref().expect("split biases must attach");
+        mlx_sys::eval(&[&down.weight, scales, biases]);
+        assert_eq!(scales.shape(), vec![1, SYN_HIDDEN]);
+        assert!(down.weight.data_f32().iter().all(|v| *v == 11.0));
+        assert!(scales.data_f32().iter().all(|v| *v == 101.0));
+        assert!(biases.data_f32().iter().all(|v| *v == 201.0));
+        let gate_up = compacted.stack.gate_up_exps_packed.as_ref().unwrap();
+        assert!(gate_up.scales.is_none() && gate_up.biases.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_pager_declared_missing_sidecar_fails_closed() {
+        // The manifest declares down_proj.scales in sidecars.safetensors but
+        // the shard does not hold it: the row load must fail with a Paging
+        // error so the MoE forward falls back to layer-stack paging.
+        let dir = synth_split_sidecar_fixture("missing", false);
+        let pager = ExpertRowPager::new(
+            Arc::new(synth_split_sidecar_manifest()),
+            dir.clone(),
+            ExpertRowPagerConfig {
+                budget_bytes: 1 << 20,
+                fuse_split_experts: false,
+                prefetch: false,
+                decay_interval: 4096,
+                hotlist_out: None,
+                load_delay: None,
+            },
+        )
+        .unwrap();
+        let Err(error) = pager.ensure_experts(0, &[1]) else {
+            panic!("declared-but-absent sidecar must fail closed");
+        };
+        assert!(
+            matches!(&error, ExpertStreamError::Paging(msg) if msg.contains("down_proj.scales")),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn synth_split_fixture(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ax_expert_stream_split_{tag}"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3165,7 +3587,8 @@ mod tests {
                 hotlist_out: None,
                 load_delay: None,
             },
-        );
+        )
+        .unwrap();
         let compacted = plain.ensure_experts(0, &[0, 2]).unwrap();
         let gate = compacted.stack.gate_exps.as_ref().unwrap();
         assert_eq!(gate.weight.shape(), vec![2, SYN_INTER, SYN_HIDDEN]);
@@ -3184,7 +3607,8 @@ mod tests {
                 hotlist_out: None,
                 load_delay: None,
             },
-        );
+        )
+        .unwrap();
         let compacted = fused.ensure_experts(0, &[0, 2]).unwrap();
         let packed = compacted
             .stack
@@ -3222,6 +3646,112 @@ mod tests {
         assert_eq!(
             stream_expert_granularity_from_env(Some("bogus")),
             StreamExpertGranularity::Layer
+        );
+    }
+
+    #[test]
+    fn granularity_family_default_flips_only_qwen4_exp() {
+        // Env unset/empty: qwen4_exp packs with a file-backed manifest decode
+        // through the row pager; every other family keeps whole-layer paging.
+        assert_eq!(
+            stream_expert_granularity_for_family(None, "qwen4_exp", true),
+            StreamExpertGranularity::Expert
+        );
+        assert_eq!(
+            stream_expert_granularity_for_family(Some(""), "qwen4_exp", true),
+            StreamExpertGranularity::Expert
+        );
+        assert_eq!(
+            stream_expert_granularity_for_family(Some("  "), "qwen4_exp", true),
+            StreamExpertGranularity::Expert
+        );
+        assert_eq!(
+            stream_expert_granularity_for_family(None, "deepseek_v4", true),
+            StreamExpertGranularity::Layer
+        );
+        assert_eq!(
+            stream_expert_granularity_for_family(None, "minimax_m3", true),
+            StreamExpertGranularity::Layer
+        );
+        // An explicit env value always wins over the family default.
+        assert_eq!(
+            stream_expert_granularity_for_family(Some("layer"), "qwen4_exp", true),
+            StreamExpertGranularity::Layer
+        );
+        assert_eq!(
+            stream_expert_granularity_for_family(Some("expert"), "deepseek_v4", true),
+            StreamExpertGranularity::Expert
+        );
+        // Invalid values fail closed to layer, not to the family default.
+        assert_eq!(
+            stream_expert_granularity_for_family(Some("bogus"), "qwen4_exp", true),
+            StreamExpertGranularity::Layer
+        );
+    }
+
+    #[test]
+    fn granularity_family_default_requires_file_backed_manifest() {
+        // Inferred manifests (no ax_expert_stream.json in the pack) carry
+        // weight rows only: the qwen4_exp flip must not engage for them.
+        assert_eq!(
+            stream_expert_granularity_for_family(None, "qwen4_exp", false),
+            StreamExpertGranularity::Layer
+        );
+        assert_eq!(
+            stream_expert_granularity_for_family(Some(""), "qwen4_exp", false),
+            StreamExpertGranularity::Layer
+        );
+        // An explicit env value still wins over the inferred-manifest gate.
+        assert_eq!(
+            stream_expert_granularity_for_family(Some("expert"), "qwen4_exp", false),
+            StreamExpertGranularity::Expert
+        );
+        assert_eq!(
+            stream_expert_granularity_for_family(Some("expert"), "deepseek_v4", false),
+            StreamExpertGranularity::Expert
+        );
+        // Invalid env + inferred manifest still fails closed to layer.
+        assert_eq!(
+            stream_expert_granularity_for_family(Some("bogus"), "qwen4_exp", false),
+            StreamExpertGranularity::Layer
+        );
+    }
+
+    #[test]
+    fn inferred_manifest_marks_provenance_and_stays_on_layer() {
+        // The review's regression test: a qwen4_exp pack whose stream plan is
+        // inferred (no ax_expert_stream.json) must not flip to per-expert
+        // paging — its manifest has no sidecar rows to resolve split
+        // triplets from.
+        let specs = vec![
+            infer_spec(
+                "model.layers.0.ffn.switch_mlp.gate_proj.weight",
+                NativeTensorRole::FfnGateUpExpsPacked,
+                0,
+                4,
+                100,
+            ),
+            infer_spec(
+                "model.layers.0.ffn.switch_mlp.down_proj.weight",
+                NativeTensorRole::FfnDownExps,
+                0,
+                4,
+                80,
+            ),
+        ];
+        let inferred = infer_layer_stack_manifest(&specs, 8).expect("roles must infer");
+        assert!(inferred.inferred);
+        assert_eq!(
+            stream_expert_granularity_for_family(None, "qwen4_exp", !inferred.inferred),
+            StreamExpertGranularity::Layer
+        );
+        let file_backed =
+            ExpertStreamManifest::parse(&serde_json::to_vec(&manifest_json(true)).unwrap())
+                .unwrap();
+        assert!(!file_backed.inferred);
+        assert_eq!(
+            stream_expert_granularity_for_family(None, "qwen4_exp", !file_backed.inferred),
+            StreamExpertGranularity::Expert
         );
     }
 

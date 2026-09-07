@@ -200,6 +200,7 @@ fn pager(dir: &Path, load_delay: Option<Duration>) -> ExpertRowPager {
             load_delay,
         },
     )
+    .expect("probe manifest sidecar map must build")
 }
 
 /// Simulated MoE trunk on a compacted stack: gate_up gather_mm → split +

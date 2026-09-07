@@ -1,0 +1,67 @@
+{
+  "schema": "ax.qwen38_flash_next_parity.engine_dump.v1",
+  "kind": "engine",
+  "ok": true,
+  "mtp_on": false,
+  "load_wall_s": 32.89,
+  "generate_wall_s": 968.005,
+  "wall_s": 1001.394,
+  "ax_engine_version": "7.2.1",
+  "generations": [
+    {
+      "prompt_id": "p01_short_factual_en",
+      "prompt_token_ids": [
+        3710,
+        369,
+        279,
+        6511,
+        314,
+        9338,
+        30,
+        21134,
+        440,
+        279,
+        3177,
+        803,
+        1132,
+        13
+      ],
+      "prompt_tokens": 14,
+      "completion_tokens": 8,
+      "token_ids": [
+        271,
+        248068,
+        198,
+        760,
+        1156,
+        16561,
+        364,
+        279
+      ],
+      "finish_reason": "max_output_tokens",
+      "status": "finished",
+      "step_count": 8,
+      "ttft_step": 1,
+      "wall_s": 967.998,
+      "mtp": {
+        "ax_mtp_draft_tokens": 0,
+        "ax_mtp_accepted_tokens": 0,
+        "ax_mtp_decode_steps": 0,
+        "ax_mtp_direct_fallback_steps": 0,
+        "ax_mtp_requested": 0,
+        "ax_mlx_mtp_model_policy": 11,
+        "ax_mlx_qwen4_exp_mtp_certification_candidate": 0,
+        "ax_mlx_qwen4_exp_mtp_direct_fallback": 1,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_accepted_tokens": 0
+      },
+      "accept_proxy": {
+        "decode_steps_proxy": 7,
+        "tokens_per_decode_step": 1.1429
+      },
+      "extras": {
+        "prompt_ids_source": "engine_echo"
+      }
+    }
+  ]
+}

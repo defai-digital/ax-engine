@@ -2354,94 +2354,108 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     // Expert streaming: attach the pager to layers whose fused expert stacks
     // are streamed. Their resident expert fields stay None; the MoE forward
     // resolves them through the handle, which pages the layer stack in.
-    let expert_stream_pager = expert_stream_manifest.as_ref().map(|manifest| {
-        let fuse_split_experts = artifacts.manifest().model_family == "deepseek_v4";
-        let pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new_with_fuse(
-            std::sync::Arc::new(manifest.clone()),
-            root.clone(),
-            crate::expert_stream::expert_layer_budget(),
-            // Resident load fuses split experts only for DeepSeek V4. MiniMax-M3
-            // mlxcel keeps split SwitchLinear; these Super-class packs stream.
-            fuse_split_experts,
-        ));
-        let granularity = crate::expert_stream::stream_expert_granularity();
-        let row_pager = match granularity {
-            crate::expert_stream::StreamExpertGranularity::Layer => None,
-            crate::expert_stream::StreamExpertGranularity::Expert => {
-                let rows = std::sync::Arc::new(crate::expert_stream::ExpertRowPager::new(
-                    std::sync::Arc::new(manifest.clone()),
-                    root.clone(),
-                    crate::expert_stream::ExpertRowPagerConfig {
-                        budget_bytes: crate::expert_stream::expert_row_cache_bytes_from_env(
-                            std::env::var(crate::expert_stream::STREAM_EXPERT_CACHE_BYTES_ENV)
+    let expert_stream_pager = match expert_stream_manifest.as_ref() {
+        Some(manifest) => {
+            let fuse_split_experts = artifacts.manifest().model_family == "deepseek_v4";
+            let pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new_with_fuse(
+                std::sync::Arc::new(manifest.clone()),
+                root.clone(),
+                crate::expert_stream::expert_layer_budget(),
+                // Resident load fuses split experts only for DeepSeek V4. MiniMax-M3
+                // mlxcel keeps split SwitchLinear; these Super-class packs stream.
+                fuse_split_experts,
+            ));
+            let granularity = crate::expert_stream::stream_expert_granularity_for_family(
+                std::env::var(crate::expert_stream::STREAM_EXPERT_GRANULARITY_ENV)
+                    .ok()
+                    .as_deref(),
+                &artifacts.manifest().model_family,
+                !manifest.inferred,
+            );
+            let row_pager = match granularity {
+                crate::expert_stream::StreamExpertGranularity::Layer => None,
+                crate::expert_stream::StreamExpertGranularity::Expert => {
+                    let rows = std::sync::Arc::new(crate::expert_stream::ExpertRowPager::new(
+                        std::sync::Arc::new(manifest.clone()),
+                        root.clone(),
+                        crate::expert_stream::ExpertRowPagerConfig {
+                            budget_bytes: crate::expert_stream::expert_row_cache_bytes_from_env(
+                                std::env::var(crate::expert_stream::STREAM_EXPERT_CACHE_BYTES_ENV)
+                                    .ok()
+                                    .as_deref(),
+                                manifest,
+                            ),
+                            fuse_split_experts,
+                            prefetch: crate::expert_stream::expert_prefetch_enabled_from_env(
+                                std::env::var(crate::expert_stream::STREAM_EXPERT_PREFETCH_ENV)
+                                    .ok()
+                                    .as_deref(),
+                            ),
+                            decay_interval: crate::expert_stream::expert_hotness_decay_from_env(
+                                std::env::var(
+                                    crate::expert_stream::STREAM_EXPERT_HOTNESS_DECAY_ENV,
+                                )
                                 .ok()
                                 .as_deref(),
-                            manifest,
-                        ),
-                        fuse_split_experts,
-                        prefetch: crate::expert_stream::expert_prefetch_enabled_from_env(
-                            std::env::var(crate::expert_stream::STREAM_EXPERT_PREFETCH_ENV)
-                                .ok()
-                                .as_deref(),
-                        ),
-                        decay_interval: crate::expert_stream::expert_hotness_decay_from_env(
-                            std::env::var(crate::expert_stream::STREAM_EXPERT_HOTNESS_DECAY_ENV)
-                                .ok()
-                                .as_deref(),
-                        ),
-                        hotlist_out: std::env::var(
-                            crate::expert_stream::STREAM_EXPERT_HOTLIST_OUT_ENV,
-                        )
-                        .ok()
-                        .map(std::path::PathBuf::from),
-                        load_delay: None,
-                    },
-                ));
-                if let Ok(path) = std::env::var(crate::expert_stream::STREAM_EXPERT_HOTLIST_ENV) {
-                    match rows.preload_hotlist(std::path::Path::new(&path)) {
-                        Ok(warmed) => tracing::info!(
-                            target: "ax_engine_mlx",
-                            warmed,
-                            path = %path,
-                            "expert hotlist preloaded into row pager"
-                        ),
-                        Err(error) => tracing::warn!(
-                            target: "ax_engine_mlx",
-                            %error,
-                            path = %path,
-                            "expert hotlist preload failed; continuing with a cold row cache"
-                        ),
+                            ),
+                            hotlist_out: std::env::var(
+                                crate::expert_stream::STREAM_EXPERT_HOTLIST_OUT_ENV,
+                            )
+                            .ok()
+                            .map(std::path::PathBuf::from),
+                            load_delay: None,
+                        },
+                    )?);
+                    if let Ok(path) = std::env::var(crate::expert_stream::STREAM_EXPERT_HOTLIST_ENV)
+                    {
+                        match rows.preload_hotlist(std::path::Path::new(&path)) {
+                            Ok(warmed) => tracing::info!(
+                                target: "ax_engine_mlx",
+                                warmed,
+                                path = %path,
+                                "expert hotlist preloaded into row pager"
+                            ),
+                            Err(error) => tracing::warn!(
+                                target: "ax_engine_mlx",
+                                %error,
+                                path = %path,
+                                "expert hotlist preload failed; continuing with a cold row cache"
+                            ),
+                        }
                     }
+                    Some(rows)
                 }
-                Some(rows)
+            };
+            let streamed_layers: std::collections::HashSet<u32> =
+                manifest.layer_indices().into_iter().collect();
+            for (li, layer) in layers.iter_mut().enumerate() {
+                if streamed_layers.contains(&(li as u32)) {
+                    let source = match &row_pager {
+                        Some(rows) => crate::expert_stream::ExpertLayerSource::new_with_rows(
+                            pager.clone(),
+                            rows.clone(),
+                            li as u32,
+                        ),
+                        None => {
+                            crate::expert_stream::ExpertLayerSource::new(pager.clone(), li as u32)
+                        }
+                    };
+                    layer.expert_stream = Some(std::sync::Arc::new(source));
+                }
             }
-        };
-        let streamed_layers: std::collections::HashSet<u32> =
-            manifest.layer_indices().into_iter().collect();
-        for (li, layer) in layers.iter_mut().enumerate() {
-            if streamed_layers.contains(&(li as u32)) {
-                let source = match &row_pager {
-                    Some(rows) => crate::expert_stream::ExpertLayerSource::new_with_rows(
-                        pager.clone(),
-                        rows.clone(),
-                        li as u32,
-                    ),
-                    None => crate::expert_stream::ExpertLayerSource::new(pager.clone(), li as u32),
-                };
-                layer.expert_stream = Some(std::sync::Arc::new(source));
-            }
+            tracing::info!(
+                target = "ax_engine_mlx",
+                layers = streamed_layers.len(),
+                budget = pager.budget_layers(),
+                required = manifest.required,
+                granularity = granularity.as_str(),
+                row_cache_bytes = row_pager.as_ref().map_or(0, |rows| rows.budget_bytes()),
+                "expert streaming active: layer-stack paging replaces resident expert loads"
+            );
+            Some(pager)
         }
-        tracing::info!(
-            target = "ax_engine_mlx",
-            layers = streamed_layers.len(),
-            budget = pager.budget_layers(),
-            required = manifest.required,
-            granularity = granularity.as_str(),
-            row_cache_bytes = row_pager.as_ref().map_or(0, |rows| rows.budget_bytes()),
-            "expert streaming active: layer-stack paging replaces resident expert loads"
-        );
-        pager
-    });
+        None => None,
+    };
 
     // Conv1d remains the reliable fail-closed check for raw HF linear-attention
     // layout. LinearAttentionNorm is a gated-norm scale in Qwen3-Next-style
