@@ -1,0 +1,260 @@
+{
+  "schema_version": "ax.qwen38_flash_next_parity.v1",
+  "status": "INFRA",
+  "exit_code": 3,
+  "mode": "engine",
+  "started_at": "2026-09-07T14:40:57Z",
+  "finished_at": "2026-09-07T16:41:01Z",
+  "wall_s": 7203.328,
+  "git_sha": "3fa82e8f3718c0754cd6132c87bd76a727527f8d",
+  "engine_version": "7.2.1",
+  "hardware": {
+    "hw.model": "Mac14,14",
+    "hw.memsize": "206158430208",
+    "machdep.cpu.brand_string": "Apple M2 Ultra",
+    "platform": "macOS-26.6.2-arm64"
+  },
+  "pack": {
+    "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+    "revision": "d514dcebf3086068ed7968caf395083c95ebcfca",
+    "tag": "6bit",
+    "path": "/Users/akiralam/.cache/huggingface/packs/qwen38-flash-next-6bit",
+    "layout": "plain_dir",
+    "sha256_manifest": "sha256-manifest.json",
+    "sha256_manifest_complete": false,
+    "model_type": "qwen4_exp",
+    "architectures": [
+      "Qwen4ExpForConditionalGeneration"
+    ],
+    "contract_sha256": {
+      "config.json": "19231536f0f8ce129eb8cab985a68c0ddced2af90e12f5c65f01a35a686efe02",
+      "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "tokenizer_config.json": "792fa3f0cb88b111e54ef3134c873531008c4df471d108da17903426e308aa7b",
+      "model.safetensors.index.json": "ab0e442ef09c9198718f10dba967ff90e0cf1c0a9005c928bb8b72c3d76bf5a2",
+      "ax_expert_stream.json": "9aa34b7edef44e8a9a6302816950dd0b37305e52f98355cde20d3388326dc2ae",
+      "mtplx_runtime.json": "119b930ed4b470a08008aa2a51b4a83162907a85b8455f559cffa03e33236ed6",
+      "axquant_mtp_sidecar_manifest.json": "119b1b6b60881959adbdefc529736d1e1048aa15e0740e8a3fbb6b2e23aed558",
+      "sha256-manifest.json": "4ebfcd5f3e820f116fb3d93a1008f19534a19ac2ba49bc1394a5f0663a1394d6"
+    },
+    "safetensors_inventory": [
+      {
+        "name": "model-00001-of-00033.safetensors",
+        "size_bytes": 5148425879
+      },
+      {
+        "name": "model-00002-of-00033.safetensors",
+        "size_bytes": 5185599851
+      },
+      {
+        "name": "model-00003-of-00033.safetensors",
+        "size_bytes": 5350031104
+      },
+      {
+        "name": "model-00004-of-00033.safetensors",
+        "size_bytes": 5000029583
+      },
+      {
+        "name": "model-00005-of-00033.safetensors",
+        "size_bytes": 5350031110
+      },
+      {
+        "name": "model-00006-of-00033.safetensors",
+        "size_bytes": 5000029587
+      },
+      {
+        "name": "model-00007-of-00033.safetensors",
+        "size_bytes": 5350031110
+      },
+      {
+        "name": "model-00008-of-00033.safetensors",
+        "size_bytes": 5000029581
+      },
+      {
+        "name": "model-00009-of-00033.safetensors",
+        "size_bytes": 5350031100
+      },
+      {
+        "name": "model-00010-of-00033.safetensors",
+        "size_bytes": 5000029587
+      },
+      {
+        "name": "model-00011-of-00033.safetensors",
+        "size_bytes": 5350031142
+      },
+      {
+        "name": "model-00012-of-00033.safetensors",
+        "size_bytes": 5000029618
+      },
+      {
+        "name": "model-00013-of-00033.safetensors",
+        "size_bytes": 4943462042
+      },
+      {
+        "name": "model-00014-of-00033.safetensors",
+        "size_bytes": 5007886287
+      },
+      {
+        "name": "model-00015-of-00033.safetensors",
+        "size_bytes": 4923592999
+      },
+      {
+        "name": "model-00016-of-00033.safetensors",
+        "size_bytes": 4928932159
+      },
+      {
+        "name": "model-00017-of-00033.safetensors",
+        "size_bytes": 5002547354
+      },
+      {
+        "name": "model-00018-of-00033.safetensors",
+        "size_bytes": 4923593194
+      },
+      {
+        "name": "model-00019-of-00033.safetensors",
+        "size_bytes": 4928932286
+      },
+      {
+        "name": "model-00020-of-00033.safetensors",
+        "size_bytes": 5002547368
+      },
+      {
+        "name": "model-00021-of-00033.safetensors",
+        "size_bytes": 4928932182
+      },
+      {
+        "name": "model-00022-of-00033.safetensors",
+        "size_bytes": 4923593222
+      },
+      {
+        "name": "model-00023-of-00033.safetensors",
+        "size_bytes": 5002547376
+      },
+      {
+        "name": "model-00024-of-00033.safetensors",
+        "size_bytes": 4928932292
+      },
+      {
+        "name": "model-00025-of-00033.safetensors",
+        "size_bytes": 4923593146
+      },
+      {
+        "name": "model-00026-of-00033.safetensors",
+        "size_bytes": 5007886422
+      },
+      {
+        "name": "model-00027-of-00033.safetensors",
+        "size_bytes": 4923593042
+      },
+      {
+        "name": "model-00028-of-00033.safetensors",
+        "size_bytes": 4928932254
+      },
+      {
+        "name": "model-00029-of-00033.safetensors",
+        "size_bytes": 5002547364
+      },
+      {
+        "name": "model-00030-of-00033.safetensors",
+        "size_bytes": 4923593068
+      },
+      {
+        "name": "model-00031-of-00033.safetensors",
+        "size_bytes": 4928932212
+      },
+      {
+        "name": "model-00032-of-00033.safetensors",
+        "size_bytes": 4967139694
+      },
+      {
+        "name": "model-00033-of-00033.safetensors",
+        "size_bytes": 675430747
+      },
+      {
+        "name": "mtp.safetensors",
+        "size_bytes": 5214305544
+      }
+    ],
+    "weights_hashed": false
+  },
+  "software": {
+    "mlx": null,
+    "mlx_vlm_version": null,
+    "mlx_vlm_commit": null,
+    "python": "3.12.13",
+    "ax_engine": null
+  },
+  "run_config": {
+    "max_tokens": 16,
+    "temperature": 0.0,
+    "stream_experts": "auto",
+    "stream_experts_applied": "auto",
+    "disable_ngram_mtp_off": "AX_NO_SPEC=1",
+    "mtp": "both",
+    "session": {
+      "mlx": true,
+      "deterministic": true,
+      "model_id": "qwen4_exp",
+      "generate": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 0,
+        "repetition_penalty": 1.0,
+        "no_repeat_ngram_size": 0,
+        "seed": 0
+      }
+    },
+    "cert_env_mtp_on": "AX_MLX_QWEN4_EXP_MTP_CERTIFICATION_CANDIDATE=1",
+    "extension_build": "maturin develop --profile release-pyext",
+    "load_timeout_s": 7200.0,
+    "request_timeout_s": 3600.0,
+    "settle_s": 10.0,
+    "stop_timeout_s": 120.0,
+    "require_mlx_mtp": false,
+    "hash_weights": false,
+    "work_dir": "/var/folders/xr/9qggs_k93ylgq_s8gmxjttvm0000gp/T/ax-parity-qwen38-y7xkaiuf"
+  },
+  "prompts": [
+    {
+      "prompt_id": "p01_short_factual_en",
+      "category": "short_factual_en",
+      "n_chars": 62,
+      "n_prompt_tokens": 14,
+      "text_sha256": "957eb3b1fd68c2fa451215d311595b0e289dc5748e8c786758600b82240f7f7c"
+    },
+    {
+      "prompt_id": "p02_code_generation",
+      "category": "code_generation",
+      "n_chars": 136,
+      "n_prompt_tokens": 24,
+      "text_sha256": "79184dfc5deed011e03745288e35264d8452fd0ed7f5b5c72b26ab4244da5ce5"
+    },
+    {
+      "prompt_id": "p04_long_instruction",
+      "category": "long_instruction",
+      "n_chars": 775,
+      "n_prompt_tokens": 148,
+      "text_sha256": "20955fd24289b144dc053c36d1137603445c48dd95fa6a8e5c0f11a8b56cc742"
+    }
+  ],
+  "checks": {
+    "token_parity_mlx_vs_engine_off": "n/a",
+    "mtp_losslessness_engine_on_vs_off": "SKIPPED",
+    "mtp_engagement": "SKIPPED",
+    "prompt_tokens_gate": "SKIPPED",
+    "mlx_mtp_accept_rate_crosscheck": "n/a"
+  },
+  "mlx": null,
+  "engine_mtp_off": null,
+  "engine_mtp_on": null,
+  "comparisons": {},
+  "warnings": [],
+  "failure": {
+    "class": "INFRA",
+    "subtype": "worker_timeout",
+    "message": "engine worker exceeded the 7200.0s load/generate budget",
+    "details": {
+      "subtype": "worker_timeout",
+      "log_tail": ""
+    }
+  }
+}
