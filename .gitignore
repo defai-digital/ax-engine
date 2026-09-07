@@ -9,6 +9,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.venv-parity/
 venv/
 node_modules/
 npm-debug.log*

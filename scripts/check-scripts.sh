@@ -243,7 +243,9 @@ bash scripts/check-qa.sh
   scripts/test_release_candidate.py \
   scripts/test_release_signing.py \
   scripts/test_standalone_release.py \
-  scripts/test_minisign_artifact.py
+  scripts/test_minisign_artifact.py \
+  scripts/parity_qwen38_flash_next.py \
+  scripts/test_parity_qwen38_flash_next.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
   scripts/test_bench_single_client_mlx_serving.py \
@@ -318,6 +320,15 @@ bash scripts/check-qa.sh
   scripts/test_release_signing.py \
   scripts/test_standalone_release.py \
   scripts/test_minisign_artifact.py
+# The parity harness tests are pytest-style (plain def test_*); run them under
+# pytest. Prefer .venv-parity (the harness's live venv) when it actually has
+# pytest importable; otherwise fall back to the gate interpreter.
+PARITY_TEST_PYTHON="$PYTHON_BIN"
+if [[ -x "$ROOT_DIR/.venv-parity/bin/python" ]] && \
+    "$ROOT_DIR/.venv-parity/bin/python" -c "import pytest" >/dev/null 2>&1; then
+    PARITY_TEST_PYTHON="$ROOT_DIR/.venv-parity/bin/python"
+fi
+"$PARITY_TEST_PYTHON" -m pytest scripts/test_parity_qwen38_flash_next.py -q
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_decode_hot_path_kernel_admission.py
