@@ -34,6 +34,18 @@ true:
   where applicable
 - known limitations are documented before the model appears in public results tables
 
+## Experimental Classifications
+
+A family with a repo-owned graph that does not yet meet the Preview direct
+evidence bar is classified **Experimental** in the architecture registry
+instead of Preview direct. Experimental families carry no support,
+performance, or certification claims; promotion runs through the same
+promotion gates above.
+
+| Family | Classification | Gaps before Preview direct |
+| --- | --- | --- |
+| `qwen4_exp` (Qwen3.8-Flash-Next, `qwen3.8-flash-next:axq`) | Experimental; repo-owned graph; text-only serving (vision tower dropped fail-loud); MTP draft head implemented but off by default (`AX_MLX_QWEN4_EXP_MTP_CERTIFICATION_CANDIDATE=1` opt-in, depth 1) | Real-pack parity and smoke evidence; benchmark artifacts; practical host fit (no expert streaming yet; ~155.6 GiB of resident weights) |
+
 ## Six-Month Activity Rule
 
 Six months without a meaningful upstream model-family release is a default stop

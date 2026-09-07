@@ -101,6 +101,23 @@ Qwen 3.8 caveat:
   path. Start with `qwen3.8-27b:axq` (the pinned AXQ 6-bit MTP pack). The
   checkpoint path is Tier 1; MTP Tier 2 performance certification remains
   pending.
+- Qwen3.8-Flash-Next (`qwen4_exp`) is a different architecture from the 27B
+  line — 48-layer hybrid (36 gated-delta linear layers plus 12 sparse
+  full-attention "QSA" layers), 512-expert MoE (top-10 plus a shared
+  expert), 4-stream hyper-connections, a PLE n-gram embedding floor, and a
+  1-layer MTP sidecar — and is registered **Experimental**. The repo-owned
+  graph and the `qwen3.8-flash-next` server preset are implemented and the
+  AXQ 6-bit pack is revision-pinned (`qwen3.8-flash-next:axq`, ~155.6 GiB),
+  but serving is text-only: the inline BF16 vision tower is dropped
+  fail-loud at download/convert and video is unsupported. The MTP draft
+  head is implemented but **off by default** (fail-closed direct decode;
+  opt in with `AX_MLX_QWEN4_EXP_MTP_CERTIFICATION_CANDIDATE=1`, depth 1).
+  Expert streaming is not available for this pack yet, so it needs resident
+  memory for the full ~155.6 GiB of weights plus runtime headroom —
+  realistically a 192 GB host (tight) or 256/512 GB. Real-pack parity
+  validation against the upstream reference implementation has not run
+  yet: there are no benchmark rows, no MTP acceptance-rate data, and no
+  certification evidence, and this is not a support claim.
 
 A model moves between tiers by landing evidence, not by renaming:
 
@@ -350,6 +367,12 @@ serve them through the idempotent resolution flow:
 | `ornith-35b`, `ornith-35b:axq-4bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit` | `9ff7a33b034a7e72cdc32a531ed8dd0d07e35116` | Tier 1 certified; compact 4-bit sibling |
 | `muse-glimmer-30b:axq`, `muse-glimmer-30b:axq-6bit` | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit` | `367745bd05b77bf82188f3799677e4beba543e8d` | Candidate; dense image-text agent; ATEM; no MTP |
 | `muse-glimmer-30b`, `muse-glimmer-30b:axq-4bit` | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit` | `bcfb0b748fc44487c1657fb6ae190592d515398b` | Candidate; compact 4-bit sibling |
+
+**AXQ experimental packs — revision-pinned, no certification track**
+
+| Alias | Repo | Pinned revision | Status |
+| --- | --- | --- | --- |
+| `qwen3.8-flash-next:axq`, `qwen3.8-flash-next:axq-6bit`, `ax-qwen3.8-flash-next-axq`[`-6bit`] | `AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP` | `d514dcebf3086068ed7968caf395083c95ebcfca` | Experimental; text-only (vision tower dropped fail-loud); MTP off by default; ~155.6 GiB, no expert streaming yet, 192 GB+ host; no certification evidence |
 
 The unqualified `:axq` selector intentionally means 6-bit. Bare family
 aliases (`qwen3.6-27b`, `gemma4-12b`) stay mlx-community, and `ax-<family>`
