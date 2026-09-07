@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
+use std::path::Path;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use mlx_sys::{
     MlxArray, MlxDtype, MlxQuantizationMode, SafetensorsNameFilter, add, astype, broadcast_to,
@@ -496,20 +498,36 @@ pub struct Qwen4ExpIndexerWeights {
 ///
 /// The 128-shard table is ~51 GiB of 8-bit group-quantized weights, so shards
 /// must never enter the resident name map or be eval'd at `load_weights` time
-/// (the same discipline as the expert-stream pager). Only the safetensors
-/// path plus manifest shape/quantization metadata are captured up front; the
-/// quantized triplet (`weight`/`scales`/`biases`) is mmap-loaded on the first
-/// [`Self::load`] so the PLE module can gather rows per shard without
-/// materializing the 320M-row join.
+/// (the same discipline as the expert-stream pager). Only the resolved
+/// safetensors paths plus manifest shape/quantization metadata are captured
+/// up front; the quantized triplet (`weight`/`scales`/`biases`) is
+/// mmap-loaded on the first [`Self::load`] so the PLE module can gather rows
+/// per shard without materializing the 320M-row join.
 pub struct Qwen4ExpPleTableShard {
-    file: PathBuf,
+    files: PleShardComponentFiles,
     weight_name: String,
     rows: i64,
     /// Logical embedding width per row (recovered from the packed manifest
     /// shape and the quantization bit width).
     dim: i64,
     quantization: NativeTensorQuantization,
-    cache: OnceLock<Result<QuantizedWeight, String>>,
+    /// First-load memo. Errors are cached typed (behind `Arc`) so the
+    /// `WeightLoadError` kind survives the cache round-trip without parsing
+    /// Display strings.
+    cache: OnceLock<Result<QuantizedWeight, Arc<WeightLoadError>>>,
+}
+
+/// Resolved pack paths for one PLE n-gram shard's affine triplet. HF/AXQ
+/// size-based sharding may legally place `{base}.weight` / `{base}.scales` /
+/// `{base}.biases` in different safetensors files, so each component
+/// resolves its own file at table construction.
+struct PleShardComponentFiles {
+    weight: PathBuf,
+    scales: PathBuf,
+    /// Present when the pack ships `{base}.biases`. Required at construction
+    /// for affine PLE shards that are not the 4-bit/gs32 MXFP4 no-bias
+    /// exception (see `QuantizedWeight::mlx_quantization_mode`).
+    biases: Option<PathBuf>,
 }
 
 impl Qwen4ExpPleTableShard {
@@ -536,21 +554,74 @@ impl Qwen4ExpPleTableShard {
         self.cache.get().is_some()
     }
 
-    /// Load this shard's quantized weight triplet on first use. Only this
-    /// shard's file is opened and only its three tensors are materialized;
-    /// the caller gathers rows and evals the gathered output itself.
+    #[cfg(test)]
+    fn weight_file(&self) -> &Path {
+        &self.files.weight
+    }
+
+    #[cfg(test)]
+    fn scales_file(&self) -> &Path {
+        &self.files.scales
+    }
+
+    #[cfg(test)]
+    fn biases_file(&self) -> Option<&Path> {
+        self.files.biases.as_deref()
+    }
+
+    /// Load this shard's quantized weight triplet on first use. Only the
+    /// shard's resolved component files are opened and only its three
+    /// tensors are materialized; the caller gathers rows and evals the
+    /// gathered output itself. The first result — success or failure — is
+    /// cached for the shard's lifetime.
     pub fn load(&self) -> Result<&QuantizedWeight, WeightLoadError> {
         let entry = self
             .cache
-            .get_or_init(|| self.load_inner().map_err(|error| error.to_string()));
+            .get_or_init(|| self.load_inner().map_err(Arc::new));
         match entry {
             Ok(weight) => Ok(weight),
-            Err(message) => Err(WeightLoadError::FileMissing(format!(
-                "qwen4_exp PLE n-gram shard {} ({}): {message}",
-                self.weight_name,
-                self.file.display()
-            ))),
+            Err(error) => Err(self.wrap_load_error(error)),
         }
+    }
+
+    /// Rebuild the cached error with its kind intact plus the resolved
+    /// component files, so a wrong name→file mapping is diagnosable from the
+    /// message. `WeightLoadError` is not `Clone`, so each call reconstructs
+    /// a fresh error of the same kind from the Arc'd one.
+    fn wrap_load_error(&self, error: &WeightLoadError) -> WeightLoadError {
+        match error {
+            WeightLoadError::QuantizationMissing(message) => {
+                WeightLoadError::QuantizationMissing(self.describe_files(message))
+            }
+            WeightLoadError::TensorMissing(message) => {
+                WeightLoadError::TensorMissing(self.describe_files(message))
+            }
+            WeightLoadError::FileMissing(message) => {
+                WeightLoadError::FileMissing(self.describe_files(message))
+            }
+            // `load_inner` produces only the three kinds above; an
+            // unexpected variant reports as InvalidLayer, not a file
+            // problem (defensive; not a kind-recovery path).
+            other => WeightLoadError::InvalidLayer(self.describe_files(&other.to_string())),
+        }
+    }
+
+    /// Error context naming every resolved component file, so a wrong
+    /// name→file mapping is diagnosable from the message alone.
+    fn describe_files(&self, message: &str) -> String {
+        let biases = self
+            .files
+            .biases
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none".to_string());
+        format!(
+            "qwen4_exp PLE n-gram shard {} (weight {}, scales {}, biases {}): {message}",
+            self.weight_name,
+            self.files.weight.display(),
+            self.files.scales.display(),
+            biases
+        )
     }
 
     fn load_inner(&self) -> Result<QuantizedWeight, WeightLoadError> {
@@ -558,19 +629,57 @@ impl Qwen4ExpPleTableShard {
             .weight_name
             .strip_suffix(".weight")
             .unwrap_or(self.weight_name.as_str());
-        let mut keep = std::collections::HashSet::new();
-        keep.insert(self.weight_name.clone());
-        keep.insert(format!("{base}.scales"));
-        keep.insert(format!("{base}.biases"));
-        let mut tensors = load_safetensors_filtered(&self.file, SafetensorsNameFilter::Keep(&keep))
-            .map_err(WeightLoadError::FileMissing)?;
-        let weight = tensors
-            .remove(&self.weight_name)
-            .ok_or_else(|| WeightLoadError::TensorMissing(self.weight_name.clone()))?;
-        let scales = tensors
-            .remove(&format!("{base}.scales"))
-            .ok_or_else(|| WeightLoadError::QuantizationMissing(format!("{base}.scales")))?;
-        let biases = tensors.remove(&format!("{base}.biases"));
+        let scales_name = format!("{base}.scales");
+        let biases_name = format!("{base}.biases");
+        // Group the Keep set by component file: the common case (the whole
+        // triplet in one file) is a single open; split triplets open two or
+        // three files and merge.
+        let mut keep_by_file: HashMap<&Path, HashSet<String>> = HashMap::new();
+        keep_by_file
+            .entry(self.files.weight.as_path())
+            .or_default()
+            .insert(self.weight_name.clone());
+        keep_by_file
+            .entry(self.files.scales.as_path())
+            .or_default()
+            .insert(scales_name.clone());
+        if let Some(biases_file) = &self.files.biases {
+            keep_by_file
+                .entry(biases_file.as_path())
+                .or_default()
+                .insert(biases_name.clone());
+        }
+        let mut tensors: HashMap<String, MlxArray> = HashMap::new();
+        for (file, keep) in &keep_by_file {
+            let loaded = load_safetensors_filtered(file, SafetensorsNameFilter::Keep(keep))
+                .map_err(|error| {
+                    WeightLoadError::FileMissing(format!(
+                        "qwen4_exp PLE n-gram shard {} component file {}: {error}",
+                        self.weight_name,
+                        file.display()
+                    ))
+                })?;
+            tensors.extend(loaded);
+        }
+        let weight = tensors.remove(&self.weight_name).ok_or_else(|| {
+            WeightLoadError::TensorMissing(format!(
+                "{} ({})",
+                self.weight_name,
+                self.files.weight.display()
+            ))
+        })?;
+        let scales = tensors.remove(&scales_name).ok_or_else(|| {
+            WeightLoadError::QuantizationMissing(format!(
+                "{scales_name} ({})",
+                self.files.scales.display()
+            ))
+        })?;
+        let biases = match &self.files.biases {
+            Some(path) => Some(tensors.remove(&biases_name).ok_or_else(|| {
+                WeightLoadError::QuantizationMissing(format!("{biases_name} ({})", path.display()))
+            })?),
+            None => None,
+        };
         Ok(QuantizedWeight::with_quantization(
             weight,
             Some(scales),
@@ -5344,6 +5453,192 @@ fn load_qwen4_exp_ple_weights(
     })
 }
 
+/// Upper bound on one safetensors JSON header, matching convert's
+/// `parse_safetensors_header` cap (the sidecar scan reads header keys only,
+/// never tensor bytes).
+const PLE_SIDECAR_HEADER_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Sidecar files the header scan must not treat as PLE triplet candidates.
+/// The DeepSeek V4 converted file name mirrors ax-engine-core convert's
+/// `pub(crate)` `DEEPSEEK_V4_CONVERTED_SAFETENSORS_FILE` (not a runtime
+/// dependency); qwen4_exp packs never ship it.
+const PLE_SIDECAR_SCAN_SKIP_FILES: [&str; 3] = [
+    "mtp.safetensors",
+    "vision.safetensors",
+    "model-deepseek-v4-ax.safetensors",
+];
+
+/// Read one safetensors file's JSON header and return its tensor names.
+/// Header-only: the 8-byte length prefix plus the JSON object keys, via safe
+/// `std::fs` (no mmap, no `unsafe`, no tensor payload).
+fn safetensors_header_tensor_names(path: &Path) -> Result<HashSet<String>, WeightLoadError> {
+    use std::io::Read as _;
+
+    let invalid = |message: String| {
+        WeightLoadError::InvalidLayer(format!(
+            "qwen4_exp PLE sidecar header scan {}: {message}",
+            path.display()
+        ))
+    };
+    let mut file = std::fs::File::open(path).map_err(|error| invalid(format!("open: {error}")))?;
+    let mut length_bytes = [0u8; 8];
+    file.read_exact(&mut length_bytes)
+        .map_err(|error| invalid(format!("header length read: {error}")))?;
+    let header_len = u64::from_le_bytes(length_bytes) as usize;
+    if header_len == 0 || header_len > PLE_SIDECAR_HEADER_MAX_BYTES {
+        return Err(invalid(format!(
+            "header size {header_len} is out of valid range"
+        )));
+    }
+    let mut header_bytes = vec![0u8; header_len];
+    file.read_exact(&mut header_bytes)
+        .map_err(|error| invalid(format!("header read: {error}")))?;
+    let header: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&header_bytes)
+        .map_err(|error| invalid(format!("header JSON parse: {error}")))?;
+    Ok(header
+        .keys()
+        .filter(|name| name.as_str() != "__metadata__")
+        .cloned()
+        .collect())
+}
+
+/// Validate one `weight_map` value: pack shards are flat single file names,
+/// so absolute paths, parent refs, and nested relative paths fail closed.
+fn qwen4_exp_ple_index_file_name(value: &str) -> Result<PathBuf, WeightLoadError> {
+    let mut components = Path::new(value).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(name)), None) => Ok(PathBuf::from(name)),
+        _ => Err(WeightLoadError::InvalidLayer(format!(
+            "qwen4_exp PLE index weight_map path {value:?} must be a single pack file name"
+        ))),
+    }
+}
+
+/// Fill still-missing `needed` sidecar names from the HF
+/// `model.safetensors.index.json` `weight_map` when the pack ships one. The
+/// index is a fast path; an escaped (non-flat) value errors closed even when
+/// the header scan would have found the tensor.
+fn qwen4_exp_ple_sidecars_from_index(
+    root: &Path,
+    needed: &HashSet<String>,
+    map: &mut HashMap<String, PathBuf>,
+) -> Result<(), WeightLoadError> {
+    let index_path = root.join("model.safetensors.index.json");
+    let Ok(bytes) = std::fs::read(&index_path) else {
+        return Ok(());
+    };
+    let index: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+        WeightLoadError::InvalidLayer(format!(
+            "qwen4_exp PLE sidecar index {}: JSON parse failed: {error}",
+            index_path.display()
+        ))
+    })?;
+    let Some(weight_map) = index
+        .get("weight_map")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Ok(());
+    };
+    for name in needed {
+        if map.contains_key(name) {
+            continue;
+        }
+        if let Some(value) = weight_map.get(name).and_then(serde_json::Value::as_str) {
+            let file = qwen4_exp_ple_index_file_name(value)?;
+            map.insert(name.clone(), file);
+        }
+    }
+    Ok(())
+}
+
+/// Fill still-missing `needed` sidecar names from the JSON headers of pack
+/// `*.safetensors` files, stopping as soon as `needed` is covered.
+/// Non-recursive; file symlinks into a Hub blob store are followed (the
+/// normal snapshot layout), directory symlinks are never descended. Files
+/// that hold only dropped-ledger names are candidates here even though no
+/// `NativeTensorSpec` references them.
+fn qwen4_exp_ple_sidecars_from_headers(
+    root: &Path,
+    needed: &HashSet<String>,
+    map: &mut HashMap<String, PathBuf>,
+) -> Result<(), WeightLoadError> {
+    let mut candidates: Vec<PathBuf> = match std::fs::read_dir(root) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_type()
+                    .map(|kind| kind.is_file() || kind.is_symlink())
+                    .unwrap_or(false)
+            })
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "safetensors"))
+            .filter(|path| {
+                !path.file_name().is_some_and(|name| {
+                    PLE_SIDECAR_SCAN_SKIP_FILES.iter().any(|skip| name == *skip)
+                })
+            })
+            .collect(),
+        // An unreadable root maps nothing; the caller reports the
+        // still-missing sidecar names as QuantizationMissing.
+        Err(_) => Vec::new(),
+    };
+    candidates.sort();
+    for path in candidates {
+        if needed.iter().all(|name| map.contains_key(name)) {
+            break;
+        }
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
+        for name in safetensors_header_tensor_names(&path)? {
+            if needed.contains(&name) {
+                map.entry(name).or_insert_with(|| PathBuf::from(file_name));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the pack file holding each PLE shard sidecar name
+/// (`{base}.scales` / `{base}.biases`). Sidecars never enter
+/// `NativeTensorSpec` (convert drops them into the ledger), so the weight
+/// spec's `file` is not evidence for the sidecars. Fill order: manifest
+/// specs (synthetic fixtures may map sidecars), the HF index `weight_map`,
+/// then the safetensors header-key scan. Any `{base}.scales` left unmapped
+/// fails closed here, at table construction, instead of at first forward.
+fn qwen4_exp_ple_sidecar_name_map(
+    root: &Path,
+    specs: &[NativeTensorSpec],
+    needed: &HashSet<String>,
+) -> Result<HashMap<String, PathBuf>, WeightLoadError> {
+    let covered = |map: &HashMap<String, PathBuf>| needed.iter().all(|name| map.contains_key(name));
+    let mut map = HashMap::new();
+    for spec in specs {
+        if needed.contains(&spec.name) {
+            map.insert(spec.name.clone(), spec.file.clone());
+        }
+    }
+    if covered(&map) {
+        return Ok(map);
+    }
+    qwen4_exp_ple_sidecars_from_index(root, needed, &mut map)?;
+    if covered(&map) {
+        return Ok(map);
+    }
+    qwen4_exp_ple_sidecars_from_headers(root, needed, &mut map)?;
+    if let Some(name) = needed
+        .iter()
+        .filter(|name| name.ends_with(".scales") && !map.contains_key(*name))
+        .min()
+    {
+        return Err(WeightLoadError::QuantizationMissing(format!(
+            "{name} (no pack file maps this PLE n-gram shard sidecar)"
+        )));
+    }
+    Ok(map)
+}
+
 /// Collect the PLE n-gram table shards from the manifest into lazy refs.
 /// Shards are checkpoint row-shards of one logical table (`split_ngram_parts`
 /// = 128); the PLE module gathers rows per shard and never joins them.
@@ -5387,6 +5682,20 @@ fn qwen4_exp_ple_table(
             )));
         }
     }
+    // Resolve every shard's sidecar files once, up front: the weight spec's
+    // `file` says nothing about where `{base}.scales` / `{base}.biases`
+    // live on a legally split pack.
+    let needed: HashSet<String> = shards
+        .iter()
+        .flat_map(|(_, spec)| {
+            let base = spec
+                .name
+                .strip_suffix(".weight")
+                .unwrap_or(spec.name.as_str());
+            [format!("{base}.scales"), format!("{base}.biases")]
+        })
+        .collect();
+    let sidecar_map = qwen4_exp_ple_sidecar_name_map(root, specs, &needed)?;
     let shards = shards
         .into_iter()
         .map(|(_, spec)| {
@@ -5417,8 +5726,36 @@ fn qwen4_exp_ple_table(
             } else {
                 shape[1] as i64
             };
+            let base = spec.name.strip_suffix(".weight").unwrap_or(spec.name.as_str());
+            let scales_name = format!("{base}.scales");
+            let biases_name = format!("{base}.biases");
+            let scales_rel = sidecar_map.get(&scales_name).ok_or_else(|| {
+                WeightLoadError::QuantizationMissing(format!(
+                    "{scales_name} (no pack file maps this sidecar for {})",
+                    spec.name
+                ))
+            })?;
+            let biases_rel = sidecar_map.get(&biases_name);
+            // Affine PLE shards need the group-bias channel: MXFP4/MXFP8/
+            // NVFP4 and the 4-bit/gs32 no-bias exception are the only
+            // bias-free dequant modes (see
+            // `QuantizedWeight::mlx_quantization_mode`).
+            let require_biases = quantization.mode != "mxfp4"
+                && quantization.mode != "mxfp8"
+                && quantization.mode != "nvfp4"
+                && !(quantization.bits == 4 && quantization.group_size == 32);
+            if require_biases && biases_rel.is_none() {
+                return Err(WeightLoadError::QuantizationMissing(format!(
+                    "{biases_name} (no pack file maps this sidecar for {})",
+                    spec.name
+                )));
+            }
             Ok(Qwen4ExpPleTableShard {
-                file: root.join(&spec.file),
+                files: PleShardComponentFiles {
+                    weight: root.join(&spec.file),
+                    scales: root.join(scales_rel),
+                    biases: biases_rel.map(|rel| root.join(rel)),
+                },
                 weight_name: spec.name.clone(),
                 rows: shape[0] as i64,
                 dim,
@@ -5427,6 +5764,16 @@ fn qwen4_exp_ple_table(
             })
         })
         .collect::<Result<Vec<_>, WeightLoadError>>()?;
+    let split = shards
+        .iter()
+        .filter(|shard| shard.files.weight != shard.files.scales)
+        .count();
+    if split > 0 {
+        tracing::debug!(
+            "qwen4_exp PLE n-gram table: {split}/{} shards split across files",
+            shards.len()
+        );
+    }
     Ok(Qwen4ExpPleTable { shards })
 }
 
@@ -10500,6 +10847,26 @@ mod tests {
         layer: Option<u32>,
         file: &str,
     ) -> (Q4eTensor, Q4eTensor, Q4eTensor) {
+        q4e_quant_files(
+            name, logical, group_size, bits, role, layer, file, file, file,
+        )
+    }
+
+    /// `q4e_quant` with a distinct file per triplet member: HF/AXQ size-based
+    /// sharding legally splits `{base}.weight` / `.scales` / `.biases` across
+    /// safetensors files.
+    #[allow(clippy::too_many_arguments)]
+    fn q4e_quant_files(
+        name: &str,
+        logical: &[i32],
+        group_size: u32,
+        bits: u32,
+        role: NativeTensorRole,
+        layer: Option<u32>,
+        weight_file: &str,
+        scales_file: &str,
+        biases_file: &str,
+    ) -> (Q4eTensor, Q4eTensor, Q4eTensor) {
         let rank = logical.len();
         let in_dim = logical[rank - 1] as usize;
         let packed_cols = in_dim * bits as usize / 32;
@@ -10511,7 +10878,7 @@ mod tests {
         let weight_len: usize = weight_shape.iter().map(|dim| *dim as usize).product();
         let sidecar_len: usize = sidecar_shape.iter().map(|dim| *dim as usize).product();
         let base = name.strip_suffix(".weight").unwrap_or(name);
-        let sidecar = |suffix: &str, fill: f32| Q4eTensor {
+        let sidecar = |suffix: &str, file: &str, fill: f32| Q4eTensor {
             name: format!("{base}.{suffix}"),
             file: file.to_string(),
             file_dtype: "BF16",
@@ -10528,7 +10895,7 @@ mod tests {
         (
             Q4eTensor {
                 name: name.to_string(),
-                file: file.to_string(),
+                file: weight_file.to_string(),
                 file_dtype: "U32",
                 file_shape: weight_shape.clone(),
                 bytes: q4e_u32_bytes(weight_len, 0x0101_0101),
@@ -10544,8 +10911,8 @@ mod tests {
                 logical_shape: weight_shape.iter().map(|dim| *dim as u64).collect(),
                 in_manifest: true,
             },
-            sidecar("scales", 1.0),
-            sidecar("biases", 0.0),
+            sidecar("scales", scales_file, 1.0),
+            sidecar("biases", biases_file, 0.0),
         )
     }
 
@@ -10909,6 +11276,40 @@ mod tests {
         tensors
     }
 
+    /// Split-triplet PLE table: shard 0 stays co-located in
+    /// `ple_shards.safetensors` (the in-pack control); shard 1's weight stays
+    /// there too while its scales/biases move to the given files
+    /// (`ple_shards_b.safetensors` for the two-file split, plus
+    /// `ple_shards_c.safetensors` for the three-way split). Sidecars stay
+    /// out of the manifest (the convert ledger contract).
+    fn q4e_shard_tensors_split(scales_file: &str, biases_file: &str) -> Vec<Q4eTensor> {
+        let embedding = format!("{}.ple.ple_embedding", q4e_layer_prefix(1));
+        let mut tensors = Vec::new();
+        let (weight, scales, biases) = q4e_quant(
+            &format!("{embedding}.ngram_embedding.shards.0.weight"),
+            &[Q4E_SHARD_ROWS, Q4E_SHARD_DIM],
+            32,
+            8,
+            NativeTensorRole::Other,
+            Some(1),
+            "ple_shards.safetensors",
+        );
+        tensors.extend([weight, scales, biases]);
+        let (weight, scales, biases) = q4e_quant_files(
+            &format!("{embedding}.ngram_embedding.shards.1.weight"),
+            &[Q4E_SHARD_ROWS, Q4E_SHARD_DIM],
+            32,
+            8,
+            NativeTensorRole::Other,
+            Some(1),
+            "ple_shards.safetensors",
+            scales_file,
+            biases_file,
+        );
+        tensors.extend([weight, scales, biases]);
+        tensors
+    }
+
     fn q4e_write_file(
         dir: &Path,
         file: &str,
@@ -10954,6 +11355,16 @@ mod tests {
     }
 
     fn q4e_synthetic_artifacts() -> (PathBuf, NativeModelArtifacts) {
+        q4e_synthetic_artifacts_with_shards(q4e_shard_tensors(), None)
+    }
+
+    /// `q4e_synthetic_artifacts` with caller-chosen PLE shard tensors (each
+    /// tensor's `file` decides which safetensors file it lands in) and an
+    /// optional `model.safetensors.index.json` body.
+    fn q4e_synthetic_artifacts_with_shards(
+        shard_tensors: Vec<Q4eTensor>,
+        index_json: Option<&str>,
+    ) -> (PathBuf, NativeModelArtifacts) {
         let dir = q4e_unique_test_dir("roles");
         let mut tensors = Vec::new();
         // Root level: token embedding, untied LM head, and the final
@@ -11040,12 +11451,24 @@ mod tests {
         q4e_push_moe(&mut tensors, 1);
         q4e_push_qsa_attention(&mut tensors);
         q4e_push_ple(&mut tensors);
-        let shard_tensors = q4e_shard_tensors();
 
         let resident_refs: Vec<&Q4eTensor> = tensors.iter().collect();
         let mut spans = q4e_write_file(&dir, "model.safetensors", &resident_refs);
-        let shard_refs: Vec<&Q4eTensor> = shard_tensors.iter().collect();
-        spans.extend(q4e_write_file(&dir, "ple_shards.safetensors", &shard_refs));
+        // Write one safetensors file per distinct shard-tensor `file` so
+        // split-triplet fixtures land their sidecars in separate files.
+        let mut shard_files: Vec<&str> = shard_tensors
+            .iter()
+            .map(|tensor| tensor.file.as_str())
+            .collect();
+        shard_files.sort_unstable();
+        shard_files.dedup();
+        for file in shard_files {
+            let refs: Vec<&Q4eTensor> = shard_tensors
+                .iter()
+                .filter(|tensor| tensor.file == file)
+                .collect();
+            spans.extend(q4e_write_file(&dir, file, &refs));
+        }
 
         let specs: Vec<NativeTensorSpec> = tensors
             .iter()
@@ -11130,6 +11553,10 @@ mod tests {
             serde_json::to_vec_pretty(&manifest).expect("manifest should serialize"),
         )
         .expect("manifest should write");
+        if let Some(index_json) = index_json {
+            std::fs::write(dir.join("model.safetensors.index.json"), index_json)
+                .expect("index fixture should write");
+        }
         // MTP sidecar decoy: one tensor only — the Qwen dense-head loader must
         // skip the hybrid qwen4_exp sidecar layout, and the family loader must
         // reject it as incomplete (no partial MTP head attaches).
@@ -11773,10 +12200,11 @@ mod tests {
         assert!(split_hf_packed_moe_gate_up(quantized, 4).is_none());
     }
 
-    #[test]
-    fn qwen4_exp_ple_table_rejects_non_contiguous_shards() {
-        let embedding = "language_model.model.layers.1.ple.ple_embedding";
-        let shard_spec = |index: u32| NativeTensorSpec {
+    /// One weight-only PLE shard spec for direct `qwen4_exp_ple_table`
+    /// construction tests (offsets are dummies; construction never reads
+    /// tensor bytes).
+    fn q4e_ple_shard_spec(embedding: &str, index: u32) -> NativeTensorSpec {
+        NativeTensorSpec {
             name: format!("{embedding}.ngram_embedding.shards.{index}.weight"),
             role: NativeTensorRole::Other,
             layer_index: Some(1),
@@ -11793,7 +12221,12 @@ mod tests {
             file: "ple_shards.safetensors".into(),
             offset_bytes: 0,
             length_bytes: 16 * 8 * 4,
-        };
+        }
+    }
+
+    #[test]
+    fn qwen4_exp_ple_table_rejects_non_contiguous_shards() {
+        let embedding = "language_model.model.layers.1.ple.ple_embedding";
 
         // No shards at all: the table cannot be gathered from.
         let error = match qwen4_exp_ple_table(&[], Path::new("/nonexistent"), embedding) {
@@ -11802,20 +12235,393 @@ mod tests {
         };
         assert!(matches!(error, WeightLoadError::RoleMissing(_)));
         // A gap in the shard indices would silently mis-gather global row ids.
-        let specs = vec![shard_spec(1)];
+        let specs = vec![q4e_ple_shard_spec(embedding, 1)];
         let error = match qwen4_exp_ple_table(&specs, Path::new("/nonexistent"), embedding) {
             Ok(_) => panic!("a sparse shard set must fail closed"),
             Err(error) => error,
         };
         assert!(matches!(error, WeightLoadError::InvalidLayer(_)));
-        // Contiguous shards assemble in index order.
-        let specs = vec![shard_spec(1), shard_spec(0)];
-        let table = match qwen4_exp_ple_table(&specs, Path::new("/nonexistent"), embedding) {
-            Ok(table) => table,
-            Err(error) => panic!("contiguous shards should assemble: {error}"),
+        // The contiguous-success case now needs real sidecar files on disk
+        // (construction fails closed on unmapped scales); the split/co-located
+        // load tests below cover assembly via `shard_count` / `total_rows`.
+    }
+
+    #[test]
+    fn qwen4_exp_ple_table_rejects_missing_scales_entry_at_construction() {
+        let embedding = "language_model.model.layers.1.ple.ple_embedding";
+        let dir = q4e_unique_test_dir("ple-missing-scales");
+        // The pack file holds the shard weights only: no `.scales` key in any
+        // spec, index, or safetensors header.
+        let weights: Vec<Q4eTensor> = (0..2)
+            .map(|shard| {
+                let (weight, _, _) = q4e_quant(
+                    &format!("{embedding}.ngram_embedding.shards.{shard}.weight"),
+                    &[Q4E_SHARD_ROWS, Q4E_SHARD_DIM],
+                    32,
+                    8,
+                    NativeTensorRole::Other,
+                    Some(1),
+                    "ple_shards.safetensors",
+                );
+                weight
+            })
+            .collect();
+        let refs: Vec<&Q4eTensor> = weights.iter().collect();
+        q4e_write_file(&dir, "ple_shards.safetensors", &refs);
+        let specs = vec![
+            q4e_ple_shard_spec(embedding, 0),
+            q4e_ple_shard_spec(embedding, 1),
+        ];
+
+        // Must fail at construction, not at first forward.
+        let error = match qwen4_exp_ple_table(&specs, &dir, embedding) {
+            Ok(_) => panic!("missing scales must fail at construction"),
+            Err(error) => error,
         };
-        assert_eq!(table.shard_count(), 2);
-        assert_eq!(table.total_rows(), 32);
+        assert!(matches!(error, WeightLoadError::QuantizationMissing(_)));
+        let message = error.to_string();
+        assert!(
+            message.contains(".scales"),
+            "must name the missing component"
+        );
+        assert!(
+            message.contains("shards.0") || message.contains("ngram_embedding.shards"),
+            "must name the shard: {message}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_ple_table_rejects_missing_biases_entry_at_construction() {
+        let embedding = "language_model.model.layers.1.ple.ple_embedding";
+        let dir = q4e_unique_test_dir("ple-missing-biases");
+        // Weight + scales on disk, no `.biases` anywhere; the shards are
+        // affine 8-bit gs32, which requires the group-bias channel.
+        let mut tensors = Vec::new();
+        for shard in 0..2 {
+            let (weight, scales, _) = q4e_quant(
+                &format!("{embedding}.ngram_embedding.shards.{shard}.weight"),
+                &[Q4E_SHARD_ROWS, Q4E_SHARD_DIM],
+                32,
+                8,
+                NativeTensorRole::Other,
+                Some(1),
+                "ple_shards.safetensors",
+            );
+            tensors.extend([weight, scales]);
+        }
+        let refs: Vec<&Q4eTensor> = tensors.iter().collect();
+        q4e_write_file(&dir, "ple_shards.safetensors", &refs);
+        let specs = vec![
+            q4e_ple_shard_spec(embedding, 0),
+            q4e_ple_shard_spec(embedding, 1),
+        ];
+
+        let error = match qwen4_exp_ple_table(&specs, &dir, embedding) {
+            Ok(_) => panic!("missing biases must fail at construction"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, WeightLoadError::QuantizationMissing(_)));
+        assert!(
+            error.to_string().contains(".biases"),
+            "must name the missing component: {error}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Row-0 gather proof for a loaded split triplet: the same
+    /// take + dequantize path `gather_quantized_rows` runs per shard.
+    fn q4e_assert_row_gather_dequantizes(loaded: &QuantizedWeight) {
+        let row_ids = [0u32];
+        let indices = MlxArray::from_raw_data(
+            row_ids.as_ptr() as *const u8,
+            std::mem::size_of_val(&row_ids),
+            &[1],
+            MlxDtype::Uint32,
+        );
+        let row_w = take(&loaded.weight, &indices, 0, None);
+        let row_s = take(loaded.scales.as_ref().expect("scales"), &indices, 0, None);
+        let row_b = take(loaded.biases.as_ref().expect("biases"), &indices, 0, None);
+        let rows = dequantize_with_mode(
+            &row_w,
+            &row_s,
+            Some(&row_b),
+            Some(loaded.group_size),
+            Some(loaded.bits),
+            loaded.mlx_quantization_mode(),
+            None,
+            None,
+            None,
+        );
+        // Eval before `row_ids` drops (the gather contract) and prove the
+        // merged split triplet actually dequantizes to one logical row.
+        eval(&[&rows]);
+        assert_eq!(rows.shape(), vec![1, Q4E_SHARD_DIM]);
+    }
+
+    #[test]
+    fn qwen4_exp_ple_split_triplet_loads_lazily_and_gathers() {
+        let (dir, artifacts) = q4e_synthetic_artifacts_with_shards(
+            q4e_shard_tensors_split("ple_shards_b.safetensors", "ple_shards_b.safetensors"),
+            None,
+        );
+        let weights = load_weights(&artifacts).expect("split PLE pack must load");
+        let ple = weights.layers[1]
+            .qwen4_exp
+            .as_ref()
+            .and_then(|family| family.ple.as_ref())
+            .expect("layer 1 PLE weights");
+        assert!(
+            !ple.table.any_shard_loaded(),
+            "lazy contract: no shard at load_weights"
+        );
+        assert_eq!(ple.table.shard_count(), 2);
+        assert_eq!(ple.table.total_rows(), i64::from(Q4E_SHARD_ROWS) * 2);
+
+        let shard0 = ple.table.shard(0).expect("shard 0 ref");
+        let shard1 = ple.table.shard(1).expect("shard 1 ref");
+        assert_eq!(
+            shard0.weight_file().file_name().expect("file name"),
+            "ple_shards.safetensors"
+        );
+        assert_eq!(
+            shard0.scales_file().file_name().expect("file name"),
+            "ple_shards.safetensors"
+        );
+        assert_ne!(
+            shard1.weight_file().file_name(),
+            shard1.scales_file().file_name(),
+            "shard 1 scales must resolve to the sidecar file"
+        );
+        assert_eq!(
+            shard1.scales_file().file_name().expect("file name"),
+            "ple_shards_b.safetensors"
+        );
+        assert_eq!(
+            shard1
+                .biases_file()
+                .and_then(|path| path.file_name())
+                .expect("file name"),
+            "ple_shards_b.safetensors"
+        );
+
+        let loaded1 = shard1.load().expect("split shard loads");
+        assert!(loaded1.scales.is_some());
+        assert!(loaded1.biases.is_some());
+        assert_eq!(loaded1.weight.shape(), vec![Q4E_SHARD_ROWS, 8]);
+        assert!(shard1.is_loaded());
+        assert!(!shard0.is_loaded(), "untouched co-located shard stays lazy");
+        q4e_assert_row_gather_dequantizes(loaded1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_ple_three_way_split_triplet_loads() {
+        let (dir, artifacts) = q4e_synthetic_artifacts_with_shards(
+            q4e_shard_tensors_split("ple_shards_b.safetensors", "ple_shards_c.safetensors"),
+            None,
+        );
+        let weights = load_weights(&artifacts).expect("three-way split PLE pack must load");
+        let ple = weights.layers[1]
+            .qwen4_exp
+            .as_ref()
+            .and_then(|family| family.ple.as_ref())
+            .expect("layer 1 PLE weights");
+        assert!(
+            !ple.table.any_shard_loaded(),
+            "lazy contract: no shard at load_weights"
+        );
+        let shard1 = ple.table.shard(1).expect("shard 1 ref");
+        let files = [
+            shard1.weight_file().file_name().expect("file name"),
+            shard1.scales_file().file_name().expect("file name"),
+            shard1
+                .biases_file()
+                .and_then(|path| path.file_name())
+                .expect("file name"),
+        ];
+        assert_eq!(
+            files,
+            [
+                "ple_shards.safetensors",
+                "ple_shards_b.safetensors",
+                "ple_shards_c.safetensors"
+            ]
+        );
+        let loaded1 = shard1.load().expect("three-way split shard loads");
+        assert!(loaded1.scales.is_some());
+        assert!(loaded1.biases.is_some());
+        assert_eq!(loaded1.weight.shape(), vec![Q4E_SHARD_ROWS, 8]);
+        q4e_assert_row_gather_dequantizes(loaded1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_ple_split_triplet_index_json_maps_sidecars() {
+        let shard1_scales =
+            "language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.1.scales";
+        let shard1_biases =
+            "language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.1.biases";
+        let index_json = serde_json::json!({
+            "metadata": { "total_size": 1 },
+            "weight_map": {
+                shard1_scales: "ple_shards_b.safetensors",
+                shard1_biases: "ple_shards_b.safetensors",
+            }
+        })
+        .to_string();
+        // Same bytes as the header-scan split test; the index resolves the
+        // shard-1 sidecars before the header fallback runs.
+        let (dir, artifacts) = q4e_synthetic_artifacts_with_shards(
+            q4e_shard_tensors_split("ple_shards_b.safetensors", "ple_shards_b.safetensors"),
+            Some(&index_json),
+        );
+        let weights = load_weights(&artifacts).expect("indexed split PLE pack must load");
+        let ple = weights.layers[1]
+            .qwen4_exp
+            .as_ref()
+            .and_then(|family| family.ple.as_ref())
+            .expect("layer 1 PLE weights");
+        assert!(!ple.table.any_shard_loaded());
+        let shard1 = ple.table.shard(1).expect("shard 1 ref");
+        assert_eq!(
+            shard1.scales_file().file_name().expect("file name"),
+            "ple_shards_b.safetensors"
+        );
+        assert_eq!(
+            shard1
+                .biases_file()
+                .and_then(|path| path.file_name())
+                .expect("file name"),
+            "ple_shards_b.safetensors"
+        );
+        let loaded1 = shard1.load().expect("indexed split shard loads");
+        assert!(loaded1.scales.is_some());
+        assert!(loaded1.biases.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_ple_rejects_escaped_index_path() {
+        let shard1_scales =
+            "language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.1.scales";
+        let index_json = serde_json::json!({
+            "weight_map": {
+                shard1_scales: "../x.safetensors",
+            }
+        })
+        .to_string();
+        // The escaped value errors closed even though the header scan would
+        // find the tensor in ple_shards_b.safetensors.
+        let (dir, artifacts) = q4e_synthetic_artifacts_with_shards(
+            q4e_shard_tensors_split("ple_shards_b.safetensors", "ple_shards_b.safetensors"),
+            Some(&index_json),
+        );
+        let error = match load_weights(&artifacts) {
+            Ok(_) => panic!("escaped index paths must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, WeightLoadError::InvalidLayer(_)),
+            "escaped index path must be InvalidLayer: {error}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_ple_rejects_malformed_index_json() {
+        // Unparseable index bytes fail closed; there is no fall-through to
+        // the header scan for a corrupt index.
+        let (dir, artifacts) = q4e_synthetic_artifacts_with_shards(
+            q4e_shard_tensors_split("ple_shards_b.safetensors", "ple_shards_b.safetensors"),
+            Some("{ not valid json"),
+        );
+        let error = match load_weights(&artifacts) {
+            Ok(_) => panic!("a malformed index must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, WeightLoadError::InvalidLayer(_)),
+            "malformed index must be InvalidLayer: {error}"
+        );
+        assert!(
+            error.to_string().contains("model.safetensors.index.json"),
+            "must name the index file: {error}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_ple_stale_index_load_error_keeps_quantization_missing_kind() {
+        // Stale mapping: the index claims shard 1's scales live in the
+        // weight file (the header scan would say ple_shards_b.safetensors).
+        // Construction trusts the index; `load` is the content check.
+        let shard1_scales =
+            "language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.1.scales";
+        let index_json = serde_json::json!({
+            "weight_map": {
+                shard1_scales: "ple_shards.safetensors",
+            }
+        })
+        .to_string();
+        let (dir, artifacts) = q4e_synthetic_artifacts_with_shards(
+            q4e_shard_tensors_split("ple_shards_b.safetensors", "ple_shards_b.safetensors"),
+            Some(&index_json),
+        );
+        let weights = load_weights(&artifacts).expect("stale index still constructs");
+        let ple = weights.layers[1]
+            .qwen4_exp
+            .as_ref()
+            .and_then(|family| family.ple.as_ref())
+            .expect("layer 1 PLE weights");
+        let shard1 = ple.table.shard(1).expect("shard 1 ref");
+        // Both the populating call and the cached replay must reconstruct the
+        // same typed kind (no Display-string parsing in the cache path).
+        for attempt in ["first load", "cached load"] {
+            let error = match shard1.load() {
+                Ok(_) => panic!("stale scales mapping must fail at {attempt}"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(error, WeightLoadError::QuantizationMissing(_)),
+                "{attempt} must keep the QuantizationMissing kind: {error}"
+            );
+            assert!(
+                error.to_string().contains("ple_shards.safetensors"),
+                "{attempt} must name the resolved scales file: {error}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_ple_tampered_sidecar_load_error_keeps_file_missing_kind() {
+        let (dir, artifacts) = q4e_synthetic_artifacts_with_shards(
+            q4e_shard_tensors_split("ple_shards_b.safetensors", "ple_shards_b.safetensors"),
+            None,
+        );
+        let weights = load_weights(&artifacts).expect("split PLE pack must load");
+        let ple = weights.layers[1]
+            .qwen4_exp
+            .as_ref()
+            .and_then(|family| family.ple.as_ref())
+            .expect("layer 1 PLE weights");
+        let shard1 = ple.table.shard(1).expect("shard 1 ref");
+        // Lazy I/O can still fail after a successful load_weights.
+        std::fs::remove_file(dir.join("ple_shards_b.safetensors")).expect("sidecar file removes");
+        let error = match shard1.load() {
+            Ok(_) => panic!("a deleted sidecar file must fail the lazy load"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, WeightLoadError::FileMissing(_)),
+            "deleted sidecar must keep the FileMissing kind: {error}"
+        );
+        assert!(
+            error.to_string().contains("ple_shards_b.safetensors"),
+            "must name the missing file: {error}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn array_u8(data: &[u8], shape: &[i32]) -> MlxArray {

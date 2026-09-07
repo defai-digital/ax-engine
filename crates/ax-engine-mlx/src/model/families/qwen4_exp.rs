@@ -125,11 +125,12 @@ pub(crate) fn layer_forward(
             ple_state,
         ) {
             Ok(ple) => ple,
-            // Every PLE error is a load-time geometry violation (shard
-            // layout, hash buffers, projection shapes) that manifest
-            // validation and the loader have already ruled out.
+            // PLE can still fail after a successful load_weights: lazy shard
+            // I/O on first gather, stale sidecar mappings, gather geometry,
+            // or dequant errors. The trunk returns MlxArray, so panic with
+            // the real error (a Result-typed trunk is a follow-up).
             Err(error) => {
-                unreachable!("qwen4_exp PLE forward failed at layer {layer_idx}: {error}")
+                panic!("qwen4_exp PLE forward failed at layer {layer_idx}: {error}")
             }
         };
         cache.set_qwen4_exp_ple_state(ple.conv_ring, ple.token_ring);
