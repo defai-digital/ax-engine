@@ -6132,6 +6132,29 @@ fn moe_router_qwen3_impl(
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
 
+    // qwen4_exp (planning doc section F): softmax over ALL experts in fp32
+    // drives selection, then top-k, then renormalize (norm_topk_prob). The
+    // bf16 narrow-softmax fast path below is off-contract for this family
+    // regardless of the env flag, and the selection must come from the fp32
+    // probabilities, not bf16-rounded logits or probabilities.
+    if cfg.qwen4_exp.is_some() {
+        let weights_all =
+            softmax_precise(&astype(&logits, MlxDtype::Float32, None), last_axis, None);
+        let (top_k_indices, top_k_weights) = top_k_by_argpartition(
+            &weights_all,
+            cfg.moe_expert_count,
+            cfg.moe_experts_per_token,
+            false,
+        );
+        let top_k_weights = if cfg.moe_norm_topk_prob {
+            let sum = sum_axis(&top_k_weights, last_axis, true, None);
+            mlx_sys::ops::divide(&top_k_weights, &sum, None)
+        } else {
+            top_k_weights
+        };
+        return (top_k_indices, top_k_weights);
+    }
+
     // Narrow softmax: argpartition on raw logits, then softmax only on the
     // top-k subset. Matches the Gemma4 router pattern. Default ON after
     // validation confirmed token-for-token equivalence with mlx-lm's
@@ -6768,6 +6791,7 @@ pub(crate) fn moe_experts_forward_with_cloned_weights(
         linear_attn: None,
         glm_mla_attn: None,
         deepseek_v4: None,
+        qwen4_exp: None,
         ffn_norm: x.clone(),
         ffn_post_norm: None,
         gate_proj: None,
@@ -11777,6 +11801,7 @@ mod tests {
             mla_attention: None,
             glm_router: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
             rope_mscale: 1.0,
@@ -11814,6 +11839,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: x.clone(),
             ffn_post_norm: None,
             gate_proj: None,
@@ -12007,6 +12033,147 @@ mod tests {
             assert_eq!(gi, ei, "hash-routed expert mismatch");
             assert!((gw - ew).abs() < 1e-4, "weight {gw} vs expected {ew}");
         }
+    }
+
+    /// Minimal qwen4_exp block for the family-scoped router path (the router
+    /// only keys on its presence; the geometry fields are unused there).
+    fn qwen4_exp_block() -> crate::model::config::Qwen4ExpConfig {
+        crate::model::config::Qwen4ExpConfig {
+            hc_count: 4,
+            hc_lowrank: 320,
+            indexer_budget: 2048,
+            indexer_compress_ratio: 4,
+            indexer_head_dim: 128,
+            indexer_kv_heads: 1,
+            indexer_n_heads: 4,
+            ngram_size: 3,
+            ngram_vocab_size_base: 20_000_000,
+            split_ngram_parts: 128,
+            heads_per_ngram: 8,
+            ple_conv_kernel_size: 4,
+            ple_embed_dim: 2560,
+            ple_layer_ids: vec![2],
+            mtp: None,
+            output_gate_type: Some("sigmoid".to_string()),
+            partial_rotary_factor: 0.25,
+            mrope_section: vec![11, 11, 10],
+            mrope_interleaved: true,
+            shared_expert_intermediate_size: 640,
+            eos_token_id: 248_044,
+            pad_token_id: None,
+        }
+    }
+
+    /// CPU f64 reference for spec §F: full softmax over all experts, top-k by
+    /// probability, renormalize — as `(expert, weight)` pairs sorted by expert.
+    fn fp32_router_reference(logits: &[f32], top_k: usize) -> Vec<(u32, f64)> {
+        let max = logits
+            .iter()
+            .map(|&logit| logit as f64)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let probs: Vec<f64> = logits
+            .iter()
+            .map(|&logit| (logit as f64 - max).exp())
+            .collect();
+        let mut order: Vec<usize> = (0..logits.len()).collect();
+        order.sort_by(|a, b| probs[*b].total_cmp(&probs[*a]));
+        let selected = &order[..top_k];
+        let denom: f64 = selected.iter().map(|&index| probs[index]).sum();
+        let mut pairs: Vec<(u32, f64)> = selected
+            .iter()
+            .map(|&index| (index as u32, probs[index] / denom))
+            .collect();
+        pairs.sort_by_key(|(expert, _)| *expert);
+        pairs
+    }
+
+    #[test]
+    fn moe_router_qwen4_exp_uses_full_width_fp32_softmax() {
+        const EXPERTS: usize = 512;
+        const TOP_K: usize = 10;
+        // bf16-exact logits with an unambiguous top-10 boundary: the leaders
+        // are 1.0, 0.875, …, -0.125 (multiples of 2^-3), the rest -4.0.
+        // hidden=1 with x=1.0 makes the bf16 matmul reproduce them exactly.
+        let mut logit_values = vec![-4.0f32; EXPERTS];
+        for (expert, value) in logit_values.iter_mut().take(TOP_K).enumerate() {
+            *value = 1.0 - 0.125 * expert as f32;
+        }
+        let router = astype(
+            &array_f32(&logit_values, &[EXPERTS as i32, 1]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let x = astype(&array_f32(&[1.0], &[1, 1, 1]), MlxDtype::Bfloat16, None);
+        let w = v4_layer_weights(router, &x);
+        let expected = fp32_router_reference(&logit_values, TOP_K);
+
+        let mut cfg = v4_test_config(EXPERTS, TOP_K);
+        cfg.model_family = "qwen4_exp".to_string();
+        cfg.qwen4_exp = Some(qwen4_exp_block());
+        let (indices, weights) = moe_router_qwen3(&cfg, &w, &x);
+        let indices = astype(&indices, MlxDtype::Uint32, None);
+        eval(&[&indices, &weights]);
+        assert_eq!(indices.shape(), vec![1, 1, TOP_K as i32]);
+        assert_eq!(
+            weights.dtype(),
+            MlxDtype::Float32,
+            "qwen4_exp router weights must stay fp32"
+        );
+        let mut got_pairs: Vec<(u32, f32)> = indices
+            .data_u32()
+            .iter()
+            .copied()
+            .zip(weights.data_f32().iter().copied())
+            .collect();
+        got_pairs.sort_by_key(|(expert, _)| *expert);
+        assert_eq!(got_pairs.len(), expected.len());
+        for ((got_expert, got_weight), (want_expert, want_weight)) in
+            got_pairs.iter().zip(expected.iter())
+        {
+            assert_eq!(got_expert, want_expert, "selected expert mismatch");
+            assert!(
+                (*got_weight as f64 - want_weight).abs() < 1e-6,
+                "qwen4_exp fp32 weight for expert {want_expert}: {got_weight} vs {want_weight}"
+            );
+        }
+
+        // The same call without the qwen4_exp block takes the default
+        // narrow-softmax path: bf16 probabilities in, bf16 weights out, and
+        // the weights measurably diverge from the fp32 reference — proving
+        // the family flag is what selects the fp32 route.
+        let narrow_cfg = v4_test_config(EXPERTS, TOP_K);
+        let (narrow_indices, narrow_weights) = moe_router_qwen3(&narrow_cfg, &w, &x);
+        let narrow_indices = astype(&narrow_indices, MlxDtype::Uint32, None);
+        eval(&[&narrow_indices, &narrow_weights]);
+        assert_eq!(
+            narrow_weights.dtype(),
+            MlxDtype::Bfloat16,
+            "the default path keeps the activation dtype"
+        );
+        let narrow_32 = astype(&narrow_weights, MlxDtype::Float32, None);
+        eval(&[&narrow_32]);
+        let mut narrow_pairs: Vec<(u32, f32)> = narrow_indices
+            .data_u32()
+            .iter()
+            .copied()
+            .zip(narrow_32.data_f32().iter().copied())
+            .collect();
+        narrow_pairs.sort_by_key(|(expert, _)| *expert);
+        let narrow_experts: Vec<u32> = narrow_pairs.iter().map(|(expert, _)| *expert).collect();
+        let expected_experts: Vec<u32> = expected.iter().map(|(expert, _)| *expert).collect();
+        assert_eq!(
+            narrow_experts, expected_experts,
+            "both paths select the same well-separated experts"
+        );
+        let max_divergence = narrow_pairs
+            .iter()
+            .zip(expected.iter())
+            .map(|((_, got), (_, want))| (*got as f64 - want).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_divergence > 1e-4,
+            "narrow bf16 weights must diverge from the fp32 reference (max {max_divergence})"
+        );
     }
 
     // ------------------------------------------------------------------

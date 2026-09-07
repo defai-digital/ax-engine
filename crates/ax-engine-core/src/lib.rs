@@ -95,9 +95,9 @@ pub use model::{
     EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS, NativeDeepseekV4AttentionConfig,
     NativeDeepseekV4Config, NativeDiffusionConfig, NativeLinearAttentionConfig,
     NativeMlaAttentionConfig, NativeModelArtifacts, NativeModelArtifactsSummary, NativeModelError,
-    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
-    SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, WeightSanitize,
+    NativeModelManifest, NativeMoeConfig, NativeQwen4ExpConfig, NativeQwen4ExpMtpConfig,
+    NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization,
+    NativeTensorRole, NativeTensorSpec, SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, WeightSanitize,
 };
 pub use multimodal_adapter::{MultimodalPrefillAdapter, PrefillModality};
 pub use nemotron_omni::{

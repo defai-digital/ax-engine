@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, add, astype, broadcast_to, concatenate, contiguous,
-    dequantize, dequantize_with_mode, eval, flatten, from_fp8, load_safetensors,
-    load_safetensors_mmap, multiply, quantize, reshape, slice, stack, take, transpose, view,
+    MlxArray, MlxDtype, MlxQuantizationMode, SafetensorsNameFilter, add, astype, broadcast_to,
+    concatenate, contiguous, dequantize, dequantize_with_mode, eval, flatten, from_fp8,
+    load_safetensors, load_safetensors_filtered, load_safetensors_mmap, multiply, quantize,
+    reshape, slice, stack, take, transpose, view, zeros,
 };
 
 use ax_engine_core::{
@@ -65,6 +66,14 @@ pub struct ModelWeights {
     /// DeepSeek V4 MTP (nextn) predictor tensors, loaded for a deferred
     /// runtime-MTP phase; not consumed by the forward path yet.
     pub deepseek_v4_nextn: Option<DeepseekV4NextnWeights>,
+    /// Root-level qwen4_exp tensors: the final hyper-connection mixer
+    /// (`model.hyper_connection_mixer.*`). `None` for other families.
+    pub qwen4_exp_root: Option<Qwen4ExpRootWeights>,
+    /// qwen4_exp MTP draft head (`mtp.safetensors` sidecar). `None` when the
+    /// checkpoint has no sidecar, the sidecar is incomplete, or the predictor
+    /// config is unsupported (anything but one hybrid full-attention block
+    /// with shared embeddings).
+    pub qwen4_exp_mtp: Option<Qwen4ExpMtpWeights>,
     /// Unlimited-OCR dual vision (SAM-ViT-B + CLIP-L) + projector.
     pub unlimited_ocr_vision: Option<crate::unlimited_ocr::UnlimitedOcrVisionWeights>,
     /// Qwen3-VL portable ViT tower (WS-V2). `None` until HF vision weights are
@@ -231,6 +240,10 @@ pub struct LayerWeights {
     // DeepSeek V4 (Flash) attention + hyper-connection tensors. Present instead
     // of standard full-attention Q/K/V/O for deepseek_v4 manifests.
     pub deepseek_v4: Option<DeepseekV4LayerWeights>,
+    // qwen4_exp (Qwen3.8-Flash-Next) hyper-connection sites, QSA indexer, and
+    // PLE tensors. Present for qwen4_exp manifests; attention projections and
+    // MoE stacks keep using the generic fields above/below.
+    pub qwen4_exp: Option<Qwen4ExpLayerWeights>,
     // Dense FFN norms and weights.
     pub ffn_norm: MlxArray,
     pub ffn_post_norm: Option<MlxArray>,
@@ -436,6 +449,258 @@ impl DeepseekV4NextnWeights {
         self.layer = self.layer.or(sidecar.layer);
         self
     }
+}
+
+/// One qwen4_exp (Qwen3.8-Flash-Next) hyper-connection site
+/// (`Qwen4ExpTextGatedResidual`): a grouped RMSNorm over the packed
+/// `hc_count`-stream hidden plus the low-rank input-mix pair and, for the two
+/// per-layer sites, the per-stream block-injection gate. The root-level
+/// `hyper_connection_mixer` omits `block_inject_weight`.
+///
+/// All tensors are BF16 and unquantized. The math (sigmoid mix, mean over
+/// streams, `2*sigmoid` injection) is the family trunk's concern; this is the
+/// tensor container only.
+pub struct Qwen4ExpHyperConnectionWeights {
+    /// Grouped RMSNorm gain (`hc_norm.weight`), `[hc_count * hidden]` BF16.
+    pub hc_norm: MlxArray,
+    /// Low-rank down projection (`input_mix_weight_down.weight`),
+    /// `[hc_lowrank, hc_count * hidden]` BF16.
+    pub input_mix_down: QuantizedWeight,
+    /// Low-rank up projection (`input_mix_weight_up.weight`),
+    /// `[hc_count * hidden, hc_lowrank]` BF16.
+    pub input_mix_up: QuantizedWeight,
+    /// Per-stream block-injection gate (`block_inject_weight.weight`),
+    /// `[hc_count, hc_count * hidden]` BF16. `None` for the root mixer.
+    pub block_inject: Option<QuantizedWeight>,
+}
+
+/// Weights for a qwen4_exp QSA sparse-attention indexer
+/// (`self_attn.indexer.*`). Selection-only, DSA-style: the indexer scores
+/// pooled block keys against per-head queries and picks the top-k blocks;
+/// attention itself runs over the full-precision K/V rows at the selected
+/// positions and never reads these tensors.
+pub struct Qwen4ExpIndexerWeights {
+    /// Fused indexer query+key projection (`indexer.index_qk_proj.weight`),
+    /// `[(indexer_n_heads + indexer_kv_heads) * indexer_head_dim, hidden]`
+    /// ([640, 2560] at reference geometry), 6-bit.
+    pub index_qk_proj: QuantizedWeight,
+    /// Per-head RMSNorm on indexer queries (`indexer.q_layernorm.weight`),
+    /// `[indexer_head_dim]` BF16.
+    pub q_layernorm: MlxArray,
+    /// RMSNorm on mean-pooled block keys (`indexer.k_layernorm.weight`),
+    /// `[indexer_head_dim]` BF16.
+    pub k_layernorm: MlxArray,
+}
+
+/// One lazily-loaded shard of the qwen4_exp PLE n-gram embedding table.
+///
+/// The 128-shard table is ~51 GiB of 8-bit group-quantized weights, so shards
+/// must never enter the resident name map or be eval'd at `load_weights` time
+/// (the same discipline as the expert-stream pager). Only the safetensors
+/// path plus manifest shape/quantization metadata are captured up front; the
+/// quantized triplet (`weight`/`scales`/`biases`) is mmap-loaded on the first
+/// [`Self::load`] so the PLE module can gather rows per shard without
+/// materializing the 320M-row join.
+pub struct Qwen4ExpPleTableShard {
+    file: PathBuf,
+    weight_name: String,
+    rows: i64,
+    /// Logical embedding width per row (recovered from the packed manifest
+    /// shape and the quantization bit width).
+    dim: i64,
+    quantization: NativeTensorQuantization,
+    cache: OnceLock<Result<QuantizedWeight, String>>,
+}
+
+impl Qwen4ExpPleTableShard {
+    /// Rows in this shard (checkpoint row-sharding only; ids stay global).
+    pub fn rows(&self) -> i64 {
+        self.rows
+    }
+
+    /// Per-row embedding width (`ple_embed_dim / ngram_heads`-sized head dim).
+    pub fn dim(&self) -> i64 {
+        self.dim
+    }
+
+    pub fn bits(&self) -> u32 {
+        self.quantization.bits
+    }
+
+    pub fn group_size(&self) -> u32 {
+        self.quantization.group_size
+    }
+
+    /// Whether the shard payload has been pulled into MLX storage already.
+    pub fn is_loaded(&self) -> bool {
+        self.cache.get().is_some()
+    }
+
+    /// Load this shard's quantized weight triplet on first use. Only this
+    /// shard's file is opened and only its three tensors are materialized;
+    /// the caller gathers rows and evals the gathered output itself.
+    pub fn load(&self) -> Result<&QuantizedWeight, WeightLoadError> {
+        let entry = self
+            .cache
+            .get_or_init(|| self.load_inner().map_err(|error| error.to_string()));
+        match entry {
+            Ok(weight) => Ok(weight),
+            Err(message) => Err(WeightLoadError::FileMissing(format!(
+                "qwen4_exp PLE n-gram shard {} ({}): {message}",
+                self.weight_name,
+                self.file.display()
+            ))),
+        }
+    }
+
+    fn load_inner(&self) -> Result<QuantizedWeight, WeightLoadError> {
+        let base = self
+            .weight_name
+            .strip_suffix(".weight")
+            .unwrap_or(self.weight_name.as_str());
+        let mut keep = std::collections::HashSet::new();
+        keep.insert(self.weight_name.clone());
+        keep.insert(format!("{base}.scales"));
+        keep.insert(format!("{base}.biases"));
+        let mut tensors = load_safetensors_filtered(&self.file, SafetensorsNameFilter::Keep(&keep))
+            .map_err(WeightLoadError::FileMissing)?;
+        let weight = tensors
+            .remove(&self.weight_name)
+            .ok_or_else(|| WeightLoadError::TensorMissing(self.weight_name.clone()))?;
+        let scales = tensors
+            .remove(&format!("{base}.scales"))
+            .ok_or_else(|| WeightLoadError::QuantizationMissing(format!("{base}.scales")))?;
+        let biases = tensors.remove(&format!("{base}.biases"));
+        Ok(QuantizedWeight::with_quantization(
+            weight,
+            Some(scales),
+            biases,
+            Some(&self.quantization),
+        ))
+    }
+}
+
+/// The sharded n-gram embedding table behind the qwen4_exp PLE layer
+/// (`ple.ple_embedding.ngram_embedding.shards.{0..N}`). Shards load lazily
+/// and are never joined into one logical table.
+pub struct Qwen4ExpPleTable {
+    shards: Vec<Qwen4ExpPleTableShard>,
+}
+
+impl Qwen4ExpPleTable {
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+
+    /// Total logical rows across all shards (head offsets index globally).
+    pub fn total_rows(&self) -> i64 {
+        self.shards.iter().map(Qwen4ExpPleTableShard::rows).sum()
+    }
+
+    pub fn shard(&self, index: usize) -> Option<&Qwen4ExpPleTableShard> {
+        self.shards.get(index)
+    }
+
+    /// Test hook: no shard payload may be resident right after `load_weights`.
+    pub fn any_shard_loaded(&self) -> bool {
+        self.shards.iter().any(Qwen4ExpPleTableShard::is_loaded)
+    }
+}
+
+/// PLE (per-layer n-gram embedding) weights on the qwen4_exp PLE layer
+/// (0-indexed layer 1 in the reference checkpoint).
+pub struct Qwen4ExpPleWeights {
+    /// PLE key projection (`ple.key_proj.weight`), `[hc_count * hidden, hidden]` 8-bit.
+    pub key_proj: QuantizedWeight,
+    /// PLE value projection (`ple.value_proj.weight`), `[hidden, hidden]` 8-bit.
+    pub value_proj: QuantizedWeight,
+    /// Group RMSNorm on the reshaped key (`ple.norm_key.weight`), `[hc_count * hidden]` BF16.
+    pub norm_key: MlxArray,
+    /// Group RMSNorm on the query hidden (`ple.norm_query.weight`), `[hc_count * hidden]` BF16.
+    pub norm_query: MlxArray,
+    /// RMSNorm before the depthwise conv (`ple.norm_conv.weight`), `[hc_count * hidden]` BF16.
+    pub norm_conv: MlxArray,
+    /// Dilated causal depthwise conv kernel (`ple.conv1d.weight`),
+    /// `[hc_count * hidden, kernel, 1]` BF16.
+    pub conv1d: MlxArray,
+    /// Splitmix64 odd multipliers per hash order (`ple.ple_embedding.layer_multipliers`), I64.
+    pub layer_multipliers: MlxArray,
+    /// Per-head prime vocab sizes (`ple.ple_embedding.ngram_heads_vocab_sizes`), I64.
+    pub ngram_heads_vocab_sizes: MlxArray,
+    /// Per-head row offsets into the logical table (`ple.ple_embedding.ngram_heads_offsets`), I64.
+    pub ngram_heads_offsets: MlxArray,
+    /// The lazily-loaded 128-shard n-gram table.
+    pub table: Qwen4ExpPleTable,
+}
+
+/// qwen4_exp (Qwen3.8-Flash-Next) per-layer family tensors. The attention
+/// projections (QSA `self_attn.{q,k,v,o}_proj` with the sigmoid gate packed
+/// into `q_proj`), the gated-delta linear-attention tensors, and the MoE
+/// router/expert/shared-expert stacks all reuse the generic `LayerWeights`
+/// fields and loaders; this struct carries only what those roles cannot
+/// express: the two hyper-connection sites, the QSA indexer, and PLE.
+pub struct Qwen4ExpLayerWeights {
+    /// Attention-branch hyper-connection (`attn_hyper_connection.*`).
+    pub attn_hyper_connection: Qwen4ExpHyperConnectionWeights,
+    /// FFN-branch hyper-connection (`mlp_hyper_connection.*`).
+    pub mlp_hyper_connection: Qwen4ExpHyperConnectionWeights,
+    /// QSA indexer — full-attention (QSA) layers only (`self_attn.indexer.*`).
+    pub indexer: Option<Qwen4ExpIndexerWeights>,
+    /// PLE — present on the PLE layer only (0-indexed layer 1).
+    pub ple: Option<Qwen4ExpPleWeights>,
+}
+
+/// Root-level qwen4_exp tensors (`model.hyper_connection_mixer.*`). The mixer
+/// collapses the packed `hc_count`-stream hidden to one `[hidden]` vector and
+/// its grouped RMSNorm is the family's final normalization — qwen4_exp
+/// checkpoints have no `model.norm`.
+pub struct Qwen4ExpRootWeights {
+    pub mixer: Qwen4ExpHyperConnectionWeights,
+}
+
+/// qwen4_exp MTP (multi-token prediction) sidecar weights (`mtp.safetensors`,
+/// BF16, 31 tensors). The draft head is a FULL hybrid decoder block — QSA
+/// attention with its own indexer + MoE + both hyper-connections — plus the
+/// input-fusion pair and a final hyper-connection mixer, NOT a Qwen dense
+/// `concat(enorm, hnorm) → fc` head (that layout loads into
+/// [`ModelWeights::mtp`] instead). Authoritative spec:
+/// `.internal/planning/qwen38-flash-next-support.md` section "D. MTP block".
+///
+/// Norm tensors stay in raw HF-delta form: the family's norm helpers
+/// (`grouped_rms_norm`, `rms_norm_one_plus_gamma`) already apply the `1 + γ`
+/// gain, so the loader must NOT run the Qwen dense `+1.0` shift on them
+/// (`mtp_norm_layout: "raw_hf_delta"` declares the on-disk form, not the
+/// dense-head shift path).
+pub struct Qwen4ExpMtpWeights {
+    /// Fusion RMSNorm over the embedded previous token
+    /// (`mtp.pre_fc_norm_embedding.weight`), `[hidden]` BF16.
+    pub pre_fc_norm_embedding: MlxArray,
+    /// Fusion RMSNorm over the packed pre-mixer hidden
+    /// (`mtp.pre_fc_norm_hidden.weight`), `[hc_count * hidden]` BF16 — ONE
+    /// global RMS across the full packed width, not grouped per stream.
+    pub pre_fc_norm_hidden: MlxArray,
+    /// Token-embedding fusion projection (`mtp.fc_embedding.weight`),
+    /// `[hidden, hidden]` BF16 dense.
+    pub fc_embedding: QuantizedWeight,
+    /// Packed-hidden fusion projection (`mtp.fc_hidden.weight`),
+    /// `[hidden, hidden]` BF16 dense, applied per stream.
+    pub fc_hidden: QuantizedWeight,
+    /// Final MTP mixer (`mtp.hyper_connection_mixer.*`) — no block-inject
+    /// weight; its grouped RMSNorm is the draft head's final normalization
+    /// before the SHARED target `lm_head`.
+    pub mixer: Qwen4ExpHyperConnectionWeights,
+    /// The MTP decoder block: QSA + indexer + MoE (routed + shared) + both
+    /// hyper-connections. `qwen4_exp.indexer` is `Some`, `qwen4_exp.ple` is
+    /// `None` (the block has no PLE floor), `linear_attn`/`expert_stream` are
+    /// `None`, and `attn_norm`/`ffn_norm` are unread dummies (the
+    /// hyper-connections replace them).
+    pub layer: Box<LayerWeights>,
+    /// Speculative depth supported by this sidecar, hard-capped at 1: the
+    /// reference pack ships exactly one predictor block.
+    pub max_depth: usize,
+    /// Draft sampling parameters from `mtplx_runtime.json`
+    /// `recommended_draft_sampler` (default: temp=0.7, top_k=20, top_p=0.95).
+    pub draft_sampling: MlxSamplingParams,
 }
 
 /// Weights for a Qwen3.5 GatedDelta linear-attention layer.
@@ -1158,6 +1423,20 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let expert_stream_skip: Option<std::collections::HashSet<String>> = expert_stream_manifest
         .as_ref()
         .map(crate::expert_stream::streamed_skip_names);
+    // qwen4_exp PLE n-gram table shards join the resident skip set: ~51 GiB of
+    // 8-bit rows that must never be materialized at init. Their specs stay in
+    // the manifest; the PLE table ref loads each shard on demand.
+    let is_qwen4_exp = artifacts.manifest().qwen4_exp.is_enabled();
+    let resident_skip: Option<std::collections::HashSet<String>> = if is_qwen4_exp {
+        let ple_skip = qwen4_exp_ple_shard_skip_names(specs);
+        match expert_stream_skip.as_ref() {
+            Some(expert_skip) => Some(expert_skip.union(&ple_skip).cloned().collect()),
+            None if ple_skip.is_empty() => None,
+            None => Some(ple_skip),
+        }
+    } else {
+        expert_stream_skip.clone()
+    };
     // AX_MMAP_WEIGHTS=1 uses the memory-mapped safetensors path. No bytes
     // are read into a heap buffer up front; pages are pulled in by the
     // OS on first access (CPU touch or GPU dispatch). On warm page cache
@@ -1173,8 +1452,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     for spec in artifacts.tensor_specs() {
         // Streamed tensors never enter the resident map and are never eval'd
         // here; a safetensors file whose specs are all streamed is never
-        // opened at init because nothing below requests it.
-        if expert_stream_skip
+        // opened at init because nothing below requests it. The same holds
+        // for qwen4_exp PLE n-gram shards (lazy table refs).
+        if resident_skip
             .as_ref()
             .is_some_and(|skip| skip.contains(&spec.name))
         {
@@ -1183,7 +1463,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         let full = root.join(&spec.file);
         if let Entry::Vacant(entry) = file_cache.entry(full) {
             let path = entry.key().clone();
-            let tensors = if let Some(skip) = expert_stream_skip.as_ref() {
+            let tensors = if let Some(skip) = resident_skip.as_ref() {
                 mlx_sys::load_safetensors_filtered(
                     &path,
                     mlx_sys::SafetensorsNameFilter::Exclude(skip),
@@ -1274,14 +1554,27 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         None,
         "token_embedding",
     )?;
-    let final_norm = take_weight(
-        specs,
-        &mut name_map,
-        NativeTensorRole::FinalNorm,
-        None,
-        "final_norm",
-    )?
-    .weight;
+    // qwen4_exp checkpoints have no `model.norm`: the root hyper-connection
+    // mixer's grouped RMSNorm is the final normalization, so the mixer loads
+    // here and its gain mirrors into the shared `final_norm` slot.
+    let qwen4_exp_root = if is_qwen4_exp {
+        Some(load_qwen4_exp_root_weights(specs, &mut name_map)?)
+    } else {
+        None
+    };
+    let final_norm = match qwen4_exp_root.as_ref() {
+        Some(family_root) => family_root.mixer.hc_norm.clone(),
+        None => {
+            take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FinalNorm,
+                None,
+                "final_norm",
+            )?
+            .weight
+        }
+    };
     // Encoder-only families (EmbeddingGemma, Nemotron Embed) have no LM head;
     // reuse the token embedding as a placeholder `lm_head` (never consumed on
     // the embedding-only forward path) so the shared ModelWeights shape stays
@@ -1438,14 +1731,34 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         let attention_layout = attention_layout_for_layer(specs, idx)?;
         let is_nemotron_h = artifacts.manifest().model_family == "nemotron_h";
 
-        let attn_norm = take_weight(
-            specs,
-            &mut name_map,
-            NativeTensorRole::AttentionNorm,
-            idx,
-            "attn_norm",
-        )?
-        .weight;
+        // qwen4_exp family tensors (hyper-connection sites, QSA indexer, PLE)
+        // load before the norm slots below: the family has no input_layernorm
+        // or post_attention_layernorm, so the shared norm fields mirror the
+        // hyper-connection norms instead.
+        let qwen4_exp = if is_qwen4_exp {
+            Some(load_qwen4_exp_layer_weights(
+                specs,
+                &mut name_map,
+                &root,
+                li as u32,
+                matches!(attention_layout, AttentionLayout::Full),
+            )?)
+        } else {
+            None
+        };
+        let attn_norm = match qwen4_exp.as_ref() {
+            Some(family) => family.attn_hyper_connection.hc_norm.clone(),
+            None => {
+                take_weight(
+                    specs,
+                    &mut name_map,
+                    NativeTensorRole::AttentionNorm,
+                    idx,
+                    "attn_norm",
+                )?
+                .weight
+            }
+        };
         let o_proj = match attention_layout {
             // V4 uses the grouped wo_a/wo_b output LoRA, loaded below.
             AttentionLayout::Full if !is_deepseek_v4 => Some(take_weight(
@@ -1479,8 +1792,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             )?),
         };
         // Nemotron-H has a single pre-mixer norm; reuse it as ffn_norm placeholder.
+        // qwen4_exp has no post_attention_layernorm either: mirror the MLP-side
+        // hyper-connection norm (the family trunk consumes `qwen4_exp` instead).
         let (attn_post_norm, ffn_norm) = if is_nemotron_h {
             (None, attn_norm.clone())
+        } else if let Some(family) = qwen4_exp.as_ref() {
+            (None, family.mlp_hyper_connection.hc_norm.clone())
         } else {
             take_layer_norms(specs, &mut name_map, idx)?
         };
@@ -1886,6 +2203,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             linear_attn,
             glm_mla_attn,
             deepseek_v4,
+            qwen4_exp,
             ffn_norm,
             ffn_post_norm,
             gate_proj,
@@ -2063,6 +2381,15 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         }
     }
 
+    // qwen4_exp ships its own hybrid MTP block in `mtp.safetensors`; load it
+    // through the family loader (the Qwen dense sidecar path below stays
+    // closed for this family — see the early return in `load_mtp_sidecar`).
+    let qwen4_exp_mtp = if artifacts.manifest().qwen4_exp.is_enabled() {
+        load_qwen4_exp_mtp_sidecar(&root, &mut name_map, artifacts.manifest())
+    } else {
+        None
+    };
+
     // Load MTP sidecar if present (e.g. `mtp.safetensors` alongside the main files).
     let (
         mtp_max_depth,
@@ -2107,6 +2434,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         glm_mtp,
         deepseek_v4_head,
         deepseek_v4_nextn,
+        qwen4_exp_root,
+        qwen4_exp_mtp,
         unlimited_ocr_vision,
         qwen3_vl_vision,
         minicpm_v46_vision,
@@ -2353,6 +2682,7 @@ fn load_dense_llama3_layer(
         linear_attn: None,
         glm_mla_attn: None,
         deepseek_v4: None,
+        qwen4_exp: None,
         ffn_norm,
         ffn_post_norm: None,
         gate_proj: Some(gate_proj),
@@ -3185,6 +3515,16 @@ fn load_mtp_sidecar(
     if manifest.deepseek_v4.is_enabled() {
         return (0, default_draft, None, None, MtpNormLayout::Auto);
     }
+    // qwen4_exp (Qwen3.8-Flash-Next) also ships `mtp.safetensors`, but its
+    // block mirrors a full QSA decoder layer (attention + indexer + MoE +
+    // hyper-connections + mixer), not the Qwen dense-head layout parsed by
+    // `load_mtp` — this loader would misread or drop its tensors. The family
+    // loads it via `load_qwen4_exp_mtp_sidecar` instead (see
+    // .internal/planning/qwen38-flash-next-support.md §D); keep this path
+    // closed for the family.
+    if manifest.qwen4_exp.is_enabled() {
+        return (0, default_draft, None, None, MtpNormLayout::Auto);
+    }
     if skip_mtp_sidecar() {
         return (0, default_draft, None, None, MtpNormLayout::Auto);
     }
@@ -3458,6 +3798,7 @@ fn load_glm_mtp_sidecar(
         linear_attn: None,
         glm_mla_attn,
         deepseek_v4: None,
+        qwen4_exp: None,
         ffn_norm,
         ffn_post_norm: None,
         gate_proj: None,
@@ -3843,6 +4184,7 @@ fn load_mtp(
         linear_attn: None,
         glm_mla_attn: None,
         deepseek_v4: None,
+        qwen4_exp: None,
         ffn_norm: ffn_norm.clone(),
         ffn_post_norm: None,
         gate_proj,
@@ -4831,6 +5173,305 @@ fn load_glm_mla_attention_weights(
     })
 }
 
+// ---------------------------------------------------------------------------
+// qwen4_exp (Qwen3.8-Flash-Next) family loaders
+//
+// The family's hyper-connection, QSA-indexer, and PLE tensors have no
+// dedicated `NativeTensorRole`s, so they resolve by exact checkpoint name
+// (the MiniMax-M3 indexer precedent): AXQ packs nest the text tower under
+// `language_model.model.layers.N.*`; sanitized MLX exports use
+// `model.layers.N.*`. Every tensor loaded below is required for the family —
+// a manifest that lacks one fails loud instead of loading a partial graph.
+// ---------------------------------------------------------------------------
+
+/// Candidate per-layer checkpoint prefixes for qwen4_exp family tensors.
+fn qwen4_exp_layer_prefixes(layer_index: u32) -> [String; 3] {
+    [
+        format!("language_model.model.layers.{layer_index}"),
+        format!("model.layers.{layer_index}"),
+        format!("model.language_model.layers.{layer_index}"),
+    ]
+}
+
+fn has_named_spec(specs: &[NativeTensorSpec], name: &str) -> bool {
+    specs.iter().any(|spec| spec.name == name)
+}
+
+/// Resolve the checkpoint prefix carrying this layer's hyper-connection
+/// tensors (presence-probed on the manifest, not the loaded name map).
+fn qwen4_exp_layer_base(specs: &[NativeTensorSpec], layer_index: u32) -> Option<String> {
+    qwen4_exp_layer_prefixes(layer_index)
+        .into_iter()
+        .find(|prefix| {
+            has_named_spec(
+                specs,
+                &format!("{prefix}.attn_hyper_connection.hc_norm.weight"),
+            )
+        })
+}
+
+fn load_qwen4_exp_hyper_connection(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    prefix: &str,
+    with_block_inject: bool,
+) -> Result<Qwen4ExpHyperConnectionWeights, WeightLoadError> {
+    Ok(Qwen4ExpHyperConnectionWeights {
+        hc_norm: take_named_weight(specs, name_map, &format!("{prefix}.hc_norm.weight"))?.weight,
+        input_mix_down: take_named_weight(
+            specs,
+            name_map,
+            &format!("{prefix}.input_mix_weight_down.weight"),
+        )?,
+        input_mix_up: take_named_weight(
+            specs,
+            name_map,
+            &format!("{prefix}.input_mix_weight_up.weight"),
+        )?,
+        block_inject: if with_block_inject {
+            Some(take_named_weight(
+                specs,
+                name_map,
+                &format!("{prefix}.block_inject_weight.weight"),
+            )?)
+        } else {
+            None
+        },
+    })
+}
+
+/// Load one qwen4_exp layer's family tensors: both hyper-connection sites
+/// (required on every layer), the QSA indexer (full-attention layers only),
+/// and PLE (the PLE layer only, presence-probed).
+fn load_qwen4_exp_layer_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    root: &std::path::Path,
+    layer_index: u32,
+    is_full_attention: bool,
+) -> Result<Qwen4ExpLayerWeights, WeightLoadError> {
+    let base = qwen4_exp_layer_base(specs, layer_index).ok_or_else(|| {
+        WeightLoadError::RoleMissing(format!("qwen4_exp attn_hyper_connection[{layer_index}]"))
+    })?;
+    let attn_hyper_connection = load_qwen4_exp_hyper_connection(
+        specs,
+        name_map,
+        &format!("{base}.attn_hyper_connection"),
+        true,
+    )?;
+    let mlp_hyper_connection = load_qwen4_exp_hyper_connection(
+        specs,
+        name_map,
+        &format!("{base}.mlp_hyper_connection"),
+        true,
+    )?;
+    let indexer = if is_full_attention {
+        let prefix = format!("{base}.self_attn.indexer");
+        Some(Qwen4ExpIndexerWeights {
+            index_qk_proj: take_named_weight(
+                specs,
+                name_map,
+                &format!("{prefix}.index_qk_proj.weight"),
+            )?,
+            q_layernorm: take_named_weight(
+                specs,
+                name_map,
+                &format!("{prefix}.q_layernorm.weight"),
+            )?
+            .weight,
+            k_layernorm: take_named_weight(
+                specs,
+                name_map,
+                &format!("{prefix}.k_layernorm.weight"),
+            )?
+            .weight,
+        })
+    } else {
+        None
+    };
+    let ple = if has_named_spec(specs, &format!("{base}.ple.key_proj.weight")) {
+        Some(load_qwen4_exp_ple_weights(specs, name_map, root, &base)?)
+    } else {
+        None
+    };
+    Ok(Qwen4ExpLayerWeights {
+        attn_hyper_connection,
+        mlp_hyper_connection,
+        indexer,
+        ple,
+    })
+}
+
+/// Load the PLE module's resident tensors (projections, norms, conv, hash
+/// buffers) and capture the sharded n-gram table as lazy refs. The table
+/// itself (~51 GiB quantized) is NOT loaded here — see `Qwen4ExpPleTableShard`.
+fn load_qwen4_exp_ple_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    root: &std::path::Path,
+    layer_base: &str,
+) -> Result<Qwen4ExpPleWeights, WeightLoadError> {
+    let prefix = format!("{layer_base}.ple");
+    let embedding = format!("{prefix}.ple_embedding");
+    Ok(Qwen4ExpPleWeights {
+        key_proj: take_named_weight(specs, name_map, &format!("{prefix}.key_proj.weight"))?,
+        value_proj: take_named_weight(specs, name_map, &format!("{prefix}.value_proj.weight"))?,
+        norm_key: take_named_weight(specs, name_map, &format!("{prefix}.norm_key.weight"))?.weight,
+        norm_query: take_named_weight(specs, name_map, &format!("{prefix}.norm_query.weight"))?
+            .weight,
+        norm_conv: take_named_weight(specs, name_map, &format!("{prefix}.norm_conv.weight"))?
+            .weight,
+        conv1d: take_named_weight(specs, name_map, &format!("{prefix}.conv1d.weight"))?.weight,
+        layer_multipliers: take_named_weight(
+            specs,
+            name_map,
+            &format!("{embedding}.layer_multipliers"),
+        )?
+        .weight,
+        ngram_heads_vocab_sizes: take_named_weight(
+            specs,
+            name_map,
+            &format!("{embedding}.ngram_heads_vocab_sizes"),
+        )?
+        .weight,
+        ngram_heads_offsets: take_named_weight(
+            specs,
+            name_map,
+            &format!("{embedding}.ngram_heads_offsets"),
+        )?
+        .weight,
+        table: qwen4_exp_ple_table(specs, root, &embedding)?,
+    })
+}
+
+/// Collect the PLE n-gram table shards from the manifest into lazy refs.
+/// Shards are checkpoint row-shards of one logical table (`split_ngram_parts`
+/// = 128); the PLE module gathers rows per shard and never joins them.
+fn qwen4_exp_ple_table(
+    specs: &[NativeTensorSpec],
+    root: &std::path::Path,
+    embedding_prefix: &str,
+) -> Result<Qwen4ExpPleTable, WeightLoadError> {
+    let marker = format!("{embedding_prefix}.ngram_embedding.shards.");
+    let mut shards = Vec::new();
+    for spec in specs
+        .iter()
+        .filter(|spec| spec.name.starts_with(&marker) && spec.name.ends_with(".weight"))
+    {
+        let index = spec
+            .name
+            .strip_prefix(&marker)
+            .and_then(|rest| rest.strip_suffix(".weight"))
+            .and_then(|index| index.parse::<u32>().ok())
+            .ok_or_else(|| {
+                WeightLoadError::InvalidLayer(format!(
+                    "qwen4_exp PLE n-gram shard name {} does not end in a shard index",
+                    spec.name
+                ))
+            })?;
+        shards.push((index, spec));
+    }
+    if shards.is_empty() {
+        return Err(WeightLoadError::RoleMissing(format!(
+            "qwen4_exp PLE n-gram table shards under {marker}"
+        )));
+    }
+    shards.sort_by_key(|(index, _)| *index);
+    // Fail closed on gaps/duplicates: global row ids assume shard k starts at
+    // k * rows-per-shard, so a sparse shard set would silently mis-gather.
+    for (expected, (index, _)) in shards.iter().enumerate() {
+        if *index != expected as u32 {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "qwen4_exp PLE n-gram shards are not contiguous from 0: \
+                 found index {index} at position {expected}"
+            )));
+        }
+    }
+    let shards = shards
+        .into_iter()
+        .map(|(_, spec)| {
+            let shape = &spec.shape;
+            if shape.len() != 2 {
+                return Err(WeightLoadError::InvalidLayer(format!(
+                    "qwen4_exp PLE n-gram shard {} must be rank-2, got shape {shape:?}",
+                    spec.name
+                )));
+            }
+            let quantization = spec.quantization.clone().ok_or_else(|| {
+                WeightLoadError::QuantizationMissing(format!(
+                    "qwen4_exp PLE n-gram shard {} quantization metadata",
+                    spec.name
+                ))
+            })?;
+            // The manifest records the PACKED file shape for quantized
+            // tensors (the convert-side contract); recover the logical
+            // embedding width from the packed u32 column count.
+            let dim = if spec.source_quantized {
+                if quantization.bits == 0 || shape[1] * 32 % u64::from(quantization.bits) != 0 {
+                    return Err(WeightLoadError::InvalidLayer(format!(
+                        "qwen4_exp PLE n-gram shard {} packed shape {shape:?} is not divisible by {}-bit packing",
+                        spec.name, quantization.bits
+                    )));
+                }
+                (shape[1] * 32 / u64::from(quantization.bits)) as i64
+            } else {
+                shape[1] as i64
+            };
+            Ok(Qwen4ExpPleTableShard {
+                file: root.join(&spec.file),
+                weight_name: spec.name.clone(),
+                rows: shape[0] as i64,
+                dim,
+                quantization,
+                cache: OnceLock::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, WeightLoadError>>()?;
+    Ok(Qwen4ExpPleTable { shards })
+}
+
+/// Load the root-level qwen4_exp hyper-connection mixer
+/// (`model.hyper_connection_mixer.*`; no block-injection gate).
+fn load_qwen4_exp_root_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+) -> Result<Qwen4ExpRootWeights, WeightLoadError> {
+    let prefix = [
+        "language_model.model.hyper_connection_mixer",
+        "model.hyper_connection_mixer",
+        "model.language_model.hyper_connection_mixer",
+    ]
+    .into_iter()
+    .find(|prefix| has_named_spec(specs, &format!("{prefix}.hc_norm.weight")))
+    .ok_or_else(|| {
+        WeightLoadError::RoleMissing("qwen4_exp model.hyper_connection_mixer".to_string())
+    })?;
+    Ok(Qwen4ExpRootWeights {
+        mixer: load_qwen4_exp_hyper_connection(specs, name_map, prefix, false)?,
+    })
+}
+
+/// Tensor names that must stay out of the resident name map for qwen4_exp:
+/// the PLE n-gram table shards plus their quantization sidecars. Mirrors the
+/// expert-stream skip discipline (`streamed_skip_names`) — a safetensors file
+/// holding only shard tensors is then never opened at init.
+fn qwen4_exp_ple_shard_skip_names(specs: &[NativeTensorSpec]) -> std::collections::HashSet<String> {
+    let mut skip = std::collections::HashSet::new();
+    for spec in specs {
+        if spec
+            .name
+            .contains(".ple.ple_embedding.ngram_embedding.shards.")
+            && spec.name.ends_with(".weight")
+        {
+            let base = spec.name.strip_suffix(".weight").unwrap_or(&spec.name);
+            skip.insert(spec.name.clone());
+            skip.insert(format!("{base}.scales"));
+            skip.insert(format!("{base}.biases"));
+        }
+    }
+    skip
+}
+
 /// Load one DeepSeek V4 (Flash) layer's attention + hyper-connection tensors.
 ///
 /// V4 reuses the `AttentionQa`/`AttentionQaNorm`/`AttentionQb` roles but
@@ -5448,6 +6089,7 @@ fn load_deepseek_v4_mtp_sidecar(
             indexer: None,
             tid2eid: None,
         }),
+        qwen4_exp: None,
         ffn_norm: ffn_norm?,
         ffn_post_norm: None,
         gate_proj: None,
@@ -5491,6 +6133,365 @@ fn load_deepseek_v4_mtp_sidecar(
         shared_head_head,
         hc_head,
         layer: Some(Box::new(layer)),
+    })
+}
+
+/// Take one qwen4_exp MTP sidecar tensor by bare name, accepting the raw-HF
+/// layout (`mtp.*`) and a `language_model.` wrapper prefix.
+fn qwen4_exp_mtp_take_plain(
+    name_map: &mut HashMap<String, MlxArray>,
+    bare: &str,
+) -> Option<MlxArray> {
+    name_map
+        .remove(bare)
+        .or_else(|| name_map.remove(&format!("language_model.{bare}")))
+}
+
+/// [`qwen4_exp_mtp_take_plain`] for a (possibly quantized) projection. BF16
+/// sidecar tensors carry no `.scales`/`.biases`, so `mtp_take_weight` infers
+/// `bits=32, group_size=1` (dense).
+fn qwen4_exp_mtp_take_weight(
+    name_map: &mut HashMap<String, MlxArray>,
+    bare_base: &str,
+) -> Option<QuantizedWeight> {
+    mtp_take_weight(name_map, bare_base, None)
+        .or_else(|| mtp_take_weight(name_map, &format!("language_model.{bare_base}"), None))
+}
+
+/// Take one hyper-connection site (`{site}.{hc_norm,input_mix_weight_down,
+/// input_mix_weight_up[,block_inject_weight]}.weight`). Norm tensors are kept
+/// raw (HF delta); the family's `1 + γ` norm helpers own the shift.
+fn qwen4_exp_mtp_take_hyper_connection(
+    name_map: &mut HashMap<String, MlxArray>,
+    site: &str,
+    with_block_inject: bool,
+) -> Option<Qwen4ExpHyperConnectionWeights> {
+    let hc_norm = qwen4_exp_mtp_take_plain(name_map, &format!("{site}.hc_norm.weight"))?;
+    let input_mix_down =
+        qwen4_exp_mtp_take_weight(name_map, &format!("{site}.input_mix_weight_down"))?;
+    let input_mix_up = qwen4_exp_mtp_take_weight(name_map, &format!("{site}.input_mix_weight_up"))?;
+    let block_inject = if with_block_inject {
+        Some(qwen4_exp_mtp_take_weight(
+            name_map,
+            &format!("{site}.block_inject_weight"),
+        )?)
+    } else {
+        None
+    };
+    Some(Qwen4ExpHyperConnectionWeights {
+        hc_norm,
+        input_mix_down,
+        input_mix_up,
+        block_inject,
+    })
+}
+
+/// Split a HF-packed MoE `gate_up_proj` stack `[E, 2I, H]` into the gate
+/// (`[:, :I, :]`) and up (`[:, I:, :]`) expert stacks the runtime MoE forward
+/// consumes. Unlike [`split_packed_ffn_gate_up`] (2-D axis-0 split), the MTP
+/// sidecar keeps experts packed as one 3-D tensor, so the split runs on the
+/// middle axis instead. BF16-dense sidecar tensors carry no scales/biases; a
+/// quantized packed stack or a middle dim that is not exactly
+/// `2 * intermediate` fails closed so the caller reports the sidecar
+/// incomplete.
+fn split_hf_packed_moe_gate_up(
+    packed: QuantizedWeight,
+    intermediate: i32,
+) -> Option<(QuantizedWeight, QuantizedWeight)> {
+    let shape = packed.weight.shape();
+    if shape.len() != 3 || intermediate <= 0 || shape[1] != 2 * intermediate {
+        return None;
+    }
+    if packed.scales.is_some() || packed.biases.is_some() {
+        return None;
+    }
+    let experts = shape[0];
+    let hidden = shape[2];
+    let slice_half = |start: i32| -> QuantizedWeight {
+        let weight = slice(
+            &packed.weight,
+            &[0, start, 0],
+            &[experts, start + intermediate, hidden],
+            &[1, 1, 1],
+            None,
+        );
+        QuantizedWeight {
+            weight,
+            scales: None,
+            biases: None,
+            group_size: packed.group_size,
+            bits: packed.bits,
+            mode: packed.mode.clone(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+        }
+    };
+    Some((slice_half(0), slice_half(intermediate)))
+}
+
+/// Whether the manifest's qwen4_exp MTP block describes the one supported
+/// predictor: exactly one hybrid full-attention layer with shared embeddings.
+/// Absent fields fall back to the reference-config defaults (1 layer, hybrid,
+/// full attention, shared embeddings), same as
+/// `Qwen4ExpMtpConfig::from_manifest`.
+fn qwen4_exp_mtp_config_supported(manifest: &ax_engine_core::NativeModelManifest) -> bool {
+    let mtp = &manifest.qwen4_exp.mtp;
+    let one_layer = mtp.num_hidden_layers.unwrap_or(1) == 1;
+    let hybrid = mtp.hybrid.unwrap_or(true);
+    let shared_embeddings = !mtp.use_dedicated_embeddings.unwrap_or(false);
+    let full_attention =
+        mtp.layer_types.is_empty() || mtp.layer_types.iter().all(|kind| kind == "full_attention");
+    one_layer && hybrid && shared_embeddings && full_attention
+}
+
+/// Take the routed-expert stacks of the MTP block: the HF-packed
+/// `experts.gate_up_proj` (`[E, 2I, H]`, split on axis 1 at load) or an
+/// already-split `{gate,up}_proj` pair (`[E, I, H]` each, no split), under
+/// either the `experts` or `switch_mlp` directory.
+fn qwen4_exp_mtp_take_experts(
+    name_map: &mut HashMap<String, MlxArray>,
+    layer: &str,
+    intermediate: i32,
+) -> Option<(QuantizedWeight, QuantizedWeight, QuantizedWeight)> {
+    let packed = qwen4_exp_mtp_take_weight(name_map, &format!("{layer}.experts.gate_up_proj"))
+        .or_else(|| {
+            qwen4_exp_mtp_take_weight(name_map, &format!("{layer}.switch_mlp.gate_up_proj"))
+        });
+    let (gate_exps, up_exps) = if let Some(packed) = packed {
+        split_hf_packed_moe_gate_up(packed, intermediate)?
+    } else {
+        let gate = qwen4_exp_mtp_take_weight(name_map, &format!("{layer}.experts.gate_proj"))
+            .or_else(|| {
+                qwen4_exp_mtp_take_weight(name_map, &format!("{layer}.switch_mlp.gate_proj"))
+            })?;
+        let up = qwen4_exp_mtp_take_weight(name_map, &format!("{layer}.experts.up_proj")).or_else(
+            || qwen4_exp_mtp_take_weight(name_map, &format!("{layer}.switch_mlp.up_proj")),
+        )?;
+        (gate, up)
+    };
+    let down_exps = qwen4_exp_mtp_take_weight(name_map, &format!("{layer}.experts.down_proj"))
+        .or_else(|| {
+            qwen4_exp_mtp_take_weight(name_map, &format!("{layer}.switch_mlp.down_proj"))
+        })?;
+    Some((gate_exps, up_exps, down_exps))
+}
+
+/// Load the qwen4_exp MTP sidecar (`mtp.safetensors`, BF16, 31 tensors).
+///
+/// Returns `Some(Qwen4ExpMtpWeights)` only when the predictor config is
+/// supported and EVERY tensor is present — an incomplete sidecar warns and
+/// returns `None` (fail closed, no partial head). `None` is also returned
+/// when the sidecar file is absent or `AX_MLX_SKIP_MTP_SIDECAR` is set, and
+/// for non-qwen4_exp manifests.
+fn load_qwen4_exp_mtp_sidecar(
+    root: &std::path::Path,
+    name_map: &mut HashMap<String, MlxArray>,
+    manifest: &ax_engine_core::NativeModelManifest,
+) -> Option<Qwen4ExpMtpWeights> {
+    if !manifest.qwen4_exp.is_enabled() {
+        return None;
+    }
+    if skip_mtp_sidecar() {
+        return None;
+    }
+    let sidecar = root.join("mtp.safetensors");
+    if !sidecar.exists() {
+        return None;
+    }
+    if !qwen4_exp_mtp_config_supported(manifest) {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        WARNED.get_or_init(|| {
+            tracing::warn!(
+                target: "ax_mlx::weights",
+                "qwen4_exp MTP supports exactly one hybrid full-attention block with shared embeddings; disabling MTP drafts"
+            );
+        });
+        return None;
+    }
+    let tensors = match load_safetensors(&sidecar, None) {
+        Ok(t) => t,
+        Err(_) => return None,
+    };
+    if !tensors.is_empty() {
+        let refs: Vec<&MlxArray> = tensors.values().collect();
+        eval(&refs);
+    }
+    name_map.extend(tensors);
+
+    let loaded = load_qwen4_exp_mtp_sidecar_tensors(name_map, root, manifest);
+    if loaded.is_none() {
+        // Fail closed without a partial head; drop any sidecar residue so the
+        // name map carries no half-consumed `mtp.*` keys.
+        name_map.retain(|name, _| {
+            !name.starts_with("mtp.") && !name.starts_with("language_model.mtp.")
+        });
+        tracing::warn!(
+            target: "ax_mlx::weights",
+            "qwen4_exp MTP sidecar is incomplete — skipping the MTP draft head"
+        );
+    }
+    loaded
+}
+
+/// Tensor-taking body of [`load_qwen4_exp_mtp_sidecar`], run after the sidecar
+/// file has been merged into `name_map`.
+fn load_qwen4_exp_mtp_sidecar_tensors(
+    name_map: &mut HashMap<String, MlxArray>,
+    root: &std::path::Path,
+    manifest: &ax_engine_core::NativeModelManifest,
+) -> Option<Qwen4ExpMtpWeights> {
+    let layer = "mtp.layers.0";
+
+    // Input fusion (shared embedding table + shared lm_head at runtime).
+    let pre_fc_norm_embedding =
+        qwen4_exp_mtp_take_plain(name_map, "mtp.pre_fc_norm_embedding.weight")?;
+    let pre_fc_norm_hidden = qwen4_exp_mtp_take_plain(name_map, "mtp.pre_fc_norm_hidden.weight")?;
+    let fc_embedding = qwen4_exp_mtp_take_weight(name_map, "mtp.fc_embedding")?;
+    let fc_hidden = qwen4_exp_mtp_take_weight(name_map, "mtp.fc_hidden")?;
+
+    // Hyper-connections: both per-layer sites carry block-inject; the final
+    // mixer does not.
+    let attn_hyper_connection = qwen4_exp_mtp_take_hyper_connection(
+        name_map,
+        &format!("{layer}.attn_hyper_connection"),
+        true,
+    )?;
+    let mlp_hyper_connection = qwen4_exp_mtp_take_hyper_connection(
+        name_map,
+        &format!("{layer}.mlp_hyper_connection"),
+        true,
+    )?;
+    let mixer = qwen4_exp_mtp_take_hyper_connection(name_map, "mtp.hyper_connection_mixer", false)?;
+
+    // QSA attention (q_proj packs query + sigmoid gate per head).
+    let attn = format!("{layer}.self_attn");
+    let q_proj = qwen4_exp_mtp_take_weight(name_map, &format!("{attn}.q_proj"))?;
+    let k_proj = qwen4_exp_mtp_take_weight(name_map, &format!("{attn}.k_proj"))?;
+    let v_proj = qwen4_exp_mtp_take_weight(name_map, &format!("{attn}.v_proj"))?;
+    let o_proj = qwen4_exp_mtp_take_weight(name_map, &format!("{attn}.o_proj"))?;
+    let q_norm = qwen4_exp_mtp_take_plain(name_map, &format!("{attn}.q_norm.weight"))?;
+    let k_norm = qwen4_exp_mtp_take_plain(name_map, &format!("{attn}.k_norm.weight"))?;
+    let index_qk_proj =
+        qwen4_exp_mtp_take_weight(name_map, &format!("{attn}.indexer.index_qk_proj"))?;
+    let q_layernorm =
+        qwen4_exp_mtp_take_plain(name_map, &format!("{attn}.indexer.q_layernorm.weight"))?;
+    let k_layernorm =
+        qwen4_exp_mtp_take_plain(name_map, &format!("{attn}.indexer.k_layernorm.weight"))?;
+
+    // MoE: softmax router + routed experts (packed gate_up split at load) +
+    // sigmoid-gated shared expert.
+    let mlp = format!("{layer}.mlp");
+    let router_proj = qwen4_exp_mtp_take_weight(name_map, &format!("{mlp}.gate"))?;
+    let intermediate = manifest.moe.expert_intermediate_size? as i32;
+    let (gate_exps, up_exps, down_exps) = qwen4_exp_mtp_take_experts(name_map, &mlp, intermediate)?;
+    let shared_gate_proj =
+        qwen4_exp_mtp_take_weight(name_map, &format!("{mlp}.shared_expert.gate_proj"))?;
+    let shared_up_proj =
+        qwen4_exp_mtp_take_weight(name_map, &format!("{mlp}.shared_expert.up_proj"))?;
+    let shared_down_proj =
+        qwen4_exp_mtp_take_weight(name_map, &format!("{mlp}.shared_expert.down_proj"))?;
+    let shared_expert_gate =
+        qwen4_exp_mtp_take_weight(name_map, &format!("{mlp}.shared_expert_gate"))?;
+
+    // Draft sampler + depth from `mtplx_runtime.json` (same parser as
+    // `load_mtp_sidecar`); depth is hard-capped at the single shipped block.
+    let default_draft = MlxSamplingParams::new(0.7, 0.95, 20);
+    let (max_depth, draft_sampling) = if let Ok(bytes) =
+        std::fs::read(root.join("mtplx_runtime.json"))
+        && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+    {
+        let raw_depth = v.get("mtp_depth_max").and_then(|x| x.as_u64()).unwrap_or(1) as usize;
+        let draft_sampling = if let Some(ds) = v.get("recommended_draft_sampler") {
+            let temp = ds
+                .get("temperature")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.7) as f32;
+            let top_k = ds.get("top_k").and_then(|x| x.as_u64()).unwrap_or(20) as u32;
+            let top_p = ds.get("top_p").and_then(|x| x.as_f64()).unwrap_or(0.95) as f32;
+            MlxSamplingParams::new(temp, top_p, top_k)
+        } else {
+            default_draft
+        };
+        (
+            raw_depth.min(1),
+            apply_draft_temperature_override(draft_sampling),
+        )
+    } else {
+        (1, apply_draft_temperature_override(default_draft))
+    };
+
+    // `attn_norm`/`ffn_norm` are unread dummies: the hyper-connections replace
+    // both norms. Keep them zeros — never a real norm weight — so a mistaken
+    // consumer cannot silently apply a wrong RMSNorm.
+    let dummy_norm = || zeros(&[1], MlxDtype::Bfloat16, None);
+    let layer_weights = LayerWeights {
+        attn_norm: dummy_norm(),
+        attn_post_norm: None,
+        q_norm: Some(q_norm),
+        k_norm: Some(k_norm),
+        q_proj: Some(q_proj),
+        k_proj: Some(k_proj),
+        v_proj: Some(v_proj),
+        qkv_packed: None,
+        attn_out_gate: None,
+        o_proj: Some(o_proj),
+        linear_attn: None,
+        glm_mla_attn: None,
+        deepseek_v4: None,
+        qwen4_exp: Some(Qwen4ExpLayerWeights {
+            attn_hyper_connection,
+            mlp_hyper_connection,
+            indexer: Some(Qwen4ExpIndexerWeights {
+                index_qk_proj,
+                q_layernorm,
+                k_layernorm,
+            }),
+            ple: None,
+        }),
+        ffn_norm: dummy_norm(),
+        ffn_post_norm: None,
+        gate_proj: None,
+        up_proj: None,
+        gate_up_packed: None,
+        down_proj: None,
+        ffn_norm2: None,
+        ffn_post_norm1: None,
+        ffn_post_norm2: None,
+        router_proj: Some(router_proj),
+        router_correction_bias: None,
+        router_scale: None,
+        router_combined_scale: None,
+        router_expert_scale: None,
+        layer_scalar: None,
+        per_layer_gate: None,
+        per_layer_proj_w: None,
+        per_layer_post_norm: None,
+        shared_expert_gate: Some(shared_expert_gate),
+        shared_gate_up_proj: None,
+        shared_gate_proj: Some(shared_gate_proj),
+        shared_up_proj: Some(shared_up_proj),
+        shared_down_proj: Some(shared_down_proj),
+        gate_up_exps_packed: None,
+        gate_exps: Some(gate_exps),
+        up_exps: Some(up_exps),
+        down_exps: Some(down_exps),
+        attn_sink: None,
+        rotation_smoothing_inverse: None,
+        expert_stream: None,
+    };
+
+    Some(Qwen4ExpMtpWeights {
+        pre_fc_norm_embedding,
+        pre_fc_norm_hidden,
+        fc_embedding,
+        fc_hidden,
+        mixer,
+        layer: Box::new(layer_weights),
+        max_depth,
+        draft_sampling,
     })
 }
 
@@ -9354,6 +10355,1467 @@ mod tests {
         // Missing sidecar file: graceful None, no panic.
         assert!(load_deepseek_v4_mtp_sidecar(&tmp, &mut name_map, &v4_manifest).is_none());
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // ── qwen4_exp (Qwen3.8-Flash-Next) synthetic fixtures ───────────────────
+
+    const Q4E_HIDDEN: i32 = 64;
+    const Q4E_STREAM_HIDDEN: i32 = 256; // hc_count 4 * hidden 64
+    const Q4E_LOW_RANK: i32 = 8;
+    const Q4E_VOCAB: i32 = 64;
+    const Q4E_EXPERTS: i32 = 8;
+    const Q4E_HEAD_DIM: i32 = 32;
+    const Q4E_SHARD_ROWS: i32 = 16;
+    const Q4E_SHARD_DIM: i32 = 32;
+
+    /// One tensor in the synthetic fixture: the on-disk payload plus the
+    /// manifest entry that resolves it.
+    struct Q4eTensor {
+        name: String,
+        file: String,
+        file_dtype: &'static str,
+        file_shape: Vec<i32>,
+        bytes: Vec<u8>,
+        role: NativeTensorRole,
+        layer_index: Option<u32>,
+        manifest_dtype: NativeTensorDataType,
+        source_quantized: bool,
+        quantization: Option<NativeTensorQuantization>,
+        logical_shape: Vec<u64>,
+        in_manifest: bool,
+    }
+
+    fn q4e_fill_bytes(len: usize, bytes_per: usize, fill: impl Fn(usize) -> Vec<u8>) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(len * bytes_per);
+        for index in 0..len {
+            bytes.extend_from_slice(&fill(index));
+        }
+        bytes
+    }
+
+    fn q4e_bf16_bytes(len: usize, fill: f32) -> Vec<u8> {
+        let bits = (fill.to_bits() >> 16) as u16;
+        q4e_fill_bytes(len, 2, |_| bits.to_le_bytes().to_vec())
+    }
+
+    fn q4e_f32_bytes(len: usize, fill: f32) -> Vec<u8> {
+        q4e_fill_bytes(len, 4, |_| fill.to_le_bytes().to_vec())
+    }
+
+    fn q4e_u32_bytes(len: usize, fill: u32) -> Vec<u8> {
+        q4e_fill_bytes(len, 4, |_| fill.to_le_bytes().to_vec())
+    }
+
+    fn q4e_i64_bytes(values: &[i64]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(values.len() * 8);
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn q4e_dense(
+        name: &str,
+        shape: &[i32],
+        role: NativeTensorRole,
+        layer: Option<u32>,
+        fill: f32,
+    ) -> Q4eTensor {
+        let len: usize = shape.iter().map(|dim| *dim as usize).product();
+        Q4eTensor {
+            name: name.to_string(),
+            file: "model.safetensors".to_string(),
+            file_dtype: "BF16",
+            file_shape: shape.to_vec(),
+            bytes: q4e_bf16_bytes(len, fill),
+            role,
+            layer_index: layer,
+            manifest_dtype: NativeTensorDataType::Bf16,
+            source_quantized: false,
+            quantization: None,
+            logical_shape: shape.iter().map(|dim| *dim as u64).collect(),
+            in_manifest: true,
+        }
+    }
+
+    fn q4e_f32(
+        name: &str,
+        shape: &[i32],
+        role: NativeTensorRole,
+        layer: Option<u32>,
+        fill: f32,
+    ) -> Q4eTensor {
+        let len: usize = shape.iter().map(|dim| *dim as usize).product();
+        Q4eTensor {
+            name: name.to_string(),
+            file: "model.safetensors".to_string(),
+            file_dtype: "F32",
+            file_shape: shape.to_vec(),
+            bytes: q4e_f32_bytes(len, fill),
+            role,
+            layer_index: layer,
+            manifest_dtype: NativeTensorDataType::F32,
+            source_quantized: false,
+            quantization: None,
+            logical_shape: shape.iter().map(|dim| *dim as u64).collect(),
+            in_manifest: true,
+        }
+    }
+
+    /// I64 hash buffer. The manifest schema has no I64 container dtype
+    /// (convert maps I32 onto U32 and has no I64 consumer yet), so the
+    /// fixture declares F32 — the safetensors header drives the loaded
+    /// array's true Int64 dtype.
+    fn q4e_i64(
+        name: &str,
+        values: &[i64],
+        role: NativeTensorRole,
+        layer: Option<u32>,
+    ) -> Q4eTensor {
+        Q4eTensor {
+            name: name.to_string(),
+            file: "model.safetensors".to_string(),
+            file_dtype: "I64",
+            file_shape: vec![values.len() as i32],
+            bytes: q4e_i64_bytes(values),
+            role,
+            layer_index: layer,
+            manifest_dtype: NativeTensorDataType::F32,
+            source_quantized: false,
+            quantization: None,
+            logical_shape: vec![values.len() as u64],
+            in_manifest: true,
+        }
+    }
+
+    /// One affine-quantized linear: `.weight` U32 packed + `.scales`/`.biases`
+    /// BF16 sidecars. Only the `.weight` enters the manifest (the runtime
+    /// resolves sidecars by name convention).
+    fn q4e_quant(
+        name: &str,
+        logical: &[i32],
+        group_size: u32,
+        bits: u32,
+        role: NativeTensorRole,
+        layer: Option<u32>,
+        file: &str,
+    ) -> (Q4eTensor, Q4eTensor, Q4eTensor) {
+        let rank = logical.len();
+        let in_dim = logical[rank - 1] as usize;
+        let packed_cols = in_dim * bits as usize / 32;
+        let groups = in_dim / group_size as usize;
+        let mut weight_shape = logical.to_vec();
+        weight_shape[rank - 1] = packed_cols as i32;
+        let mut sidecar_shape = logical.to_vec();
+        sidecar_shape[rank - 1] = groups as i32;
+        let weight_len: usize = weight_shape.iter().map(|dim| *dim as usize).product();
+        let sidecar_len: usize = sidecar_shape.iter().map(|dim| *dim as usize).product();
+        let base = name.strip_suffix(".weight").unwrap_or(name);
+        let sidecar = |suffix: &str, fill: f32| Q4eTensor {
+            name: format!("{base}.{suffix}"),
+            file: file.to_string(),
+            file_dtype: "BF16",
+            file_shape: sidecar_shape.clone(),
+            bytes: q4e_bf16_bytes(sidecar_len, fill),
+            role: NativeTensorRole::Other,
+            layer_index: layer,
+            manifest_dtype: NativeTensorDataType::Bf16,
+            source_quantized: false,
+            quantization: None,
+            logical_shape: sidecar_shape.iter().map(|dim| *dim as u64).collect(),
+            in_manifest: false,
+        };
+        (
+            Q4eTensor {
+                name: name.to_string(),
+                file: file.to_string(),
+                file_dtype: "U32",
+                file_shape: weight_shape.clone(),
+                bytes: q4e_u32_bytes(weight_len, 0x0101_0101),
+                role,
+                layer_index: layer,
+                manifest_dtype: NativeTensorDataType::U32,
+                source_quantized: true,
+                quantization: Some(NativeTensorQuantization {
+                    mode: "affine".to_string(),
+                    group_size,
+                    bits,
+                }),
+                logical_shape: weight_shape.iter().map(|dim| *dim as u64).collect(),
+                in_manifest: true,
+            },
+            sidecar("scales", 1.0),
+            sidecar("biases", 0.0),
+        )
+    }
+
+    fn q4e_push_quant(
+        tensors: &mut Vec<Q4eTensor>,
+        name: &str,
+        logical: &[i32],
+        group_size: u32,
+        bits: u32,
+        role: NativeTensorRole,
+        layer: Option<u32>,
+    ) {
+        let (weight, scales, biases) = q4e_quant(
+            name,
+            logical,
+            group_size,
+            bits,
+            role,
+            layer,
+            "model.safetensors",
+        );
+        tensors.extend([weight, scales, biases]);
+    }
+
+    fn q4e_layer_prefix(layer: u32) -> String {
+        format!("language_model.model.layers.{layer}")
+    }
+
+    /// Both hyper-connection sites for one layer. The family has no
+    /// input/post-attention layernorms; the HC norms carry `Other` roles and
+    /// load by exact name.
+    fn q4e_push_hyper_connections(tensors: &mut Vec<Q4eTensor>, layer: u32) {
+        let prefix = q4e_layer_prefix(layer);
+        for site in ["attn_hyper_connection", "mlp_hyper_connection"] {
+            tensors.push(q4e_dense(
+                &format!("{prefix}.{site}.hc_norm.weight"),
+                &[Q4E_STREAM_HIDDEN],
+                NativeTensorRole::Other,
+                Some(layer),
+                1.0,
+            ));
+            tensors.push(q4e_dense(
+                &format!("{prefix}.{site}.input_mix_weight_down.weight"),
+                &[Q4E_LOW_RANK, Q4E_STREAM_HIDDEN],
+                NativeTensorRole::Other,
+                Some(layer),
+                0.5,
+            ));
+            tensors.push(q4e_dense(
+                &format!("{prefix}.{site}.input_mix_weight_up.weight"),
+                &[Q4E_STREAM_HIDDEN, Q4E_LOW_RANK],
+                NativeTensorRole::Other,
+                Some(layer),
+                0.5,
+            ));
+            tensors.push(q4e_dense(
+                &format!("{prefix}.{site}.block_inject_weight.weight"),
+                &[4, Q4E_STREAM_HIDDEN],
+                NativeTensorRole::Other,
+                Some(layer),
+                0.5,
+            ));
+        }
+    }
+
+    fn q4e_push_moe(tensors: &mut Vec<Q4eTensor>, layer: u32) {
+        let prefix = q4e_layer_prefix(layer);
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.mlp.gate.weight"),
+            &[Q4E_EXPERTS, Q4E_HIDDEN],
+            64,
+            8,
+            NativeTensorRole::FfnGateInp,
+            Some(layer),
+        );
+        for (proj, role) in [
+            ("gate_proj", NativeTensorRole::FfnGateExps),
+            ("up_proj", NativeTensorRole::FfnUpExps),
+        ] {
+            q4e_push_quant(
+                tensors,
+                &format!("{prefix}.mlp.switch_mlp.{proj}.weight"),
+                &[Q4E_EXPERTS, 32, Q4E_HIDDEN],
+                64,
+                6,
+                role,
+                Some(layer),
+            );
+        }
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.mlp.switch_mlp.down_proj.weight"),
+            &[Q4E_EXPERTS, Q4E_HIDDEN, 32],
+            32,
+            6,
+            NativeTensorRole::FfnDownExps,
+            Some(layer),
+        );
+        for (proj, role) in [
+            ("gate_proj", NativeTensorRole::FfnSharedExpertGate),
+            ("up_proj", NativeTensorRole::FfnSharedExpertUp),
+        ] {
+            q4e_push_quant(
+                tensors,
+                &format!("{prefix}.mlp.shared_expert.{proj}.weight"),
+                &[32, Q4E_HIDDEN],
+                64,
+                6,
+                role,
+                Some(layer),
+            );
+        }
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.mlp.shared_expert.down_proj.weight"),
+            &[Q4E_HIDDEN, 32],
+            32,
+            6,
+            NativeTensorRole::FfnSharedExpertDown,
+            Some(layer),
+        );
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.mlp.shared_expert_gate.weight"),
+            &[1, Q4E_HIDDEN],
+            64,
+            8,
+            NativeTensorRole::FfnSharedExpertGateInp,
+            Some(layer),
+        );
+    }
+
+    /// Linear-attention (gated-delta) roles for layer 0 — tensor names and
+    /// shapes are identical to the qwen3_5 layout the existing loader owns.
+    fn q4e_push_linear_attention(tensors: &mut Vec<Q4eTensor>) {
+        let prefix = q4e_layer_prefix(0);
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.linear_attn.in_proj_qkv.weight"),
+            &[256, Q4E_HIDDEN],
+            64,
+            6,
+            NativeTensorRole::LinearAttentionInProjQkv,
+            Some(0),
+        );
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.linear_attn.in_proj_z.weight"),
+            &[128, Q4E_HIDDEN],
+            64,
+            6,
+            NativeTensorRole::LinearAttentionInProjZ,
+            Some(0),
+        );
+        for proj in ["in_proj_a", "in_proj_b"] {
+            let role = if proj == "in_proj_a" {
+                NativeTensorRole::LinearAttentionInProjA
+            } else {
+                NativeTensorRole::LinearAttentionInProjB
+            };
+            q4e_push_quant(
+                tensors,
+                &format!("{prefix}.linear_attn.{proj}.weight"),
+                &[4, Q4E_HIDDEN],
+                64,
+                6,
+                role,
+                Some(0),
+            );
+        }
+        tensors.push(q4e_dense(
+            &format!("{prefix}.linear_attn.conv1d.weight"),
+            &[256, 4, 1],
+            NativeTensorRole::LinearAttentionConv1d,
+            Some(0),
+            0.5,
+        ));
+        tensors.push(q4e_f32(
+            &format!("{prefix}.linear_attn.dt_bias"),
+            &[4],
+            NativeTensorRole::LinearAttentionDtBias,
+            Some(0),
+            0.1,
+        ));
+        tensors.push(q4e_f32(
+            &format!("{prefix}.linear_attn.A_log"),
+            &[4],
+            NativeTensorRole::LinearAttentionALog,
+            Some(0),
+            0.1,
+        ));
+        tensors.push(q4e_dense(
+            &format!("{prefix}.linear_attn.norm.weight"),
+            &[Q4E_HEAD_DIM],
+            NativeTensorRole::LinearAttentionNorm,
+            Some(0),
+            1.0,
+        ));
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.linear_attn.out_proj.weight"),
+            &[Q4E_HIDDEN, 128],
+            64,
+            6,
+            NativeTensorRole::LinearAttentionOutProj,
+            Some(0),
+        );
+    }
+
+    /// QSA full-attention + indexer roles for layer 1.
+    fn q4e_push_qsa_attention(tensors: &mut Vec<Q4eTensor>) {
+        let prefix = q4e_layer_prefix(1);
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.self_attn.q_proj.weight"),
+            &[128, Q4E_HIDDEN],
+            64,
+            6,
+            NativeTensorRole::AttentionQ,
+            Some(1),
+        );
+        for (proj, role) in [
+            ("k_proj", NativeTensorRole::AttentionK),
+            ("v_proj", NativeTensorRole::AttentionV),
+        ] {
+            q4e_push_quant(
+                tensors,
+                &format!("{prefix}.self_attn.{proj}.weight"),
+                &[32, Q4E_HIDDEN],
+                64,
+                6,
+                role,
+                Some(1),
+            );
+        }
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.self_attn.o_proj.weight"),
+            &[Q4E_HIDDEN, 128],
+            64,
+            6,
+            NativeTensorRole::AttentionO,
+            Some(1),
+        );
+        tensors.push(q4e_dense(
+            &format!("{prefix}.self_attn.q_norm.weight"),
+            &[Q4E_HEAD_DIM],
+            NativeTensorRole::AttentionQNorm,
+            Some(1),
+            1.0,
+        ));
+        tensors.push(q4e_dense(
+            &format!("{prefix}.self_attn.k_norm.weight"),
+            &[Q4E_HEAD_DIM],
+            NativeTensorRole::AttentionKNorm,
+            Some(1),
+            1.0,
+        ));
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.self_attn.indexer.index_qk_proj.weight"),
+            &[160, Q4E_HIDDEN],
+            64,
+            6,
+            NativeTensorRole::Other,
+            Some(1),
+        );
+        tensors.push(q4e_dense(
+            &format!("{prefix}.self_attn.indexer.q_layernorm.weight"),
+            &[Q4E_HEAD_DIM],
+            NativeTensorRole::Other,
+            Some(1),
+            1.0,
+        ));
+        tensors.push(q4e_dense(
+            &format!("{prefix}.self_attn.indexer.k_layernorm.weight"),
+            &[Q4E_HEAD_DIM],
+            NativeTensorRole::Other,
+            Some(1),
+            1.0,
+        ));
+    }
+
+    /// PLE resident tensors for layer 1 (the n-gram table shards live in
+    /// their own file — see `q4e_shard_tensors`).
+    fn q4e_push_ple(tensors: &mut Vec<Q4eTensor>) {
+        let prefix = format!("{}.ple", q4e_layer_prefix(1));
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.key_proj.weight"),
+            &[Q4E_STREAM_HIDDEN, Q4E_HIDDEN],
+            32,
+            8,
+            NativeTensorRole::Other,
+            Some(1),
+        );
+        q4e_push_quant(
+            tensors,
+            &format!("{prefix}.value_proj.weight"),
+            &[Q4E_HIDDEN, Q4E_HIDDEN],
+            32,
+            8,
+            NativeTensorRole::Other,
+            Some(1),
+        );
+        for norm in ["norm_key", "norm_query", "norm_conv"] {
+            tensors.push(q4e_dense(
+                &format!("{prefix}.{norm}.weight"),
+                &[Q4E_STREAM_HIDDEN],
+                NativeTensorRole::Other,
+                Some(1),
+                1.0,
+            ));
+        }
+        tensors.push(q4e_dense(
+            &format!("{prefix}.conv1d.weight"),
+            &[Q4E_STREAM_HIDDEN, 4, 1],
+            NativeTensorRole::Other,
+            Some(1),
+            0.5,
+        ));
+        let embedding = format!("{prefix}.ple_embedding");
+        tensors.push(q4e_i64(
+            &format!("{embedding}.layer_multipliers"),
+            &[23703573157769, 20109073645365, 8052911324071],
+            NativeTensorRole::Other,
+            Some(1),
+        ));
+        tensors.push(q4e_i64(
+            &format!("{embedding}.ngram_heads_vocab_sizes"),
+            &[20000003; 16],
+            NativeTensorRole::Other,
+            Some(1),
+        ));
+        tensors.push(q4e_i64(
+            &format!("{embedding}.ngram_heads_offsets"),
+            &[0; 16],
+            NativeTensorRole::Other,
+            Some(1),
+        ));
+    }
+
+    /// The PLE n-gram table: two shards in a dedicated file so the resident
+    /// loop can prove it never opens the table at init.
+    fn q4e_shard_tensors() -> Vec<Q4eTensor> {
+        let embedding = format!("{}.ple.ple_embedding", q4e_layer_prefix(1));
+        let mut tensors = Vec::new();
+        for shard in 0..2 {
+            let (weight, scales, biases) = q4e_quant(
+                &format!("{embedding}.ngram_embedding.shards.{shard}.weight"),
+                &[Q4E_SHARD_ROWS, Q4E_SHARD_DIM],
+                32,
+                8,
+                NativeTensorRole::Other,
+                Some(1),
+                "ple_shards.safetensors",
+            );
+            tensors.extend([weight, scales, biases]);
+        }
+        tensors
+    }
+
+    fn q4e_write_file(
+        dir: &Path,
+        file: &str,
+        tensors: &[&Q4eTensor],
+    ) -> HashMap<String, (u64, u64)> {
+        let mut header = serde_json::Map::new();
+        let mut data = Vec::new();
+        let mut spans = HashMap::new();
+        for tensor in tensors {
+            let start = data.len() as u64;
+            data.extend_from_slice(&tensor.bytes);
+            let end = data.len() as u64;
+            header.insert(
+                tensor.name.clone(),
+                serde_json::json!({
+                    "dtype": tensor.file_dtype,
+                    "shape": tensor.file_shape,
+                    "data_offsets": [start, end],
+                }),
+            );
+            spans.insert(tensor.name.clone(), (start, end));
+        }
+        let header_bytes =
+            serde_json::to_vec(&serde_json::Value::Object(header)).expect("header serializes");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&header_bytes);
+        bytes.extend_from_slice(&data);
+        std::fs::write(dir.join(file), &bytes).expect("fixture safetensors should write");
+        spans
+    }
+
+    fn q4e_unique_test_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-weights-test-qwen4-exp-{label}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("fixture directory should create");
+        dir
+    }
+
+    fn q4e_synthetic_artifacts() -> (PathBuf, NativeModelArtifacts) {
+        let dir = q4e_unique_test_dir("roles");
+        let mut tensors = Vec::new();
+        // Root level: token embedding, untied LM head, and the final
+        // hyper-connection mixer. The family has no `model.norm` — the mixer
+        // gain is the final normalization and the loader mirrors it into the
+        // shared final_norm slot.
+        q4e_push_quant(
+            &mut tensors,
+            "language_model.model.embed_tokens.weight",
+            &[Q4E_VOCAB, Q4E_HIDDEN],
+            32,
+            8,
+            NativeTensorRole::TokenEmbedding,
+            None,
+        );
+        q4e_push_quant(
+            &mut tensors,
+            "language_model.lm_head.weight",
+            &[Q4E_VOCAB, Q4E_HIDDEN],
+            64,
+            8,
+            NativeTensorRole::LmHead,
+            None,
+        );
+        // Validation-fodder norms: today's family-agnostic manifest validator
+        // still requires a [hidden]-shaped FinalNorm plus per-layer
+        // AttentionNorm/AttentionPostNorm roles (a qwen4_exp validation arm is
+        // a separate Phase 1 work item in ax-engine-core). The qwen4_exp
+        // loader never consumes these — the family's norm slots mirror the
+        // hyper-connection norms instead — so they exist only to let the
+        // synthetic manifest through `NativeModelArtifacts::from_dir`.
+        tensors.push(q4e_dense(
+            "language_model.model.norm.weight",
+            &[Q4E_HIDDEN],
+            NativeTensorRole::FinalNorm,
+            None,
+            1.0,
+        ));
+        for layer in 0..2 {
+            let prefix = q4e_layer_prefix(layer);
+            tensors.push(q4e_dense(
+                &format!("{prefix}.input_layernorm.weight"),
+                &[Q4E_HIDDEN],
+                NativeTensorRole::AttentionNorm,
+                Some(layer),
+                1.0,
+            ));
+            tensors.push(q4e_dense(
+                &format!("{prefix}.post_attention_layernorm.weight"),
+                &[Q4E_HIDDEN],
+                NativeTensorRole::AttentionPostNorm,
+                Some(layer),
+                1.0,
+            ));
+        }
+        let mixer = "language_model.model.hyper_connection_mixer";
+        tensors.push(q4e_dense(
+            &format!("{mixer}.hc_norm.weight"),
+            &[Q4E_STREAM_HIDDEN],
+            NativeTensorRole::Other,
+            None,
+            1.0,
+        ));
+        tensors.push(q4e_dense(
+            &format!("{mixer}.input_mix_weight_down.weight"),
+            &[Q4E_LOW_RANK, Q4E_STREAM_HIDDEN],
+            NativeTensorRole::Other,
+            None,
+            0.5,
+        ));
+        tensors.push(q4e_dense(
+            &format!("{mixer}.input_mix_weight_up.weight"),
+            &[Q4E_STREAM_HIDDEN, Q4E_LOW_RANK],
+            NativeTensorRole::Other,
+            None,
+            0.5,
+        ));
+        // Layer 0: gated-delta linear attention + HC + MoE.
+        q4e_push_hyper_connections(&mut tensors, 0);
+        q4e_push_moe(&mut tensors, 0);
+        q4e_push_linear_attention(&mut tensors);
+        // Layer 1: QSA full attention + indexer + HC + MoE + PLE.
+        q4e_push_hyper_connections(&mut tensors, 1);
+        q4e_push_moe(&mut tensors, 1);
+        q4e_push_qsa_attention(&mut tensors);
+        q4e_push_ple(&mut tensors);
+        let shard_tensors = q4e_shard_tensors();
+
+        let resident_refs: Vec<&Q4eTensor> = tensors.iter().collect();
+        let mut spans = q4e_write_file(&dir, "model.safetensors", &resident_refs);
+        let shard_refs: Vec<&Q4eTensor> = shard_tensors.iter().collect();
+        spans.extend(q4e_write_file(&dir, "ple_shards.safetensors", &shard_refs));
+
+        let specs: Vec<NativeTensorSpec> = tensors
+            .iter()
+            .chain(shard_tensors.iter())
+            .filter(|tensor| tensor.in_manifest)
+            .map(|tensor| {
+                let span = spans
+                    .get(&tensor.name)
+                    .copied()
+                    .expect("fixture tensor span");
+                NativeTensorSpec {
+                    name: tensor.name.clone(),
+                    role: tensor.role,
+                    layer_index: tensor.layer_index,
+                    dtype: tensor.manifest_dtype,
+                    source_tensor_type: None,
+                    source_quantized: tensor.source_quantized,
+                    quantization: tensor.quantization.clone(),
+                    quantized_source: None,
+                    shape: tensor.logical_shape.clone(),
+                    file: tensor.file.clone().into(),
+                    offset_bytes: span.0,
+                    length_bytes: span.1 - span.0,
+                }
+            })
+            .collect();
+        let mut manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": "ax.native_model.v1",
+                "model_family": "qwen4_exp",
+                "tensor_format": "safetensors",
+                "layer_count": 2,
+                "hidden_size": Q4E_HIDDEN,
+                // The QSA q_proj packs query + sigmoid-gate rows, so the
+                // resolved head count is doubled (real pack: 24 heads read as
+                // 48). A qwen4_exp-aware validation arm is the convert-side
+                // Phase 1 gap; the fixture stays self-consistent instead.
+                "attention_head_count": 4,
+                "attention_head_dim": Q4E_HEAD_DIM,
+                "kv_head_count": 1,
+                "vocab_size": Q4E_VOCAB,
+                "linear_attention": {
+                    "full_attention_interval": 4,
+                    "num_key_heads": 2,
+                    "key_head_dim": Q4E_HEAD_DIM,
+                    "num_value_heads": 4,
+                    "value_head_dim": Q4E_HEAD_DIM,
+                    "conv_kernel_dim": 4
+                },
+                "moe": {
+                    "expert_count": Q4E_EXPERTS,
+                    "experts_per_token": 2,
+                    "expert_intermediate_size": 32
+                },
+                "qwen4_exp": {
+                    "hc_count": 4,
+                    "hc_lowrank": Q4E_LOW_RANK,
+                    "indexer_budget": 8,
+                    "indexer_compress_ratio": 4,
+                    "indexer_head_dim": Q4E_HEAD_DIM,
+                    "indexer_kv_heads": 1,
+                    "indexer_n_heads": 4,
+                    "ngram_size": 3,
+                    "ngram_vocab_size_base": 20000000,
+                    "split_ngram_parts": 2,
+                    "heads_per_ngram": 8,
+                    "ple_conv_kernel_size": 4,
+                    "ple_embed_dim": Q4E_HIDDEN,
+                    "ple_layer_ids": [2],
+                    "output_gate_type": "sigmoid",
+                    "partial_rotary_factor": 0.25,
+                    "mrope_section": [11, 11, 10],
+                    "mrope_interleaved": true,
+                    "shared_expert_intermediate_size": 32
+                },
+                "tensors": []
+            }))
+            .expect("qwen4_exp manifest fixture should deserialize");
+        manifest.tensors = specs;
+        std::fs::write(
+            dir.join("model-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("manifest should serialize"),
+        )
+        .expect("manifest should write");
+        // MTP sidecar decoy: one tensor only — the Qwen dense-head loader must
+        // skip the hybrid qwen4_exp sidecar layout, and the family loader must
+        // reject it as incomplete (no partial MTP head attaches).
+        q4e_write_file(
+            &dir,
+            "mtp.safetensors",
+            &[&q4e_dense(
+                "mtp.pre_fc_norm_embedding.weight",
+                &[Q4E_HIDDEN],
+                NativeTensorRole::Other,
+                None,
+                1.0,
+            )],
+        );
+
+        let artifacts =
+            NativeModelArtifacts::from_dir(&dir).expect("fixture manifest should validate");
+        (dir, artifacts)
+    }
+
+    #[test]
+    fn qwen4_exp_synthetic_manifest_loads_family_roles_with_lazy_ple_table() {
+        let (dir, artifacts) = q4e_synthetic_artifacts();
+        let weights = load_weights(&artifacts).expect("qwen4_exp synthetic weights should load");
+
+        assert_eq!(weights.layers.len(), 2);
+        assert!(weights.token_embedding.is_quantized());
+        assert!(weights.lm_head.is_quantized());
+        assert!(
+            weights.mtp.is_none(),
+            "the Qwen dense MTP head loader stays closed for qwen4_exp"
+        );
+        assert!(
+            weights.qwen4_exp_mtp.is_none(),
+            "the one-tensor decoy sidecar is incomplete: no qwen4_exp MTP head attaches"
+        );
+        // No `model.norm`: the shared final_norm slot mirrors the mixer gain.
+        assert_eq!(weights.final_norm.shape(), vec![Q4E_STREAM_HIDDEN]);
+        let root = weights
+            .qwen4_exp_root
+            .as_ref()
+            .expect("qwen4_exp root mixer weights");
+        assert_eq!(root.mixer.hc_norm.shape(), vec![Q4E_STREAM_HIDDEN]);
+        assert_eq!(
+            root.mixer.input_mix_down.weight.shape(),
+            vec![Q4E_LOW_RANK, Q4E_STREAM_HIDDEN]
+        );
+        assert_eq!(
+            root.mixer.input_mix_up.weight.shape(),
+            vec![Q4E_STREAM_HIDDEN, Q4E_LOW_RANK]
+        );
+        assert!(
+            root.mixer.block_inject.is_none(),
+            "the root hyper_connection_mixer has no block-injection gate"
+        );
+
+        // Layer 0: gated-delta linear attention + both HC sites + MoE.
+        let layer0 = &weights.layers[0];
+        assert!(
+            layer0.linear_attn.is_some(),
+            "linear-attention roles must load"
+        );
+        assert_eq!(
+            layer0.attn_norm.shape(),
+            vec![Q4E_STREAM_HIDDEN],
+            "the shared attn_norm slot mirrors the attention hyper-connection norm"
+        );
+        assert_eq!(layer0.ffn_norm.shape(), vec![Q4E_STREAM_HIDDEN]);
+        let family0 = layer0
+            .qwen4_exp
+            .as_ref()
+            .expect("layer 0 qwen4_exp family weights");
+        for hc in [
+            &family0.attn_hyper_connection,
+            &family0.mlp_hyper_connection,
+        ] {
+            assert_eq!(hc.hc_norm.shape(), vec![Q4E_STREAM_HIDDEN]);
+            assert_eq!(
+                hc.input_mix_down.weight.shape(),
+                vec![Q4E_LOW_RANK, Q4E_STREAM_HIDDEN]
+            );
+            assert_eq!(
+                hc.input_mix_up.weight.shape(),
+                vec![Q4E_STREAM_HIDDEN, Q4E_LOW_RANK]
+            );
+            assert_eq!(
+                hc.block_inject.as_ref().map(|w| w.weight.shape()),
+                Some(vec![4, Q4E_STREAM_HIDDEN])
+            );
+        }
+        assert!(
+            family0.indexer.is_none(),
+            "linear layers carry no QSA indexer"
+        );
+        assert!(family0.ple.is_none(), "PLE lives on layer 1 only");
+        assert!(layer0.router_proj.is_some());
+        assert!(
+            layer0.gate_exps.is_some() && layer0.up_exps.is_some() && layer0.down_exps.is_some(),
+            "qwen4_exp keeps split switch experts (the fuse is DeepSeek-V4-only)"
+        );
+        assert!(layer0.gate_up_exps_packed.is_none());
+        assert!(
+            layer0.shared_gate_proj.is_some()
+                && layer0.shared_up_proj.is_some()
+                && layer0.shared_down_proj.is_some()
+        );
+        assert!(layer0.shared_expert_gate.is_some());
+
+        // Layer 1: QSA projections + indexer + PLE.
+        let layer1 = &weights.layers[1];
+        assert!(layer1.linear_attn.is_none());
+        // 6-bit packed columns: 64 * 6 / 32 = 12 u32 per row.
+        assert_eq!(
+            layer1.q_proj.as_ref().map(|w| w.weight.shape()),
+            Some(vec![128, 12])
+        );
+        assert_eq!(
+            layer1.k_proj.as_ref().map(|w| w.weight.shape()),
+            Some(vec![32, 12])
+        );
+        assert_eq!(
+            layer1.v_proj.as_ref().map(|w| w.weight.shape()),
+            Some(vec![32, 12])
+        );
+        assert_eq!(
+            layer1.o_proj.as_ref().map(|w| w.weight.shape()),
+            Some(vec![Q4E_HIDDEN, 24])
+        );
+        assert_eq!(
+            layer1.q_norm.as_ref().map(MlxArray::shape),
+            Some(vec![Q4E_HEAD_DIM])
+        );
+        assert_eq!(
+            layer1.k_norm.as_ref().map(MlxArray::shape),
+            Some(vec![Q4E_HEAD_DIM])
+        );
+        let family1 = layer1
+            .qwen4_exp
+            .as_ref()
+            .expect("layer 1 qwen4_exp family weights");
+        let indexer = family1.indexer.as_ref().expect("QSA layer indexer weights");
+        assert_eq!(indexer.index_qk_proj.weight.shape(), vec![160, 12]);
+        assert_eq!(indexer.index_qk_proj.bits, 6);
+        assert_eq!(indexer.q_layernorm.shape(), vec![Q4E_HEAD_DIM]);
+        assert_eq!(indexer.k_layernorm.shape(), vec![Q4E_HEAD_DIM]);
+
+        let ple = family1.ple.as_ref().expect("layer 1 PLE weights");
+        // 8-bit packed columns: 64 * 8 / 32 = 16 u32 per row.
+        assert_eq!(ple.key_proj.weight.shape(), vec![Q4E_STREAM_HIDDEN, 16]);
+        assert_eq!(ple.key_proj.group_size, 32);
+        assert_eq!(ple.value_proj.weight.shape(), vec![Q4E_HIDDEN, 16]);
+        assert_eq!(ple.norm_key.shape(), vec![Q4E_STREAM_HIDDEN]);
+        assert_eq!(ple.norm_query.shape(), vec![Q4E_STREAM_HIDDEN]);
+        assert_eq!(ple.norm_conv.shape(), vec![Q4E_STREAM_HIDDEN]);
+        assert_eq!(ple.conv1d.shape(), vec![Q4E_STREAM_HIDDEN, 4, 1]);
+        assert_eq!(ple.layer_multipliers.shape(), vec![3]);
+        assert_eq!(ple.layer_multipliers.dtype(), MlxDtype::Int64);
+        assert_eq!(ple.ngram_heads_vocab_sizes.shape(), vec![16]);
+        assert_eq!(ple.ngram_heads_vocab_sizes.dtype(), MlxDtype::Int64);
+        assert_eq!(ple.ngram_heads_offsets.shape(), vec![16]);
+        // The table must stay metadata-only after load_weights: no shard is
+        // opened, read, or eval'd until the PLE module gathers from it.
+        assert_eq!(ple.table.shard_count(), 2);
+        assert_eq!(ple.table.total_rows(), i64::from(Q4E_SHARD_ROWS) * 2);
+        assert!(
+            !ple.table.any_shard_loaded(),
+            "PLE n-gram shards must not materialize at load_weights time"
+        );
+        let shard = ple.table.shard(1).expect("shard 1 ref");
+        assert_eq!(shard.rows(), i64::from(Q4E_SHARD_ROWS));
+        assert_eq!(shard.dim(), i64::from(Q4E_SHARD_DIM));
+        assert_eq!(shard.bits(), 8);
+        assert_eq!(shard.group_size(), 32);
+        assert!(!shard.is_loaded());
+        let loaded = shard.load().expect("shard loads on first gather");
+        assert_eq!(loaded.weight.shape(), vec![Q4E_SHARD_ROWS, 8]);
+        assert!(loaded.scales.is_some());
+        assert!(loaded.biases.is_some());
+        assert!(shard.is_loaded());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── qwen4_exp MTP sidecar (Phase 2) ─────────────────────────────────────
+
+    /// Expert-stack layout variants the sidecar loader accepts.
+    enum Q4eMtpExperts {
+        /// Primary: packed `experts.gate_up_proj [E, 2I, H]` (split at load).
+        Packed,
+        /// Packed alias under the main trunk's `switch_mlp` directory.
+        PackedAlias,
+        /// Already-split `switch_mlp.{gate,up,down}_proj` (no split at load).
+        Split,
+    }
+
+    /// The 31-tensor qwen4_exp MTP sidecar at the tiny fixture geometry.
+    /// All tensors are BF16 dense; `prefix` models the optional
+    /// `language_model.` wrapper.
+    fn q4e_mtp_sidecar_tensors(prefix: &str, experts: &Q4eMtpExperts) -> Vec<Q4eTensor> {
+        let mtp = format!("{prefix}mtp");
+        let layer = format!("{mtp}.layers.0");
+        let mut tensors = Vec::new();
+        let mut push = |name: String, shape: &[i32], fill: f32| {
+            tensors.push(q4e_dense(&name, shape, NativeTensorRole::Other, None, fill));
+        };
+        // Fusion (raw HF-delta norms: small fills prove the loader does NOT
+        // apply the Qwen dense +1.0 shift — the family norm helpers own 1+γ).
+        push(
+            format!("{mtp}.pre_fc_norm_embedding.weight"),
+            &[Q4E_HIDDEN],
+            0.01,
+        );
+        push(
+            format!("{mtp}.pre_fc_norm_hidden.weight"),
+            &[Q4E_STREAM_HIDDEN],
+            0.02,
+        );
+        push(
+            format!("{mtp}.fc_embedding.weight"),
+            &[Q4E_HIDDEN, Q4E_HIDDEN],
+            0.03,
+        );
+        push(
+            format!("{mtp}.fc_hidden.weight"),
+            &[Q4E_HIDDEN, Q4E_HIDDEN],
+            0.04,
+        );
+        // Hyper-connections (both per-layer sites carry block-inject).
+        for site in ["attn_hyper_connection", "mlp_hyper_connection"] {
+            push(
+                format!("{layer}.{site}.hc_norm.weight"),
+                &[Q4E_STREAM_HIDDEN],
+                0.05,
+            );
+            push(
+                format!("{layer}.{site}.input_mix_weight_down.weight"),
+                &[Q4E_LOW_RANK, Q4E_STREAM_HIDDEN],
+                0.06,
+            );
+            push(
+                format!("{layer}.{site}.input_mix_weight_up.weight"),
+                &[Q4E_STREAM_HIDDEN, Q4E_LOW_RANK],
+                0.07,
+            );
+            push(
+                format!("{layer}.{site}.block_inject_weight.weight"),
+                &[4, Q4E_STREAM_HIDDEN],
+                0.08,
+            );
+        }
+        // QSA attention + indexer (q_proj packs query + sigmoid gate).
+        let attn = format!("{layer}.self_attn");
+        push(format!("{attn}.q_proj.weight"), &[128, Q4E_HIDDEN], 0.09);
+        push(
+            format!("{attn}.k_proj.weight"),
+            &[Q4E_HEAD_DIM, Q4E_HIDDEN],
+            0.10,
+        );
+        push(
+            format!("{attn}.v_proj.weight"),
+            &[Q4E_HEAD_DIM, Q4E_HIDDEN],
+            0.11,
+        );
+        push(format!("{attn}.o_proj.weight"), &[Q4E_HIDDEN, 128], 0.12);
+        push(format!("{attn}.q_norm.weight"), &[Q4E_HEAD_DIM], 0.13);
+        push(format!("{attn}.k_norm.weight"), &[Q4E_HEAD_DIM], 0.14);
+        push(
+            format!("{attn}.indexer.index_qk_proj.weight"),
+            &[160, Q4E_HIDDEN],
+            0.15,
+        );
+        push(
+            format!("{attn}.indexer.q_layernorm.weight"),
+            &[Q4E_HEAD_DIM],
+            0.16,
+        );
+        push(
+            format!("{attn}.indexer.k_layernorm.weight"),
+            &[Q4E_HEAD_DIM],
+            0.17,
+        );
+        // MoE router + experts + shared expert.
+        let mlp = format!("{layer}.mlp");
+        push(
+            format!("{mlp}.gate.weight"),
+            &[Q4E_EXPERTS, Q4E_HIDDEN],
+            0.18,
+        );
+        match experts {
+            Q4eMtpExperts::Packed => {
+                push(
+                    format!("{mlp}.experts.gate_up_proj.weight"),
+                    &[Q4E_EXPERTS, 64, Q4E_HIDDEN],
+                    0.19,
+                );
+            }
+            Q4eMtpExperts::PackedAlias => {
+                push(
+                    format!("{mlp}.switch_mlp.gate_up_proj.weight"),
+                    &[Q4E_EXPERTS, 64, Q4E_HIDDEN],
+                    0.19,
+                );
+            }
+            Q4eMtpExperts::Split => {
+                for proj in ["gate_proj", "up_proj"] {
+                    push(
+                        format!("{mlp}.switch_mlp.{proj}.weight"),
+                        &[Q4E_EXPERTS, 32, Q4E_HIDDEN],
+                        0.19,
+                    );
+                }
+            }
+        }
+        let down_dir = if matches!(experts, Q4eMtpExperts::Split) {
+            "switch_mlp"
+        } else {
+            "experts"
+        };
+        push(
+            format!("{mlp}.{down_dir}.down_proj.weight"),
+            &[Q4E_EXPERTS, Q4E_HIDDEN, 32],
+            0.20,
+        );
+        push(
+            format!("{mlp}.shared_expert.gate_proj.weight"),
+            &[32, Q4E_HIDDEN],
+            0.21,
+        );
+        push(
+            format!("{mlp}.shared_expert.up_proj.weight"),
+            &[32, Q4E_HIDDEN],
+            0.22,
+        );
+        push(
+            format!("{mlp}.shared_expert.down_proj.weight"),
+            &[Q4E_HIDDEN, 32],
+            0.23,
+        );
+        push(
+            format!("{mlp}.shared_expert_gate.weight"),
+            &[1, Q4E_HIDDEN],
+            0.24,
+        );
+        // Final mixer (no block-inject).
+        let mixer = format!("{mtp}.hyper_connection_mixer");
+        push(
+            format!("{mixer}.hc_norm.weight"),
+            &[Q4E_STREAM_HIDDEN],
+            0.25,
+        );
+        push(
+            format!("{mixer}.input_mix_weight_down.weight"),
+            &[Q4E_LOW_RANK, Q4E_STREAM_HIDDEN],
+            0.26,
+        );
+        push(
+            format!("{mixer}.input_mix_weight_up.weight"),
+            &[Q4E_STREAM_HIDDEN, Q4E_LOW_RANK],
+            0.27,
+        );
+        tensors
+    }
+
+    fn q4e_mtp_manifest(qwen4_exp_block: serde_json::Value) -> ax_engine_core::NativeModelManifest {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": "ax.native_model.v1",
+            "model_family": "qwen4_exp",
+            "tensor_format": "safetensors",
+            "layer_count": 1,
+            "hidden_size": Q4E_HIDDEN,
+            "attention_head_count": 2,
+            "attention_head_dim": Q4E_HEAD_DIM,
+            "kv_head_count": 1,
+            "vocab_size": Q4E_VOCAB,
+            "moe": {
+                "expert_count": Q4E_EXPERTS,
+                "experts_per_token": 2,
+                "expert_intermediate_size": 32
+            },
+            "qwen4_exp": qwen4_exp_block,
+            "tensors": []
+        }))
+        .expect("qwen4_exp MTP manifest fixture should deserialize")
+    }
+
+    fn q4e_write_mtp_sidecar(dir: &Path, tensors: &[Q4eTensor]) {
+        let refs: Vec<&Q4eTensor> = tensors.iter().collect();
+        q4e_write_file(dir, "mtp.safetensors", &refs);
+    }
+
+    #[test]
+    fn qwen4_exp_mtp_sidecar_loads_complete_hybrid_head() {
+        let dir = q4e_unique_test_dir("mtp-complete");
+        q4e_write_mtp_sidecar(&dir, &q4e_mtp_sidecar_tensors("", &Q4eMtpExperts::Packed));
+        // `mtp_depth_max` beyond the single shipped block still caps at 1;
+        // the recommended sampler is adopted.
+        std::fs::write(
+            dir.join("mtplx_runtime.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "mtp_depth_max": 3,
+                "mtp_norm_layout": "raw_hf_delta",
+                "recommended_draft_sampler": {
+                    "temperature": 0.5,
+                    "top_k": 8,
+                    "top_p": 0.9
+                }
+            }))
+            .expect("runtime json should serialize"),
+        )
+        .expect("runtime json should write");
+        let manifest = q4e_mtp_manifest(serde_json::json!({
+            "hc_count": 4,
+            "mtp": {
+                "num_hidden_layers": 1,
+                "hybrid": true,
+                "layer_types": ["full_attention"],
+                "use_dedicated_embeddings": false
+            }
+        }));
+
+        let mut name_map = HashMap::new();
+        let mtp = load_qwen4_exp_mtp_sidecar(&dir, &mut name_map, &manifest)
+            .expect("complete 31-tensor sidecar must attach");
+
+        // Fusion tensors, raw (unshifted) norms, dense BF16 projections.
+        assert_eq!(mtp.pre_fc_norm_embedding.shape(), vec![Q4E_HIDDEN]);
+        assert_eq!(mtp.pre_fc_norm_hidden.shape(), vec![Q4E_STREAM_HIDDEN]);
+        let norm = mlx_sys::astype(&mtp.pre_fc_norm_hidden, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&norm]);
+        let mean =
+            norm.data_f32().iter().map(|v| v.abs()).sum::<f32>() / norm.data_f32().len() as f32;
+        assert!(
+            (mean - 0.02).abs() < 0.01,
+            "raw HF-delta norms must NOT get the Qwen dense +1.0 shift (mean {mean})"
+        );
+        assert_eq!(
+            mtp.fc_embedding.weight.shape(),
+            vec![Q4E_HIDDEN, Q4E_HIDDEN]
+        );
+        assert_eq!(mtp.fc_embedding.bits, 32, "BF16 dense sidecar projection");
+        assert!(mtp.fc_embedding.scales.is_none());
+        assert_eq!(mtp.fc_hidden.weight.shape(), vec![Q4E_HIDDEN, Q4E_HIDDEN]);
+
+        // Mixer: no block-inject; block layer: indexer present, PLE absent.
+        assert!(mtp.mixer.block_inject.is_none());
+        assert_eq!(mtp.mixer.hc_norm.shape(), vec![Q4E_STREAM_HIDDEN]);
+        let family = mtp
+            .layer
+            .qwen4_exp
+            .as_ref()
+            .expect("MTP block family weights");
+        assert!(family.indexer.is_some(), "MTP block is a QSA layer");
+        assert!(family.ple.is_none(), "MTP block has no PLE floor");
+        assert!(mtp.layer.linear_attn.is_none());
+        assert!(mtp.layer.expert_stream.is_none());
+        assert_eq!(mtp.layer.attn_norm.shape(), vec![1], "dummy attn_norm");
+        assert_eq!(mtp.layer.ffn_norm.shape(), vec![1], "dummy ffn_norm");
+
+        // Packed experts split on axis 1 at load: [E, 2I, H] → [E, I, H] × 2.
+        let gate = mtp.layer.gate_exps.as_ref().expect("gate_exps");
+        let up = mtp.layer.up_exps.as_ref().expect("up_exps");
+        assert_eq!(gate.weight.shape(), vec![Q4E_EXPERTS, 32, Q4E_HIDDEN]);
+        assert_eq!(up.weight.shape(), vec![Q4E_EXPERTS, 32, Q4E_HIDDEN]);
+        assert!(gate.scales.is_none() && up.scales.is_none());
+        assert_eq!(
+            mtp.layer.down_exps.as_ref().map(|w| w.weight.shape()),
+            Some(vec![Q4E_EXPERTS, Q4E_HIDDEN, 32])
+        );
+        assert!(mtp.layer.gate_up_exps_packed.is_none());
+
+        // Depth hard-capped at the single shipped block; sampler adopted.
+        assert_eq!(mtp.max_depth, 1, "mtp_depth_max 3 still caps at one block");
+        assert_eq!(mtp.draft_sampling.temperature, 0.5);
+        assert_eq!(mtp.draft_sampling.top_k, 8);
+        assert!(
+            name_map.is_empty(),
+            "a complete sidecar drains every mtp.* tensor from the name map"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_mtp_sidecar_accepts_wrapper_prefix_and_packed_alias() {
+        let dir = q4e_unique_test_dir("mtp-prefix");
+        q4e_write_mtp_sidecar(
+            &dir,
+            &q4e_mtp_sidecar_tensors("language_model.", &Q4eMtpExperts::PackedAlias),
+        );
+        let manifest = q4e_mtp_manifest(serde_json::json!({ "hc_count": 4 }));
+        let mut name_map = HashMap::new();
+        let mtp = load_qwen4_exp_mtp_sidecar(&dir, &mut name_map, &manifest)
+            .expect("language_model.-wrapped sidecar with switch_mlp packed alias must attach");
+        assert_eq!(
+            mtp.layer.gate_exps.as_ref().map(|w| w.weight.shape()),
+            Some(vec![Q4E_EXPERTS, 32, Q4E_HIDDEN])
+        );
+        assert_eq!(
+            mtp.max_depth, 1,
+            "no mtplx_runtime.json defaults to depth 1"
+        );
+        assert_eq!(mtp.draft_sampling.temperature, 0.7);
+        assert!(name_map.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_mtp_sidecar_accepts_presplit_experts() {
+        let dir = q4e_unique_test_dir("mtp-presplit");
+        q4e_write_mtp_sidecar(&dir, &q4e_mtp_sidecar_tensors("", &Q4eMtpExperts::Split));
+        let manifest = q4e_mtp_manifest(serde_json::json!({ "hc_count": 4 }));
+        let mut name_map = HashMap::new();
+        let mtp = load_qwen4_exp_mtp_sidecar(&dir, &mut name_map, &manifest)
+            .expect("already-split experts attach without the load-time split");
+        assert_eq!(
+            mtp.layer.gate_exps.as_ref().map(|w| w.weight.shape()),
+            Some(vec![Q4E_EXPERTS, 32, Q4E_HIDDEN])
+        );
+        assert_eq!(
+            mtp.layer.up_exps.as_ref().map(|w| w.weight.shape()),
+            Some(vec![Q4E_EXPERTS, 32, Q4E_HIDDEN])
+        );
+        assert!(name_map.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_mtp_sidecar_incomplete_fails_closed() {
+        let dir = q4e_unique_test_dir("mtp-incomplete");
+        // Only the four fusion tensors: 27 of 31 missing.
+        let tensors: Vec<Q4eTensor> = q4e_mtp_sidecar_tensors("", &Q4eMtpExperts::Packed)
+            .into_iter()
+            .take(4)
+            .collect();
+        q4e_write_mtp_sidecar(&dir, &tensors);
+        let manifest = q4e_mtp_manifest(serde_json::json!({ "hc_count": 4 }));
+        let mut name_map = HashMap::new();
+        assert!(
+            load_qwen4_exp_mtp_sidecar(&dir, &mut name_map, &manifest).is_none(),
+            "an incomplete sidecar must not yield a partial MTP head"
+        );
+        assert!(
+            name_map.is_empty(),
+            "a rejected sidecar leaves no mtp.* residue in the name map"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn qwen4_exp_mtp_sidecar_unsupported_config_fails_closed() {
+        let unsupported = [
+            serde_json::json!({ "hc_count": 4, "mtp": { "num_hidden_layers": 2 } }),
+            serde_json::json!({ "hc_count": 4, "mtp": { "hybrid": false } }),
+            serde_json::json!({ "hc_count": 4, "mtp": { "use_dedicated_embeddings": true } }),
+            serde_json::json!({ "hc_count": 4, "mtp": { "layer_types": ["linear_attention"] } }),
+        ];
+        for (index, block) in unsupported.into_iter().enumerate() {
+            let dir = q4e_unique_test_dir(&format!("mtp-unsupported-{index}"));
+            q4e_write_mtp_sidecar(&dir, &q4e_mtp_sidecar_tensors("", &Q4eMtpExperts::Packed));
+            let manifest = q4e_mtp_manifest(block.clone());
+            let mut name_map = HashMap::new();
+            assert!(
+                load_qwen4_exp_mtp_sidecar(&dir, &mut name_map, &manifest).is_none(),
+                "unsupported predictor config must fail closed: {block}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn qwen4_exp_mtp_sidecar_dense_head_loader_stays_closed() {
+        let dir = q4e_unique_test_dir("mtp-guard");
+        q4e_write_mtp_sidecar(&dir, &q4e_mtp_sidecar_tensors("", &Q4eMtpExperts::Packed));
+        let manifest = q4e_mtp_manifest(serde_json::json!({ "hc_count": 4 }));
+        let mut name_map = HashMap::new();
+        let (depth, _, _, _, _) = load_mtp_sidecar(&dir, &mut name_map, &manifest);
+        assert_eq!(
+            depth, 0,
+            "qwen4_exp sidecar must not yield a Qwen dense-head draft"
+        );
+        assert!(
+            name_map.is_empty(),
+            "the Qwen dense sidecar loader leaves the hybrid layout untouched"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn split_hf_packed_moe_gate_up_splits_axis1() {
+        let data: Vec<f32> = (0..4 * 8 * 16).map(|i| i as f32).collect();
+        let packed = QuantizedWeight::new(
+            MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                std::mem::size_of_val(data.as_slice()),
+                &[4, 8, 16],
+                MlxDtype::Float32,
+            ),
+            None,
+            None,
+        );
+        let (gate, up) = split_hf_packed_moe_gate_up(packed, 4).expect("2I middle dim splits");
+        assert_eq!(gate.weight.shape(), vec![4, 4, 16]);
+        assert_eq!(up.weight.shape(), vec![4, 4, 16]);
+        let gate_flat = contiguous(&gate.weight, None);
+        let up_flat = contiguous(&up.weight, None);
+        mlx_sys::eval(&[&gate_flat, &up_flat]);
+        let gate_data = gate_flat.data_f32();
+        let up_data = up_flat.data_f32();
+        for e in 0..4usize {
+            for i in 0..4usize {
+                for h in 0..16usize {
+                    let base = (e * 8 + i) * 16 + h;
+                    assert_eq!(gate_data[(e * 4 + i) * 16 + h], data[base]);
+                    assert_eq!(up_data[(e * 4 + i) * 16 + h], data[base + 4 * 16]);
+                }
+            }
+        }
+
+        // A middle dim that is not exactly 2 * intermediate fails closed.
+        let bad = QuantizedWeight::new(
+            MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                std::mem::size_of_val(data.as_slice()),
+                &[4, 8, 16],
+                MlxDtype::Float32,
+            ),
+            None,
+            None,
+        );
+        assert!(split_hf_packed_moe_gate_up(bad, 3).is_none());
+        // Quantized packed stacks are out of scope for the BF16 sidecar.
+        let quantized = QuantizedWeight::new(
+            MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                std::mem::size_of_val(data.as_slice()),
+                &[4, 8, 16],
+                MlxDtype::Float32,
+            ),
+            Some(MlxArray::from_f32(1.0)),
+            None,
+        );
+        assert!(split_hf_packed_moe_gate_up(quantized, 4).is_none());
+    }
+
+    #[test]
+    fn qwen4_exp_ple_table_rejects_non_contiguous_shards() {
+        let embedding = "language_model.model.layers.1.ple.ple_embedding";
+        let shard_spec = |index: u32| NativeTensorSpec {
+            name: format!("{embedding}.ngram_embedding.shards.{index}.weight"),
+            role: NativeTensorRole::Other,
+            layer_index: Some(1),
+            dtype: NativeTensorDataType::U32,
+            source_tensor_type: None,
+            source_quantized: true,
+            quantization: Some(NativeTensorQuantization {
+                mode: "affine".to_string(),
+                group_size: 32,
+                bits: 8,
+            }),
+            quantized_source: None,
+            shape: vec![16, 8],
+            file: "ple_shards.safetensors".into(),
+            offset_bytes: 0,
+            length_bytes: 16 * 8 * 4,
+        };
+
+        // No shards at all: the table cannot be gathered from.
+        let error = match qwen4_exp_ple_table(&[], Path::new("/nonexistent"), embedding) {
+            Ok(_) => panic!("an empty shard set must fail closed"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, WeightLoadError::RoleMissing(_)));
+        // A gap in the shard indices would silently mis-gather global row ids.
+        let specs = vec![shard_spec(1)];
+        let error = match qwen4_exp_ple_table(&specs, Path::new("/nonexistent"), embedding) {
+            Ok(_) => panic!("a sparse shard set must fail closed"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, WeightLoadError::InvalidLayer(_)));
+        // Contiguous shards assemble in index order.
+        let specs = vec![shard_spec(1), shard_spec(0)];
+        let table = match qwen4_exp_ple_table(&specs, Path::new("/nonexistent"), embedding) {
+            Ok(table) => table,
+            Err(error) => panic!("contiguous shards should assemble: {error}"),
+        };
+        assert_eq!(table.shard_count(), 2);
+        assert_eq!(table.total_rows(), 32);
     }
 
     fn array_u8(data: &[u8], shape: &[i32]) -> MlxArray {

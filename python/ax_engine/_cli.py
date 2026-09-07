@@ -623,6 +623,20 @@ AUTOMATOSX_MODEL_PROFILES = (
         ("qwen3.8-27b:axq-mxfp4-base",),
         preset="qwen3.8-27b",
     ),
+    # Qwen3.8-Flash-Next (`qwen4_exp` family): experimental, pinned AXQ
+    # candidate — no certification claims. MLX-VLM pack served text-only:
+    # the vision tower is dropped fail-loud at convert/download-manifest
+    # level.
+    _automatosx_profile(
+        "ax-qwen3.8-flash-next-axq-6bit",
+        "AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+        (
+            "ax-qwen3.8-flash-next-axq",
+            "qwen3.8-flash-next:axq",
+            "qwen3.8-flash-next:axq-6bit",
+        ),
+        preset="qwen3.8-flash-next",
+    ),
     _automatosx_profile(
         "ax-qwen3.6-35b-4bit",
         "AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
@@ -1018,6 +1032,9 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP": (
         "b2c5354f779e430d0c1733143db848a72b71c16e"
     ),
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP": (
+        "d514dcebf3086068ed7968caf395083c95ebcfca"
+    ),
     "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit": (
         "a524f97c81ec82be3eead17aabcf652450d33842"
     ),
@@ -1129,6 +1146,7 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
     "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",

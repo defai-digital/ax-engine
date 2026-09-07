@@ -6,6 +6,9 @@ pub(super) mod linear_attention;
 pub(super) mod mla;
 pub(super) mod mlp;
 pub(super) mod norm;
+pub(super) mod qwen4_exp_gated_residual;
+pub(super) mod qwen4_exp_ple;
+pub(super) mod qwen4_exp_qsa;
 pub(super) mod rope;
 pub(super) mod utils;
 pub(crate) mod verify_qmm;
@@ -52,6 +55,12 @@ pub(crate) use mlp::{
     shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;
+pub(crate) use qwen4_exp_gated_residual::{
+    Qwen4ExpGatedResidualWeights, expand_embedding, grouped_rms_norm, inject_write_back,
+    mixed_input, mixer_output,
+};
+pub(crate) use qwen4_exp_ple::qwen4_exp_ple_forward;
+pub(crate) use qwen4_exp_qsa::{qwen4_exp_qsa_forward, rms_norm_one_plus_gamma};
 pub(super) use rope::{build_llama3_rope_freqs, build_yarn_rope_freqs};
 pub(crate) use utils::Gemma4PrefillSkipLastFfnPackedGuard;
 pub(crate) use utils::scale_hidden_pub;

@@ -842,6 +842,8 @@ def manifest_needs_media_rebuild(model_dir: Path) -> bool:
         "qwen3_vl_moe",
         "qwen3-vl",
         "qwen3-vl-moe",
+        "qwen4_exp",
+        "qwen4_exp_text",
     }:
         required_prefix_groups = (("vision_tower.", "visual.", "model.visual."),)
     elif model_type in {"gemma4", "gemma4_vl", "gemma4-vl"}:

@@ -212,6 +212,10 @@ fn catalog_families_map_to_registry_support_tiers() {
         catalog::registry_family_label("ax-qwen3-vl-30b-a3b-axq"),
         "qwen3_vl_moe"
     );
+    assert_eq!(
+        catalog::registry_family_label("ax-qwen3.8-flash-next-axq"),
+        "qwen4_exp"
+    );
     assert_eq!(catalog::registry_family_label("gpt-oss-20b"), "gpt_oss");
     assert_eq!(catalog::registry_family_label("llama3.1-8b"), "llama3");
     assert_eq!(catalog::registry_family_label("ministral-8b"), "mistral3");
@@ -225,7 +229,10 @@ fn catalog_families_map_to_registry_support_tiers() {
     let families = build_families_uninstalled();
     for family in &families {
         let tier = family.support_tier();
-        if family.key == "ax-qwen3.6-27b-axq" || family.key == "ax-qwen3-vl-30b-a3b-axq" {
+        if family.key == "ax-qwen3.6-27b-axq"
+            || family.key == "ax-qwen3-vl-30b-a3b-axq"
+            || family.key == "ax-qwen3.8-flash-next-axq"
+        {
             assert_eq!(
                 tier,
                 ModelSupportTier::Compatible,

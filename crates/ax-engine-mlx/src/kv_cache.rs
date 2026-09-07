@@ -1125,6 +1125,161 @@ struct DeepseekV4CompressorCache {
     overlap: bool,
 }
 
+/// qwen4_exp (Qwen3.8-Flash-Next) QSA sparse full-attention per-layer cache.
+///
+/// Holds the standard GQA K/V rows the selected attention runs over, plus the
+/// indexer state the sparse selection needs:
+///
+/// - `index_k`: RAW per-token index keys, pre-norm pre-RoPE. The indexer
+///   mean-pools groups of `compress_ratio` consecutive visible tokens from
+///   this buffer, then RMSNorms and RoPEs each pooled row at its block-start
+///   position before committing it as a block key.
+/// - `block_k`: committed pooled block keys, one row per completed
+///   `compress_ratio` block. Selection-only: attention never attends to
+///   these; they exist so top-k block selection can score the whole past.
+/// - `positions`: per-token 3-D mRoPE position ids (T/H/W grids) the indexer
+///   block RoPE reads back at block starts.
+///
+/// Bookkeeping mirrors the DeepSeek V4 raw+comp split: `seq_len` bounds the
+/// K/V, index-key, and position views; `committed_blocks` bounds the block
+/// rows. A `trim_to` rewind drops committed rows beyond
+/// `prefix_len / compress_ratio`; the next forward re-pools and overwrites.
+///
+/// Note: like the V4 caches, the F3 disk wire format (`serialize_to_bytes`)
+/// does not yet encode this layer kind; serialization lands with the family
+/// forward wiring phase.
+#[derive(Clone)]
+struct Qwen4ExpQsaLayerCache {
+    /// `[1, n_kv_heads, capacity, head_dim]` standard attention K rows.
+    k: MlxArray,
+    /// `[1, n_kv_heads, capacity, head_dim]` standard attention V rows.
+    v: MlxArray,
+    /// `[1, 1, capacity, index_dim]` RAW per-token index keys.
+    index_k: MlxArray,
+    /// `[1, capacity, 3]` per-token mRoPE position ids (T, H, W grids).
+    positions: MlxArray,
+    /// `[1, 1, block_capacity, index_dim]` committed pooled block keys,
+    /// f32-resident (pooling/k_layernorm/RoPE are fp32; the fp32 scoring
+    /// read-back must not see a bf16-quantized copy).
+    block_k: Option<MlxArray>,
+    /// Committed block rows (== completed blocks).
+    committed_blocks: usize,
+    n_kv_heads: i32,
+    head_dim: i32,
+    index_dim: i32,
+    capacity: usize,
+    block_capacity: usize,
+    /// Indexer compress ratio (tokens per pooled block); drives `trim_to`.
+    compress_ratio: usize,
+    dtype: MlxDtype,
+}
+
+/// Rewind window for the qwen4_exp PLE state rings: a `trim_to` rollback of
+/// up to this many tokens rebuilds the conv tail and the n-gram hash history
+/// exactly. Covers every draft depth in the engine (n-gram `MAX_DRAFT_LEN`
+/// is 6; MTP drafts are similar); deeper trims fail closed (`trim_to` refuses)
+/// rather than leaving the PLE state stale. The conv ring holds
+/// `(kernel - 1) * dilation + WINDOW` f32 rows of the packed stream (~1.7 MB
+/// at the reference 10240 channels).
+pub(crate) const QWEN4_EXP_PLE_REWIND_WINDOW: usize = 32;
+
+/// qwen4_exp PLE (per-layer n-gram embedding) runtime state. One PLE layer
+/// exists per model (0-indexed layer 1), so this is a single slot rather
+/// than a per-layer vector. Follows the `LinearLayerState` conv-state
+/// pattern: plain optional arrays, cloned with the cache, cleared on reset,
+/// intentionally outside the disk wire format.
+#[derive(Clone, Default)]
+struct Qwen4ExpPleState {
+    /// Ring of recent dilated-conv INPUT rows (the re-normed gated stream):
+    /// `[1, (kernel - 1) * dilation + QWEN4_EXP_PLE_REWIND_WINDOW, channels]`
+    /// f32 (`[1, 41, 10240]` at the reference k=4 / dilation=3 geometry),
+    /// zero-filled for positions before the sequence start. The forward
+    /// consumes the last `(kernel - 1) * dilation` rows as the conv tail;
+    /// the extra window rows let `trim_to` rebuild the exact tail at the
+    /// rewind point (the gated-delta `linear_attention_conv_prefix_state`
+    /// pattern, kept as a ring because the PLE conv input cannot be
+    /// recomputed without a full forward).
+    conv_ring: Option<MlxArray>,
+    /// Ring of recent effective token ids (post pad→EOS substitution), the
+    /// last `context_len + QWEN4_EXP_PLE_REWIND_WINDOW` entries, EOS-filled
+    /// for positions before the sequence start. The hash consumes the last
+    /// `context_len` (`ngram_size - 1`) entries as its cross-call history.
+    /// Empty when no PLE forward has run.
+    token_ring: Vec<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Qwen4ExpQsaAppendShape {
+    new_tokens: usize,
+    n_kv_heads: i32,
+    head_dim: i32,
+    index_dim: i32,
+    dtype: MlxDtype,
+}
+
+fn validate_qwen4_exp_qsa_append_inputs(
+    layer: usize,
+    layer_count: usize,
+    new_k: &MlxArray,
+    new_v: &MlxArray,
+    new_index_k: &MlxArray,
+    new_positions: &MlxArray,
+) -> Qwen4ExpQsaAppendShape {
+    let kv = validate_append_inputs(layer, layer_count, new_k, new_v);
+    let index_shape = new_index_k.shape();
+    assert_eq!(
+        index_shape.len(),
+        4,
+        "qwen4_exp QSA index-key append expects [1, 1, tokens, index_dim]"
+    );
+    assert_eq!(
+        index_shape[0], 1,
+        "qwen4_exp QSA cache supports batch=1 only"
+    );
+    assert_eq!(
+        index_shape[1], 1,
+        "qwen4_exp QSA cache stores one shared indexer key head"
+    );
+    assert_eq!(
+        index_shape[2], kv.new_tokens as i32,
+        "qwen4_exp QSA index keys must cover the same token count as K/V"
+    );
+    assert!(
+        index_shape[3] > 0,
+        "qwen4_exp QSA index-key append requires a positive index dim"
+    );
+    assert_eq!(
+        new_index_k.dtype(),
+        kv.dtype,
+        "qwen4_exp QSA index keys must match the K/V dtype"
+    );
+    let position_shape = new_positions.shape();
+    assert_eq!(
+        position_shape.len(),
+        3,
+        "qwen4_exp QSA position append expects [1, tokens, 3] mRoPE ids"
+    );
+    assert_eq!(
+        position_shape[0], 1,
+        "qwen4_exp QSA cache supports batch=1 only"
+    );
+    assert_eq!(
+        position_shape[1], kv.new_tokens as i32,
+        "qwen4_exp QSA positions must cover the same token count as K/V"
+    );
+    assert_eq!(
+        position_shape[2], 3,
+        "qwen4_exp QSA positions carry the 3 mRoPE grids (T, H, W)"
+    );
+    Qwen4ExpQsaAppendShape {
+        new_tokens: kv.new_tokens,
+        n_kv_heads: kv.n_kv_heads,
+        head_dim: kv.head_dim,
+        index_dim: index_shape[3],
+        dtype: kv.dtype,
+    }
+}
+
 #[derive(Clone, Default)]
 struct LinearLayerState {
     /// Qwen3.5 gated-delta conv tail: `[1, conv_kernel - 1, conv_dim]`.
@@ -1312,6 +1467,9 @@ pub struct MlxKVCache {
     layers: Vec<Option<FaLayerStorage>>,
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
     deepseek_v4_layers: Vec<Option<DeepseekV4LayerCache>>,
+    qwen4_exp_qsa_layers: Vec<Option<Qwen4ExpQsaLayerCache>>,
+    /// qwen4_exp PLE runtime state (single PLE layer per model).
+    qwen4_exp_ple: Qwen4ExpPleState,
     linear_layers: Vec<LinearLayerState>,
     /// Number of tokens after which a speculative verifier should capture each
     /// linear-attention layer's transient state. Checkpoints are intentionally
@@ -1430,6 +1588,8 @@ impl Clone for MlxKVCache {
             layers: self.layers.clone(),
             glm_mla_layers: self.glm_mla_layers.clone(),
             deepseek_v4_layers: self.deepseek_v4_layers.clone(),
+            qwen4_exp_qsa_layers: self.qwen4_exp_qsa_layers.clone(),
+            qwen4_exp_ple: self.qwen4_exp_ple.clone(),
             linear_layers,
             linear_prefix_capture_after: None,
             seq_len: self.seq_len,
@@ -1511,6 +1671,8 @@ impl MlxKVCache {
             layers: (0..num_layers).map(|_| None).collect(),
             glm_mla_layers: (0..num_layers).map(|_| None).collect(),
             deepseek_v4_layers: (0..num_layers).map(|_| None).collect(),
+            qwen4_exp_qsa_layers: (0..num_layers).map(|_| None).collect(),
+            qwen4_exp_ple: Qwen4ExpPleState::default(),
             linear_layers: (0..num_layers)
                 .map(|_| LinearLayerState::default())
                 .collect(),
@@ -1546,6 +1708,8 @@ impl MlxKVCache {
             layers: (0..num_layers).map(|_| None).collect(),
             glm_mla_layers: (0..num_layers).map(|_| None).collect(),
             deepseek_v4_layers: (0..num_layers).map(|_| None).collect(),
+            qwen4_exp_qsa_layers: (0..num_layers).map(|_| None).collect(),
+            qwen4_exp_ple: Qwen4ExpPleState::default(),
             linear_layers: (0..num_layers)
                 .map(|_| LinearLayerState::default())
                 .collect(),
@@ -4238,6 +4402,463 @@ impl MlxKVCache {
         ))
     }
 
+    // ── qwen4_exp (Qwen3.8-Flash-Next) QSA + PLE state ─────────────────────
+
+    /// Append one decode token or a prefill chunk to a qwen4_exp QSA layer
+    /// and return the full logical K/V views.
+    ///
+    /// - `new_k` / `new_v`: `[1, n_kv_heads, new_tokens, head_dim]` standard
+    ///   GQA rows the selected attention runs over.
+    /// - `new_index_k`: `[1, 1, new_tokens, index_dim]` RAW indexer keys
+    ///   (pre-norm, pre-RoPE); the indexer pools these into block keys.
+    /// - `new_positions`: `[1, new_tokens, 3]` per-token mRoPE position ids
+    ///   (T/H/W grids) for the indexer block RoPE.
+    /// - `compress_ratio`: indexer tokens-per-block, recorded for `trim_to`.
+    ///
+    /// Pooled block keys do not pass through here: the indexer computes them
+    /// from the raw keys and commits them via
+    /// [`Self::append_qwen4_exp_qsa_block_rows`].
+    ///
+    /// Returns `(K, V)` as `[1, n_kv_heads, total_tokens, head_dim]`.
+    pub fn append_qwen4_exp_qsa(
+        &mut self,
+        layer: usize,
+        new_k: MlxArray,
+        new_v: MlxArray,
+        new_index_k: MlxArray,
+        new_positions: MlxArray,
+        compress_ratio: usize,
+    ) -> (MlxArray, MlxArray) {
+        let append = validate_qwen4_exp_qsa_append_inputs(
+            layer,
+            self.qwen4_exp_qsa_layers.len(),
+            &new_k,
+            &new_v,
+            &new_index_k,
+            &new_positions,
+        );
+        let new_tokens = append.new_tokens;
+        let write_start = self.seq_len;
+        let write_end = write_start + new_tokens;
+        let dtype = append.dtype;
+        let n_kv_heads = append.n_kv_heads;
+        let head_dim = append.head_dim;
+        let index_dim = append.index_dim;
+
+        let entry = &mut self.qwen4_exp_qsa_layers[layer];
+        match entry {
+            None => {
+                let capacity = chunk_ceiling(write_end);
+                if write_start == 0 && capacity == new_tokens {
+                    self.growth_count = self.growth_count.saturating_add(1);
+                    *entry = Some(Qwen4ExpQsaLayerCache {
+                        k: new_k.clone(),
+                        v: new_v.clone(),
+                        index_k: new_index_k,
+                        positions: new_positions,
+                        block_k: None,
+                        committed_blocks: 0,
+                        n_kv_heads,
+                        head_dim,
+                        index_dim,
+                        capacity,
+                        block_capacity: 0,
+                        compress_ratio,
+                        dtype,
+                    });
+                    return (new_k, new_v);
+                }
+                let k = slice_update(
+                    &zeros(&[1, n_kv_heads, capacity as i32, head_dim], dtype, None),
+                    &new_k,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, n_kv_heads, write_end as i32, head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let v = slice_update(
+                    &zeros(&[1, n_kv_heads, capacity as i32, head_dim], dtype, None),
+                    &new_v,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, n_kv_heads, write_end as i32, head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let index_k = slice_update(
+                    &zeros(&[1, 1, capacity as i32, index_dim], dtype, None),
+                    &new_index_k,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, 1, write_end as i32, index_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let positions = slice_update(
+                    &zeros(&[1, capacity as i32, 3], new_positions.dtype(), None),
+                    &new_positions,
+                    &[0, write_start as i32, 0],
+                    &[1, write_end as i32, 3],
+                    &[1, 1, 1],
+                    None,
+                );
+                self.growth_count = self.growth_count.saturating_add(1);
+                *entry = Some(Qwen4ExpQsaLayerCache {
+                    k,
+                    v,
+                    index_k,
+                    positions,
+                    block_k: None,
+                    committed_blocks: 0,
+                    n_kv_heads,
+                    head_dim,
+                    index_dim,
+                    capacity,
+                    block_capacity: 0,
+                    compress_ratio,
+                    dtype,
+                });
+            }
+            Some(cache) => {
+                assert_eq!(
+                    cache.n_kv_heads, n_kv_heads,
+                    "qwen4_exp QSA cache append cannot change n_kv_heads for an existing layer"
+                );
+                assert_eq!(
+                    cache.head_dim, head_dim,
+                    "qwen4_exp QSA cache append cannot change head_dim for an existing layer"
+                );
+                assert_eq!(
+                    cache.index_dim, index_dim,
+                    "qwen4_exp QSA cache append cannot change index_dim for an existing layer"
+                );
+                assert_eq!(
+                    cache.dtype, dtype,
+                    "qwen4_exp QSA cache append cannot change dtype for an existing layer"
+                );
+                assert_eq!(
+                    cache.compress_ratio, compress_ratio,
+                    "qwen4_exp QSA cache append cannot change compress_ratio for an existing layer"
+                );
+                if write_end > cache.capacity {
+                    let new_capacity = chunk_ceiling(write_end);
+                    let ones4 = [1i32, 1, 1, 1];
+                    let kv_stop = [1i32, n_kv_heads, cache.capacity as i32, head_dim];
+                    let k_new = zeros(&[1, n_kv_heads, new_capacity as i32, head_dim], dtype, None);
+                    let v_new = zeros(&[1, n_kv_heads, new_capacity as i32, head_dim], dtype, None);
+                    cache.k = slice_update(&k_new, &cache.k, &[0, 0, 0, 0], &kv_stop, &ones4, None);
+                    cache.v = slice_update(&v_new, &cache.v, &[0, 0, 0, 0], &kv_stop, &ones4, None);
+                    cache.index_k = slice_update(
+                        &zeros(&[1, 1, new_capacity as i32, index_dim], dtype, None),
+                        &cache.index_k,
+                        &[0, 0, 0, 0],
+                        &[1, 1, cache.capacity as i32, index_dim],
+                        &ones4,
+                        None,
+                    );
+                    cache.positions = slice_update(
+                        &zeros(&[1, new_capacity as i32, 3], cache.positions.dtype(), None),
+                        &cache.positions,
+                        &[0, 0, 0],
+                        &[1, cache.capacity as i32, 3],
+                        &[1, 1, 1],
+                        None,
+                    );
+                    cache.capacity = new_capacity;
+                    self.growth_count = self.growth_count.saturating_add(1);
+                }
+                cache.k = slice_update(
+                    &cache.k,
+                    &new_k,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, n_kv_heads, write_end as i32, head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                cache.v = slice_update(
+                    &cache.v,
+                    &new_v,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, n_kv_heads, write_end as i32, head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                cache.index_k = slice_update(
+                    &cache.index_k,
+                    &new_index_k,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, 1, write_end as i32, index_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                cache.positions = slice_update(
+                    &cache.positions,
+                    &new_positions,
+                    &[0, write_start as i32, 0],
+                    &[1, write_end as i32, 3],
+                    &[1, 1, 1],
+                    None,
+                );
+            }
+        }
+
+        let Some(cache) = self.qwen4_exp_qsa_layers[layer].as_ref() else {
+            // Unreachable: the match above always installs the entry.
+            return (new_k, new_v);
+        };
+        let end = write_end as i32;
+        let kv_stop = [1, n_kv_heads, end, head_dim];
+        let strides = [1, 1, 1, 1];
+        (
+            slice(&cache.k, &[0, 0, 0, 0], &kv_stop, &strides, None),
+            slice(&cache.v, &[0, 0, 0, 0], &kv_stop, &strides, None),
+        )
+    }
+
+    /// Logical K/V views for a qwen4_exp QSA layer, sliced to `seq_len`.
+    /// `None` when the layer has no QSA cache yet.
+    pub fn qwen4_exp_qsa_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
+        let cache = self.qwen4_exp_qsa_layers.get(layer)?.as_ref()?;
+        let end = self.seq_len as i32;
+        let kv_stop = [1, cache.n_kv_heads, end, cache.head_dim];
+        let strides = [1, 1, 1, 1];
+        Some((
+            slice(&cache.k, &[0, 0, 0, 0], &kv_stop, &strides, None),
+            slice(&cache.v, &[0, 0, 0, 0], &kv_stop, &strides, None),
+        ))
+    }
+
+    /// RAW per-token indexer keys `[1, 1, seq_len, index_dim]` (pre-norm,
+    /// pre-RoPE) for one QSA layer. The indexer mean-pools each group of
+    /// `compress_ratio` consecutive visible tokens from this view.
+    pub fn qwen4_exp_qsa_index_keys(&self, layer: usize) -> Option<MlxArray> {
+        let cache = self.qwen4_exp_qsa_layers.get(layer)?.as_ref()?;
+        Some(slice(
+            &cache.index_k,
+            &[0, 0, 0, 0],
+            &[1, 1, self.seq_len as i32, cache.index_dim],
+            &[1, 1, 1, 1],
+            None,
+        ))
+    }
+
+    /// Per-token mRoPE position ids `[1, seq_len, 3]` (T/H/W grids) for one
+    /// QSA layer; the indexer block RoPE reads block-start rows from it.
+    pub fn qwen4_exp_qsa_positions(&self, layer: usize) -> Option<MlxArray> {
+        let cache = self.qwen4_exp_qsa_layers.get(layer)?.as_ref()?;
+        Some(slice(
+            &cache.positions,
+            &[0, 0, 0],
+            &[1, self.seq_len as i32, 3],
+            &[1, 1, 1],
+            None,
+        ))
+    }
+
+    /// Number of committed pooled block keys (== completed blocks).
+    pub fn qwen4_exp_qsa_committed_blocks(&self, layer: usize) -> usize {
+        self.qwen4_exp_qsa_layers
+            .get(layer)
+            .and_then(Option::as_ref)
+            .map_or(0, |cache| cache.committed_blocks)
+    }
+
+    /// Commit pooled block keys for one QSA layer and return the full
+    /// committed view.
+    ///
+    /// `rows`: `[1, 1, n_blocks, index_dim]` — one row per newly completed
+    /// block, already RMSNormed, RoPE'd at the block-start position, and kept
+    /// in f32 (the commit path is fp32 end-to-end; the buffer adopts the row
+    /// dtype). Rows are written contiguously at the committed boundary, so a
+    /// `trim_to` rewind followed by re-pooling overwrites the rejected rows.
+    ///
+    /// Returns `[1, 1, committed, index_dim]`.
+    pub fn append_qwen4_exp_qsa_block_rows(&mut self, layer: usize, rows: MlxArray) -> MlxArray {
+        let shape = rows.shape();
+        assert_eq!(
+            shape.len(),
+            4,
+            "qwen4_exp QSA block rows must be [1, 1, n_blocks, index_dim]"
+        );
+        assert_eq!(shape[0], 1, "qwen4_exp QSA block rows batch must be 1");
+        assert_eq!(shape[1], 1, "qwen4_exp QSA block rows head count must be 1");
+        let new_rows = shape[2] as usize;
+        let row_dim = shape[3];
+        let cache = self
+            .qwen4_exp_qsa_layers
+            .get_mut(layer)
+            .and_then(Option::as_mut);
+        let Some(cache) = cache else {
+            // The QSA forward commits rows only after the raw append created
+            // the entry; reaching this path is a caller bug, not a data
+            // error, so fail closed by returning the input uncommitted.
+            debug_assert!(
+                false,
+                "qwen4_exp QSA block rows require an existing QSA cache entry"
+            );
+            return rows;
+        };
+        assert_eq!(
+            cache.index_dim, row_dim,
+            "qwen4_exp QSA block rows must match the layer index dim"
+        );
+        let write_start = cache.committed_blocks;
+        let write_end = write_start + new_rows;
+
+        match cache.block_k.take() {
+            None => {
+                let capacity = chunk_ceiling(write_end.max(1));
+                if write_start == 0 && capacity == new_rows {
+                    self.growth_count = self.growth_count.saturating_add(1);
+                    cache.block_capacity = capacity;
+                    cache.committed_blocks = write_end;
+                    cache.block_k = Some(rows.clone());
+                    return rows;
+                }
+                let stored = slice_update(
+                    &zeros(&[1, 1, capacity as i32, row_dim], rows.dtype(), None),
+                    &rows,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, 1, write_end as i32, row_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                self.growth_count = self.growth_count.saturating_add(1);
+                cache.block_capacity = capacity;
+                cache.block_k = Some(stored);
+            }
+            Some(mut buf) => {
+                if write_end > cache.block_capacity {
+                    let new_capacity = chunk_ceiling(write_end);
+                    buf = slice_update(
+                        &zeros(&[1, 1, new_capacity as i32, row_dim], buf.dtype(), None),
+                        &buf,
+                        &[0, 0, 0, 0],
+                        &[1, 1, cache.block_capacity as i32, row_dim],
+                        &[1, 1, 1, 1],
+                        None,
+                    );
+                    cache.block_capacity = new_capacity;
+                    self.growth_count = self.growth_count.saturating_add(1);
+                }
+                buf = slice_update(
+                    &buf,
+                    &rows,
+                    &[0, 0, write_start as i32, 0],
+                    &[1, 1, write_end as i32, row_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                cache.block_k = Some(buf);
+            }
+        }
+        cache.committed_blocks = write_end;
+
+        let Some(block_k) = cache.block_k.as_ref() else {
+            // Unreachable: both match arms install the buffer.
+            return rows;
+        };
+        slice(
+            block_k,
+            &[0, 0, 0, 0],
+            &[1, 1, write_end as i32, row_dim],
+            &[1, 1, 1, 1],
+            None,
+        )
+    }
+
+    /// Committed pooled block keys for one QSA layer:
+    /// `[1, 1, committed, index_dim]`, or `None` when no block completed.
+    pub fn qwen4_exp_qsa_block_keys(&self, layer: usize) -> Option<MlxArray> {
+        let cache = self.qwen4_exp_qsa_layers.get(layer)?.as_ref()?;
+        let block_k = cache.block_k.as_ref()?;
+        if cache.committed_blocks == 0 {
+            return None;
+        }
+        Some(slice(
+            block_k,
+            &[0, 0, 0, 0],
+            &[1, 1, cache.committed_blocks as i32, cache.index_dim],
+            &[1, 1, 1, 1],
+            None,
+        ))
+    }
+
+    /// Rewind qwen4_exp QSA block-key bookkeeping after `trim_to`: committed
+    /// rows beyond `prefix_len / compress_ratio` are logically dropped (the
+    /// next forward re-pools and overwrites them). Raw index keys, K/V, and
+    /// positions stay seq_len-sliced like every other chunked buffer.
+    fn rewind_qwen4_exp_qsa_blocks(&mut self, prefix_len: usize) {
+        for cache in self.qwen4_exp_qsa_layers.iter_mut().flatten() {
+            let ratio = cache.compress_ratio.max(1);
+            cache.committed_blocks = cache.committed_blocks.min(prefix_len / ratio);
+        }
+    }
+
+    /// Read the qwen4_exp PLE runtime state: `(conv_ring, token_ring)`. The
+    /// conv ring holds the last `(kernel - 1) * dilation + rewind-window`
+    /// conv-input rows (the forward slices its tail out of it); the token
+    /// ring holds the last `context_len + rewind-window` effective token ids
+    /// (the hash slices its history out of it).
+    pub fn qwen4_exp_ple_state(&self) -> (Option<&MlxArray>, Option<&[i64]>) {
+        (
+            self.qwen4_exp_ple.conv_ring.as_ref(),
+            (!self.qwen4_exp_ple.token_ring.is_empty())
+                .then_some(self.qwen4_exp_ple.token_ring.as_slice()),
+        )
+    }
+
+    /// Store the qwen4_exp PLE runtime state after a forward (decode one
+    /// token or prefill a chunk — the module slices its own ring tails).
+    pub fn set_qwen4_exp_ple_state(&mut self, conv_ring: MlxArray, token_ring: Vec<i64>) {
+        self.qwen4_exp_ple.conv_ring = Some(conv_ring);
+        self.qwen4_exp_ple.token_ring = token_ring;
+    }
+
+    /// Whether a `trim_to` rollback of `rollback` tokens can rebuild the
+    /// qwen4_exp PLE state exactly. The rings only reach
+    /// `QWEN4_EXP_PLE_REWIND_WINDOW` tokens behind the write end, and the
+    /// conv input is not recomputable without a full forward, so a deeper
+    /// rollback must be refused (fail-closed, like the rotated-layer check).
+    fn qwen4_exp_ple_rewindable(&self, rollback: usize) -> bool {
+        if self.qwen4_exp_ple.conv_ring.is_none() && self.qwen4_exp_ple.token_ring.is_empty() {
+            // No PLE forward has run on this cache: nothing to rewind.
+            return true;
+        }
+        if rollback > QWEN4_EXP_PLE_REWIND_WINDOW {
+            return false;
+        }
+        let conv_ok = self
+            .qwen4_exp_ple
+            .conv_ring
+            .as_ref()
+            .is_some_and(|ring| (ring.shape()[1] as usize) > rollback);
+        let tokens_ok = self.qwen4_exp_ple.token_ring.len() >= rollback;
+        conv_ok && tokens_ok
+    }
+
+    /// Rewind the qwen4_exp PLE rings after `trim_to`: drop the last
+    /// `rollback` conv-input rows and token ids so the state equals the one
+    /// built by appending exactly the retained prefix. The next forward
+    /// re-slices its conv tail and hash history from the truncated rings.
+    fn rewind_qwen4_exp_ple(&mut self, rollback: usize) {
+        if rollback == 0 {
+            return;
+        }
+        let state = &mut self.qwen4_exp_ple;
+        if let Some(ring) = state.conv_ring.as_ref() {
+            let rows = ring.shape()[1] as usize;
+            let channels = ring.shape()[2];
+            state.conv_ring = Some(slice(
+                ring,
+                &[0, 0, 0],
+                &[1, (rows - rollback) as i32, channels],
+                &[1, 1, 1],
+                None,
+            ));
+        }
+        let keep = state.token_ring.len().saturating_sub(rollback);
+        state.token_ring.truncate(keep);
+    }
+
     /// Trim the logical boundary to `prefix_len` tokens (draft rollback).
     ///
     /// With chunked layout this is O(1) — no array data is modified.  The backing
@@ -4246,7 +4867,10 @@ impl MlxKVCache {
     ///
     /// Returns `true` when the requested trim point was valid.  Invalid requests
     /// are clamped to the current logical length so a release build cannot extend
-    /// the cache and make SDPA attend to unwritten positions.
+    /// the cache and make SDPA attend to unwritten positions.  A rollback deeper
+    /// than the qwen4_exp PLE rewind window is refused outright (`false`, no
+    /// mutation) because the PLE conv tail and hash history cannot be
+    /// reconstructed that far back.
     #[must_use]
     pub fn trim_to(&mut self, prefix_len: usize) -> bool {
         if prefix_len < self.seq_len {
@@ -4269,9 +4893,17 @@ impl MlxKVCache {
             }) {
                 return false;
             }
+            // The qwen4_exp PLE rings only reach a fixed window behind the
+            // write end; refuse a deeper rollback rather than leave the conv
+            // tail and hash history stale (fail-closed, like the rotated
+            // layers above — the caller falls back to a full recompute).
+            if !self.qwen4_exp_ple_rewindable(rollback) {
+                return false;
+            }
         }
         let valid = prefix_len <= self.seq_len;
         let trimmed = prefix_len < self.seq_len;
+        let rollback = self.seq_len.saturating_sub(prefix_len);
         self.seq_len = prefix_len.min(self.seq_len);
         if trimmed {
             // The retained fast-path views still span the pre-trim write end,
@@ -4291,6 +4923,8 @@ impl MlxKVCache {
                 }
             }
             self.rewind_deepseek_v4_comps(self.seq_len);
+            self.rewind_qwen4_exp_qsa_blocks(self.seq_len);
+            self.rewind_qwen4_exp_ple(rollback);
         }
         valid
     }
@@ -4545,6 +5179,18 @@ impl MlxKVCache {
                 refs.push(recurrent_state);
             }
         }
+        for qsa in self.qwen4_exp_qsa_layers.iter().flatten() {
+            refs.push(&qsa.k);
+            refs.push(&qsa.v);
+            refs.push(&qsa.index_k);
+            refs.push(&qsa.positions);
+            if let Some(block_k) = &qsa.block_k {
+                refs.push(block_k);
+            }
+        }
+        if let Some(conv_ring) = &self.qwen4_exp_ple.conv_ring {
+            refs.push(conv_ring);
+        }
         refs
     }
 
@@ -4696,6 +5342,8 @@ impl MlxKVCache {
             || source.glm_mla_layers.iter().any(Option::is_some)
             || self.deepseek_v4_layers.iter().any(Option::is_some)
             || source.deepseek_v4_layers.iter().any(Option::is_some)
+            || self.qwen4_exp_qsa_layers.iter().any(Option::is_some)
+            || source.qwen4_exp_qsa_layers.iter().any(Option::is_some)
         {
             return false;
         }
@@ -5230,6 +5878,10 @@ impl MlxKVCache {
         for entry in &mut self.deepseek_v4_layers {
             *entry = None;
         }
+        for entry in &mut self.qwen4_exp_qsa_layers {
+            *entry = None;
+        }
+        self.qwen4_exp_ple = Qwen4ExpPleState::default();
         for state in &mut self.linear_layers {
             *state = LinearLayerState::default();
         }
@@ -8083,6 +8735,7 @@ mod tests {
             mla_attention: None,
             glm_router: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
             rope_mscale: 1.0,
@@ -8258,5 +8911,331 @@ mod tests {
         assert!(cache.trim_to(3));
         assert_eq!(cache.deepseek_v4_comp_committed(0, false), 0);
         assert!(cache.deepseek_v4_comp_states(0, false).is_none());
+    }
+
+    // ── qwen4_exp (Qwen3.8-Flash-Next) QSA + PLE state ──────────────────────
+
+    fn qwen4_exp_fill(value: f32, shape: &[i32]) -> MlxArray {
+        let count = shape.iter().map(|dim| *dim as usize).product();
+        mlx_sys::reshape(&MlxArray::from_f32_slice(&vec![value; count]), shape, None)
+    }
+
+    /// `[1, tokens, 3]` mRoPE ids (T/H/W advance together for text-only).
+    fn qwen4_exp_positions(start: u32, tokens: usize) -> MlxArray {
+        let mut values = Vec::with_capacity(tokens * 3);
+        for t in 0..tokens {
+            let pos = start + t as u32;
+            values.extend_from_slice(&[pos, pos, pos]);
+        }
+        MlxArray::from_raw_data(
+            values.as_ptr() as *const u8,
+            std::mem::size_of_val(values.as_slice()),
+            &[1, tokens as i32, 3],
+            MlxDtype::Uint32,
+        )
+    }
+
+    fn qwen4_exp_qsa_append(
+        cache: &mut MlxKVCache,
+        layer: usize,
+        start: u32,
+        tokens: usize,
+        kv_value: f32,
+        index_value: f32,
+    ) -> (MlxArray, MlxArray) {
+        let tokens_i32 = tokens as i32;
+        cache.append_qwen4_exp_qsa(
+            layer,
+            qwen4_exp_fill(kv_value, &[1, 2, tokens_i32, 8]),
+            qwen4_exp_fill(kv_value + 1.0, &[1, 2, tokens_i32, 8]),
+            qwen4_exp_fill(index_value, &[1, 1, tokens_i32, 4]),
+            qwen4_exp_positions(start, tokens),
+            4,
+        )
+    }
+
+    #[test]
+    fn qwen4_exp_qsa_prefill_and_decode_round_trip() {
+        let mut cache = MlxKVCache::new(2);
+
+        // Prefill 4 tokens (one complete compress-ratio-4 block).
+        let (full_k, full_v) = qwen4_exp_qsa_append(&mut cache, 0, 0, 4, 1.0, 3.0);
+        cache.advance(4);
+        assert_eq!(full_k.shape(), vec![1, 2, 4, 8]);
+        assert_eq!(full_v.shape(), vec![1, 2, 4, 8]);
+
+        // Commit the pooled block row for the completed block.
+        let committed =
+            cache.append_qwen4_exp_qsa_block_rows(0, qwen4_exp_fill(4.0, &[1, 1, 1, 4]));
+        assert_eq!(committed.shape(), vec![1, 1, 1, 4]);
+        assert_eq!(cache.qwen4_exp_qsa_committed_blocks(0), 1);
+
+        // Decode one token: raw views grow, committed block rows stay put.
+        let (full_k, _) = qwen4_exp_qsa_append(&mut cache, 0, 4, 1, 5.0, 7.0);
+        cache.advance(1);
+        assert_eq!(full_k.shape(), vec![1, 2, 5, 8]);
+        assert_eq!(cache.qwen4_exp_qsa_committed_blocks(0), 1);
+
+        let (k_view, v_view) = cache.qwen4_exp_qsa_kv(0).expect("qsa kv views");
+        assert_eq!(k_view.shape(), vec![1, 2, 5, 8]);
+        assert_eq!(v_view.shape(), vec![1, 2, 5, 8]);
+        let index_keys = cache.qwen4_exp_qsa_index_keys(0).expect("raw index keys");
+        assert_eq!(index_keys.shape(), vec![1, 1, 5, 4]);
+        let positions = cache.qwen4_exp_qsa_positions(0).expect("mrope positions");
+        assert_eq!(positions.shape(), vec![1, 5, 3]);
+        eval(&[&positions]);
+        let k_host = host_f32(&k_view);
+        let v_host = host_f32(&v_view);
+        let index_host = host_f32(&index_keys);
+        let count = |values: &[f32], value: f32| values.iter().filter(|x| **x == value).count();
+        assert_eq!((count(&k_host, 1.0), count(&k_host, 5.0)), (64, 16));
+        assert_eq!((count(&v_host, 2.0), count(&v_host, 6.0)), (64, 16));
+        assert_eq!((count(&index_host, 3.0), count(&index_host, 7.0)), (16, 4));
+        let pos = positions.data_u32();
+        assert_eq!(&pos[pos.len() - 3..], &[4, 4, 4]);
+        // K, V, raw index keys, positions, committed block rows.
+        assert_eq!(cache.collect_eval_refs().len(), 5);
+
+        // Second committed block, then a draft rollback into the first block:
+        // the rewind drops rows beyond prefix_len / compress_ratio.
+        cache.append_qwen4_exp_qsa_block_rows(0, qwen4_exp_fill(8.0, &[1, 1, 1, 4]));
+        assert_eq!(cache.qwen4_exp_qsa_committed_blocks(0), 2);
+        assert!(cache.trim_to(4));
+        assert_eq!(cache.qwen4_exp_qsa_committed_blocks(0), 1);
+        let block_keys = cache
+            .qwen4_exp_qsa_block_keys(0)
+            .expect("committed block keys");
+        assert_eq!(block_keys.shape(), vec![1, 1, 1, 4]);
+        assert!(host_f32(&block_keys).iter().all(|x| *x == 4.0));
+
+        // Re-decoding overwrites the trimmed slot without growing the view.
+        let (full_k, _) = qwen4_exp_qsa_append(&mut cache, 0, 4, 1, 9.0, 11.0);
+        cache.advance(1);
+        let full_k_host = host_f32(&full_k);
+        assert_eq!(
+            (count(&full_k_host, 1.0), count(&full_k_host, 9.0)),
+            (64, 16)
+        );
+    }
+
+    #[test]
+    fn qwen4_exp_qsa_block_keys_round_trip_f32_exactly() {
+        let mut cache = MlxKVCache::new(1);
+        qwen4_exp_qsa_append(&mut cache, 0, 0, 4, 1.0, 3.0);
+        cache.advance(4);
+
+        // Values that are NOT bf16-representable: any bf16 quantization of
+        // the committed block keys would corrupt them.
+        let values: Vec<f32> = (0..4).map(|i| 0.1 + i as f32 * 0.0007).collect();
+        let rows = MlxArray::from_raw_data(
+            values.as_ptr() as *const u8,
+            std::mem::size_of_val(values.as_slice()),
+            &[1, 1, 1, 4],
+            MlxDtype::Float32,
+        );
+        let committed = cache.append_qwen4_exp_qsa_block_rows(0, rows);
+        assert_eq!(committed.dtype(), MlxDtype::Float32);
+        assert_eq!(host_f32(&committed), values);
+
+        let block_keys = cache
+            .qwen4_exp_qsa_block_keys(0)
+            .expect("committed block keys");
+        assert_eq!(block_keys.dtype(), MlxDtype::Float32);
+        assert_eq!(host_f32(&block_keys), values);
+    }
+
+    #[test]
+    fn qwen4_exp_qsa_cache_clone_and_reset() {
+        let mut cache = MlxKVCache::new(1);
+        qwen4_exp_qsa_append(&mut cache, 0, 0, 2, 1.0, 3.0);
+        cache.advance(2);
+        cache.append_qwen4_exp_qsa_block_rows(0, qwen4_exp_fill(4.0, &[1, 1, 1, 4]));
+
+        // Draft branches clone the raw buffers and the committed block rows.
+        let branch = cache.clone();
+        assert_eq!(branch.qwen4_exp_qsa_committed_blocks(0), 1);
+        let (branch_k, _) = branch.qwen4_exp_qsa_kv(0).expect("branch qsa kv");
+        assert_eq!(branch_k.shape(), vec![1, 2, 2, 8]);
+        assert_eq!(
+            branch.qwen4_exp_qsa_index_keys(0).map(|x| x.shape()),
+            Some(vec![1, 1, 2, 4])
+        );
+        assert_eq!(
+            branch.qwen4_exp_qsa_block_keys(0).map(|x| x.shape()),
+            Some(vec![1, 1, 1, 4])
+        );
+
+        cache.reset();
+        assert!(cache.qwen4_exp_qsa_kv(0).is_none());
+        assert!(cache.qwen4_exp_qsa_index_keys(0).is_none());
+        assert!(cache.qwen4_exp_qsa_positions(0).is_none());
+        assert!(cache.qwen4_exp_qsa_block_keys(0).is_none());
+        assert_eq!(cache.qwen4_exp_qsa_committed_blocks(0), 0);
+        assert!(cache.collect_eval_refs().is_empty());
+    }
+
+    #[test]
+    fn qwen4_exp_ple_state_round_trip_clone_and_reset() {
+        let mut cache = MlxKVCache::new(1);
+        let ring = qwen4_exp_fill(5.0, &[1, 41, 16]);
+        let token_ring = vec![248044_i64, 248044, 12];
+        cache.set_qwen4_exp_ple_state(ring, token_ring);
+
+        let (conv_ring, tokens) = cache.qwen4_exp_ple_state();
+        let conv_ring = conv_ring.expect("conv ring");
+        let tokens = tokens.expect("token ring");
+        assert_eq!(conv_ring.shape(), vec![1, 41, 16]);
+        assert_eq!(tokens, &[248044_i64, 248044, 12]);
+        assert_eq!(cache.collect_eval_refs().len(), 1);
+        assert!(host_f32(conv_ring).iter().all(|x| *x == 5.0));
+
+        // Draft branches inherit the PLE state.
+        let branch = cache.clone();
+        let (branch_ring, branch_tokens) = branch.qwen4_exp_ple_state();
+        assert!(branch_ring.is_some() && branch_tokens.is_some());
+
+        cache.reset();
+        let (conv_ring, tokens) = cache.qwen4_exp_ple_state();
+        assert!(conv_ring.is_none());
+        assert!(tokens.is_none());
+        assert!(cache.collect_eval_refs().is_empty());
+    }
+
+    /// Emulate the PLE forward's persisted state after `covered` tokens: the
+    /// conv ring holds the last `min(tail + WINDOW, tail + covered)` rows of
+    /// the conv-input stream (9 zero rows at sequence start, then one row per
+    /// token); the token ring the last `min(2 + WINDOW, 2 + covered)`
+    /// effective ids ([EOS, EOS] at sequence start). Rows and ids encode
+    /// their stream position so any mis-slice is visible.
+    fn qwen4_exp_ple_ring_state(covered: usize) -> (MlxArray, Vec<i64>) {
+        const TAIL: usize = 9;
+        const CONTEXT: usize = 2;
+        const CHANNELS: i32 = 4;
+        const EOS: i64 = 248044;
+        let rows = (TAIL + QWEN4_EXP_PLE_REWIND_WINDOW).min(TAIL + covered);
+        let first_row = TAIL + covered - rows;
+        let values: Vec<f32> = (first_row..first_row + rows)
+            .flat_map(|row| {
+                let base = row as f32;
+                [base, base + 0.25, base + 0.5, base + 0.75]
+            })
+            .collect();
+        let ring = MlxArray::from_raw_data(
+            values.as_ptr() as *const u8,
+            std::mem::size_of_val(values.as_slice()),
+            &[1, rows as i32, CHANNELS],
+            MlxDtype::Float32,
+        );
+        let total = CONTEXT + covered;
+        let kept = (CONTEXT + QWEN4_EXP_PLE_REWIND_WINDOW).min(total);
+        let tokens: Vec<i64> = (total - kept..total)
+            .map(|idx| {
+                if idx < CONTEXT {
+                    EOS
+                } else {
+                    (idx - CONTEXT) as i64
+                }
+            })
+            .collect();
+        (ring, tokens)
+    }
+
+    #[test]
+    fn qwen4_exp_ple_trim_rebuilds_state_for_exact_prefix() {
+        let (n, k) = (10usize, 7usize);
+        let mut cache = MlxKVCache::new(1);
+        let (ring, tokens) = qwen4_exp_ple_ring_state(n);
+        cache.set_qwen4_exp_ple_state(ring, tokens);
+        cache.advance(n);
+
+        // Reference: the state built by appending exactly k tokens.
+        let mut reference = MlxKVCache::new(1);
+        let (ref_ring, ref_tokens) = qwen4_exp_ple_ring_state(k);
+        reference.set_qwen4_exp_ple_state(ref_ring, ref_tokens);
+        reference.advance(k);
+
+        assert!(cache.trim_to(k));
+        let (ring, tokens) = cache.qwen4_exp_ple_state();
+        let (ref_ring, ref_tokens) = reference.qwen4_exp_ple_state();
+        assert_eq!(
+            host_f32(ring.expect("conv ring")),
+            host_f32(ref_ring.expect("reference conv ring")),
+            "trimmed conv ring must equal the state built from exactly k tokens"
+        );
+        assert_eq!(
+            tokens.expect("token ring"),
+            ref_tokens.expect("reference token ring"),
+            "trimmed token ring must equal the state built from exactly k tokens"
+        );
+    }
+
+    #[test]
+    fn qwen4_exp_ple_trim_within_window_after_ring_saturates() {
+        let n = QWEN4_EXP_PLE_REWIND_WINDOW + 8;
+        let rollback = 4usize;
+        let k = n - rollback;
+        let mut cache = MlxKVCache::new(1);
+        let (ring, tokens) = qwen4_exp_ple_ring_state(n);
+        cache.set_qwen4_exp_ple_state(ring, tokens);
+        cache.advance(n);
+
+        assert!(cache.trim_to(k));
+        let (ring, tokens) = cache.qwen4_exp_ple_state();
+        let kept = host_f32(ring.expect("conv ring"));
+        let tokens = tokens.expect("token ring");
+
+        // The ring sheds exactly `rollback` rows from the end; the remainder
+        // is the prefix of the saturated ring.
+        let (full_ring, full_tokens) = qwen4_exp_ple_ring_state(n);
+        let full = host_f32(&full_ring);
+        assert_eq!(kept.len(), full.len() - rollback * 4);
+        assert_eq!(kept.as_slice(), &full[..kept.len()]);
+        assert_eq!(tokens, &full_tokens[..full_tokens.len() - rollback]);
+
+        // And the consumed tails (9-row conv tail, 2-id hash history) equal
+        // the state built from exactly k tokens.
+        let (k_ring, k_tokens) = qwen4_exp_ple_ring_state(k);
+        let k_tail = host_f32(&k_ring);
+        assert_eq!(
+            &kept[kept.len() - 9 * 4..],
+            &k_tail[k_tail.len() - 9 * 4..],
+            "conv tail at the trim point"
+        );
+        assert_eq!(
+            &tokens[tokens.len() - 2..],
+            &k_tokens[k_tokens.len() - 2..],
+            "hash history at the trim point"
+        );
+    }
+
+    #[test]
+    fn qwen4_exp_ple_deep_rollback_is_refused_without_mutation() {
+        let n = QWEN4_EXP_PLE_REWIND_WINDOW + 10;
+        let mut cache = MlxKVCache::new(1);
+        let (ring, tokens) = qwen4_exp_ple_ring_state(n);
+        cache.set_qwen4_exp_ple_state(ring, tokens);
+        cache.advance(n);
+
+        // A rollback deeper than the rewind window cannot reconstruct the
+        // PLE state: the trim fails closed and nothing mutates.
+        assert!(!cache.trim_to(2));
+        assert_eq!(cache.seq_len(), n);
+        let (ring, tokens) = cache.qwen4_exp_ple_state();
+        assert_eq!(
+            ring.expect("conv ring").shape(),
+            vec![1, (9 + QWEN4_EXP_PLE_REWIND_WINDOW) as i32, 4]
+        );
+        assert_eq!(
+            tokens.expect("token ring").len(),
+            2 + QWEN4_EXP_PLE_REWIND_WINDOW
+        );
+
+        // A rollback exactly at the window boundary still succeeds and
+        // leaves the tail-only state the next forward can consume.
+        assert!(cache.trim_to(n - QWEN4_EXP_PLE_REWIND_WINDOW));
+        assert_eq!(cache.seq_len(), n - QWEN4_EXP_PLE_REWIND_WINDOW);
+        let (ring, tokens) = cache.qwen4_exp_ple_state();
+        assert_eq!(ring.expect("conv ring").shape(), vec![1, 9, 4]);
+        assert_eq!(tokens.expect("token ring").len(), 2);
     }
 }

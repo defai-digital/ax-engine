@@ -147,6 +147,7 @@ pub(crate) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String
         "unlimited-ocr" | "unlimited_ocr" | "deepseekocr" => Some("unlimited-ocr".to_string()),
         "mistral3" | "mistral" | "ministral3" => Some(infer_mistral_model_id(&path_label)),
         "gpt_oss" => Some(infer_gpt_oss_model_id(&path_label)),
+        value @ ("qwen4_exp" | "qwen4_exp_text") => Some(infer_qwen_model_id(&path_label, value)),
         value if value.starts_with("qwen3") => Some(infer_qwen_model_id(&path_label, value)),
         _ => None,
     })
@@ -189,6 +190,11 @@ fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
         "qwen3-asr-1.7b".to_string()
     } else if path_label.contains("qwen3-coder-next") {
         "qwen3-coder-next".to_string()
+    } else if path_label.contains("qwen3-8-flash-next") || path_label.contains("qwen38-flash-next")
+    {
+        // Qwen3.8-Flash-Next (`qwen4_exp`) must be matched before the generic
+        // qwen3.8 27B arm below: "qwen3-8" is a substring of its pack paths.
+        "qwen3.8-flash-next".to_string()
     } else if path_label.contains("qwen3-6-35b") || path_label.contains("qwen36-35b") {
         "qwen3.6-35b".to_string()
     } else if path_label.contains("qwen3-6-27b") || path_label.contains("qwen36-27b") {
@@ -206,6 +212,8 @@ fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
         "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5_text" | "qwen3_next" | "qwen3_6" | "qwen3.6"
     ) {
         "qwen3.6".to_string()
+    } else if matches!(model_type, "qwen4_exp" | "qwen4_exp_text") {
+        "qwen4_exp".to_string()
     } else if matches!(model_type, "qwen3_5" | "qwen3.5") {
         "qwen3.5".to_string()
     } else {

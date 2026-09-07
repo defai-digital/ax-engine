@@ -2490,6 +2490,7 @@ mod tests {
             mla_attention: None,
             glm_router: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
             rope_mscale: 1.0,

@@ -305,6 +305,53 @@ class MlxModelSupportProbeTests(unittest.TestCase):
         self.assertEqual(report["checkpoint_features"]["manifest_tensor_count"], 1)
         self.assertTrue(report["checkpoint_features"]["manifest_runtime_ready"])
 
+    def test_qwen4_exp_maps_to_qwen4_exp_family(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = write_model(root, "qwen4_exp", ["model.embed_tokens.weight"])
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "qwen4_exp",
+                        "runtime_status": {"ready": True},
+                        "tensors": [{"role": "token_embedding"}],
+                    }
+                )
+            )
+
+            report = probe.probe_model(model_dir)
+
+        self.assertEqual(report["support_decision"], "repo_owned_runtime_ready")
+        self.assertTrue(report["can_implement_repo_owned_runtime"])
+        self.assertEqual(report["blockers"], [])
+        self.assertEqual(
+            report["checkpoint_features"]["expected_model_family"], "qwen4_exp"
+        )
+        self.assertEqual(
+            report["checkpoint_features"]["manifest_model_family"], "qwen4_exp"
+        )
+
+    def test_qwen4_exp_text_maps_to_qwen4_exp_family(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = write_model(root, "qwen4_exp_text", ["model.embed_tokens.weight"])
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "qwen4_exp",
+                        "runtime_status": {"ready": True},
+                        "tensors": [{"role": "token_embedding"}],
+                    }
+                )
+            )
+
+            report = probe.probe_model(model_dir)
+
+        self.assertEqual(report["support_decision"], "repo_owned_runtime_ready")
+        self.assertEqual(
+            report["checkpoint_features"]["expected_model_family"], "qwen4_exp"
+        )
+
     def test_known_family_manifest_family_mismatch_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

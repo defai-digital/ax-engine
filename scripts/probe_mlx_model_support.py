@@ -35,6 +35,10 @@ REPO_OWNED_TYPES = {
     "qwen3_6",
     "qwen3.6",
     "qwen3_moe",
+    # Qwen3.8-Flash-Next experimental family (text-only milestone of the
+    # MLX-VLM pack; nested text_config uses `qwen4_exp_text`).
+    "qwen4_exp",
+    "qwen4_exp_text",
     "gemma4",
     "gemma4_unified",
     "gemma4_unified_text",
@@ -356,6 +360,8 @@ def _expected_ax_family(model_type: str) -> str:
         return "qwen3_5"
     if model_type in ("qwen3_next", "qwen3_6", "qwen3.6"):
         return "qwen3_next"
+    if model_type in ("qwen4_exp", "qwen4_exp_text"):
+        return "qwen4_exp"
     if model_type == "qwen3_moe":
         return "qwen3"
     if model_type in ("llama", "llama3"):

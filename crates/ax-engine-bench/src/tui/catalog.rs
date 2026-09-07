@@ -87,7 +87,10 @@ impl Family {
     pub fn support_tier(&self) -> ax_engine_core::ModelSupportTier {
         // Checkpoint-level AXQ candidates must not inherit architecture
         // certification until their quality/runtime/memory gates pass.
-        if self.key == "ax-qwen3.6-27b-axq" || self.key == "ax-qwen3-vl-30b-a3b-axq" {
+        if self.key == "ax-qwen3.6-27b-axq"
+            || self.key == "ax-qwen3-vl-30b-a3b-axq"
+            || self.key == "ax-qwen3.8-flash-next-axq"
+        {
             return ax_engine_core::ModelSupportTier::Compatible;
         }
         ax_engine_core::support_tier_for_family(registry_family_label(&self.key))
@@ -107,6 +110,10 @@ pub(super) fn registry_family_label(key: &str) -> &str {
     let k = k.strip_prefix("ax-").unwrap_or(&k);
     if k.starts_with("gemma4") {
         "gemma4"
+    } else if k.starts_with("qwen3.8-flash-next") {
+        // Qwen3.8-Flash-Next packs carry HF model_type `qwen4_exp`; grade
+        // against the qwen4_exp registry row, not the qwen3_5 lineage.
+        "qwen4_exp"
     } else if k.starts_with("qwen3.5") {
         "qwen3_5"
     } else if k.starts_with("qwen3.6") {
@@ -195,6 +202,7 @@ pub(super) fn family_display_name(key: &str) -> String {
         "ax-qwen3.5-9b" => "AX Qwen 3.5 9B".into(),
         "ax-qwen3.6-27b" => "AX Qwen 3.6 27B".into(),
         "ax-qwen3.6-27b-axq" => "AX Qwen 3.6 27B AXQ candidates".into(),
+        "ax-qwen3.8-flash-next-axq" => "AX Qwen 3.8 Flash Next AXQ candidate".into(),
         "ax-qwen3.6-35b" => "AX Qwen 3.6 35B".into(),
         "ax-qwen3-vl-30b-a3b-axq" => "AX Qwen3-VL 30B-A3B Instruct AXQ".into(),
         "ax-gemma4-12b" => "AX Gemma 4 12B".into(),

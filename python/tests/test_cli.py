@@ -93,6 +93,7 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
@@ -123,7 +124,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 87)
+        self.assertEqual(len(targets), 88)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
@@ -299,6 +300,11 @@ class AxEngineCliTests(unittest.TestCase):
                 "7b11bd5179d71a74200fe56075cba5c21212fe6a",
                 "candidate",
             ),
+            "qwen3.8-flash-next:axq": (
+                "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+                "d514dcebf3086068ed7968caf395083c95ebcfca",
+                "candidate",
+            ),
         }
         for alias, (repo_id, revision, certification) in cases.items():
             with self.subTest(alias=alias):
@@ -399,6 +405,8 @@ class AxEngineCliTests(unittest.TestCase):
             ("ax-ministral-3-8b", "ministral-3-8b"),
             ("nemotron-3-nano:axq", "nemotron-3-nano"),
             ("ax-qwen3.8-27b", "qwen3.8-27b"),
+            ("qwen3.8-flash-next:axq", "qwen3.8-flash-next"),
+            ("ax-qwen3.8-flash-next-axq-6bit", "qwen3.8-flash-next"),
             ("ax-qwen3-vl-8b", "qwen3-vl-8b"),
             ("ax-qwen3-vl-30b", "qwen3-vl-30b"),
         ):
@@ -1627,7 +1635,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 33)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 34)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.

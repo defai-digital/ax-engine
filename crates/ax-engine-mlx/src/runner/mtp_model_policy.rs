@@ -17,6 +17,8 @@ const QWEN_LINEAR_CERTIFICATION_CANDIDATE_ENV: &str =
     "AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE";
 const DEEPSEEK_V4_MTP_CERTIFICATION_CANDIDATE_ENV: &str =
     "AX_MLX_DEEPSEEK_V4_MTP_CERTIFICATION_CANDIDATE";
+const QWEN4_EXP_MTP_CERTIFICATION_CANDIDATE_ENV: &str =
+    "AX_MLX_QWEN4_EXP_MTP_CERTIFICATION_CANDIDATE";
 
 fn truthy_opt_in(raw: &str) -> bool {
     let value = raw.trim();
@@ -71,6 +73,15 @@ pub(super) fn deepseek_v4_mtp_certification_candidate_from_env() -> bool {
         .is_some_and(|raw| truthy_opt_in(&raw))
 }
 
+/// Explicitly expose the experimental qwen4_exp hybrid MTP route to a formal
+/// harness. Product default stays direct-fallback until Tier 2 evidence
+/// exists — the sidecar attaching is not end-to-end acceleration evidence.
+pub(super) fn qwen4_exp_mtp_certification_candidate_from_env() -> bool {
+    std::env::var(QWEN4_EXP_MTP_CERTIFICATION_CANDIDATE_ENV)
+        .ok()
+        .is_some_and(|raw| truthy_opt_in(&raw))
+}
+
 /// Stable route code describing the loaded model's MTP policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MtpModelPolicyKind {
@@ -88,6 +99,10 @@ pub(super) enum MtpModelPolicyKind {
     DeepseekV4CertificationCandidate,
     /// Product default until Tier 2 evidence: MTP attached but not requested.
     DeepseekV4UncertifiedDirectFallback,
+    /// Formal-harness-only qwen4_exp hybrid MTP route (opt-in).
+    Qwen4ExpCertificationCandidate,
+    /// Product default until Tier 2 evidence: sidecar attached, not requested.
+    Qwen4ExpUncertifiedDirectFallback,
     ConflictingDrafters,
 }
 
@@ -106,6 +121,8 @@ impl MtpModelPolicyKind {
             // certification-candidate path only (fail-closed by default).
             Self::DeepseekV4CertificationCandidate => 8,
             Self::DeepseekV4UncertifiedDirectFallback => 9,
+            Self::Qwen4ExpCertificationCandidate => 10,
+            Self::Qwen4ExpUncertifiedDirectFallback => 11,
         }
     }
 }
@@ -124,6 +141,11 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) gemma4_assistant_depth: Option<usize>,
     pub(super) deepseek_v4_depth: Option<usize>,
     pub(super) deepseek_v4_certification_candidate: bool,
+    /// qwen4_exp hybrid sidecar depth (never `qwen_depth`: the family carries
+    /// linear attention, so sharing that input would misroute it into the
+    /// Qwen linear exact/projected-replay verifier policy).
+    pub(super) qwen4_exp_depth: Option<usize>,
+    pub(super) qwen4_exp_certification_candidate: bool,
     pub(super) qwen_linear_attention: bool,
     pub(super) qwen_linear_exact_enabled: bool,
     pub(super) qwen_linear_projected_replay_enabled: bool,
@@ -167,6 +189,7 @@ impl MtpModelPolicy {
             inputs.glm_depth.is_some(),
             inputs.gemma4_assistant_depth.is_some(),
             inputs.deepseek_v4_depth.is_some(),
+            inputs.qwen4_exp_depth.is_some(),
         ]
         .into_iter()
         .filter(|attached| *attached)
@@ -181,6 +204,7 @@ impl MtpModelPolicy {
                     .chain(inputs.glm_depth)
                     .chain(inputs.gemma4_assistant_depth)
                     .chain(inputs.deepseek_v4_depth)
+                    .chain(inputs.qwen4_exp_depth)
                     .max()
                     .unwrap_or(0),
             );
@@ -227,6 +251,18 @@ impl MtpModelPolicy {
             return (kind, max_depth);
         }
 
+        if let Some(max_depth) = inputs.qwen4_exp_depth {
+            let kind = if inputs.qwen4_exp_certification_candidate {
+                MtpModelPolicyKind::Qwen4ExpCertificationCandidate
+            } else {
+                // Tensor eligibility is not end-to-end acceleration evidence.
+                MtpModelPolicyKind::Qwen4ExpUncertifiedDirectFallback
+            };
+            // The reference pack ships exactly one predictor block; the
+            // loader, the depth resolver, and this arm all hard-cap at 1.
+            return (kind, max_depth.min(1));
+        }
+
         (MtpModelPolicyKind::None, 0)
     }
 
@@ -236,6 +272,7 @@ impl MtpModelPolicy {
             self.kind,
             MtpModelPolicyKind::QwenLinearUncertifiedDirectFallback
                 | MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
+                | MtpModelPolicyKind::Qwen4ExpUncertifiedDirectFallback
                 | MtpModelPolicyKind::ConflictingDrafters
         )
     }
@@ -310,6 +347,20 @@ impl MtpModelPolicy {
         )
     }
 
+    pub(super) const fn is_qwen4_exp_direct_fallback(self) -> bool {
+        matches!(
+            self.kind,
+            MtpModelPolicyKind::Qwen4ExpUncertifiedDirectFallback
+        )
+    }
+
+    pub(super) const fn is_qwen4_exp_certification_candidate(self) -> bool {
+        matches!(
+            self.kind,
+            MtpModelPolicyKind::Qwen4ExpCertificationCandidate
+        )
+    }
+
     pub(super) const fn is_qwen_linear_certification_candidate(self) -> bool {
         matches!(
             self.kind,
@@ -336,6 +387,18 @@ impl MtpModelPolicy {
         self.gate_default_for(GateResolverFamily::Glm)
     }
 
+    /// qwen4_exp draft-confidence default: the depth-1 certification route
+    /// keeps the gate at 0.0 (a 0.90 gate would drop the only draft token and
+    /// turn every step into an ordinary decode); the fallback never drafts.
+    pub(super) const fn qwen4_exp_gate_default(self) -> Option<f32> {
+        match self.kind {
+            MtpModelPolicyKind::Qwen4ExpCertificationCandidate => {
+                Some(CERTIFICATION_DEPTH_ONE_GATE)
+            }
+            _ => None,
+        }
+    }
+
     const fn gate_default_for(self, family: GateResolverFamily) -> Option<f32> {
         match (self.kind, family) {
             (
@@ -357,6 +420,10 @@ impl MtpModelPolicy {
             | MtpModelPolicyKind::QwenLinearCertificationCandidateMultiDepth
             | MtpModelPolicyKind::QwenLinearUncertifiedDirectFallback => self.qwen_gate_default(),
             MtpModelPolicyKind::GlmCalibrated => self.glm_gate_default(),
+            MtpModelPolicyKind::Qwen4ExpCertificationCandidate
+            | MtpModelPolicyKind::Qwen4ExpUncertifiedDirectFallback => {
+                self.qwen4_exp_gate_default()
+            }
             MtpModelPolicyKind::None
             | MtpModelPolicyKind::Gemma4AssistantCalibrated
             | MtpModelPolicyKind::DeepseekV4CertificationCandidate
@@ -399,6 +466,14 @@ impl MtpModelPolicy {
         decisions.upsert_route_decision(
             "ax_mlx_deepseek_v4_mtp_direct_fallback",
             u32::from(self.is_deepseek_v4_direct_fallback()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_qwen4_exp_mtp_certification_candidate",
+            u32::from(self.is_qwen4_exp_certification_candidate()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_qwen4_exp_mtp_direct_fallback",
+            u32::from(self.is_qwen4_exp_direct_fallback()),
         );
         decisions.upsert_route_decision(
             "ax_mlx_mtp_model_gate_default_present",
@@ -453,6 +528,147 @@ mod tests {
         assert!(!should_capture_qwen_mtp_prefill_history(true, false));
         assert!(!should_capture_qwen_mtp_prefill_history(false, false));
         assert!(should_capture_qwen_mtp_prefill_history(true, true));
+    }
+
+    #[test]
+    fn qwen4_exp_shaped_inputs_have_a_dedicated_policy_route() {
+        // Without an attached qwen4_exp sidecar depth the family has no
+        // drafter at all — even though it carries linear attention, it must
+        // never classify into the Qwen linear routes.
+        let policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_linear_attention: true,
+            ..Default::default()
+        });
+        assert_eq!(policy.kind, MtpModelPolicyKind::None);
+        assert!(!policy.has_attached_drafter());
+        assert_eq!(policy.max_depth(), 0);
+        assert!(policy.route_safe());
+
+        // Product default: sidecar attached but fail-closed (not route-safe).
+        let fallback = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_linear_attention: true,
+            qwen4_exp_depth: Some(1),
+            ..Default::default()
+        });
+        assert_eq!(
+            fallback.kind,
+            MtpModelPolicyKind::Qwen4ExpUncertifiedDirectFallback
+        );
+        assert!(!fallback.route_safe());
+        assert!(fallback.is_qwen4_exp_direct_fallback());
+        assert!(!fallback.is_qwen4_exp_certification_candidate());
+        assert!(fallback.has_attached_drafter());
+        assert_eq!(fallback.max_depth(), 1);
+        assert_eq!(fallback.qwen_gate_default(), None);
+        assert_eq!(fallback.qwen4_exp_gate_default(), None);
+        // Same `_ => true` default as V4: the product gate is route_safe.
+        assert!(fallback.certified_default_on());
+
+        // Certification-candidate opt-in: route-safe, depth hard-capped at 1,
+        // gate default 0.0 (a 0.90 gate would drop the only draft token).
+        let candidate = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_linear_attention: true,
+            qwen4_exp_depth: Some(1),
+            qwen4_exp_certification_candidate: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            candidate.kind,
+            MtpModelPolicyKind::Qwen4ExpCertificationCandidate
+        );
+        assert!(candidate.route_safe());
+        assert!(candidate.is_qwen4_exp_certification_candidate());
+        assert!(!candidate.is_qwen4_exp_direct_fallback());
+        assert_eq!(candidate.max_depth(), 1);
+        assert_eq!(candidate.qwen4_exp_gate_default(), Some(0.0));
+
+        // A deeper declared stack still caps at the single shipped block.
+        let deeper = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_linear_attention: true,
+            qwen4_exp_depth: Some(3),
+            qwen4_exp_certification_candidate: true,
+            ..Default::default()
+        });
+        assert_eq!(deeper.max_depth(), 1);
+    }
+
+    #[test]
+    fn qwen4_exp_certification_candidate_env_is_strictly_truthy() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        const ENV: &str = "AX_MLX_QWEN4_EXP_MTP_CERTIFICATION_CANDIDATE";
+        unsafe {
+            std::env::set_var(ENV, "1");
+        }
+        assert!(qwen4_exp_mtp_certification_candidate_from_env());
+        for disabled in ["", "0", "false", "no", "candidate", "2"] {
+            unsafe {
+                std::env::set_var(ENV, disabled);
+            }
+            assert!(
+                !qwen4_exp_mtp_certification_candidate_from_env(),
+                "{disabled:?} must not opt in"
+            );
+        }
+        unsafe {
+            std::env::remove_var(ENV);
+        }
+        assert!(!qwen4_exp_mtp_certification_candidate_from_env());
+    }
+
+    #[test]
+    fn qwen4_exp_route_telemetry_exposes_fallback_and_candidate() {
+        let mut fallback_decisions = Vec::new();
+        MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen4_exp_depth: Some(1),
+            ..Default::default()
+        })
+        .append_route_decisions(true, &mut fallback_decisions);
+        let fallback = fallback_decisions.into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(fallback.get("ax_mlx_mtp_model_policy"), Some(&11));
+        assert_eq!(fallback.get("ax_mlx_mtp_model_policy_route_safe"), Some(&0));
+        assert_eq!(fallback.get("ax_mlx_mtp_model_policy_active"), Some(&0));
+        assert_eq!(
+            fallback.get("ax_mlx_qwen4_exp_mtp_direct_fallback"),
+            Some(&1)
+        );
+        assert_eq!(
+            fallback.get("ax_mlx_qwen4_exp_mtp_certification_candidate"),
+            Some(&0)
+        );
+
+        let mut candidate_decisions = Vec::new();
+        MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen4_exp_depth: Some(1),
+            qwen4_exp_certification_candidate: true,
+            ..Default::default()
+        })
+        .append_route_decisions(true, &mut candidate_decisions);
+        let candidate = candidate_decisions.into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(candidate.get("ax_mlx_mtp_model_policy"), Some(&10));
+        assert_eq!(candidate.get("ax_mlx_mtp_model_policy_depth"), Some(&1));
+        assert_eq!(
+            candidate.get("ax_mlx_mtp_model_policy_route_safe"),
+            Some(&1)
+        );
+        assert_eq!(candidate.get("ax_mlx_mtp_model_policy_active"), Some(&1));
+        assert_eq!(
+            candidate.get("ax_mlx_qwen4_exp_mtp_direct_fallback"),
+            Some(&0)
+        );
+        assert_eq!(
+            candidate.get("ax_mlx_qwen4_exp_mtp_certification_candidate"),
+            Some(&1)
+        );
+        // Candidate gate default 0.0: present and zero.
+        assert_eq!(
+            candidate.get("ax_mlx_mtp_model_gate_default_present"),
+            Some(&1)
+        );
+        assert_eq!(
+            candidate.get("ax_mlx_mtp_model_gate_default_x1000"),
+            Some(&0)
+        );
     }
 
     #[test]

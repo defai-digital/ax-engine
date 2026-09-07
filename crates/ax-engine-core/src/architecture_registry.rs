@@ -32,6 +32,10 @@ pub enum LayerForwardRoute {
     /// sandwich norms, weightless QK norms, sigmoid attention output gate,
     /// and softcapped scaled final logits.
     MuseGlimmer,
+    /// qwen4_exp (Qwen3.8-Flash-Next): dedicated repo-owned trunk owning the
+    /// packed 4-stream gated-residual (hyper-connections), hybrid gated-delta
+    /// / QSA attention, PLE, and 512-expert MoE.
+    Qwen4Exp,
 }
 
 /// Whether an architecture artifact may be loaded as the primary MLX runner.
@@ -88,6 +92,7 @@ impl LayerForwardRoute {
             Self::GptOss => 6,
             Self::NemotronH => 7,
             Self::MuseGlimmer => 9,
+            Self::Qwen4Exp => 10,
         }
     }
 
@@ -103,13 +108,14 @@ impl LayerForwardRoute {
             Self::Mixtral => "mixtral",
             Self::GptOss => "gpt_oss",
             Self::NemotronH => "nemotron_h",
+            Self::Qwen4Exp => "qwen4_exp",
         }
     }
 
     /// Trunk composition style for this route (ADR-025 D3).
     pub const fn trunk_style(self) -> TrunkStyle {
         match self {
-            Self::DeepseekV4 => TrunkStyle::DedicatedTrunk,
+            Self::DeepseekV4 | Self::Qwen4Exp => TrunkStyle::DedicatedTrunk,
             Self::Standard
             | Self::Llama4
             | Self::GlmMoeLite
@@ -194,6 +200,21 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         dense_batched_decode_candidate: false,
         cert_gate_note: "hybrid gated-delta / MoE; capability-gated, not name-allowlisted",
         support_tier: ModelSupportTier::Certified,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::QwenChatMl,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
+    },
+    ArchitectureRegistration {
+        family_label: "qwen4_exp",
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Qwen4Exp,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "hybrid gated-delta + periodic QSA full-attention MoE with gated-residual hyper-connections; dedicated repo-owned trunk, Experimental tier, no certification evidence",
+        support_tier: ModelSupportTier::Experimental,
         chat_contract: ChatContract {
             template: ChatTemplateKind::QwenChatMl,
             output_policy: ChatOutputPolicy::Plain,
@@ -670,6 +691,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,
@@ -696,6 +718,26 @@ mod tests {
         assert!(!muse.dense_batched_decode_candidate);
         assert_eq!(muse.support_tier, ModelSupportTier::Experimental);
         assert_eq!(muse.layer_forward_route, LayerForwardRoute::MuseGlimmer);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn qwen4_exp_is_experimental_with_a_dedicated_trunk_route() {
+        // Phase 1 landed the MLX family trunk: qwen4_exp owns its packed
+        // gated-residual stream through dedicated forward entry points (see
+        // ax-engine-mlx model/mod.rs), so it registers a DedicatedTrunk route
+        // exactly like DeepSeek V4. The tier stays Experimental.
+        let reg = lookup_architecture("qwen4_exp").expect("qwen4_exp registered");
+        assert_eq!(reg.support_tier, ModelSupportTier::Experimental);
+        assert!(!reg.dense_batched_decode_candidate);
+        assert_eq!(reg.layer_forward_route, LayerForwardRoute::Qwen4Exp);
+        assert_eq!(
+            reg.layer_forward_route.trunk_style(),
+            TrunkStyle::DedicatedTrunk
+        );
+        assert!(reg.mlx_runner_admission.allows_primary());
+        assert_eq!(reg.chat_contract.template, ChatTemplateKind::QwenChatMl);
+        assert!(reg.chat_contract.default_thinking_off);
     }
 
     #[test]
@@ -739,6 +781,10 @@ mod tests {
         assert_eq!(
             resolve_layer_forward_route("qwen3_5"),
             Some(LayerForwardRoute::Standard)
+        );
+        assert_eq!(
+            resolve_layer_forward_route("qwen4_exp"),
+            Some(LayerForwardRoute::Qwen4Exp)
         );
         assert_eq!(
             resolve_layer_forward_route("llama4"),
@@ -812,6 +858,7 @@ mod tests {
             "qwen3_next",
             "qwen3_vl",
             "qwen3_vl_moe",
+            "qwen4_exp",
             "unlimited_ocr",
             "whisper",
         ];

@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ax_engine_core::{GenerationKind, NativeModelManifest};
+use ax_engine_core::{GenerationKind, NativeModelManifest, NativeQwen4ExpConfig};
 use mlx_sys::MlxArray;
 
 static NEXT_COMPILE_CACHE_IDENTITY: AtomicU64 = AtomicU64::new(1);
@@ -298,6 +298,130 @@ impl DeepseekV4Config {
     }
 }
 
+/// Qwen4-exp MTP predictor parameters extracted from the manifest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Qwen4ExpMtpConfig {
+    pub num_hidden_layers: usize,
+    pub hybrid: bool,
+    pub layer_types: Vec<String>,
+    pub rope_theta: f32,
+    pub use_dedicated_embeddings: bool,
+}
+
+impl Qwen4ExpMtpConfig {
+    pub(crate) fn from_manifest(cfg: &NativeQwen4ExpConfig) -> Option<Self> {
+        let mtp = &cfg.mtp;
+        if !mtp.is_enabled() {
+            return None;
+        }
+        // Absent fields fall back to the same reference-config defaults the
+        // converter applies (`qwen4_exp_config` in ax-engine-core).
+        Some(Self {
+            num_hidden_layers: mtp.num_hidden_layers.unwrap_or(1) as usize,
+            hybrid: mtp.hybrid.unwrap_or(true),
+            layer_types: mtp.layer_types.clone(),
+            rope_theta: mtp.rope_theta.unwrap_or(10_000_000) as f32,
+            use_dedicated_embeddings: mtp.use_dedicated_embeddings.unwrap_or(false),
+        })
+    }
+}
+
+/// Qwen4-exp (Qwen3.8-Flash-Next) architecture parameters extracted from the
+/// manifest: hyper-connection geometry, sparse indexer, n-gram embedding
+/// tables, per-layer embeddings (PLE), the MTP predictor block, and the MRoPE
+/// axis split. Typed surface for the Phase 1 runtime trunk; the runner
+/// rejects this family at manifest validation until then.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Qwen4ExpConfig {
+    /// Hyper-connection stream count.
+    pub hc_count: usize,
+    /// Hyper-connection low-rank width.
+    pub hc_lowrank: usize,
+    /// Sparse-indexer token budget.
+    pub indexer_budget: usize,
+    /// Sparse-indexer KV compression ratio.
+    pub indexer_compress_ratio: usize,
+    pub indexer_head_dim: usize,
+    pub indexer_kv_heads: usize,
+    pub indexer_n_heads: usize,
+    /// N-gram width for the n-gram embedding tables.
+    pub ngram_size: usize,
+    pub ngram_vocab_size_base: usize,
+    pub split_ngram_parts: usize,
+    pub heads_per_ngram: usize,
+    /// Per-layer embedding (PLE) conv kernel size.
+    pub ple_conv_kernel_size: usize,
+    pub ple_embed_dim: usize,
+    /// Layer indices that carry a per-layer embedding.
+    pub ple_layer_ids: Vec<u32>,
+    pub mtp: Option<Qwen4ExpMtpConfig>,
+    /// Attention output gate kind. The reference architecture's gated-delta
+    /// RMSNormGated uses a sigmoid gate; convert always emits `"sigmoid"`, and
+    /// an absent field defaults to it here (defense-in-depth). Contradictory
+    /// values are rejected fail-closed by `validate_qwen4_exp_manifest`.
+    pub output_gate_type: Option<String>,
+    pub partial_rotary_factor: f32,
+    /// MRoPE axis split (three entries).
+    pub mrope_section: Vec<u32>,
+    pub mrope_interleaved: bool,
+    pub shared_expert_intermediate_size: usize,
+    /// Model EOS token id consumed by the PLE n-gram hash's EOS-segment-aware
+    /// shifts (NOT the generation stop-token set, which is tokenizer-scoped).
+    pub eos_token_id: u32,
+    /// Tokenizer pad token id. When declared and distinct from
+    /// `eos_token_id`, the batch=1 text trunk substitutes pad ids with EOS in
+    /// the ids handed to the PLE hash (the reference's conv-mask
+    /// substitution; the text path has no conv mask).
+    pub pad_token_id: Option<u32>,
+}
+
+impl Qwen4ExpConfig {
+    pub(crate) fn from_manifest(m: &NativeModelManifest) -> Option<Self> {
+        let cfg = &m.qwen4_exp;
+        if !cfg.is_enabled() {
+            return None;
+        }
+        // Absent fields fall back to the same reference-config defaults the
+        // converter applies (`qwen4_exp_config` in ax-engine-core), so
+        // hand-written manifests cannot panic this loader.
+        Some(Self {
+            hc_count: cfg.hc_count.unwrap_or(4) as usize,
+            hc_lowrank: cfg.hc_lowrank.unwrap_or(320) as usize,
+            indexer_budget: cfg.indexer_budget.unwrap_or(2048) as usize,
+            indexer_compress_ratio: cfg.indexer_compress_ratio.unwrap_or(4) as usize,
+            indexer_head_dim: cfg.indexer_head_dim.unwrap_or(128) as usize,
+            indexer_kv_heads: cfg.indexer_kv_heads.unwrap_or(1) as usize,
+            indexer_n_heads: cfg.indexer_n_heads.unwrap_or(4) as usize,
+            ngram_size: cfg.ngram_size.unwrap_or(3) as usize,
+            ngram_vocab_size_base: cfg.ngram_vocab_size_base.unwrap_or(20_000_000) as usize,
+            split_ngram_parts: cfg.split_ngram_parts.unwrap_or(128) as usize,
+            heads_per_ngram: cfg.heads_per_ngram.unwrap_or(8) as usize,
+            ple_conv_kernel_size: cfg.ple_conv_kernel_size.unwrap_or(4) as usize,
+            ple_embed_dim: cfg.ple_embed_dim.unwrap_or(2560) as usize,
+            ple_layer_ids: cfg.ple_layer_ids.clone(),
+            mtp: Qwen4ExpMtpConfig::from_manifest(cfg),
+            // The reference gated-delta output gate is sigmoid (the one
+            // activation difference from the shared stack); without this
+            // default an omitted field would silently take the silu path in
+            // `linear_attention_output_gate_sigmoid`.
+            output_gate_type: Some(
+                cfg.output_gate_type
+                    .clone()
+                    .unwrap_or_else(|| "sigmoid".to_string()),
+            ),
+            partial_rotary_factor: cfg.partial_rotary_factor.unwrap_or(0.25),
+            mrope_section: cfg.mrope_section.clone(),
+            mrope_interleaved: cfg.mrope_interleaved.unwrap_or(true),
+            shared_expert_intermediate_size: cfg.shared_expert_intermediate_size.unwrap_or(640)
+                as usize,
+            // Reference family EOS (Qwen3.8-Flash-Next config.json declares
+            // 248044); convert writes the pack's declared id when present.
+            eos_token_id: cfg.eos_token_id.unwrap_or(248_044),
+            pad_token_id: cfg.pad_token_id,
+        })
+    }
+}
+
 /// GLM4MoELite router contract extracted from mlx-lm/glm4_moe_lite.py.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlmRouterConfig {
@@ -582,6 +706,8 @@ pub struct ModelConfig {
     pub glm_router: Option<GlmRouterConfig>,
     /// DeepSeek V4 (Flash) architecture config, when present.
     pub deepseek_v4: Option<DeepseekV4Config>,
+    /// Qwen4-exp (Qwen3.8-Flash-Next) architecture config, when present.
+    pub qwen4_exp: Option<Qwen4ExpConfig>,
     /// Epsilon for all RMSNorm operations (1e-6 for Qwen/Gemma, 1e-5 for GLM/LLaMA/Mistral).
     pub rms_norm_eps: f32,
     /// Precomputed LLaMA-3 / YaRN corrected RoPE frequencies `[dims/2]`.
@@ -728,18 +854,21 @@ impl ModelConfig {
             _ => (None, 1.0),
         };
 
-        let moe_norm_topk_prob =
-            if matches!(m.model_family.as_str(), "qwen3_5" | "qwen3_next") && m.moe.is_enabled() {
-                // mlx_lm / Transformers default norm_topk_prob to true for Qwen MoE
-                // hybrids (qwen3_5 MoE and qwen3_next / Qwen3.6-35B-A3B). Older AX
-                // manifests emitted false when config.json omitted the field, which
-                // routes experts with the wrong weights. Keep the loader compatible
-                // with those cached manifests while the converter emits the correct
-                // default for both families.
-                true
-            } else {
-                m.moe_norm_topk_prob
-            };
+        let moe_norm_topk_prob = if matches!(
+            m.model_family.as_str(),
+            "qwen3_5" | "qwen3_next" | "qwen4_exp"
+        ) && m.moe.is_enabled()
+        {
+            // mlx_lm / Transformers default norm_topk_prob to true for Qwen MoE
+            // hybrids (qwen3_5 MoE and qwen3_next / Qwen3.6-35B-A3B). Older AX
+            // manifests emitted false when config.json omitted the field, which
+            // routes experts with the wrong weights. Keep the loader compatible
+            // with those cached manifests while the converter emits the correct
+            // default for both families.
+            true
+        } else {
+            m.moe_norm_topk_prob
+        };
 
         Self {
             compile_cache_identity: NEXT_COMPILE_CACHE_IDENTITY.fetch_add(1, Ordering::Relaxed),
@@ -777,6 +906,7 @@ impl ModelConfig {
             mla_attention: MlaAttentionConfig::from_manifest(m),
             glm_router: GlmRouterConfig::from_manifest(m),
             deepseek_v4: DeepseekV4Config::from_manifest(m),
+            qwen4_exp: Qwen4ExpConfig::from_manifest(m),
             rms_norm_eps: m
                 .rms_norm_eps
                 .unwrap_or_else(|| default_rms_norm_eps(&m.model_family)),
@@ -875,7 +1005,7 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
     // transitions and DeepSeek V4 think-aware MTP draft temperature is inert
     // (DI-DS-A001).
     let family_defaults = match m.model_family.as_str() {
-        "qwen3" | "qwen3_5" | "qwen3_next" | "minicpmv4_6" => {
+        "qwen3" | "qwen3_5" | "qwen3_next" | "minicpmv4_6" | "qwen4_exp" => {
             if m.vocab_size >= 200_000 {
                 (Some(248_068), Some(248_069))
             } else {

@@ -105,6 +105,9 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP" => {
             Some("b2c5354f779e430d0c1733143db848a72b71c16e")
         }
+        "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP" => {
+            Some("d514dcebf3086068ed7968caf395083c95ebcfca")
+        }
         "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit" => {
             Some("a524f97c81ec82be3eead17aabcf652450d33842")
         }
@@ -186,6 +189,7 @@ fn profile_certification(profile: ModelProfile) -> Option<&'static str> {
         | "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit"
         | "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP"
         | "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit"
+        | "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP"
         | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit"
         | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit"
         | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP"
@@ -501,6 +505,23 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         // Measured on-disk snapshot 2026-08-16: 18,203,066,368 bytes (~17 GiB).
         // The previous 25 GB figure overstated the pack by ~38%.
         approx_size_bytes: Some(18_203_066_368),
+    },
+    // Qwen3.8-Flash-Next (`qwen4_exp` family) is an explicit, pinned
+    // experimental candidate — no certification claims, and no bare family
+    // alias may point here. MLX-VLM pack served text-only: the vision tower
+    // is dropped fail-loud at convert/download-manifest level.
+    ModelProfile {
+        label: "ax-qwen3.8-flash-next-axq-6bit",
+        preset: Some("qwen3.8-flash-next"),
+        repo_id: "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+        aliases: &[
+            "ax-qwen3.8-flash-next-axq-6bit",
+            "ax-qwen3.8-flash-next-axq",
+            "qwen3.8-flash-next:axq",
+            "qwen3.8-flash-next:axq-6bit",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(167_058_348_471),
     },
     ModelProfile {
         label: "ax-qwen3.6-35b",
@@ -4459,7 +4480,7 @@ mod tests {
         assert!(!value.to_string().contains('\n'));
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 77] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 78] = [
         "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
@@ -4527,6 +4548,7 @@ mod tests {
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
         "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
         "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
@@ -4559,7 +4581,7 @@ mod tests {
                 .iter()
                 .filter(|target| target["mtp_included"] == true)
                 .count(),
-            32
+            33
         );
     }
 
@@ -4838,6 +4860,18 @@ mod tests {
             profile_for_model("ax-muse-glimmer-30b").unwrap().repo_id,
             "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit"
         );
+
+        let flash_next = profile_for_model("qwen3.8-flash-next:axq").unwrap();
+        assert_eq!(
+            flash_next.repo_id,
+            "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP"
+        );
+        assert_eq!(
+            profile_revision(flash_next),
+            Some("d514dcebf3086068ed7968caf395083c95ebcfca")
+        );
+        assert_eq!(profile_certification(flash_next), Some("candidate"));
+        assert_eq!(flash_next.preset, Some("qwen3.8-flash-next"));
     }
 
     #[test]

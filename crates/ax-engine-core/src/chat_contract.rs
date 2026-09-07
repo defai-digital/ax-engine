@@ -124,6 +124,7 @@ mod tests {
             "qwen3",
             "qwen3_5",
             "qwen3_next",
+            "qwen4_exp",
             "minicpmv4_6",
             "qwen3_vl",
             "qwen3_vl_moe",
@@ -242,7 +243,10 @@ mod tests {
         use crate::architecture_registry::TrunkStyle;
         for entry in ARCHITECTURE_REGISTRY {
             let style = entry.layer_forward_route.trunk_style();
-            if entry.layer_forward_route == LayerForwardRoute::DeepseekV4 {
+            if matches!(
+                entry.layer_forward_route,
+                LayerForwardRoute::DeepseekV4 | LayerForwardRoute::Qwen4Exp
+            ) {
                 assert_eq!(
                     style,
                     TrunkStyle::DedicatedTrunk,
@@ -258,9 +262,13 @@ mod tests {
                 );
             }
         }
-        // The registry row for the dedicated trunk keeps its experimental
-        // certification note so admission diagnostics stay honest.
+        // The registry rows for the dedicated trunks keep their experimental
+        // certification notes so admission diagnostics stay honest.
         let v4 = lookup_architecture("deepseek_v4").expect("deepseek_v4 registered");
         assert!(!v4.cert_gate_note.is_empty());
+        assert!(
+            lookup_architecture("qwen4_exp").is_some_and(|q4e| !q4e.cert_gate_note.is_empty()),
+            "qwen4_exp must be registered with a cert gate note"
+        );
     }
 }

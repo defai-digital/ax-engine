@@ -9,13 +9,15 @@ use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::model::shared::{
     apply_final_logit_softcap, ffn_swiglu, fixed_capacity_causal_mask,
-    flatten_attention_output_bhsd, glm_mla_attention_forward, moe_experts_forward,
+    flatten_attention_output_bhsd, glm_mla_attention_forward, mixer_output, moe_experts_forward,
     moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
     qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj, qw, rms_norm_opt, shared_expert_forward,
 };
-use crate::model::{ModelConfig, deepseek_v4_family, embed_tokens_arr};
+use crate::model::{ModelConfig, deepseek_v4_family, embed_tokens_arr, qwen4_exp_family};
 use crate::sampling::{TokenDistribution, Xorshift64};
-use crate::weights::{DeepseekV4NextnWeights, GlmMtpWeights, ModelWeights, MtpWeights};
+use crate::weights::{
+    DeepseekV4NextnWeights, GlmMtpWeights, ModelWeights, MtpWeights, Qwen4ExpMtpWeights,
+};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
@@ -3358,6 +3360,589 @@ pub fn deepseek_v4_mtp_warmup_cache(
     }
 }
 
+// -------------------------------------------------------------------------
+// qwen4_exp (Qwen3.8-Flash-Next) hybrid MTP draft head
+//
+// The sidecar head is one FULL hybrid decoder block (QSA + indexer + MoE +
+// both hyper-connections + final mixer), not a Qwen dense `concat → fc`
+// head. Execution mirrors the DeepSeek V4 nextn contract: packed pre-mixer
+// hidden + shared embedding/lm_head, dedicated one-slot QSA draft cache,
+// depth hard-capped at 1, sequential greedy verify on the production cache.
+// -------------------------------------------------------------------------
+
+/// Default qwen4_exp MTP draft sampling temperature (the sidecar's
+/// `recommended_draft_sampler` ships 0.7, matching the GLM/V4 default).
+pub const QWEN4_EXP_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
+
+/// Temperature used for BOTH qwen4_exp draft sampling and draft log-probs
+/// (and therefore accept-path rejection rescale). qwen4_exp has no
+/// think-block special case: greedy drafts record log-probs at T=1.0;
+/// stochastic drafts sample and log at the sidecar's head temperature.
+pub fn qwen4_exp_mtp_sample_and_log_temperature(mode: MtpDraftMode, head_temperature: f32) -> f32 {
+    match mode {
+        MtpDraftMode::Greedy => 1.0,
+        MtpDraftMode::Stochastic => head_temperature,
+    }
+}
+
+/// Process-env draft mode → sample/log temperature (see
+/// [`qwen4_exp_mtp_sample_and_log_temperature`]).
+pub fn qwen4_exp_mtp_sample_and_log_temperature_from_env(head_temperature: f32) -> f32 {
+    qwen4_exp_mtp_sample_and_log_temperature(mtp_draft_mode_from_env(), head_temperature)
+}
+
+/// Depth supported by the qwen4_exp MTP head: exactly one predictor block.
+/// Returns 0 — disabling MTP drafts — when the config carries no `mtp` block;
+/// a multi-block stack is rejected loudly (once), mirroring
+/// [`deepseek_v4_mtp_max_depth`].
+pub fn qwen4_exp_mtp_max_depth(cfg: &ModelConfig) -> usize {
+    let Some(mtp_cfg) = cfg.qwen4_exp.as_ref().and_then(|q4e| q4e.mtp.as_ref()) else {
+        return 0;
+    };
+    match mtp_cfg.num_hidden_layers {
+        1 => 1,
+        n => {
+            if n > 1 {
+                static WARNED: OnceLock<()> = OnceLock::new();
+                WARNED.get_or_init(|| {
+                    tracing::warn!(
+                        num_hidden_layers = n,
+                        "qwen4_exp MTP supports exactly one predictor block; disabling MTP drafts"
+                    );
+                });
+            }
+            0
+        }
+    }
+}
+
+/// Run the qwen4_exp MTP draft block for a single decode step.
+///
+/// Returns the block's packed output `[1, 1, hc*hidden]` (kept in the V4
+/// `t_h_nextn` shape so depth chaining stays possible; depth-1 never
+/// chains). Advances the dedicated draft cache by one token.
+///
+/// * `mtp`            — sidecar weights (fusion pair + block + mixer).
+/// * `packed_hidden`  — packed PRE-MIXER residual `[1, 1, hc*hidden]` from
+///   the main model (`qwen4_exp_forward_all_positions_with_packed`).
+/// * `prev_token_arr` — token ID as a GPU uint32 array, shape `[1]`.
+/// * `weights`        — main model weights (shared token embedding + lm_head).
+/// * `cache`          — dedicated one-slot MTP QSA cache (`MlxKVCache::new(1)`).
+/// * `cfg`            — main model config.
+/// * `rope_offset_override` — explicit RoPE offset (capped warmup); `None` to
+///   use `cache.seq_len() + cache.rope_offset`.
+#[allow(clippy::too_many_arguments)]
+pub fn qwen4_exp_mtp_head_forward(
+    mtp: &Qwen4ExpMtpWeights,
+    packed_hidden: &MlxArray,
+    prev_token_arr: &MlxArray,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    rope_offset_override: Option<usize>,
+) -> MlxArray {
+    let token_offset = rope_offset_override.unwrap_or(cache.seq_len() + cache.rope_offset);
+    // Text-only mRoPE: all three grids advance together.
+    let positions = [[token_offset as i32; 3]];
+    let fused = qwen4_exp_family::mtp_fuse_inputs(packed_hidden, prev_token_arr, mtp, weights, cfg);
+    let packed = qwen4_exp_family::mtp_block_forward(cfg, mtp, &fused, &positions, cache);
+    cache.advance(1);
+    packed
+}
+
+/// Collapse the MTP block's packed output and apply the SHARED target head:
+/// `mtp.hyper_connection_mixer` (its grouped RMSNorm is the draft head's
+/// final normalization — there is no `mtp.norm`) → shared `lm_head`
+/// (`mtp_use_dedicated_embeddings: false` ships no dedicated table).
+///
+/// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
+pub fn qwen4_exp_mtp_hidden_to_logits(
+    packed_hidden: &MlxArray,
+    mtp: &Qwen4ExpMtpWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+) -> MlxArray {
+    let Some(q4e) = cfg.qwen4_exp.as_ref() else {
+        unreachable!("qwen4_exp MTP logits requires ModelConfig.qwen4_exp");
+    };
+    let mixer = qwen4_exp_family::gated_residual(&mtp.mixer);
+    let hidden = mixer_output(
+        packed_hidden,
+        &mixer,
+        q4e.hc_count,
+        cfg.hidden_size,
+        cfg.rms_norm_eps,
+    );
+    let logits = qw(&hidden, &weights.lm_head);
+    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+    reshape(&logits_f32, &[cfg.vocab_size as i32], None)
+}
+
+/// Draft up to `max_depth` (hard-capped at 1) tokens using the qwen4_exp MTP
+/// block. Mirrors [`deepseek_v4_mtp_draft_tokens_gated`]; returns empty when
+/// `weights.qwen4_exp_mtp` is `None` or the predictor config is unsupported.
+///
+/// `draft_temperature` must match the temperature used for accept-path
+/// log-prob rescale (see [`qwen4_exp_mtp_sample_and_log_temperature`]).
+#[allow(clippy::too_many_arguments)]
+pub fn qwen4_exp_mtp_draft_tokens_gated(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth_cap: Option<usize>,
+    _rng: &mut Xorshift64,
+    min_confidence: f32,
+    draft_temperature: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let Some(mtp) = weights.qwen4_exp_mtp.as_ref() else {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    };
+    let max_depth = qwen4_exp_mtp_max_depth(cfg)
+        .min(max_depth_cap.unwrap_or(usize::MAX))
+        .min(1);
+    if max_depth == 0 {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    }
+
+    let vocab = cfg.vocab_size as i32;
+    let draft_mode = mtp_draft_mode_from_env();
+    let gate_forces_greedy = min_confidence > 0.0 && draft_mode != MtpDraftMode::Stochastic;
+
+    let result = if gate_forces_greedy || draft_mode == MtpDraftMode::Greedy {
+        // Greedy argmax; log-probs at T=1.0.
+        qwen4_exp_mtp_draft_tokens_greedy(
+            mtp,
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            max_depth,
+            vocab,
+            1.0,
+        )
+    } else {
+        qwen4_exp_mtp_draft_tokens_stochastic(
+            mtp,
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            max_depth,
+            vocab,
+            draft_temperature,
+        )
+    };
+
+    let appended = result.3;
+    let gated = apply_draft_confidence_gate(result, min_confidence);
+    let dropped = appended.saturating_sub(gated.3);
+    if dropped > 0 {
+        let target = cache.seq_len().saturating_sub(dropped);
+        if !cache.trim_to(target) {
+            // Same contract as the GLM/V4 paths: output stays correct (every
+            // draft is verified), so warn rather than fail.
+            tracing::warn!(target, "MTP confidence-gate trim refused");
+        }
+    }
+    gated
+}
+
+/// Greedy qwen4_exp MTP draft: lazy argmax across all depths, single batch eval.
+#[allow(clippy::too_many_arguments)]
+fn qwen4_exp_mtp_draft_tokens_greedy(
+    mtp: &Qwen4ExpMtpWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth: usize,
+    vocab: i32,
+    log_prob_temperature: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for _ in 0..max_depth {
+        let new_hidden = qwen4_exp_mtp_head_forward(
+            mtp,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let logits = qwen4_exp_mtp_hidden_to_logits(&new_hidden, mtp, weights, cfg);
+        let lazy_tok = lazy_argmax_logits(&logits);
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_temperature, vocab);
+        lazy_tokens.push(lazy_tok.clone());
+        lazy_log_probs.push(lazy_lp);
+        prev_hidden = new_hidden;
+        prev_token_arr = lazy_tok;
+    }
+
+    let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+    for t in &lazy_tokens {
+        all_refs.push(t);
+    }
+    for lp in &lazy_log_probs {
+        all_refs.push(lp);
+    }
+    eval(&all_refs);
+
+    let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+    let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+    let added = draft_tokens.len();
+    (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+/// Stochastic qwen4_exp MTP draft: GPU-side `random_categorical` sampling.
+#[allow(clippy::too_many_arguments)]
+fn qwen4_exp_mtp_draft_tokens_stochastic(
+    mtp: &Qwen4ExpMtpWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth: usize,
+    vocab: i32,
+    temperature: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for _ in 0..max_depth {
+        let new_hidden = qwen4_exp_mtp_head_forward(
+            mtp,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let logits = qwen4_exp_mtp_hidden_to_logits(&new_hidden, mtp, weights, cfg);
+        let lazy_tok = if temperature > 0.0 {
+            lazy_random_sample(&logits, temperature, vocab)
+        } else {
+            lazy_argmax_logits(&logits)
+        };
+        lazy_tokens.push(lazy_tok.clone());
+        // Log-prob must use the same temperature as sampling so q(token)
+        // matches the proposal distribution used for rejection sampling.
+        let log_prob_t = if temperature > 0.0 { temperature } else { 1.0 };
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_t, vocab);
+        lazy_log_probs.push(lazy_lp);
+        prev_hidden = new_hidden;
+        prev_token_arr = lazy_tok;
+    }
+
+    let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+    for t in &lazy_tokens {
+        all_refs.push(t);
+    }
+    for lp in &lazy_log_probs {
+        all_refs.push(lp);
+    }
+    eval(&all_refs);
+
+    let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+    let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+    let added = draft_tokens.len();
+    (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+/// Like [`qwen4_exp_mtp_draft_tokens_gated`], but first threads the MTP block
+/// through `forced_prefix` (real cache appends, correctly incrementing RoPE
+/// offsets) before drafting the tail. Mirrors
+/// [`deepseek_v4_mtp_draft_tokens_after_forced_prefix`] for the hybrid
+/// n-gram+MTP path.
+///
+/// `draft_temperature` must match the temperature used for accept-path
+/// log-prob rescale (see [`qwen4_exp_mtp_sample_and_log_temperature`]).
+#[allow(clippy::too_many_arguments)]
+pub fn qwen4_exp_mtp_draft_tokens_after_forced_prefix(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    forced_prefix: &[u32],
+    cache: &mut MlxKVCache,
+    max_tail_depth: usize,
+    rng: &mut Xorshift64,
+    // Same gate the pure-MTP path resolved for this request. `None` falls
+    // back to the process-global profile resolver (tests / legacy callers).
+    min_confidence: Option<f32>,
+    draft_temperature: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let Some(mtp) = weights.qwen4_exp_mtp.as_ref() else {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    };
+    let min_confidence = min_confidence.unwrap_or_else(|| {
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        )
+    });
+    if forced_prefix.is_empty() {
+        return qwen4_exp_mtp_draft_tokens_gated(
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            Some(max_tail_depth),
+            rng,
+            min_confidence,
+            draft_temperature,
+        );
+    }
+
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for &forced_token in forced_prefix {
+        prev_hidden = qwen4_exp_mtp_head_forward(
+            mtp,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let tok_data = [forced_token];
+        prev_token_arr = MlxArray::from_raw_data(
+            tok_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+    }
+
+    if max_tail_depth == 0 {
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&prev_hidden);
+        targets.extend(kv_refs);
+        eval(&targets);
+        return (vec![], vec![], vec![], forced_prefix.len(), [0.0f32; 3]);
+    }
+
+    let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
+    let (draft, log_probs, distributions, tail_added, top2_margins) =
+        qwen4_exp_mtp_draft_tokens_gated(
+            weights,
+            cfg,
+            &prev_hidden,
+            last_forced,
+            cache,
+            Some(max_tail_depth),
+            rng,
+            min_confidence,
+            draft_temperature,
+        );
+
+    (
+        draft,
+        log_probs,
+        distributions,
+        forced_prefix.len().saturating_add(tail_added),
+        top2_margins,
+    )
+}
+
+/// Warm the qwen4_exp MTP QSA cache from prompt-side packed residuals.
+///
+/// Mirrors [`deepseek_v4_mtp_warmup_cache`]: without this the draft block's
+/// attention starts decode with almost no prompt history and acceptance
+/// collapses. `packed_hidden_seq` is `[1, seq, hc*hidden]` aligned with
+/// `prev_tokens` (the token that FOLLOWS each packed row — the same
+/// established Qwen/V4 warmup contract).
+pub fn qwen4_exp_mtp_warmup_cache(
+    mtp: &Qwen4ExpMtpWeights,
+    packed_hidden_seq: &MlxArray,
+    prev_tokens: &[u32],
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    rope_offset: usize,
+) {
+    if prev_tokens.is_empty() {
+        return;
+    }
+    let seq = prev_tokens.len();
+    let shape = packed_hidden_seq.shape();
+    let avail = shape.get(1).copied().unwrap_or(0).max(0) as usize;
+    let n = seq.min(avail);
+    if n == 0 {
+        return;
+    }
+    let width = shape.get(2).copied().unwrap_or(0);
+    for (i, &token) in prev_tokens.iter().enumerate().take(n) {
+        let packed_row = slice(
+            packed_hidden_seq,
+            &[0, i as i32, 0],
+            &[1, (i + 1) as i32, width],
+            &[1, 1, 1],
+            None,
+        );
+        let packed_row = reshape(&packed_row, &[1, 1, width], None);
+        let tok = [token];
+        let prev_token_arr =
+            MlxArray::from_raw_data(tok.as_ptr() as *const u8, 4, &[1_i32], MlxDtype::Uint32);
+        let _ = qwen4_exp_mtp_head_forward(
+            mtp,
+            &packed_row,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            Some(rope_offset + i),
+        );
+    }
+}
+
+/// Result of sequential greedy qwen4_exp MTP verification.
+///
+/// Production KV advances by `1 + accept_count` (primary always commits; same
+/// plan as the runner's `deepseek_v4_mtp_committed_verify_len`) and matches
+/// pure single-token greedy decode for the committed prefix.
+#[derive(Clone, Debug)]
+pub struct SequentialGreedyQwen4ExpMtpVerify {
+    /// Leading draft tokens equal to sequential greedy production.
+    pub accept_count: usize,
+    /// Correction (partial reject) or bonus (full accept) token.
+    pub correction_token: u32,
+    /// Packed residual `[1, 1, hc*hidden]` at the last committed position —
+    /// seeds the next MTP draft step.
+    pub draft_hidden: MlxArray,
+    /// Per-position greedy predictions (length `accept_count + 1`).
+    pub predicted: Vec<u32>,
+    /// Last committed position logits `[vocab]` (greedy tail uses
+    /// `correction_token` directly; shape matches `forward_argmax`).
+    pub last_logits: MlxArray,
+}
+
+/// Verify qwen4_exp MTP drafts with **singleton** target forwards.
+///
+/// Multi-token teacher-forced verify can disagree with pure single-token
+/// greedy on the trunk's gated-delta recurrent state — the same failure class
+/// that forced DeepSeek V4 onto this path (its compressor trim was
+/// incomplete). This path mirrors direct decode: one token at a time, same
+/// production cache, packed residual captured for the next MTP draft.
+///
+/// Accept decisions come from the packed helper's ArgmaxOnly logit form
+/// (native lm_head dtype, no softcap, no vocab-wide f32 cast) — the same
+/// arithmetic as production `forward_argmax`, so a full-accept stream is
+/// bit-identical to MTP-off greedy. The helper's second return is used ONLY
+/// to capture the pre-mixer hidden the next draft needs.
+///
+/// On entry `cache.seq_len()` must equal `token_offset`. On exit the cache
+/// has advanced by `1 + accept_count`.
+pub fn sequential_greedy_qwen4_exp_mtp_verify(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    last_token: u32,
+    drafts: &[u32],
+    token_offset: usize,
+    draft_hidden_width: usize,
+) -> SequentialGreedyQwen4ExpMtpVerify {
+    use crate::model::qwen4_exp_forward_all_positions_with_packed;
+
+    let mut predicted: Vec<u32> = Vec::with_capacity(drafts.len().saturating_add(1));
+    let mut accept_count = 0usize;
+
+    let (logits, packed) = qwen4_exp_forward_all_positions_with_packed(
+        cfg,
+        weights,
+        &[last_token],
+        cache,
+        token_offset,
+        true,
+    );
+    cache.advance(1);
+    let pred_arr = argmax(&logits, None);
+    {
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+        targets.push(&pred_arr);
+        targets.push(&packed);
+        targets.extend(kv_refs);
+        eval(&targets);
+    }
+    let mut next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+    predicted.push(next_tok);
+    let mut draft_hidden = slice_packed_hidden_row(&packed, 0, draft_hidden_width);
+    let mut last_logits = reshape_singleton_vocab_logits(&logits, cfg.vocab_size);
+
+    for (index, &draft) in drafts.iter().enumerate() {
+        if next_tok != draft {
+            break;
+        }
+        accept_count += 1;
+        let (logits, packed) = qwen4_exp_forward_all_positions_with_packed(
+            cfg,
+            weights,
+            &[draft],
+            cache,
+            token_offset + 1 + index,
+            true,
+        );
+        cache.advance(1);
+        let pred_arr = argmax(&logits, None);
+        {
+            let kv_refs = cache.collect_eval_refs();
+            let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+            targets.push(&pred_arr);
+            targets.push(&packed);
+            targets.extend(kv_refs);
+            eval(&targets);
+        }
+        next_tok = pred_arr.data_u32().first().copied().unwrap_or(0);
+        predicted.push(next_tok);
+        draft_hidden = slice_packed_hidden_row(&packed, 0, draft_hidden_width);
+        last_logits = reshape_singleton_vocab_logits(&logits, cfg.vocab_size);
+    }
+
+    SequentialGreedyQwen4ExpMtpVerify {
+        accept_count,
+        correction_token: next_tok,
+        draft_hidden,
+        predicted,
+        last_logits,
+    }
+}
+
 #[cfg(test)]
 mod confidence_gate_tests {
     use super::*;
@@ -3594,6 +4179,7 @@ mod deepseek_v4_mtp_tests {
             mla_attention: None,
             glm_router: None,
             deepseek_v4: Some(test_v4_config()),
+            qwen4_exp: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
             rope_mscale: 1.0,
@@ -3673,6 +4259,7 @@ mod deepseek_v4_mtp_tests {
                 indexer: None,
                 tid2eid: None,
             }),
+            qwen4_exp: None,
             ffn_norm: array_f32(&fill(E, 0.9), &[E as i32]),
             ffn_post_norm: None,
             gate_proj: None,
@@ -3766,6 +4353,8 @@ mod deepseek_v4_mtp_tests {
                 hc_head_scale: array_f32(&[1.0], &[1]),
             }),
             deepseek_v4_nextn: nextn,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -4107,5 +4696,204 @@ mod deepseek_v4_mtp_tests {
         assert_eq!(draft2.len(), 1);
         assert_eq!(added2, 1);
         assert_eq!(cache.seq_len(), 1);
+    }
+}
+
+// -------------------------------------------------------------------------
+// qwen4_exp hybrid MTP tests — config gating, temperature lock, and the
+// no-sidecar fail-closed contract (head/block/e2e coverage lives in
+// `model::families::qwen4_exp::tests`).
+// -------------------------------------------------------------------------
+#[cfg(test)]
+mod qwen4_exp_mtp_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::weights::{LayerWeights, QuantizedWeight};
+
+    fn qwen4_exp_cfg(mtp_block: serde_json::Value) -> ModelConfig {
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": "ax.native_model.v1",
+                "model_family": "qwen4_exp",
+                "tensor_format": "safetensors",
+                "layer_count": 1,
+                "hidden_size": 64,
+                "attention_head_count": 4,
+                "attention_head_dim": 32,
+                "kv_head_count": 1,
+                "vocab_size": 64,
+                "linear_attention": {
+                    "full_attention_interval": 4,
+                    "num_key_heads": 2,
+                    "key_head_dim": 32,
+                    "num_value_heads": 4,
+                    "value_head_dim": 32,
+                    "conv_kernel_dim": 4
+                },
+                "moe": {
+                    "expert_count": 4,
+                    "experts_per_token": 2,
+                    "expert_intermediate_size": 32
+                },
+                "qwen4_exp": mtp_block,
+                "tensors": []
+            }))
+            .expect("qwen4_exp manifest fixture should deserialize");
+        ModelConfig::from_manifest(&manifest)
+    }
+
+    #[test]
+    fn max_depth_is_one_only_for_the_single_shipped_block() {
+        let one = qwen4_exp_cfg(serde_json::json!({
+            "hc_count": 4,
+            "mtp": {
+                "num_hidden_layers": 1,
+                "hybrid": true,
+                "layer_types": ["full_attention"],
+                "use_dedicated_embeddings": false
+            }
+        }));
+        assert_eq!(qwen4_exp_mtp_max_depth(&one), 1);
+
+        // A multi-block stack is rejected (disables drafts), never capped.
+        let two = qwen4_exp_cfg(serde_json::json!({
+            "hc_count": 4,
+            "mtp": { "num_hidden_layers": 2 }
+        }));
+        assert_eq!(qwen4_exp_mtp_max_depth(&two), 0);
+
+        // No mtp block / no qwen4_exp family at all: depth 0.
+        let none_block = qwen4_exp_cfg(serde_json::json!({ "hc_count": 4 }));
+        assert_eq!(qwen4_exp_mtp_max_depth(&none_block), 0);
+        let v4_cfg = ModelConfig::from_manifest(
+            &serde_json::from_value::<ax_engine_core::NativeModelManifest>(serde_json::json!({
+                "schema_version": "ax.native_model.v1",
+                "model_family": "qwen3",
+                "tensor_format": "safetensors",
+                "layer_count": 1,
+                "hidden_size": 64,
+                "attention_head_count": 4,
+                "attention_head_dim": 32,
+                "kv_head_count": 1,
+                "vocab_size": 64,
+                "tensors": []
+            }))
+            .expect("plain manifest"),
+        );
+        assert_eq!(qwen4_exp_mtp_max_depth(&v4_cfg), 0);
+    }
+
+    #[test]
+    fn sample_and_log_temperature_locks_greedy_and_stochastic() {
+        // Greedy drafts always record log-probs at T=1.0; stochastic drafts
+        // sample and log at the sidecar's head temperature (no think-block
+        // special case for this family).
+        assert_eq!(
+            qwen4_exp_mtp_sample_and_log_temperature(MtpDraftMode::Greedy, 0.7),
+            1.0
+        );
+        assert_eq!(
+            qwen4_exp_mtp_sample_and_log_temperature(MtpDraftMode::Stochastic, 0.7),
+            QWEN4_EXP_MTP_DRAFT_TEMPERATURE
+        );
+        assert!(
+            (QWEN4_EXP_MTP_DRAFT_TEMPERATURE - 0.7).abs() < 1e-6,
+            "the sidecar default draft temperature stays 0.7"
+        );
+        assert_eq!(
+            qwen4_exp_mtp_sample_and_log_temperature_from_env(0.7),
+            qwen4_exp_mtp_sample_and_log_temperature(mtp_draft_mode_from_env(), 0.7)
+        );
+    }
+
+    fn weights_without_qwen4_exp_mtp() -> ModelWeights {
+        let dummy = || {
+            QuantizedWeight::new(
+                MlxArray::from_raw_data(
+                    [0.0f32; 4].as_ptr() as *const u8,
+                    16,
+                    &[2, 2],
+                    MlxDtype::Float32,
+                ),
+                None,
+                None,
+            )
+        };
+        ModelWeights {
+            token_embedding: dummy(),
+            final_norm: MlxArray::from_f32(1.0),
+            lm_head: dummy(),
+            layers: Vec::<LayerWeights>::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
+            diffusion_self_conditioning: None,
+            unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
+            expert_stream: None,
+        }
+    }
+
+    #[test]
+    fn draft_tokens_empty_without_sidecar() {
+        let cfg = qwen4_exp_cfg(serde_json::json!({
+            "hc_count": 4,
+            "mtp": { "num_hidden_layers": 1 }
+        }));
+        let weights = weights_without_qwen4_exp_mtp();
+        let hidden = MlxArray::from_raw_data(
+            [0.5f32; 256].as_ptr() as *const u8,
+            1024,
+            &[1, 1, 256],
+            MlxDtype::Float32,
+        );
+        let mut cache = MlxKVCache::new(1);
+        let mut rng = Xorshift64::new(1);
+        let (draft, log_probs, dist, added, margins) = qwen4_exp_mtp_draft_tokens_gated(
+            &weights, &cfg, &hidden, 3, &mut cache, None, &mut rng, 0.0, 1.0,
+        );
+        assert!(draft.is_empty());
+        assert!(log_probs.is_empty());
+        assert!(dist.is_empty());
+        assert_eq!(added, 0);
+        assert_eq!(margins, [0.0; 3]);
+        assert_eq!(
+            cache.seq_len(),
+            0,
+            "no sidecar must not touch the draft cache"
+        );
+
+        let (draft2, _lp, _d, added2, _m) = qwen4_exp_mtp_draft_tokens_after_forced_prefix(
+            &weights,
+            &cfg,
+            &hidden,
+            3,
+            &[5, 7],
+            &mut cache,
+            1,
+            &mut rng,
+            Some(0.0),
+            1.0,
+        );
+        assert!(draft2.is_empty());
+        assert_eq!(added2, 0);
+        assert_eq!(cache.seq_len(), 0);
     }
 }

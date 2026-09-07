@@ -1067,6 +1067,8 @@ fn native_dense_kernel_coverage_bucket(
             }
         }
         NativeTensorDataType::I8 | NativeTensorDataType::U8 => unreachable!(),
+        // I64 hash buffers are never dense projection weights.
+        NativeTensorDataType::I64 => NativeDenseKernelCoverageBucket::Ignore,
     }
 }
 

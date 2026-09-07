@@ -1334,6 +1334,50 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             self.assertTrue(download_model.manifest_needs_media_rebuild(model_dir))
 
+    def test_qwen4_exp_visual_manifest_is_marked_for_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "qwen4_exp", "vision_config": {}})
+            )
+            (model_dir / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "language_model.model.embed_tokens.weight": "model.safetensors",
+                            "vision_tower.patch_embed.proj.weight": "model.safetensors",
+                        }
+                    }
+                )
+            )
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps({"tensors": [{"name": "language_model.model.embed_tokens.weight"}]})
+            )
+
+            self.assertTrue(download_model.manifest_needs_media_rebuild(model_dir))
+
+    def test_qwen4_exp_text_visual_manifest_is_marked_for_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "qwen4_exp_text", "vision_config": {}})
+            )
+            (model_dir / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "language_model.model.embed_tokens.weight": "model.safetensors",
+                            "vision_tower.patch_embed.proj.weight": "model.safetensors",
+                        }
+                    }
+                )
+            )
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps({"tensors": [{"name": "language_model.model.embed_tokens.weight"}]})
+            )
+
+            self.assertTrue(download_model.manifest_needs_media_rebuild(model_dir))
+
     def test_gemma_visual_manifest_requires_projection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)

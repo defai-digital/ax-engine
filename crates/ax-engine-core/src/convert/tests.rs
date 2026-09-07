@@ -18,7 +18,7 @@ use super::{
     convert_hf_model_dir, deepseek_v4_config, ensure_deepseek_v4_chat_template,
     ensure_manifest_for_hf_model_dir, llama4_no_rope_layer_interval, match_tensor,
     model_family_for_type, moe_config, parse_layer_types, parse_rope_params, parse_rope_scaling,
-    tensor_name_looks_like_media_role, tensor_quantization_override,
+    qwen4_exp_config, tensor_name_looks_like_media_role, tensor_quantization_override,
     validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling, with_real_model_manifest_lock,
     write_manifest,
 };
@@ -30,6 +30,7 @@ fn write_fake_safetensors(dir: &Path, filename: &str, tensors: &[(&str, &str, &[
         let elem_size: u64 = match *dtype {
             "F16" | "BF16" => 2,
             "F32" | "U32" => 4,
+            "I64" => 8,
             _ => 1,
         };
         let num_elements: u64 = shape.iter().product();
@@ -701,6 +702,8 @@ fn primary_productivity_families_resolve() {
         ("qwen3_5", "qwen3_5", true),
         ("qwen3_next", "qwen3_next", true),
         ("qwen3.6", "qwen3_next", true),
+        ("qwen4_exp", "qwen4_exp", true),
+        ("qwen4_exp_text", "qwen4_exp", true),
         ("glm4_moe_lite", "glm4_moe_lite", false),
     ] {
         let family = model_family_for_type(model_type, &empty_config)
@@ -2085,6 +2088,751 @@ fn converts_qwen3_5_moe_language_model_switch_mlp_directory() {
         .expect("qwen3.5 MoE manifest should validate");
 
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn converts_qwen4_exp_language_model_switch_mlp_directory() {
+    let dir = unique_test_dir("qwen4_exp_language_model");
+    // Raw-string JSON: the deeply nested text_config exceeds serde_json's
+    // json! macro recursion limit as a literal.
+    let config: serde_json::Value = serde_json::from_str(
+        r#"{
+        "model_type": "qwen4_exp",
+        "vocab_size": 32,
+        "vision_config": {
+            "model_type": "qwen4_exp_vision"
+        },
+        "text_config": {
+            "model_type": "qwen4_exp_text",
+            "hidden_size": 8,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 8,
+            "num_hidden_layers": 1,
+            "vocab_size": 32,
+            "linear_num_value_heads": 2,
+            "linear_num_key_heads": 1,
+            "linear_key_head_dim": 4,
+            "linear_value_head_dim": 2,
+            "linear_conv_kernel_dim": 4,
+            "full_attention_interval": 4,
+            "num_experts": 4,
+            "num_experts_per_tok": 2,
+            "moe_intermediate_size": 8,
+            "shared_expert_intermediate_size": 16,
+            "hc_count": 4,
+            "hc_lowrank": 320,
+            "indexer_budget": 2048,
+            "indexer_compress_ratio": 4,
+            "indexer_head_dim": 128,
+            "indexer_kv_heads": 1,
+            "indexer_n_heads": 4,
+            "ngram_size": 3,
+            "ngram_vocab_size_base": 20000000,
+            "split_ngram_parts": 128,
+            "heads_per_ngram": 8,
+            "ple_conv_kernel_size": 4,
+            "ple_embed_dim": 8,
+            "ple_layer_ids": [0],
+            "output_gate_type": "sigmoid",
+            "partial_rotary_factor": 0.25,
+            "rope_parameters": {
+                "mrope_interleaved": true,
+                "mrope_section": [11, 11, 10],
+                "partial_rotary_factor": 0.25,
+                "rope_theta": 10000000,
+                "rope_type": "default"
+            },
+            "mtp": {
+                "hybrid": true,
+                "layer_types": ["full_attention"],
+                "num_hidden_layers": 1,
+                "rope_theta": 10000000
+            },
+            "mtp_use_dedicated_embeddings": false
+        }
+    }"#,
+    )
+    .expect("qwen4_exp config fixture should parse");
+    write_config(&dir, config);
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[
+            ("language_model.model.embed_tokens.weight", "BF16", &[32, 8]),
+            ("language_model.model.norm.weight", "BF16", &[8]),
+            ("language_model.lm_head.weight", "BF16", &[32, 8]),
+            (
+                "language_model.model.layers.0.input_layernorm.weight",
+                "BF16",
+                &[8],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_qkv.weight",
+                "BF16",
+                &[12, 8],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_z.weight",
+                "BF16",
+                &[4, 8],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_a.weight",
+                "BF16",
+                &[2, 8],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.in_proj_b.weight",
+                "BF16",
+                &[2, 8],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.conv1d.weight",
+                "BF16",
+                &[12, 1, 4],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.dt_bias",
+                "F32",
+                &[2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.A_log",
+                "F32",
+                &[2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.norm.weight",
+                "BF16",
+                &[2],
+            ),
+            (
+                "language_model.model.layers.0.linear_attn.out_proj.weight",
+                "BF16",
+                &[8, 4],
+            ),
+            (
+                "language_model.model.layers.0.post_attention_layernorm.weight",
+                "BF16",
+                &[8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.gate.weight",
+                "BF16",
+                &[4, 8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                "BF16",
+                &[4, 8, 8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.switch_mlp.up_proj.weight",
+                "BF16",
+                &[4, 8, 8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.switch_mlp.down_proj.weight",
+                "BF16",
+                &[4, 8, 8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.shared_expert_gate.weight",
+                "BF16",
+                &[1, 8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.shared_expert.gate_proj.weight",
+                "BF16",
+                &[8, 8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.shared_expert.up_proj.weight",
+                "BF16",
+                &[8, 8],
+            ),
+            (
+                "language_model.model.layers.0.mlp.shared_expert.down_proj.weight",
+                "BF16",
+                &[8, 8],
+            ),
+        ],
+    );
+
+    let manifest = convert_hf_model_dir(&dir).expect("qwen4_exp conversion should succeed");
+
+    assert_eq!(manifest.model_family, "qwen4_exp");
+    assert_eq!(manifest.linear_attention.full_attention_interval, Some(4));
+    assert_eq!(manifest.linear_attention.key_head_dim, Some(4));
+    assert_eq!(manifest.moe.expert_count, Some(4));
+    assert_eq!(manifest.moe.experts_per_token, Some(2));
+    assert_eq!(manifest.moe.expert_intermediate_size, Some(8));
+    assert!(
+        manifest.moe_norm_topk_prob,
+        "qwen4_exp follows the qwen3_5 norm_topk_prob=true default"
+    );
+    assert!(
+        manifest.attn_output_gate,
+        "qwen4_exp full-attention layers use the sigmoid output gate by default"
+    );
+    let family_cfg = &manifest.qwen4_exp;
+    assert_eq!(family_cfg.hc_count, Some(4));
+    assert_eq!(family_cfg.hc_lowrank, Some(320));
+    assert_eq!(family_cfg.indexer_budget, Some(2048));
+    assert_eq!(family_cfg.indexer_compress_ratio, Some(4));
+    assert_eq!(family_cfg.indexer_head_dim, Some(128));
+    assert_eq!(family_cfg.indexer_kv_heads, Some(1));
+    assert_eq!(family_cfg.indexer_n_heads, Some(4));
+    assert_eq!(family_cfg.ngram_size, Some(3));
+    assert_eq!(family_cfg.ngram_vocab_size_base, Some(20_000_000));
+    assert_eq!(family_cfg.split_ngram_parts, Some(128));
+    assert_eq!(family_cfg.heads_per_ngram, Some(8));
+    assert_eq!(family_cfg.ple_conv_kernel_size, Some(4));
+    assert_eq!(family_cfg.ple_embed_dim, Some(8));
+    assert_eq!(family_cfg.ple_layer_ids, vec![0]);
+    assert_eq!(family_cfg.mtp.num_hidden_layers, Some(1));
+    assert_eq!(family_cfg.mtp.hybrid, Some(true));
+    assert_eq!(
+        family_cfg.mtp.layer_types,
+        vec!["full_attention".to_string()]
+    );
+    assert_eq!(family_cfg.mtp.rope_theta, Some(10_000_000));
+    assert_eq!(family_cfg.mtp.use_dedicated_embeddings, Some(false));
+    assert_eq!(family_cfg.output_gate_type.as_deref(), Some("sigmoid"));
+    assert_eq!(family_cfg.partial_rotary_factor, Some(0.25));
+    assert_eq!(family_cfg.mrope_section, vec![11, 11, 10]);
+    assert_eq!(family_cfg.mrope_interleaved, Some(true));
+    assert_eq!(family_cfg.shared_expert_intermediate_size, Some(16));
+    for role in [
+        NativeTensorRole::FfnGateInp,
+        NativeTensorRole::FfnGateExps,
+        NativeTensorRole::FfnUpExps,
+        NativeTensorRole::FfnDownExps,
+        NativeTensorRole::FfnSharedExpertDown,
+    ] {
+        assert!(
+            manifest.tensors.iter().any(|tensor| tensor.role == role),
+            "missing role {role:?}"
+        );
+    }
+
+    write_manifest(&dir, &manifest).expect("write should succeed");
+    crate::model::NativeModelArtifacts::from_dir(&dir).expect("qwen4_exp manifest should validate");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Real qwen4_exp checkpoints carry no `model.norm` and no per-layer
+/// input/post layernorms (hyper-connections replace them). This fixture
+/// mirrors that layout end-to-end: one gated-delta layer, one QSA layer, PLE
+/// on 0-indexed layer 1 (`ple_layer_ids` is 1-based), the root
+/// hyper-connection mixer, and an inline vision tower that must drop
+/// fail-loud via the ledger.
+#[test]
+#[allow(clippy::expect_used)]
+fn converts_qwen4_exp_family_tensors_without_norms() {
+    let dir = unique_test_dir("qwen4_exp_family_tensors");
+    // Raw-string JSON: the deeply nested text_config exceeds serde_json's
+    // json! macro recursion limit as a literal.
+    let config: serde_json::Value = serde_json::from_str(
+        r#"{
+        "model_type": "qwen4_exp",
+        "vocab_size": 32,
+        "quantization": { "bits": 8, "group_size": 32 },
+        "text_config": {
+            "model_type": "qwen4_exp_text",
+            "hidden_size": 8,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 8,
+            "num_hidden_layers": 2,
+            "vocab_size": 32,
+            "linear_num_value_heads": 2,
+            "linear_num_key_heads": 1,
+            "linear_key_head_dim": 4,
+            "linear_value_head_dim": 2,
+            "linear_conv_kernel_dim": 4,
+            "full_attention_interval": 2,
+            "num_experts": 4,
+            "num_experts_per_tok": 2,
+            "moe_intermediate_size": 8,
+            "shared_expert_intermediate_size": 16,
+            "hc_count": 4,
+            "hc_lowrank": 2,
+            "indexer_budget": 2048,
+            "indexer_compress_ratio": 4,
+            "indexer_head_dim": 4,
+            "indexer_kv_heads": 1,
+            "indexer_n_heads": 4,
+            "ngram_size": 3,
+            "ngram_vocab_size_base": 20000000,
+            "split_ngram_parts": 4,
+            "heads_per_ngram": 8,
+            "ple_conv_kernel_size": 4,
+            "ple_embed_dim": 16,
+            "ple_layer_ids": [2],
+            "output_gate_type": "sigmoid",
+            "partial_rotary_factor": 0.25,
+            "rope_parameters": {
+                "mrope_interleaved": true,
+                "mrope_section": [11, 11, 10],
+                "partial_rotary_factor": 0.25,
+                "rope_theta": 10000000,
+                "rope_type": "default"
+            }
+        }
+    }"#,
+    )
+    .expect("qwen4_exp family config fixture should parse");
+    write_config(&dir, config);
+
+    let mut tensors: Vec<(String, &str, Vec<u64>)> = vec![
+        (
+            "language_model.model.embed_tokens.weight".to_string(),
+            "BF16",
+            vec![32, 8],
+        ),
+        (
+            "language_model.lm_head.weight".to_string(),
+            "BF16",
+            vec![32, 8],
+        ),
+        // Root hyper-connection mixer (no block_inject at the root).
+        (
+            "language_model.model.hyper_connection_mixer.hc_norm.weight".to_string(),
+            "BF16",
+            vec![32],
+        ),
+        (
+            "language_model.model.hyper_connection_mixer.input_mix_weight_down.weight".to_string(),
+            "BF16",
+            vec![2, 32],
+        ),
+        (
+            "language_model.model.hyper_connection_mixer.input_mix_weight_up.weight".to_string(),
+            "BF16",
+            vec![32, 2],
+        ),
+        // Inline vision tower: dropped fail-loud via the ledger.
+        (
+            "vision_tower.blocks.0.attn.qkv.weight".to_string(),
+            "BF16",
+            vec![24, 8],
+        ),
+        ("visual.patch_embed.weight".to_string(), "BF16", vec![8, 8]),
+    ];
+    // Per-layer hyper-connection sites (both branches, every layer).
+    for layer in 0..2 {
+        for site in ["attn_hyper_connection", "mlp_hyper_connection"] {
+            let base = format!("language_model.model.layers.{layer}.{site}");
+            tensors.extend([
+                (format!("{base}.hc_norm.weight"), "BF16", vec![32]),
+                (
+                    format!("{base}.input_mix_weight_down.weight"),
+                    "BF16",
+                    vec![2, 32],
+                ),
+                (
+                    format!("{base}.input_mix_weight_up.weight"),
+                    "BF16",
+                    vec![32, 2],
+                ),
+                (
+                    format!("{base}.block_inject_weight.weight"),
+                    "BF16",
+                    vec![4, 32],
+                ),
+            ]);
+        }
+        // MoE router + experts + shared expert (mapped by the generic maps).
+        let mlp = format!("language_model.model.layers.{layer}.mlp");
+        tensors.extend([
+            (format!("{mlp}.gate.weight"), "BF16", vec![4, 8]),
+            (
+                format!("{mlp}.switch_mlp.gate_proj.weight"),
+                "BF16",
+                vec![4, 8, 8],
+            ),
+            (
+                format!("{mlp}.switch_mlp.up_proj.weight"),
+                "BF16",
+                vec![4, 8, 8],
+            ),
+            (
+                format!("{mlp}.switch_mlp.down_proj.weight"),
+                "BF16",
+                vec![4, 8, 8],
+            ),
+            (
+                format!("{mlp}.shared_expert_gate.weight"),
+                "BF16",
+                vec![1, 8],
+            ),
+            (
+                format!("{mlp}.shared_expert.gate_proj.weight"),
+                "BF16",
+                vec![8, 8],
+            ),
+            (
+                format!("{mlp}.shared_expert.up_proj.weight"),
+                "BF16",
+                vec![8, 8],
+            ),
+            (
+                format!("{mlp}.shared_expert.down_proj.weight"),
+                "BF16",
+                vec![8, 8],
+            ),
+        ]);
+    }
+    // Layer 0: gated-delta linear attention (generic Qwen3.5 map).
+    let linear = "language_model.model.layers.0.linear_attn";
+    tensors.extend([
+        (format!("{linear}.in_proj_qkv.weight"), "BF16", vec![12, 8]),
+        (format!("{linear}.in_proj_z.weight"), "BF16", vec![4, 8]),
+        (format!("{linear}.in_proj_a.weight"), "BF16", vec![2, 8]),
+        (format!("{linear}.in_proj_b.weight"), "BF16", vec![2, 8]),
+        (format!("{linear}.conv1d.weight"), "BF16", vec![12, 1, 4]),
+        (format!("{linear}.dt_bias"), "F32", vec![2]),
+        (format!("{linear}.A_log"), "F32", vec![2]),
+        (format!("{linear}.norm.weight"), "BF16", vec![2]),
+        (format!("{linear}.out_proj.weight"), "BF16", vec![8, 4]),
+    ]);
+    // Layer 1: QSA full attention with the gate packed into q_proj
+    // ([2 * heads * head_dim, hidden] = [32, 8]) plus the indexer trio.
+    let attn = "language_model.model.layers.1.self_attn";
+    tensors.extend([
+        (format!("{attn}.q_proj.weight"), "BF16", vec![32, 8]),
+        (format!("{attn}.k_proj.weight"), "BF16", vec![8, 8]),
+        (format!("{attn}.v_proj.weight"), "BF16", vec![8, 8]),
+        (format!("{attn}.o_proj.weight"), "BF16", vec![8, 16]),
+        (format!("{attn}.q_norm.weight"), "BF16", vec![8]),
+        (format!("{attn}.k_norm.weight"), "BF16", vec![8]),
+        (
+            format!("{attn}.indexer.index_qk_proj.weight"),
+            "BF16",
+            vec![20, 8],
+        ),
+        (
+            format!("{attn}.indexer.q_layernorm.weight"),
+            "BF16",
+            vec![4],
+        ),
+        (
+            format!("{attn}.indexer.k_layernorm.weight"),
+            "BF16",
+            vec![4],
+        ),
+    ]);
+    // PLE on 0-indexed layer 1: resident tensors, I64 hash buffers, and the
+    // sharded n-gram table (quant companions stay file-local).
+    let ple = "language_model.model.layers.1.ple";
+    tensors.extend([
+        (format!("{ple}.key_proj.weight"), "BF16", vec![32, 8]),
+        (format!("{ple}.value_proj.weight"), "BF16", vec![8, 8]),
+        (format!("{ple}.norm_key.weight"), "BF16", vec![32]),
+        (format!("{ple}.norm_query.weight"), "BF16", vec![32]),
+        (format!("{ple}.norm_conv.weight"), "BF16", vec![32]),
+        (format!("{ple}.conv1d.weight"), "BF16", vec![32, 4, 1]),
+        (
+            format!("{ple}.ple_embedding.layer_multipliers"),
+            "I64",
+            vec![3],
+        ),
+        (
+            format!("{ple}.ple_embedding.ngram_heads_vocab_sizes"),
+            "I64",
+            vec![16],
+        ),
+        (
+            format!("{ple}.ple_embedding.ngram_heads_offsets"),
+            "I64",
+            vec![16],
+        ),
+    ]);
+    for shard in 0..4 {
+        let base = format!("{ple}.ple_embedding.ngram_embedding.shards.{shard}");
+        tensors.extend([
+            (format!("{base}.weight"), "U32", vec![8, 4]),
+            (format!("{base}.scales"), "BF16", vec![8, 1]),
+            (format!("{base}.biases"), "BF16", vec![8, 1]),
+        ]);
+    }
+    let tensor_refs: Vec<(&str, &str, &[u64])> = tensors
+        .iter()
+        .map(|(name, dtype, shape)| (name.as_str(), *dtype, shape.as_slice()))
+        .collect();
+    write_fake_safetensors(&dir, "model.safetensors", &tensor_refs);
+
+    let manifest = convert_hf_model_dir(&dir).expect("qwen4_exp family conversion should succeed");
+
+    assert_eq!(manifest.model_family, "qwen4_exp");
+    assert_eq!(manifest.layer_count, 2);
+    assert!(manifest.qwen4_exp.is_enabled());
+    assert!(
+        manifest.attn_output_gate,
+        "qwen4_exp QSA layers pack the sigmoid gate into q_proj"
+    );
+    // The family converts norm-free: hyper-connections replace every norm.
+    for role in [
+        NativeTensorRole::FinalNorm,
+        NativeTensorRole::AttentionNorm,
+        NativeTensorRole::AttentionPostNorm,
+        NativeTensorRole::FfnNorm,
+    ] {
+        assert!(
+            !manifest.tensors.iter().any(|tensor| tensor.role == role),
+            "qwen4_exp must not carry {role:?}"
+        );
+    }
+
+    let find = |name: &str| manifest.tensors.iter().find(|tensor| tensor.name == name);
+    // Every family tensor survives convert as `Other` under its exact
+    // checkpoint name (the loader's exact-name contract).
+    let mut family_names: Vec<String> = Vec::new();
+    for layer in 0..2 {
+        for site in ["attn_hyper_connection", "mlp_hyper_connection"] {
+            let base = format!("language_model.model.layers.{layer}.{site}");
+            family_names.extend([
+                format!("{base}.hc_norm.weight"),
+                format!("{base}.input_mix_weight_down.weight"),
+                format!("{base}.input_mix_weight_up.weight"),
+                format!("{base}.block_inject_weight.weight"),
+            ]);
+        }
+    }
+    family_names.extend([
+        format!("{attn}.indexer.index_qk_proj.weight"),
+        format!("{attn}.indexer.q_layernorm.weight"),
+        format!("{attn}.indexer.k_layernorm.weight"),
+        format!("{ple}.key_proj.weight"),
+        format!("{ple}.value_proj.weight"),
+        format!("{ple}.norm_key.weight"),
+        format!("{ple}.norm_query.weight"),
+        format!("{ple}.norm_conv.weight"),
+        format!("{ple}.conv1d.weight"),
+        format!("{ple}.ple_embedding.layer_multipliers"),
+        format!("{ple}.ple_embedding.ngram_heads_vocab_sizes"),
+        format!("{ple}.ple_embedding.ngram_heads_offsets"),
+    ]);
+    for shard in 0..4 {
+        family_names.push(format!(
+            "{ple}.ple_embedding.ngram_embedding.shards.{shard}.weight"
+        ));
+    }
+    for name in &family_names {
+        let spec = find(name).expect("family tensor should be present");
+        assert_eq!(
+            spec.role,
+            NativeTensorRole::Other,
+            "{name} must ride as Other"
+        );
+    }
+    // Per-layer family tensors carry their layer index; the root mixer does not.
+    let hc = find("language_model.model.layers.1.attn_hyper_connection.hc_norm.weight")
+        .expect("layer-1 hc_norm");
+    assert_eq!(hc.layer_index, Some(1));
+    assert_eq!(hc.dtype, NativeTensorDataType::Bf16);
+    for name in [
+        "language_model.model.hyper_connection_mixer.hc_norm.weight",
+        "language_model.model.hyper_connection_mixer.input_mix_weight_down.weight",
+        "language_model.model.hyper_connection_mixer.input_mix_weight_up.weight",
+    ] {
+        let spec = find(name).expect("root mixer tensor should be present");
+        assert_eq!(spec.role, NativeTensorRole::Other);
+        assert_eq!(spec.layer_index, None, "{name} is root-level");
+    }
+    // I64 hash buffers keep their integer dtype through convert.
+    for name in [
+        format!("{ple}.ple_embedding.layer_multipliers"),
+        format!("{ple}.ple_embedding.ngram_heads_vocab_sizes"),
+        format!("{ple}.ple_embedding.ngram_heads_offsets"),
+    ] {
+        let spec = find(&name).expect("I64 hash buffer should be present");
+        assert_eq!(spec.dtype, NativeTensorDataType::I64, "{name}");
+        assert!(!spec.source_quantized, "{name} is not a quantized weight");
+        assert_eq!(spec.layer_index, Some(1));
+    }
+    // Quantized PLE shards carry U32 packed storage plus affine metadata;
+    // their scales/biases companions stay file-local (dropped ledger).
+    for shard in 0..4 {
+        let name = format!("{ple}.ple_embedding.ngram_embedding.shards.{shard}.weight");
+        let spec = find(&name).expect("shard should be present");
+        assert_eq!(spec.dtype, NativeTensorDataType::U32, "{name}");
+        assert!(spec.source_quantized, "{name}");
+        let quantization = spec.quantization.as_ref().expect("shard quantization");
+        assert_eq!(
+            (quantization.bits, quantization.group_size),
+            (8, 32),
+            "{name}"
+        );
+        assert_eq!(spec.layer_index, Some(1));
+    }
+    // The generic maps still claim the attention / linear-attention / MoE stacks.
+    for (name, role, layer_index) in [
+        (
+            "language_model.model.layers.1.self_attn.q_proj.weight",
+            NativeTensorRole::AttentionQ,
+            1,
+        ),
+        (
+            "language_model.model.layers.1.self_attn.k_norm.weight",
+            NativeTensorRole::AttentionKNorm,
+            1,
+        ),
+        (
+            "language_model.model.layers.1.self_attn.o_proj.weight",
+            NativeTensorRole::AttentionO,
+            1,
+        ),
+        (
+            "language_model.model.layers.0.linear_attn.in_proj_qkv.weight",
+            NativeTensorRole::LinearAttentionInProjQkv,
+            0,
+        ),
+        (
+            "language_model.model.layers.0.linear_attn.out_proj.weight",
+            NativeTensorRole::LinearAttentionOutProj,
+            0,
+        ),
+        (
+            "language_model.model.layers.0.mlp.gate.weight",
+            NativeTensorRole::FfnGateInp,
+            0,
+        ),
+        (
+            "language_model.model.layers.1.mlp.switch_mlp.down_proj.weight",
+            NativeTensorRole::FfnDownExps,
+            1,
+        ),
+        (
+            "language_model.model.layers.1.mlp.shared_expert_gate.weight",
+            NativeTensorRole::FfnSharedExpertGateInp,
+            1,
+        ),
+        ("language_model.lm_head.weight", NativeTensorRole::LmHead, 0),
+    ] {
+        let spec = find(name).expect("generic-mapped tensor should be present");
+        assert_eq!(spec.role, role, "{name}");
+        if role == NativeTensorRole::LmHead {
+            assert_eq!(spec.layer_index, None);
+        } else {
+            assert_eq!(spec.layer_index, Some(layer_index), "{name}");
+        }
+    }
+    // The vision tower and the quant companions drop fail-loud via the ledger:
+    // 2 vision tensors + 4 shards x (scales + biases) = 10 entries.
+    assert_eq!(manifest.dropped_tensors.count, 10);
+    assert_eq!(manifest.dropped_tensors.media_role_hits, 2);
+    for vision_name in [
+        "vision_tower.blocks.0.attn.qkv.weight",
+        "visual.patch_embed.weight",
+    ] {
+        assert!(
+            manifest
+                .dropped_tensors
+                .names_sample
+                .iter()
+                .any(|name| name == vision_name),
+            "ledger must record {vision_name}"
+        );
+    }
+
+    write_manifest(&dir, &manifest).expect("write should succeed");
+    crate::model::NativeModelArtifacts::from_dir(&dir)
+        .expect("norm-free qwen4_exp manifest should validate");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn qwen4_exp_config_applies_documented_defaults() {
+    // A sparse text_config still yields the complete family block so Phase 1
+    // runtime code never has to re-derive the reference defaults.
+    let config = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "text_config": {
+            "hidden_size": 8
+        }
+    });
+    let family_cfg = qwen4_exp_config(&config, "qwen4_exp");
+    assert!(family_cfg.is_enabled());
+    assert_eq!(family_cfg.hc_count, Some(4));
+    assert_eq!(family_cfg.hc_lowrank, Some(320));
+    assert_eq!(family_cfg.indexer_budget, Some(2048));
+    assert_eq!(family_cfg.indexer_compress_ratio, Some(4));
+    assert_eq!(family_cfg.indexer_head_dim, Some(128));
+    assert_eq!(family_cfg.indexer_kv_heads, Some(1));
+    assert_eq!(family_cfg.indexer_n_heads, Some(4));
+    assert_eq!(family_cfg.ngram_size, Some(3));
+    assert_eq!(family_cfg.ngram_vocab_size_base, Some(20_000_000));
+    assert_eq!(family_cfg.split_ngram_parts, Some(128));
+    assert_eq!(family_cfg.heads_per_ngram, Some(8));
+    assert_eq!(family_cfg.ple_conv_kernel_size, Some(4));
+    assert_eq!(family_cfg.ple_embed_dim, Some(2560));
+    assert_eq!(family_cfg.ple_layer_ids, vec![2]);
+    assert_eq!(family_cfg.mtp.num_hidden_layers, Some(1));
+    assert_eq!(family_cfg.mtp.hybrid, Some(true));
+    assert_eq!(
+        family_cfg.mtp.layer_types,
+        vec!["full_attention".to_string()]
+    );
+    assert_eq!(family_cfg.mtp.rope_theta, Some(10_000_000));
+    assert_eq!(family_cfg.mtp.use_dedicated_embeddings, Some(false));
+    assert_eq!(family_cfg.output_gate_type.as_deref(), Some("sigmoid"));
+    assert_eq!(family_cfg.partial_rotary_factor, Some(0.25));
+    assert_eq!(family_cfg.mrope_section, vec![11, 11, 10]);
+    assert_eq!(family_cfg.mrope_interleaved, Some(true));
+    assert_eq!(family_cfg.shared_expert_intermediate_size, Some(640));
+    assert_eq!(family_cfg.eos_token_id, None);
+
+    // Non-qwen4_exp model types never emit the block.
+    let other = qwen4_exp_config(&config, "qwen3_5");
+    assert!(other.is_disabled());
+}
+
+#[test]
+fn qwen4_exp_config_reads_eos_token_id_for_the_ple_hash() {
+    // Single-id form (the reference pack shape).
+    let config = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "eos_token_id": 248044,
+        "text_config": { "hidden_size": 8 }
+    });
+    let family_cfg = qwen4_exp_config(&config, "qwen4_exp");
+    assert_eq!(family_cfg.eos_token_id, Some(248044));
+
+    // List form: the primary EOS is the first entry.
+    let config = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "eos_token_id": [248044, 248045],
+        "text_config": { "hidden_size": 8 }
+    });
+    let family_cfg = qwen4_exp_config(&config, "qwen4_exp");
+    assert_eq!(family_cfg.eos_token_id, Some(248044));
+}
+
+#[test]
+fn qwen4_exp_config_reads_pad_token_id_for_the_ple_hash() {
+    let config = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "eos_token_id": 248044,
+        "pad_token_id": 248043,
+        "text_config": { "hidden_size": 8 }
+    });
+    let family_cfg = qwen4_exp_config(&config, "qwen4_exp");
+    assert_eq!(family_cfg.pad_token_id, Some(248043));
+
+    // Absent pad id: the trunk leaves the PLE ids untouched.
+    let config = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "eos_token_id": 248044,
+        "text_config": { "hidden_size": 8 }
+    });
+    let family_cfg = qwen4_exp_config(&config, "qwen4_exp");
+    assert_eq!(family_cfg.pad_token_id, None);
 }
 
 #[test]

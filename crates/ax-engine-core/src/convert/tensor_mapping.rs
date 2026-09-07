@@ -689,6 +689,106 @@ pub(crate) const GPT_OSS_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// qwen4_exp (Qwen3.8-Flash-Next) family tensors that the generic role maps
+/// cannot express: the two per-layer hyper-connection sites
+/// (`{attn,mlp}_hyper_connection.*`), the QSA sparse-attention indexer
+/// (`self_attn.indexer.*`), the PLE module (resident projections/norms/conv,
+/// the I64 hash buffers, and the sharded n-gram table), and the root-level
+/// `hyper_connection_mixer.*`.
+///
+/// These tensors ride as [`NativeTensorRole::Other`] and resolve by exact
+/// checkpoint name at load time (the MiniMax-M3 indexer precedent): the MLX
+/// loader probes the `language_model.model.*` / `model.language_model.*` /
+/// `model.*` text-tower prefixes, so conversion must preserve every layout
+/// verbatim. Only the `.weight` member of each quantized triplet enters the
+/// manifest; `.scales` / `.biases` sidecars stay file-local and drop into the
+/// ledger like every other family. Attention projections, gated-delta
+/// linear-attention tensors, and the MoE stacks still flow through
+/// [`HF_STANDARD_TENSOR_MAP`] / [`QWEN3_MOE_EXTRA_TENSOR_MAP`] /
+/// [`QWEN35_LINEAR_TENSOR_MAP`].
+pub(crate) const QWEN4_EXP_HYPER_CONNECTION_SUFFIXES: &[&str] = &[
+    "hc_norm.weight",
+    "input_mix_weight_down.weight",
+    "input_mix_weight_up.weight",
+    "block_inject_weight.weight",
+];
+
+/// Root mixer suffixes: the final hyper-connection has no block-injection gate.
+pub(crate) const QWEN4_EXP_ROOT_MIXER_SUFFIXES: &[&str] = &[
+    "hc_norm.weight",
+    "input_mix_weight_down.weight",
+    "input_mix_weight_up.weight",
+];
+
+/// Per-layer qwen4_exp family suffixes beyond the hyper-connection sites: the
+/// QSA indexer (full-attention layers only) and the PLE resident tensors
+/// (PLE layer only). The PLE hash buffers are raw I64 tensors with no
+/// `.weight` suffix.
+pub(crate) const QWEN4_EXP_LAYER_FAMILY_SUFFIXES: &[&str] = &[
+    "self_attn.indexer.index_qk_proj.weight",
+    "self_attn.indexer.q_layernorm.weight",
+    "self_attn.indexer.k_layernorm.weight",
+    "ple.key_proj.weight",
+    "ple.value_proj.weight",
+    "ple.norm_key.weight",
+    "ple.norm_query.weight",
+    "ple.norm_conv.weight",
+    "ple.conv1d.weight",
+    "ple.ple_embedding.layer_multipliers",
+    "ple.ple_embedding.ngram_heads_vocab_sizes",
+    "ple.ple_embedding.ngram_heads_offsets",
+];
+
+/// PLE n-gram table shard suffix prefix: `ngram_embedding.shards.{i}.weight`
+/// relative to the layer's `ple.ple_embedding.` path.
+pub(crate) const QWEN4_EXP_PLE_SHARD_PREFIX: &str = "ple.ple_embedding.ngram_embedding.shards.";
+
+/// Match qwen4_exp family tensors by exact checkpoint name (see
+/// [`QWEN4_EXP_LAYER_FAMILY_SUFFIXES`]). Returns the `Other` role plus the
+/// layer index for per-layer tensors, `None` for the root mixer, and `None`
+/// for every name outside the family tensor set (standard/MoE/linear maps
+/// still claim those).
+pub(crate) fn match_qwen4_exp_family_tensor(name: &str) -> Option<(NativeTensorRole, Option<u32>)> {
+    // Longest prefix first: exactly one of these can strip a given name.
+    for prefix in ["language_model.model.", "model.language_model.", "model."] {
+        let Some(rest) = name.strip_prefix(prefix) else {
+            continue;
+        };
+        if let Some(mixer) = rest.strip_prefix("hyper_connection_mixer.") {
+            return QWEN4_EXP_ROOT_MIXER_SUFFIXES
+                .contains(&mixer)
+                .then_some((NativeTensorRole::Other, None));
+        }
+        let Some(layers) = rest.strip_prefix("layers.") else {
+            return None;
+        };
+        let dot = layers.find('.')?;
+        let layer_index: u32 = layers[..dot].parse().ok()?;
+        let suffix = &layers[dot + 1..];
+        for site in ["attn_hyper_connection.", "mlp_hyper_connection."] {
+            if let Some(member) = suffix.strip_prefix(site) {
+                return QWEN4_EXP_HYPER_CONNECTION_SUFFIXES
+                    .contains(&member)
+                    .then_some((NativeTensorRole::Other, Some(layer_index)));
+            }
+        }
+        if QWEN4_EXP_LAYER_FAMILY_SUFFIXES.contains(&suffix) {
+            return Some((NativeTensorRole::Other, Some(layer_index)));
+        }
+        if let Some(index) = suffix
+            .strip_prefix(QWEN4_EXP_PLE_SHARD_PREFIX)
+            .and_then(|rest| rest.strip_suffix(".weight"))
+        {
+            return index
+                .parse::<u32>()
+                .ok()
+                .map(|_| (NativeTensorRole::Other, Some(layer_index)));
+        }
+        return None;
+    }
+    None
+}
+
 /// HuggingFace tensor name patterns shared by Qwen3/Gemma4.
 ///
 /// The HuggingFace convention is:

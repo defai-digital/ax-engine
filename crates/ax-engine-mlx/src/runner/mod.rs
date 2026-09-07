@@ -60,9 +60,10 @@ use crate::generate::{
     chunked_prefill_qwen3_vl_with_sampling_buffers,
     chunked_prefill_unlimited_ocr_with_sampling_buffers,
     chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers,
-    chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
-    decode_step, direct_pipeline_barrier_enabled, prepare_direct_pipeline_advance,
-    sample_token_from_prefill_logits, start_direct_pipeline,
+    chunked_prefill_with_mtp_history_and_sampling_buffers,
+    chunked_prefill_with_qwen4_exp_mtp_history_and_sampling_buffers,
+    chunked_prefill_with_sampling_buffers, decode_step, direct_pipeline_barrier_enabled,
+    prepare_direct_pipeline_advance, sample_token_from_prefill_logits, start_direct_pipeline,
 };
 use crate::kv_block_pool::{
     FaBlockPoolConfig, FaBlockPoolError, SharedFaBlockPool, default_fa_block_pool_config,
@@ -85,7 +86,9 @@ use crate::mtp::{
     deepseek_v4_mtp_draft_tokens_after_forced_prefix, deepseek_v4_mtp_draft_tokens_gated,
     deepseek_v4_mtp_warmup_cache, glm_mtp_draft_tokens_after_forced_prefix,
     glm_mtp_draft_tokens_gated, mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
-    sequential_greedy_deepseek_v4_mtp_verify,
+    qwen4_exp_mtp_draft_tokens_after_forced_prefix, qwen4_exp_mtp_draft_tokens_gated,
+    qwen4_exp_mtp_warmup_cache, sequential_greedy_deepseek_v4_mtp_verify,
+    sequential_greedy_qwen4_exp_mtp_verify,
 };
 use crate::mtp_adaptive_gate::{
     AdaptiveStepSignals, MtpAdaptiveGateState, adaptive_gate_enabled_from_env,
@@ -1349,13 +1352,21 @@ impl MlxRunner {
         {
             return v4.hc_mult * self.cfg.hidden_size;
         }
+        // qwen4_exp's MTP block reads the packed pre-mixer residual
+        // (`hc_count * hidden`), same contract as V4's nextn.
+        if self.weights.qwen4_exp_mtp.is_some()
+            && let Some(q4e) = self.cfg.qwen4_exp.as_ref()
+        {
+            return q4e.hc_count * self.cfg.hidden_size;
+        }
         self.cfg.hidden_size
     }
 
     /// Fresh MTP draft-head KV cache. Qwen/GLM heads own a single layer; the
     /// DeepSeek V4 nextn block appends at slot `num_hidden_layers` (llama.cpp
     /// `il = n_layer + nextn_layer_offset`), so its cache needs one slot past
-    /// the main stack.
+    /// the main stack. The qwen4_exp QSA draft block writes layer index 0, so
+    /// a dedicated one-slot cache suffices.
     fn new_mtp_draft_cache(&self) -> MlxKVCache {
         if self.weights.deepseek_v4_nextn.is_some() {
             MlxKVCache::new(crate::mtp::deepseek_v4_mtp_cache_layer_count(&self.cfg))
@@ -1690,6 +1701,29 @@ impl MlxRunner {
                 .and(cfg.deepseek_v4.as_ref())
                 .filter(|v4| v4.num_nextn_predict_layers == 1)
                 .map(|_| 1),
+            // qwen4_exp hybrid sidecar: attaches only with a usable QSA block
+            // (indexer present) and the one supported predictor config (one
+            // hybrid full-attention layer with shared embeddings). This input
+            // is deliberately NOT `qwen_depth`: the family carries linear
+            // attention, so sharing that field would misroute it into the
+            // Qwen linear exact/projected-replay verifier policy.
+            qwen4_exp_depth: weights
+                .qwen4_exp_mtp
+                .as_ref()
+                .filter(|mtp| {
+                    mtp.layer
+                        .qwen4_exp
+                        .as_ref()
+                        .and_then(|family| family.indexer.as_ref())
+                        .is_some()
+                })
+                .and(cfg.qwen4_exp.as_ref())
+                .and_then(|q4e| q4e.mtp.as_ref())
+                .filter(|mtp| {
+                    mtp.num_hidden_layers == 1 && !mtp.use_dedicated_embeddings && mtp.hybrid
+                })
+                .map(|_| 1),
+            qwen4_exp_certification_candidate: qwen4_exp_mtp_certification_candidate_from_env(),
             qwen_linear_attention: cfg.linear_attention.is_some(),
             qwen_linear_exact_enabled: qwen_linear_mtp_exact_enabled,
             qwen_linear_projected_replay_enabled,
@@ -1925,6 +1959,14 @@ impl MlxRunner {
                 mtp_depth = mtp_model_policy.max_depth(),
                 certification_candidate = mtp_model_policy.is_deepseek_v4_certification_candidate(),
                 "DeepSeek V4 nextn MTP uncertified; using direct decode until Tier 2 evidence",
+            );
+        } else if mtp_model_policy.is_qwen4_exp_direct_fallback() {
+            tracing::warn!(
+                target: "ax_engine_mlx::runner",
+                model_family = %cfg.model_family,
+                mtp_depth = mtp_model_policy.max_depth(),
+                certification_candidate = mtp_model_policy.is_qwen4_exp_certification_candidate(),
+                "qwen4_exp hybrid MTP uncertified; using direct decode until Tier 2 evidence",
             );
         } else if mtp_model_policy.has_conflicting_drafters() {
             tracing::error!(
@@ -2577,7 +2619,8 @@ impl MlxRunner {
             self.gemma4_assistant_mtp_status.enabled,
             self.weights.mtp.is_some()
                 || self.weights.glm_mtp.is_some()
-                || self.weights.deepseek_v4_nextn.is_some(),
+                || self.weights.deepseek_v4_nextn.is_some()
+                || self.weights.qwen4_exp_mtp.is_some(),
             self.mtp_requested,
             self.disable_mtp_ngram_stacking,
             self.mtp_skip_state,
@@ -5918,6 +5961,23 @@ impl MlxRunner {
                                 state.mtp_prefill_hidden = Some(packed);
                                 state.mtp_prefill_history_tokens = history_tokens;
                                 tok
+                            } else if self.mtp_requested && self.weights.qwen4_exp_mtp.is_some() {
+                                let (tok, packed, history_tokens) =
+                                    chunked_prefill_with_qwen4_exp_mtp_history_and_sampling_buffers(
+                                        &self.cfg,
+                                        &self.weights,
+                                        token_ids,
+                                        &mut state.cache,
+                                        recompute_chunk,
+                                        MlxSamplingRequest::new(sampling, &recompute_history),
+                                        &mut state.rng,
+                                        &mut state.sampling_probs_buf,
+                                        &mut state.sampling_logits_buf,
+                                        &mut state.sampling_candidates_buf,
+                                    );
+                                state.mtp_prefill_hidden = Some(packed);
+                                state.mtp_prefill_history_tokens = history_tokens;
+                                tok
                             } else {
                                 chunked_prefill_with_sampling_buffers(
                                     &self.cfg,
@@ -5978,6 +6038,23 @@ impl MlxRunner {
                     } else if self.weights.deepseek_v4_nextn.is_some() {
                         let (tok, packed, history_tokens) =
                             chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
+                                &self.cfg,
+                                &self.weights,
+                                prefill_tokens,
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                MlxSamplingRequest::new(sampling, &repetition_history),
+                                &mut state.rng,
+                                &mut state.sampling_probs_buf,
+                                &mut state.sampling_logits_buf,
+                                &mut state.sampling_candidates_buf,
+                            );
+                        state.mtp_prefill_hidden = Some(packed);
+                        state.mtp_prefill_history_tokens = history_tokens;
+                        Some(tok)
+                    } else if self.mtp_requested && self.weights.qwen4_exp_mtp.is_some() {
+                        let (tok, packed, history_tokens) =
+                            chunked_prefill_with_qwen4_exp_mtp_history_and_sampling_buffers(
                                 &self.cfg,
                                 &self.weights,
                                 prefill_tokens,
@@ -8764,7 +8841,14 @@ impl MlxRunner {
         }
         let mut pending = state.mtp_pending_draft.clone();
         let token_offset = state.cache.seq_len();
-        let has_linear_attention = self.cfg.linear_attention.is_some();
+        // qwen4_exp carries gated-delta layers, but with its hybrid sidecar
+        // attached the whole MTP step (verify dispatch, refold, MTP-cache
+        // trim, n-gram sizing) runs the V4-style packed sequential contract
+        // — never the Qwen-linear teacher-forced verifier.
+        let has_linear_attention = mtp_decode_uses_linear_contract(
+            self.cfg.linear_attention.is_some(),
+            self.weights.qwen4_exp_mtp.is_some(),
+        );
         let vocab = self.cfg.vocab_size as i32;
         let mut mtp_timings = MtpStepTimings::default();
         // Draft log-probs are computed at T=1.0 (greedy path) or the draft
@@ -8783,6 +8867,14 @@ impl MlxRunner {
         } else {
             None
         };
+        // qwen4_exp: greedy drafts record log-probs at T=1.0; stochastic
+        // drafts sample and log at the sidecar's recommended temperature (no
+        // think-block special case for this family).
+        let qwen4_exp_draft_temperature = self.weights.qwen4_exp_mtp.as_ref().map(|mtp| {
+            crate::mtp::qwen4_exp_mtp_sample_and_log_temperature_from_env(
+                mtp.draft_sampling.temperature,
+            )
+        });
         let draft_sampling_temperature = self
             .weights
             .mtp
@@ -8794,7 +8886,8 @@ impl MlxRunner {
                     .as_ref()
                     .map(|h| h.draft_sampling.temperature)
             })
-            .or(deepseek_draft_temperature);
+            .or(deepseek_draft_temperature)
+            .or(qwen4_exp_draft_temperature);
         let draft_log_prob_temperature_for_new_drafts = draft_sampling_temperature
             .map(|t| if t > 0.0 { t } else { 1.0 })
             .unwrap_or_else(|| {
@@ -9556,6 +9649,17 @@ impl MlxRunner {
                         &mut state.cache,
                         token_offset,
                     )
+                } else if self.weights.qwen4_exp_mtp.is_some() {
+                    // qwen4_exp MTP consumes the packed pre-mixer residual;
+                    // the second return is `[1, seq, hc*hidden]`, not post-norm.
+                    crate::model::qwen4_exp_forward_all_positions_with_packed(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut state.cache,
+                        token_offset,
+                        false,
+                    )
                 } else if needs_predicted {
                     forward_all_positions_with_post_norm(
                         &self.cfg,
@@ -10068,6 +10172,246 @@ impl MlxRunner {
                             ac,
                             self.mtp_draft_hidden_width(),
                         );
+                        let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                        (
+                            logits_all,
+                            draft_hidden,
+                            ac,
+                            all_accepted,
+                            exact_rejection_correction
+                                .or(accept.rejection_correction)
+                                .unwrap_or(correction_argmax_tok),
+                            exact_residual_correction_applied,
+                            predicted,
+                        )
+                    }
+                } else if self.weights.qwen4_exp_mtp.is_some() {
+                    // qwen4_exp greedy exact path: singleton sequential verify
+                    // on production (same route as direct decode). The trunk's
+                    // gated-delta recurrent state has no proven multi-token
+                    // rollback, so teacher-forced verify stays sequential —
+                    // the same failure class that forced V4 onto this path.
+                    // Depth 1 caps the cost at two main forwards per step.
+                    let greedy_exact = sampling.temperature <= 0.0
+                        && !sampling.uses_logits_processors()
+                        && model_acceptance_mode == MtpModelAcceptanceMode::Greedy;
+                    if greedy_exact {
+                        let verify_forward_started = Instant::now();
+                        let seq = sequential_greedy_qwen4_exp_mtp_verify(
+                            &self.cfg,
+                            &self.weights,
+                            &mut state.cache,
+                            verify_input[0],
+                            &pending,
+                            token_offset,
+                            self.mtp_draft_hidden_width(),
+                        );
+                        mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                        mtp_timings.verify_eval_wall_us = 0;
+                        let accept_started = Instant::now();
+                        let ac = seq.accept_count;
+                        let all_accepted = ac == pending.len();
+                        mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                        let rollback_started = Instant::now();
+                        let committed_len =
+                            token_offset + deepseek_v4_mtp_committed_verify_len(ac, pending.len());
+                        debug_assert_eq!(
+                            state.cache.seq_len(),
+                            committed_len,
+                            "qwen4_exp sequential MTP commit length must match accept count"
+                        );
+                        let rejected_count = pending.len().saturating_sub(ac);
+                        if rejected_count > 0 {
+                            let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                            if let Some(ref mut c) = state.mtp_cache
+                                && !c.trim_to(new_mtp_len)
+                            {
+                                tracing::warn!(
+                                    new_mtp_len,
+                                    "MTP head cache trim refused; draft quality may degrade"
+                                );
+                            }
+                            state.mtp_decode_count = new_mtp_len;
+                        }
+                        mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                        state.pending_direct = None;
+                        (
+                            seq.last_logits,
+                            seq.draft_hidden,
+                            ac,
+                            all_accepted,
+                            seq.correction_token,
+                            false,
+                            seq.predicted,
+                        )
+                    } else {
+                        // Sampled / non-greedy: verify on a clone so rejected
+                        // drafts never touch production QSA/PLE/linear state.
+                        let mut verify_cache = state.cache.clone();
+                        let verify_forward_started = Instant::now();
+                        let (logits_all, post_norm_all) =
+                            crate::model::qwen4_exp_forward_all_positions_with_packed(
+                                &self.cfg,
+                                &self.weights,
+                                &verify_input,
+                                &mut verify_cache,
+                                token_offset,
+                                false,
+                            );
+                        mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                        verify_cache.advance(verify_len);
+                        let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
+                        let target_prob_workspace =
+                            if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
+                                &mut state.mtp_target_prob_workspace
+                            } else {
+                                &mut local_target_prob_workspace
+                            };
+                        let target_softmax_started = Instant::now();
+                        let lazy_target_probs = compute_mtp_target_probs(
+                            &logits_all,
+                            &pending,
+                            acceptance_log_probs,
+                            vocab,
+                            sampling,
+                            self.mtp_target_softmax_topk,
+                            target_filter,
+                            target_prob_workspace,
+                        );
+                        mtp_timings.target_softmax_wall_us = mtp_timings
+                            .target_softmax_wall_us
+                            .saturating_add(elapsed_us(target_softmax_started));
+                        let predicted_arr = Some(argmax(&logits_all, None));
+                        let kv_refs2 = verify_cache.collect_eval_refs();
+                        let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
+                        targets.push(predicted_arr.as_ref().unwrap());
+                        targets.push(&post_norm_all);
+                        if let Some(ref ltp) = lazy_target_probs {
+                            ltp.push_eval_targets(&mut targets);
+                        }
+                        targets.extend(kv_refs2);
+                        let verify_eval_started = Instant::now();
+                        eval(&targets);
+                        mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                        let accept_started = Instant::now();
+                        let predicted: Vec<u32> = predicted_arr
+                            .as_ref()
+                            .map(|arr| arr.data_u32().to_vec())
+                            .unwrap_or_default();
+                        let target_softmax_extract_started = Instant::now();
+                        let target_probs_cpu = lazy_target_probs
+                            .as_ref()
+                            .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                        mtp_timings.target_softmax_wall_us = mtp_timings
+                            .target_softmax_wall_us
+                            .saturating_add(elapsed_us(target_softmax_extract_started));
+                        let target_distributions_cpu: Option<&[TokenDistribution]> = None;
+
+                        let accept = mtp_accept_count(
+                            &pending,
+                            acceptance_log_probs,
+                            &state.mtp_pending_draft_distributions,
+                            &state.mtp_pending_draft_sources,
+                            target_probs_cpu,
+                            target_distributions_cpu,
+                            &predicted,
+                            &mut state.rng,
+                            draft_log_prob_temperature,
+                            sampling.temperature,
+                            model_acceptance_mode,
+                            mtp_ngram_acceptance_mode_from_env(),
+                        );
+                        let ac = accept.accept_count;
+                        let all_accepted = accept.all_accepted;
+                        let exact_rejection_correction = (!all_accepted
+                            && proposal_law == MtpProposalLaw::DeterministicDelta)
+                            .then(|| {
+                                sample_exact_mtp_delta_rejection_correction(
+                                    &logits_all,
+                                    ac,
+                                    vocab,
+                                    sampling,
+                                    pending[ac],
+                                    &mut state.rng,
+                                )
+                            })
+                            .flatten();
+                        let exact_residual_correction_applied =
+                            exact_rejection_correction.is_some();
+                        mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                        let rollback_started = Instant::now();
+                        // Primary (verify_input[0] == last_token) is not yet in
+                        // production at token_offset; even ac==0 commits length 1.
+                        let committed_len =
+                            token_offset + deepseek_v4_mtp_committed_verify_len(ac, pending.len());
+                        let production_replay_packed = if all_accepted {
+                            state.cache = verify_cache;
+                            None
+                        } else {
+                            // Reject: never adopt the clone (linear-state trim
+                            // is unproven). Replay the committed prefix on
+                            // production instead — and keep its packed output:
+                            // the next round's fusion must read the row that
+                            // actually landed in production, not the clone's
+                            // teacher-forced rows past the accept boundary.
+                            drop(verify_cache);
+                            let accepted_input = &verify_input[..=ac];
+                            let (_, replay_packed) =
+                                crate::model::qwen4_exp_forward_all_positions_with_packed(
+                                    &self.cfg,
+                                    &self.weights,
+                                    accepted_input,
+                                    &mut state.cache,
+                                    token_offset,
+                                    false,
+                                );
+                            state.cache.advance(accepted_input.len());
+                            let kv_refs = state.cache.collect_eval_refs();
+                            let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+                            targets.push(&replay_packed);
+                            targets.extend(kv_refs);
+                            eval(&targets);
+                            Some(replay_packed)
+                        };
+                        debug_assert_eq!(
+                            state.cache.seq_len(),
+                            committed_len,
+                            "qwen4_exp MTP commit length must match accept count"
+                        );
+
+                        let rejected_count = pending.len() - ac;
+                        if rejected_count > 0 {
+                            let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                            if let Some(ref mut c) = state.mtp_cache
+                                && !c.trim_to(new_mtp_len)
+                            {
+                                tracing::warn!(
+                                    new_mtp_len,
+                                    "MTP head cache trim refused; draft quality may degrade"
+                                );
+                            }
+                            state.mtp_decode_count = new_mtp_len;
+                        }
+                        mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                        state.pending_direct = None;
+                        let draft_hidden = match production_replay_packed.as_ref() {
+                            // Reject: fuse the next draft from the PRODUCTION
+                            // replay's packed row at the last committed
+                            // position. Full accept adopts the clone, whose
+                            // rows are the production state by construction.
+                            Some(replay_packed) => slice_post_norm_hidden(
+                                replay_packed,
+                                ac,
+                                self.mtp_draft_hidden_width(),
+                            ),
+                            None => slice_post_norm_hidden(
+                                &post_norm_all,
+                                ac,
+                                self.mtp_draft_hidden_width(),
+                            ),
+                        };
                         let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
                         (
                             logits_all,
@@ -10671,9 +11015,17 @@ impl MlxRunner {
             } else {
                 None
             };
+            // qwen4_exp next-draft T: same env-mode resolution as the accept
+            // side (greedy → 1.0, stochastic → sidecar head temperature).
+            let qwen4_exp_next_draft_temperature = self.weights.qwen4_exp_mtp.as_ref().map(|mtp| {
+                crate::mtp::qwen4_exp_mtp_sample_and_log_temperature_from_env(
+                    mtp.draft_sampling.temperature,
+                )
+            });
             // Qwen draft branches below may overwrite this with the T actually
             // used for log-probs (often 1.0 on exact/gated greedy — not head 0.7).
             let mut next_draft_log_prob_temperature = deepseek_next_draft_temperature
+                .or(qwen4_exp_next_draft_temperature)
                 .unwrap_or(draft_log_prob_temperature_for_new_drafts);
             let mtp_post_think_guarded =
                 self.cfg.think_start_token_id.is_some() && !think_state_after_result;
@@ -10916,7 +11268,8 @@ impl MlxRunner {
                 if mtp_tail_cap > 0
                     && (self.weights.mtp.is_some()
                         || self.weights.glm_mtp.is_some()
-                        || self.weights.deepseek_v4_nextn.is_some())
+                        || self.weights.deepseek_v4_nextn.is_some()
+                        || self.weights.qwen4_exp_mtp.is_some())
                 {
                     let cache = state
                         .mtp_cache
@@ -10932,6 +11285,10 @@ impl MlxRunner {
                             self.mtp_model_policy.qwen_gate_default()
                         } else if self.weights.glm_mtp.is_some() {
                             self.mtp_model_policy.glm_gate_default()
+                        } else if self.weights.qwen4_exp_mtp.is_some() {
+                            // Same candidate gate (0.0) as the pure-MTP arm:
+                            // a 0.90 gate would drop the only tail token.
+                            self.mtp_model_policy.qwen4_exp_gate_default()
                         } else {
                             None
                         },
@@ -10955,6 +11312,23 @@ impl MlxRunner {
                             let hybrid_draft_t = deepseek_next_draft_temperature
                                 .expect("deepseek nextn implies next-draft temperature");
                             deepseek_v4_mtp_draft_tokens_after_forced_prefix(
+                                &self.weights,
+                                &self.cfg,
+                                &draft_hidden,
+                                tail_tok,
+                                &draft,
+                                cache,
+                                mtp_tail_cap,
+                                &mut state.rng,
+                                Some(hybrid_gate),
+                                hybrid_draft_t,
+                            )
+                        } else if self.weights.qwen4_exp_mtp.is_some() {
+                            // Same draft T as pure-MTP / accept rescale (env
+                            // mode: greedy 1.0, stochastic head temperature).
+                            let hybrid_draft_t = qwen4_exp_next_draft_temperature
+                                .expect("qwen4_exp MTP implies next-draft temperature");
+                            qwen4_exp_mtp_draft_tokens_after_forced_prefix(
                                 &self.weights,
                                 &self.cfg,
                                 &draft_hidden,
@@ -11162,6 +11536,44 @@ impl MlxRunner {
                         .expect("deepseek nextn implies next-draft temperature");
                     let (draft, log_probs, distributions, added, _top2_margins) =
                         deepseek_v4_mtp_draft_tokens_gated(
+                            &self.weights,
+                            &self.cfg,
+                            &draft_hidden,
+                            tail_tok,
+                            cache,
+                            Some(state.mtp_adaptive_max_depth),
+                            &mut state.rng,
+                            gate,
+                            draft_temperature,
+                        );
+                    mtp_timings.mtp_draft_wall_us = mtp_timings
+                        .mtp_draft_wall_us
+                        .saturating_add(elapsed_us(mtp_draft_started));
+                    state.mtp_decode_count += added;
+                    state.mtp_pending_draft_distributions = distributions;
+                    let sources = vec![MtpDraftSource::Mtp; draft.len()];
+                    (draft, log_probs, sources)
+                } else if self.weights.qwen4_exp_mtp.is_some() {
+                    // qwen4_exp hybrid MTP head (packed pre-mixer hidden, QSA
+                    // block, shared lm_head; dedicated one-slot QSA cache).
+                    let cache = state
+                        .mtp_cache
+                        .get_or_insert_with(|| self.new_mtp_draft_cache());
+                    let mtp_draft_started = Instant::now();
+                    let (gate, src) = resolve_mtp_gate_from_env(
+                        Some(sampling.temperature),
+                        state.mtp_adaptive_gate.as_ref(),
+                        mtp_optimistic_draft_min_confidence_override(),
+                        self.mtp_model_policy.qwen4_exp_gate_default(),
+                    );
+                    state.mtp_draft_gate_x1000 = (gate.clamp(0.0, 1.0) * 1000.0) as u32;
+                    state.mtp_draft_gate_source = src.route_code();
+                    // Must match next_draft_log_prob_temperature / accept
+                    // rescale on the following step.
+                    let draft_temperature = qwen4_exp_next_draft_temperature
+                        .expect("qwen4_exp MTP implies next-draft temperature");
+                    let (draft, log_probs, distributions, added, _top2_margins) =
+                        qwen4_exp_mtp_draft_tokens_gated(
                             &self.weights,
                             &self.cfg,
                             &draft_hidden,
@@ -11510,6 +11922,59 @@ impl MlxRunner {
                 );
                 deepseek_v4_mtp_warmup_cache(
                     nextn,
+                    &warmup_packed,
+                    &history_tokens[start_offset..total],
+                    &self.weights,
+                    cache,
+                    &self.cfg,
+                    rope_start,
+                );
+                let kv_refs = cache.collect_eval_refs();
+                mlx_sys::eval(&kv_refs);
+                clear_cache();
+                state.mtp_decode_count = warmup_len;
+                if let Some(ref mut c) = state.mtp_cache {
+                    c.rope_offset = rope_start;
+                }
+            }
+        } else if self.weights.qwen4_exp_mtp.is_some()
+            && let Some(prefill_packed) = state.mtp_prefill_hidden.take()
+        {
+            // qwen4_exp MTP: packed pre-mixer rows + dedicated one-slot QSA
+            // cache warmup. Same cap / absolute-rope-start contract as the
+            // DeepSeek V4 arm above; the block reads layer index 0 only.
+            let mtp = self
+                .weights
+                .qwen4_exp_mtp
+                .as_ref()
+                .expect("qwen4_exp MTP present after is_some guard");
+            let history_tokens = std::mem::take(&mut state.mtp_prefill_history_tokens);
+            let cache = state
+                .mtp_cache
+                .get_or_insert_with(|| self.new_mtp_draft_cache());
+            let available_rows = prefill_packed
+                .shape()
+                .get(1)
+                .copied()
+                .unwrap_or_default()
+                .max(0) as usize;
+            let total = available_rows.min(history_tokens.len());
+            let cap = crate::fastpath::mtp_warmup_cap();
+            let warmup_len = if cap > 0 { total.min(cap) } else { total };
+            let start_offset = total.saturating_sub(warmup_len);
+            let rope_start =
+                mtp_warmup_absolute_rope_start(state.cache.seq_len(), available_rows, start_offset);
+            if warmup_len > 0 {
+                let width = prefill_packed.shape().get(2).copied().unwrap_or(0);
+                let warmup_packed = slice(
+                    &prefill_packed,
+                    &[0, start_offset as i32, 0],
+                    &[1, total as i32, width],
+                    &[1, 1, 1],
+                    None,
+                );
+                qwen4_exp_mtp_warmup_cache(
+                    mtp,
                     &warmup_packed,
                     &history_tokens[start_offset..total],
                     &self.weights,
@@ -11922,6 +12387,22 @@ pub(super) fn deepseek_v4_mtp_committed_verify_len(
     pending_len: usize,
 ) -> usize {
     1 + accept_count.min(pending_len)
+}
+
+/// Whether the MTP decode step uses the Qwen-linear verifier contract
+/// (teacher-forced multi-token windows, exact/projected-replay profiles,
+/// async draft).
+///
+/// qwen4_exp carries gated-delta layers (`linear_attention.is_some()`), but
+/// its MTP contract is the DeepSeek-V4-style packed sequential path: the
+/// draft head consumes the packed pre-mixer hidden (`hc*hidden` wide), and
+/// teacher-forced multi-token windows through the gated-delta trunk have no
+/// proven rollback. The attached qwen4_exp sidecar must therefore exclude
+/// the model from the linear contract for the WHOLE decode step — verify
+/// dispatch, accepted-history refold, MTP-cache trim, and n-gram draft
+/// sizing alike — not just the verify `if`.
+fn mtp_decode_uses_linear_contract(cfg_linear_attention: bool, has_qwen4_exp_mtp: bool) -> bool {
+    cfg_linear_attention && !has_qwen4_exp_mtp
 }
 
 /// Absolute RoPE start for MTP prefill warmup when history is only the last
@@ -17211,6 +17692,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -17257,6 +17739,8 @@ mod tests {
             glm_mtp: None,
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -17741,6 +18225,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
@@ -18181,6 +18666,27 @@ mod tests {
             error
                 .to_string()
                 .contains("not supported by the MLX runner")
+        );
+    }
+
+    #[test]
+    fn mlx_manifest_validation_gates_qwen4_exp_through_the_family_arm() {
+        // Phase 1 flipped the fail-closed guard: the family arm
+        // (`validate_qwen4_exp_manifest`) is now the live gate, so a dense
+        // manifest merely relabeled qwen4_exp still fails closed — now with
+        // the arm's contract error instead of a blanket rejection.
+        let mut manifest = dense_manifest();
+        manifest.model_family = "qwen4_exp".to_string();
+        let artifacts = write_artifacts(manifest);
+
+        let error = validate_mlx_supported_manifest(&artifacts)
+            .expect_err("a dense manifest relabeled qwen4_exp must fail the family arm");
+
+        assert!(
+            error
+                .to_string()
+                .contains("qwen4_exp requires qwen4_exp metadata"),
+            "unexpected error: {error}"
         );
     }
 
@@ -21389,5 +21895,34 @@ mod tests {
         // Single full-prompt chunk: relative start_offset is already absolute.
         assert_eq!(mtp_warmup_absolute_rope_start(100, 100, 50), 50);
         assert_eq!(mtp_warmup_absolute_rope_start(50, 100, 0), 0); // clamp
+    }
+
+    #[test]
+    fn qwen4_exp_mtp_excludes_the_linear_verify_contract() {
+        // Verify-dispatch regression (run_mtp_decode): qwen4_exp carries
+        // gated-delta layers (`linear_attention.is_some()` == true), so the
+        // pre-fix flag routed its MTP step into the Qwen-linear
+        // teacher-forced verifier — leaving the packed sequential arm dead,
+        // handing the draft head a 2560-wide hidden, double-trimming the MTP
+        // cache, and admitting exact/projected-replay/async-draft profiles.
+        // With the sidecar attached, the WHOLE step must leave the linear
+        // contract; without it (or for plain linear Qwen), behavior is
+        // unchanged.
+        assert!(
+            !mtp_decode_uses_linear_contract(true, true),
+            "qwen4_exp with its MTP sidecar must NOT use the linear verifier"
+        );
+        assert!(
+            mtp_decode_uses_linear_contract(true, false),
+            "qwen4_exp without the sidecar keeps the linear contract"
+        );
+        assert!(
+            !mtp_decode_uses_linear_contract(false, false),
+            "dense families never use the linear contract"
+        );
+        assert!(
+            !mtp_decode_uses_linear_contract(false, true),
+            "no linear config, no linear contract"
+        );
     }
 }

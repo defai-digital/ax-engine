@@ -159,6 +159,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,
@@ -178,7 +179,7 @@ mod tests {
             | "glm4_moe_lite" | "gpt_oss" | "deepseek_v3" | "deepseek_v32" => {
                 ModelSupportTier::Certified
             }
-            "diffusion_gemma" | "deepseek_v4" | "muse_glimmer" | "minimax_m3" => {
+            "diffusion_gemma" | "deepseek_v4" | "muse_glimmer" | "minimax_m3" | "qwen4_exp" => {
                 ModelSupportTier::Experimental
             }
             _ => ModelSupportTier::Compatible,
@@ -246,6 +247,16 @@ mod tests {
         // still in progress, so no certification evidence exists.
         assert_eq!(
             support_tier_for_family("deepseek_v4"),
+            ModelSupportTier::Experimental
+        );
+    }
+
+    #[test]
+    fn qwen4_exp_is_experimental_until_runtime_trunk_lands() {
+        // Convert + registry plumbing only (Phase 0); the MLX family trunk is
+        // not implemented, so no certification evidence exists.
+        assert_eq!(
+            support_tier_for_family("qwen4_exp"),
             ModelSupportTier::Experimental
         );
     }

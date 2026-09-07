@@ -32,9 +32,9 @@ use crate::model::{
     AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance, KvCacheQuantizationManifest,
     NativeDeepseekV4AttentionConfig, NativeDeepseekV4Config, NativeDiffusionConfig,
     NativeGlmRouterConfig, NativeLinearAttentionConfig, NativeMlaAttentionConfig,
-    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
-    WeightSanitize,
+    NativeModelManifest, NativeMoeConfig, NativeQwen4ExpConfig, NativeQwen4ExpMtpConfig,
+    NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization,
+    NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 
 /// Env: when set to `1`/`true`/`on`, convert hard-errors if any tensors are dropped.
@@ -145,7 +145,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper, minimax_m3, minimax_m3_vl"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, qwen4_exp, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper, minimax_m3, minimax_m3_vl"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -299,6 +299,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let mla_attention = mla_attention_config(&config, &model_type);
     let glm_router = glm_router_config(&config, &model_type);
     let deepseek_v4 = deepseek_v4_config(&config, &model_type);
+    let qwen4_exp = qwen4_exp_config(&config, &model_type);
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
@@ -436,6 +437,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         moe: moe_config(&config, &model_type),
         glm_router,
         deepseek_v4,
+        qwen4_exp,
         // Converter assumes the on-disk weights are mlx-community pre-sanitized;
         // raw HuggingFace checkpoints need this set to `HfToMlx` by hand (or via
         // the doctor command when REQ-L4 lands). EmbeddingGemma's mlx-community
@@ -998,6 +1000,10 @@ fn convert_dtype(dtype: &str, name: &str) -> Result<NativeTensorDataType, Conver
         // table). Stored with the same 4-byte U32 container dtype the GGUF
         // loader already uses for GGML_TYPE_I32; not a quantized weight.
         "I32" => Ok(NativeTensorDataType::U32),
+        // Signed 64-bit integer buffers (qwen4_exp PLE n-gram hash tables:
+        // `ple.ple_embedding.{layer_multipliers,ngram_heads_vocab_sizes,
+        // ngram_heads_offsets}`). Not a quantized weight.
+        "I64" => Ok(NativeTensorDataType::I64),
         other => Err(ConvertError::UnsupportedDtype {
             name: name.to_string(),
             dtype: other.to_string(),
@@ -1157,6 +1163,19 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
     // (no `model.` prefix). Also accept the standard `model.*` layout.
     if family.family_name == "nemotron_embed" {
         if let Some(result) = match_nemotron_embed_tensor(name, family.tensor_map) {
+            return Some(result);
+        }
+    }
+
+    // qwen4_exp (Qwen3.8-Flash-Next) family tensors — per-layer
+    // hyper-connection sites, the QSA indexer, PLE (resident tensors, I64
+    // hash buffers, sharded n-gram table), and the root hyper-connection
+    // mixer — resolve by exact checkpoint name at load time, so convert
+    // preserves them as `Other` (the MiniMax-M3 indexer precedent). Generic
+    // maps below still claim the attention / linear-attention / MoE tensors;
+    // the vision tower stays unmatched and drops fail-loud via the ledger.
+    if family.family_name == "qwen4_exp" {
+        if let Some(result) = match_qwen4_exp_family_tensor(name) {
             return Some(result);
         }
     }

@@ -31,8 +31,8 @@ use crate::linear_attention_ops::{
     gated_delta_fused_verify_from_qkv, gated_delta_kernel, gated_delta_kernel_verify_no_checkpoint,
     gated_delta_kernel_with_prefix_checkpoint, gated_delta_kernel_with_tape,
     linear_attention_conv1d, linear_attention_decode_post_input_metal,
-    normalize_linear_attention_qk, replay_gated_delta_tape, rms_norm_gated_with_full_gate_policy,
-    slice_seq_row_4d, split_linear_attention_qkv,
+    normalize_linear_attention_qk, replay_gated_delta_tape, rms_norm_gated_sigmoid,
+    rms_norm_gated_with_full_gate_policy, slice_seq_row_4d, split_linear_attention_qkv,
 };
 use crate::weights::{
     LayerWeights, LinearAttentionWeights, QuantizedWeight, SHARED_VERIFY_COMPILE_LAYER,
@@ -206,11 +206,11 @@ pub(crate) fn linear_attention_forward_verify_functional(
     {
         fused
     } else {
-        let gated = rms_norm_gated_with_full_gate_policy(
+        let gated = rms_norm_gated_output(
+            cfg,
             &out,
             &z,
             &linear_w.norm,
-            cfg.rms_norm_eps,
             if fastpath::qwen_linear_mtp_exact_enabled() {
                 false
             } else {
@@ -542,11 +542,11 @@ fn linear_attention_forward_inner(
     {
         fused
     } else {
-        let out = rms_norm_gated_with_full_gate_policy(
+        let out = rms_norm_gated_output(
+            cfg,
             &out,
             &z,
             &linear_w.norm,
-            cfg.rms_norm_eps,
             if fastpath::qwen_linear_mtp_exact_enabled() {
                 // Exact S=2 fused Metal on early layers (`dced27d4`) kept
                 // MTP-off `39a36e3f` but ON became `f4b5490d`. Stay portable.
@@ -880,8 +880,7 @@ pub(crate) fn linear_attention_forward_batched(
     lin_state.update_layer(linear_state_idx, new_conv_state, new_recurrent_state);
 
     // Portable gated RMSNorm (allow_full_gate_metal = false): batch-general.
-    let out =
-        rms_norm_gated_with_full_gate_policy(&out, &z, &linear_w.norm, cfg.rms_norm_eps, false);
+    let out = rms_norm_gated_output(cfg, &out, &z, &linear_w.norm, false);
     let flat = reshape(&out, &[batch, seq, linear_cfg.value_dim() as i32], None);
     qw(&flat, &linear_w.out_proj)
 }
@@ -1566,6 +1565,35 @@ fn qwen_linear_attention_direct_cpp_default_family(cfg: &ModelConfig) -> bool {
     matches!(cfg.model_family.as_str(), "qwen3_5" | "qwen3_next")
 }
 
+/// qwen4_exp's per-v-head RMSNormGated uses a sigmoid output gate
+/// (`output_gate_type: sigmoid`); every other gated-delta family (Qwen3.5,
+/// Qwen3-Next, Nemotron-H) uses silu. The qwen38-flash-next plan (section E)
+/// calls this out as the one activation difference in the shared stack.
+fn linear_attention_output_gate_sigmoid(cfg: &ModelConfig) -> bool {
+    cfg.qwen4_exp
+        .as_ref()
+        .and_then(|q4e| q4e.output_gate_type.as_deref())
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("sigmoid"))
+}
+
+/// Gated output norm for the gated-delta stack: the qwen4_exp sigmoid gate or
+/// the established silu full-gate policy. `allow_full_gate_metal` is the silu
+/// policy's argument only — the sigmoid path stays portable because every
+/// fused Metal gate kernel is silu-specific.
+fn rms_norm_gated_output(
+    cfg: &ModelConfig,
+    out: &MlxArray,
+    z: &MlxArray,
+    norm: &MlxArray,
+    allow_full_gate_metal: bool,
+) -> MlxArray {
+    if linear_attention_output_gate_sigmoid(cfg) {
+        rms_norm_gated_sigmoid(out, z, norm, cfg.rms_norm_eps)
+    } else {
+        rms_norm_gated_with_full_gate_policy(out, z, norm, cfg.rms_norm_eps, allow_full_gate_metal)
+    }
+}
+
 fn linear_attention_full_gate_metal_allowed(
     cfg: &ModelConfig,
     w: &LinearAttentionWeights,
@@ -2077,11 +2105,11 @@ pub(crate) fn try_linear_attention_whole_layer_metal(
     let (out, new_recurrent_state) =
         gated_delta_kernel(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
     cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
-    let out = rms_norm_gated_with_full_gate_policy(
+    let out = rms_norm_gated_output(
+        cfg,
         &out,
         &z,
         &linear_w.norm,
-        cfg.rms_norm_eps,
         linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx),
     );
     let flat = reshape(&out, &[1, seq, linear_cfg.value_dim() as i32], None);
@@ -2251,6 +2279,120 @@ mod tests {
         assert!(!linear_attention_prefill_allows_mixed_pack(1, true));
         assert!(linear_attention_prefill_allows_mixed_pack(1, false));
         assert!(linear_attention_prefill_allows_mixed_pack(128, false));
+    }
+
+    fn gate_kind_config(family: &str, output_gate_type: Option<&str>) -> ModelConfig {
+        // For qwen4_exp the None arm keeps the block enabled (hc_count) but
+        // omits the field, exercising the from_manifest sigmoid default;
+        // other families carry no qwen4_exp block at all.
+        let family_block = match (family == "qwen4_exp", output_gate_type) {
+            (true, Some(kind)) => serde_json::json!({ "hc_count": 4, "output_gate_type": kind }),
+            (true, None) => serde_json::json!({ "hc_count": 4 }),
+            (false, _) => serde_json::json!({}),
+        };
+        let value = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": family,
+            "tensor_format": "safetensors",
+            "layer_count": 1,
+            "hidden_size": 8,
+            "attention_head_count": 1,
+            "attention_head_dim": 8,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "qwen4_exp": family_block,
+            "tensors": []
+        });
+        let Ok(manifest) = serde_json::from_value::<ax_engine_core::NativeModelManifest>(value)
+        else {
+            unreachable!("gate-kind test manifest must deserialize");
+        };
+        ModelConfig::from_manifest(&manifest)
+    }
+
+    #[test]
+    fn output_gate_sigmoid_is_scoped_to_qwen4_exp_sigmoid_configs() {
+        assert!(linear_attention_output_gate_sigmoid(&gate_kind_config(
+            "qwen4_exp",
+            Some("sigmoid")
+        )));
+        // Case-insensitive like the manifest contract.
+        assert!(linear_attention_output_gate_sigmoid(&gate_kind_config(
+            "qwen4_exp",
+            Some("SIGMOID")
+        )));
+        // An enabled qwen4_exp config that omits the field defaults to the
+        // reference sigmoid gate (convert always emits it; this is
+        // defense-in-depth against hand-written manifests).
+        assert!(linear_attention_output_gate_sigmoid(&gate_kind_config(
+            "qwen4_exp",
+            None
+        )));
+        // A contradictory value does not dispatch sigmoid; manifest
+        // validation rejects it fail-closed before the runner loads the pack.
+        assert!(!linear_attention_output_gate_sigmoid(&gate_kind_config(
+            "qwen4_exp",
+            Some("silu")
+        )));
+        // Other gated-delta families never take the sigmoid path.
+        assert!(!linear_attention_output_gate_sigmoid(&gate_kind_config(
+            "qwen3_5", None
+        )));
+    }
+
+    #[test]
+    fn rms_norm_gated_output_uses_sigmoid_only_for_qwen4_exp() {
+        let sigmoid_cfg = gate_kind_config("qwen4_exp", Some("sigmoid"));
+        let silu_cfg = gate_kind_config("qwen3_5", None);
+        let h_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.0625).collect();
+        let g_data: Vec<f32> = (0..16).map(|i| (i as f32 - 4.0) * 0.125).collect();
+        let w_data: Vec<f32> = vec![0.5, 1.0, 1.5, 2.0];
+        let make = |data: &[f32], shape: &[i32]| {
+            MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                std::mem::size_of_val(data),
+                shape,
+                MlxDtype::Float32,
+            )
+        };
+        let h = make(&h_data, &[1, 2, 2, 4]);
+        let g = make(&g_data, &[1, 2, 2, 4]);
+        let w = make(&w_data, &[4]);
+
+        let routed = rms_norm_gated_output(&sigmoid_cfg, &h, &g, &w, true);
+        let direct = rms_norm_gated_sigmoid(&h, &g, &w, 1e-6);
+        let silu = rms_norm_gated_output(&silu_cfg, &h, &g, &w, false);
+        eval(&[&routed, &direct, &silu]);
+        assert_eq!(routed.data_f32(), direct.data_f32());
+
+        // Manual reference: per row of 4, sigmoid(gate) * (x * rsqrt(mean(x^2)+eps) * w).
+        let eps = 1e-6f32;
+        let mut expected = [0.0f32; 16];
+        for row in 0..4 {
+            let x = &h_data[row * 4..row * 4 + 4];
+            let mean_sqr = x.iter().map(|v| v * v).sum::<f32>() / 4.0;
+            let rstd = (mean_sqr + eps).powf(-0.5);
+            for e in 0..4 {
+                let gate = 1.0 / (1.0 + (-g_data[row * 4 + e]).exp());
+                expected[row * 4 + e] = gate * x[e] * rstd * w_data[e];
+            }
+        }
+        for (actual, want) in routed.data_f32().iter().zip(expected.iter()) {
+            assert!(
+                (actual - want).abs() < 1e-5,
+                "sigmoid gated norm must match the manual reference: {actual} vs {want}"
+            );
+        }
+        let max_silu_drift = routed
+            .data_f32()
+            .iter()
+            .zip(silu.data_f32().iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_silu_drift > 1e-3,
+            "qwen4_exp sigmoid gate must not silently take the silu path (drift {max_silu_drift})"
+        );
     }
 
     #[test]

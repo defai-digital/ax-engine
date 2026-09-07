@@ -10,8 +10,9 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use ax_engine_core::{
-    MlxRunnerAdmission, NativeModelArtifacts, NativeModelManifest, NativeTensorRole,
-    mlx_runner_admission_for_family, runner::NativeModelBindingSummary,
+    MlxRunnerAdmission, NativeModelArtifacts, NativeModelManifest, NativeTensorDataType,
+    NativeTensorRole, NativeTensorSpec, mlx_runner_admission_for_family,
+    runner::NativeModelBindingSummary,
 };
 
 use super::{COMMON_EOT_TOKEN_STRINGS, MlxRunnerError};
@@ -21,6 +22,12 @@ pub(super) fn validate_mlx_supported_manifest(
 ) -> Result<(), MlxRunnerError> {
     let manifest = artifacts.manifest();
     validate_mlx_primary_admission(&manifest.model_family)?;
+    // Family-scoped qwen4_exp contract (hyper-connection sites, QSA indexer +
+    // gate-packed q_proj geometry, PLE module + n-gram shards, root mixer).
+    // The family trunk (`model::qwen4_exp_forward_*`) serves admitted packs.
+    if manifest.model_family == "qwen4_exp" {
+        validate_qwen4_exp_manifest(manifest)?;
+    }
     if manifest.model_family == "glm4_moe_lite"
         || manifest.model_family == "deepseek_v4"
         || has_glm_mla_tensors(artifacts)
@@ -413,6 +420,352 @@ pub(super) fn validate_deepseek_v4_manifest(
     Ok(())
 }
 
+/// Validate the qwen4_exp (Qwen3.8-Flash-Next) manifest contract.
+///
+/// Called from `validate_mlx_supported_manifest` AFTER the fail-closed guard,
+/// so it only gates the runner once the family trunk lands; unit tests
+/// exercise it directly. The family has no `model.norm` and no per-layer
+/// input/post layernorms — hyper-connections replace them and the loader
+/// mirrors the hyper-connection norms into the shared norm slots — so the
+/// generic FinalNorm/AttentionNorm requirements are exempted family-scoped in
+/// core manifest validation (`validate_native_model_manifest`). This arm
+/// instead requires the family tensors the loader resolves by exact
+/// checkpoint name: both hyper-connection sites on every layer, the QSA
+/// indexer plus gate-packed `q_proj` geometry (rows = 2 × heads × head_dim)
+/// on full-attention layers, the PLE module (resident tensors, I64 hash
+/// buffers, contiguous n-gram shards) on each `ple_layer_ids` entry, and the
+/// root hyper-connection mixer.
+pub(super) fn validate_qwen4_exp_manifest(
+    manifest: &NativeModelManifest,
+) -> Result<(), MlxRunnerError> {
+    let cfg = &manifest.qwen4_exp;
+    if cfg.is_disabled() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "qwen4_exp requires qwen4_exp metadata in the manifest".to_string(),
+        ));
+    }
+    // Absent fields fall back to the same reference-config defaults the
+    // converter (`qwen4_exp_config`) and the typed config loader
+    // (`Qwen4ExpConfig::from_manifest`) apply.
+    let hc_count = u64::from(cfg.hc_count.unwrap_or(4));
+    let hc_lowrank = u64::from(cfg.hc_lowrank.unwrap_or(320));
+    if hc_count == 0 || hc_lowrank == 0 {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "qwen4_exp hc_count/hc_lowrank must be greater than zero".to_string(),
+        ));
+    }
+    // QSA full-attention layers pack the sigmoid output gate into q_proj, so
+    // attention head dims only resolve after halving the q_proj row count.
+    if !manifest.attn_output_gate {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "qwen4_exp requires attn_output_gate (the sigmoid gate packs into self_attn.q_proj)"
+                .to_string(),
+        ));
+    }
+    // The reference architecture's gated-delta output gate is sigmoid (the
+    // one activation difference from the shared stack). An absent field
+    // defaults to sigmoid in the typed config; a contradictory value would
+    // silently run the Qwen3.5 silu gate, so fail closed.
+    if let Some(kind) = cfg.output_gate_type.as_deref()
+        && !kind.eq_ignore_ascii_case("sigmoid")
+    {
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "qwen4_exp output_gate_type must be \"sigmoid\", got {kind:?}"
+        )));
+    }
+    let interval = match manifest
+        .linear_attention
+        .resolved_full_attention_interval("qwen4_exp")
+    {
+        Some(0) => {
+            return Err(MlxRunnerError::UnsupportedFeature(
+                "qwen4_exp linear_attention.full_attention_interval must be greater than zero"
+                    .to_string(),
+            ));
+        }
+        Some(value) => u64::from(value),
+        None => {
+            return Err(MlxRunnerError::UnsupportedFeature(
+                "qwen4_exp requires linear_attention.full_attention_interval".to_string(),
+            ));
+        }
+    };
+    let hidden = u64::from(manifest.hidden_size);
+    let hc_width = hidden.saturating_mul(hc_count);
+    let indexer_head_dim = u64::from(cfg.indexer_head_dim.unwrap_or(128));
+    let indexer_rows = u64::from(cfg.indexer_n_heads.unwrap_or(4))
+        .saturating_add(u64::from(cfg.indexer_kv_heads.unwrap_or(1)))
+        .saturating_mul(indexer_head_dim);
+    let gate_packed_q_rows = u64::from(manifest.attention_head_count)
+        .saturating_mul(u64::from(manifest.attention_head_dim))
+        .saturating_mul(2);
+
+    for layer_index in 0..manifest.layer_count {
+        let base = qwen4_exp_layer_base(manifest, layer_index).ok_or_else(|| {
+            MlxRunnerError::UnsupportedFeature(format!(
+                "qwen4_exp layer {layer_index} is missing attn_hyper_connection tensors"
+            ))
+        })?;
+        for site in ["attn_hyper_connection", "mlp_hyper_connection"] {
+            let prefix = format!("{base}.{site}");
+            expect_qwen4_exp_vector(
+                require_qwen4_exp_tensor(manifest, &format!("{prefix}.hc_norm.weight"))?,
+                hc_width,
+            )?;
+            expect_qwen4_exp_matrix_rows(
+                require_qwen4_exp_tensor(
+                    manifest,
+                    &format!("{prefix}.input_mix_weight_down.weight"),
+                )?,
+                hc_lowrank,
+                hc_width,
+            )?;
+            expect_qwen4_exp_matrix_rows(
+                require_qwen4_exp_tensor(
+                    manifest,
+                    &format!("{prefix}.input_mix_weight_up.weight"),
+                )?,
+                hc_width,
+                hc_lowrank,
+            )?;
+            expect_qwen4_exp_matrix_rows(
+                require_qwen4_exp_tensor(
+                    manifest,
+                    &format!("{prefix}.block_inject_weight.weight"),
+                )?,
+                hc_count,
+                hc_width,
+            )?;
+        }
+
+        if (u64::from(layer_index) + 1).is_multiple_of(interval) {
+            // QSA (sparse full-attention) layer: indexer trio plus the
+            // gate-packed q_proj row geometry.
+            let indexer = format!("{base}.self_attn.indexer");
+            expect_qwen4_exp_matrix_rows(
+                require_qwen4_exp_tensor(manifest, &format!("{indexer}.index_qk_proj.weight"))?,
+                indexer_rows,
+                hidden,
+            )?;
+            expect_qwen4_exp_vector(
+                require_qwen4_exp_tensor(manifest, &format!("{indexer}.q_layernorm.weight"))?,
+                indexer_head_dim,
+            )?;
+            expect_qwen4_exp_vector(
+                require_qwen4_exp_tensor(manifest, &format!("{indexer}.k_layernorm.weight"))?,
+                indexer_head_dim,
+            )?;
+            let q_proj = manifest
+                .tensors
+                .iter()
+                .find(|tensor| {
+                    tensor.role == NativeTensorRole::AttentionQ
+                        && tensor.layer_index == Some(layer_index)
+                })
+                .ok_or_else(|| {
+                    MlxRunnerError::UnsupportedFeature(format!(
+                        "qwen4_exp QSA layer {layer_index} is missing self_attn.q_proj"
+                    ))
+                })?;
+            if q_proj.shape.first() != Some(&gate_packed_q_rows) {
+                return Err(MlxRunnerError::UnsupportedFeature(format!(
+                    "qwen4_exp QSA layer {layer_index} q_proj rows must be 2 * heads * head_dim ({gate_packed_q_rows}), got {:?}",
+                    q_proj.shape
+                )));
+            }
+        }
+    }
+
+    // PLE lives on the layers listed in `ple_layer_ids` (1-based ids).
+    let ple_kernel = u64::from(cfg.ple_conv_kernel_size.unwrap_or(4));
+    for &ple_id in &cfg.ple_layer_ids {
+        if ple_id == 0 || ple_id > manifest.layer_count {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "qwen4_exp ple_layer_ids entry {ple_id} is out of range for layer_count {} (ids are 1-based)",
+                manifest.layer_count
+            )));
+        }
+        let layer_index = ple_id - 1;
+        let base = qwen4_exp_layer_base(manifest, layer_index).ok_or_else(|| {
+            MlxRunnerError::UnsupportedFeature(format!(
+                "qwen4_exp PLE layer {layer_index} is missing attn_hyper_connection tensors"
+            ))
+        })?;
+        let ple = format!("{base}.ple");
+        expect_qwen4_exp_matrix_rows(
+            require_qwen4_exp_tensor(manifest, &format!("{ple}.key_proj.weight"))?,
+            hc_width,
+            hidden,
+        )?;
+        expect_qwen4_exp_matrix_rows(
+            require_qwen4_exp_tensor(manifest, &format!("{ple}.value_proj.weight"))?,
+            hidden,
+            hidden,
+        )?;
+        for norm in ["norm_key", "norm_query", "norm_conv"] {
+            expect_qwen4_exp_vector(
+                require_qwen4_exp_tensor(manifest, &format!("{ple}.{norm}.weight"))?,
+                hc_width,
+            )?;
+        }
+        let conv = require_qwen4_exp_tensor(manifest, &format!("{ple}.conv1d.weight"))?;
+        if conv.shape != [hc_width, ple_kernel, 1] {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "qwen4_exp tensor {} must have shape [{hc_width}, {ple_kernel}, 1], got {:?}",
+                conv.name, conv.shape
+            )));
+        }
+        let embedding = format!("{ple}.ple_embedding");
+        for buffer in [
+            "layer_multipliers",
+            "ngram_heads_vocab_sizes",
+            "ngram_heads_offsets",
+        ] {
+            let spec = require_qwen4_exp_tensor(manifest, &format!("{embedding}.{buffer}"))?;
+            if spec.dtype != NativeTensorDataType::I64 {
+                return Err(MlxRunnerError::UnsupportedFeature(format!(
+                    "qwen4_exp PLE hash buffer {} must have dtype i64, got {:?}",
+                    spec.name, spec.dtype
+                )));
+            }
+        }
+        // The n-gram table ships as contiguous row shards from index 0; the
+        // loader gathers by global row id, so gaps or a short shard set would
+        // silently mis-gather.
+        let marker = format!("{embedding}.ngram_embedding.shards.");
+        let mut shard_indices: Vec<u32> = manifest
+            .tensors
+            .iter()
+            .filter_map(|tensor| {
+                tensor
+                    .name
+                    .strip_prefix(&marker)?
+                    .strip_suffix(".weight")?
+                    .parse::<u32>()
+                    .ok()
+            })
+            .collect();
+        shard_indices.sort_unstable();
+        shard_indices.dedup();
+        if shard_indices.is_empty() {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "qwen4_exp PLE layer {layer_index} is missing n-gram table shards under {marker}"
+            )));
+        }
+        for (expected, index) in shard_indices.iter().enumerate() {
+            if *index != expected as u32 {
+                return Err(MlxRunnerError::UnsupportedFeature(format!(
+                    "qwen4_exp PLE n-gram shards are not contiguous from 0: found index {index} at position {expected}"
+                )));
+            }
+        }
+        let split_parts = cfg.split_ngram_parts.unwrap_or(128) as usize;
+        if shard_indices.len() != split_parts {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "qwen4_exp PLE n-gram table ships {} shard(s) but split_ngram_parts is {split_parts}",
+                shard_indices.len()
+            )));
+        }
+    }
+
+    // Root-level final hyper-connection mixer (no block-injection gate).
+    let mixer = [
+        "language_model.model.hyper_connection_mixer",
+        "model.hyper_connection_mixer",
+        "model.language_model.hyper_connection_mixer",
+    ]
+    .into_iter()
+    .find(|prefix| {
+        manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.name == format!("{prefix}.hc_norm.weight"))
+    })
+    .ok_or_else(|| {
+        MlxRunnerError::UnsupportedFeature(
+            "qwen4_exp is missing the root model.hyper_connection_mixer tensors".to_string(),
+        )
+    })?;
+    expect_qwen4_exp_vector(
+        require_qwen4_exp_tensor(manifest, &format!("{mixer}.hc_norm.weight"))?,
+        hc_width,
+    )?;
+    expect_qwen4_exp_matrix_rows(
+        require_qwen4_exp_tensor(manifest, &format!("{mixer}.input_mix_weight_down.weight"))?,
+        hc_lowrank,
+        hc_width,
+    )?;
+    expect_qwen4_exp_matrix_rows(
+        require_qwen4_exp_tensor(manifest, &format!("{mixer}.input_mix_weight_up.weight"))?,
+        hc_width,
+        hc_lowrank,
+    )?;
+    Ok(())
+}
+
+/// Candidate per-layer checkpoint prefixes for qwen4_exp family tensors.
+/// Must mirror the loader's probe prefixes in weights.rs.
+fn qwen4_exp_layer_base(manifest: &NativeModelManifest, layer_index: u32) -> Option<String> {
+    [
+        "language_model.model.layers.",
+        "model.layers.",
+        "model.language_model.layers.",
+    ]
+    .into_iter()
+    .map(|prefix| format!("{prefix}{layer_index}"))
+    .find(|base| {
+        manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.name == format!("{base}.attn_hyper_connection.hc_norm.weight"))
+    })
+}
+
+fn require_qwen4_exp_tensor<'a>(
+    manifest: &'a NativeModelManifest,
+    name: &str,
+) -> Result<&'a NativeTensorSpec, MlxRunnerError> {
+    manifest
+        .tensors
+        .iter()
+        .find(|tensor| tensor.name == name)
+        .ok_or_else(|| {
+            MlxRunnerError::UnsupportedFeature(format!(
+                "qwen4_exp manifest is missing required tensor {name}"
+            ))
+        })
+}
+
+fn expect_qwen4_exp_vector(spec: &NativeTensorSpec, len: u64) -> Result<(), MlxRunnerError> {
+    if spec.shape == [len] {
+        return Ok(());
+    }
+    Err(MlxRunnerError::UnsupportedFeature(format!(
+        "qwen4_exp tensor {} must have shape [{len}], got {:?}",
+        spec.name, spec.shape
+    )))
+}
+
+/// Row-exact matrix shape check. Quantized tensors record the packed file
+/// shape (columns packed), so the column count is only checked for
+/// unquantized storage; row counts stay logical in both layouts.
+fn expect_qwen4_exp_matrix_rows(
+    spec: &NativeTensorSpec,
+    rows: u64,
+    cols: u64,
+) -> Result<(), MlxRunnerError> {
+    let shape_ok = spec.shape.len() == 2
+        && spec.shape[0] == rows
+        && (spec.source_quantized || spec.shape[1] == cols);
+    if shape_ok {
+        return Ok(());
+    }
+    Err(MlxRunnerError::UnsupportedFeature(format!(
+        "qwen4_exp tensor {} must have shape [{rows}, {cols}], got {:?}",
+        spec.name, spec.shape
+    )))
+}
+
 pub(super) fn validate_llama4_manifest(
     manifest: &NativeModelManifest,
 ) -> Result<(), MlxRunnerError> {
@@ -671,10 +1024,10 @@ pub(super) fn validate_qwen_gated_delta_linear_attention(
 ) -> Result<(), MlxRunnerError> {
     if !matches!(
         manifest.model_family.as_str(),
-        "qwen3_5" | "qwen3_next" | "minicpmv4_6"
+        "qwen3_5" | "qwen3_next" | "minicpmv4_6" | "qwen4_exp"
     ) {
         return Err(MlxRunnerError::UnsupportedFeature(
-            "linear_attention is currently supported only for qwen3_5/qwen3_next/MiniCPM-V 4.6 MLX manifests".to_string(),
+            "linear_attention is currently supported only for qwen3_5/qwen3_next/qwen4_exp/MiniCPM-V 4.6 MLX manifests".to_string(),
         ));
     }
     let cfg = &manifest.linear_attention;
@@ -818,4 +1171,631 @@ pub(super) fn validate_gemma4_interleaved_attention(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use std::fs;
+    use std::path::PathBuf;
+
+    use ax_engine_core::{
+        AX_NATIVE_MODEL_MANIFEST_FILE, NativeDiffusionConfig, NativeLinearAttentionConfig,
+        NativeMoeConfig, NativeQwen4ExpConfig, NativeRuntimeStatus, NativeTensorFormat,
+        NativeTensorQuantization, WeightSanitize,
+    };
+
+    use super::*;
+
+    fn tensor(
+        name: &str,
+        role: NativeTensorRole,
+        layer_index: Option<u32>,
+        shape: Vec<u64>,
+    ) -> NativeTensorSpec {
+        NativeTensorSpec {
+            name: name.to_string(),
+            role,
+            layer_index,
+            dtype: NativeTensorDataType::F16,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantization: None,
+            quantized_source: None,
+            shape,
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: 32,
+        }
+    }
+
+    fn i64_tensor(name: &str, layer_index: Option<u32>, shape: Vec<u64>) -> NativeTensorSpec {
+        NativeTensorSpec {
+            dtype: NativeTensorDataType::I64,
+            ..tensor(name, NativeTensorRole::Other, layer_index, shape)
+        }
+    }
+
+    fn ple_shard_tensor(name: &str, layer_index: u32) -> NativeTensorSpec {
+        NativeTensorSpec {
+            dtype: NativeTensorDataType::U32,
+            source_quantized: true,
+            quantization: Some(NativeTensorQuantization {
+                mode: "affine".to_string(),
+                group_size: 32,
+                bits: 8,
+            }),
+            ..tensor(name, NativeTensorRole::Other, Some(layer_index), vec![8, 4])
+        }
+    }
+
+    /// Minimal valid qwen4_exp manifest: one gated-delta layer (0), one QSA
+    /// layer (1), PLE on 0-indexed layer 1 (`ple_layer_ids` is 1-based), the
+    /// root hyper-connection mixer, and no norm tensors anywhere — the layout
+    /// real checkpoints convert to.
+    fn qwen4_exp_test_manifest() -> NativeModelManifest {
+        let mut tensors = vec![
+            tensor(
+                "language_model.model.embed_tokens.weight",
+                NativeTensorRole::TokenEmbedding,
+                None,
+                vec![32, 8],
+            ),
+            tensor(
+                "language_model.lm_head.weight",
+                NativeTensorRole::LmHead,
+                None,
+                vec![32, 8],
+            ),
+            tensor(
+                "language_model.model.hyper_connection_mixer.hc_norm.weight",
+                NativeTensorRole::Other,
+                None,
+                vec![32],
+            ),
+            tensor(
+                "language_model.model.hyper_connection_mixer.input_mix_weight_down.weight",
+                NativeTensorRole::Other,
+                None,
+                vec![2, 32],
+            ),
+            tensor(
+                "language_model.model.hyper_connection_mixer.input_mix_weight_up.weight",
+                NativeTensorRole::Other,
+                None,
+                vec![32, 2],
+            ),
+        ];
+        for layer in 0..2u32 {
+            for site in ["attn_hyper_connection", "mlp_hyper_connection"] {
+                let base = format!("language_model.model.layers.{layer}.{site}");
+                tensors.extend([
+                    tensor(
+                        &format!("{base}.hc_norm.weight"),
+                        NativeTensorRole::Other,
+                        Some(layer),
+                        vec![32],
+                    ),
+                    tensor(
+                        &format!("{base}.input_mix_weight_down.weight"),
+                        NativeTensorRole::Other,
+                        Some(layer),
+                        vec![2, 32],
+                    ),
+                    tensor(
+                        &format!("{base}.input_mix_weight_up.weight"),
+                        NativeTensorRole::Other,
+                        Some(layer),
+                        vec![32, 2],
+                    ),
+                    tensor(
+                        &format!("{base}.block_inject_weight.weight"),
+                        NativeTensorRole::Other,
+                        Some(layer),
+                        vec![4, 32],
+                    ),
+                ]);
+            }
+            let mlp = format!("language_model.model.layers.{layer}.mlp");
+            tensors.extend([
+                tensor(
+                    &format!("{mlp}.gate.weight"),
+                    NativeTensorRole::FfnGateInp,
+                    Some(layer),
+                    vec![4, 8],
+                ),
+                tensor(
+                    &format!("{mlp}.switch_mlp.gate_proj.weight"),
+                    NativeTensorRole::FfnGateExps,
+                    Some(layer),
+                    vec![4, 8, 8],
+                ),
+                tensor(
+                    &format!("{mlp}.switch_mlp.up_proj.weight"),
+                    NativeTensorRole::FfnUpExps,
+                    Some(layer),
+                    vec![4, 8, 8],
+                ),
+                tensor(
+                    &format!("{mlp}.switch_mlp.down_proj.weight"),
+                    NativeTensorRole::FfnDownExps,
+                    Some(layer),
+                    vec![4, 8, 8],
+                ),
+                tensor(
+                    &format!("{mlp}.shared_expert_gate.weight"),
+                    NativeTensorRole::FfnSharedExpertGateInp,
+                    Some(layer),
+                    vec![1, 8],
+                ),
+                tensor(
+                    &format!("{mlp}.shared_expert.gate_proj.weight"),
+                    NativeTensorRole::FfnSharedExpertGate,
+                    Some(layer),
+                    vec![8, 8],
+                ),
+                tensor(
+                    &format!("{mlp}.shared_expert.up_proj.weight"),
+                    NativeTensorRole::FfnSharedExpertUp,
+                    Some(layer),
+                    vec![8, 8],
+                ),
+                tensor(
+                    &format!("{mlp}.shared_expert.down_proj.weight"),
+                    NativeTensorRole::FfnSharedExpertDown,
+                    Some(layer),
+                    vec![8, 8],
+                ),
+            ]);
+        }
+        let linear = "language_model.model.layers.0.linear_attn";
+        tensors.extend([
+            tensor(
+                &format!("{linear}.in_proj_qkv.weight"),
+                NativeTensorRole::LinearAttentionInProjQkv,
+                Some(0),
+                vec![128, 8],
+            ),
+            tensor(
+                &format!("{linear}.in_proj_z.weight"),
+                NativeTensorRole::LinearAttentionInProjZ,
+                Some(0),
+                vec![64, 8],
+            ),
+            tensor(
+                &format!("{linear}.in_proj_a.weight"),
+                NativeTensorRole::LinearAttentionInProjA,
+                Some(0),
+                vec![2, 8],
+            ),
+            tensor(
+                &format!("{linear}.in_proj_b.weight"),
+                NativeTensorRole::LinearAttentionInProjB,
+                Some(0),
+                vec![2, 8],
+            ),
+            tensor(
+                &format!("{linear}.conv1d.weight"),
+                NativeTensorRole::LinearAttentionConv1d,
+                Some(0),
+                vec![128, 1, 4],
+            ),
+            tensor(
+                &format!("{linear}.dt_bias"),
+                NativeTensorRole::LinearAttentionDtBias,
+                Some(0),
+                vec![2],
+            ),
+            tensor(
+                &format!("{linear}.A_log"),
+                NativeTensorRole::LinearAttentionALog,
+                Some(0),
+                vec![2],
+            ),
+            tensor(
+                &format!("{linear}.norm.weight"),
+                NativeTensorRole::LinearAttentionNorm,
+                Some(0),
+                vec![32],
+            ),
+            tensor(
+                &format!("{linear}.out_proj.weight"),
+                NativeTensorRole::LinearAttentionOutProj,
+                Some(0),
+                vec![8, 64],
+            ),
+        ]);
+        let attn = "language_model.model.layers.1.self_attn";
+        tensors.extend([
+            tensor(
+                &format!("{attn}.q_proj.weight"),
+                NativeTensorRole::AttentionQ,
+                Some(1),
+                vec![32, 8],
+            ),
+            tensor(
+                &format!("{attn}.k_proj.weight"),
+                NativeTensorRole::AttentionK,
+                Some(1),
+                vec![8, 8],
+            ),
+            tensor(
+                &format!("{attn}.v_proj.weight"),
+                NativeTensorRole::AttentionV,
+                Some(1),
+                vec![8, 8],
+            ),
+            tensor(
+                &format!("{attn}.o_proj.weight"),
+                NativeTensorRole::AttentionO,
+                Some(1),
+                vec![8, 16],
+            ),
+            tensor(
+                &format!("{attn}.q_norm.weight"),
+                NativeTensorRole::AttentionQNorm,
+                Some(1),
+                vec![8],
+            ),
+            tensor(
+                &format!("{attn}.k_norm.weight"),
+                NativeTensorRole::AttentionKNorm,
+                Some(1),
+                vec![8],
+            ),
+            tensor(
+                &format!("{attn}.indexer.index_qk_proj.weight"),
+                NativeTensorRole::Other,
+                Some(1),
+                vec![20, 8],
+            ),
+            tensor(
+                &format!("{attn}.indexer.q_layernorm.weight"),
+                NativeTensorRole::Other,
+                Some(1),
+                vec![4],
+            ),
+            tensor(
+                &format!("{attn}.indexer.k_layernorm.weight"),
+                NativeTensorRole::Other,
+                Some(1),
+                vec![4],
+            ),
+        ]);
+        let ple = "language_model.model.layers.1.ple";
+        tensors.extend([
+            tensor(
+                &format!("{ple}.key_proj.weight"),
+                NativeTensorRole::Other,
+                Some(1),
+                vec![32, 8],
+            ),
+            tensor(
+                &format!("{ple}.value_proj.weight"),
+                NativeTensorRole::Other,
+                Some(1),
+                vec![8, 8],
+            ),
+            tensor(
+                &format!("{ple}.norm_key.weight"),
+                NativeTensorRole::Other,
+                Some(1),
+                vec![32],
+            ),
+            tensor(
+                &format!("{ple}.norm_query.weight"),
+                NativeTensorRole::Other,
+                Some(1),
+                vec![32],
+            ),
+            tensor(
+                &format!("{ple}.norm_conv.weight"),
+                NativeTensorRole::Other,
+                Some(1),
+                vec![32],
+            ),
+            tensor(
+                &format!("{ple}.conv1d.weight"),
+                NativeTensorRole::Other,
+                Some(1),
+                vec![32, 4, 1],
+            ),
+            i64_tensor(
+                &format!("{ple}.ple_embedding.layer_multipliers"),
+                Some(1),
+                vec![3],
+            ),
+            i64_tensor(
+                &format!("{ple}.ple_embedding.ngram_heads_vocab_sizes"),
+                Some(1),
+                vec![16],
+            ),
+            i64_tensor(
+                &format!("{ple}.ple_embedding.ngram_heads_offsets"),
+                Some(1),
+                vec![16],
+            ),
+        ]);
+        for shard in 0..4u32 {
+            tensors.push(ple_shard_tensor(
+                &format!("{ple}.ple_embedding.ngram_embedding.shards.{shard}.weight"),
+                1,
+            ));
+        }
+
+        NativeModelManifest {
+            schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
+            model_family: "qwen4_exp".to_string(),
+            tensor_format: NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: NativeRuntimeStatus::default(),
+            layer_count: 2,
+            hidden_size: 8,
+            intermediate_size: 0,
+            attention_head_count: 2,
+            attention_head_dim: 8,
+            kv_head_count: 1,
+            vocab_size: 32,
+            tie_word_embeddings: false,
+            rope_theta: Some(10_000_000),
+            rope_theta_swa: None,
+            rope_scaling_type: None,
+            rope_scaling_factor: None,
+            rope_low_freq_factor: None,
+            rope_high_freq_factor: None,
+            rope_original_context_len: None,
+            rope_beta_fast: None,
+            rope_beta_slow: None,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: None,
+            attn_temperature_scale: None,
+            intermediate_size_mlp: 0,
+            query_pre_attn_scalar: None,
+            attention_logit_softcap: None,
+            attn_output_gate: true,
+            partial_rotary_factor: Some(0.25),
+            rms_norm_eps: None,
+            attention_value_from_key_layers: Vec::new(),
+            attention_v_norm_no_scale_layers: Vec::new(),
+            global_head_dim: None,
+            global_kv_head_count: None,
+            sliding_window_size: None,
+            layer_types: Vec::new(),
+            kv_shared_source_layers: Default::default(),
+            final_logit_softcapping: None,
+            final_logits_scale: None,
+            attention_scale_multiplier: None,
+            post_norm_eps: None,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: true,
+            hidden_size_per_layer_input: 0,
+            vocab_size_per_layer_input: None,
+            linear_attention: NativeLinearAttentionConfig {
+                full_attention_interval: Some(2),
+                num_value_heads: Some(2),
+                num_key_heads: Some(1),
+                key_head_dim: Some(32),
+                value_head_dim: Some(32),
+                conv_kernel_dim: Some(4),
+            },
+            mla_attention: Default::default(),
+            moe: NativeMoeConfig {
+                expert_count: Some(4),
+                experts_per_token: Some(2),
+                expert_intermediate_size: Some(8),
+                ..Default::default()
+            },
+            glm_router: Default::default(),
+            deepseek_v4: Default::default(),
+            qwen4_exp: NativeQwen4ExpConfig {
+                hc_count: Some(4),
+                hc_lowrank: Some(2),
+                indexer_head_dim: Some(4),
+                indexer_kv_heads: Some(1),
+                indexer_n_heads: Some(4),
+                split_ngram_parts: Some(4),
+                ple_conv_kernel_size: Some(4),
+                ple_embed_dim: Some(16),
+                ple_layer_ids: vec![2],
+                ..Default::default()
+            },
+            weight_sanitize: WeightSanitize::None,
+            think_start_token_id: None,
+            think_end_token_id: None,
+            diffusion: NativeDiffusionConfig::default(),
+            dropped_tensors: Default::default(),
+            kv_cache_quantization: None,
+            tensors,
+        }
+    }
+
+    fn write_artifacts(manifest: NativeModelManifest) -> NativeModelArtifacts {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ax-mlx-qwen4-exp-manifest-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("fixture directory should create");
+        fs::write(dir.join("model.safetensors"), vec![0_u8; 4096]).expect("weights should write");
+        fs::write(
+            dir.join(AX_NATIVE_MODEL_MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).expect("manifest should serialize"),
+        )
+        .expect("manifest should write");
+        NativeModelArtifacts::from_dir(&dir).expect("fixture manifest should validate")
+    }
+
+    #[test]
+    fn qwen4_exp_arm_accepts_minimal_valid_manifest() {
+        let manifest = qwen4_exp_test_manifest();
+        validate_qwen4_exp_manifest(&manifest).expect("minimal qwen4_exp manifest should pass");
+        // The norm-free fixture must also clear core manifest validation
+        // (the family-scoped FinalNorm/AttentionNorm exemptions).
+        write_artifacts(manifest);
+    }
+
+    #[test]
+    fn qwen4_exp_arm_requires_indexer_on_qsa_layers() {
+        let mut manifest = qwen4_exp_test_manifest();
+        manifest
+            .tensors
+            .retain(|spec| !spec.name.contains(".indexer."));
+
+        let error = validate_qwen4_exp_manifest(&manifest)
+            .expect_err("a QSA layer without its indexer must fail");
+
+        assert!(
+            error.to_string().contains("indexer.index_qk_proj"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn qwen4_exp_arm_requires_ple_on_ple_layer() {
+        let mut missing_resident = qwen4_exp_test_manifest();
+        missing_resident.tensors.retain(|spec| {
+            !(spec.name.contains(".ple.") && !spec.name.contains(".ple_embedding."))
+        });
+        let error = validate_qwen4_exp_manifest(&missing_resident)
+            .expect_err("a PLE layer without resident PLE tensors must fail");
+        assert!(
+            error.to_string().contains("ple.key_proj"),
+            "unexpected error: {error}"
+        );
+
+        let mut missing_shards = qwen4_exp_test_manifest();
+        missing_shards
+            .tensors
+            .retain(|spec| !spec.name.contains(".ngram_embedding.shards."));
+        let error = validate_qwen4_exp_manifest(&missing_shards)
+            .expect_err("a PLE layer without n-gram shards must fail");
+        assert!(
+            error.to_string().contains("n-gram table shards"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn qwen4_exp_family_arm_is_the_live_runner_gate() {
+        // Phase 1 flipped the fail-closed guard: a manifest that satisfies the
+        // family arm is admitted by the runner entry, and the arm (not a
+        // blanket rejection) is now the gate for malformed manifests.
+        let artifacts = write_artifacts(qwen4_exp_test_manifest());
+        validate_mlx_supported_manifest(&artifacts)
+            .expect("qwen4_exp must be admitted now that the family trunk has landed");
+
+        let mut malformed = qwen4_exp_test_manifest();
+        malformed
+            .tensors
+            .retain(|spec| !spec.name.contains(".indexer."));
+        let artifacts = write_artifacts(malformed);
+        let error = validate_mlx_supported_manifest(&artifacts)
+            .expect_err("a QSA layer without its indexer must fail the family arm");
+        assert!(
+            error.to_string().contains("indexer.index_qk_proj"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn qwen4_exp_arm_rejects_genuinely_malformed_manifests() {
+        for (label, mutate) in [
+            (
+                "missing family metadata",
+                Box::new(|m: &mut NativeModelManifest| {
+                    m.qwen4_exp = NativeQwen4ExpConfig::default();
+                }) as Box<dyn Fn(&mut NativeModelManifest)>,
+            ),
+            (
+                "attn_output_gate disabled",
+                Box::new(|m: &mut NativeModelManifest| m.attn_output_gate = false),
+            ),
+            (
+                "q_proj rows not gate-packed",
+                Box::new(|m: &mut NativeModelManifest| {
+                    for spec in &mut m.tensors {
+                        if spec.role == NativeTensorRole::AttentionQ {
+                            spec.shape = vec![16, 8];
+                        }
+                    }
+                }),
+            ),
+            (
+                "ple_layer_ids out of range",
+                Box::new(|m: &mut NativeModelManifest| m.qwen4_exp.ple_layer_ids = vec![3]),
+            ),
+            (
+                "I64 hash buffer with float dtype",
+                Box::new(|m: &mut NativeModelManifest| {
+                    for spec in &mut m.tensors {
+                        if spec.name.ends_with("ple_embedding.layer_multipliers") {
+                            spec.dtype = NativeTensorDataType::F32;
+                        }
+                    }
+                }),
+            ),
+            (
+                "missing root hyper-connection mixer",
+                Box::new(|m: &mut NativeModelManifest| {
+                    m.tensors
+                        .retain(|spec| !spec.name.contains(".hyper_connection_mixer."));
+                }),
+            ),
+        ] {
+            let mut manifest = qwen4_exp_test_manifest();
+            mutate(&mut manifest);
+            let error = validate_qwen4_exp_manifest(&manifest)
+                .expect_err(&format!("{label} should fail closed"));
+            assert!(
+                error.to_string().contains("qwen4_exp"),
+                "{label}: unexpected error message: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn qwen4_exp_arm_defaults_output_gate_to_sigmoid_and_rejects_contradictions() {
+        // Absent field: valid (the typed config defaults it to sigmoid).
+        let manifest = qwen4_exp_test_manifest();
+        validate_qwen4_exp_manifest(&manifest)
+            .expect("absent output_gate_type defaults to sigmoid and stays valid");
+
+        // Explicit sigmoid (any case): valid.
+        let mut manifest = qwen4_exp_test_manifest();
+        manifest.qwen4_exp.output_gate_type = Some("SIGMOID".to_string());
+        validate_qwen4_exp_manifest(&manifest).expect("case-insensitive sigmoid passes");
+
+        // A contradictory value fails closed — it would otherwise silently
+        // take the Qwen3.5 silu gate in the shared gated-delta stack.
+        let mut manifest = qwen4_exp_test_manifest();
+        manifest.qwen4_exp.output_gate_type = Some("silu".to_string());
+        let error = validate_qwen4_exp_manifest(&manifest)
+            .expect_err("a silu output gate must fail closed");
+        assert!(
+            error.to_string().contains("output_gate_type"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn qwen4_exp_arm_is_scoped_to_the_family() {
+        // A manifest without the qwen4_exp block never passes the arm, and
+        // the arm's requirements never leak into other families (the guard
+        // in `validate_mlx_supported_manifest` is family-string gated too).
+        let mut manifest = qwen4_exp_test_manifest();
+        manifest.model_family = "qwen3_5".to_string();
+        manifest.qwen4_exp = NativeQwen4ExpConfig::default();
+
+        let error = validate_qwen4_exp_manifest(&manifest)
+            .expect_err("non-qwen4_exp manifests must not pass the family arm");
+
+        assert!(
+            error.to_string().contains("requires qwen4_exp metadata"),
+            "unexpected error: {error}"
+        );
+    }
 }

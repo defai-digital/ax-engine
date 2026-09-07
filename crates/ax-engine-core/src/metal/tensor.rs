@@ -109,6 +109,7 @@ pub(super) fn native_dtype_size_bytes(dtype: NativeTensorDataType) -> usize {
         NativeTensorDataType::F16 | NativeTensorDataType::Bf16 => 2,
         NativeTensorDataType::F32 => 4,
         NativeTensorDataType::I8 | NativeTensorDataType::U8 => 1,
+        NativeTensorDataType::I64 => 8,
         // Quantized block types have no simple per-element byte size.
         // Callers must handle row offsets via q4km_row_byte_offset() or dequantize at load time.
         NativeTensorDataType::U32 => 4,
@@ -375,6 +376,10 @@ pub(super) fn decode_native_tensor_scalar(
         NativeTensorDataType::F32 => Some(f32::from_le_bytes(bytes.try_into().ok()?)),
         NativeTensorDataType::I8 => Some(i8::from_le_bytes([*bytes.first()?]) as f32),
         NativeTensorDataType::U8 => Some(*bytes.first()? as f32),
+        NativeTensorDataType::I64 => {
+            let raw = i64::from_le_bytes(bytes.try_into().ok()?);
+            Some(raw as f32)
+        }
         NativeTensorDataType::U32 => {
             let raw = u32::from_le_bytes(bytes.try_into().ok()?);
             Some(raw as f32)
@@ -426,6 +431,7 @@ pub(super) fn round_f32_to_native_dtype(value: f32, dtype: NativeTensorDataType)
         NativeTensorDataType::F32
         | NativeTensorDataType::I8
         | NativeTensorDataType::U8
+        | NativeTensorDataType::I64
         | NativeTensorDataType::U32
         | NativeTensorDataType::Q4Km
         | NativeTensorDataType::Q5Km

@@ -107,6 +107,8 @@ pub(crate) fn uses_text_config(model_type: &str) -> bool {
             | "qwen3_5_moe"
             | "qwen3_5_moe_text"
             | "qwen3_5_text"
+            | "qwen4_exp"
+            | "qwen4_exp_text"
             | "qwen3_next"
             | "qwen3_6"
             | "qwen3.5"
@@ -175,7 +177,16 @@ pub(crate) fn is_qwen3_5_family(model_type: &str) -> bool {
 }
 
 pub(crate) fn is_qwen_gated_delta_family(model_type: &str) -> bool {
-    is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+    is_qwen3_5_family(model_type)
+        || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+        || is_qwen4_exp(model_type)
+}
+
+/// Qwen4-exp (Qwen3.8-Flash-Next): hybrid gated-delta linear attention +
+/// periodic full attention + MoE + hyper-connections. `qwen4_exp_text` is
+/// the nested text-tower alias (like `qwen3_5_text`).
+pub(crate) fn is_qwen4_exp(model_type: &str) -> bool {
+    matches!(model_type, "qwen4_exp" | "qwen4_exp_text")
 }
 
 pub(crate) fn is_gemma4_target_model_type(model_type: &str) -> bool {
@@ -366,7 +377,9 @@ pub(crate) fn is_mla_family(model_type: &str) -> bool {
 }
 
 pub(crate) fn defaults_attn_output_gate(model_type: &str) -> bool {
-    is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+    is_qwen3_5_family(model_type)
+        || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+        || is_qwen4_exp(model_type)
 }
 
 pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
@@ -376,8 +389,10 @@ pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
     // expert routing weights when config.json had no explicit field.
     // MiniMax M3's mlx-vlm router always L1-normalizes the selected sigmoid
     // scores before `routed_scaling_factor`, even when config omits the field.
+    // qwen4_exp follows the qwen3_5 Qwen MoE hybrid semantics.
     is_qwen3_5_family(model_type)
         || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+        || is_qwen4_exp(model_type)
         || is_nemotron_h(model_type)
         || is_minimax_m3(model_type)
 }
@@ -568,6 +583,148 @@ pub(crate) fn deepseek_v4_config(
     }
 }
 
+/// Parse Qwen4-exp (Qwen3.8-Flash-Next) family parameters from config.json.
+///
+/// Every field nests under `text_config` (the `arch_*` helpers resolve that
+/// via `uses_text_config`); the `mtp` dict and `rope_parameters` object are
+/// read at the same nesting level. Absent fields fall back to the reference
+/// HF config values for the family so converted manifests carry the complete
+/// block for the Phase 1 runtime trunk.
+pub(crate) fn qwen4_exp_config(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> NativeQwen4ExpConfig {
+    if !is_qwen4_exp(model_type) {
+        return NativeQwen4ExpConfig::default();
+    }
+
+    // Flat key lookup at the architecture level (top level, then text_config).
+    let nested = |key: &str| -> Option<&serde_json::Value> {
+        config.get(key).or_else(|| {
+            if uses_text_config(model_type) {
+                config.get("text_config").and_then(|tc| tc.get(key))
+            } else {
+                None
+            }
+        })
+    };
+    let get_u32 = |key: &str, default: u32| -> Option<u32> {
+        arch_u64(config, model_type, key)
+            .and_then(u64_to_u32)
+            .or(Some(default))
+    };
+    let get_u32_list = |key: &str, default: &[u32]| -> Vec<u32> {
+        nested(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_u64())
+                    .filter_map(u64_to_u32)
+                    .collect()
+            })
+            .unwrap_or_else(|| default.to_vec())
+    };
+
+    let mtp = nested("mtp");
+    let rope_parameters = nested("rope_parameters");
+
+    NativeQwen4ExpConfig {
+        hc_count: get_u32("hc_count", 4),
+        hc_lowrank: get_u32("hc_lowrank", 320),
+        indexer_budget: get_u32("indexer_budget", 2048),
+        indexer_compress_ratio: get_u32("indexer_compress_ratio", 4),
+        indexer_head_dim: get_u32("indexer_head_dim", 128),
+        indexer_kv_heads: get_u32("indexer_kv_heads", 1),
+        indexer_n_heads: get_u32("indexer_n_heads", 4),
+        ngram_size: get_u32("ngram_size", 3),
+        ngram_vocab_size_base: get_u32("ngram_vocab_size_base", 20_000_000),
+        split_ngram_parts: get_u32("split_ngram_parts", 128),
+        heads_per_ngram: get_u32("heads_per_ngram", 8),
+        ple_conv_kernel_size: get_u32("ple_conv_kernel_size", 4),
+        ple_embed_dim: get_u32("ple_embed_dim", 2560),
+        ple_layer_ids: get_u32_list("ple_layer_ids", &[2]),
+        mtp: NativeQwen4ExpMtpConfig {
+            // `num_hidden_layers` / `use_dedicated_embeddings` also exist as
+            // flat `mtp_num_hidden_layers` / `mtp_use_dedicated_embeddings`
+            // siblings in the reference config; prefer the `mtp` dict.
+            num_hidden_layers: mtp
+                .and_then(|m| m.get("num_hidden_layers"))
+                .and_then(|v| v.as_u64())
+                .and_then(u64_to_u32)
+                .or_else(|| {
+                    arch_u64(config, model_type, "mtp_num_hidden_layers").and_then(u64_to_u32)
+                })
+                .or(Some(1)),
+            hybrid: mtp
+                .and_then(|m| m.get("hybrid"))
+                .and_then(|v| v.as_bool())
+                .or(Some(true)),
+            layer_types: mtp
+                .and_then(|m| m.get("layer_types"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["full_attention".to_string()]),
+            rope_theta: mtp
+                .and_then(|m| m.get("rope_theta"))
+                .and_then(|v| v.as_f64())
+                .and_then(f64_to_u32)
+                .or(Some(10_000_000)),
+            use_dedicated_embeddings: arch_bool(config, model_type, "mtp_use_dedicated_embeddings")
+                .or(Some(false)),
+        },
+        output_gate_type: nested("output_gate_type")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| Some("sigmoid".to_string())),
+        partial_rotary_factor: arch_f64(config, model_type, "partial_rotary_factor")
+            .or_else(|| {
+                rope_parameters
+                    .and_then(|rp| rp.get("partial_rotary_factor"))
+                    .and_then(|v| v.as_f64())
+            })
+            .map(|v| v as f32)
+            .filter(|&v| v <= 1.0)
+            .or(Some(0.25)),
+        mrope_section: rope_parameters
+            .and_then(|rp| rp.get("mrope_section"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_u64())
+                    .filter_map(u64_to_u32)
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![11, 11, 10]),
+        mrope_interleaved: rope_parameters
+            .and_then(|rp| rp.get("mrope_interleaved"))
+            .and_then(|v| v.as_bool())
+            .or(Some(true)),
+        shared_expert_intermediate_size: get_u32("shared_expert_intermediate_size", 640),
+        // The PLE n-gram hash is EOS-segment aware; `eos_token_id` lives at
+        // the top level of config.json (a single id, or a list whose first
+        // entry is the primary EOS). Absent → the typed config applies the
+        // reference family default.
+        eos_token_id: nested("eos_token_id").and_then(|v| match v {
+            serde_json::Value::Number(_) => v.as_u64().and_then(u64_to_u32),
+            serde_json::Value::Array(ids) => {
+                ids.first().and_then(|id| id.as_u64()).and_then(u64_to_u32)
+            }
+            _ => None,
+        }),
+        // Tokenizer pad id (a single top-level id in config.json). The
+        // mask-free text trunk hashes pad positions as EOS when this is
+        // declared and differs from the model EOS.
+        pad_token_id: nested("pad_token_id")
+            .and_then(|v| v.as_u64())
+            .and_then(u64_to_u32),
+    }
+}
+
 pub(crate) fn glm_router_config(
     config: &serde_json::Value,
     model_type: &str,
@@ -609,6 +766,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
             | "qwen3-vl-moe"
     ) || (is_qwen3_5_family(model_type)
         && config_has_moe_experts(config, model_type));
+    let is_qwen4_exp_moe = is_qwen4_exp(model_type) && config_has_moe_experts(config, model_type);
     let is_qwen3_next_moe = matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6");
     let is_glm_moe = is_glm4_moe_lite(model_type);
     let is_mixtral = model_type == "mixtral";
@@ -623,6 +781,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     if !is_gemma4_moe
         && !is_diffusion_gemma_moe
         && !is_qwen3_moe
+        && !is_qwen4_exp_moe
         && !is_qwen3_next_moe
         && !is_glm_moe
         && !is_mixtral

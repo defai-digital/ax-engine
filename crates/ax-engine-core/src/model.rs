@@ -37,6 +37,10 @@ pub enum NativeTensorDataType {
     F32,
     I8,
     U8,
+    /// Signed 64-bit integer buffers — not weights. qwen4_exp PLE n-gram hash
+    /// tables (`layer_multipliers`, `ngram_heads_vocab_sizes`,
+    /// `ngram_heads_offsets`) are genuine I64 tensors.
+    I64,
     /// Packed uint32 — used by MLX affine quantization for the weight tensor.
     /// Bit width and group size are carried by per-tensor quantization metadata.
     /// Scales and biases are stored as separate bf16/f32 tensors with the same base name.
@@ -399,7 +403,10 @@ impl NativeLinearAttentionConfig {
 
     pub fn resolved_full_attention_interval(&self, model_family: &str) -> Option<u32> {
         self.full_attention_interval.or_else(|| {
-            let is_hybrid_family = matches!(model_family, "qwen3_5" | "qwen3_next" | "minicpmv4_6");
+            let is_hybrid_family = matches!(
+                model_family,
+                "qwen3_5" | "qwen3_next" | "minicpmv4_6" | "qwen4_exp"
+            );
             (self.is_enabled() && is_hybrid_family)
                 .then_some(QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL)
         })
@@ -539,6 +546,143 @@ impl NativeDeepseekV4Config {
             || self.num_nextn_predict_layers.is_some()
             || self.scoring_func.is_some()
             || self.swiglu_limit.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
+    }
+}
+
+/// Qwen4-exp MTP (multi-token prediction) predictor parameters.
+///
+/// Mirrors the HF `text_config.mtp` sub-dict; `use_dedicated_embeddings`
+/// comes from the flat `text_config.mtp_use_dedicated_embeddings` sibling
+/// field instead of the `mtp` dict itself.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NativeQwen4ExpMtpConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_hidden_layers: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hybrid: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layer_types: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_theta: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_dedicated_embeddings: Option<bool>,
+}
+
+impl NativeQwen4ExpMtpConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.num_hidden_layers.is_some()
+            || self.hybrid.is_some()
+            || !self.layer_types.is_empty()
+            || self.rope_theta.is_some()
+            || self.use_dedicated_embeddings.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
+    }
+}
+
+/// Qwen4-exp (Qwen3.8-Flash-Next) architecture parameters that have no home
+/// in the generic manifest fields: hyper-connection (HC) geometry, the sparse
+/// indexer, n-gram embedding tables, per-layer embeddings (PLE), the MTP
+/// predictor block, and the multimodal RoPE (MRoPE) axis split.
+///
+/// Gated-delta linear-attention dims stay in [`NativeLinearAttentionConfig`]
+/// and the MoE shape in [`NativeMoeConfig`]; this block carries only the
+/// family-specific extras. The MLX runtime trunk is not implemented yet, so
+/// these fields are parsed at convert time for the Phase 1 graph.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NativeQwen4ExpConfig {
+    /// Hyper-connection stream count (`hc_count`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_count: Option<u32>,
+    /// Hyper-connection low-rank width (`hc_lowrank`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_lowrank: Option<u32>,
+    /// Sparse-indexer token budget (`indexer_budget`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_budget: Option<u32>,
+    /// Sparse-indexer KV compression ratio (`indexer_compress_ratio`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_compress_ratio: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_head_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_kv_heads: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_n_heads: Option<u32>,
+    /// N-gram width for the n-gram embedding tables (`ngram_size`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ngram_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ngram_vocab_size_base: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_ngram_parts: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heads_per_ngram: Option<u32>,
+    /// Per-layer embedding (PLE) conv kernel size (`ple_conv_kernel_size`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ple_conv_kernel_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ple_embed_dim: Option<u32>,
+    /// Layer indices that carry a per-layer embedding (`ple_layer_ids`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ple_layer_ids: Vec<u32>,
+    #[serde(default, skip_serializing_if = "NativeQwen4ExpMtpConfig::is_disabled")]
+    pub mtp: NativeQwen4ExpMtpConfig,
+    /// Attention output gate kind (`output_gate_type`, e.g. "sigmoid").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_gate_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_rotary_factor: Option<f32>,
+    /// MRoPE axis split (`rope_parameters.mrope_section`, three entries).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mrope_section: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mrope_interleaved: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_expert_intermediate_size: Option<u32>,
+    /// Model EOS token id (`eos_token_id` from config.json) consumed by the
+    /// PLE n-gram hash's EOS-segment-aware shifts. Not a generation stop
+    /// token — the runtime trunk reads the *first* declared id here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eos_token_id: Option<u32>,
+    /// Tokenizer pad token id (`pad_token_id` from config.json). When
+    /// declared and distinct from `eos_token_id`, the batch=1 text trunk
+    /// substitutes pad ids with EOS in the ids handed to the PLE hash (the
+    /// reference's conv-mask substitution; the text path has no conv mask).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pad_token_id: Option<u32>,
+}
+
+impl NativeQwen4ExpConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.hc_count.is_some()
+            || self.hc_lowrank.is_some()
+            || self.indexer_budget.is_some()
+            || self.indexer_compress_ratio.is_some()
+            || self.indexer_head_dim.is_some()
+            || self.indexer_kv_heads.is_some()
+            || self.indexer_n_heads.is_some()
+            || self.ngram_size.is_some()
+            || self.ngram_vocab_size_base.is_some()
+            || self.split_ngram_parts.is_some()
+            || self.heads_per_ngram.is_some()
+            || self.ple_conv_kernel_size.is_some()
+            || self.ple_embed_dim.is_some()
+            || !self.ple_layer_ids.is_empty()
+            || self.mtp.is_enabled()
+            || self.output_gate_type.is_some()
+            || self.partial_rotary_factor.is_some()
+            || !self.mrope_section.is_empty()
+            || self.mrope_interleaved.is_some()
+            || self.shared_expert_intermediate_size.is_some()
+            || self.eos_token_id.is_some()
+            || self.pad_token_id.is_some()
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -1022,6 +1166,10 @@ pub struct NativeModelManifest {
     /// model families.
     #[serde(default, skip_serializing_if = "NativeDeepseekV4Config::is_disabled")]
     pub deepseek_v4: NativeDeepseekV4Config,
+    /// Qwen4-exp (Qwen3.8-Flash-Next) architecture parameters. Disabled for
+    /// all other model families.
+    #[serde(default, skip_serializing_if = "NativeQwen4ExpConfig::is_disabled")]
+    pub qwen4_exp: NativeQwen4ExpConfig,
     /// Weight on-disk convention. Defaults to `None` (mlx-community
     /// pre-sanitized layout) so existing manifests deserialize unchanged.
     /// Set to `hf_to_mlx` in raw HuggingFace checkpoints' manifests to
@@ -1649,7 +1797,15 @@ pub(crate) fn validate_native_model_manifest(
         NativeTensorRole::TokenEmbedding,
         "token_embedding",
     )?;
-    require_global_role(&global_roles, NativeTensorRole::FinalNorm, "final_norm")?;
+    // qwen4_exp (Qwen3.8-Flash-Next) has no `model.norm`: hyper-connections
+    // replace the final RMSNorm, and the root hyper-connection mixer's grouped
+    // RMSNorm is the family's final normalization. The MLX loader mirrors that
+    // norm into the shared final-norm slot (weights.rs), so the family is
+    // exempt from the FinalNorm role requirement. Same gate the loader uses.
+    let is_qwen4_exp = manifest.qwen4_exp.is_enabled();
+    if !is_qwen4_exp {
+        require_global_role(&global_roles, NativeTensorRole::FinalNorm, "final_norm")?;
+    }
     // EmbeddingGemma is a bidirectional encoder: no LM head (never produces
     // logits), but it requires the two sentence-transformers Dense projections.
     // Nemotron 3 Embed is also encoder-only mean-pool with no Dense head and no
@@ -1704,12 +1860,17 @@ pub(crate) fn validate_native_model_manifest(
                 .ok_or_else(|| NativeModelError::InvalidManifest {
                     message: format!("missing tensors for layer {}", layer_index),
                 })?;
-        require_layer_role(
-            roles,
-            NativeTensorRole::AttentionNorm,
-            layer_index,
-            "attention_norm",
-        )?;
+        // qwen4_exp has no input_layernorm: the attention-branch
+        // hyper-connection's grouped RMSNorm replaces it (the loader mirrors
+        // that norm into the shared attn_norm slot).
+        if !is_qwen4_exp {
+            require_layer_role(
+                roles,
+                NativeTensorRole::AttentionNorm,
+                layer_index,
+                "attention_norm",
+            )?;
+        }
 
         // Nemotron-H layers are single residual mixers (Mamba / attention / MoE)
         // without a classic attn+FFN sandwich — skip FFN/post-norm requirements
@@ -1751,8 +1912,10 @@ pub(crate) fn validate_native_model_manifest(
         }
 
         // ffn_norm is optional when attention_post_norm serves as the FFN norm
-        // (e.g. Qwen3.5 linear attention layers).
-        if !roles.contains(&NativeTensorRole::FfnNorm)
+        // (e.g. Qwen3.5 linear attention layers). qwen4_exp has neither: the
+        // FFN-branch hyper-connection norm replaces both.
+        if !is_qwen4_exp
+            && !roles.contains(&NativeTensorRole::FfnNorm)
             && !roles.contains(&NativeTensorRole::AttentionPostNorm)
         {
             return Err(NativeModelError::InvalidManifest {
@@ -2603,7 +2766,11 @@ fn validate_deepseek_v4_layer(
 }
 
 fn moe_requires_shared_expert(manifest: &NativeModelManifest) -> bool {
-    manifest.moe.is_enabled() && matches!(manifest.model_family.as_str(), "qwen3_5" | "qwen3_next")
+    manifest.moe.is_enabled()
+        && matches!(
+            manifest.model_family.as_str(),
+            "qwen3_5" | "qwen3_next" | "qwen4_exp"
+        )
 }
 
 fn validate_native_model_tensor_shapes(
@@ -2630,9 +2797,14 @@ fn validate_native_model_tensor_shapes(
     )?;
     expect_matrix_shape(token_embedding, vocab_size, hidden_size, "token_embedding")?;
 
-    let final_norm =
-        required_global_tensor_spec(manifest, NativeTensorRole::FinalNorm, "final_norm")?;
-    expect_vector_shape(final_norm, hidden_size, "final_norm")?;
+    let is_qwen4_exp = manifest.qwen4_exp.is_enabled();
+    // qwen4_exp checkpoints carry no `model.norm` (see the role-presence gate
+    // above), so there is no final_norm tensor to shape-check.
+    if !is_qwen4_exp {
+        let final_norm =
+            required_global_tensor_spec(manifest, NativeTensorRole::FinalNorm, "final_norm")?;
+        expect_vector_shape(final_norm, hidden_size, "final_norm")?;
+    }
 
     // EmbeddingGemma encoder: no LM head (see role-presence check above), so skip
     // the lm_head shape validation; validate the Dense projection head instead.
@@ -2769,13 +2941,17 @@ fn validate_native_model_tensor_shapes(
     }
 
     for layer_index in 0..manifest.layer_count {
-        let attention_norm = required_layer_tensor_spec(
-            manifest,
-            layer_index,
-            NativeTensorRole::AttentionNorm,
-            "attention_norm",
-        )?;
-        expect_vector_shape(attention_norm, hidden_size, "attention_norm")?;
+        // qwen4_exp layers carry no input_layernorm (hyper-connection norms
+        // replace it), so there is no attention_norm tensor to shape-check.
+        if !is_qwen4_exp {
+            let attention_norm = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::AttentionNorm,
+                "attention_norm",
+            )?;
+            expect_vector_shape(attention_norm, hidden_size, "attention_norm")?;
+        }
         if let Some(attention_post_norm) = manifest_tensor(
             manifest,
             NativeTensorRole::AttentionPostNorm,
@@ -5261,6 +5437,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,

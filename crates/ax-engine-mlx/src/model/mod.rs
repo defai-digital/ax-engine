@@ -135,6 +135,9 @@ pub(crate) use families::standard::layer_forward_bidirectional;
 // The MTP module drives the nextn block directly (`mtp.rs`); the family owns
 // the packed hyper-connection residual it threads through that block.
 pub(crate) use families::deepseek_v4 as deepseek_v4_family;
+// The MTP module drives the qwen4_exp hybrid draft block directly (`mtp.rs`);
+// the family owns the packed gated-residual stream and the block composition.
+pub(crate) use families::qwen4_exp as qwen4_exp_family;
 
 /// Read and reset the batched-decode per-stage timing accumulators
 /// (`AX_MLX_BATCHED_PROFILE=1`); `[pre_attn, attention, o_proj, ffn]` µs.
@@ -271,6 +274,16 @@ pub fn layer_forward(
             // fails loudly.
             panic!(
                 "deepseek_v4 layers must run through the dedicated deepseek_v4 forward path (packed hyper-connection residual)"
+            )
+        }
+        Some(LayerForwardRoute::Qwen4Exp) => {
+            // Unreachable by construction: qwen4_exp forwards dispatch to
+            // `qwen4_exp_forward_*` before the layer loop — the family owns
+            // the packed gated-residual stream (plus PLE/QSA state), which the
+            // E-wide `layer_forward` contract cannot express. Fails loudly for
+            // a bypassing caller, same as the DeepseekV4 arm above.
+            unreachable!(
+                "qwen4_exp layers must run through the dedicated qwen4_exp forward path (packed gated-residual stream)"
             )
         }
         Some(LayerForwardRoute::Mistral3) => families::mistral3::layer_forward(
@@ -1042,6 +1055,18 @@ fn forward_and_logits_mode(
             logits_mode,
         );
     }
+    // qwen4_exp owns its packed gated-residual stream (and the PLE hash needs
+    // the host token ids); dispatch before the generic E-wide path.
+    if cfg.qwen4_exp.is_some() {
+        return qwen4_exp_forward_and_logits_mode(
+            cfg,
+            weights,
+            token_ids,
+            cache,
+            token_offset,
+            logits_mode,
+        );
+    }
     families::qwen3_linear::clear_qwen_prefill_pending_ffn();
     let profile_prefill = token_ids.len() > 1 && prefill_profile_enabled();
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
@@ -1403,6 +1428,195 @@ fn deepseek_v4_forward_lazy_single_and_logits_mode(
     finalize_lm_head_logits(cfg, &logits, lazy_mode.logits_mode())
 }
 
+// ── qwen4_exp (Qwen3.8-Flash-Next) forward path ─────────────────────────────
+//
+// qwen4_exp owns the packed `[1, seq, hc_count * hidden]` gated-residual
+// stream end-to-end; these helpers keep the generic `layer_forward` dispatch
+// (E-wide) out of the loop and expose E-wide boundaries only at embed and at
+// the post-mixer tail. There is no final RMSNorm: the root
+// hyper-connection mixer's grouped RMSNorm is the family's final
+// normalization.
+
+/// qwen4_exp trunk: embed `ids_1d` → expand to the packed stream → per-layer
+/// `families::qwen4_exp::layer_forward`. Returns the packed residual
+/// `[1, seq, hc*hidden]`. `token_ids` is the host copy of `ids_1d` — the PLE
+/// n-gram hash needs the raw ids every forward. QSA layers get text mRoPE
+/// positions `[p, p, p]` derived from `token_offset`.
+fn qwen4_exp_forward_trunk(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    ids_1d: &MlxArray,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> MlxArray {
+    let Some(q4e) = cfg.qwen4_exp.as_ref() else {
+        unreachable!("qwen4_exp trunk requires ModelConfig.qwen4_exp");
+    };
+    let seq = token_ids.len();
+    let mut hidden = embed_tokens_arr(ids_1d, &weights.token_embedding, cfg.hidden_size);
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    let mut packed = shared::expand_embedding(&hidden, q4e.hc_count);
+    // PLE hash ids: pad positions hash as EOS when the pack declares a pad id
+    // distinct from EOS (the text path carries no conv mask).
+    let ple_ids = families::qwen4_exp::ple_input_ids(token_ids, q4e.pad_token_id, q4e.eos_token_id);
+    let positions: Vec<[i32; 3]> = (token_offset..token_offset + seq)
+        .map(|position| [position as i32; 3])
+        .collect();
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        packed = families::qwen4_exp::layer_forward(
+            cfg, layer_w, &packed, &ple_ids, &positions, cache, li,
+        );
+    }
+    packed
+}
+
+/// qwen4_exp trunk + root-level `hyper_connection_mixer` collapse →
+/// `[1, seq, hidden]`.
+fn qwen4_exp_forward_hidden(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    ids_1d: &MlxArray,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> MlxArray {
+    let Some(q4e) = cfg.qwen4_exp.as_ref() else {
+        unreachable!("qwen4_exp trunk requires ModelConfig.qwen4_exp");
+    };
+    let packed = qwen4_exp_forward_trunk(cfg, weights, ids_1d, token_ids, cache, token_offset);
+    let Some(root) = weights.qwen4_exp_root.as_ref() else {
+        unreachable!("qwen4_exp trunk requires Qwen4ExpRootWeights (hyper_connection_mixer)");
+    };
+    let mixer = families::qwen4_exp::gated_residual(&root.mixer);
+    shared::mixer_output(
+        &packed,
+        &mixer,
+        q4e.hc_count,
+        cfg.hidden_size,
+        cfg.rms_norm_eps,
+    )
+}
+
+/// qwen4_exp counterpart of [`forward_and_logits_mode`]: last-position logits
+/// `[vocab]`, or — for [`FinalLogitsMode::Skip`] — the packed residual after
+/// the last layer (mixer collapse and lm_head skipped; the gated-residual
+/// write-back consumes the full stream, so every layer runs its full FFN —
+/// the same no-pruning policy as DeepSeek V4).
+fn qwen4_exp_forward_and_logits_mode(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    logits_mode: FinalLogitsMode,
+) -> MlxArray {
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let seq = token_ids.len();
+    if matches!(logits_mode, FinalLogitsMode::Skip) {
+        return qwen4_exp_forward_trunk(cfg, weights, &ids_1d, token_ids, cache, token_offset);
+    }
+    let hidden = qwen4_exp_forward_hidden(cfg, weights, &ids_1d, token_ids, cache, token_offset);
+    let last_hidden = if seq > 1 {
+        let last = (seq - 1) as i32;
+        let hs = cfg.hidden_size as i32;
+        slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
+    } else {
+        hidden
+    };
+    let logits = qw(&last_hidden, &weights.lm_head);
+    let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
+    reshape(&logits, &[cfg.vocab_size as i32], None)
+}
+
+/// qwen4_exp counterpart of [`forward_lazy_single_and_logits_mode`]:
+/// single-token forward from a (possibly lazy) token array, returning
+/// `[1, 1, vocab]`. The PLE n-gram hash runs on the host, so the lazy token
+/// materializes here — one scalar readback per decode step.
+fn qwen4_exp_forward_lazy_single_and_logits_mode(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_arr: &MlxArray,
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    lazy_mode: LazySingleTokenMode,
+) -> MlxArray {
+    mlx_sys::eval(&[token_arr]);
+    let token_data = token_arr.data_u32();
+    let Some(&token_id) = token_data.first() else {
+        unreachable!("qwen4_exp lazy decode requires a singleton token array");
+    };
+    let hidden =
+        qwen4_exp_forward_hidden(cfg, weights, token_arr, &[token_id], cache, token_offset);
+    let logits = qw(&hidden, &weights.lm_head);
+    finalize_lm_head_logits(cfg, &logits, lazy_mode.logits_mode())
+}
+
+/// qwen4_exp MTP verify/prefill forward: per-position logits `[seq, vocab]`
+/// plus the packed pre-mixer residual `[1, seq, hc*hidden]` — the MTP draft
+/// block's `packed_hidden` input (the second return is the fusion source, NOT
+/// the mixer-collapsed E-wide hidden). qwen4_exp counterpart of
+/// [`deepseek_v4_forward_all_positions_with_packed`]: the runner slices draft
+/// rows from the second return with width `hc_count * hidden_size`; every
+/// other all-positions caller keeps the mixer-collapsed helpers.
+///
+/// `native_greedy_logits` selects the logit contract, mirroring
+/// [`forward_all_positions_with_post_norm_ids`]: `true` returns the ArgmaxOnly
+/// form (native lm_head dtype, no softcap, no vocab-wide f32 cast — the same
+/// arithmetic as production `forward_argmax`) for greedy accept decisions;
+/// `false` returns the f32 (+ softcap) form sampled-path consumers need.
+pub fn qwen4_exp_forward_all_positions_with_packed(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    native_greedy_logits: bool,
+) -> (MlxArray, MlxArray) {
+    let Some(q4e) = cfg.qwen4_exp.as_ref() else {
+        unreachable!("qwen4_exp packed forward requires ModelConfig.qwen4_exp");
+    };
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let packed = qwen4_exp_forward_trunk(cfg, weights, &ids_1d, token_ids, cache, token_offset);
+    let Some(root) = weights.qwen4_exp_root.as_ref() else {
+        unreachable!(
+            "qwen4_exp packed forward requires Qwen4ExpRootWeights (hyper_connection_mixer)"
+        );
+    };
+    let mixer = families::qwen4_exp::gated_residual(&root.mixer);
+    let hidden = shared::mixer_output(
+        &packed,
+        &mixer,
+        q4e.hc_count,
+        cfg.hidden_size,
+        cfg.rms_norm_eps,
+    );
+    let logits = qw(&hidden, &weights.lm_head);
+    let seq = token_ids.len() as i32;
+    let logits_out = if native_greedy_logits {
+        // ArgmaxOnly contract (production `forward_argmax`): native lm_head
+        // dtype, no softcap, no vocab-wide f32 cast. Greedy accept decisions
+        // consume argmax indices; they must come from the same arithmetic as
+        // the MTP-off singleton path.
+        reshape(&logits, &[seq, cfg.vocab_size as i32], None)
+    } else {
+        let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+        let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+        reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None)
+    };
+    (logits_out, packed)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     cfg: &ModelConfig,
@@ -1419,6 +1633,13 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
         // hidden + media-overlay path cannot express it. Defensive guard —
         // V4 manifests carry no vision tower, so this is unreachable.
         panic!("deepseek_v4 does not support the initial-hidden/media forward path");
+    }
+    if cfg.qwen4_exp.is_some() {
+        // qwen4_exp is text-only (the vision tower is dropped fail-loud at
+        // convert) and owns the packed gated-residual stream; the
+        // pre-scattered hidden + media-overlay path cannot express it.
+        // Defensive guard — unreachable for valid manifests.
+        unreachable!("qwen4_exp does not support the initial-hidden/media forward path");
     }
     // Gemma 4 E-series derives a separate embedding for every language
     // layer. Media placeholder IDs are outside that auxiliary embedding
@@ -1673,6 +1894,12 @@ pub fn forward_all_positions_update_cache(
             deepseek_v4_forward_trunk(cfg, weights, &ids_1d, token_ids.len(), cache, token_offset);
         return;
     }
+    if cfg.qwen4_exp.is_some() {
+        // Trunk only: cache writes (QSA K/V, PLE rings, linear state) are the
+        // point; the mixer collapse and lm_head are skipped.
+        let _ = qwen4_exp_forward_trunk(cfg, weights, &ids_1d, token_ids, cache, token_offset);
+        return;
+    }
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = shared::utils::qwen_prefill_maybe_skip_bf16_astype(
         &hidden,
@@ -1733,6 +1960,17 @@ pub fn forward_all_positions(
         let seq = token_ids.len() as i32;
         let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
         let logits = qw(&normed, &weights.lm_head);
+        let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+        let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+        return reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None);
+    }
+    if cfg.qwen4_exp.is_some() {
+        // Mixer-collapsed hidden (there is no final RMSNorm: the root mixer's
+        // grouped norm is the family's final normalization).
+        let hidden =
+            qwen4_exp_forward_hidden(cfg, weights, &ids_1d, token_ids, cache, token_offset);
+        let seq = token_ids.len() as i32;
+        let logits = qw(&hidden, &weights.lm_head);
         let logits_f32 = astype(&logits, MlxDtype::Float32, None);
         let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
         return reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None);
@@ -1875,6 +2113,24 @@ pub fn forward_all_positions_with_post_norm_greedy(
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
     let seq = token_ids.len();
+    if cfg.qwen4_exp.is_some() {
+        // Dispatch before the family-scoped MoE scopes below (they arm on
+        // `moe_expert_count > 0`, which qwen4_exp satisfies). The second
+        // return is the mixer-collapsed hidden; ArgmaxOnly contract: native
+        // lm_head dtype, no softcap, no vocab-wide f32 cast.
+        let ids_1d = MlxArray::from_raw_data(
+            token_ids.as_ptr() as *const u8,
+            std::mem::size_of_val(token_ids),
+            &[token_ids.len() as i32],
+            MlxDtype::Uint32,
+        );
+        let hidden =
+            qwen4_exp_forward_hidden(cfg, weights, &ids_1d, token_ids, cache, token_offset);
+        let seq_i = seq as i32;
+        let logits = qw(&hidden, &weights.lm_head);
+        let logits_out = reshape(&logits, &[seq_i, cfg.vocab_size as i32], None);
+        return (logits_out, hidden);
+    }
     // LONG_MT uses physical cache length (heuristic), then map to MRoPE origin.
     let moe_long_mt = cfg.moe_expert_count > 0
         && token_offset >= 512
@@ -1996,6 +2252,28 @@ pub fn forward_all_positions_with_post_norm_ids(
         let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
         let logits_out = reshape(&logits_f32, &[seq_i, cfg.vocab_size as i32], None);
         return (logits_out, normed);
+    }
+    if cfg.qwen4_exp.is_some() {
+        // The PLE n-gram hash reads the ids on the host, so the (possibly
+        // lazy) ids materialize here — one readback per verify window. The
+        // second return is the mixer-collapsed hidden, NOT the packed stream:
+        // MTP draft/verify rows come from `qwen4_exp_forward_all_positions_with_packed`.
+        mlx_sys::eval(&[ids_1d]);
+        let token_ids = ids_1d.data_u32();
+        let Some(token_ids) = token_ids.get(..seq) else {
+            unreachable!("qwen4_exp verify ids must cover every position");
+        };
+        let hidden = qwen4_exp_forward_hidden(cfg, weights, ids_1d, token_ids, cache, token_offset);
+        let seq_i = seq as i32;
+        let logits = qw(&hidden, &weights.lm_head);
+        let logits_out = if native_greedy_logits {
+            reshape(&logits, &[seq_i, cfg.vocab_size as i32], None)
+        } else {
+            let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+            let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+            reshape(&logits_f32, &[seq_i, cfg.vocab_size as i32], None)
+        };
+        return (logits_out, hidden);
     }
     let mut hidden = embed_tokens_arr(ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
@@ -2205,6 +2483,19 @@ pub fn forward_all_positions_post_norm_last_lm_head(
         let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
         let last_logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
         return (last_logits, normed);
+    }
+    if cfg.qwen4_exp.is_some() {
+        let seq = token_ids.len();
+        let hidden =
+            qwen4_exp_forward_hidden(cfg, weights, &ids_1d, token_ids, cache, token_offset);
+        let last = (seq - 1) as i32;
+        let hs = cfg.hidden_size as i32;
+        let last_hidden = slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
+        let logits = qw(&last_hidden, &weights.lm_head);
+        let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+        let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+        let last_logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
+        return (last_logits, hidden);
     }
     let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = shared::utils::qwen_prefill_maybe_skip_bf16_astype(
@@ -4260,6 +4551,18 @@ fn forward_lazy_single_and_logits_mode(
             lazy_mode,
         );
     }
+    // qwen4_exp owns its packed gated-residual stream; the lazy token is also
+    // read on the host for the PLE n-gram hash.
+    if cfg.qwen4_exp.is_some() {
+        return qwen4_exp_forward_lazy_single_and_logits_mode(
+            cfg,
+            weights,
+            token_arr,
+            cache,
+            token_offset,
+            lazy_mode,
+        );
+    }
     let profile_decode = decode_profile_enabled();
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
 
@@ -4555,6 +4858,7 @@ mod tests {
             mla_attention: None,
             glm_router: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
             rope_mscale: 1.0,
@@ -4653,6 +4957,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
@@ -4723,6 +5028,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
@@ -4910,6 +5216,7 @@ mod tests {
                 has_shared_experts: true,
             },
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
@@ -5192,6 +5499,8 @@ mod tests {
             glm_mtp: None,
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -5304,6 +5613,8 @@ mod tests {
             glm_mtp: None,
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -5371,6 +5682,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[hidden_size as i32], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -5442,6 +5754,7 @@ mod tests {
                 ]),
             }),
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[cfg.hidden_size as i32], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -5644,6 +5957,7 @@ mod tests {
             }),
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[hidden_size as i32], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -5804,6 +6118,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: Some(dense_weight(&[3, 4])),
@@ -5982,6 +6297,8 @@ mod tests {
             glm_mtp: None,
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -6041,6 +6358,8 @@ mod tests {
             glm_mtp: None,
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -6205,6 +6524,8 @@ mod tests {
             glm_mtp: None,
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: Some(dense_weight(&[16, 32])),
             assistant_post_projection: Some(dense_weight(&[16, 16])),
@@ -6291,6 +6612,8 @@ mod tests {
             glm_mtp: None,
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: Some(dense_weight(&[16, 32])),
             assistant_post_projection: Some(dense_weight(&[16, 16])),
@@ -7072,6 +7395,8 @@ mod tests {
             glm_mtp: None,
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -7340,6 +7665,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -7438,6 +7764,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -7512,6 +7839,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -7586,6 +7914,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -7660,6 +7989,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -7777,6 +8107,7 @@ mod tests {
             linear_attn: None,
             glm_mla_attn: None,
             deepseek_v4: None,
+            qwen4_exp: None,
             ffn_norm: zeros(&[4], MlxDtype::Float32, None),
             ffn_post_norm: None,
             gate_proj: None,
@@ -8791,6 +9122,8 @@ mod tests {
             glm_mtp: None,
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
+            qwen4_exp_root: None,
+            qwen4_exp_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,

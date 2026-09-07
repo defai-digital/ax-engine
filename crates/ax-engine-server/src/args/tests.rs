@@ -569,6 +569,16 @@ fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
             "qwen3.8-27b",
         ),
         (
+            "models--AutomatosX--AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+            "qwen4_exp",
+            "qwen3.8-flash-next-mtp",
+        ),
+        (
+            "models--AutomatosX--AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit",
+            "qwen4_exp_text",
+            "qwen3.8-flash-next",
+        ),
+        (
             "models--mlx-community--Qwen3-VL-8B-Thinking-4bit",
             "qwen3_vl",
             "qwen3-vl-8b-thinking",
@@ -962,6 +972,7 @@ fn render_presets_lists_glm_preset() {
     assert!(presets.contains("ornith-35b\tmodel_id=ornith-35b"));
     assert!(presets.contains("muse-glimmer-30b\tmodel_id=muse-glimmer-30b"));
     assert!(presets.contains("qwen3.8-27b\tmodel_id=qwen3.8-27b"));
+    assert!(presets.contains("qwen3.8-flash-next\tmodel_id=qwen3.8-flash-next"));
     assert!(presets.contains("qwen3-vl-30b\tmodel_id=qwen3-vl-30b-a3b"));
     assert!(presets.contains("nemotron-3-nano\tmodel_id=nemotron-3-nano"));
     assert!(presets.contains("ministral-3-8b\tmodel_id=ministral-3-8b"));
@@ -1067,6 +1078,94 @@ fn qwen36_35b_preset_hf_cache_resolution_accepts_cached_snapshot() {
     assert_eq!(
         actual.mlx_model_artifacts_dir.as_deref(),
         Some(expected.as_path())
+    );
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn qwen38_flash_next_preset_selects_experimental_text_only_defaults() {
+    // Qwen3.8-Flash-Next (`qwen4_exp`) is an experimental, uncertified family:
+    // the preset keeps the native non-certified tier with a conservative
+    // batch budget. Media capabilities stay text-only — the MLX-VLM vision
+    // tower is dropped fail-loud at convert/download-manifest level.
+    let mlx_model_artifacts_dir = PathBuf::from("/tmp/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP");
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Qwen38FlashNext),
+        mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(args.effective_model_id().unwrap(), "qwen3.8-flash-next");
+    assert_eq!(
+        args.effective_support_tier(),
+        PreviewSupportTier::MlxPreview
+    );
+    assert_eq!(actual.max_batch_tokens, 1024);
+    assert_eq!(
+        actual.resolved_backend.selected_backend,
+        SelectedBackend::Mlx
+    );
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(mlx_model_artifacts_dir.as_path())
+    );
+}
+
+#[test]
+fn qwen38_flash_next_preset_hf_cache_resolution_accepts_cached_snapshot() {
+    let root = unique_test_dir("hf-cache-qwen38-flash-next");
+    let expected = write_hf_snapshot(
+        &root,
+        "models--AutomatosX--AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+        "abc123",
+        "qwen4_exp",
+    );
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Qwen38FlashNext),
+        resolve_model_artifacts: ModelArtifactResolution::HfCache,
+        hf_cache_root: Some(root.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(expected.as_path())
+    );
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn qwen38_flash_next_preset_hf_cache_resolution_accepts_text_config_model_type() {
+    let root = unique_test_dir("hf-cache-qwen38-flash-next-text");
+    let snapshot = root
+        .join("models--AutomatosX--AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP")
+        .join("snapshots")
+        .join("abc123");
+    fs::create_dir_all(&snapshot).expect("snapshot dir should create");
+    fs::write(
+        snapshot.join("config.json"),
+        r#"{"model_type":"qwen4_exp","text_config":{"model_type":"qwen4_exp_text"}}"#,
+    )
+    .expect("config should write");
+    fs::write(snapshot.join(artifacts::MODEL_MANIFEST_FILE), "{}").expect("manifest should write");
+    fs::write(snapshot.join("model.safetensors"), b"placeholder")
+        .expect("safetensors should write");
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Qwen38FlashNext),
+        resolve_model_artifacts: ModelArtifactResolution::HfCache,
+        hf_cache_root: Some(root.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(snapshot.as_path())
     );
     fs::remove_dir_all(root).expect("test dir should clean up");
 }

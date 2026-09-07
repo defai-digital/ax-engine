@@ -5,6 +5,7 @@ pub(super) mod gpt_oss;
 pub(super) mod llama4;
 pub(super) mod nemotron_h;
 pub(super) mod qwen3_linear;
+pub(crate) mod qwen4_exp;
 pub(super) mod standard;
 
 pub(super) mod mistral3;

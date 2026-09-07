@@ -19,7 +19,7 @@
   },
   "crates/ax-engine-mlx/src/generate.rs": {
     "async_eval": 3,
-    "eval": 14
+    "eval": 19
   },
   "crates/ax-engine-mlx/src/kv_cache.rs": {
     "eval": 1
@@ -32,7 +32,7 @@
   },
   "crates/ax-engine-mlx/src/model/mod.rs": {
     "async_eval": 4,
-    "eval": 8
+    "eval": 10
   },
   "crates/ax-engine-mlx/src/model/profile.rs": {
     "eval": 6
@@ -49,9 +49,15 @@
     "eval": 2
   },
   "crates/ax-engine-mlx/src/model/shared/mlp.rs": {
-    "async_eval": 4,
+    "async_eval": 5,
     "eval": 3,
-    "try_eval": 1
+    "try_eval": 3
+  },
+  "crates/ax-engine-mlx/src/model/shared/qwen4_exp_ple.rs": {
+    "eval": 4
+  },
+  "crates/ax-engine-mlx/src/model/shared/qwen4_exp_qsa.rs": {
+    "eval": 1
   },
   "crates/ax-engine-mlx/src/model/shared/utils.rs": {
     "async_eval": 1,
@@ -59,7 +65,7 @@
   },
   "crates/ax-engine-mlx/src/mtp.rs": {
     "async_eval": 2,
-    "eval": 14
+    "eval": 19
   },
   "crates/ax-engine-mlx/src/ngram_accel.rs": {
     "eval": 10
@@ -72,7 +78,7 @@
   },
   "crates/ax-engine-mlx/src/runner/mod.rs": {
     "async_eval": 2,
-    "eval": 27
+    "eval": 30
   },
   "crates/ax-engine-mlx/src/runner/pipeline.rs": {
     "eval": 1
@@ -85,7 +91,7 @@
     "eval": 4
   },
   "crates/ax-engine-mlx/src/weights.rs": {
-    "eval": 22,
+    "eval": 23,
     "try_eval": 1
   },
   "crates/ax-engine-mlx/src/whisper.rs": {

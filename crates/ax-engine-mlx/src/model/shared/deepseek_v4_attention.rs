@@ -668,6 +668,7 @@ mod tests {
             linear_attention: None,
             mla_attention: None,
             glm_router: None,
+            qwen4_exp: None,
             deepseek_v4: Some(DeepseekV4Config {
                 head_dim: D,
                 qk_rope_head_dim: ROT,
@@ -751,6 +752,7 @@ mod tests {
                 indexer: None,
                 tid2eid: None,
             }),
+            qwen4_exp: None,
             ffn_norm: array_f32(&fill(E, 0.9), &[E as i32]),
             ffn_post_norm: None,
             gate_proj: None,

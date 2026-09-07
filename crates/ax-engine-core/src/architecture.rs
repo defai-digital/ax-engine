@@ -334,6 +334,11 @@ fn uses_mxfp4_moe(family: &str) -> bool {
 /// Families whose decode MoE path uses `moe_router_qwen3` (the only router
 /// the continuous batched FFN implements). Mixtral shares that router layout
 /// but is still rejected for sliding-window structure.
+///
+/// qwen4_exp stays OFF deliberately: it is Experimental-tier and not a
+/// batched-decode candidate, and this bit only opts families into the
+/// continuous batched-decode certification path — it is not required for the
+/// generic (non-batched) forward.
 fn family_uses_batched_qwen3_moe_router(family: &str) -> bool {
     matches!(
         family,
@@ -499,6 +504,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,

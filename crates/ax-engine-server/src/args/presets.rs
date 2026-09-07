@@ -43,6 +43,14 @@ pub enum ServerPreset {
     Qwen3CoderNext,
     #[value(name = "qwen3.8-27b", alias = "qwen38-27b", alias = "qwen3.8")]
     Qwen38_27b,
+    /// Qwen3.8-Flash-Next (`qwen4_exp` family): experimental MLX-VLM pack
+    /// served text-only. The vision tower ships inline BF16 upstream but is
+    /// dropped fail-loud at convert/download-manifest level, so media
+    /// capabilities stay text-only like every non-vision preset. No
+    /// certification claims; the tier stays MlxPreview (the native,
+    /// non-certified tier — PreviewSupportTier has no Experimental variant).
+    #[value(name = "qwen3.8-flash-next", alias = "qwen38-flash-next")]
+    Qwen38FlashNext,
     #[value(name = "qwen3-vl-30b", alias = "qwen3-vl-30b-a3b")]
     Qwen3Vl30b,
     #[value(name = "qwen3-vl-8b", alias = "qwen3-vl-8b-instruct")]
@@ -290,6 +298,23 @@ impl ServerPreset {
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
+            // Qwen3.8-Flash-Next experimental preset: `qwen4_exp` family
+            // (nested `qwen4_exp_text` text path). Conservative batch budget
+            // for the ~167 GB MoE pack while the family is experimental.
+            Self::Qwen38FlashNext => PresetDefinition {
+                preset: self,
+                label: "qwen3.8-flash-next",
+                model_id: "qwen3.8-flash-next",
+                aliases: &[
+                    "qwen3.8-flash-next",
+                    "qwen38-flash-next",
+                    "ax-qwen3.8-flash-next",
+                    "ax-qwen3.8-flash-next-axq",
+                ],
+                model_types: &["qwen4_exp", "qwen4_exp_text"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 1024,
+            },
             Self::Qwen3Vl30b => PresetDefinition {
                 preset: self,
                 label: "qwen3-vl-30b",
@@ -480,6 +505,7 @@ pub fn render_presets() -> String {
         ServerPreset::MuseGlimmer30b,
         ServerPreset::Qwen3CoderNext,
         ServerPreset::Qwen38_27b,
+        ServerPreset::Qwen38FlashNext,
         ServerPreset::Qwen3Vl30b,
         ServerPreset::Qwen3Vl8b,
         ServerPreset::Nemotron3Nano,

@@ -5,10 +5,10 @@ use std::thread::ThreadId;
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, astype, concatenate, contiguous, conv1d, multiply, reshape, rms_norm,
-    rms_norm_silu_mul_normed, silu_mul, slice, slice_last_dim, zeros,
+    rms_norm_silu_mul_normed, sigmoid, silu_mul, slice, slice_last_dim, zeros,
 };
 #[cfg(test)]
-use mlx_sys::{add, exp, less, log1p, negative, sigmoid, where_cond};
+use mlx_sys::{add, exp, less, log1p, negative, where_cond};
 
 use crate::attention_mask::scalar_i32;
 use crate::fastpath;
@@ -2036,6 +2036,24 @@ pub fn rms_norm_gated_with_full_gate_policy(
         return gated;
     }
     portable_silu_mul_normed(&normed, gate, hidden_states.dtype())
+}
+
+/// qwen4_exp gated-delta output gate: `sigmoid(gate.float32) * rms_norm(x).float32`
+/// cast back to the input dtype. Qwen3.5 uses silu — the one activation
+/// difference in the shared gated-delta stack (qwen38-flash-next plan,
+/// section E). Portable-only by design: every fused Metal gate kernel in this
+/// file is silu-specific.
+pub fn rms_norm_gated_sigmoid(
+    hidden_states: &MlxArray,
+    gate: &MlxArray,
+    weight: &MlxArray,
+    eps: f32,
+) -> MlxArray {
+    let normed = rms_norm(hidden_states, Some(weight), eps, None);
+    let gate_f32 = astype(gate, MlxDtype::Float32, None);
+    let normed_f32 = astype(&normed, MlxDtype::Float32, None);
+    let gated = multiply(&sigmoid(&gate_f32, None), &normed_f32, None);
+    astype(&gated, hidden_states.dtype(), None)
 }
 
 /// Uncompiled exact-identity RMSNorm + f32 SiLU*norm graph.
@@ -4908,6 +4926,63 @@ mod tests {
             metal.data_f32(),
             direct.data_f32(),
             2.0e-2,
+        );
+    }
+
+    #[test]
+    fn rms_norm_gated_sigmoid_matches_manual_chain_for_bf16() {
+        // qwen4_exp gated-delta output gate: sigmoid(gate) * rms_norm(x).
+        let hidden_data: Vec<f32> = (0..16)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.125)
+            .collect();
+        let gate_data: Vec<f32> = (0..16).map(|idx| ((idx % 5) as f32 - 2.0) * 0.25).collect();
+        let weight_data = vec![0.8_f32, 1.0, 1.2, 1.4];
+        let hidden = astype(
+            &f32_array(&hidden_data, &[1, 2, 2, 4]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let gate = astype(
+            &f32_array(&gate_data, &[1, 2, 2, 4]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let weight = astype(&f32_array(&weight_data, &[4]), MlxDtype::Bfloat16, None);
+
+        let normed = rms_norm(&hidden, Some(&weight), 1e-6, None);
+        let expected = astype(
+            &multiply(
+                &mlx_sys::ops::sigmoid(&astype(&gate, MlxDtype::Float32, None), None),
+                &astype(&normed, MlxDtype::Float32, None),
+                None,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let out = rms_norm_gated_sigmoid(&hidden, &gate, &weight, 1e-6);
+        let expected = astype(&expected, MlxDtype::Float32, None);
+        let out = astype(&out, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&expected, &out]);
+        assert_close(
+            "rms_norm_gated_sigmoid",
+            out.data_f32(),
+            expected.data_f32(),
+            2.0e-2,
+        );
+
+        // The Qwen3.5 silu policy must not collide with the sigmoid gate.
+        let silu = rms_norm_gated_with_full_gate_policy(&hidden, &gate, &weight, 1e-6, false);
+        let silu = astype(&silu, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&silu]);
+        let drift = out
+            .data_f32()
+            .iter()
+            .zip(silu.data_f32().iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            drift > 1e-3,
+            "sigmoid gated norm must differ from the silu policy (drift {drift})"
         );
     }
 
