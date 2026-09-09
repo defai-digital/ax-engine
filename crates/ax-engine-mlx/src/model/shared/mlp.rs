@@ -6079,9 +6079,11 @@ fn maybe_trace_moe_router(indices: &MlxArray, seq: usize) {
         return;
     };
     let indices = if indices.dtype() == MlxDtype::Uint32 {
-        indices.clone()
+        // Router outputs may arrive as strided views; materialize a dense
+        // copy (data_u32 refuses non-row-contiguous arrays).
+        contiguous(indices, None)
     } else {
-        astype(indices, MlxDtype::Uint32, None)
+        contiguous(&astype(indices, MlxDtype::Uint32, None), None)
     };
     mlx_sys::eval(&[&indices]);
     let values = indices.data_u32();
@@ -7317,11 +7319,14 @@ fn build_expert_bins(top_k_indices: &MlxArray, n_experts: usize) -> Option<Exper
     }
     let flat_size = total_tokens * top_k;
     // Ensure the array is Uint32 before calling data_u32(); convert if needed.
+    // Router outputs may arrive as strided views; materialize a dense copy
+    // (data_u32 refuses non-row-contiguous arrays).
     let u32_indices: MlxArray;
     let indices_ref: &MlxArray = if top_k_indices.dtype() == MlxDtype::Uint32 {
-        top_k_indices
+        u32_indices = contiguous(top_k_indices, None);
+        &u32_indices
     } else {
-        u32_indices = astype(top_k_indices, MlxDtype::Uint32, None);
+        u32_indices = contiguous(&astype(top_k_indices, MlxDtype::Uint32, None), None);
         &u32_indices
     };
     let indices = indices_ref.data_u32();
@@ -7475,15 +7480,96 @@ impl PagedExpertWeights {
 /// Per-expert decode paging: read the router's top-k ids back to the host and
 /// page just those experts. The readback eval is the required sync point —
 /// the compacted stacks below then run through the unchanged `gather_qmm`
-/// kernels with remapped indices.
+/// kernels with remapped indices. `contiguous` materializes a dense copy:
+/// router/topk outputs may arrive as strided views, and `data_u32` refuses
+/// non-row-contiguous arrays.
 fn page_compacted_experts(
     source: &crate::expert_stream::ExpertLayerSource,
     top_k_indices: &MlxArray,
 ) -> Result<crate::expert_stream::CompactedExperts, crate::expert_stream::ExpertStreamError> {
-    let ids = astype(top_k_indices, MlxDtype::Uint32, None);
+    let ids = contiguous(&astype(top_k_indices, MlxDtype::Uint32, None), None);
     mlx_sys::transforms::try_eval(&[&ids])
         .map_err(crate::expert_stream::ExpertStreamError::Paging)?;
     source.experts_for_ids(ids.data_u32())
+}
+
+/// Sorted, de-duplicated union of the router's top-k expert ids across all
+/// prompt tokens (`flat_ids` is row-major `[.., seq, top_k]`). Dedup caps the
+/// union at `num_experts` no matter how long the prompt is.
+fn union_expert_ids(flat_ids: &[u32]) -> Vec<u32> {
+    let mut union = flat_ids.to_vec();
+    union.sort_unstable();
+    union.dedup();
+    union
+}
+
+/// Per-position union-slot lookup for `flat_ids`, in the same row-major
+/// order as `top_k_weights`: each selected global id maps to its slot in the
+/// sorted `union` via binary search. The search is injective on the union
+/// (distinct ids land on distinct slots) and total on the selection (the
+/// union is built from exactly these ids, so it cannot miss), and positions
+/// never move — only the id VALUE changes, from global id to union slot — so
+/// a token's weight at position i still multiplies the row of the expert the
+/// router picked at position i.
+fn union_slot_remap(
+    flat_ids: &[u32],
+    union: &[u32],
+) -> Result<Vec<u32>, crate::expert_stream::ExpertStreamError> {
+    flat_ids
+        .iter()
+        .map(|id| {
+            union
+                .binary_search(id)
+                .map(|slot| slot as u32)
+                .map_err(|_| {
+                    crate::expert_stream::ExpertStreamError::Paging(format!(
+                        "expert id {id} missing from the prefill union built from it"
+                    ))
+                })
+        })
+        .collect()
+}
+
+/// Fail-open degenerate-union threshold: when the union covers more than
+/// half the stack, row-mode pays per-row preads plus concatenation for what
+/// is effectively full-stack I/O — the layer-stack pager's filtered load
+/// reads the same rows cheaper. The fraction rule is the review's
+/// `|union| > num_experts / 2`; the byte-cost form
+/// (`|union| × per_expert ≥ stack cost / 2`) is identical here because
+/// per-expert rows are uniform (`read_row` requires the payload divisible
+/// into equal rows), and it needs no manifest byte plumbing through
+/// `ExpertLayerSource`. Tune here.
+fn union_prefill_prefers_stack(union_len: usize, num_experts: u32) -> bool {
+    union_len * 2 > num_experts as usize
+}
+
+/// Row-mode prefill: read the router's top-k ids back to the host, page the
+/// sorted union of the prompt's selected experts, and assemble a compacted
+/// `[|union|, ...]` stack whose slot j holds global expert `union[j]`.
+/// `remap` carries the per-position union-slot lookup (NOT the decode
+/// compaction's identity `[0..k)`). `contiguous` materializes a dense copy:
+/// real prefill's indices arrive as strided views, and `data_u32` refuses
+/// non-row-contiguous arrays. Returns `Ok(None)` when the union is
+/// degenerate (see [`union_prefill_prefers_stack`]) and the caller should
+/// take the full-stack path — a fail-open cost decision, not an error.
+fn page_union_prefill_experts(
+    source: &crate::expert_stream::ExpertLayerSource,
+    top_k_indices: &MlxArray,
+    num_experts: u32,
+) -> Result<Option<crate::expert_stream::CompactedExperts>, crate::expert_stream::ExpertStreamError>
+{
+    let ids = contiguous(&astype(top_k_indices, MlxDtype::Uint32, None), None);
+    mlx_sys::transforms::try_eval(&[&ids])
+        .map_err(crate::expert_stream::ExpertStreamError::Paging)?;
+    let flat = ids.data_u32();
+    let union = union_expert_ids(flat);
+    if union_prefill_prefers_stack(union.len(), num_experts) {
+        return Ok(None);
+    }
+    let remap = union_slot_remap(flat, &union)?;
+    let mut compacted = source.experts_for_ids(&union)?;
+    compacted.remap = remap;
+    Ok(Some(compacted))
 }
 
 fn warn_row_paging_once(layer: u32, error: &crate::expert_stream::ExpertStreamError) {
@@ -7506,7 +7592,9 @@ fn warn_row_paging_once(layer: u32, error: &crate::expert_stream::ExpertStreamEr
     }
 }
 
-/// Build the compacted `[0..k)` index array matching `like`'s shape.
+/// Build the compacted index array from flat per-position slot data
+/// (identity `[0..k)` for decode compaction, the union-slot lookup for
+/// row-mode prefill), materialized with `like`'s shape.
 fn remapped_moe_indices(remap: &[u32], like: &MlxArray) -> MlxArray {
     let mut data = Vec::with_capacity(remap.len() * 4);
     for id in remap {
@@ -7677,7 +7765,7 @@ fn split_submit_down_out(
     x: &MlxArray,
     top_k_indices: &MlxArray,
 ) -> Result<MlxArray, crate::expert_stream::ExpertStreamError> {
-    let ids_arr = astype(top_k_indices, MlxDtype::Uint32, None);
+    let ids_arr = contiguous(&astype(top_k_indices, MlxDtype::Uint32, None), None);
     mlx_sys::transforms::try_eval(&[&ids_arr])
         .map_err(crate::expert_stream::ExpertStreamError::Paging)?;
     let ids = ids_arr.data_u32();
@@ -7808,11 +7896,13 @@ fn moe_experts_forward_impl(
     // resident, page it in here. Every kernel path below then runs unchanged
     // (same gather_qmm) on the returned QuantizedWeight values.
     //
-    // Per-expert mode (single-token decode only): page just the
-    // router-selected experts and assemble compacted [top_k, ...] stacks;
-    // the kernels below then run on remapped [0..k) indices. Prefill,
-    // batched decode, and any row-mode failure fall back to layer-stack
-    // paging.
+    // Per-expert mode: single-token decode pages just the router-selected
+    // experts and assembles compacted [top_k, ...] stacks; prefill
+    // (Qwen3-style routers only, no per-expert scale) pages the sorted union
+    // of the prompt's selected experts and assembles a compacted
+    // [|union|, ...] stack. The kernels below then run on remapped indices.
+    // Batched decode, ineligible prefill, and any row-mode failure fall back
+    // to layer-stack paging.
     // Split-submit overlap (ADR-028 Phase 1, default-off): when the row pager
     // is active and the selection mixes resident and missing experts, the
     // resident part's trunk is GPU-submitted before the missing rows' SSD
@@ -7863,6 +7953,34 @@ fn moe_experts_forward_impl(
                         )
                     }
                 }
+            } else if seq > 1
+                && batch == 1
+                && source.is_per_expert()
+                && top_k_expert_scale.is_none()
+            {
+                // Row-mode prefill: page only the union of the prompt's
+                // selected experts instead of the whole layer stack. The
+                // expert-scale guard keeps Gemma4-style routers on the full
+                // stack (conservative fail-closed; see the design Phase 2
+                // note). A degenerate union fails open to the full stack:
+                // past the threshold, row-mode I/O costs more than the
+                // stack it would approximate.
+                match page_union_prefill_experts(source, top_k_indices, cfg.moe_expert_count) {
+                    Ok(Some(compacted)) => PagedExpertWeights::Compacted(compacted),
+                    Ok(None) => PagedExpertWeights::Stacks(
+                        source
+                            .stack()
+                            .expect("expert stream paging failed for MoE layer"),
+                    ),
+                    Err(error) => {
+                        warn_row_paging_once(source.layer(), &error);
+                        PagedExpertWeights::Stacks(
+                            source
+                                .stack()
+                                .expect("expert stream paging failed for MoE layer"),
+                        )
+                    }
+                }
             } else {
                 PagedExpertWeights::Stacks(
                     source
@@ -7892,9 +8010,10 @@ fn moe_experts_forward_impl(
         .as_ref()
         .or_else(|| paged_stack.and_then(|stack| stack.down_exps.as_ref()));
 
-    // Compacted per-expert stacks use [0..k) indices in request order;
-    // everything downstream (gather inputs, sort/unsort, fused kernels) sees
-    // the same shapes as the full-stack path.
+    // Compacted per-expert stacks use per-position slot indices in request
+    // order ([0..k) for decode compaction, the union-slot lookup for row-mode
+    // prefill); everything downstream (gather inputs, sort/unsort, fused
+    // kernels) sees the same shapes as the full-stack path.
     let remapped_indices;
     let effective_indices = match &paged_experts {
         Some(PagedExpertWeights::Compacted(compacted)) => {
@@ -12317,6 +12436,14 @@ mod tests {
     /// F32 safetensors writer for the split e2e fixture (self-contained;
     /// mirrors the expert_stream test fixtures).
     fn split_write_safetensors(dir: &std::path::Path, tensors: &[(&str, Vec<i32>, Vec<f32>)]) {
+        split_write_safetensors_named(dir, "experts.safetensors", tensors);
+    }
+
+    fn split_write_safetensors_named(
+        dir: &std::path::Path,
+        file_name: &str,
+        tensors: &[(&str, Vec<i32>, Vec<f32>)],
+    ) {
         let mut header = serde_json::Map::new();
         let mut data: Vec<u8> = Vec::new();
         for (name, shape, values) in tensors {
@@ -12338,7 +12465,7 @@ mod tests {
         bytes.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
         bytes.extend_from_slice(&header_bytes);
         bytes.extend_from_slice(&data);
-        std::fs::write(dir.join("experts.safetensors"), &bytes).unwrap();
+        std::fs::write(dir.join(file_name), &bytes).unwrap();
     }
 
     fn split_e2e_fixture(tag: &str) -> std::path::PathBuf {
@@ -12488,5 +12615,398 @@ mod tests {
     #[test]
     fn split_submit_down_out_matches_production_interleaved() {
         assert_split_submit_e2e("mixed", &[3, 1, 2, 0], &[1, 0]);
+    }
+
+    // ------------------------------------------------------------------
+    // Row-mode prefill (union of top-k experts) tests.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn union_expert_ids_sorts_dedups_and_caps() {
+        // Unsorted input with duplicates across tokens.
+        assert_eq!(union_expert_ids(&[3, 1, 0, 3, 2, 1]), vec![0, 1, 2, 3]);
+        // Single-token edge (one token's worth of selections).
+        assert_eq!(union_expert_ids(&[2, 0]), vec![0, 2]);
+        // |union| == 1: every token picked the same expert.
+        assert_eq!(union_expert_ids(&[2, 2, 2]), vec![2]);
+        // The dedup caps the union at num_experts regardless of prompt length.
+        assert_eq!(
+            union_expert_ids(&[0, 1, 2, 3, 0, 1, 2, 3, 3, 3, 2, 0]),
+            vec![0, 1, 2, 3]
+        );
+        assert!(union_expert_ids(&[]).is_empty());
+    }
+
+    #[test]
+    fn union_slot_remap_lands_each_id_on_its_union_row() {
+        let flat = [3, 1, 0, 3, 2, 1];
+        let union = union_expert_ids(&flat);
+        let remap = union_slot_remap(&flat, &union).unwrap();
+        assert_eq!(remap.len(), flat.len(), "remap is per-position");
+        // Positions never move: the slot at position i names the expert the
+        // router picked at position i, so weights at position i stay aligned.
+        for (i, id) in flat.iter().enumerate() {
+            assert_eq!(union[remap[i] as usize], *id, "position {i} misaligned");
+        }
+        // Bijective on the union: distinct ids land on distinct slots and
+        // every union slot is used by at least one position (the union was
+        // built from exactly these ids).
+        let mut used = remap.clone();
+        used.sort_unstable();
+        used.dedup();
+        assert_eq!(used, (0..union.len() as u32).collect::<Vec<_>>());
+        // A smaller union remaps onto the compacted slot range, not the ids.
+        let flat = [5, 2, 5, 2];
+        let union = union_expert_ids(&flat);
+        assert_eq!(union, vec![2, 5]);
+        assert_eq!(union_slot_remap(&flat, &union).unwrap(), vec![1, 0, 1, 0]);
+    }
+
+    /// Reference prefill output on the layer-stack pager (full stack).
+    fn union_reference(
+        cfg: &ModelConfig,
+        dir: &std::path::Path,
+        layer: u32,
+        x: &MlxArray,
+        idx: &MlxArray,
+        wts: &MlxArray,
+    ) -> MlxArray {
+        let stack_pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new(
+            split_e2e_manifest(),
+            dir.to_path_buf(),
+            4,
+        ));
+        let source = crate::expert_stream::ExpertLayerSource::new(stack_pager, layer);
+        let mut w = v4_layer_weights(x.clone(), x);
+        w.expert_stream = Some(std::sync::Arc::new(source));
+        moe_experts_forward_impl(cfg, &w, x, idx, wts, None, None)
+    }
+
+    /// Union-prefill output on a row-pager-backed source; returns the row
+    /// pager and its backing stack pager for branch assertions.
+    fn union_run(
+        cfg: &ModelConfig,
+        dir: &std::path::Path,
+        layer: u32,
+        x: &MlxArray,
+        idx: &MlxArray,
+        wts: &MlxArray,
+    ) -> (
+        MlxArray,
+        std::sync::Arc<crate::expert_stream::ExpertRowPager>,
+        bool,
+    ) {
+        let rows = split_e2e_row_pager(dir);
+        let stack_pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new(
+            split_e2e_manifest(),
+            dir.to_path_buf(),
+            4,
+        ));
+        let source = crate::expert_stream::ExpertLayerSource::new_with_rows(
+            stack_pager.clone(),
+            rows.clone(),
+            layer,
+        );
+        let mut w = v4_layer_weights(x.clone(), x);
+        w.expert_stream = Some(std::sync::Arc::new(source));
+        let out = moe_experts_forward_impl(cfg, &w, x, idx, wts, None, None);
+        (out, rows, stack_pager.cached_layer_count() > 0)
+    }
+
+    #[test]
+    fn union_prefill_matches_full_stack_prefill() {
+        // seq=3, k=2 → 6 selections (below the multi-token sort threshold),
+        // duplicates across tokens, |union| == num_experts, non-uniform
+        // weights (a weight/remap misalignment would change the output).
+        let dir = split_e2e_fixture("union_prefill");
+        let cfg = v4_test_config(4, 2);
+        let x = array_f32(
+            &[
+                0.25, 0.5, 0.75, 1.0, // token 0
+                1.0, 0.75, 0.5, 0.25, // token 1
+                0.5, 1.0, 0.25, 0.75, // token 2
+            ],
+            &[1, 3, 4],
+        );
+        let idx = split_u32_array(&[3, 1, 0, 3, 2, 1], &[1, 3, 2]);
+        let wts = array_f32(&[0.7, 0.3, 0.25, 0.75, 0.9, 0.1], &[1, 3, 2]);
+
+        let reference = union_reference(&cfg, &dir, 0, &x, &idx, &wts);
+        let (union_out, rows, used_stack) = union_run(&cfg, &dir, 0, &x, &idx, &wts);
+        eval(&[&reference, &union_out]);
+        assert_eq!(reference.shape(), union_out.shape());
+        assert_eq!(reference.data_f32(), union_out.data_f32());
+        assert!(
+            !used_stack,
+            "union prefill must not page the full layer stack"
+        );
+        assert_eq!(
+            rows.cached_expert_keys(),
+            vec![(0, 0), (0, 1), (0, 2), (0, 3)],
+            "the union covers every expert selected by any token"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn union_prefill_matches_full_stack_prefill_sorted_gather() {
+        // seq=8, k=2 → 16 selections (expert-id sort path), partial union
+        // {1, 3} ⊂ 4 experts, non-uniform weights.
+        let dir = split_e2e_fixture("union_prefill_sorted");
+        let cfg = v4_test_config(4, 2);
+        let x_values: Vec<f32> = (0..32)
+            .map(|i| ((i * 7) % 13) as f32 * 0.1 + 0.05)
+            .collect();
+        let x = array_f32(&x_values, &[1, 8, 4]);
+        let idx = split_u32_array(
+            &[3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3],
+            &[1, 8, 2],
+        );
+        let wts_values: Vec<f32> = (0..16).map(|i| ((i * 5) % 7) as f32 * 0.1 + 0.1).collect();
+        let wts = array_f32(&wts_values, &[1, 8, 2]);
+
+        let reference = union_reference(&cfg, &dir, 0, &x, &idx, &wts);
+        let (union_out, rows, used_stack) = union_run(&cfg, &dir, 0, &x, &idx, &wts);
+        eval(&[&reference, &union_out]);
+        assert_eq!(reference.shape(), union_out.shape());
+        assert_eq!(reference.data_f32(), union_out.data_f32());
+        assert!(
+            !used_stack,
+            "union prefill must not page the full layer stack"
+        );
+        assert_eq!(rows.cached_expert_keys(), vec![(0, 1), (0, 3)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn union_prefill_single_expert_union() {
+        // k=1, seq=2: every token picked expert 2 → |union| == 1.
+        let dir = split_e2e_fixture("union_prefill_single");
+        let cfg = v4_test_config(4, 1);
+        let x = array_f32(&[0.25, 0.5, 0.75, 1.0, 1.0, 0.75, 0.5, 0.25], &[1, 2, 4]);
+        let idx = split_u32_array(&[2, 2], &[1, 2, 1]);
+        let wts = array_f32(&[0.6, 0.4], &[1, 2, 1]);
+
+        let reference = union_reference(&cfg, &dir, 0, &x, &idx, &wts);
+        let (union_out, rows, used_stack) = union_run(&cfg, &dir, 0, &x, &idx, &wts);
+        eval(&[&reference, &union_out]);
+        assert_eq!(reference.shape(), union_out.shape());
+        assert_eq!(reference.data_f32(), union_out.data_f32());
+        assert!(!used_stack);
+        assert_eq!(rows.cached_expert_keys(), vec![(0, 2)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn union_prefill_expert_scale_guard_stays_full_stack() {
+        // A per-expert scale (Gemma4-style router) must keep prefill on the
+        // full stack: the scaled weighted sum indexes top_k_indices into a
+        // global scale, which union-slot remapping would corrupt.
+        let dir = split_e2e_fixture("union_scale_guard");
+        let cfg = v4_test_config(4, 2);
+        let x = array_f32(
+            &[
+                0.25, 0.5, 0.75, 1.0, 1.0, 0.75, 0.5, 0.25, 0.5, 1.0, 0.25, 0.75,
+            ],
+            &[1, 3, 4],
+        );
+        let idx = split_u32_array(&[3, 1, 0, 3, 2, 1], &[1, 3, 2]);
+        let wts = array_f32(&[0.7, 0.3, 0.25, 0.75, 0.9, 0.1], &[1, 3, 2]);
+        let scale = array_f32(&[1.0, 1.0, 1.0, 1.0], &[4]);
+
+        let rows = split_e2e_row_pager(&dir);
+        let stack_pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new(
+            split_e2e_manifest(),
+            dir.clone(),
+            4,
+        ));
+        let source = crate::expert_stream::ExpertLayerSource::new_with_rows(
+            stack_pager.clone(),
+            rows.clone(),
+            0,
+        );
+        let mut w = v4_layer_weights(x.clone(), &x);
+        w.expert_stream = Some(std::sync::Arc::new(source));
+        let out = moe_experts_forward_impl(&cfg, &w, &x, &idx, &wts, Some(&scale), None);
+        assert_eq!(
+            stack_pager.cached_layer_count(),
+            1,
+            "the expert-scale guard must page the full layer stack"
+        );
+        assert_eq!(
+            rows.cached_expert_count(),
+            0,
+            "the expert-scale guard must not touch the row pager"
+        );
+        let reference = union_reference(&cfg, &dir, 0, &x, &idx, &wts);
+        eval(&[&out, &reference]);
+        assert_eq!(out.data_f32(), reference.data_f32());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two-layer fixture: layer 0's down_proj scales are declared in
+    /// `sidecars.safetensors` (which does not hold them), layer 1 is a
+    /// healthy dense set.
+    fn union_two_layer_fixture(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ax_union_prefill_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        split_write_safetensors(
+            &dir,
+            &[
+                (
+                    "model.layers.0.mlp.switch_mlp.gate_up_proj.weight",
+                    vec![4, 16, 4],
+                    (0..4).flat_map(|e| vec![10.0 + e as f32; 16 * 4]).collect(),
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    vec![4, 4, 8],
+                    (0..4).flat_map(|e| vec![100.0 + e as f32; 4 * 8]).collect(),
+                ),
+                (
+                    "model.layers.1.mlp.switch_mlp.gate_up_proj.weight",
+                    vec![4, 16, 4],
+                    (0..4).flat_map(|e| vec![20.0 + e as f32; 16 * 4]).collect(),
+                ),
+                (
+                    "model.layers.1.mlp.switch_mlp.down_proj.weight",
+                    vec![4, 4, 8],
+                    (0..4).flat_map(|e| vec![200.0 + e as f32; 4 * 8]).collect(),
+                ),
+            ],
+        );
+        split_write_safetensors_named(
+            &dir,
+            "sidecars.safetensors",
+            &[("unrelated.tensor", vec![2], vec![1.0, 2.0])],
+        );
+        dir
+    }
+
+    fn union_two_layer_manifest() -> std::sync::Arc<crate::expert_stream::ExpertStreamManifest> {
+        let tensor = |name: &str, file: &str, layer: u32, proj: &str| {
+            serde_json::json!({
+                "name": name,
+                "file": file,
+                "layer": layer,
+                "proj": proj,
+                "expert_axis": 0,
+                "num_experts": 4,
+                "bits": 2,
+                "group_size": 64
+            })
+        };
+        let json = serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "generated_by": "ax-engine-test",
+            "required": true,
+            "mode": "layer-stack",
+            "num_experts": 4,
+            "experts_per_tok": 2,
+            "estimated_resident_bytes": 1000,
+            "estimated_full_resident_bytes": 5000,
+            "estimated_max_layer_expert_bytes": 2000,
+            "resident_roles": ["embedding", "attention", "router", "norm", "lm_head"],
+            "streamed_roles": ["expert"],
+            "tensors": [
+                tensor("model.layers.0.mlp.switch_mlp.gate_up_proj.weight", "experts.safetensors", 0, "gate_up"),
+                tensor("model.layers.0.mlp.switch_mlp.down_proj.weight", "experts.safetensors", 0, "down"),
+                tensor("model.layers.0.mlp.switch_mlp.down_proj.scales", "sidecars.safetensors", 0, "down"),
+                tensor("model.layers.1.mlp.switch_mlp.gate_up_proj.weight", "experts.safetensors", 1, "gate_up"),
+                tensor("model.layers.1.mlp.switch_mlp.down_proj.weight", "experts.safetensors", 1, "down")
+            ]
+        });
+        std::sync::Arc::new(
+            crate::expert_stream::ExpertStreamManifest::parse(&serde_json::to_vec(&json).unwrap())
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn union_prefill_row_error_fails_only_that_layer() {
+        // Layer 0's row load fails closed (declared scales absent from the
+        // declared shard) and falls back to the full stack for THAT layer;
+        // layer 1 still union-pages through the healthy row pager.
+        let dir = union_two_layer_fixture("row_error");
+        let cfg = v4_test_config(4, 2);
+        let x = array_f32(
+            &[
+                0.25, 0.5, 0.75, 1.0, 1.0, 0.75, 0.5, 0.25, 0.5, 1.0, 0.25, 0.75,
+            ],
+            &[1, 3, 4],
+        );
+        let idx = split_u32_array(&[3, 1, 0, 3, 2, 1], &[1, 3, 2]);
+        let wts = array_f32(&[0.7, 0.3, 0.25, 0.75, 0.9, 0.1], &[1, 3, 2]);
+        let manifest = union_two_layer_manifest();
+        let rows = std::sync::Arc::new(
+            crate::expert_stream::ExpertRowPager::new(
+                manifest.clone(),
+                dir.clone(),
+                crate::expert_stream::ExpertRowPagerConfig {
+                    budget_bytes: 1 << 20,
+                    fuse_split_experts: false,
+                    prefetch: false,
+                    decay_interval: 4096,
+                    hotlist_out: None,
+                    load_delay: None,
+                },
+            )
+            .unwrap(),
+        );
+        let stack_pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new(
+            manifest.clone(),
+            dir.clone(),
+            4,
+        ));
+        let layer_out = |layer: u32| {
+            let source = crate::expert_stream::ExpertLayerSource::new_with_rows(
+                stack_pager.clone(),
+                rows.clone(),
+                layer,
+            );
+            let mut w = v4_layer_weights(x.clone(), &x);
+            w.expert_stream = Some(std::sync::Arc::new(source));
+            moe_experts_forward_impl(&cfg, &w, &x, &idx, &wts, None, None)
+        };
+        let reference = |layer: u32| {
+            let ref_pager = std::sync::Arc::new(crate::expert_stream::ExpertStackPager::new(
+                manifest.clone(),
+                dir.clone(),
+                4,
+            ));
+            let source = crate::expert_stream::ExpertLayerSource::new(ref_pager, layer);
+            let mut w = v4_layer_weights(x.clone(), &x);
+            w.expert_stream = Some(std::sync::Arc::new(source));
+            moe_experts_forward_impl(&cfg, &w, &x, &idx, &wts, None, None)
+        };
+
+        let out0 = layer_out(0);
+        let ref0 = reference(0);
+        eval(&[&out0, &ref0]);
+        assert_eq!(
+            out0.data_f32(),
+            ref0.data_f32(),
+            "the failing layer must fall back to a correct full stack"
+        );
+        let out1 = layer_out(1);
+        let ref1 = reference(1);
+        eval(&[&out1, &ref1]);
+        assert_eq!(out1.data_f32(), ref1.data_f32());
+
+        assert_eq!(
+            stack_pager.cached_layer_indices(),
+            vec![0],
+            "only the failing layer paged its full stack"
+        );
+        assert!(
+            rows.cached_expert_keys()
+                .iter()
+                .all(|(layer, _)| *layer == 1),
+            "only the healthy layer used the row pager: {:?}",
+            rows.cached_expert_keys()
+        );
+        assert!(!rows.cached_expert_keys().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

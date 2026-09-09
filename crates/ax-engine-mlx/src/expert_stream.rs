@@ -17,11 +17,14 @@
 //! decayed over time) rather than recency, preloads an optional offline
 //! hotlist, and warms the next layer's predicted experts on a loader thread.
 //! Decode assembles a compacted `[top_k, ...]` stack so the same `gather_qmm`
-//! path runs unchanged; prefill and any row-mode failure fall back to the
-//! layer-stack pager. An explicit env value always wins; when the env is
-//! unset, qwen4_exp packs with a file-backed `ax_expert_stream.json` default
-//! to `expert` and every other family (and inferred manifests) stays on
-//! `layer` (see [`stream_expert_granularity_for_family`]).
+//! path runs unchanged; prefill pages the sorted union of the prompt's
+//! selected experts (Qwen3-style routers only — per-expert-scale routers
+//! stay on full stacks), and any row-mode failure falls back to the
+//! layer-stack pager for that layer. An explicit env value always wins; when
+//! the env is unset, qwen4_exp packs with a file-backed
+//! `ax_expert_stream.json` default to `expert` and every other family (and
+//! inferred manifests) stays on `layer` (see
+//! [`stream_expert_granularity_for_family`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -1056,8 +1059,10 @@ pub struct ExpertHotlistEntry {
 }
 
 /// Compacted per-token expert stacks assembled from cached rows: the same
-/// slots the resident path fills, plus the slot index each requested expert
-/// landed in. Assembly follows request order, so `remap` is `0..k`.
+/// slots the resident path fills, plus the flat per-position slot indices to
+/// consume them with. Assembly follows request order, so `ensure_experts`
+/// leaves `remap` as the identity `0..k` (decode compaction); the row-mode
+/// prefill caller overwrites it with the per-position union-slot lookup.
 #[derive(Clone)]
 pub struct CompactedExperts {
     pub stack: LayerExpertStack,
