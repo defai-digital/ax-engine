@@ -18,6 +18,9 @@ const MONOTONIC_CROSSOVER_DECISION_KEYS: &[&str] = &[
     "retained_cache_hits",
     "prefix_reused_blocks",
     "prefix_reused_tokens",
+    // Physical MLX restore is per-step delta telemetry. A later store-only
+    // prefill chunk emits the key at 0; last-wins would drop cached_tokens.
+    "ax_mlx_prefix_cache_reused_tokens",
     "blocked_prefix_reuse_requests",
     "blocked_prefix_reuse_blocks",
     "blocked_prefix_reuse_tokens",
@@ -191,6 +194,40 @@ mod tests {
             stored.crossover_decisions.get("ax_mlx_kv_logical_tokens"),
             Some(&520),
             "non-monotonic counters take the latest value"
+        );
+    }
+
+    #[test]
+    fn merge_native_route_preserves_physical_mlx_prefix_reuse_across_store_only_steps() {
+        let mut stored = GenerateRouteReport {
+            crossover_decisions: [
+                ("prefix_reused_tokens".to_string(), 512u32),
+                ("ax_mlx_prefix_cache_reused_tokens".to_string(), 128),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let store_only = GenerateRouteReport {
+            crossover_decisions: [
+                ("ax_mlx_prefix_cache_reused_tokens".to_string(), 0u32),
+                ("ax_mlx_prefix_cache_stores".to_string(), 1),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        merge_native_route_into(&mut stored, store_only);
+        assert_eq!(
+            stored
+                .crossover_decisions
+                .get("ax_mlx_prefix_cache_reused_tokens"),
+            Some(&128),
+            "physical MLX restore must survive a later store-only step"
+        );
+        assert_eq!(
+            stored.crossover_decisions.get("ax_mlx_prefix_cache_stores"),
+            Some(&1)
         );
     }
 

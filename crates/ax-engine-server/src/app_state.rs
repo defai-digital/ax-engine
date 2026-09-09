@@ -673,6 +673,19 @@ struct EngineStepStats {
     /// rate the low-acceptance bypass watches; expose it so operators can see
     /// speculation paying for itself (or not) without bench tooling.
     mtp_accept_rate_ewma_x1000: u64,
+    mlx_prefix_cache_hits_total: u64,
+    mlx_prefix_cache_misses_total: u64,
+    mlx_prefix_cache_reused_tokens_total: u64,
+    mlx_prefix_cache_warmup_tokens_total: u64,
+    mlx_prefix_cache_blocked_entry_too_large_total: u64,
+    mlx_prefill_wall_us_total: u64,
+    mlx_prefill_forward_wall_us_total: u64,
+    mlx_prefill_prefix_cache_wall_us_total: u64,
+    mlx_prefill_generation_state_wall_us_total: u64,
+    mlx_mtp_model_policy_active: u64,
+    mlx_mtp_model_policy_route_safe: u64,
+    mlx_mtp_certified_default_on: u64,
+    mlx_mtp_runtime_enabled_by_default: u64,
     memory: Option<ModelMemoryGauges>,
 }
 
@@ -710,6 +723,19 @@ pub(crate) struct EngineStepGauges {
     pub(crate) mtp_accepted_tokens_total: u64,
     pub(crate) mtp_direct_fallback_steps_total: u64,
     pub(crate) mtp_accept_rate_ewma_x1000: u64,
+    pub(crate) mlx_prefix_cache_hits_total: u64,
+    pub(crate) mlx_prefix_cache_misses_total: u64,
+    pub(crate) mlx_prefix_cache_reused_tokens_total: u64,
+    pub(crate) mlx_prefix_cache_warmup_tokens_total: u64,
+    pub(crate) mlx_prefix_cache_blocked_entry_too_large_total: u64,
+    pub(crate) mlx_prefill_wall_us_total: u64,
+    pub(crate) mlx_prefill_forward_wall_us_total: u64,
+    pub(crate) mlx_prefill_prefix_cache_wall_us_total: u64,
+    pub(crate) mlx_prefill_generation_state_wall_us_total: u64,
+    pub(crate) mlx_mtp_model_policy_active: u64,
+    pub(crate) mlx_mtp_model_policy_route_safe: u64,
+    pub(crate) mlx_mtp_certified_default_on: u64,
+    pub(crate) mlx_mtp_runtime_enabled_by_default: u64,
 }
 
 /// Latest model-attributed memory geometry reported by the native runner.
@@ -894,6 +920,68 @@ impl ServerMetrics {
             if let Some(ewma) = route.decision("ax_mtp_mtp_only_accept_rate_ewma_x1000") {
                 entry.mtp_accept_rate_ewma_x1000 = u64::from(ewma);
             }
+            for (target, key) in [
+                (
+                    &mut entry.mlx_prefix_cache_hits_total,
+                    "ax_mlx_prefix_cache_hits",
+                ),
+                (
+                    &mut entry.mlx_prefix_cache_misses_total,
+                    "ax_mlx_prefix_cache_misses",
+                ),
+                (
+                    &mut entry.mlx_prefix_cache_reused_tokens_total,
+                    "ax_mlx_prefix_cache_reused_tokens",
+                ),
+                (
+                    &mut entry.mlx_prefix_cache_warmup_tokens_total,
+                    "ax_mlx_prefix_cache_warmup_tokens",
+                ),
+                (
+                    &mut entry.mlx_prefix_cache_blocked_entry_too_large_total,
+                    "ax_mlx_prefix_cache_blocked_entry_too_large",
+                ),
+                (
+                    &mut entry.mlx_prefill_wall_us_total,
+                    "ax_mlx_prefill_wall_us",
+                ),
+                (
+                    &mut entry.mlx_prefill_forward_wall_us_total,
+                    "ax_mlx_prefill_forward_wall_us",
+                ),
+                (
+                    &mut entry.mlx_prefill_prefix_cache_wall_us_total,
+                    "ax_mlx_prefill_prefix_cache_wall_us",
+                ),
+                (
+                    &mut entry.mlx_prefill_generation_state_wall_us_total,
+                    "ax_mlx_prefill_generation_state_wall_us",
+                ),
+            ] {
+                *target = target.saturating_add(u64::from(route.decision(key).unwrap_or(0)));
+            }
+            for (target, key) in [
+                (
+                    &mut entry.mlx_mtp_model_policy_active,
+                    "ax_mlx_mtp_model_policy_active",
+                ),
+                (
+                    &mut entry.mlx_mtp_model_policy_route_safe,
+                    "ax_mlx_mtp_model_policy_route_safe",
+                ),
+                (
+                    &mut entry.mlx_mtp_certified_default_on,
+                    "ax_mlx_mtp_certified_default_on",
+                ),
+                (
+                    &mut entry.mlx_mtp_runtime_enabled_by_default,
+                    "ax_mlx_mtp_runtime_enabled_by_default",
+                ),
+            ] {
+                if let Some(value) = route.decision(key) {
+                    *target = u64::from(value);
+                }
+            }
         }
         if let Some(route) = report.route.as_ref()
             && route
@@ -983,6 +1071,25 @@ impl ServerMetrics {
                         mtp_accepted_tokens_total: entry.mtp_accepted_tokens_total,
                         mtp_direct_fallback_steps_total: entry.mtp_direct_fallback_steps_total,
                         mtp_accept_rate_ewma_x1000: entry.mtp_accept_rate_ewma_x1000,
+                        mlx_prefix_cache_hits_total: entry.mlx_prefix_cache_hits_total,
+                        mlx_prefix_cache_misses_total: entry.mlx_prefix_cache_misses_total,
+                        mlx_prefix_cache_reused_tokens_total: entry
+                            .mlx_prefix_cache_reused_tokens_total,
+                        mlx_prefix_cache_warmup_tokens_total: entry
+                            .mlx_prefix_cache_warmup_tokens_total,
+                        mlx_prefix_cache_blocked_entry_too_large_total: entry
+                            .mlx_prefix_cache_blocked_entry_too_large_total,
+                        mlx_prefill_wall_us_total: entry.mlx_prefill_wall_us_total,
+                        mlx_prefill_forward_wall_us_total: entry.mlx_prefill_forward_wall_us_total,
+                        mlx_prefill_prefix_cache_wall_us_total: entry
+                            .mlx_prefill_prefix_cache_wall_us_total,
+                        mlx_prefill_generation_state_wall_us_total: entry
+                            .mlx_prefill_generation_state_wall_us_total,
+                        mlx_mtp_model_policy_active: entry.mlx_mtp_model_policy_active,
+                        mlx_mtp_model_policy_route_safe: entry.mlx_mtp_model_policy_route_safe,
+                        mlx_mtp_certified_default_on: entry.mlx_mtp_certified_default_on,
+                        mlx_mtp_runtime_enabled_by_default: entry
+                            .mlx_mtp_runtime_enabled_by_default,
                     },
                 )
             })

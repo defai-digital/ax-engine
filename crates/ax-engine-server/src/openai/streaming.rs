@@ -27,7 +27,9 @@ use crate::openai::chunks::{
 };
 use crate::openai::reasoning_stream::ThinkTagScanner;
 use crate::openai::requests::OpenAiResponseOptions;
-use crate::openai::responses::{finish_reason_from_llama_cpp_chat, openai_usage};
+use crate::openai::responses::{
+    finish_reason_from_llama_cpp_chat, openai_usage, served_prefix_reused_tokens,
+};
 use crate::openai::schema::{OpenAiPromptTokensDetails, OpenAiStreamKind, OpenAiUsage};
 use crate::openai::sse::send_openai_stream_chunk;
 use crate::openai::stop::StopSequenceScanner;
@@ -261,9 +263,8 @@ impl OpenAiStreamDriver {
     /// repeat or omit it, so a fresh value wins and `None` keeps the last
     /// observed count.
     fn track_prefix_reuse(&mut self, route: &GenerateRouteReport) {
-        self.prefix_reused_tokens = route
-            .decision("prefix_reused_tokens")
-            .or(self.prefix_reused_tokens);
+        self.prefix_reused_tokens =
+            served_prefix_reused_tokens(route).or(self.prefix_reused_tokens);
     }
 
     fn handle_event(&mut self, tx: &StreamEventSender, event: GenerateStreamEvent) -> bool {
@@ -1686,8 +1687,14 @@ mod stream_usage_tests {
         driver.track_prefix_reuse(&route);
         assert_eq!(driver.prefix_reused_tokens, Some(64));
 
+        route
+            .crossover_decisions
+            .insert("ax_mlx_prefix_cache_reused_tokens".to_string(), 0);
+        driver.track_prefix_reuse(&route);
+        assert_eq!(driver.prefix_reused_tokens, Some(0));
+
         // Later reports without the decision keep the last observed count.
         driver.track_prefix_reuse(&GenerateRouteReport::default());
-        assert_eq!(driver.prefix_reused_tokens, Some(64));
+        assert_eq!(driver.prefix_reused_tokens, Some(0));
     }
 }

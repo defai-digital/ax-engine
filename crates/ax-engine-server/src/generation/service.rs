@@ -486,6 +486,7 @@ enum ServiceCommand {
         request: GenerateRequest,
         events: mpsc::Sender<NativeEvent>,
         terminal_events: Arc<parking_lot::Mutex<VecDeque<NativeEvent>>>,
+        consumer_disconnected: Arc<AtomicBool>,
         started: oneshot::Sender<Result<(), EngineSessionError>>,
         permit: AdmissionPermit,
     },
@@ -548,9 +549,14 @@ pub(crate) struct NativeGenerationService {
 pub(crate) struct NativeEventReceiver {
     receiver: mpsc::Receiver<NativeEvent>,
     terminal_events: Arc<parking_lot::Mutex<VecDeque<NativeEvent>>>,
+    consumer_disconnected: Arc<AtomicBool>,
 }
 
 impl NativeEventReceiver {
+    pub(crate) fn disconnect_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.consumer_disconnected)
+    }
+
     pub(crate) async fn recv(&mut self) -> Option<NativeEvent> {
         match self.receiver.recv().await {
             Some(event) => Some(event),
@@ -563,6 +569,12 @@ impl NativeEventReceiver {
             Some(event) => Some(event),
             None => self.terminal_events.lock().pop_front(),
         }
+    }
+}
+
+impl Drop for NativeEventReceiver {
+    fn drop(&mut self) {
+        self.consumer_disconnected.store(true, Ordering::Release);
     }
 }
 
@@ -694,12 +706,14 @@ impl NativeGenerationService {
     ) -> Result<NativeEventReceiver, GenerationServiceError> {
         let (events_tx, events_rx) = mpsc::channel(STREAM_EVENT_CHANNEL_CAPACITY);
         let terminal_events = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
+        let consumer_disconnected = Arc::new(AtomicBool::new(false));
         let (started_tx, started_rx) = oneshot::channel();
         self.enqueue(ServiceCommand::StartStream {
             request_id,
             request,
             events: events_tx,
             terminal_events: Arc::clone(&terminal_events),
+            consumer_disconnected: Arc::clone(&consumer_disconnected),
             started: started_tx,
             permit,
         })?;
@@ -710,6 +724,7 @@ impl NativeGenerationService {
         Ok(NativeEventReceiver {
             receiver: events_rx,
             terminal_events,
+            consumer_disconnected,
         })
     }
 
@@ -1180,6 +1195,7 @@ struct ActiveStream {
     state: GenerateStreamState,
     events: mpsc::Sender<NativeEvent>,
     terminal_events: Arc<parking_lot::Mutex<VecDeque<NativeEvent>>>,
+    consumer_disconnected: Arc<AtomicBool>,
     pending_events: VecDeque<NativeEvent>,
     request_event_pending: bool,
     permit: Option<AdmissionPermit>,
@@ -1273,6 +1289,7 @@ fn handle_command(
             request,
             events,
             terminal_events,
+            consumer_disconnected,
             started,
             permit,
         } => match session.stream_generate_state_with_request_id(request_id, request) {
@@ -1283,6 +1300,7 @@ fn handle_command(
                         state: stream_state,
                         events,
                         terminal_events,
+                        consumer_disconnected,
                         pending_events: VecDeque::new(),
                         request_event_pending: true,
                         permit: Some(permit),
@@ -1415,7 +1433,7 @@ fn maintain_streams(
     let mut progressed = false;
     let mut terminal = Vec::new();
     for (request_id, stream) in active_streams.iter_mut() {
-        if stream.events.is_closed() {
+        if stream.consumer_disconnected.load(Ordering::Acquire) || stream.events.is_closed() {
             let _ = session.cancel_request(*request_id);
             stream.permit.take();
             discard_pending_events(stream, service_state);
@@ -2409,9 +2427,11 @@ mod tests {
             .expect("channel should accept the queued event");
         terminal_events.lock().push_back(error("terminal event"));
         drop(sender);
+        let consumer_disconnected = Arc::new(AtomicBool::new(false));
         let mut events = NativeEventReceiver {
             receiver,
             terminal_events,
+            consumer_disconnected: Arc::clone(&consumer_disconnected),
         };
 
         let queued = events
@@ -2428,6 +2448,8 @@ mod tests {
         assert!(queued.to_string().contains("queued event"));
         assert!(terminal.to_string().contains("terminal event"));
         assert!(events.recv().await.is_none());
+        drop(events);
+        assert!(consumer_disconnected.load(Ordering::Acquire));
     }
 
     #[tokio::test]

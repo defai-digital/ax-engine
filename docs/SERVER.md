@@ -198,8 +198,9 @@ Notes:
 (total, in-flight, 2xx/4xx/5xx), gRPC request counters (total, in-flight,
 ok/error), shared engine-job admission (`ax_engine_jobs_in_flight`), persistent
 generation-worker work (`ax_engine_generation_jobs_pending`), and engine-step
-gauges (scheduled requests and tokens, KV block usage, accumulated prefix-cache
-hits). The endpoint is read-only: engine-step values are snapshots cached when
+gauges (scheduled requests and tokens, KV block usage, accumulated scheduler
+prefix hits, physical MLX prefix reuse, MLX prefill phases, and MTP policy
+state). The endpoint is read-only: engine-step values are snapshots cached when
 generation endpoints drive real steps, never sampled by stepping the engine
 from the scrape path. Engine-step gauges appear only after at least one step
 has been observed via `POST /v1/step`. Per-model gauges are removed when their
@@ -295,8 +296,10 @@ than silently dropped.
   OpenClaw's `qwen-chat-template` compatibility mode.
 - **`usage.prompt_tokens_details.cached_tokens`**: when the engine served
   part of the prompt from the prefix cache, non-streaming responses report
-  the reused token count in the OpenAI prompt-caching shape; the block is
-  omitted when reuse was zero or unknown.
+  the reused token count in the OpenAI prompt-caching shape. MLX responses use
+  the runner's physical restore count, including an explicit zero overriding
+  scheduler prefix affinity. Other backends fall back to the scheduler count;
+  the block is omitted when reuse was zero or unknown.
 - **`response_format: json_object`** (completions and chat): non-streaming
   responses are validated server-side; output that is not a JSON object
   returns `502 invalid_output`. This is post-hoc validation, not constrained
@@ -1188,6 +1191,14 @@ model is never evicted; sweeps run only while the server is otherwise idle.
 Engine-step `/metrics` series carry a `model` label per loaded model, plus
 unlabeled aggregates for single-model dashboards. Unload/replace drop the
 retired generation's per-model samples immediately.
+
+MLX latency diagnosis uses `ax_engine_mlx_prefill_*_wall_us_total` to separate
+the forward pass, prefix-cache work, and generation-state initialization.
+`ax_engine_mlx_prefix_cache_{hits,misses,reused_tokens,warmup_tokens}_total`
+reports physical runner behavior, while
+`ax_engine_mlx_prefix_cache_blocked_entry_too_large_total` counts snapshots
+rejected before serialization. The `ax_engine_mlx_mtp_*` gauges expose route
+safety, certification, runtime default enablement, and actual policy activity.
 
 Memory metrics deliberately separate process measurements from model
 attribution:

@@ -223,6 +223,8 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_MEDIA_IDENTITY: &str =
     "ax_mlx_prefix_cache_blocked_media_identity";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_RESTORE_ERROR: &str =
     "ax_mlx_prefix_cache_blocked_restore_error";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_ENTRY_TOO_LARGE: &str =
+    "ax_mlx_prefix_cache_blocked_entry_too_large";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES: &str = "ax_mlx_prefix_cache_stores";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS: &str = "ax_mlx_prefix_cache_evictions";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS: &str = "ax_mlx_prefix_cache_reused_tokens";
@@ -1908,7 +1910,7 @@ impl MlxRunner {
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
         let has_mtp = mtp_model_policy.has_attached_drafter();
         let mtp_model_route_safe = mtp_model_policy.route_safe();
-        if mtp_model_policy.is_qwen_linear_direct_fallback() && !disable_ngram_acceleration {
+        if mtp_model_policy.is_qwen_linear_direct_fallback() && !speculation_disabled {
             tracing::warn!(
                 target: "ax_engine_mlx::runner",
                 model_family = %cfg.model_family,
@@ -1956,16 +1958,15 @@ impl MlxRunner {
             .filter(|&c| c >= 1)
             .unwrap_or(8);
         let batched_session = Mutex::new(BatchedDecodeSession::new(cfg.layer_count, batched_cap));
-        // Session-level n-gram disable is the pure direct contract used by
-        // AX-only README benches (`--ax-direct` / `AX_NO_SPEC`). Leave MTP
-        // requested only when speculation remains enabled so greedy direct
-        // decode keeps the double-buffer pipeline instead of falling into
-        // `run_non_ngram_decode` → single-decode. Default-on additionally
-        // requires the pack's publisher certification (fail-closed);
-        // explicit requests re-enter through `set_mtp_requested`.
-        let mtp_requested = !disable_ngram_acceleration
-            && mtp_model_route_safe
-            && (mtp_model_policy.certified_default_on() || crate::fastpath::mtp_force_requested());
+        // The CLI n-gram switch controls only the independent n-gram drafter.
+        // AX_NO_SPEC remains the process-wide kill switch for every speculative
+        // route. Packaged MTP is otherwise admitted independently and still
+        // requires route safety plus publisher certification (fail closed).
+        let mtp_requested = default_mtp_requested(
+            speculation_disabled,
+            mtp_model_route_safe,
+            mtp_model_policy.certified_default_on() || crate::fastpath::mtp_force_requested(),
+        );
         tracing::info!(
             target: "ax_engine_mlx::runner",
             model_family = %cfg.model_family,
@@ -5396,7 +5397,7 @@ impl MlxRunner {
                         max_output,
                         Some(tok),
                         is_greedy,
-                        sampling.temperature,
+                        sampling,
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -5479,7 +5480,7 @@ impl MlxRunner {
                         max_output,
                         Some(tok),
                         is_greedy,
-                        sampling.temperature,
+                        sampling,
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -5562,7 +5563,7 @@ impl MlxRunner {
                         max_output,
                         Some(tok),
                         is_greedy,
-                        sampling.temperature,
+                        sampling,
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -5645,7 +5646,7 @@ impl MlxRunner {
                         max_output,
                         Some(tok),
                         is_greedy,
-                        sampling.temperature,
+                        sampling,
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -5725,7 +5726,7 @@ impl MlxRunner {
                         max_output,
                         Some(tok),
                         is_greedy,
-                        sampling.temperature,
+                        sampling,
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -6089,7 +6090,7 @@ impl MlxRunner {
                             max_output,
                             Some(tok),
                             is_greedy,
-                            sampling.temperature,
+                            sampling,
                         );
                         prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     }
@@ -6137,7 +6138,7 @@ impl MlxRunner {
                             max_output,
                             Some(tok),
                             is_greedy,
-                            sampling.temperature,
+                            sampling,
                         );
                         vec![tok]
                     } else {
@@ -7356,6 +7357,25 @@ impl MlxRunner {
                 return telemetry;
             }
         }
+        if !l1_superseding {
+            let lower_bound = snapshot_cache
+                .usage_snapshot()
+                .logical_bytes
+                .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64));
+            if !self
+                .prefix_cache
+                .lock()
+                .policy
+                .admits_lower_bound(lower_bound)
+            {
+                telemetry.record_blocked_entry_too_large();
+                Self::pfx_dbg(
+                    "store-skip",
+                    &format!("entry_too_large lower_bound={lower_bound}"),
+                );
+                return telemetry;
+            }
+        }
         let serialize_started = Instant::now();
         let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
         let serialize_us = u64::from(elapsed_us(serialize_started));
@@ -7664,6 +7684,25 @@ impl MlxRunner {
                 );
                 continue;
             }
+            if !l1_superseding {
+                let lower_bound = snapshot_cache
+                    .usage_snapshot()
+                    .logical_bytes
+                    .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64));
+                if !self
+                    .prefix_cache
+                    .lock()
+                    .policy
+                    .admits_lower_bound(lower_bound)
+                {
+                    telemetry.record_blocked_entry_too_large();
+                    Self::pfx_dbg(
+                        "store-loop-skip",
+                        &format!("entry_too_large prefix={prefix_len} lower_bound={lower_bound}"),
+                    );
+                    continue;
+                }
+            }
             // F3 M2 — for the disk layer we want the largest valid
             // snapshot persisted; smaller intermediate prefixes stay
             // in L1 only. Without an eviction policy yet (M3), writing
@@ -7944,6 +7983,7 @@ impl MlxRunner {
             state.think_soft_close_armed,
             sampling.uses_logits_processors(),
             is_greedy || sampling.temperature <= 0.0,
+            self.mtp_requested,
         );
         let direct_pipeline = pure_direct_pipeline
             || (!state.think_soft_close_armed
@@ -11312,7 +11352,7 @@ impl MlxRunner {
         max_output: u32,
         prefill_output_token: Option<u32>,
         is_greedy: bool,
-        temperature: f32,
+        sampling: MlxSamplingParams,
     ) {
         // When MTP is active, use a wider prompt window (NGRAM_MTP_PROMPT_FEED_MAX)
         // so real-code bigrams are seeded before the first decode step. Without
@@ -11396,7 +11436,7 @@ impl MlxRunner {
         state.mtp_adaptive_gate = mtp_adaptive_maybe_init(
             adaptive_gate_enabled_from_env(),
             speculation_profile_from_env(),
-            Some(temperature),
+            Some(sampling.temperature),
         );
         state.mtp_draft_gate_x1000 = 0;
         state.mtp_draft_gate_source = 0;
@@ -11615,17 +11655,18 @@ impl MlxRunner {
             self.weights.glm_mtp.is_some() || self.weights.deepseek_v4_nextn.is_some(),
         ) && (self.mtp_optimistic
             || mtp_auto_optimistic_enabled_from_env());
-        let exact_supported = is_greedy;
-        let mtp_uses_direct_pipeline = matches!(
+        let exact_supported = mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
+        let mtp_uses_direct_pipeline = mtp_fallback_primes_direct_pipeline(
             mtp_request_route(
                 self.has_mtp(),
                 self.mtp_requested,
                 exact_supported,
                 approximate_profile,
                 false,
-                false,
+                sampling.uses_logits_processors(),
             ),
-            MtpRequestRoute::DirectFallback
+            is_greedy,
+            sampling.uses_logits_processors(),
         );
 
         // Mirror mlx_lm.generate_step's first-yield boundary for the direct
@@ -11667,9 +11708,10 @@ impl MlxRunner {
             state.ngram_acceleration_disabled_for_request,
             self.has_mtp(),
             mtp_uses_direct_pipeline,
+            self.mtp_requested,
         ) || gemma_exact_direct_bootstrap)
             && !gemma_moe_long_mt_singleton
-            && (is_greedy || (self.disable_ngram_acceleration && temperature <= 0.0))
+            && (is_greedy || (self.disable_ngram_acceleration && sampling.temperature <= 0.0))
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token
         {
@@ -12952,6 +12994,17 @@ const fn qwen_linear_mtp_exact_scope_for_request(
     mtp_requested: bool,
 ) -> bool {
     resolved_profile_enabled && mtp_requested
+}
+
+/// Resolves default packaged-MTP admission independently from the CLI n-gram
+/// switch. `AX_NO_SPEC` supplies `speculation_disabled` and remains the only
+/// construction-time kill switch shared by both speculative mechanisms.
+const fn default_mtp_requested(
+    speculation_disabled: bool,
+    route_safe: bool,
+    certified_or_forced: bool,
+) -> bool {
+    !speculation_disabled && route_safe && certified_or_forced
 }
 
 /// A deferred Qwen draft is valid whenever the linear-attention verifier is
@@ -15033,16 +15086,24 @@ mod tests {
 
     #[test]
     fn direct_pipeline_bootstrap_does_not_overlap_strict_mtp() {
-        // Session-direct always primes the double-buffer, even when MTP weights
-        // are attached (pure direct clears mtp_requested at construction).
+        // AX_NO_SPEC / `--ax-direct` still primes the double-buffer when MTP
+        // weights are attached because construction cleared `mtp_requested`.
         assert!(
-            should_bootstrap_direct_pipeline(true, false, true, false),
+            should_bootstrap_direct_pipeline(true, false, true, false, false),
             "session-direct must bootstrap the greedy pipeline for long decode",
         );
-        assert!(should_bootstrap_direct_pipeline(true, false, false, false));
-        assert!(should_bootstrap_direct_pipeline(false, true, false, false));
-        assert!(should_bootstrap_direct_pipeline(false, false, true, true));
-        assert!(!should_bootstrap_direct_pipeline(false, true, true, false));
+        assert!(should_bootstrap_direct_pipeline(
+            true, false, false, false, false
+        ));
+        assert!(should_bootstrap_direct_pipeline(
+            false, true, false, false, false
+        ));
+        assert!(should_bootstrap_direct_pipeline(
+            false, false, true, true, true
+        ));
+        assert!(!should_bootstrap_direct_pipeline(
+            false, true, true, false, true
+        ));
         assert!(
             !should_use_session_direct_pipeline(true, true, true, true),
             "when MTP remains requested, decode must not steal the direct pipeline",
@@ -15073,17 +15134,15 @@ mod tests {
                 "session_direct greedy pipeline required (has_mtp={has_mtp})"
             );
             assert!(
-                should_bootstrap_direct_pipeline(true, false, has_mtp, false),
+                should_bootstrap_direct_pipeline(true, false, has_mtp, false, false),
                 "session_direct must bootstrap pipeline (has_mtp={has_mtp})"
             );
         }
-        // Construction contract: after `disable_ngram || AX_NO_SPEC`, the
-        // runner must clear `mtp_requested` so the pure-direct gate cannot be
-        // defeated by leftover MTP-request bits from CLI/env mismatch.
+        // AX_NO_SPEC clears MTP even when the model would otherwise qualify.
         let disable_ngram = true;
         let speculation_disabled = true;
         let session_direct = disable_ngram || speculation_disabled;
-        let mtp_requested = !session_direct;
+        let mtp_requested = default_mtp_requested(speculation_disabled, true, true);
         assert!(!mtp_requested);
         assert!(should_use_session_direct_pipeline(
             session_direct,
@@ -15094,31 +15153,125 @@ mod tests {
     }
 
     #[test]
+    fn ngram_disable_does_not_disable_certified_packaged_mtp() {
+        let disable_ngram = true;
+        let mtp_requested = default_mtp_requested(false, true, true);
+        assert!(disable_ngram);
+        assert!(mtp_requested);
+        assert!(!default_mtp_requested(true, true, true));
+        assert!(!default_mtp_requested(false, false, true));
+        assert!(!default_mtp_requested(false, true, false));
+        // decode_one consults these predicates before `run_model_decode`.
+        assert!(
+            !v4_uncertified_uses_pure_direct_pipeline(
+                false,
+                disable_ngram,
+                false,
+                false,
+                true,
+                mtp_requested
+            ),
+            "CLI n-gram off must not force the pure-direct pipeline over certified MTP"
+        );
+        assert!(!should_use_session_direct_pipeline(
+            disable_ngram,
+            true,
+            true,
+            mtp_requested
+        ));
+        assert!(
+            !should_bootstrap_direct_pipeline(disable_ngram, false, true, false, mtp_requested),
+            "CLI n-gram off must not prime pending_direct while MTP is requested"
+        );
+        // OpenAI-shaped temp-0 + top_p is not `is_greedy`, but decode classifies
+        // it as exact MTP. Bootstrap must use the same predicate so it does not
+        // prime pending_direct through the DirectFallback term.
+        let sampling = MlxSamplingParams::new(0.0, 0.9, 0);
+        let exact_supported = mtp_exact_sampling_supported(sampling, None);
+        assert!(exact_supported);
+        let mtp_uses_direct_pipeline = matches!(
+            mtp_request_route(
+                true,
+                mtp_requested,
+                exact_supported,
+                false,
+                false,
+                sampling.uses_logits_processors(),
+            ),
+            MtpRequestRoute::DirectFallback
+        );
+        assert!(
+            !mtp_uses_direct_pipeline,
+            "temp-0 top_p certified MTP must be StrictMtp at both bootstrap and decode"
+        );
+        assert!(!should_bootstrap_direct_pipeline(
+            disable_ngram,
+            false,
+            true,
+            mtp_uses_direct_pipeline,
+            mtp_requested
+        ));
+        // DirectFallback with a logits processor must not prime: decode uses
+        // `run_single_decode` and would leave pending_direct undrained.
+        let penalized = MlxSamplingParams::new(0.0, 1.0, 0).with_repetition_penalty(1.1, Some(64));
+        assert!(penalized.uses_logits_processors());
+        let penalized_exact = mtp_exact_sampling_supported(penalized, None);
+        assert!(!penalized_exact);
+        let penalized_route = mtp_request_route(
+            true,
+            mtp_requested,
+            penalized_exact,
+            false,
+            false,
+            penalized.uses_logits_processors(),
+        );
+        assert_eq!(penalized_route, MtpRequestRoute::DirectFallback);
+        assert!(!mtp_fallback_primes_direct_pipeline(
+            penalized_route,
+            true,
+            penalized.uses_logits_processors(),
+        ));
+        assert!(!should_bootstrap_direct_pipeline(
+            disable_ngram,
+            false,
+            true,
+            mtp_fallback_primes_direct_pipeline(
+                penalized_route,
+                true,
+                penalized.uses_logits_processors(),
+            ),
+            mtp_requested
+        ));
+    }
+
+    #[test]
     fn pure_direct_pipeline_gate_ignores_mtp_request_bit() {
-        // decode_one pure-direct force path: session_direct + temp0 must not
-        // consult has_mtp/mtp_requested (those only apply to speculative sessions).
+        // decode_one pure-direct force path: session_direct + temp0 uses the
+        // pipeline when construction cleared `mtp_requested` (AX_NO_SPEC).
         assert!(
             should_use_session_direct_pipeline(true, true, true, false),
             "pure direct with mtp weights attached still uses pipeline"
         );
-        // When mtp_requested is wrongly left true, the *predicate* fails, which
-        // is why decode_one also forces pipeline from disable_ngram alone.
+        // Certified packaged MTP stays requested when only n-gram is disabled.
         assert!(!should_use_session_direct_pipeline(true, true, true, true));
     }
 
     #[test]
     fn v4_uncertified_fallback_uses_pure_direct_even_when_ngram_is_on() {
         assert!(v4_uncertified_uses_pure_direct_pipeline(
-            true, false, false, false, true
+            true, false, false, false, true, false
         ));
         assert!(!v4_uncertified_uses_pure_direct_pipeline(
-            false, false, false, false, true
+            false, false, false, false, true, false
         ));
         assert!(!v4_uncertified_uses_pure_direct_pipeline(
-            true, false, false, true, true
+            true, false, false, true, true, false
         ));
         assert!(v4_uncertified_uses_pure_direct_pipeline(
-            false, true, false, false, true
+            false, true, false, false, true, false
+        ));
+        assert!(!v4_uncertified_uses_pure_direct_pipeline(
+            false, true, false, false, true, true
         ));
     }
 
@@ -16639,13 +16792,14 @@ mod tests {
         let telemetry = MlxPrefixCacheTelemetry {
             hits: 1,
             misses: 2,
-            blocked: 3,
+            blocked: 4,
             blocked_policy_disabled: 1,
             blocked_unsupported_layout: 1,
             blocked_trim_failure: 1,
             blocked_snapshot_incomplete: 1,
             blocked_media_identity: 1,
             blocked_restore_error: 1,
+            blocked_entry_too_large: 1,
             stores: 4,
             evictions: 5,
             reused_tokens: 16,
@@ -16674,13 +16828,14 @@ mod tests {
 
         assert!(decisions.contains(&("ax_mlx_prefix_cache_hits".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_misses".into(), 2)));
-        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked".into(), 3)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked".into(), 4)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_policy_disabled".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_unsupported_layout".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_trim_failure".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_snapshot_incomplete".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_media_identity".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_restore_error".into(), 1)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_entry_too_large".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_evictions".into(), 5)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_bytes_kib".into(), 4)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_native_hits".into(), 11)));

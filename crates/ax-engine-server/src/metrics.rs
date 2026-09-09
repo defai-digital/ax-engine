@@ -300,6 +300,91 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             &step_models,
             |step| step.mtp_accept_rate_ewma_x1000,
         );
+        for (name, help, value) in [
+            (
+                "ax_engine_mlx_prefix_cache_hits_total",
+                "Physical MLX prefix-cache hits accumulated across observed engine steps.",
+                (|step: &crate::app_state::EngineStepGauges| step.mlx_prefix_cache_hits_total)
+                    as fn(&crate::app_state::EngineStepGauges) -> u64,
+            ),
+            (
+                "ax_engine_mlx_prefix_cache_misses_total",
+                "Physical MLX prefix-cache misses accumulated across observed engine steps.",
+                |step: &crate::app_state::EngineStepGauges| step.mlx_prefix_cache_misses_total,
+            ),
+            (
+                "ax_engine_mlx_prefix_cache_reused_tokens_total",
+                "Prompt tokens physically restored from the MLX prefix cache.",
+                |step: &crate::app_state::EngineStepGauges| {
+                    step.mlx_prefix_cache_reused_tokens_total
+                },
+            ),
+            (
+                "ax_engine_mlx_prefix_cache_warmup_tokens_total",
+                "Prompt tokens recomputed after an MLX prefix-cache miss.",
+                |step: &crate::app_state::EngineStepGauges| {
+                    step.mlx_prefix_cache_warmup_tokens_total
+                },
+            ),
+            (
+                "ax_engine_mlx_prefix_cache_blocked_entry_too_large_total",
+                "MLX prefix snapshots skipped before serialization because their lower-bound size exceeded the portable cache budget.",
+                |step: &crate::app_state::EngineStepGauges| {
+                    step.mlx_prefix_cache_blocked_entry_too_large_total
+                },
+            ),
+            (
+                "ax_engine_mlx_prefill_wall_us_total",
+                "Total MLX prefill wall time observed in microseconds.",
+                |step: &crate::app_state::EngineStepGauges| step.mlx_prefill_wall_us_total,
+            ),
+            (
+                "ax_engine_mlx_prefill_forward_wall_us_total",
+                "Total MLX prefill forward-pass wall time observed in microseconds.",
+                |step: &crate::app_state::EngineStepGauges| step.mlx_prefill_forward_wall_us_total,
+            ),
+            (
+                "ax_engine_mlx_prefill_prefix_cache_wall_us_total",
+                "Total MLX prefill prefix-cache work observed in microseconds.",
+                |step: &crate::app_state::EngineStepGauges| {
+                    step.mlx_prefill_prefix_cache_wall_us_total
+                },
+            ),
+            (
+                "ax_engine_mlx_prefill_generation_state_wall_us_total",
+                "Total MLX post-prefill generation-state initialization observed in microseconds.",
+                |step: &crate::app_state::EngineStepGauges| {
+                    step.mlx_prefill_generation_state_wall_us_total
+                },
+            ),
+        ] {
+            append_step_metric(&mut body, name, help, "counter", &step_models, value);
+        }
+        for (name, help, value) in [
+            (
+                "ax_engine_mlx_mtp_model_policy_active",
+                "Whether packaged MTP was active in the latest observed route.",
+                (|step: &crate::app_state::EngineStepGauges| step.mlx_mtp_model_policy_active)
+                    as fn(&crate::app_state::EngineStepGauges) -> u64,
+            ),
+            (
+                "ax_engine_mlx_mtp_model_policy_route_safe",
+                "Whether the latest observed model route was safe for packaged MTP.",
+                |step: &crate::app_state::EngineStepGauges| step.mlx_mtp_model_policy_route_safe,
+            ),
+            (
+                "ax_engine_mlx_mtp_certified_default_on",
+                "Whether the model pack certifies packaged MTP for default use.",
+                |step: &crate::app_state::EngineStepGauges| step.mlx_mtp_certified_default_on,
+            ),
+            (
+                "ax_engine_mlx_mtp_runtime_enabled_by_default",
+                "Whether the model pack runtime metadata enables packaged MTP by default.",
+                |step: &crate::app_state::EngineStepGauges| step.mlx_mtp_runtime_enabled_by_default,
+            ),
+        ] {
+            append_step_metric(&mut body, name, help, "gauge", &step_models, value);
+        }
         for (name, help, kind, value) in [
             (
                 "ax_engine_kv_allocated_blocks_total",

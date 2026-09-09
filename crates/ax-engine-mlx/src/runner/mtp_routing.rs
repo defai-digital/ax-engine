@@ -148,6 +148,17 @@ pub(super) const fn mtp_request_route(
     }
 }
 
+/// DirectFallback decode only consumes `pending_direct` on the greedy
+/// pipeline arm. Priming on any wider set leaves a lazy token at an
+/// already-advanced cache position that `run_single_decode` never drains.
+pub(super) const fn mtp_fallback_primes_direct_pipeline(
+    mtp_route: MtpRequestRoute,
+    is_greedy: bool,
+    uses_logits_processors: bool,
+) -> bool {
+    matches!(mtp_route, MtpRequestRoute::DirectFallback) && is_greedy && !uses_logits_processors
+}
+
 pub(super) fn mtp_exact_sampling_supported(
     sampling: MlxSamplingParams,
     target_softmax_topk: Option<u32>,
@@ -170,29 +181,32 @@ pub(super) const fn should_bootstrap_direct_pipeline(
     request_ngram_disabled: bool,
     has_mtp: bool,
     mtp_uses_direct_pipeline: bool,
+    mtp_requested: bool,
 ) -> bool {
-    // Pure session-direct (n-gram disabled at the runner boundary) is the
-    // README/direct-mode contract: always prime the double-buffer pipeline.
-    // MTP weights may still be attached to the package, but pure direct
-    // sessions clear `mtp_requested` so they must not skip bootstrap.
-    //
-    // When the session still allows speculation, only bootstrap when MTP is
-    // explicitly on the direct-fallback route, or when no MTP is attached and
-    // the request itself disabled n-gram.
-    session_direct || mtp_uses_direct_pipeline || (request_ngram_disabled && !has_mtp)
+    // AX_NO_SPEC / `--ax-direct` still primes the double-buffer pipeline even
+    // when MTP weights are attached, because construction cleared
+    // `mtp_requested`. The CLI n-gram switch is not that kill switch: Studio
+    // may disable n-gram while leaving certified packaged MTP requested, and
+    // priming `pending_direct` on that path collides with `run_mtp_decode`.
+    let pure_direct = session_direct && !(has_mtp && mtp_requested);
+    pure_direct || mtp_uses_direct_pipeline || (request_ngram_disabled && !has_mtp)
 }
 
 /// Greedy Flash-0731 with uncertified nextn must use the mlx-lm-style
 /// async_eval double-buffer even when n-gram is still session-on. The sidecar
 /// makes `has_mtp` true, but `route_safe` is false so MTP is not requested.
+/// CLI n-gram disable alone must not take this path when packaged MTP remains
+/// requested.
 pub(super) const fn v4_uncertified_uses_pure_direct_pipeline(
     v4_direct_fallback: bool,
     disable_ngram: bool,
     think_soft_close_armed: bool,
     uses_logits_processors: bool,
     greedy: bool,
+    mtp_requested: bool,
 ) -> bool {
-    !think_soft_close_armed
+    !mtp_requested
+        && !think_soft_close_armed
         && (disable_ngram || v4_direct_fallback)
         && !uses_logits_processors
         && greedy

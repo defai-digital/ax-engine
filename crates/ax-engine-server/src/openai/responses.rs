@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ax_engine_sdk::{GenerateFinishReason, GenerateResponse};
+use ax_engine_sdk::{GenerateFinishReason, GenerateResponse, GenerateRouteReport};
 use axum::Json;
 use axum::response::IntoResponse;
 use serde_json::Value;
@@ -787,12 +787,7 @@ pub(crate) fn openai_usage(response: &GenerateResponse) -> Option<OpenAiUsage> {
     // of prompt tokens whose KV state was served from cache). Reported in the
     // OpenAI prompt-caching shape; omitted when zero/unknown, matching how
     // other local engines expose it.
-    let cached_tokens = response
-        .route
-        .crossover_decisions
-        .get("prefix_reused_tokens")
-        .copied()
-        .unwrap_or(0);
+    let cached_tokens = served_prefix_reused_tokens(&response.route).unwrap_or(0);
     Some(OpenAiUsage {
         prompt_tokens,
         completion_tokens,
@@ -800,6 +795,26 @@ pub(crate) fn openai_usage(response: &GenerateResponse) -> Option<OpenAiUsage> {
         prompt_tokens_details: (cached_tokens > 0)
             .then_some(OpenAiPromptTokensDetails { cached_tokens }),
     })
+}
+
+/// Returns the prompt tokens physically restored by the backend. MLX emits an
+/// explicit zero on a miss, which must override scheduler-level prefix affinity.
+/// Older and non-MLX routes retain the scheduler decision as a compatibility
+/// fallback when no physical-backend measurement exists.
+pub(crate) fn served_prefix_reused_tokens(route: &GenerateRouteReport) -> Option<u32> {
+    if let Some(actual) = route.decision("ax_mlx_prefix_cache_reused_tokens") {
+        return Some(actual);
+    }
+    // An MLX route without the physical reuse field is an older or partial
+    // report. Do not relabel scheduler affinity as a physical cache hit.
+    if route
+        .crossover_decisions
+        .keys()
+        .any(|key| key.starts_with("ax_mlx_"))
+    {
+        return Some(0);
+    }
+    route.decision("prefix_reused_tokens")
 }
 
 pub(crate) fn openai_finish_reason(

@@ -970,6 +970,67 @@ fn usage_reports_cached_tokens_from_prefix_reuse() {
     );
 }
 
+#[test]
+fn usage_prefers_physical_mlx_prefix_reuse_over_scheduler_affinity() {
+    let mut response = sample_generate_response("hello", vec![10], vec![Some(-0.1)]);
+    response
+        .route
+        .crossover_decisions
+        .insert("prefix_reused_tokens".to_string(), 512);
+    response
+        .route
+        .crossover_decisions
+        .insert("ax_mlx_prefix_cache_reused_tokens".to_string(), 0);
+
+    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    assert!(
+        openai
+            .usage
+            .expect("usage should be present")
+            .prompt_tokens_details
+            .is_none(),
+        "an explicit physical miss must not be reported as cached tokens"
+    );
+
+    response
+        .route
+        .crossover_decisions
+        .insert("ax_mlx_prefix_cache_reused_tokens".to_string(), 128);
+    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    assert_eq!(
+        openai
+            .usage
+            .expect("usage should be present")
+            .prompt_tokens_details
+            .expect("physical reuse should be present")
+            .cached_tokens,
+        128
+    );
+}
+
+#[test]
+fn usage_does_not_report_scheduler_affinity_for_partial_mlx_telemetry() {
+    let mut response = sample_generate_response("hello", vec![10], vec![Some(-0.1)]);
+    response
+        .route
+        .crossover_decisions
+        .insert("prefix_reused_tokens".to_string(), 512);
+    response
+        .route
+        .crossover_decisions
+        .insert("ax_mlx_prefill_steps".to_string(), 2);
+
+    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    assert!(
+        openai
+            .usage
+            .expect("usage should be present")
+            .prompt_tokens_details
+            .is_none(),
+        "an MLX route without physical reuse evidence must not report scheduler affinity as cached tokens"
+    );
+}
+
 fn sample_generate_response(
     output_text: &str,
     output_tokens: Vec<u32>,

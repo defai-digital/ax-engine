@@ -133,6 +133,10 @@ where
 {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_monitor = Arc::clone(&cancel);
+    let service_disconnect = match &stream_context {
+        StreamStateSource::Service(events) => Some(events.disconnect_flag()),
+        StreamStateSource::Stateless { .. } | StreamStateSource::Stateful { .. } => None,
+    };
     let monitor_tx = tx.clone();
     let error_monitor_tx = monitor_tx.clone();
     // Detect client disconnect: when all receivers are dropped the
@@ -140,6 +144,13 @@ where
     let cancel_monitor_handle = tokio::spawn(async move {
         monitor_tx.closed().await;
         cancel_monitor.store(true, Ordering::Relaxed);
+        if let Some(disconnected) = service_disconnect {
+            // The native service owns its event sender, while this blocking
+            // adapter still owns the receiver. Signal the worker directly so
+            // it can cancel at the next scheduler boundary instead of waiting
+            // for a post-prefill event send to discover the closed HTTP stream.
+            disconnected.store(true, Ordering::Release);
+        }
     });
     match stream_context {
         StreamStateSource::Service(mut events) => {
@@ -379,7 +390,11 @@ fn spawn_deadline_relay(
                 (None, Some(remaining)) => remaining,
                 (None, None) => return,
             };
-            match tokio::time::timeout(wait, rx.recv()).await {
+            let received = tokio::select! {
+                _ = relay_tx.closed() => return,
+                result = tokio::time::timeout(wait, rx.recv()) => result,
+            };
+            match received {
                 Ok(Some(event)) => {
                     match tokio::time::timeout(RELAY_SEND_TIMEOUT, relay_tx.send(event)).await {
                         Ok(Ok(())) => {}
@@ -522,6 +537,22 @@ mod tests {
             relay_rx.recv().await.is_none(),
             "relay should close its side once the producer finishes"
         );
+    }
+
+    #[tokio::test]
+    async fn deadline_relay_drops_upstream_immediately_when_sse_consumer_disconnects() {
+        let (tx, rx) = mpsc::channel::<StreamEvent>(STREAM_CHANNEL_CAPACITY);
+        let deadlines = StreamDeadlines {
+            idle_timeout: Some(Duration::from_secs(60)),
+            max_duration: Some(Duration::from_secs(60)),
+        };
+        let relay_rx = spawn_deadline_relay(rx, deadlines);
+
+        drop(relay_rx);
+
+        tokio::time::timeout(Duration::from_secs(1), tx.closed())
+            .await
+            .expect("relay should release the producer as soon as the SSE consumer disconnects");
     }
 
     #[tokio::test]

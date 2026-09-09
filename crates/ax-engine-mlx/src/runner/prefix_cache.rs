@@ -80,6 +80,10 @@ impl MlxPrefixCachePolicy {
     pub(crate) fn enabled(self) -> bool {
         self.max_bytes > 0 && self.max_entries > 0
     }
+
+    pub(crate) fn admits_lower_bound(self, bytes: u64) -> bool {
+        self.enabled() && bytes <= self.max_bytes
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1018,6 +1022,9 @@ pub(crate) struct MlxPrefixCacheTelemetry {
     /// A cached payload was found but failed to restore (deserialize error
     /// or shared-pool admission failure) and was treated as a miss.
     pub(crate) blocked_restore_error: u32,
+    /// Serialization was skipped because the live cache's raw byte count plus
+    /// token identity already exceeded the portable entry budget.
+    pub(crate) blocked_entry_too_large: u32,
     pub(crate) stores: u32,
     pub(crate) evictions: u32,
     pub(crate) reused_tokens: u32,
@@ -1126,6 +1133,9 @@ impl MlxPrefixCacheTelemetry {
         self.blocked_restore_error = self
             .blocked_restore_error
             .saturating_add(other.blocked_restore_error);
+        self.blocked_entry_too_large = self
+            .blocked_entry_too_large
+            .saturating_add(other.blocked_entry_too_large);
         self.stores = self.stores.saturating_add(other.stores);
         self.evictions = self.evictions.saturating_add(other.evictions);
         self.reused_tokens = self.reused_tokens.saturating_add(other.reused_tokens);
@@ -1226,6 +1236,10 @@ impl MlxPrefixCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_RESTORE_ERROR,
                 self.blocked_restore_error,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_ENTRY_TOO_LARGE,
+                self.blocked_entry_too_large,
             ),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES, self.stores),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS, self.evictions),
@@ -1382,6 +1396,11 @@ impl MlxPrefixCacheTelemetry {
         self.blocked_restore_error = self.blocked_restore_error.saturating_add(1);
     }
 
+    pub(crate) fn record_blocked_entry_too_large(&mut self) {
+        self.blocked = self.blocked.saturating_add(1);
+        self.blocked_entry_too_large = self.blocked_entry_too_large.saturating_add(1);
+    }
+
     pub(crate) fn record_disk_hit(&mut self) {
         self.disk_hits = self.disk_hits.saturating_add(1);
     }
@@ -1501,6 +1520,23 @@ impl MlxPrefixCacheTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_policy_rejects_oversized_lower_bound_before_serialization() {
+        let policy = MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 2,
+        };
+        assert!(policy.admits_lower_bound(1024));
+        assert!(!policy.admits_lower_bound(1025));
+        assert!(
+            !MlxPrefixCachePolicy {
+                max_bytes: 0,
+                max_entries: 2,
+            }
+            .admits_lower_bound(1)
+        );
+    }
 
     fn native_prefix_key(token: u32) -> MlxPrefixCacheKey {
         MlxPrefixCacheKey {
