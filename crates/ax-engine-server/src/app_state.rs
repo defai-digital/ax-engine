@@ -679,9 +679,13 @@ struct EngineStepStats {
     mlx_prefix_cache_warmup_tokens_total: u64,
     mlx_prefix_cache_blocked_entry_too_large_total: u64,
     mlx_prefill_wall_us_total: u64,
+    mlx_prefill_wall_us_last: u64,
     mlx_prefill_forward_wall_us_total: u64,
+    mlx_prefill_forward_wall_us_last: u64,
     mlx_prefill_prefix_cache_wall_us_total: u64,
+    mlx_prefill_prefix_cache_wall_us_last: u64,
     mlx_prefill_generation_state_wall_us_total: u64,
+    mlx_prefill_generation_state_wall_us_last: u64,
     mlx_mtp_model_policy_active: u64,
     mlx_mtp_model_policy_route_safe: u64,
     mlx_mtp_certified_default_on: u64,
@@ -941,24 +945,38 @@ impl ServerMetrics {
                     &mut entry.mlx_prefix_cache_blocked_entry_too_large_total,
                     "ax_mlx_prefix_cache_blocked_entry_too_large",
                 ),
+            ] {
+                *target = target.saturating_add(u64::from(route.decision(key).unwrap_or(0)));
+            }
+            // DecodeTelemetry re-emits the request's running prefill wall
+            // times on every chunk and decode step. Adding those snapshots
+            // as if they were per-step deltas over-counts a split prefill as
+            // the triangular series n(n+1)/2.
+            for (total, last, key) in [
                 (
                     &mut entry.mlx_prefill_wall_us_total,
+                    &mut entry.mlx_prefill_wall_us_last,
                     "ax_mlx_prefill_wall_us",
                 ),
                 (
                     &mut entry.mlx_prefill_forward_wall_us_total,
+                    &mut entry.mlx_prefill_forward_wall_us_last,
                     "ax_mlx_prefill_forward_wall_us",
                 ),
                 (
                     &mut entry.mlx_prefill_prefix_cache_wall_us_total,
+                    &mut entry.mlx_prefill_prefix_cache_wall_us_last,
                     "ax_mlx_prefill_prefix_cache_wall_us",
                 ),
                 (
                     &mut entry.mlx_prefill_generation_state_wall_us_total,
+                    &mut entry.mlx_prefill_generation_state_wall_us_last,
                     "ax_mlx_prefill_generation_state_wall_us",
                 ),
             ] {
-                *target = target.saturating_add(u64::from(route.decision(key).unwrap_or(0)));
+                if let Some(observed) = route.decision(key) {
+                    accumulate_cumulative_route_counter(total, last, u64::from(observed));
+                }
             }
             for (target, key) in [
                 (
@@ -1137,6 +1155,19 @@ impl ServerMetrics {
 
 fn route_kib_as_bytes(route: &ax_engine_sdk::GenerateRouteReport, key: &str) -> u64 {
     u64::from(route.decision(key).unwrap_or(0)).saturating_mul(1024)
+}
+
+/// Grow a process-wide counter from a request-cumulative snapshot that the
+/// runner re-emits on every step. A rising value is the same request's
+/// running total; a drop is a new request (or a reset) and starts a fresh
+/// contribution.
+fn accumulate_cumulative_route_counter(total: &mut u64, last: &mut u64, observed: u64) {
+    if observed >= *last {
+        *total = total.saturating_add(observed - *last);
+    } else {
+        *total = total.saturating_add(observed);
+    }
+    *last = observed;
 }
 
 /// Build an initial `LiveState`. The generation service constructs the session
@@ -1600,6 +1631,19 @@ mod tests {
     use ax_engine_sdk::{PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier};
 
     use super::*;
+
+    #[test]
+    fn cumulative_prefill_snapshots_add_only_the_increment() {
+        let mut total = 0;
+        let mut last = 0;
+        accumulate_cumulative_route_counter(&mut total, &mut last, 100);
+        accumulate_cumulative_route_counter(&mut total, &mut last, 200);
+        assert_eq!(total, 200);
+        accumulate_cumulative_route_counter(&mut total, &mut last, 200);
+        assert_eq!(total, 200);
+        accumulate_cumulative_route_counter(&mut total, &mut last, 50);
+        assert_eq!(total, 250);
+    }
 
     #[derive(Default)]
     struct RecordedAdvertisement(parking_lot::Mutex<Vec<String>>);

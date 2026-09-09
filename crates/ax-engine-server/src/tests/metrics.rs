@@ -164,6 +164,77 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     ));
 }
 
+/// DecodeTelemetry re-emits the request's running prefill wall times on each
+/// chunk. Adding those snapshots as per-step deltas would report 100+200=300
+/// for a two-chunk prefill whose true wall time is 200.
+#[tokio::test]
+async fn metrics_mlx_prefill_wall_us_does_not_sum_cumulative_snapshots() {
+    let state = llama_cpp_state();
+    let metrics = state.metrics.clone();
+    let app = build_router(state);
+
+    let report = |wall_us: u32, hits: u32| EngineStepReport {
+        route: Some(GenerateRouteReport {
+            crossover_decisions: BTreeMap::from([
+                ("ax_mlx_prefill_wall_us".to_string(), wall_us),
+                ("ax_mlx_prefill_forward_wall_us".to_string(), wall_us),
+                ("ax_mlx_prefill_prefix_cache_wall_us".to_string(), wall_us),
+                (
+                    "ax_mlx_prefill_generation_state_wall_us".to_string(),
+                    wall_us,
+                ),
+                ("ax_mlx_prefix_cache_hits".to_string(), hits),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    metrics.record_step_report("qwen3", &report(100, 1));
+    metrics.record_step_report("qwen3", &report(200, 1));
+
+    let (status, _, body) = text_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("ax_engine_mlx_prefill_wall_us_total 200\n"),
+        "cumulative snapshots 100 then 200 are one 200µs prefill, not 300: {body}"
+    );
+    assert!(
+        !body.contains("ax_engine_mlx_prefill_wall_us_total 300\n"),
+        "saturating_add of running totals over-counts split prefills"
+    );
+    assert!(body.contains("ax_engine_mlx_prefill_forward_wall_us_total 200\n"));
+    assert!(body.contains("ax_engine_mlx_prefill_prefix_cache_wall_us_total 200\n"));
+    assert!(body.contains("ax_engine_mlx_prefill_generation_state_wall_us_total 200\n"));
+    assert!(
+        body.contains("ax_engine_mlx_prefix_cache_hits_total 2\n"),
+        "prefix-cache hits remain per-step deltas"
+    );
+
+    metrics.record_step_report("qwen3", &report(200, 0));
+    let (_, _, body) = text_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        body.contains("ax_engine_mlx_prefill_wall_us_total 200\n"),
+        "a later step that re-emits the same running total must not grow the counter: {body}"
+    );
+}
+
 /// Node-saturation series follow the AX Serving fleet-dispatch contract:
 /// config-derived series are always present once a model is loaded, while
 /// measurement-derived series stay hidden until real traffic produces them.
