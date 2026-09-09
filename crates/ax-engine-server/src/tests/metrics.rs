@@ -235,6 +235,76 @@ async fn metrics_mlx_prefill_wall_us_does_not_sum_cumulative_snapshots() {
     );
 }
 
+/// MtpTelemetry re-emits the request's running draft/accept totals on each
+/// decode step. Adding those snapshots as per-step deltas would report
+/// 100+200=300 for a request whose true drafted count is 200.
+#[tokio::test]
+async fn metrics_mtp_counters_do_not_sum_cumulative_snapshots() {
+    let state = llama_cpp_state();
+    let metrics = state.metrics.clone();
+    let app = build_router(state);
+
+    let report = |drafted: u32, accepted: u32, fallback: u32| EngineStepReport {
+        route: Some(GenerateRouteReport {
+            crossover_decisions: BTreeMap::from([
+                ("ax_mtp_draft_tokens".to_string(), drafted),
+                ("ax_mtp_accepted_tokens".to_string(), accepted),
+                ("ax_mtp_direct_fallback_steps".to_string(), fallback),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    metrics.record_step_report("qwen3", &report(100, 80, 1));
+    metrics.record_step_report("qwen3", &report(200, 150, 1));
+
+    let (status, _, body) = text_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("ax_engine_mtp_draft_tokens_total 200\n"),
+        "cumulative snapshots 100 then 200 are 200 drafted tokens, not 300: {body}"
+    );
+    assert!(
+        !body.contains("ax_engine_mtp_draft_tokens_total 300\n"),
+        "saturating_add of running MTP totals over-counts a multi-step request"
+    );
+    assert!(body.contains("ax_engine_mtp_accepted_tokens_total 150\n"));
+    assert!(
+        !body.contains("ax_engine_mtp_accepted_tokens_total 230\n"),
+        "accepted tokens must not sum 80+150"
+    );
+    assert!(
+        body.contains("ax_engine_mtp_direct_fallback_steps_total 1\n"),
+        "a re-emitted fallback snapshot of 1 must not grow the counter: {body}"
+    );
+
+    metrics.record_step_report("qwen3", &report(200, 150, 1));
+    let (_, _, body) = text_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        body.contains("ax_engine_mtp_draft_tokens_total 200\n"),
+        "a later step that re-emits the same running total must not grow the counter: {body}"
+    );
+    assert!(body.contains("ax_engine_mtp_accepted_tokens_total 150\n"));
+    assert!(body.contains("ax_engine_mtp_direct_fallback_steps_total 1\n"));
+}
+
 /// Node-saturation series follow the AX Serving fleet-dispatch contract:
 /// config-derived series are always present once a model is loaded, while
 /// measurement-derived series stay hidden until real traffic produces them.

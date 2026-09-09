@@ -667,8 +667,11 @@ struct EngineStepStats {
     /// MTP/speculative-decoding counters accumulated from per-step route
     /// telemetry (ax_mtp_* decisions). Zero for non-speculative models.
     mtp_draft_tokens_total: u64,
+    mtp_draft_tokens_last: u64,
     mtp_accepted_tokens_total: u64,
+    mtp_accepted_tokens_last: u64,
     mtp_direct_fallback_steps_total: u64,
+    mtp_direct_fallback_steps_last: u64,
     /// Latest cascade-corrected MTP-only acceptance EWMA (x1000). This is the
     /// rate the low-acceptance bypass watches; expose it so operators can see
     /// speculation paying for itself (or not) without bench tooling.
@@ -908,17 +911,31 @@ impl ServerMetrics {
         entry.request_terminal_snapshot_order = report.request_terminal_snapshot_order;
         entry.request_terminal_snapshot_bytes = report.request_terminal_snapshot_bytes;
         if let Some(route) = report.route.as_ref() {
-            entry.mtp_draft_tokens_total = entry.mtp_draft_tokens_total.saturating_add(u64::from(
-                route.decision("ax_mtp_draft_tokens").unwrap_or(0),
-            ));
-            entry.mtp_accepted_tokens_total = entry.mtp_accepted_tokens_total.saturating_add(
-                u64::from(route.decision("ax_mtp_accepted_tokens").unwrap_or(0)),
-            );
-            entry.mtp_direct_fallback_steps_total = entry
-                .mtp_direct_fallback_steps_total
-                .saturating_add(u64::from(
-                    route.decision("ax_mtp_direct_fallback_steps").unwrap_or(0),
-                ));
+            // MtpTelemetry re-emits the request's running draft/accept totals
+            // on every decode step. Adding those snapshots as if they were
+            // per-step deltas over-counts a request as the triangular series
+            // n(n+1)/2. The EWMA remains a last-wins gauge.
+            for (total, last, key) in [
+                (
+                    &mut entry.mtp_draft_tokens_total,
+                    &mut entry.mtp_draft_tokens_last,
+                    "ax_mtp_draft_tokens",
+                ),
+                (
+                    &mut entry.mtp_accepted_tokens_total,
+                    &mut entry.mtp_accepted_tokens_last,
+                    "ax_mtp_accepted_tokens",
+                ),
+                (
+                    &mut entry.mtp_direct_fallback_steps_total,
+                    &mut entry.mtp_direct_fallback_steps_last,
+                    "ax_mtp_direct_fallback_steps",
+                ),
+            ] {
+                if let Some(observed) = route.decision(key) {
+                    accumulate_cumulative_route_counter(total, last, u64::from(observed));
+                }
+            }
             // Gauge: only overwrite when the step actually reports an EWMA —
             // pure direct steps carry no MTP telemetry and must not zero it.
             if let Some(ewma) = route.decision("ax_mtp_mtp_only_accept_rate_ewma_x1000") {
