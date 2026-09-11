@@ -4482,7 +4482,7 @@ mod tests {
         assert!(!value.to_string().contains('\n'));
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 77] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 78] = [
         "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
@@ -4513,6 +4513,7 @@ mod tests {
         "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit",
         "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
         "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+        "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
         "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
         "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
@@ -4582,7 +4583,7 @@ mod tests {
                 .iter()
                 .filter(|target| target["mtp_included"] == true)
                 .count(),
-            32
+            33
         );
     }
 
