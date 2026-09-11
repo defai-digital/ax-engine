@@ -56,6 +56,7 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Nemotron-3-Nano-30B-A3B-MLX-AXQ-6bit",
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
@@ -123,7 +124,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 87)
+        self.assertEqual(len(targets), 88)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
@@ -259,6 +260,11 @@ class AxEngineCliTests(unittest.TestCase):
                 "9ff7a33b034a7e72cdc32a531ed8dd0d07e35116",
                 None,
             ),
+            "ornith-1.5-35b:axq": (
+                "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP",
+                "22cbca366b6b4f767bb7e71f9e6105f932878f42",
+                "candidate",
+            ),
             "muse-glimmer-30b:axq": (
                 "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
                 "367745bd05b77bf82188f3799677e4beba543e8d",
@@ -381,6 +387,8 @@ class AxEngineCliTests(unittest.TestCase):
         for alias, preset in (
             ("holo3-35b:axq", "holo3-35b"),
             ("ornith-35b:axq", "ornith-35b"),
+            ("ornith-1.5-35b:axq", "ornith-35b"),
+            ("ax-ornith-1.5-35b", "ornith-35b"),
             ("muse-glimmer-30b:axq", "muse-glimmer-30b"),
             ("ax-holo3-35b", "holo3-35b"),
             ("ax-ornith-35b", "ornith-35b"),
@@ -1627,7 +1635,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 33)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 34)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.

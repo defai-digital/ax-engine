@@ -305,6 +305,7 @@ serve them through the idempotent resolution flow:
 | `ax-qwen3-vl-8b`[`-4bit`] | `AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-{4,6}bit` (development AXQ, no MTP) |
 | `ax-holo3-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE text path; vision BF16 sidecar; **Tier 1 certified**, no MTP) |
 | `ax-ornith-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-{4bit,6bit}` (Qwen3.5-class 35B-A3B MoE coding agent; vision BF16 sidecar; **development** AXQ, no MTP) |
+| `ax-ornith-1.5-35b` | `AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP` (Qwen3.5-class 35B-A3B MoE; HF per-expert MTP sidecar; **development**, no Hub T1/T2) |
 | `ax-muse-glimmer-30b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-{4bit,6bit}` (Meta dense 30B image-text agent; ATEM chat; vision BF16-preserved; **development** AXQ, no MTP) |
 | `ax-gemma4-12b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-12B-IT-MLX-{QAT-OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` (OptiQ/QAT flagship; AXQ is `:axq`) |
 | `ax-gemma4-26b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Gemma-4-26B-A4B-IT-MLX-{OptiQ-4bit,QAT-4bit,6bit}-Assistant-MTP` (OptiQ/QAT flagship; AXQ is `:axq`) |
@@ -348,6 +349,7 @@ serve them through the idempotent resolution flow:
 | `holo3-35b`, `holo3-35b:axq-4bit` | `AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit` | `7b2256130cd55ea6b7489817a9a00c46e9874403` | Tier 1 certified; compact 4-bit sibling |
 | `ornith-35b:axq`, `ornith-35b:axq-6bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit` | `41015da430ae62802d9357b0ef31bf46c2b13b58` | Tier 1 certified; Qwen3.5-class 35B-A3B coding agent; no MTP |
 | `ornith-35b`, `ornith-35b:axq-4bit` | `AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit` | `9ff7a33b034a7e72cdc32a531ed8dd0d07e35116` | Tier 1 certified; compact 4-bit sibling |
+| `ornith-1.5-35b:axq`, `ax-ornith-1.5-35b` | `AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP` | `22cbca366b6b4f767bb7e71f9e6105f932878f42` | Candidate; HF per-expert MTP sidecar binds from v7.3.1; no Hub T1/T2 |
 | `muse-glimmer-30b:axq`, `muse-glimmer-30b:axq-6bit` | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit` | `367745bd05b77bf82188f3799677e4beba543e8d` | Candidate; dense image-text agent; ATEM; no MTP |
 | `muse-glimmer-30b`, `muse-glimmer-30b:axq-4bit` | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit` | `bcfb0b748fc44487c1657fb6ae190592d515398b` | Candidate; compact 4-bit sibling |
 

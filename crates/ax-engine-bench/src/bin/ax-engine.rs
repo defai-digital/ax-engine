@@ -132,6 +132,9 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit" => {
             Some("41015da430ae62802d9357b0ef31bf46c2b13b58")
         }
+        "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP" => {
+            Some("22cbca366b6b4f767bb7e71f9e6105f932878f42")
+        }
         "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit" => {
             Some("93d9991a3636c6c46cb92e711d11f1be5de96b6a")
         }
@@ -1192,6 +1195,26 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         ],
         downloadable: true,
         approx_size_bytes: Some(26352107653),
+    },
+    ModelProfile {
+        label: "ornith-1.5-35b",
+        preset: Some("ornith-35b"),
+        repo_id: "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP",
+        aliases: &[
+            "ornith-1.5-35b",
+            "ornith-1.5-35b-a3b",
+            "ornith-1.5-35b-6bit",
+            "ornith-1.5-35b-a3b-6bit",
+            "ax-ornith-1.5-35b",
+            "ax-ornith-1.5-35b-a3b",
+            "ax-ornith-1.5-35b-6bit",
+            "ax-ornith-1.5-35b-axq",
+            "ornith-1.5-35b:axq",
+            "ornith-1.5-35b:axq-6bit",
+            "ornith-1.5-35b-a3b:axq",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(33822830592),
     },
     ModelProfile {
         label: "ax-qwen3-asr-1.7b",

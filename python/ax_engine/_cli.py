@@ -752,6 +752,25 @@ AUTOMATOSX_MODEL_PROFILES = (
         ("ax-ornith", "ax-ornith-1.0-35b", "ax-ornith-1.0"),
         preset="ornith-35b",
     ),
+    # Ornith 1.5 35B-A3B AXQ 6-bit MTP: HF per-expert sidecar now binds in
+    # load_mtp. Development pack (no Hub T1/T2); pin the snapshot.
+    _automatosx_profile(
+        "ax-ornith-1.5-35b",
+        "AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP",
+        (
+            "ax-ornith-1.5-35b-a3b",
+            "ax-ornith-1.5-35b-6bit",
+            "ax-ornith-1.5-35b-axq",
+            "ax-ornith-1.5-35b-axq-6bit",
+            "ornith-1.5-35b",
+            "ornith-1.5-35b-a3b",
+            "ornith-1.5-35b-6bit",
+            "ornith-1.5-35b:axq",
+            "ornith-1.5-35b:axq-6bit",
+            "ornith-1.5-35b-a3b:axq",
+        ),
+        preset="ornith-35b",
+    ),
     # Muse-Glimmer 30B AXQ packs: dense image-text agent, no MTP.
     # Development / not certified — pin revisions like other AXQ candidates.
     _automatosx_profile(
@@ -1087,6 +1106,9 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit": (
         "41015da430ae62802d9357b0ef31bf46c2b13b58"
     ),
+    "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP": (
+        "22cbca366b6b4f767bb7e71f9e6105f932878f42"
+    ),
     "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit": (
         "bcfb0b748fc44487c1657fb6ae190592d515398b"
     ),
@@ -1133,6 +1155,7 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",

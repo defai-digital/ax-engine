@@ -92,7 +92,7 @@ environment:
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine[download]>=7.3.0,<8"
+python3 -m pip install --upgrade "ax-engine[download]>=7.3.1,<8"
 ax-engine doctor
 ```
 
@@ -172,6 +172,7 @@ Those packs can technically load through the SSD expert-stream path
 | Vision MoE Instruct AXQ | `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-4bit` | Qwen3-VL 30B-A3B Instruct AXQ packs; candidate, no MTP |
 | Holo3 GUI-agent AXQ | `holo3-35b` / `holo3-35b:axq` | Qwen3.5-class 35B-A3B MoE; Tier 1 certified text path; no MTP |
 | Ornith coding AXQ | `ornith-35b` / `ornith-35b:axq` | Qwen3.5-class 35B-A3B MoE coding agent; Tier 1 AXQ; no MTP |
+| Ornith 1.5 MTP | `ornith-1.5-35b:axq` | Qwen3.5-class 35B-A3B MoE with HF per-expert MTP sidecar; development pack |
 | GPT-OSS AXQ | `gpt-oss-20b:axq` / `gpt-oss-120b:axq` | AutomatosX AXQ; bare aliases stay mlx-community MXFP4-Q4 |
 | Nemotron 3 Nano AXQ | `nemotron-3-nano` / `nemotron-3-nano:axq` | `nemotron_h` 30B-A3B; development AXQ |
 | Muse-Glimmer image-text AXQ | `muse-glimmer-30b` / `muse-glimmer-30b:axq` | Meta dense 30B image-text agent; ATEM chat; development AXQ; no MTP |

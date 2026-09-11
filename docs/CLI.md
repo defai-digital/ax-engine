@@ -61,6 +61,7 @@ qwen3.6-35b:axq          # pinned 35B-A3B AXQ 6-bit
 gemma4-12b:axq           # pinned Gemma 4 12B AXQ 6-bit
 holo3-35b:axq            # pinned Holo3 AXQ 6-bit (Tier 1 certified)
 ornith-35b:axq           # pinned Ornith 1.0 AXQ 6-bit
+ornith-1.5-35b:axq       # pinned Ornith 1.5 35B-A3B AXQ 6-bit MTP (development)
 muse-glimmer-30b:axq     # pinned Muse-Glimmer 30B AXQ 6-bit (development)
 ```
 
