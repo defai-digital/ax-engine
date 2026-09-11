@@ -2746,6 +2746,163 @@ fn mtp_take_mxfp4_experts(
     Some((gate_up, down))
 }
 
+/// Stack HF-style per-expert Qwen MTP tensors
+/// (`{mlp}.experts.{N}.{gate,up,down}_proj`) into packed `gate_up_exps` +
+/// `down_exps`.
+///
+/// AXQuant Ornith 1.5 / Qwen3.5-MoE sidecars ship one BF16 projection per
+/// expert instead of stacked `mlp.gate_proj` or fused
+/// `mlp.experts.gate_up_proj`. Layout 1/2 miss that naming and previously
+/// dropped the whole MTP head (`return None`). Fail closed on a gap in the
+/// expert index, mixed quantization, or a count that does not match the
+/// router. Does not consume tensors unless the full set is present.
+fn mtp_take_per_expert_qwen_moe(
+    name_map: &mut HashMap<String, MlxArray>,
+    mlp_prefix: &str,
+    bits_hint: Option<i32>,
+    expected_experts: Option<usize>,
+) -> Option<(QuantizedWeight, QuantizedWeight)> {
+    let first_weight = format!("{mlp_prefix}.experts.0.gate_proj.weight");
+    let first_alt = format!("{mlp_prefix}.experts.0.gate_proj");
+    if !name_map.contains_key(&first_weight) && !name_map.contains_key(&first_alt) {
+        return None;
+    }
+
+    let mut expert_count = 0usize;
+    loop {
+        let weight = format!("{mlp_prefix}.experts.{expert_count}.gate_proj.weight");
+        let alt = format!("{mlp_prefix}.experts.{expert_count}.gate_proj");
+        if name_map.contains_key(&weight) || name_map.contains_key(&alt) {
+            expert_count += 1;
+            if expert_count > 4096 {
+                return None;
+            }
+        } else {
+            break;
+        }
+    }
+    if expert_count == 0 {
+        return None;
+    }
+    if expected_experts.is_some_and(|expected| expected != expert_count) {
+        return None;
+    }
+
+    for expert in 0..expert_count {
+        for proj in ["gate_proj", "up_proj", "down_proj"] {
+            let weight = format!("{mlp_prefix}.experts.{expert}.{proj}.weight");
+            let alt = format!("{mlp_prefix}.experts.{expert}.{proj}");
+            if !name_map.contains_key(&weight) && !name_map.contains_key(&alt) {
+                return None;
+            }
+        }
+    }
+
+    let mut gate_up_weights = Vec::with_capacity(expert_count);
+    let mut gate_up_scales = Vec::with_capacity(expert_count);
+    let mut down_weights = Vec::with_capacity(expert_count);
+    let mut down_scales = Vec::with_capacity(expert_count);
+    let mut bits = 0i32;
+    let mut group_size = 0i32;
+    let mut mode = String::new();
+    let mut saw_scales: Option<bool> = None;
+
+    for expert in 0..expert_count {
+        let gate = mtp_take_weight(
+            name_map,
+            &format!("{mlp_prefix}.experts.{expert}.gate_proj"),
+            bits_hint,
+        )?;
+        let up = mtp_take_weight(
+            name_map,
+            &format!("{mlp_prefix}.experts.{expert}.up_proj"),
+            bits_hint,
+        )?;
+        let down = mtp_take_weight(
+            name_map,
+            &format!("{mlp_prefix}.experts.{expert}.down_proj"),
+            bits_hint,
+        )?;
+        let expert_has_scales =
+            gate.scales.is_some() && up.scales.is_some() && down.scales.is_some();
+        let expert_no_scales =
+            gate.scales.is_none() && up.scales.is_none() && down.scales.is_none();
+        if !expert_has_scales && !expert_no_scales {
+            return None;
+        }
+        match saw_scales {
+            None => {
+                saw_scales = Some(expert_has_scales);
+                bits = gate.bits;
+                group_size = gate.group_size;
+                mode = gate.mode.clone();
+            }
+            Some(previous) if previous != expert_has_scales => return None,
+            Some(_) if gate.bits != bits || up.bits != bits || down.bits != bits => return None,
+            Some(_) => {}
+        }
+        if gate.weight.shape() != up.weight.shape() {
+            return None;
+        }
+        gate_up_weights.push(concatenate(&[&gate.weight, &up.weight], 0, None));
+        down_weights.push(down.weight);
+        if expert_has_scales {
+            let gate_scale = gate.scales.as_ref()?;
+            let up_scale = up.scales.as_ref()?;
+            if gate_scale.shape() != up_scale.shape() {
+                return None;
+            }
+            gate_up_scales.push(concatenate(&[gate_scale, up_scale], 0, None));
+            down_scales.push(down.scales?);
+        }
+    }
+
+    let gate_up_refs: Vec<&MlxArray> = gate_up_weights.iter().collect();
+    let down_refs: Vec<&MlxArray> = down_weights.iter().collect();
+    let packed = QuantizedWeight {
+        weight: stack(&gate_up_refs, 0, None),
+        scales: if saw_scales == Some(true) {
+            let refs: Vec<&MlxArray> = gate_up_scales.iter().collect();
+            Some(stack(&refs, 0, None))
+        } else {
+            None
+        },
+        biases: None,
+        group_size,
+        bits,
+        mode: mode.clone(),
+        linear_bias: None,
+        decode_weight_t: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
+    };
+    let down = QuantizedWeight {
+        weight: stack(&down_refs, 0, None),
+        scales: if saw_scales == Some(true) {
+            let refs: Vec<&MlxArray> = down_scales.iter().collect();
+            Some(stack(&refs, 0, None))
+        } else {
+            None
+        },
+        biases: None,
+        group_size,
+        bits,
+        mode,
+        linear_bias: None,
+        decode_weight_t: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
+    };
+    tracing::info!(
+        target: "ax_mlx::weights",
+        expert_count,
+        "MTP sidecar attached via HF per-expert Qwen MoE packing"
+    );
+    Some((packed, down))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DraftLmHeadSpec {
     bits: i32,
@@ -3680,16 +3837,35 @@ fn load_mtp(
     //   1) mlp.{gate,up,down}_proj stacked experts (legacy / HF-style)
     //   2) mlp.experts.gate_up_proj + mlp.experts.down_proj (Qwen3.5/3.6 MoE
     //      A3B sidecars from axquant; matches main-model FfnGateUpExpsPacked)
-    let gate_exps = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"), bits);
-    let up_exps = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"), bits);
-    let down_exps = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits)
+    //   3) mlp.experts.{N}.{gate,up,down}_proj (HF per-expert; Ornith 1.5)
+    let mut gate_exps = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"), bits);
+    let mut up_exps = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"), bits);
+    let mut down_exps = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits)
         .or_else(|| mtp_take_weight(name_map, &format!("{p}.mlp.experts.down_proj"), bits));
-    let gate_up_exps_packed = if gate_exps.is_none() && up_exps.is_none() {
+    let mut gate_up_exps_packed = if gate_exps.is_none() && up_exps.is_none() {
         mtp_take_weight(name_map, &format!("{p}.mlp.experts.gate_up_proj"), bits)
     } else {
         None
     };
     let has_moe_ffn = router_proj.is_some();
+    if has_moe_ffn {
+        let packed_complete = down_exps.is_some()
+            && (gate_up_exps_packed.is_some() || (gate_exps.is_some() && up_exps.is_some()));
+        if !packed_complete {
+            let expected_experts = router_proj
+                .as_ref()
+                .and_then(|router| router.weight.shape().first().copied())
+                .map(|dim| dim as usize);
+            if let Some((packed, down)) =
+                mtp_take_per_expert_qwen_moe(name_map, &format!("{p}.mlp"), bits, expected_experts)
+            {
+                gate_up_exps_packed = Some(packed);
+                down_exps = Some(down);
+                gate_exps = None;
+                up_exps = None;
+            }
+        }
+    }
     let (gate_proj, up_proj, down_proj, gate_exps, up_exps, down_exps) = if has_moe_ffn {
         (None, None, None, gate_exps, up_exps, down_exps)
     } else {
@@ -8930,6 +9106,246 @@ mod tests {
             .is_none(),
             "incomplete MoE MTP (router without expert packs) must not attach"
         );
+    }
+
+    fn put_mtp_moe_common(
+        name_map: &mut HashMap<String, MlxArray>,
+        hidden: usize,
+        head_dim: usize,
+        n_heads: usize,
+        n_kv: usize,
+        n_experts: usize,
+        inter: usize,
+    ) {
+        let put = |map: &mut HashMap<String, MlxArray>, key: &str, shape: &[i32]| {
+            map.insert(key.to_string(), zeros(shape, MlxDtype::Bfloat16, None));
+        };
+        let q_rows = n_heads * head_dim * 2;
+        let k_rows = n_kv * head_dim;
+        put(
+            name_map,
+            "mtp.pre_fc_norm_embedding.weight",
+            &[hidden as i32],
+        );
+        put(name_map, "mtp.pre_fc_norm_hidden.weight", &[hidden as i32]);
+        put(name_map, "mtp.norm.weight", &[hidden as i32]);
+        put(
+            name_map,
+            "mtp.fc.weight",
+            &[hidden as i32, (2 * hidden) as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.input_layernorm.weight",
+            &[hidden as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.post_attention_layernorm.weight",
+            &[hidden as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.self_attn.q_norm.weight",
+            &[head_dim as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.self_attn.k_norm.weight",
+            &[head_dim as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.self_attn.q_proj.weight",
+            &[q_rows as i32, hidden as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.self_attn.k_proj.weight",
+            &[k_rows as i32, hidden as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.self_attn.v_proj.weight",
+            &[k_rows as i32, hidden as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.self_attn.o_proj.weight",
+            &[hidden as i32, q_rows as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.mlp.gate.weight",
+            &[n_experts as i32, hidden as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.mlp.shared_expert_gate.weight",
+            &[1, hidden as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.mlp.shared_expert.gate_proj.weight",
+            &[inter as i32, hidden as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.mlp.shared_expert.up_proj.weight",
+            &[inter as i32, hidden as i32],
+        );
+        put(
+            name_map,
+            "mtp.layers.0.mlp.shared_expert.down_proj.weight",
+            &[hidden as i32, inter as i32],
+        );
+    }
+
+    #[test]
+    fn load_mtp_accepts_hf_per_expert_qwen_moe_packing() {
+        let hidden = 32usize;
+        let head_dim = 8usize;
+        let n_heads = 2usize;
+        let n_kv = 1usize;
+        let n_experts = 4usize;
+        let inter = 16usize;
+        let mut name_map = HashMap::new();
+        put_mtp_moe_common(
+            &mut name_map,
+            hidden,
+            head_dim,
+            n_heads,
+            n_kv,
+            n_experts,
+            inter,
+        );
+        for expert in 0..n_experts {
+            name_map.insert(
+                format!("mtp.layers.0.mlp.experts.{expert}.gate_proj.weight"),
+                zeros(&[inter as i32, hidden as i32], MlxDtype::Bfloat16, None),
+            );
+            name_map.insert(
+                format!("mtp.layers.0.mlp.experts.{expert}.up_proj.weight"),
+                zeros(&[inter as i32, hidden as i32], MlxDtype::Bfloat16, None),
+            );
+            name_map.insert(
+                format!("mtp.layers.0.mlp.experts.{expert}.down_proj.weight"),
+                zeros(&[hidden as i32, inter as i32], MlxDtype::Bfloat16, None),
+            );
+        }
+
+        let lm_head = QuantizedWeight::new(
+            zeros(&[64, hidden as i32], MlxDtype::Bfloat16, None),
+            None,
+            None,
+        );
+        let mtp = load_mtp(
+            &mut name_map,
+            &lm_head,
+            1,
+            MlxSamplingParams::new(0.0, 1.0, 0),
+            None,
+            None,
+            MtpNormLayout::MlxMultiplier,
+        )
+        .expect("HF per-expert MoE MTP sidecar must load");
+
+        assert_eq!(mtp.max_depth, 1);
+        assert_eq!(mtp.head_dim, head_dim);
+        assert_eq!(mtp.n_heads, n_heads);
+        assert_eq!(mtp.n_kv_heads, n_kv);
+        assert!(mtp.ffn_layer.router_proj.is_some());
+        let packed = mtp
+            .ffn_layer
+            .gate_up_exps_packed
+            .as_ref()
+            .expect("per-expert gate/up must stack into gate_up_exps_packed");
+        assert_eq!(
+            packed.weight.shape(),
+            &[n_experts as i32, (2 * inter) as i32, hidden as i32]
+        );
+        let down = mtp
+            .ffn_layer
+            .down_exps
+            .as_ref()
+            .expect("per-expert down must stack into down_exps");
+        assert_eq!(
+            down.weight.shape(),
+            &[n_experts as i32, hidden as i32, inter as i32]
+        );
+        assert!(mtp.ffn_layer.gate_exps.is_none() && mtp.ffn_layer.up_exps.is_none());
+    }
+
+    #[test]
+    fn load_mtp_rejects_hf_per_expert_when_an_expert_is_missing() {
+        let hidden = 32usize;
+        let mut name_map = HashMap::new();
+        put_mtp_moe_common(&mut name_map, hidden, 8, 2, 1, 4, 16);
+        for expert in [0usize, 1, 3] {
+            name_map.insert(
+                format!("mtp.layers.0.mlp.experts.{expert}.gate_proj.weight"),
+                zeros(&[16, hidden as i32], MlxDtype::Bfloat16, None),
+            );
+            name_map.insert(
+                format!("mtp.layers.0.mlp.experts.{expert}.up_proj.weight"),
+                zeros(&[16, hidden as i32], MlxDtype::Bfloat16, None),
+            );
+            name_map.insert(
+                format!("mtp.layers.0.mlp.experts.{expert}.down_proj.weight"),
+                zeros(&[hidden as i32, 16], MlxDtype::Bfloat16, None),
+            );
+        }
+        let lm_head = QuantizedWeight::new(
+            zeros(&[64, hidden as i32], MlxDtype::Bfloat16, None),
+            None,
+            None,
+        );
+        assert!(
+            load_mtp(
+                &mut name_map,
+                &lm_head,
+                1,
+                MlxSamplingParams::new(0.0, 1.0, 0),
+                None,
+                None,
+                MtpNormLayout::MlxMultiplier,
+            )
+            .is_none(),
+            "gapped per-expert MTP (missing expert 2 of 4) must not attach"
+        );
+    }
+
+    #[test]
+    fn load_mtp_attaches_real_ornith_per_expert_sidecar_when_configured() {
+        if std::env::var("AX_ENGINE_MLX_LOAD_REAL_WEIGHTS").as_deref() != Ok("1") {
+            return;
+        }
+        let Ok(model_dir) = std::env::var("AX_ENGINE_MLX_REAL_MODEL_DIR") else {
+            return;
+        };
+        let sidecar = Path::new(&model_dir).join("mtp.safetensors");
+        let mut name_map = load_safetensors(&sidecar, None).expect("real MTP sidecar should load");
+        let hidden = 2048i32;
+        let lm_head =
+            QuantizedWeight::new(zeros(&[16, hidden], MlxDtype::Bfloat16, None), None, None);
+        let mtp = load_mtp(
+            &mut name_map,
+            &lm_head,
+            1,
+            MlxSamplingParams::new(0.0, 1.0, 0),
+            None,
+            None,
+            MtpNormLayout::Auto,
+        )
+        .expect("Ornith 1.5 HF per-expert MTP sidecar must attach");
+        assert!(mtp.ffn_layer.router_proj.is_some());
+        let packed = mtp
+            .ffn_layer
+            .gate_up_exps_packed
+            .as_ref()
+            .expect("per-expert experts must pack gate_up");
+        assert_eq!(packed.weight.shape().first().copied(), Some(256));
+        assert!(mtp.ffn_layer.down_exps.is_some());
     }
 
     #[test]
