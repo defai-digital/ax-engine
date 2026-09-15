@@ -1,0 +1,2104 @@
+{
+  "schema_version": 1,
+  "qualification": false,
+  "hardware": "Apple M2 Ultra, 192 GiB",
+  "mlx_version": "0.32.2",
+  "prompt_ids": [
+    760,
+    6511,
+    314,
+    9338,
+    369
+  ],
+  "flags": {
+    "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL": "1",
+    "AX_MLX_FLASH_NEXT_SELECTED_EXPERTS": "1",
+    "AX_MLX_FLASH_NEXT_SELECTED_PREFILL": "1",
+    "AX_MLX_FLASH_NEXT_MTP_CANDIDATE": "1"
+  },
+  "paging": "on",
+  "two_bit_additional_gate": "AX_ENGINE_2BIT_EXPERIMENTAL=1",
+  "matrix": {
+    "completed": true,
+    "qualification": false,
+    "binary_sha256": "b18d91a9a2273b81cdec6412ff27da60ae78a93fda78a7dbba449760923981e7",
+    "packs": {
+      "2bit": {
+        "state": {
+          "accepted": 1,
+          "cached_whole_layers_after_run": 0,
+          "draft_state_exact_each_step": true,
+          "forced_acceptance_rejection_budget_and_eos": true,
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "mtp_only_selected_decode_payload_bytes": 3538944000,
+          "prefill_primary_and_draft_state_exact": true,
+          "primary_state_exact_each_step": true,
+          "proposed": 3,
+          "qualification": false,
+          "selected_payload_after_prefill": 3365683200,
+          "selected_payload_after_run": 20002406400,
+          "zero_budget_preserves_primary_and_draft_state": true,
+          "process_seconds": 6.5142507500131615
+        },
+        "runner": {
+          "block_size_tokens": 4,
+          "direct_ids": [
+            264,
+            3177,
+            421
+          ],
+          "direct_routes": [
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                192
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                4586400
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ],
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                48
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                864000
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ],
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ]
+          ],
+          "mtp_ids": [
+            264,
+            3177,
+            421
+          ],
+          "mtp_routes": [
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                144
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                3722400
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ],
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                96
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                1728000
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ]
+          ],
+          "qualification": false,
+          "process_seconds": 4.228215290990192
+        },
+        "manifest_sha256": "77c52b2f6d53ca9f67f4ac00a7020ed9a55f5cf43bb07968a1b8d70a0e0241c1"
+      },
+      "4bit": {
+        "state": {
+          "accepted": 2,
+          "cached_whole_layers_after_run": 0,
+          "draft_state_exact_each_step": true,
+          "forced_acceptance_rejection_budget_and_eos": true,
+          "generated_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "mtp_only_selected_decode_payload_bytes": 5308416000,
+          "prefill_primary_and_draft_state_exact": true,
+          "primary_state_exact_each_step": true,
+          "proposed": 2,
+          "qualification": false,
+          "selected_payload_after_prefill": 5037465600,
+          "selected_payload_after_run": 29981491200,
+          "zero_budget_preserves_primary_and_draft_state": true,
+          "process_seconds": 7.566190833997098
+        },
+        "runner": {
+          "block_size_tokens": 4,
+          "direct_ids": [
+            11751,
+            13,
+            561
+          ],
+          "direct_routes": [
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                192
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                6871500
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ],
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                48
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                1296000
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ],
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ]
+          ],
+          "mtp_ids": [
+            11751,
+            13,
+            561
+          ],
+          "mtp_routes": [
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                144
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                5575500
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ],
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                96
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                2592000
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ]
+          ],
+          "qualification": false,
+          "process_seconds": 5.054261249999399
+        },
+        "manifest_sha256": "25c5b6e3882111d6be90b44a17f2f22e822447dd7336f3084c11a09c39a464aa"
+      },
+      "6bit": {
+        "state": {
+          "accepted": 2,
+          "cached_whole_layers_after_run": 0,
+          "draft_state_exact_each_step": true,
+          "forced_acceptance_rejection_budget_and_eos": true,
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "mtp_only_selected_decode_payload_bytes": 7667712000,
+          "prefill_primary_and_draft_state_exact": true,
+          "primary_state_exact_each_step": true,
+          "proposed": 2,
+          "qualification": false,
+          "selected_payload_after_prefill": 7304294400,
+          "selected_payload_after_run": 43362508800,
+          "zero_budget_preserves_primary_and_draft_state": true,
+          "process_seconds": 9.455045624999912
+        },
+        "runner": {
+          "block_size_tokens": 4,
+          "direct_ids": [
+            11751,
+            13,
+            561
+          ],
+          "direct_routes": [
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                192
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                9952800
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ],
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                48
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                1872000
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ],
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ]
+          ],
+          "mtp_ids": [
+            11751,
+            13,
+            561
+          ],
+          "mtp_routes": [
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                144
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                8080800
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ],
+            [
+              [
+                "ax_mlx_mtp_model_policy",
+                10
+              ],
+              [
+                "ax_mlx_flash_next_mtp_certification_candidate",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_attach_failed",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_gathers",
+                96
+              ],
+              [
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                3744000
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_cursor_dropped",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_verified_steps",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_accepted_steps",
+                1
+              ],
+              [
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                0
+              ],
+              [
+                "ax_mlx_flash_next_mtp_step_errors",
+                0
+              ]
+            ]
+          ],
+          "qualification": false,
+          "process_seconds": 6.147839458993985
+        },
+        "manifest_sha256": "9749c40ab16554026320e5283b90825ee06f2cda4f3cf74302437fd8068967ad"
+      }
+    },
+    "swap": "vm.swapusage: total = 1024.00M  used = 35.31M  free = 988.69M  (encrypted)"
+  },
+  "http": {
+    "qualification": false,
+    "completed": true,
+    "binary_sha256": "b75f3ac3cadec0486f524e6fccb67bc9623aaab5ca6ad190823c1134be020163",
+    "packs": {
+      "6bit": {
+        "disabled": {
+          "expected_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "expected_text": " Paris. The capital",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789493049,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris. The capital",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 10.876014583001961
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493051,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493051,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493051,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493051,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " capital",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493051,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493051,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris. The capital",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 2.1364666250010487
+            }
+          ],
+          "ok": true,
+          "health": {
+            "status": "ok",
+            "model_id": "flash-next-candidate",
+            "selected_backend": "mlx",
+            "model_family": "qwen4_exp",
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            }
+          },
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 10877100.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 21754200.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "rss_kib": 10558224,
+          "stopped": true,
+          "exit_code": 0
+        },
+        "required": {
+          "expected_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "expected_text": " Paris. The capital",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789493058,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris. The capital",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 2.3140140829927986
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493059,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493060,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ". The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493060,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " capital",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493060,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493060,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris. The capital",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 2.2025221250078175
+            }
+          ],
+          "ok": true,
+          "health": {
+            "status": "ok",
+            "model_id": "flash-next-candidate",
+            "selected_backend": "mlx",
+            "model_family": "qwen4_exp",
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            }
+          },
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 240.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 12749100.0,
+            "ax_engine_mtp_draft_tokens_total": 1.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 480.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 25498200.0,
+            "ax_engine_mtp_draft_tokens_total": 2.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "rss_kib": 7284176,
+          "stopped": true,
+          "exit_code": 0
+        }
+      },
+      "4bit": {
+        "disabled": {
+          "expected_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "expected_text": " Paris.\n\nThe",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789493156,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris.\n\nThe",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 29.968756083995686
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493158,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493158,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493158,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "\n\n",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493158,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493158,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493158,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris.\n\nThe",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 1.6385040419991128
+            }
+          ],
+          "ok": true,
+          "health": {
+            "status": "ok",
+            "model_id": "flash-next-candidate",
+            "selected_backend": "mlx",
+            "model_family": "qwen4_exp",
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            }
+          },
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 7511400.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 15022800.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "rss_kib": 9794832,
+          "stopped": true,
+          "exit_code": 0
+        },
+        "required": {
+          "expected_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "expected_text": " Paris.\n\nThe",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789493163,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris.\n\nThe",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 1.676950166001916
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493164,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493164,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".\n\n",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493164,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493164,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493164,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris.\n\nThe",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 1.4731761250004638
+            }
+          ],
+          "ok": true,
+          "health": {
+            "status": "ok",
+            "model_id": "flash-next-candidate",
+            "selected_backend": "mlx",
+            "model_family": "qwen4_exp",
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            }
+          },
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 240.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 8807400.0,
+            "ax_engine_mtp_draft_tokens_total": 1.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 480.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 17614800.0,
+            "ax_engine_mtp_draft_tokens_total": 2.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "rss_kib": 6522032,
+          "stopped": true,
+          "exit_code": 0
+        }
+      },
+      "2bit": {
+        "disabled": {
+          "expected_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "expected_text": " Paris. The capital",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789493215,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris. The capital",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 10.482479667000007
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493216,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493216,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493216,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493216,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " capital",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493216,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493216,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris. The capital",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 1.2732557080016704
+            }
+          ],
+          "ok": true,
+          "health": {
+            "status": "ok",
+            "model_id": "flash-next-candidate",
+            "selected_backend": "mlx",
+            "model_family": "qwen4_exp",
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            }
+          },
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 5014800.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 10029600.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "rss_kib": 9959712,
+          "stopped": true,
+          "exit_code": 0
+        },
+        "required": {
+          "expected_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "expected_text": " Paris. The capital",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789493221,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris. The capital",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 1.4678102500038221
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493222,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493222,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493222,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493222,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " capital",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493222,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789493222,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris. The capital",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 1.2842324170051143
+            }
+          ],
+          "ok": true,
+          "health": {
+            "status": "ok",
+            "model_id": "flash-next-candidate",
+            "selected_backend": "mlx",
+            "model_family": "qwen4_exp",
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            }
+          },
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 5014800.0,
+            "ax_engine_mtp_draft_tokens_total": 2.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 10029600.0,
+            "ax_engine_mtp_draft_tokens_total": 4.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "rss_kib": 6682512,
+          "stopped": true,
+          "exit_code": 0
+        }
+      }
+    },
+    "swap": "vm.swapusage: total = 1024.00M  used = 35.31M  free = 988.69M  (encrypted)"
+  },
+  "test_provenance": {
+    "base_commit": "93fe06410a0c73d21c7cd552973547d7018cee88",
+    "profile": "release-server",
+    "binary_sha256": "b18d91a9a2273b81cdec6412ff27da60ae78a93fda78a7dbba449760923981e7",
+    "sources": {
+      "crates/ax-engine-mlx/src/model/shared/qwen4_exp_gdn.rs": "6c22ae8caa63b1bd1365f82464ce9e5e692a3adf60a1e00c4cd490299d7f8e46",
+      "crates/ax-engine-mlx/src/model/qwen4_exp/profiling.rs": "faa7fb475a4c917974fb7ef458bb5ef143b7416fc5aac4c6466853df56ffaa8a",
+      "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "06a67c2b6e35362ff8b88bd56e4c07bb9dbd1ab5fc6b2e783bd8eac2d474a67c",
+      "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": "a3986a430e85f6ccb1085dec1711dca8c366308945f4893f1c1f5a66de2335f1"
+    }
+  },
+  "server_provenance": {
+    "base_commit": "93fe06410a0c73d21c7cd552973547d7018cee88",
+    "profile": "release-server",
+    "binary_sha256": "b75f3ac3cadec0486f524e6fccb67bc9623aaab5ca6ad190823c1134be020163",
+    "sources": {
+      "crates/ax-engine-mlx/src/model/shared/qwen4_exp_gdn.rs": "6c22ae8caa63b1bd1365f82464ce9e5e692a3adf60a1e00c4cd490299d7f8e46",
+      "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "110abfa96cfe7e3a47b391cf17033a1f8f1bd64b3bebf3d86f0ec71c80569ca2",
+      "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": "bed41a5bbb2a5f59be00ec9e0715f6003ba358856f399d96f83b78460b80f05a",
+      "crates/ax-engine-mlx/src/runner/mod.rs": "b4b95258e58bed7eae22ccda7a96fff88fc7717e9b185e98192739ba5c5a5f55"
+    }
+  },
+  "raw_artifact_sha256": {
+    "selected-mtp-final-matrix.json": "4a30ae4b9c780c75df5280b6561d88e4ccc58075e763fecf267471596671ced1",
+    "selected-mtp-http.json": "2202bc3aa9c700fa25bd7635f2d98fddb02165d63df4966c8a6a3fadf015dc91"
+  },
+  "synthetic_controls": {
+    "oracle-mtp-candidate": 0,
+    "oracle-mtp-runner": 0,
+    "oracle-mtp-bf16-candidate": 0,
+    "oracle-mtp-bf16-runner": 0
+  },
+  "reviews": {
+    "claude": {
+      "completed": true,
+      "exit_code": 0
+    },
+    "muse": {
+      "completed": true,
+      "exit_code": 0
+    }
+  },
+  "final_code_review": {
+    "completed": true,
+    "exit_code": 0
+  },
+  "review_adjudication": [
+    "Serialized state includes the position through cache.advance(state.position()) and the seq_len header.",
+    "The MTP loader constructs exactly one graph layer, so the one-layer draft codec is complete.",
+    "Each real trace starts with distinct primary/correction IDs 11751 and 13, exercising draft-EOS separately from primary-EOS."
+  ],
+  "final_gates": {
+    "workspace-tests": 0,
+    "mlx-test-clippy": 0,
+    "script-gates": 0,
+    "format": 0
+  },
+  "workspace_tests": {
+    "passed": 3637,
+    "ignored": 39,
+    "failed": 0
+  },
+  "clippy_audit": {
+    "new_line_findings": [],
+    "workspace_exit_code": 101,
+    "mlx_lib_tests_exit_code": 0,
+    "server_production_exit_code": 0,
+    "existing_error_summaries": [
+      "error: could not compile `ax-engine-core` (test \"kv_rollback_after_eviction_repro\") due to 7 previous errors",
+      "error: could not compile `ax-engine-core` (test \"engine_step_err_after_shared_prefix_eviction\") due to 3 previous errors",
+      "error: could not compile `ax-engine-core` (bin \"generate-manifest\" test) due to 5 previous errors",
+      "error: could not compile `ax-engine-core` (lib test) due to 1779 previous errors"
+    ]
+  },
+  "performance_claim": false,
+  "limitations": [
+    "State control uses four output tokens with n-1/singleton prefill; runner control uses its own matched block-4 schedule.",
+    "Total selected payload includes reference and verifier traffic; the separate MTP-only counter brackets CandidateSession.step.",
+    "Forced EOS coverage in the real state test is verifier-level. Synthetic forced-acceptance session/runner tests cover terminal behavior.",
+    "Process/request times include uncontrolled filesystem cache effects and are not throughput or MTP profitability evidence.",
+    "Independent full-checkpoint logits agreement and trained-head oracle remain open."
+  ]
+}

@@ -185,6 +185,12 @@ impl Qwen4ExpGdn {
         let (convolved, conv) =
             linear_attention_conv1d(cfg, &qkv, &self.weights.conv, state.map(|s| &s.conv));
         let split = split_linear_attention_qkv(cfg, &convolved);
+        #[cfg(test)]
+        {
+            crate::model::qwen4_exp::profiling::dump("gdn_query_input", &[&split.q]);
+            crate::model::qwen4_exp::profiling::dump("gdn_key_input", &[&split.k]);
+            crate::model::qwen4_exp::profiling::dump("gdn_value_input", &[&split.v]);
+        }
         let q = divide(
             &qwen4_l2(&split.q),
             &cached_scalar((dk as f32).sqrt(), MlxDtype::Float32),
@@ -206,17 +212,15 @@ impl Qwen4ExpGdn {
             &log1p(&exp(&minimum(&a, &negative(&a, None), None), None), None),
             None,
         );
-        let decay = exp(
-            &negative(
-                &multiply(
-                    &exp(&astype(&self.weights.a_log, MlxDtype::Float32, None), None),
-                    &softplus,
-                    None,
-                ),
+        let log_decay = negative(
+            &multiply(
+                &exp(&astype(&self.weights.a_log, MlxDtype::Float32, None), None),
+                &softplus,
                 None,
             ),
             None,
         );
+        let decay = exp(&log_decay, None);
         let beta = astype(
             &sigmoid(&qw_with_policy(input, &self.weights.beta, policy), None),
             MlxDtype::Float32,
@@ -236,6 +240,12 @@ impl Qwen4ExpGdn {
             || zeros(&recurrent_shape, MlxDtype::Float32, None),
             |s| s.recurrent.clone(),
         );
+        #[cfg(test)]
+        {
+            crate::model::qwen4_exp::profiling::dump("gdn_log_decay", &[&log_decay]);
+            crate::model::qwen4_exp::profiling::dump("gdn_beta", &[&beta]);
+            crate::model::qwen4_exp::profiling::dump("gdn_initial_state", &[&recurrent]);
+        }
         let native = if seq == 1 && super::qwen4_exp_gdn_metal::enabled() {
             super::qwen4_exp_gdn_metal::singleton(&q, &k, &v, &decay, &beta, &recurrent)?
         } else {
@@ -289,6 +299,11 @@ impl Qwen4ExpGdn {
             let refs: Vec<&MlxArray> = outputs.iter().collect();
             (concatenate(&refs, 1, None), recurrent)
         };
+        #[cfg(test)]
+        {
+            crate::model::qwen4_exp::profiling::dump("gdn_core_output", &[&output]);
+            crate::model::qwen4_exp::profiling::dump("gdn_final_state", &[&recurrent]);
+        }
         let output = astype(&output, input.dtype(), None);
         let normed = rms_norm(
             &astype(&output, MlxDtype::Float32, None),
@@ -316,6 +331,12 @@ impl Qwen4ExpGdn {
             input.dtype(),
             None,
         );
+        #[cfg(test)]
+        {
+            crate::model::qwen4_exp::profiling::dump("gdn_norm_gain", &[&self.weights.norm_gain]);
+            crate::model::qwen4_exp::profiling::dump("gdn_gate", &[&gate]);
+            crate::model::qwen4_exp::profiling::dump("gdn_gated_output", &[&gated]);
+        }
         Ok((
             qw_with_policy(&gated, &self.weights.output, policy),
             Qwen4ExpGdnState { conv, recurrent },

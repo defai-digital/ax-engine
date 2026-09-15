@@ -164,3 +164,30 @@ FP32 normalization. This identifies a concrete numerical difference, but does
 not explain or accept the complete final-logit error. Independent full-checkpoint
 correctness remains a gate. See the
 [independent comparison evidence](../../benchmarks/results/flash-next-independent-logits-m2-20260915.json).
+
+A subsequent control feeds captured real first-layer Q/K/V, decay, beta and
+state to the pinned official Transformers recurrent/chunked functions. All 32
+component comparisons pass the previously fixed F32/BF16 oracle tolerances.
+Independently carried official recurrent state differs by at most 4.77e-7;
+norm/gate output differs by at most 1.53e-5. Capturing these tensors preserves
+AX's complete logits and state fingerprints. This supports the tested GDN
+arithmetic; it does not qualify the full model or resolve the MLX-VLM mismatch.
+See the [official GDN evidence](../../benchmarks/results/flash-next-official-gdn-m2-20260915.json).
+
+### Selected prefill with MTP
+
+Bounded M2 controls now exercise both selected flags with MTP on all three
+audited affine packs. Primary and draft state match the direct/full-head
+controls immediately after prefill and after each committed step. The tests
+separately count selected payload read by MTP steps, retain zero cached whole
+expert layers, and cover verifier acceptance, rejection, budget and EOS
+boundaries. Synthetic forced-acceptance tests also cover session and runner
+terminal behavior.
+
+The same production executable passes completion and SSE with MTP disabled and
+required for each pack: 12 requests, matching the corresponding direct output.
+Actual draft and selected-read counters confirm execution; the certified
+default-on metric remains zero. These short controls do not establish MTP
+profitability, a trained-head oracle, long-context quality or full-checkpoint
+independent logits agreement. See the
+[selected MTP evidence](../../benchmarks/results/flash-next-selected-mtp-m2-20260915.json).

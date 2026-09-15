@@ -1003,25 +1003,62 @@ fn flash_mtp_state_bytes(state: &qwen4_exp::Qwen4ExpState, layers: usize) -> Vec
 }
 
 #[test]
-#[ignore = "requires synthetic Flash Next MTP candidate artifacts"]
+#[ignore = "requires synthetic Flash Next MTP artifacts or an explicit real selected-prefill pack"]
 fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
-    use crate::model::qwen4_exp_mtp::{CandidateSession, verify_one};
-    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
-    let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
-    manifest.weight_sanitize = WeightSanitize::HfToMlx;
-    manifest.runtime_status = NativeRuntimeStatus::default();
-    let artifacts = NativeModelArtifacts::from_manifest_and_root(root.clone(), manifest).unwrap();
-    let trunk = crate::weights::qwen4_exp::load_with_paging_policy(
-        &root,
-        artifacts.manifest(),
-        crate::expert_stream::StreamExpertsMode::Off,
-        1,
-    )
-    .unwrap();
-    let head = crate::weights::qwen4_exp_mtp::load(&root, artifacts.manifest(), &trunk).unwrap();
-    let tokens = [1, 2, 3, 4, 5, 6, 7];
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, verify_one};
+    let (artifacts, tokens, mode, budget) =
+        if let Some(root) = std::env::var_os("AX_FLASH_NEXT_REAL_PACK") {
+            let artifacts = NativeModelArtifacts::from_dir(PathBuf::from(root)).unwrap();
+            let tokens: Vec<u32> =
+                serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+            assert!((3..=16).contains(&tokens.len()));
+            assert_eq!(
+                std::env::var("AX_MLX_FLASH_NEXT_SELECTED_EXPERTS").unwrap(),
+                "1"
+            );
+            assert_eq!(
+                std::env::var("AX_MLX_FLASH_NEXT_SELECTED_PREFILL").unwrap(),
+                "1"
+            );
+            (
+                artifacts,
+                tokens,
+                crate::expert_stream::StreamExpertsMode::On,
+                4,
+            )
+        } else {
+            let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
+            let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+            manifest.weight_sanitize = WeightSanitize::HfToMlx;
+            manifest.runtime_status = NativeRuntimeStatus::default();
+            (
+                NativeModelArtifacts::from_manifest_and_root(root, manifest).unwrap(),
+                vec![1, 2, 3, 4, 5, 6, 7],
+                crate::expert_stream::StreamExpertsMode::Off,
+                12,
+            )
+        };
+    let root = artifacts.root_dir();
+    let trunk =
+        crate::weights::qwen4_exp::load_with_paging_policy(root, artifacts.manifest(), mode, 1)
+            .unwrap();
+    let head = crate::weights::qwen4_exp_mtp::load(root, artifacts.manifest(), &trunk).unwrap();
     let owner = 901;
     let mut session = CandidateSession::prefill(&trunk, &head, &tokens, owner, owner + 1).unwrap();
+    let selected_after_prefill = trunk
+        .expert_stream
+        .as_ref()
+        .map(|pager| pager.selected_payload_bytes_read().unwrap());
+    if std::env::var_os("AX_FLASH_NEXT_REAL_PACK").is_some() {
+        assert!(selected_after_prefill.is_some());
+    }
+    if let Some(bytes) = selected_after_prefill {
+        assert!(bytes > 0);
+        assert_eq!(
+            trunk.expert_stream.as_ref().unwrap().cached_layer_count(),
+            0
+        );
+    }
     let initial = qwen4_exp::Qwen4ExpState::new(&trunk, owner);
     let prefix = qwen4_exp::forward(
         &trunk,
@@ -1031,6 +1068,15 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
         ProjectionBatchPolicy::Shared,
     )
     .unwrap();
+    let mut draft_reference = head_forward(
+        &head,
+        &prefix.stream_hidden,
+        &tokens[1..],
+        &qwen4_exp::Qwen4ExpState::new(&head.graph, owner + 1),
+        owner + 1,
+    )
+    .unwrap()
+    .state;
     let mut direct = qwen4_exp::forward(
         &trunk,
         &tokens[tokens.len() - 1..],
@@ -1047,12 +1093,25 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     assert_eq!(session.primary, greedy(&direct));
     let before = flash_mtp_state_bytes(&session.trunk_state, trunk.layers.len());
     let draft_before = flash_mtp_state_bytes(&session.draft_state, 1);
-    assert!(session.step(&trunk, &head, 0, &[]).is_err());
+    assert_eq!(
+        before,
+        flash_mtp_state_bytes(&direct.state, trunk.layers.len())
+    );
+    assert_eq!(draft_before, flash_mtp_state_bytes(&draft_reference, 1));
+    let counters_before = (session.primary, session.proposed, session.accepted);
+    assert_eq!(
+        session.step(&trunk, &head, 0, &[]).unwrap_err(),
+        "invalid Flash Next MTP budget or draft/trunk alignment"
+    );
     assert_eq!(
         flash_mtp_state_bytes(&session.trunk_state, trunk.layers.len()),
         before
     );
     assert_eq!(flash_mtp_state_bytes(&session.draft_state, 1), draft_before);
+    assert_eq!(
+        (session.primary, session.proposed, session.accepted),
+        counters_before
+    );
 
     // Force both verifier outcomes independently of the synthetic head's quality.
     let primary = greedy(&direct);
@@ -1065,9 +1124,12 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     )
     .unwrap();
     let correct_draft = greedy(&target);
+    let vocabulary = artifacts.manifest().vocab_size;
+    assert!(vocabulary > 1);
+    let wrong_draft = (correct_draft + 1) % vocabulary;
     for (draft, remaining, accepted) in [
         (correct_draft, 2, true),
-        (u32::MAX, 2, false),
+        (wrong_draft, 2, false),
         (correct_draft, 1, false),
     ] {
         let verified =
@@ -1110,19 +1172,45 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     .unwrap();
     assert!(!terminal.accepted);
     assert!(terminal.after_draft.is_none());
+    assert_eq!(terminal.committed, vec![primary]);
+    assert_eq!(
+        flash_mtp_state_bytes(&terminal.after_primary.state, trunk.layers.len()),
+        flash_mtp_state_bytes(&target.state, trunk.layers.len())
+    );
     assert_eq!(terminal.next_primary, correct_draft);
     assert_eq!(
         terminal.after_primary.state.position(),
         direct.state.position() + 1
     );
     let mut generated = Vec::new();
-    while generated.len() < 12 {
+    let mut mtp_selected_decode_bytes = 0;
+    while generated.len() < budget {
+        let selected_before = trunk
+            .expert_stream
+            .as_ref()
+            .map(|pager| pager.selected_payload_bytes_read().unwrap())
+            .unwrap_or(0);
         let committed = session
-            .step(&trunk, &head, 12 - generated.len(), &[])
+            .step(&trunk, &head, budget - generated.len(), &[])
             .unwrap();
-        assert!(!committed.is_empty() && committed.len() <= 12 - generated.len());
+        let selected_after = trunk
+            .expert_stream
+            .as_ref()
+            .map(|pager| pager.selected_payload_bytes_read().unwrap())
+            .unwrap_or(0);
+        mtp_selected_decode_bytes += selected_after - selected_before;
+        assert!(!committed.is_empty() && committed.len() <= budget - generated.len());
         for token in &committed {
             assert_eq!(*token, greedy(&direct));
+            draft_reference = head_forward(
+                &head,
+                &direct.stream_hidden,
+                &[*token],
+                &draft_reference,
+                owner + 1,
+            )
+            .unwrap()
+            .state;
             direct = qwen4_exp::forward(
                 &trunk,
                 &[*token],
@@ -1142,12 +1230,43 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             session.draft_state.position() + 1,
             session.trunk_state.position()
         );
+        assert_eq!(
+            flash_mtp_state_bytes(&session.draft_state, 1),
+            flash_mtp_state_bytes(&draft_reference, 1)
+        );
     }
-    assert_eq!(generated.len(), 12);
+    assert_eq!(generated.len(), budget);
     eprintln!(
-        "Flash Next synthetic MTP: proposed={}, accepted={}, tokens={generated:?}",
+        "Flash Next MTP control: proposed={}, accepted={}, tokens={generated:?}",
         session.proposed, session.accepted
     );
+    if let Some(bytes) = selected_after_prefill {
+        assert!(session.proposed > 0);
+        assert!(mtp_selected_decode_bytes > 0);
+        assert_eq!(
+            trunk.expert_stream.as_ref().unwrap().cached_layer_count(),
+            0
+        );
+        let result = serde_json::json!({
+            "qualification": false, "generated_ids": generated,
+            "selected_payload_after_prefill": bytes,
+            "selected_payload_after_run": trunk.expert_stream.as_ref().unwrap()
+                .selected_payload_bytes_read().unwrap(),
+            "proposed": session.proposed, "accepted": session.accepted,
+            "mtp_only_selected_decode_payload_bytes": mtp_selected_decode_bytes,
+            "prefill_primary_and_draft_state_exact": true,
+            "draft_state_exact_each_step": true,
+            "cached_whole_layers_after_run": 0,
+            "primary_state_exact_each_step": true,
+            "forced_acceptance_rejection_budget_and_eos": true,
+            "zero_budget_preserves_primary_and_draft_state": true,
+        });
+        std::fs::write(
+            std::env::var_os("AX_FLASH_NEXT_RESULT_PATH").unwrap(),
+            serde_json::to_vec_pretty(&result).unwrap(),
+        )
+        .unwrap();
+    }
 }
 
 #[test]

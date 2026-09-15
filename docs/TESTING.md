@@ -140,6 +140,21 @@ embedding and first-layer stage dumps. Each `.f32le` file has a JSON shape and
 original dtype record. This adds evaluation barriers; verify that final logits
 and state still match the uninstrumented control. It is not a timing baseline.
 
+The first-layer dump also records GDN raw Q/K/V, log decay, beta, incoming and
+outgoing recurrent state, FP32 recurrence output, norm gain, gate and gated
+output. State uses AX's `[batch, value_heads, value_dim, key_dim]` layout; an
+official Transformers comparison must transpose its final two axes. Preserve
+the original dtype metadata when restoring captured BF16 values.
+
+The ignored `qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact` test
+also accepts `AX_FLASH_NEXT_REAL_PACK`, `AX_FLASH_NEXT_PROMPT_IDS` (3-16 tokens),
+and `AX_FLASH_NEXT_RESULT_PATH`. This real-pack mode requires both selected
+expert flags, forces paging, and checks primary and draft state against a
+same-schedule direct/full-head control. Its MTP-only selected payload counter
+excludes reference forwards. Keep the experimental family and 2-bit admission
+gates enabled where required. Without the real-pack variable, the existing
+synthetic MTP oracle mode is unchanged.
+
 ## Secondary families
 
 Keep Qwen 3.6 27B AXQ, Qwen 3.6 35B-A3B, Gemma 4 assistant-MTP, and GLM 4.7

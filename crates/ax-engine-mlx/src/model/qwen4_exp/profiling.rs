@@ -35,7 +35,7 @@ pub(crate) fn layer(index: usize) {
     });
 }
 
-pub(crate) fn mark(stage: &'static str, arrays: &[&MlxArray]) {
+pub(crate) fn dump(stage: &'static str, arrays: &[&MlxArray]) {
     if let Some(root) = std::env::var_os("AX_FLASH_NEXT_FIRST_LAYER_DUMP") {
         if stage == "embedding" {
             DUMP_LAYER.set(usize::MAX);
@@ -65,6 +65,10 @@ pub(crate) fn mark(stage: &'static str, arrays: &[&MlxArray]) {
             .unwrap();
         }
     }
+}
+
+pub(crate) fn mark(stage: &'static str, arrays: &[&MlxArray]) {
+    dump(stage, arrays);
     CAPTURE.with_borrow_mut(|capture| {
         if let Some(capture) = capture {
             eval(arrays);
