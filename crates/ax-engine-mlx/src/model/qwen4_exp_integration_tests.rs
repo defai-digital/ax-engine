@@ -373,6 +373,20 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
     let tokens: Vec<u32> =
         serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
     assert!((2..=512).contains(&tokens.len()));
+    let logits_dir = std::env::var_os("AX_FLASH_NEXT_LOGITS_DIR").map(PathBuf::from);
+    if let Some(dir) = &logits_dir {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let save_logits = |name: &str, logits: &MlxArray| {
+        if let Some(dir) = &logits_dir {
+            let bytes: Vec<u8> = logits
+                .data_f32()
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            std::fs::write(dir.join(format!("{name}.f32le")), bytes).unwrap();
+        }
+    };
     let expected_streaming = match std::env::var("AX_FLASH_NEXT_EXPECT_STREAMING")
         .unwrap()
         .as_str()
@@ -420,6 +434,7 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
         .map(|p| p.selected_payload_bytes_read().unwrap())
         .unwrap_or(0);
     let mut prefix_digest = Sha256::new();
+    save_logits("prefix", &prefix.logits);
     for value in prefix.logits.data_f32() {
         assert!(value.is_finite());
         prefix_digest.update(value.to_bits().to_le_bytes());
@@ -445,6 +460,7 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
     let mut records = Vec::new();
     let mut generated = Vec::new();
     for step in 0..4 {
+        save_logits(&format!("decode-{step}"), &output.logits);
         let logits = output.logits.data_f32();
         assert!(logits.iter().all(|v| v.is_finite()));
         let mut digest = Sha256::new();

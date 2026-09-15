@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -22,9 +22,12 @@ struct Capture {
 
 thread_local! {
     static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
+    static DUMP_LAYER: Cell<usize> = const { Cell::new(usize::MAX) };
+    static DUMP_FORWARD: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(crate) fn layer(index: usize) {
+    DUMP_LAYER.set(index);
     CAPTURE.with_borrow_mut(|capture| {
         if let Some(capture) = capture {
             capture.layer = Some(index);
@@ -33,6 +36,35 @@ pub(crate) fn layer(index: usize) {
 }
 
 pub(crate) fn mark(stage: &'static str, arrays: &[&MlxArray]) {
+    if let Some(root) = std::env::var_os("AX_FLASH_NEXT_FIRST_LAYER_DUMP") {
+        if stage == "embedding" {
+            DUMP_LAYER.set(usize::MAX);
+            DUMP_FORWARD.set(DUMP_FORWARD.get() + 1);
+        }
+        if (stage == "embedding" || DUMP_LAYER.get() == 0)
+            && let Some(array) = arrays.first()
+        {
+            let values = mlx_sys::astype(array, MlxDtype::Float32, None);
+            mlx_sys::try_eval(&[&values]).expect("first-layer diagnostic evaluation");
+            let root = std::path::PathBuf::from(root);
+            std::fs::create_dir_all(&root).unwrap();
+            let name = format!("forward-{}-{stage}", DUMP_FORWARD.get());
+            let bytes: Vec<u8> = values
+                .data_f32()
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            std::fs::write(root.join(format!("{name}.f32le")), bytes).unwrap();
+            std::fs::write(
+                root.join(format!("{name}.json")),
+                serde_json::to_vec(&serde_json::json!({
+                    "shape": array.shape(), "dtype": format!("{:?}", array.dtype()),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+    }
     CAPTURE.with_borrow_mut(|capture| {
         if let Some(capture) = capture {
             eval(arrays);

@@ -145,3 +145,22 @@ with actual additional prefill gather counts. A 258-token control exercises
 capacity fallback with exact logits/state. These bounded controls do not qualify
 long-context quality, MTP combinations, sustained throughput or the target SKU.
 See the [selected-prefill development evidence](../../benchmarks/results/flash-next-selected-prefill-m2-20260915.json).
+
+### Independent full-checkpoint comparison remains open
+
+An unmodified pinned MLX-VLM reference loaded the same 4-bit checkpoint with
+MLX 0.32.2 and the same n-1/singleton schedule. Its four generated tokens matched
+AX, but complete logits did not: maximum absolute error was 0.9609375 during
+prefill and 2.3427734375 at the first decode step. The highest-scoring token at
+the first prefix position also differed. This is retained as an unsuccessful
+numerical comparison, not a quality pass.
+
+Pass-through first-layer captures reproduced each implementation's original
+logits; AX state fingerprints also stayed exact. Embedding outputs matched.
+The first prefill HC difference affected one value, and GDN introduced broader
+differences, including during decode with identical HC input. Reference GDN
+normalizes Q/K in BF16, while the official Transformers fallback and AX use
+FP32 normalization. This identifies a concrete numerical difference, but does
+not explain or accept the complete final-logit error. Independent full-checkpoint
+correctness remains a gate. See the
+[independent comparison evidence](../../benchmarks/results/flash-next-independent-logits-m2-20260915.json).

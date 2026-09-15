@@ -129,6 +129,17 @@ Compare `generated_ids` and every `records` entry across modes of the same pack,
 with the same prompt and prefill schedule. This test alone does not establish
 checkpoint quality, long-context correctness, throughput, or SKU qualification.
 
+For independent numerical comparisons, set `AX_FLASH_NEXT_LOGITS_DIR` to a
+fresh output directory. The fingerprint test writes `prefix.f32le` and
+`decode-0.f32le` through `decode-3.f32le`: contiguous little-endian float32
+pre-softmax logits, with shapes recorded in the corresponding JSON fingerprint.
+These are diagnostic files and must not be added as model artifacts.
+
+The test binary also accepts `AX_FLASH_NEXT_FIRST_LAYER_DUMP` for synchronized
+embedding and first-layer stage dumps. Each `.f32le` file has a JSON shape and
+original dtype record. This adds evaluation barriers; verify that final logits
+and state still match the uninstrumented control. It is not a timing baseline.
+
 ## Secondary families
 
 Keep Qwen 3.6 27B AXQ, Qwen 3.6 35B-A3B, Gemma 4 assistant-MTP, and GLM 4.7
