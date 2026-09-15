@@ -21,15 +21,11 @@ fn norm(input: &MlxArray, gain: &MlxArray, eps: f32) -> MlxArray {
     astype(&multiply(&unit, gain, None), input.dtype(), None)
 }
 
-/// Draft state belongs to the separate one-layer graph, never the trunk.
-/// The returned state is unpublished until its caller commits the transaction.
-pub(crate) fn head_forward(
+fn prepare_head_input(
     head: &Qwen4ExpMtpWeights,
     stream_hidden: &MlxArray,
     next_tokens: &[u32],
-    state: &Qwen4ExpState,
-    owner: u64,
-) -> Result<Qwen4ExpOutput, String> {
+) -> Result<MlxArray, String> {
     let layout = head.graph.layout;
     let (hidden, streams, width) = (
         layout.hidden_size() as i32,
@@ -75,12 +71,42 @@ pub(crate) fn head_forward(
         ProjectionBatchPolicy::RowExact,
     );
     let projected_embedding = reshape(&projected_embedding, &[1, sequence, 1, hidden], None);
-    let prepared = reshape(
+    Ok(reshape(
         &add(&projected_hidden, &projected_embedding, None),
         &[1, sequence, width],
         None,
-    );
+    ))
+}
+
+/// Draft state belongs to the separate one-layer graph, never the trunk.
+/// The returned state is unpublished until its caller commits the transaction.
+pub(crate) fn head_forward(
+    head: &Qwen4ExpMtpWeights,
+    stream_hidden: &MlxArray,
+    next_tokens: &[u32],
+    state: &Qwen4ExpState,
+    owner: u64,
+) -> Result<Qwen4ExpOutput, String> {
+    let prepared = prepare_head_input(head, stream_hidden, next_tokens)?;
     qwen4_exp::forward_prepared(
+        &head.graph,
+        next_tokens,
+        prepared,
+        state,
+        owner,
+        ProjectionBatchPolicy::RowExact,
+    )
+}
+
+fn head_advance_cache(
+    head: &Qwen4ExpMtpWeights,
+    stream_hidden: &MlxArray,
+    next_tokens: &[u32],
+    state: &Qwen4ExpState,
+    owner: u64,
+) -> Result<Qwen4ExpState, String> {
+    let prepared = prepare_head_input(head, stream_hidden, next_tokens)?;
+    qwen4_exp::advance_prepared_qsa_cache(
         &head.graph,
         next_tokens,
         prepared,
@@ -248,7 +274,7 @@ impl Qwen4ExpDraftCursor {
             (None, prefix) => (prefix, &tokens[1..]),
         };
         let staged = if let Some(pairs) = pairs {
-            head_forward(head, &pairs, shifted, &self.draft_state, self.owner)?.state
+            head_advance_cache(head, &pairs, shifted, &self.draft_state, self.owner)?
         } else {
             self.draft_state.clone()
         };
@@ -300,7 +326,7 @@ impl Qwen4ExpDraftCursor {
         let verify_wall_us = elapsed_us(verify_started);
         let (draft_state, final_output) = if let Some(after_draft) = verified.after_draft {
             let alignment_started = Instant::now();
-            let aligned = head_forward(
+            let aligned = head_advance_cache(
                 head,
                 &verified.after_primary.stream_hidden,
                 &[draft],
@@ -308,7 +334,7 @@ impl Qwen4ExpDraftCursor {
                 self.owner,
             )?;
             draft_wall_us = draft_wall_us.saturating_add(elapsed_us(alignment_started));
-            (aligned.state, after_draft)
+            (aligned, after_draft)
         } else {
             (proposed.state, verified.after_primary)
         };
@@ -400,7 +426,7 @@ impl CandidateSession {
                 trunk_owner,
                 ProjectionBatchPolicy::Shared,
             )?;
-            let warmed = head_forward(
+            let warmed = head_advance_cache(
                 head,
                 &prefix.stream_hidden,
                 &tokens[1..],
@@ -408,7 +434,7 @@ impl CandidateSession {
                 draft_owner,
             )?;
             trunk_state = prefix.state;
-            draft_state = warmed.state;
+            draft_state = warmed;
         }
         let output = qwen4_exp::forward(
             trunk,
@@ -474,6 +500,125 @@ mod cursor_tests {
         cache.qwen4_exp = Some(state.clone());
         cache.advance(state.position());
         cache.serialize_to_bytes()
+    }
+
+    fn broken_lazy_array(original: &MlxArray) -> MlxArray {
+        let kernel = mlx_sys::MlxMetalKernel::new(
+            "ax_flash_next_mtp_cache_failure",
+            &["input"],
+            &["output"],
+            "output[thread_position_in_grid.x] = ax_intentionally_undefined_symbol;",
+            "",
+            true,
+        );
+        kernel
+            .try_apply_with_template(
+                &[original],
+                &[mlx_sys::KernelOutputSpec {
+                    shape: original.shape(),
+                    dtype: original.dtype(),
+                }],
+                &[],
+                (original.shape().iter().product(), 1, 1),
+                (32, 1, 1),
+                None,
+            )
+            .unwrap()
+            .remove(0)
+    }
+
+    #[test]
+    #[ignore = "requires synthetic or real Flash Next MTP artifacts and Metal"]
+    fn flash_next_cache_only_head_matches_full_state_and_preserves_failures() {
+        let (root, manifest) = if let Some(root) = std::env::var_os("AX_FLASH_NEXT_REAL_PACK") {
+            let root = PathBuf::from(root);
+            let artifacts = ax_engine_core::NativeModelArtifacts::from_dir(&root).unwrap();
+            (root, artifacts.manifest().clone())
+        } else {
+            let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
+            let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+            manifest.weight_sanitize = ax_engine_core::WeightSanitize::HfToMlx;
+            (root, manifest)
+        };
+        let trunk = crate::weights::qwen4_exp::load(&root, &manifest).unwrap();
+        let mut head = crate::weights::qwen4_exp_mtp::load(&root, &manifest, &trunk).unwrap();
+        let tokens = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let output = qwen4_exp::forward(
+            &trunk,
+            &tokens,
+            &Qwen4ExpState::new(&trunk, 1701),
+            1701,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        let owner = 1702;
+        let width = head.graph.layout.packed_width() as i32;
+        assert!(
+            qwen4_exp::advance_prepared_qsa_cache(
+                &trunk,
+                &tokens,
+                output.stream_hidden.clone(),
+                &output.state,
+                1701,
+                ProjectionBatchPolicy::RowExact,
+            )
+            .is_err()
+        );
+        for chunk_size in [1, 3, 9] {
+            let mut reference = Qwen4ExpState::new(&head.graph, owner);
+            let mut actual = reference.clone();
+            let mut offset = 0;
+            for chunk in tokens.chunks(chunk_size) {
+                let end = offset + chunk.len();
+                let rows = slice(
+                    &output.stream_hidden,
+                    &[0, offset as i32, 0],
+                    &[1, end as i32, width],
+                    &[1, 1, 1],
+                    None,
+                );
+                reference = head_forward(&head, &rows, chunk, &reference, owner)
+                    .unwrap()
+                    .state;
+                actual = head_advance_cache(&head, &rows, chunk, &actual, owner).unwrap();
+                assert_eq!(bytes(&actual), bytes(&reference));
+                offset = end;
+            }
+            let row = slice(
+                &output.stream_hidden,
+                &[0, 8, 0],
+                &[1, 9, width],
+                &[1, 1, 1],
+                None,
+            );
+            let expected = head_forward(&head, &row, &[2], &reference, owner).unwrap();
+            let proposal = head_forward(&head, &row, &[2], &actual, owner).unwrap();
+            assert_eq!(proposal.logits.data_f32(), expected.logits.data_f32());
+            assert_eq!(bytes(&proposal.state), bytes(&expected.state));
+
+            let before = bytes(&actual);
+            assert!(head_advance_cache(&head, &row, &[2], &actual, owner + 1).is_err());
+            assert!(head_advance_cache(&head, &row, &[u32::MAX], &actual, owner).is_err());
+            assert!(head_advance_cache(&head, &row, &[], &actual, owner).is_err());
+
+            // A vocabulary projection is not a dependency of the QSA cache.
+            let original = head.graph.lm_head.weight.clone();
+            head.graph.lm_head.weight = broken_lazy_array(&original);
+            let cached = head_advance_cache(&head, &row, &[2], &actual, owner).unwrap();
+            assert_eq!(bytes(&cached), bytes(&expected.state));
+            assert!(head_forward(&head, &row, &[2], &actual, owner).is_err());
+            head.graph.lm_head.weight = original;
+
+            // The pre-FC hidden projection is required. Its failure must not
+            // publish any cache growth, and retry must recover exactly.
+            let original = head.fc_hidden.weight.clone();
+            head.fc_hidden.weight = broken_lazy_array(&original);
+            assert!(head_advance_cache(&head, &row, &[2], &actual, owner).is_err());
+            head.fc_hidden.weight = original;
+            assert_eq!(bytes(&actual), before);
+            let recovered = head_advance_cache(&head, &row, &[2], &actual, owner).unwrap();
+            assert_eq!(bytes(&recovered), bytes(&expected.state));
+        }
     }
 
     #[test]

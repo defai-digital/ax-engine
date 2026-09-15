@@ -106,6 +106,8 @@ fn execute_with_block_size(
 struct Generation {
     tokens: Vec<u32>,
     routes: Vec<Vec<(String, u32)>>,
+    prefill_seconds: f64,
+    decode_seconds: f64,
 }
 
 impl Generation {
@@ -139,10 +141,14 @@ fn generate_with_block_size(
     let mut result = Generation {
         tokens: Vec::new(),
         routes: Vec::new(),
+        prefill_seconds: 0.0,
+        decode_seconds: 0.0,
     };
     for chunk in prompt.chunks(quantum) {
+        let prefill_started = Instant::now();
         let output =
             execute_with_block_size(runner, ctx, chunk, ExecutionMode::Prefill, block_size);
+        result.prefill_seconds += prefill_started.elapsed().as_secs_f64();
         let update = &output.request_updates[0];
         assert!(update.error.is_none(), "{:?}", update.error);
         result.tokens.extend(update.output_token);
@@ -161,6 +167,7 @@ fn generate_with_block_size(
     assert_eq!(result.tokens.len(), 1);
     while result.tokens.len() < ctx.max_output_tokens as usize {
         ctx.generated_len = result.tokens.len() as u32;
+        let decode_started = Instant::now();
         let output = execute_with_block_size(
             runner,
             ctx,
@@ -168,6 +175,7 @@ fn generate_with_block_size(
             ExecutionMode::Decode,
             block_size,
         );
+        result.decode_seconds += decode_started.elapsed().as_secs_f64();
         let update = &output.request_updates[0];
         assert!(update.error.is_none(), "{:?}", update.error);
         assert!(update.output_token.is_some());
@@ -467,4 +475,98 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
     }
     assert_eq!(candidate.tokens, direct.tokens);
     assert!(candidate.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
+}
+
+#[test]
+#[ignore = "requires a real Flash Next pack and explicit MTP attachment; records paired timings"]
+fn flash_next_real_runner_mtp_paired_cost() {
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(&root).unwrap();
+    let prompt: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!(!prompt.is_empty() && prompt.len() <= 128);
+    let output_path = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_RESULT_PATH").unwrap());
+    let load_started = Instant::now();
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 2048, true).unwrap();
+    let load_seconds = load_started.elapsed().as_secs_f64();
+    assert!(runner.has_mtp());
+    assert!(!runner.mtp_model_policy.certified_default_on());
+    let mut evidence = serde_json::json!({
+        "qualification": false,
+        "kind": "paired_production_runner_cost",
+        "completed": false,
+        "prompt_ids": prompt,
+        "output_budget": 32,
+        "block_size_tokens": 16,
+        "prefill_quantum": "whole_prompt",
+        "load_seconds": load_seconds,
+        "head_attached_in_both_modes": true,
+        "prefix_stores": "cleared_before_every_request",
+        "timing_boundary": "runner_call_with_host_visible_tokens",
+        "limitations": [
+            "A single short prompt does not qualify MTP profitability.",
+            "Direct control includes attached-head memory; it does not measure head loading cost.",
+            "No mlx_lm baseline or independent trained-head oracle is supplied.",
+            "Prefix resets and per-step state-alignment assertions are outside or between runner calls."
+        ],
+        "samples": [],
+    });
+    let mut expected = None;
+    // Pair zero warms both routes. Reverse order on alternate pairs to avoid
+    // assigning all later, warmer requests to one mode.
+    for pair in 0..7 {
+        for mode in 0..2 {
+            let candidate = (pair + mode) % 2 == 1;
+            *runner.prefix_cache.lock() = MlxPrefixCache::new(MlxPrefixCachePolicy {
+                max_bytes: 64 * 1024 * 1024,
+                max_entries: 128,
+            });
+            *runner.native_prefix_cache.lock() = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+                max_bytes: 64 * 1024 * 1024,
+                max_entries: 128,
+            });
+            runner.set_mtp_requested(candidate);
+            let started = Instant::now();
+            let result = generate_with_block_size(
+                &runner,
+                &prompt,
+                usize::MAX,
+                context(1100 + pair * 2 + mode, prompt.len(), 32),
+                16,
+            );
+            let total_seconds = started.elapsed().as_secs_f64();
+            let reference = expected.get_or_insert_with(|| result.tokens.clone());
+            let parity = result.tokens == *reference;
+            let verified = result.maximum("ax_mlx_flash_next_mtp_verified_steps");
+            let errors = result.maximum("ax_mlx_flash_next_mtp_step_errors");
+            evidence["samples"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "pair": pair, "warmup": pair == 0,
+                    "mtp_requested": candidate,
+                    "total_seconds": total_seconds,
+                    "prefill_seconds": result.prefill_seconds,
+                    "decode_seconds": result.decode_seconds,
+                    "generated_ids": result.tokens,
+                    "token_parity": parity,
+                    "routes": result.routes,
+                    "mlx_buffer_cache_bytes": mlx_sys::get_cache_memory(),
+                    "mlx_peak_bytes": mlx_sys::get_peak_memory(),
+                }));
+            std::fs::write(&output_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+            eprintln!(
+                "pair={pair} candidate={candidate} total_seconds={total_seconds:.6} parity={parity}"
+            );
+            assert!(
+                parity,
+                "paired runner output changed at pair={pair} candidate={candidate}"
+            );
+            assert_eq!(result.tokens.len(), 32);
+            assert_eq!(errors, 0);
+            assert_eq!(verified > 0, candidate);
+        }
+    }
+    evidence["completed"] = true.into();
+    std::fs::write(output_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
 }

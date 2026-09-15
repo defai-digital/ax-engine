@@ -598,16 +598,13 @@ pub(crate) fn forward(
     forward_prepared(weights, tokens, hidden, state, owner, policy)
 }
 
-/// Run AX-owned layers from an explicitly prepared packed residual. The MTP
-/// candidate uses this boundary with its separately owned one-layer graph.
-pub(crate) fn forward_prepared(
+fn validate_prepared_input(
     weights: &Qwen4ExpWeights,
     tokens: &[u32],
-    mut hidden: MlxArray,
+    hidden: &MlxArray,
     state: &Qwen4ExpState,
     owner: u64,
-    policy: ProjectionBatchPolicy,
-) -> Result<Qwen4ExpOutput, String> {
+) -> Result<(usize, u32), String> {
     if state.owner != owner || state.layers.len() != weights.layers.len() {
         return Err("qwen4_exp request state belongs to a different model".into());
     }
@@ -628,6 +625,59 @@ pub(crate) fn forward_prepared(
     {
         return Err("qwen4_exp prepared stream has invalid shape or dtype".into());
     }
+    Ok((end, vocabulary))
+}
+
+/// The one-layer MTP head has no recurrent state after QSA. Absorbing a
+/// committed token needs its K/V/index cache, not its discarded MoE/logits.
+pub(crate) fn advance_prepared_qsa_cache(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
+    hidden: MlxArray,
+    state: &Qwen4ExpState,
+    owner: u64,
+    policy: ProjectionBatchPolicy,
+) -> Result<Qwen4ExpState, String> {
+    let (end, _) = validate_prepared_input(weights, tokens, &hidden, state, owner)?;
+    let [layer] = weights.layers.as_slice() else {
+        return Err("qwen4_exp cache-only advance requires exactly one QSA layer".into());
+    };
+    let Qwen4ExpAttentionBranch::Qsa(branch) = &layer.attention else {
+        return Err("qwen4_exp cache-only advance requires QSA attention".into());
+    };
+    if layer.ple.is_some() || state.layers[0].ple.is_some() {
+        return Err("qwen4_exp cache-only advance does not support PLE".into());
+    }
+    let AttentionState::Qsa(cache) = &state.layers[0].attention else {
+        return Err("qwen4_exp cache-only QSA state mismatch".into());
+    };
+    let read = layer
+        .attention_hc
+        .read(&hidden, policy)
+        .map_err(|e| e.to_string())?;
+    let cache = branch
+        .forward(read.branch_input(), cache, state.position, policy)
+        .map_err(|e| e.to_string())?
+        .into_next_state();
+    let mut next = state.clone();
+    next.layers[0].attention = AttentionState::Qsa(cache);
+    mlx_sys::try_eval(&next.arrays())
+        .map_err(|e| format!("qwen4_exp cache-only evaluation failed: {e}"))?;
+    next.position = end;
+    Ok(next)
+}
+
+/// Run AX-owned layers from an explicitly prepared packed residual. The MTP
+/// candidate uses this boundary with its separately owned one-layer graph.
+pub(crate) fn forward_prepared(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
+    mut hidden: MlxArray,
+    state: &Qwen4ExpState,
+    owner: u64,
+    policy: ProjectionBatchPolicy,
+) -> Result<Qwen4ExpOutput, String> {
+    let (end, vocabulary) = validate_prepared_input(weights, tokens, &hidden, state, owner)?;
     #[cfg(test)]
     profiling::mark("embedding", &[&hidden]);
     let mut next = state.clone();
