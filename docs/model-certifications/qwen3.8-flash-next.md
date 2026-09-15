@@ -298,3 +298,18 @@ chat responses. Workspace tests report 3,644 passed, 39 ignored and zero
 failed; relevant strict Clippy passes, while full-workspace Clippy retains
 existing core test failures. See the
 [QSA gate evidence](../../benchmarks/results/flash-next-qsa-gate-precision-m2-20260915.json).
+
+### GDN schedule attribution
+
+A diagnostic changes only the original official prefill from its chunk
+function to its recurrent function. Both unchanged reference controls
+reproduce saved complete logits, and restoring the original function
+reproduces the original prefix. This schedule change alone moves one decode
+choice from 271 to 561, matching AX on all four decode choices; the original
+chunk reference has exactly tied maxima at 271 and 561 on that step.
+
+The official schedules still differ by up to 2.203125 in full logits, and
+AX differs from the recurrent reference by up to 2.09375. This attributes
+schedule sensitivity on one request; it neither replaces the original oracle
+nor establishes full-model accuracy. No production GDN code changed. See the
+[schedule attribution evidence](../../benchmarks/results/flash-next-gdn-schedule-attribution-m2-20260915.json).
