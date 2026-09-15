@@ -13,14 +13,18 @@ Same checkpoint directory was offered to every runtime. No GGUF or community
 
 ## Measured
 
-| Runtime | Version (latest checked 2026-09-15) | Decode |
-| --- | --- | ---: |
-| AX Engine | 7.4.0 product-path MTP (recurrent depth 3) | **76.90 tok/s** |
-| MTPLX | **2.11.2** (PyPI / mtplx.com Latest) | 70.62 tok/s |
-| mlx-lm | **0.31.3** (PyPI Latest), direct AR on the same `flappy` prompts | 27.90 tok/s |
-| OMLX | **0.6.4**, `import_mtplx_sidecar` then Lightning MTP depth 1 | 38.47 tok/s |
+| Runtime | Version (latest checked 2026-09-15) | Decode | Prefill |
+| --- | --- | ---: | ---: |
+| AX Engine | 7.4.0 product-path MTP (recurrent depth 3) | **76.90 tok/s** | **795.3 tok/s** |
+| MTPLX | **2.11.2** (PyPI / mtplx.com Latest) | 70.62 tok/s | 686.6 tok/s |
+| mlx-lm | **0.31.3** (PyPI Latest), direct AR on the same `flappy` prompts | 27.90 tok/s | — (decode-only harness) |
+| OMLX | **0.6.4**, `import_mtplx_sidecar` then Lightning MTP depth 1 | 38.47 tok/s | — (generate-wall tok/s) |
 
-Raw: `ax_engine.json`, `mtplx.json`, `mlx_lm.json`. mlx-lm is greedy
+Prefill for AX is `prefill_tok_s` (20-run median). Prefill for MTPLX is
+`prompt_tokens / prompt_eval_time_s` (20-run median). Prompt lengths are
+264–432 tokens.
+
+Raw: `ax_engine.json`, `mtplx.json`, `mlx_lm.json`, `omlx.json`. mlx-lm is greedy
 `stream_generate` (temp 0), 256 tokens, 2 warmups + 5 reps per case; decode
 excludes the first generated token. It does **not** use the MTP sidecar.
 

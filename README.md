@@ -332,26 +332,27 @@ One pack, one contract, latest runtimes we could invoke on 2026-09-15:
 **median of 20 measured runs**. Same snapshot directory for every runtime;
 no GGUF or community-4-bit substitute.
 
-| Runtime | Latest checked | Decode |
-| --- | --- | ---: |
-| **AX Engine 7.4.0** (product-path MTP, depth 3) | this tree | **76.90 tok/s** |
-| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** | PyPI / mtplx.com Latest | 70.62 tok/s |
-| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 27.90 tok/s |
-| [mlxcel](https://github.com/lablup/mlxcel) **0.7.0** | GitHub Latest (2026-09-09) | unsupported (AXQ 6-bit affine group layout) |
-| [OMLX](https://github.com/jundot/omlx) **0.6.4** (imported sidecar, Lightning depth 1) | GitHub Latest release | 38.47 tok/s |
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) **0.4.0** (formula 0.4.1) | Homebrew | unsupported (not GGUF) |
-| [mistral.rs](https://github.com/EricLBuehler/mistral.rs) **0.9.3** | GitHub Latest | unsupported (no AXQ MLX loader on host) |
-| [exo](https://github.com/exo-explore/exo) **1.0.71** | GitHub Latest | unsupported (cluster runtime) |
-| [rMLX](https://github.com/Pushkinist/rMLX) **0.4.1** | GitHub Latest | unsupported (no campaign binary) |
-| [uzu](https://github.com/trymirai/uzu) **0.5.26** | PyPI | unsupported (Mirai checkpoints, not this pack) |
-| [vLLM](https://github.com/vllm-project/vllm) **0.29.0** | PyPI | unsupported (CUDA, not Apple Silicon) |
+| Runtime | Latest checked | Decode | Prefill |
+| --- | --- | ---: | ---: |
+| **AX Engine 7.4.0** (product-path MTP, depth 3) | this tree | **76.90 tok/s** | **795.3 tok/s** |
+| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** | PyPI / mtplx.com Latest | 70.62 tok/s | 686.6 tok/s |
+| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 27.90 tok/s | — |
+| [mlxcel](https://github.com/lablup/mlxcel) **0.7.0** | GitHub Latest (2026-09-09) | unsupported (AXQ 6-bit affine group layout) | — |
+| [OMLX](https://github.com/jundot/omlx) **0.6.4** (imported sidecar, Lightning depth 1) | GitHub Latest release | 38.47 tok/s | — |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) **0.4.0** (formula 0.4.1) | Homebrew | unsupported (not GGUF) | — |
+| [mistral.rs](https://github.com/EricLBuehler/mistral.rs) **0.9.3** | GitHub Latest | unsupported (no AXQ MLX loader on host) | — |
+| [exo](https://github.com/exo-explore/exo) **1.0.71** | GitHub Latest | unsupported (cluster runtime) | — |
+| [rMLX](https://github.com/Pushkinist/rMLX) **0.4.1** | GitHub Latest | unsupported (no campaign binary) | — |
+| [uzu](https://github.com/trymirai/uzu) **0.5.26** | PyPI | unsupported (Mirai checkpoints, not this pack) | — |
+| [vLLM](https://github.com/vllm-project/vllm) **0.29.0** | PyPI | unsupported (CUDA, not Apple Silicon) | — |
 
-AX and MTPLX loaded the snapshot and completed the MTP contract. mlx-lm 0.31.3
-loaded the **same directory** and ran the same `flappy` greedy 256-token
-decode as an autoregressive baseline (no MTP head). OMLX 0.6.4 required a
-writable snapshot plus `import_mtplx_sidecar` (sidecar tensors stay out of
-the language index); Lightning MTP ran at draft depth 1. mlxcel 0.7.0 still
-fails to load this AXQ affine layout.
+AX and MTPLX loaded the snapshot and completed the MTP contract. Decode and
+prefill are **20-run medians** on the same `flappy` prompts (prompt lengths
+264–432 tokens). mlx-lm 0.31.3 is a direct-AR decode baseline (first generated
+token excluded; prefill not split in that harness). OMLX 0.6.4 required a
+writable snapshot plus `import_mtplx_sidecar`; Lightning MTP ran at draft
+depth 1 and the OMLX runner reports generate-wall tok/s (prefill not split).
+mlxcel 0.7.0 still fails to load this AXQ affine layout.
 Unsupported is not replaced with another checkpoint. MTP Tier 2 remains
 pending. Artifacts:
 [2026-09-15 campaign](benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).

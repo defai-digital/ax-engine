@@ -17,11 +17,13 @@
   "measured": {
     "ax_engine": {
       "version": "7.4.0",
-      "decode_tok_s_median_20": 76.90
+      "decode_tok_s_median_20": 76.90,
+      "prefill_tok_s_median_20": 795.3
     },
     "mtplx": {
       "version": "2.11.2",
-      "decode_tok_s_median_20": 70.62
+      "decode_tok_s_median_20": 70.62,
+      "prefill_tok_s_median_20": 686.6
     },
     "mlx_lm": {
       "version": "0.31.3",
