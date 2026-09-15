@@ -752,7 +752,10 @@ env_flag!(
 env_flag!(
     /// `AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS` — build greedy target-verifier
     /// logits with the native greedy post-norm path instead of the sampled
-    /// softmax contract. Default OFF; opt-in A/B only.
+    /// softmax contract.
+    ///
+    /// **Default: OFF.** M5 Max 2026-09-15 depth-3 flappy A/B: greedy identity
+    /// held, decode GM 0.997 vs off (below ADR-003 D5 1.01).
     mtp_native_greedy_verify_logits_enabled,
     "AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS"
 );
