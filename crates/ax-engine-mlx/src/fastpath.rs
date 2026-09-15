@@ -934,7 +934,8 @@ env_flag!(
     /// replay and fallback recompute remain valid, while the superseded K/V
     /// handles no longer prevent MLX from donating `slice_update` inputs.
     ///
-    /// **Default: OFF** pending matched M5 admission.
+    /// **Default: OFF.** M5 Max 2026-09-15 depth-3 flappy A/B: greedy identity
+    /// held, decode GM 1.005 vs off (below ADR-003 D5 1.01).
     mtp_rebind_verify_fa_enabled,
     "AX_MLX_MTP_REBIND_VERIFY_FA"
 );
@@ -962,9 +963,10 @@ env_flag!(
     "AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT"
 );
 
-/// Skip the confirmed-row recurrent checkpoint. Kept env-only pending matched
-/// M5 admission. When fused GDN verify is also eligible, skip uses the
-/// no-checkpoint fused kernel instead of dropping fusion.
+/// Skip the confirmed-row recurrent checkpoint. Kept env-only: M5 Max
+/// 2026-09-15 flappy A/B (depth 1 and product depth 3) held greedy identity
+/// at decode GM 1.001 / 1.000, below ADR-003 D5 1.01. When fused GDN verify
+/// is also eligible, skip uses the no-checkpoint fused kernel.
 pub fn mtp_skip_prefix_checkpoint_enabled() -> bool {
     mtp_skip_prefix_checkpoint_env()
 }
