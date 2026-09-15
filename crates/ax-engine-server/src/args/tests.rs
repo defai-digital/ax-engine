@@ -71,6 +71,7 @@ fn base_args() -> ServerArgs {
         hf_cache_root: None,
         disable_ngram_acceleration: false,
         mlx_mtp_enable_ngram_stacking: false,
+        mlx_mtp_policy: ax_engine_sdk::MlxMtpPolicy::Auto,
         mlx_mtp_disable_ngram_stacking: false,
         speculation_profile: None,
         prefill_chunk: None,
@@ -1534,4 +1535,25 @@ fn stream_experts_flag_parses_and_threads_into_session_config() {
     let off = ServerArgs::try_parse_from(["ax-engine-server", "--stream-experts", "off"])
         .expect("--stream-experts off should parse");
     assert_eq!(off.stream_experts, MlxStreamExpertsMode::Off);
+}
+
+#[test]
+fn mlx_mtp_policy_parses_and_preserves_explicit_session_intent() {
+    for (value, expected) in [
+        ("auto", MlxMtpPolicy::Auto),
+        ("disabled", MlxMtpPolicy::Disabled),
+        ("required", MlxMtpPolicy::Required),
+    ] {
+        let args =
+            ServerArgs::try_parse_from(["ax-engine-server", "--mlx", "--mlx-mtp-policy", value])
+                .expect("valid MTP policy");
+        assert_eq!(args.mlx_mtp_policy, expected);
+        assert_eq!(args.session_config().unwrap().mlx_mtp_policy, expected);
+    }
+    let default = ServerArgs::try_parse_from(["ax-engine-server"]).unwrap();
+    assert_eq!(default.mlx_mtp_policy, MlxMtpPolicy::Auto);
+    assert!(
+        ServerArgs::try_parse_from(["ax-engine-server", "--mlx-mtp-policy", "optimistic",])
+            .is_err()
+    );
 }

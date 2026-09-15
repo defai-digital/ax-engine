@@ -16,11 +16,11 @@ use super::{
     MANIFEST_TEMP_FILE_PREFIX, NativeTensorDataType, NativeTensorRole,
     compute_attention_value_from_key_layers, compute_kv_shared_sources, config_quantization,
     convert_hf_model_dir, deepseek_v4_config, ensure_deepseek_v4_chat_template,
-    ensure_manifest_for_hf_model_dir, llama4_no_rope_layer_interval, match_tensor,
-    model_family_for_type, moe_config, parse_layer_types, parse_rope_params, parse_rope_scaling,
-    tensor_name_looks_like_media_role, tensor_quantization_override,
-    validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling, with_real_model_manifest_lock,
-    write_manifest,
+    ensure_manifest_for_hf_model_dir, llama4_no_rope_layer_interval, match_qwen4_exp_ngram_tensor,
+    match_tensor, model_family_for_type, moe_config, parse_layer_types, parse_rope_params,
+    parse_rope_scaling, qwen4_exp_config, tensor_name_looks_like_media_role,
+    tensor_quantization_override, validate_glm4_moe_lite_rope_scaling, validate_qwen_rope_scaling,
+    with_real_model_manifest_lock, write_manifest,
 };
 
 fn write_fake_safetensors(dir: &Path, filename: &str, tensors: &[(&str, &str, &[u64])]) {
@@ -30,6 +30,7 @@ fn write_fake_safetensors(dir: &Path, filename: &str, tensors: &[(&str, &str, &[
         let elem_size: u64 = match *dtype {
             "F16" | "BF16" => 2,
             "F32" | "U32" => 4,
+            "I64" => 8,
             _ => 1,
         };
         let num_elements: u64 = shape.iter().product();
@@ -4763,6 +4764,172 @@ fn qwen4_exp_parse_rope_defaults_partial_rotary_factor() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn qwen4_exp_official_oracle_metadata_maps_and_validates() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/flash_next/metadata.json"
+    ))
+    .unwrap();
+    let dir = unique_test_dir("qwen4_official_metadata");
+    fs::create_dir_all(&dir).unwrap();
+    write_config(&dir, fixture["config"].clone());
+    let owned: Vec<_> = fixture["tensors"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, entry)| {
+            (
+                name.clone(),
+                entry["dtype"].as_str().unwrap().to_string(),
+                entry["shape"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|dim| dim.as_u64().unwrap())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let tensors: Vec<_> = owned
+        .iter()
+        .map(|(name, dtype, shape)| (name.as_str(), dtype.as_str(), shape.as_slice()))
+        .collect();
+    write_fake_safetensors(&dir, "model.safetensors", &tensors);
+    let mut manifest = convert_hf_model_dir(&dir).unwrap();
+    assert!(!manifest.runtime_status.ready);
+    assert_eq!(manifest.qwen4_exp.ple_layer_ids, [2]);
+    assert_eq!(
+        manifest.qwen4_exp.output_gate_type.as_deref(),
+        Some("sigmoid")
+    );
+    assert_eq!(
+        manifest
+            .tensors
+            .iter()
+            .filter(|t| matches!(
+                t.role,
+                NativeTensorRole::Qwen4ExpPleMultipliers
+                    | NativeTensorRole::Qwen4ExpPleHeadOffsets
+                    | NativeTensorRole::Qwen4ExpPleHeadVocabSizes
+            ))
+            .count(),
+        3
+    );
+    // Validate the schema independently of rollout readiness. No model is
+    // executed by this metadata-only fixture, and no ready manifest is saved.
+    manifest.runtime_status.ready = true;
+    manifest.runtime_status.blockers.clear();
+    manifest.weight_sanitize = WeightSanitize::HfToMlx;
+    crate::model::validate_native_model_manifest(&dir, &manifest).unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn qwen4_exp_preserves_ple_and_block_selection_contract() {
+    let config = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "text_config": {
+            "hidden_size": 16,
+            "ple_layer_ids": [2, 5],
+            "ple_embed_dim": 32,
+            "ple_conv_kernel_size": 3,
+            "make_ngram_vocab_size_divisible_by": 64,
+            "split_ngram_parts": 4,
+            "seed": 9876,
+            "indexer_compress_ratio": 3
+        }
+    });
+    let parsed = qwen4_exp_config(&config, "qwen4_exp").unwrap();
+    assert_eq!(parsed.ple_layer_ids, vec![2, 5]);
+    assert_eq!(parsed.ple_embed_dim, Some(32));
+    assert_eq!(parsed.ple_conv_kernel_size, Some(3));
+    assert_eq!(parsed.ngram_vocab_divisor, Some(64));
+    assert_eq!(parsed.ngram_seed, Some(9876));
+    assert_eq!(parsed.split_ngram_parts, Some(4));
+    assert_eq!(parsed.indexer_compress_ratio, Some(3));
+    let encoded = serde_json::to_vec(&parsed).unwrap();
+    let decoded: crate::NativeQwen4ExpConfig = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(parsed, decoded);
+
+    let defaults = qwen4_exp_config(&serde_json::json!({"hidden_size": 16}), "qwen4_exp").unwrap();
+    assert_eq!(defaults.ple_embed_dim, Some(16));
+    assert_eq!(defaults.ngram_seed, Some(1234));
+    assert_eq!(defaults.ple_conv_kernel_size, Some(4));
+    assert!(defaults.ple_layer_ids.is_empty());
+    assert!(defaults.never_eval_ngram_at_load);
+    assert!(!qwen4_exp_config(&config, "qwen3_5").unwrap().is_enabled());
+}
+
+#[test]
+fn qwen4_exp_rejects_malformed_contract_fields_without_dropping_entries() {
+    for value in [
+        serde_json::json!([1, -2]),
+        serde_json::json!([1, "2"]),
+        serde_json::json!([0]),
+        serde_json::json!([4294967296u64]),
+        serde_json::json!("2"),
+    ] {
+        let config = serde_json::json!({"text_config": {"ple_layer_ids": value}});
+        assert!(qwen4_exp_config(&config, "qwen4_exp").is_err());
+    }
+    for field in [
+        "seed",
+        "indexer_compress_ratio",
+        "hc_count",
+        "ple_embed_dim",
+    ] {
+        let config = serde_json::json!({"text_config": {field: -1}});
+        assert!(qwen4_exp_config(&config, "qwen4_exp").is_err(), "{field}");
+    }
+}
+
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn qwen4_exp_preserves_ngram_layer_ownership_and_hash_buffers() {
+    let family = model_family_for_type("qwen4_exp", &serde_json::json!({})).unwrap();
+    for prefix in [
+        "model.language_model.layers.7",
+        "language_model.model.layers.7",
+    ] {
+        for (suffix, role) in [
+            (
+                "ple.ple_embedding.layer_multipliers",
+                NativeTensorRole::Qwen4ExpPleMultipliers,
+            ),
+            (
+                "ple.ple_embedding.ngram_heads_offsets",
+                NativeTensorRole::Qwen4ExpPleHeadOffsets,
+            ),
+            (
+                "ple.ple_embedding.ngram_heads_vocab_sizes",
+                NativeTensorRole::Qwen4ExpPleHeadVocabSizes,
+            ),
+            (
+                "ple.ple_embedding.ngram_embedding.shard_12.weight",
+                NativeTensorRole::NgramEmbedding,
+            ),
+            (
+                "ple.ple_embedding.ngram_embedding.shards.12.weight",
+                NativeTensorRole::NgramEmbedding,
+            ),
+            (
+                "ple.ple_embedding.ngram_embedding.weight",
+                NativeTensorRole::NgramEmbedding,
+            ),
+        ] {
+            assert_eq!(
+                match_tensor(&format!("{prefix}.{suffix}"), &family),
+                Some((role, Some(7)))
+            );
+        }
+    }
+    for suffix in ["shard_1garbage", "shards.2.unrelated", "weight_scale_extra"] {
+        assert!(match_qwen4_exp_ngram_tensor(&format!("model.ngram_embedding.{suffix}")).is_none());
+    }
+}
+
+#[test]
 fn maps_qwen4_exp_published_hf_checkpoint_names() {
     let family = model_family_for_type(
         "qwen4_exp",
@@ -8348,4 +8515,107 @@ fn converts_minimax_m3_vl_language_moe_directory() {
             .any(|t| t.role == NativeTensorRole::Other && t.name.contains("vision_tower"))
     );
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+#[ignore = "requires header-only metadata captured from the campaign pack"]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn qwen4_exp_campaign_pack_metadata_validates_without_loading_weights() {
+    use std::io::Write;
+    let source = std::env::var_os("AX_FLASH_NEXT_PACK_METADATA").expect("pack metadata path");
+    let metadata: serde_json::Value = serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
+    let dir = unique_test_dir("qwen4_campaign_metadata");
+    fs::create_dir_all(&dir).unwrap();
+    // Sparse placeholders preserve real byte bounds while writing only headers.
+    // The converter and manifest validator must not read weight payloads.
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
+    write_config(&dir, metadata["config"].clone());
+    let mut files =
+        std::collections::BTreeMap::<String, serde_json::Map<String, serde_json::Value>>::new();
+    let mut weight_map = serde_json::Map::new();
+    for (name, entry) in metadata["headers"].as_object().unwrap() {
+        let mut header = entry.as_object().unwrap().clone();
+        let file = header.remove("file").unwrap().as_str().unwrap().to_owned();
+        weight_map.insert(name.clone(), serde_json::Value::String(file.clone()));
+        files
+            .entry(file)
+            .or_default()
+            .insert(name.clone(), header.into());
+    }
+    for (name, header) in files {
+        let payload = header
+            .values()
+            .map(|v| v["data_offsets"][1].as_u64().unwrap())
+            .max()
+            .unwrap();
+        let encoded = serde_json::to_vec(&header).unwrap();
+        let mut file = fs::File::create(dir.join(name)).unwrap();
+        file.write_all(&(encoded.len() as u64).to_le_bytes())
+            .unwrap();
+        file.write_all(&encoded).unwrap();
+        file.set_len(8 + encoded.len() as u64 + payload).unwrap();
+    }
+    fs::write(
+        dir.join("model.safetensors.index.json"),
+        serde_json::to_vec(&serde_json::json!({"weight_map":weight_map})).unwrap(),
+    )
+    .unwrap();
+    let mut manifest = convert_hf_model_dir(&dir).unwrap();
+    assert!(!manifest.runtime_status.ready);
+    assert_eq!(manifest.qwen4_exp.ple_layer_ids, [2]);
+    assert_eq!(manifest.weight_sanitize, WeightSanitize::None);
+    manifest.runtime_status.ready = true;
+    manifest.runtime_status.blockers.clear();
+    crate::model::validate_native_model_manifest(&dir, &manifest).unwrap();
+    eprintln!(
+        "Flash Next campaign metadata validated: {} mapped tensors",
+        manifest.tensors.len()
+    );
+}
+
+/// Generate only the native sidecar in an explicitly prepared private candidate
+/// directory. The normal converter must identify the layout automatically; this
+/// harness admits the implemented graph solely for real-server validation.
+#[test]
+#[ignore = "requires an isolated real Flash Next candidate pack directory"]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn qwen4_exp_write_real_server_candidate_manifest() {
+    let root = std::path::PathBuf::from(
+        std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR")
+            .expect("isolated candidate pack directory"),
+    );
+    assert!(
+        !root
+            .join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE)
+            .exists()
+    );
+    let mut manifest = convert_hf_model_dir(&root).unwrap();
+    assert_eq!(manifest.model_family, "qwen4_exp");
+    assert_eq!(manifest.weight_sanitize, WeightSanitize::HfNormOnly);
+    assert!(!manifest.runtime_status.ready);
+    assert_eq!(
+        manifest.runtime_status.blockers,
+        ["qwen4_exp_native_trunk_not_implemented"],
+        "do not bypass unresolved format or feature blockers",
+    );
+    manifest.runtime_status.blockers.clear();
+    manifest.runtime_status.ready = true;
+    manifest.runtime_status.notes.push(
+        "Development candidate for real-server validation; not a release or MTP certification"
+            .into(),
+    );
+    crate::model::validate_native_model_manifest(&root, &manifest).unwrap();
+    write_manifest(&root, &manifest).unwrap();
+    eprintln!(
+        "Flash Next server candidate: tensors={}, sanitation={:?}, path={}",
+        manifest.tensors.len(),
+        manifest.weight_sanitize,
+        root.display(),
+    );
 }

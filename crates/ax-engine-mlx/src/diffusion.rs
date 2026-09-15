@@ -1451,7 +1451,7 @@ fn forward_bidirectional(mut ctx: BidirectionalForward<'_>) -> MlxArray {
     }
 
     // Final norm + LM head → logits [1, seq, vocab_size].
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = shared::qw(&normed, &weights.lm_head);
     finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::Full)
 }
@@ -2109,7 +2109,9 @@ mod tests {
                 None,
                 None,
             ),
-            final_norm: zeros(&[hidden as i32], MlxDtype::Float32, None),
+            final_norm: Some(zeros(&[hidden as i32], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: QuantizedWeight::new(
                 zeros(&[vocab as i32, hidden as i32], MlxDtype::Float32, None),
                 None,

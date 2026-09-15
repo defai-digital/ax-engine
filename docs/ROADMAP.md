@@ -49,7 +49,7 @@ non-production surfaces until their evidence lands.
 | AXQuant | Ongoing claim gate | AXQuant metadata integrity is verified at model load, or doctor-only verification is recorded as the explicit contract; MTP sidecar gains provenance parity with the vision sidecar |
 | Primary pack | Ongoing claim gate | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) on Mac mini M5 64 GB keeps the [certification record](model-certifications/qwen3.8-27b-axq.md) honest: still Candidate, MTP Tier 2 pending; do not promote dirty-tree refresh rows |
 | AXQuant | Ongoing claim gate | The pinned Qwen 3.6 27B AXQ 6-bit **secondary** candidate clears the [checkpoint certification record](model-certifications/qwen3.6-27b-axq.md); architecture-prior evidence alone cannot promote it |
-| Flash Next | Incubating / fail-closed | Qwen 3.8 Flash Next (`qwen4_exp`) on Mac Studio M5 Ultra 256 GB: convert rejects; no graph. Record: [qwen3.8-flash-next.md](model-certifications/qwen3.8-flash-next.md) |
+| Flash Next | Incubating / fail-closed | Qwen 3.8 Flash Next (`qwen4_exp`) on Mac Studio M5 Ultra 256 GB: dedicated graph and development serving validated; public artifact qualification open. Record: [qwen3.8-flash-next.md](model-certifications/qwen3.8-flash-next.md) |
 | Performance | Ongoing claim gate | The cross-family MTP prefill regression and the steady-state eval-wall drift are resolved or explicitly accepted in `PERFORMANCE-RESULTS.md` |
 | Positioning | Ongoing claim gate | The `docs/SERVER.md` "not yet a production server surface" caveat can be removed honestly |
 

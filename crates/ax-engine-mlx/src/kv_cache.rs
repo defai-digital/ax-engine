@@ -1199,11 +1199,14 @@ pub enum MlxKVCacheSerializeError {
     /// A layer the model requires to carry linear-attention state is
     /// missing its conv or recurrent tensor.
     IncompleteLinearLayer(usize),
+    /// Flash Next request state is inconsistent with its prefix or model.
+    FlashNextState(String),
 }
 
 impl std::fmt::Display for MlxKVCacheSerializeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::FlashNextState(message) => write!(f, "Flash Next cache: {message}"),
             Self::BadMagic => write!(f, "kv-cache payload has wrong magic"),
             Self::UnsupportedVersion(v) => write!(f, "kv-cache payload version {v} unsupported"),
             Self::UnexpectedEof => write!(f, "kv-cache payload truncated"),
@@ -1309,6 +1312,7 @@ pub struct DeepseekV4LayerStateView<'a> {
 /// the backing buffer but are beyond the logical boundary, so SDPA never sees them.
 /// The next `append` overwrites from `prefix_len`, restoring correctness.
 pub struct MlxKVCache {
+    pub(crate) qwen4_exp: Option<crate::model::qwen4_exp::Qwen4ExpState>,
     layers: Vec<Option<FaLayerStorage>>,
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
     deepseek_v4_layers: Vec<Option<DeepseekV4LayerCache>>,
@@ -1427,6 +1431,7 @@ impl Clone for MlxKVCache {
             state.mtp_tape = None;
         }
         Self {
+            qwen4_exp: self.qwen4_exp.clone(),
             layers: self.layers.clone(),
             glm_mla_layers: self.glm_mla_layers.clone(),
             deepseek_v4_layers: self.deepseek_v4_layers.clone(),
@@ -1493,6 +1498,7 @@ impl MlxKVCache {
     const LAYER_KIND_FA: u8 = 1;
     const LAYER_KIND_MLA: u8 = 2;
     const LAYER_KIND_LINEAR: u8 = 3;
+    const LAYER_KIND_FLASH_NEXT: u8 = 4;
     const TENSOR_PRESENT_TAG: u8 = 1;
     const TENSOR_ABSENT_TAG: u8 = 0;
 
@@ -1508,6 +1514,7 @@ impl MlxKVCache {
     /// is off and by deserialize (wire format is always dense).
     pub fn new_contiguous(num_layers: usize) -> Self {
         Self {
+            qwen4_exp: None,
             layers: (0..num_layers).map(|_| None).collect(),
             glm_mla_layers: (0..num_layers).map(|_| None).collect(),
             deepseek_v4_layers: (0..num_layers).map(|_| None).collect(),
@@ -1543,6 +1550,7 @@ impl MlxKVCache {
     /// Build a paged cache backed by a runner-owned synchronized FA pool.
     pub fn new_with_shared_fa_block_pool(num_layers: usize, fa_pool: SharedFaBlockPool) -> Self {
         Self {
+            qwen4_exp: None,
             layers: (0..num_layers).map(|_| None).collect(),
             glm_mla_layers: (0..num_layers).map(|_| None).collect(),
             deepseek_v4_layers: (0..num_layers).map(|_| None).collect(),
@@ -2028,7 +2036,18 @@ impl MlxKVCache {
     /// write at `seq_len` per layer, so the boundary must not move until
     /// all layers have appended).
     pub fn advance(&mut self, n: usize) {
-        self.seq_len += n;
+        let next = self
+            .seq_len
+            .checked_add(n)
+            .expect("KV token count overflow");
+        if let Some(state) = &self.qwen4_exp {
+            assert_eq!(
+                state.position(),
+                next,
+                "Flash Next cache advancement must match staged state"
+            );
+        }
+        self.seq_len = next;
     }
 
     /// Set the logical boundary to an absolute position. Prefer
@@ -2036,6 +2055,13 @@ impl MlxKVCache {
     /// known position (prefill restore, warmup, tests). For rollback use
     /// [`Self::trim_to`], which also validates ring residency.
     pub fn set_seq_len(&mut self, n: usize) {
+        if let Some(state) = &self.qwen4_exp {
+            assert_eq!(
+                state.position(),
+                n,
+                "Flash Next cache boundary must match recurrent state"
+            );
+        }
         self.seq_len = n;
     }
 
@@ -2371,6 +2397,28 @@ impl MlxKVCache {
         // old payloads readable (zero delta) without a format bump.
         out.extend_from_slice(&self.mrope_position_delta.to_le_bytes());
 
+        if let Some(state) = &self.qwen4_exp {
+            state
+                .validate_snapshot(self.layers.len(), self.seq_len)
+                .unwrap_or_else(|error| panic!("cannot serialize Flash Next cache: {error}"));
+            assert!(
+                self.layers.iter().all(Option::is_none)
+                    && self.glm_mla_layers.iter().all(Option::is_none)
+                    && self.deepseek_v4_layers.iter().all(Option::is_none)
+                    && self
+                        .linear_layers
+                        .iter()
+                        .all(|layer| layer.conv_state.is_none() && layer.recurrent_state.is_none()),
+                "Flash Next cannot serialize mixed-family cache state"
+            );
+            for idx in 0..state.layer_count() {
+                out.push(Self::LAYER_KIND_FLASH_NEXT);
+                out.extend_from_slice(&[0u8; 7]);
+                state.write_layer(idx, &mut out, Self::serialize_tensor);
+            }
+            return out;
+        }
+
         for idx in 0..self.layers.len() {
             // Per-index disambiguation: at most one of the three layer
             // vectors is populated. The encoded `kind` byte tells the
@@ -2493,11 +2541,18 @@ impl MlxKVCache {
         cache.rope_offset = rope_offset;
         cache.mrope_position_delta = mrope_position_delta;
 
+        let mut flash_layers = Vec::new();
         for idx in 0..layer_count {
             let kind = read_u8_from(reader)?;
             let mut reserved = [0u8; 7];
             read_exact_from(reader, &mut reserved)?;
             match kind {
+                k if k == Self::LAYER_KIND_FLASH_NEXT => {
+                    flash_layers.push(crate::model::qwen4_exp::Qwen4ExpState::read_layer(
+                        reader,
+                        Self::read_tensor_from_reader,
+                    )?);
+                }
                 k if k == Self::LAYER_KIND_EMPTY => continue,
                 k if k == Self::LAYER_KIND_FA => {
                     let ring_window = usize::try_from(read_u64_from(reader)?)
@@ -2587,6 +2642,20 @@ impl MlxKVCache {
             }
         }
 
+        if !flash_layers.is_empty() {
+            if flash_layers.len() != layer_count || rope_offset != 0 || mrope_position_delta != 0 {
+                return Err(MlxKVCacheSerializeError::FlashNextState(
+                    "mixed layer kinds or unsupported position offsets".into(),
+                ));
+            }
+            cache.qwen4_exp = Some(
+                crate::model::qwen4_exp::Qwen4ExpState::from_serialized_layers(
+                    seq_len,
+                    flash_layers,
+                )?,
+            );
+        }
+
         Ok(cache)
     }
 
@@ -2622,6 +2691,16 @@ impl MlxKVCache {
                 expected: expected_tokens,
                 actual: self.seq_len,
             });
+        }
+        if let Some(state) = &self.qwen4_exp {
+            if self.rope_offset != 0 || self.mrope_position_delta != 0 {
+                return Err(MlxKVCacheSerializeError::FlashNextState(
+                    "unsupported position offsets".into(),
+                ));
+            }
+            return state
+                .validate_snapshot(expected_layer_count, expected_tokens)
+                .map_err(MlxKVCacheSerializeError::FlashNextState);
         }
         if expected_tokens == 0 {
             return Ok(());
@@ -4249,6 +4328,15 @@ impl MlxKVCache {
     /// the cache and make SDPA attend to unwritten positions.
     #[must_use]
     pub fn trim_to(&mut self, prefix_len: usize) -> bool {
+        if self.qwen4_exp.is_some() && prefix_len < self.seq_len {
+            // GDN and PLE state cannot be sliced. The verifier restores its
+            // pre-call checkpoint and replays the accepted prefix instead.
+            if prefix_len == 0 {
+                self.reset();
+                return true;
+            }
+            return false;
+        }
         if prefix_len < self.seq_len {
             // Rotated layers can absorb a rollback only within their slack:
             // token `t` lives at slot `t % capacity`, so a token is still
@@ -4492,6 +4580,9 @@ impl MlxKVCache {
     /// Mirrors mlx_lm's `mx.eval(y, cache)` pattern.
     pub fn collect_eval_refs(&self) -> Vec<&MlxArray> {
         let mut refs = Vec::with_capacity(self.layers.len() * 4 + self.glm_mla_layers.len() * 2);
+        if let Some(state) = &self.qwen4_exp {
+            refs.extend(state.arrays());
+        }
         for fa in self.layers.iter().flatten() {
             match fa {
                 FaLayerStorage::Contiguous(lkv) => {
@@ -4668,6 +4759,10 @@ impl MlxKVCache {
             usage.capacity_bytes = usage
                 .capacity_bytes
                 .saturating_add(bytes_per_token.saturating_mul(glm_mla.capacity as u64));
+        }
+
+        if let Some(state) = &self.qwen4_exp {
+            state.account_usage(&mut usage);
         }
 
         usage
@@ -5211,6 +5306,7 @@ impl MlxKVCache {
 
     /// Reset cache entirely (e.g., between requests).
     pub fn reset(&mut self) {
+        self.qwen4_exp = None;
         if let Some(pool) = self.fa_pool.as_ref() {
             for entry in self.layers.iter_mut().flatten() {
                 if let FaLayerStorage::Paged(paged) = entry {

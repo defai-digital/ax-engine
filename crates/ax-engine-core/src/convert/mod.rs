@@ -149,7 +149,7 @@ pub enum ConvertError {
     )]
     UnsupportedModelType { model_type: String },
     #[error(
-        "Qwen 3.8 Flash Next (`{model_type}`) is incubating: AX has no repo-owned graph yet. \
+        "Qwen 3.8 Flash Next (`{model_type}`) is incubating: its dedicated AX graph has not passed public artifact qualification. \
 Best-experience SKU is Mac Studio M5 Ultra 256 GB. Do not load this checkpoint as qwen3_5, \
 Super-class 2.4T, or a Compatible generic family. See docs/model-certifications/qwen3.8-flash-next.md"
     )]
@@ -305,7 +305,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let mla_attention = mla_attention_config(&config, &model_type);
     let glm_router = glm_router_config(&config, &model_type);
     let deepseek_v4 = deepseek_v4_config(&config, &model_type);
-    let qwen4_exp = qwen4_exp_config(&config, &model_type);
+    let qwen4_exp = qwen4_exp_config(&config, &model_type)?;
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
@@ -476,6 +476,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         kv_cache_quantization: None,
         tensors: mapped_tensors,
     };
+
+    qwen4_exp_layout::apply(model_dir, &mut manifest)?;
 
     // Best-effort bridge: lift AXQuant's per-layer KV-cache quantization table
     // from `axquant_runtime.json` into the manifest so runtimes that only read
@@ -813,6 +815,8 @@ pub fn ensure_manifest_for_hf_model_dir(model_dir: &Path) -> Result<bool, Conver
 
 mod hf_config;
 mod model_family;
+mod qwen4_exp_layout;
+pub(crate) use qwen4_exp_layout::experimental_runtime_admission as admit_experimental_flash_next;
 mod tensor_mapping;
 #[cfg(test)]
 mod tests;
@@ -1014,6 +1018,7 @@ fn convert_dtype(dtype: &str, name: &str) -> Result<NativeTensorDataType, Conver
         "BF16" => Ok(NativeTensorDataType::Bf16),
         "F32" => Ok(NativeTensorDataType::F32),
         "I8" => Ok(NativeTensorDataType::I8),
+        "I64" => Ok(NativeTensorDataType::I64),
         "U8" => Ok(NativeTensorDataType::U8),
         "U32" => Ok(NativeTensorDataType::U32),
         // Signed 32-bit integers (DeepSeek V4 `ffn.gate.tid2eid` hash-routing
@@ -1433,19 +1438,27 @@ fn match_nemotron_h_tensor(
 }
 
 fn match_qwen4_exp_ngram_tensor(name: &str) -> Option<(NativeTensorRole, Option<u32>)> {
-    // Scalar FP8 scale next to the PLE table; same skip-at-load contract as shards.
-    if name.contains("ngram_embedding.weight_scale") {
-        return Some((NativeTensorRole::NgramEmbedding, None));
+    let layer = [
+        "model.language_model.layers.",
+        "language_model.model.layers.",
+        "model.layers.",
+        "layers.",
+    ]
+    .iter()
+    .find_map(|prefix| {
+        name.strip_prefix(prefix)
+            .and_then(|rest| rest.split_once('.'))
+            .and_then(|(index, _)| index.parse::<u32>().ok())
+    });
+    let table = name.split_once("ngram_embedding.")?.1;
+    if matches!(table, "weight" | "weight_scale") {
+        return Some((NativeTensorRole::NgramEmbedding, layer));
     }
-    // HF: ngram_embedding.shard_N ; mlx-vlm sanitize: ngram_embedding.shards.N
-    for marker in ["ngram_embedding.shard_", "ngram_embedding.shards."] {
-        if let Some(idx) = name.find(marker) {
-            let after = &name[idx + marker.len()..];
-            let digits_end = after
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(after.len());
-            if digits_end > 0 && after[..digits_end].parse::<u32>().is_ok() {
-                return Some((NativeTensorRole::NgramEmbedding, None));
+    for prefix in ["shard_", "shards."] {
+        if let Some(suffix) = table.strip_prefix(prefix) {
+            let (index, field) = suffix.split_once('.').unwrap_or((suffix, ""));
+            if index.parse::<u32>().is_ok() && matches!(field, "" | "weight" | "weight_scale") {
+                return Some((NativeTensorRole::NgramEmbedding, layer));
             }
         }
     }

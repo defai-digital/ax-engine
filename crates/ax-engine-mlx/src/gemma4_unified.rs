@@ -522,7 +522,9 @@ mod tests {
         let dummy = || QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
         ModelWeights {
             token_embedding: dummy(),
-            final_norm: zeros(&[1], MlxDtype::Float32, None),
+            final_norm: Some(zeros(&[1], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dummy(),
             layers: Vec::new(),
             per_layer_embed: None,

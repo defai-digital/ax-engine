@@ -734,7 +734,13 @@ impl ExpertStackPager {
                 mlx_sys::SafetensorsNameFilter::Keep(keep),
             )
             .map_err(ExpertStreamError::Paging)?;
-            loaded.extend(tensors);
+            for (name, array) in tensors {
+                if loaded.insert(name.clone(), array).is_some() {
+                    return Err(ExpertStreamError::Paging(format!(
+                        "tensor {name} appears in multiple files for layer {layer}"
+                    )));
+                }
+            }
         }
         // Wire the freshly created arrays into MLX's working set, mirroring the
         // initial-load eval for both loader paths. Use try_eval so a paging
@@ -1314,6 +1320,30 @@ mod tests {
         tensors.extend(layer1);
         write_safetensors_f32(&dir, "experts.safetensors", &tensors);
         dir
+    }
+
+    #[test]
+    fn pager_rejects_duplicate_sidecars_before_caching() {
+        let dir = synth_fixture("duplicate_sidecar");
+        let name = "model.layers.0.mlp.switch_mlp.gate_up_proj.scales";
+        let mut tensors = synth_tensors(0).to_vec();
+        tensors.push((name, vec![SYN_EXPERTS, 2 * SYN_INTER, 1], vec![1.0; 16]));
+        write_safetensors_f32(&dir, "experts.safetensors", &tensors);
+        write_safetensors_f32(
+            &dir,
+            "sidecars.safetensors",
+            &[(name, vec![SYN_EXPERTS, 2 * SYN_INTER, 1], vec![2.0; 16])],
+        );
+        let mut manifest = synth_manifest();
+        let mut sidecar = manifest.tensors[0].clone();
+        sidecar.name = name.into();
+        sidecar.file = "sidecars.safetensors".into();
+        manifest.tensors.push(sidecar);
+        let pager = ExpertStackPager::new(Arc::new(manifest), dir.clone(), 1);
+        let error = pager.ensure_layer(0).err().expect("duplicate must fail");
+        assert!(error.to_string().contains("appears in multiple files"));
+        assert_eq!(pager.cached_layer_count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

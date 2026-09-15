@@ -110,8 +110,10 @@ Qwen 3.8 caveat:
   the unique general-purpose default and primary optimization target.
   Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
 - **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU
-  for Mac Studio M5 Ultra 256 GB. It is **incubating**: convert maps metadata
-  but load/serve stay fail-closed (`qwen4_exp_native_trunk_not_implemented`).
+  for Mac Studio M5 Ultra 256 GB. It is **incubating**: a dedicated graph and
+  development serving path exist; public artifact qualification remains open.
+  Default load/serve retain the legacy blocker `qwen4_exp_native_trunk_not_implemented`;
+  the audited 4-bit native path requires `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1`.
   No download alias. Do not treat it as 27B or as Super-class 2.4T. Record:
   [Qwen 3.8 Flash Next](model-certifications/qwen3.8-flash-next.md).
 

@@ -23,10 +23,17 @@ use crate::gemma4_assistant_mtp::{Gemma4AssistantMtpStatus, load_gemma4_assistan
 use crate::model::MlaAttentionConfig;
 use crate::sampling::MlxSamplingParams;
 
+pub(crate) mod qwen4_exp;
+pub(crate) mod qwen4_exp_mtp;
+
 /// All weight arrays for one model.
 pub struct ModelWeights {
     pub token_embedding: QuantizedWeight,
-    pub final_norm: MlxArray,
+    /// `None` for Flash Next (`qwen4_exp`), whose trunk ends in a
+    /// hyper-connection mixer rather than a generic final RMSNorm. Every
+    /// other family populates this. Generic forward code should read it
+    /// through [`ModelWeights::final_norm`] rather than matching directly.
+    pub final_norm: Option<MlxArray>,
     pub lm_head: QuantizedWeight,
     pub layers: Vec<LayerWeights>,
     /// Per-layer token embedding table (Gemma4 2B/4B, shape [vocab_per_layer, num_layers*per_layer_dim]).
@@ -78,6 +85,76 @@ pub struct ModelWeights {
     /// `None` for the default fully-resident load; when set, MoE expert
     /// stacks are paged per layer instead of resident.
     pub expert_stream: Option<std::sync::Arc<crate::expert_stream::ExpertStackPager>>,
+    /// Flash Next (`qwen4_exp`) dedicated trunk weights, loaded through
+    /// [`qwen4_exp::load`]. `Some` only for `model_family == "qwen4_exp"`;
+    /// every other field above that is family-specific to the generic
+    /// trunk (`layers`, per-layer embed/proj, MTP, vision towers, …) stays
+    /// at its empty/`None` default on the qwen4_exp load path.
+    pub(crate) qwen4_exp: Option<Box<qwen4_exp::Qwen4ExpWeights>>,
+    /// Flash Next MTP draft sidecar. Attached only when the trunk is
+    /// `qwen4_exp` and [`FLASH_NEXT_MTP_CANDIDATE_ENV`] opts in; kept separate
+    /// from the generic `mtp` head, which stays `None` for this family.
+    pub(crate) qwen4_exp_mtp: Option<Box<qwen4_exp_mtp::Qwen4ExpMtpWeights>>,
+}
+
+/// Development opt-in that attaches the uncertified Flash Next MTP sidecar.
+/// Attachment alone never activates speculation: the session must still
+/// request MTP, and the model policy never makes this route default-on.
+pub(crate) const FLASH_NEXT_MTP_CANDIDATE_ENV: &str = "AX_MLX_FLASH_NEXT_MTP_CANDIDATE";
+
+fn flash_next_mtp_candidate_opt_in(raw: Option<&str>) -> bool {
+    raw.map(str::trim).is_some_and(|value| {
+        value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+    })
+}
+
+pub(crate) fn flash_next_mtp_candidate_requested() -> bool {
+    flash_next_mtp_candidate_opt_in(std::env::var(FLASH_NEXT_MTP_CANDIDATE_ENV).ok().as_deref())
+}
+
+/// Load the requested Flash Next sidecar. A missing or invalid sidecar leaves
+/// the head detached and is reported loudly; the runner then refuses to
+/// advertise an MTP drafter, so an explicit `Required` session fails instead
+/// of silently decoding direct.
+fn load_flash_next_mtp_candidate(
+    artifacts: &NativeModelArtifacts,
+    trunk: &qwen4_exp::Qwen4ExpWeights,
+) -> Option<Box<qwen4_exp_mtp::Qwen4ExpMtpWeights>> {
+    if !flash_next_mtp_candidate_requested() {
+        return None;
+    }
+    match qwen4_exp_mtp::load(artifacts.root_dir(), artifacts.manifest(), trunk) {
+        Ok(head) => Some(Box::new(head)),
+        Err(error) => {
+            tracing::error!(
+                target: "ax_engine_mlx::weights",
+                %error,
+                env = FLASH_NEXT_MTP_CANDIDATE_ENV,
+                "requested Flash Next MTP sidecar failed to attach; MTP is unavailable for this model"
+            );
+            None
+        }
+    }
+}
+
+impl ModelWeights {
+    /// The generic final RMSNorm. Populated for every family except Flash
+    /// Next (`qwen4_exp`), whose trunk ends in a hyper-connection mixer
+    /// instead of a generic norm.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called on a `qwen4_exp` load, where `final_norm` is `None`
+    /// by construction: that family's forward path must read `qwen4_exp`
+    /// weights directly rather than going through this generic accessor.
+    pub fn final_norm(&self) -> &MlxArray {
+        self.final_norm.as_ref().expect(
+            "ModelWeights::final_norm() called with final_norm == None: this checkpoint has no \
+             generic final norm (Flash Next `qwen4_exp` ends in a hyper-connection mixer, not a \
+             final RMSNorm); the caller must route qwen4_exp models through their dedicated \
+             trunk instead of the generic final_norm accessor",
+        )
+    }
 }
 
 /// The exact weights owned by one static pipeline rank.
@@ -1131,6 +1208,42 @@ pub fn mmap_weights_enabled() -> bool {
 
 pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, WeightLoadError> {
     maybe_raise_metal_buffer_caps(artifacts);
+    if artifacts.manifest().model_family == "qwen4_exp" {
+        let dedicated = qwen4_exp::load(artifacts.root_dir(), artifacts.manifest())?;
+        let token_embedding = dedicated.token_embedding.clone();
+        let lm_head = dedicated.lm_head.clone();
+        let expert_stream = dedicated.expert_stream.clone();
+        let qwen4_exp_mtp = load_flash_next_mtp_candidate(artifacts, &dedicated);
+        return Ok(ModelWeights {
+            token_embedding,
+            final_norm: None,
+            lm_head,
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            gemma4_assistant_mtp: Gemma4AssistantMtpStatus::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+            gemma4_vl_vision: None,
+            diffusion_self_conditioning: None,
+            glm_mtp: None,
+            deepseek_v4_head: None,
+            deepseek_v4_nextn: None,
+            unlimited_ocr_vision: None,
+            qwen3_vl_vision: None,
+            minicpm_v46_vision: None,
+            nemotron_omni: None,
+            expert_stream,
+            qwen4_exp: Some(Box::new(dedicated)),
+            qwen4_exp_mtp,
+        });
+    }
     let root = artifacts.root_dir().to_path_buf();
     // SSD expert streaming admission (ax_expert_stream.json). A pack marked
     // `required=true` fails closed without --stream-experts /
@@ -2036,7 +2149,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     lm_head.prepare_contiguous_decode_weight_t();
     let mut model = ModelWeights {
         token_embedding,
-        final_norm,
+        final_norm: Some(final_norm),
         lm_head,
         layers,
         per_layer_embed,
@@ -2060,6 +2173,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         minicpm_v46_vision,
         nemotron_omni,
         expert_stream: expert_stream_pager,
+        qwen4_exp: None,
+        qwen4_exp_mtp: None,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;
@@ -6886,6 +7001,23 @@ mod tests {
     use ax_engine_core::NativeTensorDataType;
     use mlx_sys::{MlxDtype, zeros};
     use std::path::Path;
+
+    #[test]
+    fn flash_next_mtp_candidate_opt_in_is_strictly_truthy() {
+        for enabled in ["1", "true", "TRUE", "yes", " Yes "] {
+            assert!(
+                flash_next_mtp_candidate_opt_in(Some(enabled)),
+                "{enabled:?}"
+            );
+        }
+        for disabled in ["", "0", "false", "no", "candidate", "2"] {
+            assert!(
+                !flash_next_mtp_candidate_opt_in(Some(disabled)),
+                "{disabled:?}"
+            );
+        }
+        assert!(!flash_next_mtp_candidate_opt_in(None));
+    }
 
     #[test]
     fn mmap_weights_env_requires_a_nonzero_nonempty_value() {

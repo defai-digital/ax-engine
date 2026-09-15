@@ -27,10 +27,10 @@ pub(super) fn validate_mlx_supported_manifest(
     {
         validate_mla_moe_manifest(manifest)?;
     }
-    if manifest.model_family != "nemotron_h"
+    if !matches!(manifest.model_family.as_str(), "nemotron_h" | "qwen4_exp")
         && (manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts))
     {
-        // Nemotron-H reuses linear_attention dims for Mamba-2; skip Qwen gated-delta contract.
+        // These families have dedicated shape validation in NativeModelArtifacts.
         validate_qwen_gated_delta_linear_attention(manifest)?;
     }
     if manifest.model_family == "llama4" {
@@ -41,7 +41,7 @@ pub(super) fn validate_mlx_supported_manifest(
     // uniform SWA (mistral3, mixtral) use only sliding_window_size with no
     // layer_types, so they skip this gate. Nemotron-H also uses layer_types for
     // hybrid mixer kinds (mamba/attention/moe) and must not enter this path.
-    if manifest.model_family != "nemotron_h"
+    if !matches!(manifest.model_family.as_str(), "nemotron_h" | "qwen4_exp")
         && (!manifest.layer_types.is_empty()
             || !manifest.kv_shared_source_layers.is_empty()
             || manifest.global_head_dim.is_some()

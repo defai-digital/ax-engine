@@ -28,6 +28,7 @@ class QualifyFlashNextTest(unittest.TestCase):
         self.assertEqual(payload["family"], "qwen4_exp")
         self.assertEqual(payload["host_class"], "Mac Studio M5 Ultra, 256 GB")
         self.assertTrue(payload["fail_closed"])
+        self.assertEqual(payload["experimental_opt_in"], "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
         self.assertIn("qwen3.8-27b:axq", payload["not"])
 
     def test_dry_run_cli_json(self) -> None:

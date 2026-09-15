@@ -24,6 +24,7 @@ pub mod closure;
 pub mod error;
 pub mod fast;
 pub mod io;
+pub mod io_rows;
 pub mod mempressure;
 pub mod metal;
 pub mod op_count;
@@ -58,6 +59,9 @@ pub use fast::{
 };
 pub use io::{
     SafetensorsNameFilter, load_safetensors, load_safetensors_filtered, load_safetensors_mmap,
+};
+pub use io_rows::{
+    DEFAULT_MAX_GATHER_BYTES, MAX_HEADER_BYTES, RowTensorMeta, SafetensorsRowReader,
 };
 pub use mempressure::{
     device_active_bytes, device_cache_bytes, device_peak_bytes,

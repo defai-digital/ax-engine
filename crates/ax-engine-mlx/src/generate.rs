@@ -401,6 +401,64 @@ fn cache_only_forward_chunks(
     }
 }
 
+/// Greedy Flash Next prefill with request-local, shifted draft history.
+/// The trunk follows the same n-1 plus singleton schedule as direct prefill.
+/// Draft failures discard only the optional cursor; primary output remains authoritative.
+pub(crate) fn chunked_prefill_flash_next_mtp(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    tokens: &[u32],
+    cache: &mut MlxKVCache,
+    chunk_size: usize,
+    completes_prompt: bool,
+    cursor: &mut Option<crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor>,
+) -> Option<u32> {
+    if tokens.is_empty() {
+        return None;
+    }
+    let prefix_len = tokens.len() - 1;
+    let mut offset = 0;
+    let mut next = None;
+    while offset < tokens.len() {
+        let end = if offset < prefix_len {
+            offset.saturating_add(chunk_size.max(1)).min(prefix_len)
+        } else {
+            tokens.len()
+        };
+        let chunk = &tokens[offset..end];
+        let output = crate::model::qwen4_exp_forward_with_streams(
+            cfg,
+            weights,
+            chunk,
+            cache,
+            cache.seq_len(),
+        );
+        cache.advance(chunk.len());
+        if let Some(draft) = cursor.as_mut() {
+            let result = weights
+                .qwen4_exp_mtp
+                .as_ref()
+                .ok_or_else(|| "Flash Next draft weights are not attached".to_string())
+                .and_then(|head| draft.absorb(head, chunk, &output.stream_hidden));
+            if let Err(error) = result {
+                tracing::warn!(%error, "Flash Next MTP prefill fell back to primary decode");
+                *cursor = None;
+            }
+        }
+        if completes_prompt && end == tokens.len() {
+            // The final chunk is always a singleton, matching direct decode.
+            let token = argmax(&output.logits, None);
+            eval_with_kv_refs(&token, cache);
+            next = Some(token.first_u32_unchecked());
+        }
+        offset = end;
+    }
+    if clear_cache_after_split_prefill(cfg.hidden_size_per_layer_input) {
+        clear_cache();
+    }
+    next
+}
+
 /// `AX_MLX_PREFILL_TIME_DEBUG=1` — print per-chunk graph-build vs eval wall
 /// splits for the cache-only prefill path to stderr. Diagnostic only.
 fn prefill_time_debug_enabled() -> bool {

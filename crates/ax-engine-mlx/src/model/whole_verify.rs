@@ -245,7 +245,7 @@ fn qwen_whole_verify_body(
     }
 
     let seq_i32 = i32::try_from(seq).ok()?;
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = super::lm_head_verify_window_projection(
         &normed,
         &weights.lm_head,

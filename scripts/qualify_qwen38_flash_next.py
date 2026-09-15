@@ -2,7 +2,7 @@
 """Qwen 3.8 Flash Next incubating contract.
 
 `--dry-run` prints the SKU and fail-closed rule (CI-safe, no weights).
-A live `--model-dir` run is expected to fail until a repo-owned graph exists.
+A live `--model-dir` run stays closed until public artifact qualification.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any, Sequence
 FAMILY = "qwen4_exp"
 HOST_CLASS = "Mac Studio M5 Ultra, 256 GB"
 STATUS = (
-    "Incubating. Convert maps qwen4_exp metadata; load/serve stay fail-closed "
+    "Incubating. The dedicated graph has development evidence; default load/serve stay fail-closed "
     "(qwen4_exp_native_trunk_not_implemented). Not Qwen 3.8 27B and not Super-class 2.4T."
 )
 
@@ -35,6 +35,8 @@ def contract() -> dict[str, Any]:
         "fail_closed": True,
         "convert": "metadata mapping; runtime_status.ready=false",
         "load_blocker": "qwen4_exp_native_trunk_not_implemented",
+        "experimental_opt_in": "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1",
+        "experimental_scope": "audited AXQuant 1.9.0 affine 4-bit experts with 4/8-bit projections",
         "not": [
             "qwen3.8-27b:axq",
             "qwen3_5",
@@ -76,7 +78,7 @@ def _live_preflight(model_dir: Path) -> None:
     if not config.is_file():
         raise SystemExit(f"missing config.json under {model_dir}")
     raise SystemExit(
-        "Qwen 3.8 Flash Next is incubating: AX has no repo-owned graph yet. "
+        "Qwen 3.8 Flash Next is incubating: public artifact qualification remains open. "
         f"Best-experience SKU is {HOST_CLASS}."
     )
 
