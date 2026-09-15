@@ -287,6 +287,8 @@ pub enum NativeTensorRole {
     Qwen4ExpPleNormConv,
     Qwen4ExpIndexerQNorm,
     Qwen4ExpIndexerKNorm,
+    /// Qwen 3.8 Flash Next fused QSA indexer Q/K projection (`index_qk_proj`).
+    Qwen4ExpIndexerQkProj,
     /// Qwen 3.8 Flash Next PLE n-gram embedding shard (`ngram_embedding.shard_N`
     /// / `ngram_embedding.shards.N`). Must not be eval'd at `load_weights` when
     /// [`NativeQwen4ExpConfig::never_eval_ngram_at_load`] is set.
@@ -403,6 +405,7 @@ impl NativeTensorRole {
                 | Self::Qwen4ExpPleNormConv
                 | Self::Qwen4ExpIndexerQNorm
                 | Self::Qwen4ExpIndexerKNorm
+                | Self::Qwen4ExpIndexerQkProj
         )
     }
 

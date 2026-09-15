@@ -13,10 +13,11 @@ plus a 51B n-gram embedding table.
 
 Convert maps `qwen4_exp` metadata (family label, GDN/MoE dims, n-gram/HC/QSA
 contract with `never_eval_ngram_at_load`), gated-residual hyper-connection
-and PLE inject tensors, and PLE shards as `NgramEmbedding`. `load_weights`
-excludes n-gram shards from the resident eval set. Auto-generate / load /
-serve stay fail-closed until the trunk is implemented. Layer-forward panics
-if entered.
+and PLE inject tensors, QSA `index_qk_proj` plus q/k layernorms, packed
+`mlp.experts.{gate_up,down}_proj` and `shared_expert` routers, and PLE shards
+as `NgramEmbedding`. `load_weights` excludes n-gram shards from the resident
+eval set. Auto-generate / load / serve stay fail-closed until the trunk is
+implemented. Layer-forward panics if entered.
 There is no download alias and no Compatible generic load path. Never remap
 onto `qwen3_5` or Super-class 2.4T.
 

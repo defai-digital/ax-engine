@@ -81,6 +81,50 @@ pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         "self_attn.indexer.k_layernorm.weight",
         TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpIndexerKNorm),
     ),
+    (
+        "self_attn.indexer.index_qk_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpIndexerQkProj),
+    ),
+    (
+        "self_attn.indexer.index_qk_proj",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpIndexerQkProj),
+    ),
+    (
+        "mlp.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "mlp.gate.e_score_correction_bias",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpCorrectionBias),
+    ),
+    (
+        "mlp.experts.gate_up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateUpExpsPacked),
+    ),
+    (
+        "mlp.experts.gate_up_proj",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateUpExpsPacked),
+    ),
+    (
+        "mlp.experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "mlp.experts.down_proj",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "mlp.shared_expert.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "mlp.shared_expert.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "mlp.shared_expert.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
 ];
 
 pub(crate) const QWEN4_EXP_HC_GLOBAL_TENSOR_MAP: &[(&str, TensorMapping)] = &[

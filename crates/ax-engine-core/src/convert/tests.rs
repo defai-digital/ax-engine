@@ -4862,6 +4862,31 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
                     &[8],
                 ),
                 (
+                    "language_model.model.layers.0.self_attn.indexer.index_qk_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.gate.weight",
+                    "BF16",
+                    &[4, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.experts.gate_up_proj",
+                    "BF16",
+                    &[4, 16, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.experts.down_proj",
+                    "BF16",
+                    &[4, 8, 16],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.shared_expert.gate_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                (
                     "language_model.ngram_embedding.shard_0.weight",
                     "BF16",
                     &[8, 8],
@@ -4923,6 +4948,26 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
             "{model_type}: QSA indexer q-norm"
         );
         assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::Qwen4ExpIndexerQkProj, Some(0)),
+            "{model_type}: leftover indexer index_qk_proj must be typed, not dropped"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::FfnGateInp, Some(0)),
+            "{model_type}: MoE router mlp.gate"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::FfnGateUpExpsPacked, Some(0)),
+            "{model_type}: packed mlp.experts.gate_up_proj"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::FfnDownExps, Some(0)),
+            "{model_type}: mlp.experts.down_proj"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::FfnSharedExpertGate, Some(0)),
+            "{model_type}: shared_expert.gate_proj"
+        );
+        assert!(
             manifest.tensors.iter().any(|tensor| {
                 tensor.role == NativeTensorRole::NgramEmbedding
                     && tensor.name.contains("ngram_embedding.shard_0")
@@ -4942,6 +4987,19 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
                 .any(|n| n.contains("ngram_embedding.shards.1")),
             "{model_type}: {skipped:?}"
         );
+        for keep in [
+            "attn_hyper_connection",
+            "ple.key_proj",
+            "indexer",
+            "mlp.experts",
+            "mlp.gate",
+            "shared_expert",
+        ] {
+            assert!(
+                skipped.iter().all(|n| !n.contains(keep)),
+                "{model_type}: n-gram skip leaked onto {keep}: {skipped:?}"
+            );
+        }
         assert_eq!(
             crate::resolve_layer_forward_route("qwen4_exp"),
             Some(crate::LayerForwardRoute::Qwen4Exp)
