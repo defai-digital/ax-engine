@@ -9488,6 +9488,9 @@ impl MlxRunner {
                         // forward consumes these recurrent states and its
                         // normal eval barrier materialises them in dependency
                         // order, avoiding a rejection-only GPU/CPU round trip.
+                        // Skip-checkpoint complete-misses take the replay arm
+                        // and would otherwise retain a stale capture/stash.
+                        verify_cache.clear_linear_prefix_checkpoint();
                         state.cache = verify_cache;
                         None
                     } else {

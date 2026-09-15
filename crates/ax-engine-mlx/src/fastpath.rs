@@ -956,13 +956,15 @@ pub fn mtp_linear_tape_capture_enabled() -> bool {
 env_flag!(
     /// `AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT` — retain the verifier's projected
     /// QKV/A/B inputs but do not write a full recurrent-state checkpoint at
-    /// the confirmed row.
+    /// the confirmed row. Fused GDN verify stays eligible via the
+    /// no-checkpoint fused kernel.
     mtp_skip_prefix_checkpoint_env,
     "AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT"
 );
 
-/// Skip the confirmed-row recurrent checkpoint. Kept env-only: it disables
-/// the fused GDN verifier used by throughput MTP.
+/// Skip the confirmed-row recurrent checkpoint. Kept env-only pending matched
+/// M5 admission. When fused GDN verify is also eligible, skip uses the
+/// no-checkpoint fused kernel instead of dropping fusion.
 pub fn mtp_skip_prefix_checkpoint_enabled() -> bool {
     mtp_skip_prefix_checkpoint_env()
 }

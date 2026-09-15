@@ -28,7 +28,8 @@ use crate::batched_linear_state::BatchedLinearState;
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::{
-    gated_delta_fused_verify_from_qkv, gated_delta_kernel, gated_delta_kernel_verify_no_checkpoint,
+    gated_delta_fused_verify_from_qkv, gated_delta_fused_verify_no_checkpoint_from_qkv,
+    gated_delta_kernel, gated_delta_kernel_verify_no_checkpoint,
     gated_delta_kernel_with_prefix_checkpoint, gated_delta_kernel_with_tape,
     linear_attention_conv1d, linear_attention_decode_post_input_metal,
     normalize_linear_attention_qk, replay_gated_delta_tape, rms_norm_gated_with_full_gate_policy,
@@ -384,32 +385,61 @@ fn linear_attention_forward_inner(
         .cloned()
         .unwrap_or_else(|| initial_recurrent_state_zeros(linear_cfg));
     // The short relaxed verifier can keep conv/QK intermediates in one Metal
-    // dispatch. It returns the same final and row-0 checkpoint state as the
-    // established two-kernel composition; every unsupported shape or kernel
-    // error falls through to that composition below.
-    let fused_verify = (prefix_capture_after == Some(1)
+    // dispatch. Skip-checkpoint uses a lockstep fused kernel without the
+    // row-0 recurrent/conv-prefix buffers; complete-miss then keep=1
+    // projected-replays. Tape capture still excludes fusion. Unsupported
+    // shapes fall through to the two-kernel composition below.
+    let fused_eligible = prefix_capture_after == Some(1)
         && !profile_enabled
         && fastpath::qwen_linear_mtp_target_verify_enabled()
         && fastpath::mtp_fused_gated_delta_verify_enabled()
-        && !fastpath::mtp_skip_prefix_checkpoint_enabled()
-        && !fastpath::mtp_linear_tape_capture_enabled())
-    .then(|| {
-        gated_delta_fused_verify_from_qkv(
-            linear_cfg,
-            &qkv,
-            &linear_w.conv1d_dense,
-            conv_state,
-            &a_log_f32,
-            &a,
-            &dt_bias_f32,
-            &b,
-            &state,
-            linear_cfg.q_scale,
-            linear_cfg.k_scale,
-            cfg.rms_norm_eps,
-        )
-    })
-    .flatten();
+        && !fastpath::mtp_linear_tape_capture_enabled();
+    let skip_prefix_checkpoint = fastpath::mtp_skip_prefix_checkpoint_enabled();
+    let fused_verify = fused_eligible
+        .then(|| {
+            if skip_prefix_checkpoint {
+                gated_delta_fused_verify_no_checkpoint_from_qkv(
+                    linear_cfg,
+                    &qkv,
+                    &linear_w.conv1d_dense,
+                    conv_state,
+                    &a_log_f32,
+                    &a,
+                    &dt_bias_f32,
+                    &b,
+                    &state,
+                    linear_cfg.q_scale,
+                    linear_cfg.k_scale,
+                    cfg.rms_norm_eps,
+                )
+                .map(|(out, new_state, new_conv)| (out, new_state, None, new_conv, None))
+            } else {
+                gated_delta_fused_verify_from_qkv(
+                    linear_cfg,
+                    &qkv,
+                    &linear_w.conv1d_dense,
+                    conv_state,
+                    &a_log_f32,
+                    &a,
+                    &dt_bias_f32,
+                    &b,
+                    &state,
+                    linear_cfg.q_scale,
+                    linear_cfg.k_scale,
+                    cfg.rms_norm_eps,
+                )
+                .map(|(out, new_state, prefix_state, new_conv, prefix_conv)| {
+                    (
+                        out,
+                        new_state,
+                        Some(prefix_state),
+                        new_conv,
+                        Some(prefix_conv),
+                    )
+                })
+            }
+        })
+        .flatten();
 
     // g and beta are computed inside the Metal kernels instead of as separate
     // lazy MLX ops, eliminating ~8 dispatches per layer.
@@ -421,14 +451,7 @@ fn linear_attention_forward_inner(
         prefix_recurrent_state,
         mtp_tape,
     ) = if let Some((out, new_state, prefix_state, new_conv, prefix_conv)) = fused_verify {
-        (
-            out,
-            new_conv,
-            new_state,
-            Some(prefix_conv),
-            Some(prefix_state),
-            None,
-        )
+        (out, new_conv, new_state, prefix_conv, prefix_state, None)
     } else {
         let (q, k, v, new_conv_state, metal_prefix_conv) = linear_attention_post_input(
             cfg,
