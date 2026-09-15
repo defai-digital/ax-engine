@@ -718,6 +718,16 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         } else if is_llama4 {
             // LLaMA 4 always has 1 shared expert when MoE is active
             Some(1)
+        } else if is_qwen3_moe || is_qwen3_next_moe {
+            // Official Flash Next / Qwen 3.5 MoE configs often omit
+            // `n_shared_experts` and only set `shared_expert_intermediate_size`.
+            arch_u64(config, model_type, "n_shared_experts")
+                .and_then(u64_to_u32)
+                .or_else(|| {
+                    let width = arch_u64(config, model_type, "shared_expert_intermediate_size")
+                        .unwrap_or(0);
+                    (width > 0).then_some(1)
+                })
         } else {
             None
         };

@@ -5054,6 +5054,16 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         );
         assert_eq!(manifest.linear_attention.full_attention_interval, Some(4));
         assert_eq!(manifest.moe.expert_count, Some(4));
+        assert_eq!(
+            manifest.moe.shared_expert_count,
+            Some(1),
+            "{model_type}: shared_expert_intermediate_size without n_shared_experts must still record a shared expert"
+        );
+        assert_eq!(
+            manifest.dropped_tensors.count, 0,
+            "{model_type}: fixture must not silently drop unrecognised tensors: {:?}",
+            manifest.dropped_tensors.names_sample
+        );
         assert!(
             manifest.moe_norm_topk_prob,
             "{model_type}: Flash Next MoE must default norm_topk_prob=true"

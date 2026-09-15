@@ -15,7 +15,9 @@ Convert maps `qwen4_exp` metadata (family label, GDN/MoE dims, n-gram/HC/QSA
 contract with `never_eval_ngram_at_load`), gated-residual hyper-connection
 and PLE inject tensors, QSA `index_qk_proj` plus q/k layernorms, packed
 `mlp.experts.{gate_up,down}_proj` (packed or split gate/up) and `shared_expert`
-/ `shared_experts` routers, PLE `ngram_heads_*` tables, and PLE shards
+/ `shared_experts` routers (shared-expert presence follows
+`shared_expert_intermediate_size` when `n_shared_experts` is omitted), PLE
+`ngram_heads_*` tables, and PLE shards
 as `NgramEmbedding` (including `weight_scale`). MTP sidecars are preserved as
 `Other`. `load_weights` excludes n-gram shards and scale from the resident
 eval set. Auto-generate / load / serve stay fail-closed until the trunk is
