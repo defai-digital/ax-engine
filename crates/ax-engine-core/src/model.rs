@@ -461,7 +461,8 @@ impl NativeLinearAttentionConfig {
 
     pub fn resolved_full_attention_interval(&self, model_family: &str) -> Option<u32> {
         self.full_attention_interval.or_else(|| {
-            let is_hybrid_family = matches!(model_family, "qwen3_5" | "qwen3_next" | "minicpmv4_6");
+            let is_hybrid_family =
+                matches!(model_family, "qwen3_5" | "qwen3_next" | "minicpmv4_6" | "qwen4_exp");
             (self.is_enabled() && is_hybrid_family)
                 .then_some(QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL)
         })

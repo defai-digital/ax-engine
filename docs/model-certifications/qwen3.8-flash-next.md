@@ -19,7 +19,8 @@ and PLE inject tensors, QSA `index_qk_proj` plus q/k layernorms, packed
 as `NgramEmbedding` (including `weight_scale`). MTP sidecars are preserved as
 `Other`. `load_weights` excludes n-gram shards and scale from the resident
 eval set. Auto-generate / load / serve stay fail-closed until the trunk is
-implemented. Layer-forward panics if entered.
+implemented. Layer-forward and the generic decode entry reject `qwen4_exp`
+before the Qwen 3.5 linear-attention short-circuit.
 There is no download alias and no Compatible generic load path. Never remap
 onto `qwen3_5` or Super-class 2.4T.
 

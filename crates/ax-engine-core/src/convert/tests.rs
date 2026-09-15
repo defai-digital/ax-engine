@@ -4808,6 +4808,20 @@ fn maps_qwen4_exp_published_hf_checkpoint_names() {
         "model.language_model.layers.1.ple.ngram_heads_vocab_sizes",
         "language_model.model.layers.0.self_attn.indexer.index_qk_proj.weight",
         "language_model.model.embed_tokens.weight",
+        "model.language_model.layers.0.linear_attn.in_proj_qkvz.weight",
+        "model.language_model.layers.0.self_attn.qkv_proj.weight",
+        "model.visual.blocks.0.attn.qkv.weight",
+        "model.visual.merger.mlp.0.weight",
+        "model.visual.blocks.0.mlp.fc1.weight",
+        "mtp.hyper_connection.0.weight",
+        "mtp.layers.0.mlp.experts.gate_up_proj",
+        "model.language_model.layers.0.mlp.experts.down_proj.weight",
+        "model.language_model.norm.weight",
+        "language_model.model.norm.weight",
+        "model.language_model.layers.1.ple.value_proj.weight",
+        "model.language_model.layers.1.ple.conv1d.weight",
+        "model.language_model.layers.0.mlp_hyper_connection.block_inject_weight",
+        "model.language_model.layers.0.mlp.shared_experts.down_proj.weight",
     ];
     let mut missing = Vec::new();
     for name in names {

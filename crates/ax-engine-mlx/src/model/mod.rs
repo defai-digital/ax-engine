@@ -198,6 +198,16 @@ use profile::record_linear_attention_profile_layer;
 ///
 /// Returns updated hidden states.
 #[allow(clippy::too_many_arguments)]
+/// Flash Next owns a packed gated-residual trunk. GDN layers must not take the
+/// Qwen 3.5 linear-attention short-circuit (that path has no HC mix/combine).
+pub(crate) fn reject_unimplemented_qwen4_exp(cfg: &ModelConfig) {
+    if cfg.model_family == "qwen4_exp" {
+        panic!(
+            "qwen4_exp layers must run through the dedicated Flash Next trunk (not implemented; n-gram table must not eval at load_weights)"
+        );
+    }
+}
+
 pub fn layer_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -213,6 +223,7 @@ pub fn layer_forward(
     if cfg.model_family == "nemotron_h" {
         return families::nemotron_h::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset);
     }
+    reject_unimplemented_qwen4_exp(cfg);
 
     // Linear-attention layers dispatch before the family route because the same
     // model (qwen3_5 / qwen3_next) has both linear and full-attention layers
@@ -352,6 +363,7 @@ pub fn layer_forward_last_only(
         let _ = skip_post_attention_ffn;
         return families::nemotron_h::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset);
     }
+    reject_unimplemented_qwen4_exp(cfg);
     if cfg.is_linear_attention_layer(layer_idx) {
         // Linear-attention layers support last-position-only and skip-FFN:
         // the recurrent state is committed to cache before the FFN path.
@@ -1035,6 +1047,7 @@ fn forward_and_logits_mode(
     token_offset: usize,
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
+    reject_unimplemented_qwen4_exp(cfg);
     // DeepSeek V4 owns its packed hyper-connection residual; dispatch before
     // the generic E-wide path.
     if cfg.deepseek_v4.is_some() {
@@ -6511,6 +6524,19 @@ mod tests {
         assert!(cfg.is_linear_attention_layer(1));
         assert!(cfg.is_linear_attention_layer(2));
         assert!(!cfg.is_linear_attention_layer(3));
+    }
+
+    #[test]
+    #[should_panic(expected = "dedicated Flash Next trunk")]
+    fn qwen4_exp_rejects_before_qwen35_linear_short_circuit() {
+        let mut manifest = qwen35_linear_manifest();
+        manifest.model_family = "qwen4_exp".to_string();
+        let cfg = ModelConfig::from_manifest(&manifest);
+        assert!(
+            cfg.is_linear_attention_layer(0),
+            "GDN layers must still classify as linear so the old short-circuit would have fired"
+        );
+        reject_unimplemented_qwen4_exp(&cfg);
     }
 
     #[test]
