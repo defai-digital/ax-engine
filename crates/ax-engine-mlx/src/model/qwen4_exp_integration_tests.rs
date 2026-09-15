@@ -1494,7 +1494,7 @@ fn qwen4_exp_mtp_candidate_accepts_with_exact_draft_history_and_budget() {
         );
     }
     assert_eq!(count, 5);
-    assert_eq!((session.proposed, session.accepted), (3, 2));
+    assert_eq!((session.proposed, session.accepted), (2, 2));
     let mut terminal = CandidateSession::prefill(&trunk, &head, &[1], owner, draft_owner).unwrap();
     assert_eq!(terminal.step(&trunk, &head, 5, &[0]).unwrap(), vec![0]);
     assert_eq!(terminal.accepted, 0);

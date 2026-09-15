@@ -339,3 +339,29 @@ counters accompany the [functional QA evidence](../../benchmarks/results/flash-n
 This short closed-answer cohort does not close full numerical, broad quality,
 trained-MTP, profitability or target-hardware qualification gates. No runtime
 source or public readiness setting changed.
+
+### MTP final output budget
+
+When only one output slot remains, the candidate now updates its required QSA
+history and runs the authoritative primary graph without computing a draft
+that cannot be accepted. It publishes state only after both operations succeed
+and records no proposal for this step. Larger budgets retain the existing
+verification path.
+
+F32 and BF16 regressions fail the old path on a poisoned draft projection and
+pass the correction. Full serialized state, hidden values, failure recovery
+and subsequent continuation agree with the full-head/direct controls. The
+same final-budget control and existing state/runner controls pass on all three
+affine formats on M2. Workspace tests report 3,644 passed, 40 ignored and zero
+failed; all 28 synthetic controls also pass in debug and optimized builds.
+The rebuilt native server passes 12 completion/SSE requests across the three
+formats with MTP disabled and required.
+
+In the bounded 32-token cost probe, with six measured pairs per binary, the
+final step's draft/cache interval has medians of 3.085 ms before and 1.009 ms
+after. Medians of the per-pair MTP/direct decode ratios are 1.013 before and
+1.042 after; both routes also slow between campaigns. These separate runs
+do not demonstrate an end-to-end speed improvement.
+This removes discarded work without establishing trained-head mathematical
+correctness, MTP profitability or public readiness. See the
+[final-budget evidence](../../benchmarks/results/flash-next-mtp-final-budget-m2-20260915.json).

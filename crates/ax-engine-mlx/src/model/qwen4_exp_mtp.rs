@@ -309,6 +309,33 @@ impl Qwen4ExpDraftCursor {
             .stream_hidden
             .as_ref()
             .ok_or("missing MTP stream row")?;
+        if remaining == 1 {
+            // No draft can be accepted, but its QSA history must stay aligned.
+            let started = Instant::now();
+            let draft_state =
+                head_advance_cache(head, hidden, &[primary], &self.draft_state, self.owner)?;
+            let draft_wall_us = elapsed_us(started);
+            let started = Instant::now();
+            let output = qwen4_exp::forward(
+                trunk,
+                &[primary],
+                state,
+                trunk_owner,
+                ProjectionBatchPolicy::Shared,
+            )?;
+            let next_primary = next_token(&output)?;
+            let verify_wall_us = elapsed_us(started);
+            self.draft_state = draft_state;
+            self.stream_hidden = Some(output.stream_hidden);
+            return Ok(AdvancedStep {
+                trunk_state: output.state,
+                consumed: vec![primary],
+                next_primary,
+                accepted: false,
+                draft_wall_us,
+                verify_wall_us,
+            });
+        }
         let draft_started = Instant::now();
         let proposed = head_forward(head, hidden, &[primary], &self.draft_state, self.owner)?;
         let draft = next_token(&proposed)?;
@@ -496,10 +523,20 @@ mod cursor_tests {
     use std::path::PathBuf;
 
     fn bytes(state: &Qwen4ExpState) -> Vec<u8> {
-        let mut cache = MlxKVCache::new_contiguous(1);
+        state_bytes(state, 1)
+    }
+
+    fn state_bytes(state: &Qwen4ExpState, layers: usize) -> Vec<u8> {
+        let mut cache = MlxKVCache::new_contiguous(layers);
         cache.qwen4_exp = Some(state.clone());
         cache.advance(state.position());
         cache.serialize_to_bytes()
+    }
+
+    fn values(array: &MlxArray) -> Vec<f32> {
+        let array = mlx_sys::contiguous(&astype(array, MlxDtype::Float32, None), None);
+        try_eval(&[&array]).unwrap();
+        array.data_f32().to_vec()
     }
 
     fn broken_lazy_array(original: &MlxArray) -> MlxArray {
@@ -525,6 +562,178 @@ mod cursor_tests {
             )
             .unwrap()
             .remove(0)
+    }
+
+    #[test]
+    #[ignore = "requires synthetic or real Flash Next MTP artifacts and Metal"]
+    fn flash_next_final_budget_skips_proposal_and_preserves_transactional_state() {
+        let (root, manifest, paging) =
+            if let Some(root) = std::env::var_os("AX_FLASH_NEXT_REAL_PACK") {
+                let root = PathBuf::from(root);
+                let artifacts = ax_engine_core::NativeModelArtifacts::from_dir(&root).unwrap();
+                (
+                    root,
+                    artifacts.manifest().clone(),
+                    crate::expert_stream::StreamExpertsMode::On,
+                )
+            } else {
+                let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
+                let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+                manifest.weight_sanitize = ax_engine_core::WeightSanitize::HfToMlx;
+                (root, manifest, crate::expert_stream::StreamExpertsMode::Off)
+            };
+        let mut trunk =
+            crate::weights::qwen4_exp::load_with_paging_policy(&root, &manifest, paging, 1)
+                .unwrap();
+        let mut head = crate::weights::qwen4_exp_mtp::load(&root, &manifest, &trunk).unwrap();
+        let owner = 1801;
+        let tokens = [1, 2, 3, 4];
+        let prefill = qwen4_exp::forward(
+            &trunk,
+            &tokens,
+            &Qwen4ExpState::new(&trunk, owner),
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        let primary = next_token(&prefill).unwrap();
+        let mut cursor = Qwen4ExpDraftCursor::new(&head, owner);
+        cursor
+            .absorb(&head, &tokens, &prefill.stream_hidden)
+            .unwrap();
+        let before = bytes(&cursor.draft_state);
+        let trunk_before = state_bytes(&prefill.state, trunk.layers.len());
+        let hidden_before = cursor.stream_hidden.as_ref().unwrap().clone();
+        let expected_head = head_forward(
+            &head,
+            &hidden_before,
+            &[primary],
+            &cursor.draft_state,
+            cursor.owner,
+        )
+        .unwrap();
+        let expected = qwen4_exp::forward(
+            &trunk,
+            &[primary],
+            &prefill.state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        let expected_token = next_token(&expected).unwrap();
+
+        let head_projection = head.graph.lm_head.weight.clone();
+        head.graph.lm_head.weight = broken_lazy_array(&head_projection);
+        let mut actual = cursor.clone();
+        let result = actual
+            .step(&trunk, &head, &prefill.state, owner, primary, 1, &[])
+            .expect("final budget must not evaluate discarded draft logits");
+        assert_eq!(result.emitted, vec![expected_token]);
+        assert_eq!(result.committed_len, 1);
+        assert!(!result.accepted);
+        assert_eq!((actual.proposed, actual.accepted), (0, 0));
+        assert_eq!(bytes(&actual.draft_state), bytes(&expected_head.state));
+        assert_eq!(
+            state_bytes(&result.trunk_state, trunk.layers.len()),
+            state_bytes(&expected.state, trunk.layers.len())
+        );
+        assert_eq!(
+            values(actual.stream_hidden.as_ref().unwrap()),
+            values(&expected.stream_hidden)
+        );
+        assert!(actual.aligned(&result.trunk_state));
+        assert!(
+            cursor
+                .step(&trunk, &head, &prefill.state, owner, primary, 2, &[])
+                .is_err()
+        );
+        head.graph.lm_head.weight = head_projection;
+
+        // Required cache work and a later primary failure must publish neither state.
+        for fail_primary in [false, true] {
+            let saved = if fail_primary {
+                trunk.lm_head.weight.clone()
+            } else {
+                head.fc_hidden.weight.clone()
+            };
+            if fail_primary {
+                trunk.lm_head.weight = broken_lazy_array(&saved);
+            } else {
+                head.fc_hidden.weight = broken_lazy_array(&saved);
+            }
+            assert!(
+                cursor
+                    .step(&trunk, &head, &prefill.state, owner, primary, 1, &[])
+                    .is_err()
+            );
+            if fail_primary {
+                trunk.lm_head.weight = saved;
+            } else {
+                head.fc_hidden.weight = saved;
+            }
+            assert_eq!(bytes(&cursor.draft_state), before);
+            assert_eq!(
+                state_bytes(&prefill.state, trunk.layers.len()),
+                trunk_before
+            );
+            assert_eq!((cursor.proposed, cursor.accepted), (0, 0));
+            assert_eq!(
+                values(cursor.stream_hidden.as_ref().unwrap()),
+                values(&hidden_before)
+            );
+        }
+        let retry = cursor
+            .step(&trunk, &head, &prefill.state, owner, primary, 1, &[])
+            .unwrap();
+        assert_eq!(retry.emitted, result.emitted);
+        assert_eq!(bytes(&cursor.draft_state), bytes(&actual.draft_state));
+        assert_eq!(
+            state_bytes(&retry.trunk_state, trunk.layers.len()),
+            state_bytes(&result.trunk_state, trunk.layers.len())
+        );
+        let mut reference = Qwen4ExpDraftCursor {
+            draft_state: expected_head.state,
+            stream_hidden: Some(expected.stream_hidden),
+            owner: cursor.owner,
+            proposed: 0,
+            accepted: 0,
+        };
+        let resumed = cursor
+            .step(
+                &trunk,
+                &head,
+                &retry.trunk_state,
+                owner,
+                expected_token,
+                2,
+                &[],
+            )
+            .unwrap();
+        let control = reference
+            .step(
+                &trunk,
+                &head,
+                &expected.state,
+                owner,
+                expected_token,
+                2,
+                &[],
+            )
+            .unwrap();
+        assert_eq!(resumed.emitted, control.emitted);
+        assert_eq!(
+            state_bytes(&resumed.trunk_state, trunk.layers.len()),
+            state_bytes(&control.trunk_state, trunk.layers.len())
+        );
+        assert_eq!(bytes(&cursor.draft_state), bytes(&reference.draft_state));
+        assert_eq!(
+            values(cursor.stream_hidden.as_ref().unwrap()),
+            values(reference.stream_hidden.as_ref().unwrap())
+        );
+        assert_eq!(
+            (cursor.proposed, cursor.accepted),
+            (reference.proposed, reference.accepted)
+        );
     }
 
     #[test]
