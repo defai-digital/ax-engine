@@ -743,8 +743,9 @@ env_flag!(
     /// `AX_MLX_MTP_PROFITABILITY_THROUGHPUT` — admit the existing request-local
     /// MTP profitability latch on greedy Qwen linear throughput (relaxed
     /// verify, projected replay, recurrent depth ≤ 3). Default OFF: probes
-    /// tax a winning depth-3 path, and the 0.96× natural-prompt loss was
-    /// measured on exact depth-one.
+    /// tax a winning depth-3 path. M5 2026-09-15 `python_modules_long` product
+    /// MTP / direct GM 2.03 (accept 0.81–0.91); the 0.96× loss was exact
+    /// depth-one, not this path.
     mtp_profitability_throughput_enabled,
     "AX_MLX_MTP_PROFITABILITY_THROUGHPUT"
 );
