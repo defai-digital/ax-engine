@@ -24,20 +24,35 @@
 //! own arithmetic. The convolution weight is stored `[C * H, K, 1]` (MLX
 //! depthwise layout), not the raw HF `[C * H, 1, K]` layout.
 
-use mlx_sys::ops::{cached_scalar, silu};
+use mlx_sys::ops::cached_scalar;
 use mlx_sys::{
     MlxArray, MlxDtype, add, astype, concatenate, conv1d, divide, less, maximum, multiply,
-    negative, power, reshape, sigmoid, slice, sum_axis, where_cond, zeros,
+    negative, power, reshape, slice, sum_axis, where_cond, zeros,
 };
 use thiserror::Error;
 
 use super::qwen4_exp_residual::{
     Qwen4ExpResidualError, Qwen4ExpStreamLayout, qwen4_exp_grouped_rms_norm,
+    sigmoid_projection_dtype, silu_projection_dtype,
 };
 use super::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::weights::QuantizedWeight;
 
 const GATE_FLOOR: f32 = 1e-6;
+
+fn scaled_dot(key: &MlxArray, query: &MlxArray, hidden: usize) -> MlxArray {
+    // The product and completed sum each round before the scalar division.
+    let product = multiply(key, query, None);
+    let dtype = product.dtype();
+    let dot = sum_axis(&astype(&product, MlxDtype::Float32, None), 3, true, None);
+    let dot = astype(&dot, dtype, None);
+    let scale = cached_scalar((hidden as f32).sqrt(), MlxDtype::Float32);
+    astype(
+        &divide(&astype(&dot, MlxDtype::Float32, None), &scale, None),
+        dtype,
+        None,
+    )
+}
 
 #[derive(Debug, Error)]
 pub(crate) enum Qwen4ExpPleError {
@@ -187,13 +202,12 @@ impl Qwen4ExpPle {
             qwen4_exp_grouped_rms_norm(self.layout, residual, &self.norm_query_gain, self.eps)?;
         let query = reshape(&query_normed, &[batch, seq, streams, hidden], None);
 
-        let dot = sum_axis(&multiply(&key, &query, None), 3, true, None);
-        let scale = cached_scalar((self.layout.hidden_size() as f32).sqrt(), dtype);
-        let score = divide(&dot, &scale, None);
+        let score = scaled_dot(&key, &query, self.layout.hidden_size());
         let gate = signed_sqrt_floor(&score);
 
         let value_bcast = reshape(&value, &[batch, seq, 1, hidden], None);
-        let gated = multiply(&sigmoid(&gate, None), &value_bcast, None);
+        let gate_score = sigmoid_projection_dtype(&gate);
+        let gated = multiply(&gate_score, &value_bcast, None);
         let gated_flat = reshape(
             &gated,
             &[batch, seq, self.layout.packed_width() as i32],
@@ -205,6 +219,21 @@ impl Qwen4ExpPle {
 
         let (conv_out, next_state) = self.short_conv(&normed_for_conv, history, batch)?;
         let delta = add(&gated_flat, &astype(&conv_out, dtype, None), None);
+        #[cfg(test)]
+        {
+            for (stage, array) in [
+                ("ple_key", &key),
+                ("ple_query", &query),
+                ("ple_score", &score),
+                ("ple_gate", &gate),
+                ("ple_gate_score", &gate_score),
+                ("ple_value", &value_bcast),
+                ("ple_gated", &gated),
+                ("ple_delta", &delta),
+            ] {
+                crate::model::qwen4_exp::profiling::dump(stage, &[array]);
+            }
+        }
 
         Ok(Qwen4ExpPleOutput { delta, next_state })
     }
@@ -314,7 +343,14 @@ impl Qwen4ExpPle {
             None,
         );
         let conv_out = conv1d(&window, &self.conv_weight, 1, 0, self.dilation, width, None);
-        let activated = silu(&conv_out, None);
+        let activated = silu_projection_dtype(&conv_out);
+        #[cfg(test)]
+        {
+            crate::model::qwen4_exp::profiling::dump("ple_conv_pre_activation", &[&conv_out]);
+            crate::model::qwen4_exp::profiling::dump("ple_conv_activated", &[&activated]);
+            crate::model::qwen4_exp::profiling::dump("ple_conv_window", &[&window]);
+            crate::model::qwen4_exp::profiling::dump("ple_conv_weight", &[&self.conv_weight]);
+        }
         Ok((
             activated,
             Qwen4ExpPleConvState {
@@ -475,6 +511,35 @@ fn validate_conv_weight(weight: &MlxArray, width: i32, kernel: i32) -> ResidualR
 mod tests {
     use super::*;
     use mlx_sys::eval;
+
+    #[test]
+    fn ple_bf16_score_matches_official_accumulation_and_scale() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/flash_next/hc_ple_bf16_rounding.json"
+        ))
+        .unwrap();
+        let array = |name: &str, shape: &[i32]| {
+            let values: Vec<f32> = fixture[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_f64().unwrap() as f32)
+                .collect();
+            astype(&array_f32(&values, shape), MlxDtype::Bfloat16, None)
+        };
+        let actual = astype(
+            &scaled_dot(
+                &array("key", &[1, 2, 4, 10]),
+                &array("query", &[1, 2, 4, 10]),
+                10,
+            ),
+            MlxDtype::Float32,
+            None,
+        );
+        let expected = astype(&array("score", &[1, 2, 4, 1]), MlxDtype::Float32, None);
+        eval(&[&actual, &expected]);
+        assert_eq!(actual.data_f32(), expected.data_f32());
+    }
 
     #[test]
     fn ple_matches_pinned_transformers_for_whole_and_split_prefill() {

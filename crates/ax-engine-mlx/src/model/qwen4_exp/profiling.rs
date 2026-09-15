@@ -24,10 +24,12 @@ thread_local! {
     static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
     static DUMP_LAYER: Cell<usize> = const { Cell::new(usize::MAX) };
     static DUMP_FORWARD: Cell<usize> = const { Cell::new(0) };
+    static DUMP_HC: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(crate) fn layer(index: usize) {
     DUMP_LAYER.set(index);
+    DUMP_HC.set(0);
     CAPTURE.with_borrow_mut(|capture| {
         if let Some(capture) = capture {
             capture.layer = Some(index);
@@ -41,14 +43,28 @@ pub(crate) fn dump(stage: &'static str, arrays: &[&MlxArray]) {
             DUMP_LAYER.set(usize::MAX);
             DUMP_FORWARD.set(DUMP_FORWARD.get() + 1);
         }
-        if (stage == "embedding" || DUMP_LAYER.get() == 0)
+        let selected_layer = std::env::var("AX_FLASH_NEXT_DUMP_LAYER")
+            .map(|value| value.parse::<usize>().expect("diagnostic layer index"))
+            .unwrap_or(0);
+        if (stage == "embedding" || DUMP_LAYER.get() == selected_layer)
             && let Some(array) = arrays.first()
         {
+            if stage == "hc_scaled" {
+                DUMP_HC.set(DUMP_HC.get() + 1);
+            }
             let values = mlx_sys::astype(array, MlxDtype::Float32, None);
             mlx_sys::try_eval(&[&values]).expect("first-layer diagnostic evaluation");
             let root = std::path::PathBuf::from(root);
             std::fs::create_dir_all(&root).unwrap();
-            let name = format!("forward-{}-{stage}", DUMP_FORWARD.get());
+            let name = if stage.starts_with("hc_") {
+                format!(
+                    "forward-{}-hc-{}-{stage}",
+                    DUMP_FORWARD.get(),
+                    DUMP_HC.get()
+                )
+            } else {
+                format!("forward-{}-{stage}", DUMP_FORWARD.get())
+            };
             let bytes: Vec<u8> = values
                 .data_f32()
                 .iter()
@@ -59,6 +75,7 @@ pub(crate) fn dump(stage: &'static str, arrays: &[&MlxArray]) {
                 root.join(format!("{name}.json")),
                 serde_json::to_vec(&serde_json::json!({
                     "shape": array.shape(), "dtype": format!("{:?}", array.dtype()),
+                    "layer": DUMP_LAYER.get(),
                 }))
                 .unwrap(),
             )

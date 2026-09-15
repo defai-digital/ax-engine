@@ -246,3 +246,25 @@ direct and required MTP. Workspace tests report 3,640 passed and 39 ignored;
 relevant strict Clippy passes, with existing full-workspace core test errors
 retained. See the
 [MoE precision evidence](../../benchmarks/results/flash-next-moe-precision-m2-20260915.json).
+
+### HC and PLE precision correction
+
+Measured real inputs isolate additional rounding differences in HC/PLE
+activations, the HC stream mean, and PLE dot accumulation/scalar division.
+The correction retains each low-precision product, uses FP32 activation or
+accumulation, and preserves the official cast boundaries. Three regressions
+fail old arithmetic and pass the correction. All 115 actual HC/PLE boundary
+comparisons are exact, including the complete PLE short convolution; 32 GDN
+recurrence/norm controls also pass on the changed HC inputs. Test observations
+preserve complete logits and state exactly against their plain controls.
+
+Full-model agreement remains open: teacher-forced decode error against
+unchanged MLX-VLM reaches 1.84375, with one argmax mismatch. Error is not
+uniformly reduced at every step. These operator results do not establish
+full-model quality, MTP profitability or M5 Ultra qualification.
+
+All three affine state/runner matrices, 12 completion/SSE requests and six
+direct/required-MTP chat checks pass. Workspace tests report 3,643 passed,
+39 ignored and zero failed. Relevant strict Clippy passes; the existing core
+test failures remain in full-workspace Clippy. See the
+[HC/PLE precision evidence](../../benchmarks/results/flash-next-hc-ple-precision-m2-20260915.json).

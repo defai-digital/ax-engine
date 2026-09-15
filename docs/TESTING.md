@@ -146,6 +146,14 @@ embedding and first-layer stage dumps. Each `.f32le` file has a JSON shape and
 original dtype record. This adds evaluation barriers; verify that final logits
 and state still match the uninstrumented control. It is not a timing baseline.
 
+With that explicit dump root set, `AX_FLASH_NEXT_DUMP_LAYER` selects a zero-based
+layer instead of the default 0. Use a separate directory for each layer. The
+checkpoint's PLE layer IDs are one-based: ID 2 corresponds to dump layer 1.
+HC stages include occurrence 1 (attention) or 2 (MLP) to distinguish their
+activation, injection and stream-mean boundaries. PLE stages include gate,
+score, key/query/value and convolution window/weights/pre-activation/output.
+These controls exist only in the test binary.
+
 The first-layer dump also records GDN raw Q/K/V, log decay, beta, incoming and
 outgoing recurrent state, FP32 recurrence output, norm gain, gate and gated
 output. State uses AX's `[batch, value_heads, value_dim, key_dim]` layout; an

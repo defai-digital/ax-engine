@@ -34,6 +34,32 @@ use crate::weights::QuantizedWeight;
 
 const WRITE_GATE_SCALE: f32 = 2.0;
 
+pub(crate) fn silu_projection_dtype(input: &MlxArray) -> MlxArray {
+    // Official activation rounds once before the separate projection-dtype product.
+    astype(
+        &silu(&astype(input, MlxDtype::Float32, None), None),
+        input.dtype(),
+        None,
+    )
+}
+
+pub(crate) fn sigmoid_projection_dtype(input: &MlxArray) -> MlxArray {
+    astype(
+        &sigmoid(&astype(input, MlxDtype::Float32, None), None),
+        input.dtype(),
+        None,
+    )
+}
+
+fn stream_mean(input: &MlxArray, streams: i32) -> MlxArray {
+    let mean = divide(
+        &sum_axis(&astype(input, MlxDtype::Float32, None), 2, false, None),
+        &cached_scalar(streams as f32, MlxDtype::Float32),
+        None,
+    );
+    astype(&mean, input.dtype(), None)
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum Qwen4ExpResidualError {
     #[error("qwen4_exp stream layout is invalid: streams={stream_count}, hidden={hidden_size}")]
@@ -248,10 +274,15 @@ impl Qwen4ExpGatedResidual {
         let dtype = logits.dtype();
         let scaled = divide(&logits, &self.layout.streams_scalar(dtype), None);
         let write_gate = multiply(
-            &sigmoid(&scaled, None),
+            &sigmoid_projection_dtype(&scaled),
             &cached_scalar(WRITE_GATE_SCALE, dtype),
             None,
         );
+        #[cfg(test)]
+        {
+            crate::model::qwen4_exp::profiling::dump("hc_inject_scaled", &[&scaled]);
+            crate::model::qwen4_exp::profiling::dump("hc_write_gate", &[&write_gate]);
+        }
         Ok(Qwen4ExpResidualRead {
             layout: self.layout,
             batch,
@@ -295,19 +326,30 @@ impl Qwen4ExpGatedResidual {
         let layout = self.layout;
         let down = qw_with_policy(normalized, &self.read_down, policy);
         let scaled = divide(&down, &layout.streams_scalar(down.dtype()), None);
-        let low = silu(&scaled, None);
-        let gate = sigmoid(&qw_with_policy(&low, &self.read_up, policy), None);
+        let low = silu_projection_dtype(&scaled);
+        let up = qw_with_policy(&low, &self.read_up, policy);
+        let gate = sigmoid_projection_dtype(&up);
         let stream_shape = [batch, seq, layout.stream_count, layout.hidden_size];
         let gated = multiply(
             &reshape(&gate, &stream_shape, None),
             &reshape(normalized, &stream_shape, None),
             None,
         );
-        let mean = divide(
-            &sum_axis(&gated, 2, false, None),
-            &layout.streams_scalar(gated.dtype()),
-            None,
-        );
+        let mean = stream_mean(&gated, layout.stream_count);
+        #[cfg(test)]
+        {
+            for (stage, array) in [
+                ("hc_scaled", &scaled),
+                ("hc_normalized", normalized),
+                ("hc_low", &low),
+                ("hc_up", &up),
+                ("hc_gate", &gate),
+                ("hc_gated", &gated),
+                ("hc_mean", &mean),
+            ] {
+                crate::model::qwen4_exp::profiling::dump(stage, &[array]);
+            }
+        }
         astype(&mean, residual_dtype, None)
     }
 }
@@ -472,6 +514,57 @@ pub(crate) fn validate_projection(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn rounding_fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../../../tests/fixtures/flash_next/hc_ple_bf16_rounding.json"
+        ))
+        .unwrap()
+    }
+
+    fn fixture_array(value: &serde_json::Value, shape: &[i32]) -> MlxArray {
+        let values: Vec<f32> = value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_f64().unwrap() as f32)
+            .collect();
+        astype(&array_f32(&values, shape), MlxDtype::Bfloat16, None)
+    }
+
+    #[test]
+    fn hc_ple_bf16_activations_match_official_rounding() {
+        let fixture = rounding_fixture();
+        let shape = [fixture["gate"].as_array().unwrap().len() as i32];
+        let input = fixture_array(&fixture["gate"], &shape);
+        for (name, actual) in [
+            ("silu", silu_projection_dtype(&input)),
+            ("sigmoid", sigmoid_projection_dtype(&input)),
+        ] {
+            let expected = astype(
+                &fixture_array(&fixture[name], &shape),
+                MlxDtype::Float32,
+                None,
+            );
+            let actual = astype(&actual, MlxDtype::Float32, None);
+            mlx_sys::eval(&[&actual, &expected]);
+            assert_eq!(actual.data_f32(), expected.data_f32(), "{name}");
+        }
+    }
+
+    #[test]
+    fn hc_bf16_mean_matches_official_accumulation() {
+        let fixture = rounding_fixture();
+        let input = fixture_array(&fixture["streams"], &[1, 3, 4, 16]);
+        let actual = astype(&stream_mean(&input, 4), MlxDtype::Float32, None);
+        let expected = astype(
+            &fixture_array(&fixture["mean"], &[1, 3, 16]),
+            MlxDtype::Float32,
+            None,
+        );
+        mlx_sys::eval(&[&actual, &expected]);
+        assert_eq!(actual.data_f32(), expected.data_f32());
+    }
     use mlx_sys::{MlxQuantizationMode, dequantize, eval, quantize};
 
     #[test]
