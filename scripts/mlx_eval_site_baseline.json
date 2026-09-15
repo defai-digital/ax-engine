@@ -44,7 +44,8 @@
     "eval": 2
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": {
-    "eval": 9
+    "eval": 9,
+    "try_eval": 1
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": {
     "try_eval": 2

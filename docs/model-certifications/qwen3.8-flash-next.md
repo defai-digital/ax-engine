@@ -28,15 +28,26 @@ control tokens, and explicit MTP runner/HTTP checks. This is not M5 Ultra
 certification, a trained MTP-head oracle, or a published throughput result.
 Quantized prefill comparisons must use the same chunk schedule.
 
+Additional 2-bit and 6-bit controls each match all four generated tokens, full
+F32 logits and serialized request state exactly across resident, forced paging
+and Auto modes. On the M2, Auto selects resident for the 2-bit pack and paging
+for the 6-bit pack. These are bounded execution controls, not a model-quality
+comparison between quantization formats. Both packs also pass native completion
+and SSE repeat against their own resident-control tokens, with MTP disabled.
+Raw numerical and API controls are in the
+[affine format evidence](../../benchmarks/results/flash-next-affine-formats-m2-20260915.json).
+
 ## Public admission and remaining gates
 
 Conversion preserves the dedicated metadata and validates tensor geometry.
 Default auto-generation/load/serve reject `runtime_status.ready=false` and the
 legacy blocker `qwen4_exp_native_trunk_not_implemented`. That compatibility
 identifier predates the development graph; the remaining gate is public artifact
-qualification. An explicit experimental opt-in admits only the audited affine
-4-bit expert layout (4/8-bit projections) through all ordinary tensor, file and
-geometry checks. It does not rewrite readiness or imply certification.
+qualification. An explicit experimental opt-in admits the audited affine
+2/4/6-bit expert packs through all ordinary tensor, file and geometry checks.
+Expert bit/group pairs must be uniform: 2-bit/group32, 4-bit/group64 or
+6-bit/group64. Protected projection layouts are checked against that pack's
+expert format. This does not rewrite readiness or imply certification.
 
 There is no download alias or generic Compatible route. Never remap this model
 onto `qwen3_5` or Super-class 2.4T. Broader checkpoint/oracle, model quality,
@@ -55,7 +66,7 @@ python3 scripts/qualify_qwen38_flash_next.py --dry-run
 The script reports the admission contract without loading weights. A live
 `--model-dir` qualification run remains closed pending public qualification.
 
-For development with the audited AXQuant 1.9.0 4-bit Flash Next export, the
+For development with the audited AXQuant 1.9.0 affine Flash Next exports, the
 native server can generate its metadata manifest and load with explicit opt-in:
 
 ```bash
@@ -65,8 +76,13 @@ AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1 ax-engine-server --mlx \
 ```
 
 The loader rechecks the audited exporter/source identity and convolution layout.
-Unknown layouts, other expert bit widths, missing files and additional blockers
-remain rejected. Removing the opt-in rejects the manifest again. Expert residency
-uses the existing Auto/On/Off policy; forced whole-layer paging has substantial
+The 2-bit export additionally requires `AX_ENGINE_2BIT_EXPERIMENTAL=1`; the
+family opt-in does not bypass this existing quantization gate. Experimental
+auto-conversion reports the underlying validation error when a gate or tensor
+check fails, and does not leave an invalid generated manifest behind.
+
+Unsupported bit/group pairs, mixed expert layouts, MXFP4, missing files and
+additional blockers remain rejected. Removing a required opt-in rejects the
+manifest again. Expert residency uses the existing Auto/On/Off policy; forced whole-layer paging has substantial
 transfer cost. MTP remains a separate opt-in candidate and is not certified.
 See [Testing](../TESTING.md) and [Supported Models](../SUPPORTED-MODELS.md).

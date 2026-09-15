@@ -30,7 +30,7 @@ const HF_NORM_ONLY: &str = "hf_norm_only";
 /// exporter tuple).
 pub const QWEN4_EXP_WEIGHT_LAYOUT_UNKNOWN_BLOCKER: &str = "qwen4_exp_weight_layout_unknown";
 
-/// An explicit development opt-in may admit the tested affine 4/8-bit layout
+/// An explicit development opt-in may admit the audited affine 2/4/6-bit packs
 /// through ordinary manifest validation. It never changes on-disk readiness
 /// and never skips tensor, architecture, file or quantization validation.
 pub(crate) fn experimental_runtime_admission(
@@ -46,7 +46,7 @@ pub(crate) fn experimental_runtime_admission(
     {
         return false;
     }
-    let mut expert_projections = 0;
+    let mut expert_layout = None;
     for tensor in &manifest.tensors {
         let expert = matches!(
             tensor.role,
@@ -56,19 +56,38 @@ pub(crate) fn experimental_runtime_admission(
                 | NativeTensorRole::FfnGateUpExpsPacked
         );
         if let Some(quantization) = &tensor.quantization {
-            if quantization.mode != "affine"
-                || !matches!(quantization.bits, 4 | 8)
-                || !matches!(quantization.group_size, 32 | 64)
-                || (expert && (quantization.bits != 4 || quantization.group_size != 64))
-            {
+            if quantization.mode != "affine" {
                 return false;
+            }
+            if expert {
+                let layout = (quantization.bits, quantization.group_size);
+                if !matches!(layout, (2, 32) | (4 | 6, 64))
+                    || expert_layout.is_some_and(|expected| expected != layout)
+                {
+                    return false;
+                }
+                expert_layout = Some(layout);
             }
         } else if expert {
             return false;
         }
-        expert_projections += usize::from(expert);
     }
-    if expert_projections == 0 {
+    let Some(expert_layout) = expert_layout else {
+        return false;
+    };
+    // Each audited pack has its own protected-projection layout. A union of
+    // their tuples would also admit untested mixtures between pack variants.
+    if !manifest
+        .tensors
+        .iter()
+        .filter_map(|tensor| tensor.quantization.as_ref())
+        .all(|quant| match expert_layout {
+            (2, 32) => matches!((quant.bits, quant.group_size), (2 | 4 | 8, 32)),
+            (4, 64) => matches!((quant.bits, quant.group_size), (4 | 8, 32 | 64)),
+            (6, 64) => matches!((quant.bits, quant.group_size), (6, 64) | (8, 32 | 64)),
+            _ => false,
+        })
+    {
         return false;
     }
     let mut checked = manifest.clone();
@@ -523,7 +542,7 @@ mod tests {
         assert!(!experimental_runtime_admission(&dir, &manifest, false));
         assert!(experimental_runtime_admission(&dir, &manifest, true));
         assert_eq!(serde_json::to_vec(&manifest).unwrap(), before);
-        for bits in [2, 3, 5, 6, 8] {
+        for bits in [2, 3, 5, 8] {
             let mut changed = manifest.clone();
             changed
                 .tensors
@@ -572,6 +591,64 @@ mod tests {
         assert!(!experimental_runtime_admission(&dir, &manifest, true));
         std::fs::remove_file(dir.join(AXQUANT_MANIFEST_FILE)).unwrap();
         assert!(!experimental_runtime_admission(&dir, &manifest, true));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn experimental_affine_formats_require_observed_and_uniform_expert_layouts() {
+        let dir = temp_model_dir("experimental-affine-formats");
+        write_axquant_manifest(&dir, &audited_legacy_json());
+        let mut manifest = base_manifest();
+        apply(&dir, &mut manifest).unwrap();
+        let mut expert = conv_tensor(
+            "expert",
+            NativeTensorRole::FfnGateExps,
+            vec![4, 8, 1],
+            NativeTensorDataType::U32,
+            true,
+        );
+        for (bits, group_size) in [(2, 32), (4, 64), (6, 64)] {
+            let quant = expert.quantization.as_mut().unwrap();
+            quant.bits = bits;
+            quant.group_size = group_size;
+            let mut candidate = manifest.clone();
+            candidate.tensors.push(expert.clone());
+            let before = serde_json::to_vec(&candidate).unwrap();
+            assert!(!experimental_runtime_admission(&dir, &candidate, false));
+            assert!(experimental_runtime_admission(&dir, &candidate, true));
+            assert_eq!(serde_json::to_vec(&candidate).unwrap(), before);
+
+            let mut mixed = expert.clone();
+            mixed.name = "other_expert".into();
+            let other = mixed.quantization.as_mut().unwrap();
+            (other.bits, other.group_size) = if bits == 2 { (4, 64) } else { (2, 32) };
+            candidate.tensors.push(mixed);
+            assert!(!experimental_runtime_admission(&dir, &candidate, true));
+            candidate.tensors.pop();
+
+            let mut projection = expert.clone();
+            projection.name = "projection".into();
+            projection.role = NativeTensorRole::AttentionQ;
+            for (bad_bits, bad_group) in [(2, 64), (6, 32), (3, 32), (8, 128)] {
+                let quant = projection.quantization.as_mut().unwrap();
+                quant.bits = bad_bits;
+                quant.group_size = bad_group;
+                candidate.tensors.push(projection.clone());
+                assert!(!experimental_runtime_admission(&dir, &candidate, true));
+                candidate.tensors.pop();
+            }
+            let outside_pack = projection.quantization.as_mut().unwrap();
+            (outside_pack.bits, outside_pack.group_size) = match bits {
+                2 => (8, 64),
+                4 => (6, 64),
+                _ => (4, 64),
+            };
+            candidate.tensors.push(projection);
+            assert!(!experimental_runtime_admission(&dir, &candidate, true));
+            candidate.tensors.pop();
+            candidate.tensors.last_mut().unwrap().quantization = None;
+            assert!(!experimental_runtime_admission(&dir, &candidate, true));
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

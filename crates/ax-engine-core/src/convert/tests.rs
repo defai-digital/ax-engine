@@ -23,6 +23,41 @@ use super::{
     with_real_model_manifest_lock, write_manifest,
 };
 
+#[test]
+fn experimental_flash_next_auto_convert_preserves_quantization_failure() {
+    let dir = Path::new("flash-next-fixture");
+    let reason = "tensor expert quantization bits 2 requires experimental gate (set AX_ENGINE_2BIT_EXPERIMENTAL=1)";
+    for experimental in [false, true] {
+        let error = super::generated_manifest_validation_error(
+            dir,
+            "qwen4_exp",
+            experimental,
+            crate::model::NativeModelError::InvalidManifest {
+                message: reason.into(),
+            },
+        );
+        if experimental {
+            assert!(matches!(
+                error,
+                ConvertError::GeneratedManifestInvalid { .. }
+            ));
+            if let ConvertError::GeneratedManifestInvalid {
+                dir: actual_dir,
+                message,
+            } = error
+            {
+                assert_eq!(actual_dir, dir);
+                assert!(message.contains(reason));
+            }
+        } else {
+            assert!(matches!(
+                error,
+                ConvertError::IncubatingQwen38FlashNext { .. }
+            ));
+        }
+    }
+}
+
 fn write_fake_safetensors(dir: &Path, filename: &str, tensors: &[(&str, &str, &[u64])]) {
     let mut header = BTreeMap::new();
     let mut offset = 0u64;

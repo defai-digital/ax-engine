@@ -36,7 +36,13 @@ def contract() -> dict[str, Any]:
         "convert": "metadata mapping; runtime_status.ready=false",
         "load_blocker": "qwen4_exp_native_trunk_not_implemented",
         "experimental_opt_in": "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1",
-        "experimental_scope": "audited AXQuant 1.9.0 affine 4-bit experts with 4/8-bit projections",
+        "experimental_scope": "audited AXQuant 1.9.0 affine 2/4/6-bit expert packs with pack-specific protected projections",
+        "experimental_expert_layouts": [
+            {"bits": 2, "group_size": 32},
+            {"bits": 4, "group_size": 64},
+            {"bits": 6, "group_size": 64},
+        ],
+        "experimental_2bit_opt_in": "AX_ENGINE_2BIT_EXPERIMENTAL=1",
         "not": [
             "qwen3.8-27b:axq",
             "qwen3_5",

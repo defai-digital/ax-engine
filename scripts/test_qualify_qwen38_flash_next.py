@@ -29,6 +29,12 @@ class QualifyFlashNextTest(unittest.TestCase):
         self.assertEqual(payload["host_class"], "Mac Studio M5 Ultra, 256 GB")
         self.assertTrue(payload["fail_closed"])
         self.assertEqual(payload["experimental_opt_in"], "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
+        self.assertEqual(payload["experimental_2bit_opt_in"], "AX_ENGINE_2BIT_EXPERIMENTAL=1")
+        self.assertEqual(payload["experimental_expert_layouts"], [
+            {"bits": 2, "group_size": 32},
+            {"bits": 4, "group_size": 64},
+            {"bits": 6, "group_size": 64},
+        ])
         self.assertIn("qwen3.8-27b:axq", payload["not"])
 
     def test_dry_run_cli_json(self) -> None:

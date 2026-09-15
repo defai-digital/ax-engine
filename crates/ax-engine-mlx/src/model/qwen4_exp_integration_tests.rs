@@ -229,6 +229,117 @@ fn qwen4_exp_real_pack_production_pipeline_matches_dedicated() {
 }
 
 #[test]
+#[ignore = "requires an isolated real Flash Next pack; records same-pack residency controls"]
+fn qwen4_exp_real_pack_residency_fingerprint() {
+    use sha2::{Digest, Sha256};
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR").unwrap());
+    let output_path = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!((2..=128).contains(&tokens.len()));
+    let expected_streaming = match std::env::var("AX_FLASH_NEXT_EXPECT_STREAMING")
+        .unwrap()
+        .as_str()
+    {
+        "0" => false,
+        "1" => true,
+        other => panic!("invalid expected streaming flag {other}"),
+    };
+    let artifacts = NativeModelArtifacts::from_dir_or_convert(&root).unwrap();
+    assert!(!artifacts.manifest().runtime_status.ready);
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let started = std::time::Instant::now();
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let load_seconds = started.elapsed().as_secs_f64();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let streaming = weights.expert_stream.is_some();
+    assert_eq!(streaming, expected_streaming);
+    let table_bytes = || {
+        trunk
+            .layers
+            .iter()
+            .filter_map(|layer| layer.ple.as_ref())
+            .map(|ple| ple.table.payload_bytes_read())
+            .sum::<u64>()
+    };
+    assert_eq!(table_bytes(), 0);
+    if let Some(pager) = &weights.expert_stream {
+        assert_eq!(pager.cached_layer_count(), 0);
+    }
+    let active_after_load = mlx_sys::mempressure::device_active_bytes().unwrap();
+    // A fixed request owner permits byte comparison across isolated processes.
+    let owner = 3701;
+    let initial = qwen4_exp::Qwen4ExpState::new(trunk, owner);
+    let prefix = qwen4_exp::forward(
+        trunk,
+        &tokens[..tokens.len() - 1],
+        &initial,
+        owner,
+        ProjectionBatchPolicy::Shared,
+    )
+    .unwrap();
+    let mut output = qwen4_exp::forward(
+        trunk,
+        &tokens[tokens.len() - 1..],
+        &prefix.state,
+        owner,
+        ProjectionBatchPolicy::Shared,
+    )
+    .unwrap();
+    let mut records = Vec::new();
+    let mut generated = Vec::new();
+    for step in 0..4 {
+        let logits = output.logits.data_f32();
+        assert!(logits.iter().all(|v| v.is_finite()));
+        let mut digest = Sha256::new();
+        for value in logits {
+            digest.update(value.to_bits().to_le_bytes());
+        }
+        let mut cache = MlxKVCache::new_contiguous(cfg.layer_count);
+        cache.advance(output.state.position());
+        cache.qwen4_exp = Some(output.state.clone());
+        let state_bytes = cache.serialize_to_bytes();
+        let token = mlx_sys::argmax(&output.logits, None);
+        mlx_sys::try_eval(&[&token]).unwrap();
+        let token = token.data_u32()[0];
+        generated.push(token);
+        records.push(serde_json::json!({
+            "step": step, "position": output.state.position(), "token": token,
+            "logits_shape": output.logits.shape(),
+            "logits_f32_le_sha256": format!("{:x}", digest.finalize()),
+            "state_bytes": state_bytes.len(),
+            "state_sha256": format!("{:x}", Sha256::digest(&state_bytes)),
+        }));
+        eprintln!("streaming={streaming} step={step} token={token}");
+        if step < 3 {
+            output = qwen4_exp::forward(
+                trunk,
+                &[token],
+                &output.state,
+                owner,
+                ProjectionBatchPolicy::Shared,
+            )
+            .unwrap();
+        }
+    }
+    if let Some(pager) = &weights.expert_stream {
+        assert!(pager.cached_layer_count() <= pager.budget_layers());
+    }
+    let result = serde_json::json!({
+        "qualification": false, "family": "qwen4_exp", "prompt_ids": tokens,
+        "prefill_schedule": "n-1 then singleton", "generated_ids": generated,
+        "expert_streaming": streaming, "load_seconds": load_seconds,
+        "cached_expert_layers_at_load": streaming.then_some(0), "table_payload_bytes_at_load": 0,
+        "active_after_load": active_after_load, "peak_mlx_bytes": mlx_sys::get_peak_memory(),
+        "table_payload_bytes_after_run": table_bytes(), "records": records,
+        "cached_expert_layers": weights.expert_stream.as_ref().map(|p| p.cached_layer_count()),
+        "expert_layer_budget": weights.expert_stream.as_ref().map(|p| p.budget_layers()),
+    });
+    std::fs::write(output_path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
+
+#[test]
 #[ignore = "requires generated official Flash Next oracle artifacts"]
 fn qwen4_exp_production_cache_round_trip_and_verify_replay() {
     let root =

@@ -22,7 +22,7 @@ pub const EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[3];
 /// natively; production validation still rejects it by default.
 pub const AX_ENGINE_2BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_2BIT_EXPERIMENTAL";
 pub const EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[2];
-/// Explicit opt-in for the audited Flash Next 4-bit development path.
+/// Explicit opt-in for audited Flash Next affine 2/4/6-bit development packs.
 /// Runtime readiness and certification records remain unchanged.
 pub const AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL";
 

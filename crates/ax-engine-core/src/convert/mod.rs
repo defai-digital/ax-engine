@@ -798,19 +798,36 @@ pub fn ensure_manifest_for_hf_model_dir(model_dir: &Path) -> Result<bool, Conver
     // `from_dir_or_convert` from retrying conversion (only the NotFound arm
     // converts) and flips AX-ready detection in other tools.
     crate::model::validate_native_model_manifest(model_dir, &manifest).map_err(|error| {
-        if manifest.model_family == "qwen4_exp" {
-            ConvertError::IncubatingQwen38FlashNext {
-                model_type: "qwen4_exp".to_string(),
-            }
-        } else {
-            ConvertError::GeneratedManifestInvalid {
-                dir: model_dir.to_path_buf(),
-                message: error.to_string(),
-            }
-        }
+        generated_manifest_validation_error(
+            model_dir,
+            &manifest.model_family,
+            std::env::var_os(crate::model::AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV)
+                .is_some_and(|value| value == "1"),
+            error,
+        )
     })?;
     write_manifest(model_dir, &manifest)?;
     Ok(true)
+}
+
+fn generated_manifest_validation_error(
+    model_dir: &Path,
+    model_family: &str,
+    experimental_flash_next: bool,
+    error: crate::model::NativeModelError,
+) -> ConvertError {
+    if model_family == "qwen4_exp" && !experimental_flash_next {
+        ConvertError::IncubatingQwen38FlashNext {
+            model_type: "qwen4_exp".to_string(),
+        }
+    } else {
+        // An opted-in graph can reach ordinary shape/file/quantization checks.
+        // Preserve that failure instead of relabeling it as missing support.
+        ConvertError::GeneratedManifestInvalid {
+            dir: model_dir.to_path_buf(),
+            message: error.to_string(),
+        }
+    }
 }
 
 mod hf_config;

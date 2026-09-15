@@ -113,7 +113,8 @@ Qwen 3.8 caveat:
   for Mac Studio M5 Ultra 256 GB. It is **incubating**: a dedicated graph and
   development serving path exist; public artifact qualification remains open.
   Default load/serve retain the legacy blocker `qwen4_exp_native_trunk_not_implemented`;
-  the audited 4-bit native path requires `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1`.
+  the audited affine 2/4/6-bit native paths require `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1`.
+  The 2-bit export also requires `AX_ENGINE_2BIT_EXPERIMENTAL=1`.
   No download alias. Do not treat it as 27B or as Super-class 2.4T. Record:
   [Qwen 3.8 Flash Next](model-certifications/qwen3.8-flash-next.md).
 

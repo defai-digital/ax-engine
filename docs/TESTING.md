@@ -78,8 +78,39 @@ endurance, long-context decode-at-depth, peer ranking, multi-model residency,
 multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
 Mac mini M5 64 GB SKU. Qwen 3.8 Flash Next is incubating on Mac Studio M5 Ultra
 256 GB (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`). Convert may
-map `qwen4_exp` metadata; load/serve stay fail-closed. Do not treat a laptop
+map `qwen4_exp` metadata; default load/serve stay fail-closed. Audited affine
+exports have an explicit experimental development path documented in the
+[Flash Next record](model-certifications/qwen3.8-flash-next.md). Do not treat a
 campaign host as either SKU.
+
+## Flash Next residency control (development only)
+
+The ignored real-pack test writes four tokens, full F32 logit fingerprints,
+serialized cache fingerprints, and memory/table-read counters. Use a private
+copy of an audited pack; ordinary auto-conversion may create its manifest.
+Run on an adequately sized Apple Silicon development host with MLX 0.32.2:
+
+```bash
+AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1 \
+AX_STREAM_EXPERTS=on AX_STREAM_EXPERT_LAYERS=1 \
+AX_FLASH_NEXT_EXPECT_STREAMING=1 \
+AX_FLASH_NEXT_CANDIDATE_PACK_DIR=/path/to/private-flash-next-6bit \
+AX_FLASH_NEXT_PROMPT_IDS='[760,6511,314,9338,369]' \
+AX_FLASH_NEXT_SMOKE_OUTPUT=/tmp/flash-next-6bit-on.json \
+cargo test -p ax-engine-mlx --profile release-server \
+  model::qwen4_exp_integration_tests::qwen4_exp_real_pack_residency_fingerprint \
+  -- --ignored --exact --nocapture
+```
+
+For a resident control set `AX_STREAM_EXPERTS=off` and
+`AX_FLASH_NEXT_EXPECT_STREAMING=0`, using a different output filename. Auto uses
+the existing full-resident estimate plus 48 GiB admission rule; set the expected
+streaming value for the pack and host being tested. The 2-bit export also needs
+`AX_ENGINE_2BIT_EXPERIMENTAL=1` in every process.
+
+Compare `generated_ids` and every `records` entry across modes of the same pack,
+with the same prompt and prefill schedule. This test alone does not establish
+checkpoint quality, long-context correctness, throughput, or SKU qualification.
 
 ## Secondary families
 
