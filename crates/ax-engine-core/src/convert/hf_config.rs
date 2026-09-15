@@ -852,7 +852,10 @@ pub(crate) fn parse_rope_params(
                 .and_then(|v| v.as_f64())
         })
         .map(|v| v as f32)
-        .filter(|&v| v <= 1.0);
+        .filter(|&v| v <= 1.0)
+        // Official Qwen 3.8 Flash Next rotates 0.25 of head_dim. Omitting the
+        // field would silently full-rotate GDN/QSA when the trunk lands.
+        .or_else(|| is_qwen4_exp_family(model_type).then_some(0.25));
 
     (theta, None, partial_rotary)
 }

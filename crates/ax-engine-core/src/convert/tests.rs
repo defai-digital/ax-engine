@@ -4753,6 +4753,16 @@ fn rejects_unsupported_model_type() {
 }
 
 #[test]
+fn qwen4_exp_parse_rope_defaults_partial_rotary_factor() {
+    let config = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "text_config": { "hidden_size": 8 }
+    });
+    let (_, _, partial_rotary) = parse_rope_params(&config, "qwen4_exp");
+    assert_eq!(partial_rotary, Some(0.25));
+}
+
+#[test]
 fn maps_qwen4_exp_published_hf_checkpoint_names() {
     let family = model_family_for_type(
         "qwen4_exp",
@@ -5051,6 +5061,11 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         assert!(
             manifest.attn_output_gate,
             "{model_type}: Flash Next full-attn uses a sigmoid output gate"
+        );
+        assert_eq!(
+            manifest.partial_rotary_factor,
+            Some(0.25),
+            "{model_type}: Flash Next defaults partial_rotary_factor=0.25"
         );
         assert_eq!(manifest.layer_types, vec!["linear_attention"]);
         assert_eq!(manifest.qwen4_exp.ngram_size, Some(3));
