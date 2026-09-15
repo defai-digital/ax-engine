@@ -488,6 +488,7 @@ impl Qwen4ExpAttention {
         #[cfg(test)]
         {
             for (stage, array) in [
+                ("qsa_gather_indices", selection.gather_indices()),
                 ("qsa_attention_before_gate", &attn),
                 ("qsa_gate", &gate),
                 ("qsa_gated", &gated),

@@ -365,3 +365,31 @@ do not demonstrate an end-to-end speed improvement.
 This removes discarded work without establishing trained-head mathematical
 correctness, MTP profitability or public readiness. See the
 [final-budget evidence](../../benchmarks/results/flash-next-mtp-final-budget-m2-20260915.json).
+
+### First QSA pruning boundary
+
+A frozen structural prompt on M2, using the same affine 4-bit pack for both
+graphs, crosses the real first-pruning boundary:
+with a 2,048-token budget and four-token blocks, pruning begins at 2,052
+visible tokens, when the 513th complete block exceeds the 512-block budget.
+AX and the unchanged MLX-VLM full runs retain the same first-QSA-layer token
+sets through 2,055, including partial tails. The original indexer also selects
+the same sets on all 2,055 captured AX hidden inputs at that layer. Five
+original projected-input controls reproduce the reference masks and index
+history; normal and separately projected replay histories agree. Quantized
+projections share MLX. Gather order differs from chronological mask order,
+so equal selected sets do not establish equal attention outputs.
+
+Both full graphs retain identical complete-logit and state fingerprints
+between their own plain and observed runs. At 21 saved last-row positions,
+20 greedy choices agree across implementations. Across the saved full-vocabulary
+rows, logits differ by up to 11.90625; at position 2,054, AX chooses 271 and the reference chooses
+198, each with a unique maximum. This is unresolved numerical disagreement,
+despite matching first-QSA selection sets. It does not identify the cause in
+later operators or layers.
+
+This diagnostic extends an ignored test and its observation capture; it
+changes no production math or admission setting. Workspace tests pass with
+3,644 passed and 40 ignored. It covers one first-pruning trajectory, not broad
+quality, all-layer mask equivalence, throughput or target-hardware
+qualification. See the [curated QSA boundary evidence](../../benchmarks/results/flash-next-qsa-pruning-boundary-m2-20260915.json).

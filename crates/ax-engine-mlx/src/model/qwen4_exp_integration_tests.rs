@@ -372,7 +372,18 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
     let output_path = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT").unwrap());
     let tokens: Vec<u32> =
         serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
-    assert!((2..=512).contains(&tokens.len()));
+    let prefill_chunk_size = std::env::var("AX_FLASH_NEXT_PREFILL_CHUNK_SIZE")
+        .ok()
+        .map(|value| value.parse::<usize>().expect("prefill chunk size"));
+    assert!((2..=4096).contains(&tokens.len()));
+    if let Some(size) = prefill_chunk_size {
+        assert!((1..=128).contains(&size));
+    } else {
+        assert!(
+            tokens.len() <= 512,
+            "long probes require bounded prefill chunks"
+        );
+    }
     let logits_dir = std::env::var_os("AX_FLASH_NEXT_LOGITS_DIR").map(PathBuf::from);
     if let Some(dir) = &logits_dir {
         std::fs::create_dir_all(dir).unwrap();
@@ -427,14 +438,62 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
     // A fixed request owner permits byte comparison across isolated processes.
     let owner = 3701;
     let initial = qwen4_exp::Qwen4ExpState::new(trunk, owner);
-    let prefix = qwen4_exp::forward(
+    let chunk_size = prefill_chunk_size.unwrap_or(tokens.len() - 1);
+    let first_end = chunk_size.min(tokens.len() - 1);
+    let mut prefix = qwen4_exp::forward(
         trunk,
-        &tokens[..tokens.len() - 1],
+        &tokens[..first_end],
         &initial,
         owner,
         ProjectionBatchPolicy::Shared,
     )
     .unwrap();
+    let record_prefix = |index: usize, output: &qwen4_exp::Qwen4ExpOutput| {
+        let shape = output.logits.shape();
+        let last = mlx_sys::contiguous(
+            &mlx_sys::slice(&output.logits, &[shape[0] - 1, 0], &shape, &[1, 1], None),
+            None,
+        );
+        mlx_sys::try_eval(&[&last]).unwrap();
+        save_logits(&format!("prefill-{index}-last"), &last);
+        let digest = |array: &MlxArray| {
+            let mut hash = Sha256::new();
+            for value in array.data_f32() {
+                assert!(value.is_finite());
+                hash.update(value.to_bits().to_le_bytes());
+            }
+            format!("{:x}", hash.finalize())
+        };
+        let mut cache = MlxKVCache::new_contiguous(cfg.layer_count);
+        cache.advance(output.state.position());
+        cache.qwen4_exp = Some(output.state.clone());
+        let state = cache.serialize_to_bytes();
+        serde_json::json!({
+            "position": output.state.position(), "logits_shape": shape,
+            "logits_f32_le_sha256": digest(&output.logits),
+            "last_logits_f32_le_sha256": digest(&last),
+            "state_bytes": state.len(), "state_sha256": format!("{:x}", Sha256::digest(&state)),
+        })
+    };
+    let mut prefix_steps = Vec::new();
+    if prefill_chunk_size.is_some() {
+        prefix_steps.push(record_prefix(0, &prefix));
+    }
+    let mut consumed = first_end;
+    while consumed < tokens.len() - 1 {
+        let end = (consumed + chunk_size).min(tokens.len() - 1);
+        prefix = qwen4_exp::forward(
+            trunk,
+            &tokens[consumed..end],
+            &prefix.state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        prefix_steps.push(record_prefix(prefix_steps.len(), &prefix));
+        consumed = end;
+        eprintln!("prefill position={consumed}");
+    }
     let selected_bytes_after_prefill = weights
         .expert_stream
         .as_ref()
@@ -518,6 +577,11 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
         "cached_expert_layers": weights.expert_stream.as_ref().map(|p| p.cached_layer_count()),
         "expert_layer_budget": weights.expert_stream.as_ref().map(|p| p.budget_layers()),
     });
+    if let Some(size) = prefill_chunk_size {
+        result["prefill_chunk_size"] = serde_json::json!(size);
+        result["prefill_schedule"] = "chunked n-1 then singleton".into();
+        result["prefix_steps"] = serde_json::json!(prefix_steps);
+    }
     if let Some(ids) = teacher_force {
         result["teacher_force_ids"] = serde_json::json!(ids);
     }
