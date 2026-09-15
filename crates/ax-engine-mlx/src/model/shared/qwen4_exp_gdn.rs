@@ -11,7 +11,9 @@ use mlx_sys::{
 
 use super::qwen4_exp_residual::validate_projection;
 use super::utils::{ProjectionBatchPolicy, qw_with_policy};
-use crate::linear_attention_ops::{linear_attention_conv1d, split_linear_attention_qkv};
+use crate::linear_attention_ops::{
+    linear_attention_conv1d_pre_activation, split_linear_attention_qkv,
+};
 use crate::model::LinearAttentionConfig;
 use crate::weights::QuantizedWeight;
 
@@ -55,6 +57,24 @@ fn require_float_shape(name: &str, tensor: &MlxArray, shape: &[i32]) -> Result<(
         ));
     }
     Ok(())
+}
+
+fn qwen4_beta(input: &MlxArray) -> MlxArray {
+    // The official sigmoid rounds to the projection dtype before the FP32 recurrence.
+    let beta = sigmoid(&astype(input, MlxDtype::Float32, None), None);
+    astype(&astype(&beta, input.dtype(), None), MlxDtype::Float32, None)
+}
+
+fn qwen4_conv1d(
+    cfg: &LinearAttentionConfig,
+    qkv: &MlxArray,
+    weight: &MlxArray,
+    state: Option<&MlxArray>,
+) -> (MlxArray, MlxArray) {
+    let (convolved, state) = linear_attention_conv1d_pre_activation(cfg, qkv, weight, state);
+    // Match the official BF16 activation's single rounding after sigmoid and multiply.
+    let activated = mlx_sys::ops::silu(&astype(&convolved, MlxDtype::Float32, None), None);
+    (astype(&activated, qkv.dtype(), None), state)
 }
 
 impl Qwen4ExpGdn {
@@ -182,8 +202,7 @@ impl Qwen4ExpGdn {
             self.validate_state(state, batch as usize, input.dtype())?;
         }
         let qkv = qw_with_policy(input, &self.weights.qkv, policy);
-        let (convolved, conv) =
-            linear_attention_conv1d(cfg, &qkv, &self.weights.conv, state.map(|s| &s.conv));
+        let (convolved, conv) = qwen4_conv1d(cfg, &qkv, &self.weights.conv, state.map(|s| &s.conv));
         let split = split_linear_attention_qkv(cfg, &convolved);
         #[cfg(test)]
         {
@@ -221,11 +240,7 @@ impl Qwen4ExpGdn {
             None,
         );
         let decay = exp(&log_decay, None);
-        let beta = astype(
-            &sigmoid(&qw_with_policy(input, &self.weights.beta, policy), None),
-            MlxDtype::Float32,
-            None,
-        );
+        let beta = qwen4_beta(&qw_with_policy(input, &self.weights.beta, policy));
         let repeat = hv / cfg.num_key_heads as i32;
         let head_ids: Vec<i32> = (0..hv).map(|h| h / repeat).collect();
         let ids = MlxArray::from_raw_data(
@@ -429,6 +444,83 @@ mod tests {
             .enumerate()
         {
             assert!((a - b).abs() < 2e-6, "{label}[{i}]: {a} != {b}");
+        }
+    }
+
+    #[test]
+    fn gdn_bf16_activations_match_official_rounding() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/flash_next/gdn_bf16_activations.json"
+        ))
+        .unwrap();
+        let length = fixture["input"].as_array().unwrap().len() as i32;
+        let input = astype(
+            &array(&fixture["input"], &[1, length, 1]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let expected = array(&fixture["beta"], &[1, length, 1]);
+        let beta = contiguous(&qwen4_beta(&input), None);
+        eval(&[&beta, &expected]);
+        assert_eq!(beta.data_f32(), expected.data_f32(), "BF16 beta rounding");
+        let config = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_key_heads: 1,
+            num_value_heads: 1,
+            key_head_dim: 1,
+            value_head_dim: 1,
+            conv_kernel_dim: 4,
+            q_scale: 1.0,
+            k_scale: 1.0,
+        };
+        let input = concatenate(&[&input, &input, &input], 2, None);
+        let weights = astype(
+            &array(
+                &serde_json::json!([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
+                &[3, 4, 1],
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let expected = array(&fixture["silu"], &[1, length, 1]);
+        let expected = contiguous(
+            &concatenate(&[&expected, &expected, &expected], 2, None),
+            None,
+        );
+        for split in [1, 4, length - 1] {
+            let prefix = slice(&input, &[0, 0, 0], &[1, split, 3], &[1, 1, 1], None);
+            let suffix = slice(&input, &[0, split, 0], &[1, length, 3], &[1, 1, 1], None);
+            let (head, state) = qwen4_conv1d(&config, &prefix, &weights, None);
+            let (tail, state) = qwen4_conv1d(&config, &suffix, &weights, Some(&state));
+            let output = contiguous(
+                &astype(
+                    &concatenate(&[&head, &tail], 1, None),
+                    MlxDtype::Float32,
+                    None,
+                ),
+                None,
+            );
+            eval(&[&output, &expected]);
+            assert_eq!(
+                output.data_f32(),
+                expected.data_f32(),
+                "BF16 SiLU split {split}"
+            );
+            close(
+                &astype(&state, MlxDtype::Float32, None),
+                &astype(
+                    &slice(
+                        &input,
+                        &[0, length - 3, 0],
+                        &[1, length, 3],
+                        &[1, 1, 1],
+                        None,
+                    ),
+                    MlxDtype::Float32,
+                    None,
+                ),
+                "convolution tail",
+            );
         }
     }
 

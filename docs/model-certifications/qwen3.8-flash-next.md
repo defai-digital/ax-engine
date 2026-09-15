@@ -191,3 +191,31 @@ default-on metric remains zero. These short controls do not establish MTP
 profitability, a trained-head oracle, long-context quality or full-checkpoint
 independent logits agreement. See the
 [selected MTP evidence](../../benchmarks/results/flash-next-selected-mtp-m2-20260915.json).
+
+### GDN activation precision correction
+
+A later same-input M2 diagnostic isolated BF16 SiLU and beta sigmoid rounding.
+Flash Next now evaluates these activation intermediates in FP32, then rounds
+to the original projection dtype before recurrence. Convolution and its cached
+tail retain their original precision; other families retain their existing
+activation path. A pinned official fixture reproduces both old failures and
+passes after the correction, including three cache-boundary splits.
+
+All 20 captured Q/K/V/beta comparisons are now byte-exact with the official
+first-layer inputs, and all 32 recurrence/norm component comparisons pass.
+The entire first-layer output passes the fixed BF16 tolerance on four of five
+forwards; the fifth still fails with maximum error 0.001953125. That residual
+is retained as an open numerical discrepancy.
+
+With identical teacher-forced inputs, maximum decode error against the
+unmodified full MLX-VLM reference falls from 2.3427734375 to 1.43359375. The
+prefix argmax mismatch is resolved, but a decode argmax differs. This is not
+full-model acceptance. An unchanged reference control reproduces its original
+logits exactly; a hybrid graph using whole official GDN modules remains a
+diagnostic, not a complete official model oracle.
+
+The corrected path passes the three affine pack state/runner matrices and 12
+native HTTP/SSE requests with MTP disabled/required. Workspace tests report
+3,638 passed and 39 ignored; relevant MLX/server Clippy passes. Full workspace
+Clippy retains existing core test errors. See the
+[GDN precision evidence](../../benchmarks/results/flash-next-gdn-precision-m2-20260915.json).

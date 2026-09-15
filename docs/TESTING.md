@@ -129,6 +129,12 @@ Compare `generated_ids` and every `records` entry across modes of the same pack,
 with the same prompt and prefill schedule. This test alone does not establish
 checkpoint quality, long-context correctness, throughput, or SKU qualification.
 
+When a greedy continuation differs, the ignored fingerprint test accepts
+`AX_FLASH_NEXT_TEACHER_FORCE_IDS='[11751,13,271]'` to fix the three subsequent
+singleton inputs. It validates the token count and vocabulary bounds and
+records the forced inputs separately from the predicted IDs. Compare logits
+only when the complete input history and prefill schedule match.
+
 For independent numerical comparisons, set `AX_FLASH_NEXT_LOGITS_DIR` to a
 fresh output directory. The fingerprint test writes `prefix.f32le` and
 `decode-0.f32le` through `decode-3.f32le`: contiguous little-endian float32

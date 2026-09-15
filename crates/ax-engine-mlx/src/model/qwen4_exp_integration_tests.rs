@@ -397,6 +397,13 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
     };
     let artifacts = NativeModelArtifacts::from_dir_or_convert(&root).unwrap();
     assert!(!artifacts.manifest().runtime_status.ready);
+    let teacher_force: Option<Vec<u32>> = std::env::var("AX_FLASH_NEXT_TEACHER_FORCE_IDS")
+        .ok()
+        .map(|value| serde_json::from_str(&value).unwrap());
+    if let Some(ids) = &teacher_force {
+        assert_eq!(ids.len(), 3, "expected three continuation inputs");
+        assert!(ids.iter().all(|&id| id < artifacts.manifest().vocab_size));
+    }
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
     let started = std::time::Instant::now();
     let weights = crate::weights::load_weights(&artifacts).unwrap();
@@ -486,7 +493,7 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
         if step < 3 {
             output = qwen4_exp::forward(
                 trunk,
-                &[token],
+                &[teacher_force.as_ref().map_or(token, |ids| ids[step])],
                 &output.state,
                 owner,
                 ProjectionBatchPolicy::Shared,
@@ -497,7 +504,7 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
     if let Some(pager) = &weights.expert_stream {
         assert!(pager.cached_layer_count() <= pager.budget_layers());
     }
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "qualification": false, "family": "qwen4_exp", "prompt_ids": tokens,
         "prefill_schedule": "n-1 then singleton", "generated_ids": generated,
         "expert_streaming": streaming, "load_seconds": load_seconds,
@@ -511,6 +518,9 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
         "cached_expert_layers": weights.expert_stream.as_ref().map(|p| p.cached_layer_count()),
         "expert_layer_budget": weights.expert_stream.as_ref().map(|p| p.budget_layers()),
     });
+    if let Some(ids) = teacher_force {
+        result["teacher_force_ids"] = serde_json::json!(ids);
+    }
     std::fs::write(output_path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
