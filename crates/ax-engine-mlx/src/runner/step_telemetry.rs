@@ -71,6 +71,10 @@ pub(super) struct MtpTelemetry {
     pub(super) target_softmax_wall_us: u32,
     pub(super) verify_tokens: u32,
     pub(super) emitted_tokens: u32,
+    /// Compiled whole-verifier hits (flag on and compile returned Some).
+    pub(super) whole_verify_compile_hits: u32,
+    /// Compiled whole-verifier attempts that fell back to the imperative path.
+    pub(super) whole_verify_compile_fallbacks: u32,
     pub(super) source_mtp_submitted_tokens: u32,
     pub(super) source_mtp_accepted_tokens: u32,
     pub(super) source_mtp_rejected_tokens: u32,
@@ -163,6 +167,8 @@ pub(super) struct MtpStepTimings {
     pub(super) verify_tokens: u32,
     pub(super) emitted_tokens: u32,
     pub(super) ngram_submitted_tokens: u32,
+    pub(super) whole_verify_compile_hits: u32,
+    pub(super) whole_verify_compile_fallbacks: u32,
 }
 
 impl MtpTelemetry {
@@ -490,6 +496,12 @@ impl MtpTelemetry {
             .saturating_add(timings.ngram_lookup_wall_us);
         self.verify_tokens = self.verify_tokens.saturating_add(timings.verify_tokens);
         self.emitted_tokens = self.emitted_tokens.saturating_add(timings.emitted_tokens);
+        self.whole_verify_compile_hits = self
+            .whole_verify_compile_hits
+            .saturating_add(timings.whole_verify_compile_hits);
+        self.whole_verify_compile_fallbacks = self
+            .whole_verify_compile_fallbacks
+            .saturating_add(timings.whole_verify_compile_fallbacks);
 
         let utility_wall_us = timings
             .verify_forward_wall_us
@@ -619,6 +631,12 @@ impl MtpTelemetry {
             .saturating_add(other.target_softmax_wall_us);
         self.verify_tokens = self.verify_tokens.saturating_add(other.verify_tokens);
         self.emitted_tokens = self.emitted_tokens.saturating_add(other.emitted_tokens);
+        self.whole_verify_compile_hits = self
+            .whole_verify_compile_hits
+            .saturating_add(other.whole_verify_compile_hits);
+        self.whole_verify_compile_fallbacks = self
+            .whole_verify_compile_fallbacks
+            .saturating_add(other.whole_verify_compile_fallbacks);
         self.source_mtp_submitted_tokens = self
             .source_mtp_submitted_tokens
             .saturating_add(other.source_mtp_submitted_tokens);
@@ -912,6 +930,14 @@ impl MtpTelemetry {
             ("ax_mtp_target_softmax_wall_us", self.target_softmax_wall_us),
             ("ax_mtp_verify_tokens", self.verify_tokens),
             ("ax_mtp_emitted_tokens", self.emitted_tokens),
+            (
+                "ax_mtp_whole_verify_compile_hits",
+                self.whole_verify_compile_hits,
+            ),
+            (
+                "ax_mtp_whole_verify_compile_fallbacks",
+                self.whole_verify_compile_fallbacks,
+            ),
             (
                 "ax_mtp_source_mtp_proposed_tokens",
                 self.source_mtp_submitted_tokens,

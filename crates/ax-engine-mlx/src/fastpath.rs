@@ -732,7 +732,9 @@ env_flag!(
     /// gated-delta cache tensor inputs/outputs. Exact target semantics are
     /// preserved; failure falls back to the ordinary verifier.
     ///
-    /// **Default: OFF** pending matched M5 admission.
+    /// **Default: OFF.** M5 Max 2026-09-15 depth-3 flappy A/B: greedy identity
+    /// held and compile actually ran (774 hits / 12 fallbacks) but decode GM
+    /// 0.976 vs off (below ADR-003 D5 1.01; slower).
     mtp_whole_verify_compile_enabled,
     "AX_MLX_MTP_WHOLE_VERIFY_COMPILE"
 );

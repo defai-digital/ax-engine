@@ -9263,6 +9263,11 @@ impl MlxRunner {
                         &mut verify_cache,
                         token_offset,
                     );
+                    if compiled.is_some() {
+                        mtp_timings.whole_verify_compile_hits = 1;
+                    } else if crate::fastpath::mtp_whole_verify_compile_enabled() {
+                        mtp_timings.whole_verify_compile_fallbacks = 1;
+                    }
                     compiled.unwrap_or_else(|| {
                         forward_all_positions_with_post_norm_ids(
                             &self.cfg,
@@ -9274,22 +9279,45 @@ impl MlxRunner {
                             native_greedy_logits,
                         )
                     })
-                } else if native_greedy_logits {
-                    forward_all_positions_with_post_norm_greedy(
-                        &self.cfg,
-                        &self.weights,
-                        &verify_input,
-                        &mut verify_cache,
-                        token_offset,
-                    )
                 } else {
-                    forward_all_positions_with_post_norm(
+                    let ids_1d = MlxArray::from_raw_data(
+                        verify_input.as_ptr() as *const u8,
+                        verify_input.len().saturating_mul(4),
+                        &[i32::try_from(verify_input.len()).unwrap_or(0)],
+                        MlxDtype::Uint32,
+                    );
+                    let compiled = try_whole_compiled_qwen_verify(
                         &self.cfg,
                         &self.weights,
-                        &verify_input,
+                        &ids_1d,
+                        verify_len,
                         &mut verify_cache,
                         token_offset,
-                    )
+                    );
+                    if compiled.is_some() {
+                        mtp_timings.whole_verify_compile_hits = 1;
+                    } else if crate::fastpath::mtp_whole_verify_compile_enabled() {
+                        mtp_timings.whole_verify_compile_fallbacks = 1;
+                    }
+                    compiled.unwrap_or_else(|| {
+                        if native_greedy_logits {
+                            forward_all_positions_with_post_norm_greedy(
+                                &self.cfg,
+                                &self.weights,
+                                &verify_input,
+                                &mut verify_cache,
+                                token_offset,
+                            )
+                        } else {
+                            forward_all_positions_with_post_norm(
+                                &self.cfg,
+                                &self.weights,
+                                &verify_input,
+                                &mut verify_cache,
+                                token_offset,
+                            )
+                        }
+                    })
                 };
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 verify_cache.advance(verify_len);
@@ -14755,6 +14783,8 @@ mod tests {
             verify_tokens: 8,
             emitted_tokens: 4,
             ngram_submitted_tokens: 0,
+            whole_verify_compile_hits: 3,
+            whole_verify_compile_fallbacks: 1,
         });
 
         let mut decisions = Vec::new();
@@ -14780,6 +14810,8 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_draft_wall_us".into(), 70)));
         assert!(decisions.contains(&("ax_mtp_target_softmax_wall_us".into(), 35)));
         assert!(decisions.contains(&("ax_mtp_verify_tokens".into(), 8)));
+        assert!(decisions.contains(&("ax_mtp_whole_verify_compile_hits".into(), 3)));
+        assert!(decisions.contains(&("ax_mtp_whole_verify_compile_fallbacks".into(), 1)));
         assert!(decisions.contains(&("ax_mtp_emitted_tokens".into(), 4)));
         assert!(decisions.contains(&("ax_mtp_source_mtp_submitted_tokens".into(), 9)));
         assert!(decisions.contains(&("ax_mtp_source_mtp_accepted_tokens".into(), 4)));
