@@ -242,7 +242,10 @@ mod tests {
         use crate::architecture_registry::TrunkStyle;
         for entry in ARCHITECTURE_REGISTRY {
             let style = entry.layer_forward_route.trunk_style();
-            if entry.layer_forward_route == LayerForwardRoute::DeepseekV4 {
+            if matches!(
+                entry.layer_forward_route,
+                LayerForwardRoute::DeepseekV4 | LayerForwardRoute::Qwen4Exp
+            ) {
                 assert_eq!(
                     style,
                     TrunkStyle::DedicatedTrunk,

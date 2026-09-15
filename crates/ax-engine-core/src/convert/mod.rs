@@ -32,9 +32,9 @@ use crate::model::{
     AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance, KvCacheQuantizationManifest,
     NativeDeepseekV4AttentionConfig, NativeDeepseekV4Config, NativeDiffusionConfig,
     NativeGlmRouterConfig, NativeLinearAttentionConfig, NativeMlaAttentionConfig,
-    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
-    WeightSanitize,
+    NativeModelManifest, NativeMoeConfig, NativeQwen4ExpConfig, NativeRuntimeStatus,
+    NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
+    NativeTensorSpec, WeightSanitize,
 };
 
 /// Env: when set to `1`/`true`/`on`, convert hard-errors if any tensors are dropped.
@@ -305,6 +305,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let mla_attention = mla_attention_config(&config, &model_type);
     let glm_router = glm_router_config(&config, &model_type);
     let deepseek_v4 = deepseek_v4_config(&config, &model_type);
+    let qwen4_exp = qwen4_exp_config(&config, &model_type);
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
@@ -450,6 +451,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         moe: moe_config(&config, &model_type),
         glm_router,
         deepseek_v4,
+        qwen4_exp,
         // Converter assumes the on-disk weights are mlx-community pre-sanitized;
         // raw HuggingFace checkpoints need this set to `HfToMlx` by hand (or via
         // the doctor command when REQ-L4 lands). EmbeddingGemma's mlx-community

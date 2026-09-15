@@ -546,6 +546,83 @@ impl NativeDeepseekV4Config {
     }
 }
 
+/// Qwen 3.8 Flash Next (`qwen4_exp`) n-gram / hyper-connection / QSA contract.
+///
+/// Convert fills this from `text_config`. The dedicated trunk is not
+/// implemented; `never_eval_ngram_at_load` records that the 51B n-gram table
+/// must not be materialized at `load_weights`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeQwen4ExpConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ngram_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ngram_vocab_size_base: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_ngram_parts: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heads_per_ngram: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_lowrank: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_budget: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_head_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_n_heads: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_kv_heads: Option<u32>,
+    /// Contract: n-gram shards stay off the `load_weights` eval path.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub never_eval_ngram_at_load: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+impl Default for NativeQwen4ExpConfig {
+    fn default() -> Self {
+        Self {
+            ngram_size: None,
+            ngram_vocab_size_base: None,
+            split_ngram_parts: None,
+            heads_per_ngram: None,
+            hc_count: None,
+            hc_lowrank: None,
+            indexer_budget: None,
+            indexer_head_dim: None,
+            indexer_n_heads: None,
+            indexer_kv_heads: None,
+            never_eval_ngram_at_load: true,
+        }
+    }
+}
+
+impl NativeQwen4ExpConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.ngram_size.is_some()
+            || self.ngram_vocab_size_base.is_some()
+            || self.split_ngram_parts.is_some()
+            || self.heads_per_ngram.is_some()
+            || self.hc_count.is_some()
+            || self.hc_lowrank.is_some()
+            || self.indexer_budget.is_some()
+            || self.indexer_head_dim.is_some()
+            || self.indexer_n_heads.is_some()
+            || self.indexer_kv_heads.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct NativeMoeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1022,6 +1099,9 @@ pub struct NativeModelManifest {
     /// model families.
     #[serde(default, skip_serializing_if = "NativeDeepseekV4Config::is_disabled")]
     pub deepseek_v4: NativeDeepseekV4Config,
+    /// Qwen 3.8 Flash Next n-gram / hyper-connection / QSA contract.
+    #[serde(default, skip_serializing_if = "NativeQwen4ExpConfig::is_disabled")]
+    pub qwen4_exp: NativeQwen4ExpConfig,
     /// Weight on-disk convention. Defaults to `None` (mlx-community
     /// pre-sanitized layout) so existing manifests deserialize unchanged.
     /// Set to `hf_to_mlx` in raw HuggingFace checkpoints' manifests to
@@ -5261,6 +5341,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,

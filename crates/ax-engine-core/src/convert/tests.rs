@@ -4854,6 +4854,12 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         assert_eq!(manifest.linear_attention.full_attention_interval, Some(4));
         assert_eq!(manifest.moe.expert_count, Some(4));
         assert_eq!(manifest.layer_types, vec!["linear_attention"]);
+        assert_eq!(manifest.qwen4_exp.ngram_size, Some(3));
+        assert!(manifest.qwen4_exp.never_eval_ngram_at_load);
+        assert_eq!(
+            crate::resolve_layer_forward_route("qwen4_exp"),
+            Some(crate::LayerForwardRoute::Qwen4Exp)
+        );
 
         write_manifest(&dir, &manifest).expect("write not-ready manifest");
         let load_err = crate::model::NativeModelArtifacts::from_dir(&dir)

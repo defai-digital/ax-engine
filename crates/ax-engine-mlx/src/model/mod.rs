@@ -273,6 +273,11 @@ pub fn layer_forward(
                 "deepseek_v4 layers must run through the dedicated deepseek_v4 forward path (packed hyper-connection residual)"
             )
         }
+        Some(LayerForwardRoute::Qwen4Exp) => {
+            panic!(
+                "qwen4_exp layers must run through the dedicated Flash Next trunk (not implemented; n-gram table must not eval at load_weights)"
+            )
+        }
         Some(LayerForwardRoute::Mistral3) => families::mistral3::layer_forward(
             cfg,
             w,
@@ -4653,6 +4658,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
@@ -4723,6 +4729,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
@@ -4910,6 +4917,7 @@ mod tests {
                 has_shared_experts: true,
             },
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,

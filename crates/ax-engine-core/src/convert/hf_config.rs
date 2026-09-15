@@ -522,6 +522,29 @@ pub(crate) fn is_deepseek_v4(model_type: &str) -> bool {
     model_type == "deepseek_v4"
 }
 
+pub(crate) fn qwen4_exp_config(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> NativeQwen4ExpConfig {
+    if !is_qwen4_exp_family(model_type) {
+        return NativeQwen4ExpConfig::default();
+    }
+    NativeQwen4ExpConfig {
+        ngram_size: arch_u64(config, model_type, "ngram_size").and_then(u64_to_u32),
+        ngram_vocab_size_base: arch_u64(config, model_type, "ngram_vocab_size_base")
+            .and_then(u64_to_u32),
+        split_ngram_parts: arch_u64(config, model_type, "split_ngram_parts").and_then(u64_to_u32),
+        heads_per_ngram: arch_u64(config, model_type, "heads_per_ngram").and_then(u64_to_u32),
+        hc_count: arch_u64(config, model_type, "hc_count").and_then(u64_to_u32),
+        hc_lowrank: arch_u64(config, model_type, "hc_lowrank").and_then(u64_to_u32),
+        indexer_budget: arch_u64(config, model_type, "indexer_budget").and_then(u64_to_u32),
+        indexer_head_dim: arch_u64(config, model_type, "indexer_head_dim").and_then(u64_to_u32),
+        indexer_n_heads: arch_u64(config, model_type, "indexer_n_heads").and_then(u64_to_u32),
+        indexer_kv_heads: arch_u64(config, model_type, "indexer_kv_heads").and_then(u64_to_u32),
+        never_eval_ngram_at_load: true,
+    }
+}
+
 /// Parse DeepSeek V4 (Flash) architecture parameters from config.json.
 ///
 /// V4 drops the V3 MLA keys and carries its own attention geometry

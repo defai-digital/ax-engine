@@ -32,6 +32,9 @@ pub enum LayerForwardRoute {
     /// sandwich norms, weightless QK norms, sigmoid attention output gate,
     /// and softcapped scaled final logits.
     MuseGlimmer,
+    /// Qwen 3.8 Flash Next (`qwen4_exp`): dedicated trunk (GDN + QSA +
+    /// hyper-connection + n-gram table). Forward is not implemented yet.
+    Qwen4Exp,
 }
 
 /// Whether an architecture artifact may be loaded as the primary MLX runner.
@@ -88,6 +91,7 @@ impl LayerForwardRoute {
             Self::GptOss => 6,
             Self::NemotronH => 7,
             Self::MuseGlimmer => 9,
+            Self::Qwen4Exp => 10,
         }
     }
 
@@ -103,13 +107,14 @@ impl LayerForwardRoute {
             Self::Mixtral => "mixtral",
             Self::GptOss => "gpt_oss",
             Self::NemotronH => "nemotron_h",
+            Self::Qwen4Exp => "qwen4_exp",
         }
     }
 
     /// Trunk composition style for this route (ADR-025 D3).
     pub const fn trunk_style(self) -> TrunkStyle {
         match self {
-            Self::DeepseekV4 => TrunkStyle::DedicatedTrunk,
+            Self::DeepseekV4 | Self::Qwen4Exp => TrunkStyle::DedicatedTrunk,
             Self::Standard
             | Self::Llama4
             | Self::GlmMoeLite
@@ -188,11 +193,11 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
     },
     ArchitectureRegistration {
         family_label: "qwen4_exp",
-        mlx_runner_admission: MlxRunnerAdmission::AuxiliaryOnly,
+        mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
-        layer_forward_route: LayerForwardRoute::Standard,
+        layer_forward_route: LayerForwardRoute::Qwen4Exp,
         dense_batched_decode_candidate: false,
-        cert_gate_note: "Qwen 3.8 Flash Next incubating: convert maps metadata; dedicated trunk not implemented; n-gram table must not eval at load_weights",
+        cert_gate_note: "Qwen 3.8 Flash Next incubating dedicated trunk: convert maps n-gram/HC/QSA contract; forward not implemented; n-gram table must not eval at load_weights",
         support_tier: ModelSupportTier::Experimental,
         chat_contract: ChatContract {
             template: ChatTemplateKind::QwenChatMl,
@@ -685,6 +690,7 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             deepseek_v4: Default::default(),
+            qwen4_exp: Default::default(),
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,
@@ -733,21 +739,25 @@ mod tests {
             .map(|entry| entry.family_label)
             .collect::<Vec<_>>();
 
-        assert_eq!(auxiliary_families, vec!["qwen4_exp", "gemma4_assistant"]);
+        assert_eq!(auxiliary_families, vec!["gemma4_assistant"]);
         assert_eq!(
             mlx_runner_admission_for_family("gemma4_assistant"),
-            Some(MlxRunnerAdmission::AuxiliaryOnly)
-        );
-        assert_eq!(
-            mlx_runner_admission_for_family("qwen4_exp"),
             Some(MlxRunnerAdmission::AuxiliaryOnly)
         );
         assert_eq!(mlx_runner_admission_for_family("not_a_family"), None);
         assert!(is_primary_mlx_runner_family("qwen3"));
         assert!(is_primary_mlx_runner_family("deepseek_v4"));
+        assert!(is_primary_mlx_runner_family("qwen4_exp"));
         assert!(!is_primary_mlx_runner_family("gemma4_assistant"));
-        assert!(!is_primary_mlx_runner_family("qwen4_exp"));
         assert!(!is_primary_mlx_runner_family("not_a_family"));
+        assert_eq!(
+            resolve_layer_forward_route("qwen4_exp"),
+            Some(LayerForwardRoute::Qwen4Exp)
+        );
+        assert_eq!(
+            LayerForwardRoute::Qwen4Exp.trunk_style(),
+            TrunkStyle::DedicatedTrunk
+        );
     }
 
     #[test]
