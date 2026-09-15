@@ -5977,7 +5977,8 @@ env_flag!(
     /// offset. This avoids concatenating the complete MTP history at every
     /// draft depth and makes one compiled closure reusable across steps.
     ///
-    /// **Default: OFF** pending matched M5 admission.
+    /// **Default: OFF.** M5 Max 2026-09-15 depth-3 flappy A/B: greedy identity
+    /// held, decode GM 1.002 vs off (below ADR-003 D5 1.01).
     mtp_compiled_head_fixed_kv_enabled,
     "AX_MTP_COMPILED_HEAD_FIXED_KV"
 );
