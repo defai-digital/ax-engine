@@ -336,6 +336,7 @@ no GGUF or community-4-bit substitute.
 | --- | --- | ---: |
 | **AX Engine 7.4.0** (product-path MTP, depth 3) | this tree | **76.90 tok/s** |
 | [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** | PyPI / mtplx.com Latest | 70.62 tok/s |
+| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 27.90 tok/s |
 | [mlxcel](https://github.com/lablup/mlxcel) **0.7.0** | GitHub Latest (2026-09-09) | unsupported (AXQ 6-bit affine group layout) |
 | [OMLX](https://github.com/jundot/omlx) **0.6.4** | GitHub Latest release | unsupported (`mtp.*` Lightning tensors) |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) **0.4.0** (formula 0.4.1) | Homebrew | unsupported (not GGUF) |
@@ -345,8 +346,10 @@ no GGUF or community-4-bit substitute.
 | [uzu](https://github.com/trymirai/uzu) **0.5.26** | PyPI | unsupported (Mirai checkpoints, not this pack) |
 | [vLLM](https://github.com/vllm-project/vllm) **0.29.0** | PyPI | unsupported (CUDA, not Apple Silicon) |
 
-AX and MTPLX loaded the snapshot and completed the contract. mlxcel 0.7.0 and
-OMLX 0.6.4 were started against the **same directory** and failed in load.
+AX and MTPLX loaded the snapshot and completed the MTP contract. mlx-lm 0.31.3
+loaded the **same directory** and ran the same `flappy` greedy 256-token
+decode as an autoregressive baseline (no MTP head). mlxcel 0.7.0 and
+OMLX 0.6.4 were started against that directory and failed in load.
 Unsupported is not replaced with another checkpoint. MTP Tier 2 remains
 pending. Artifacts:
 [2026-09-15 campaign](benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).

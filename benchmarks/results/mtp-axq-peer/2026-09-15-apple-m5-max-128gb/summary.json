@@ -22,6 +22,11 @@
     "mtplx": {
       "version": "2.11.2",
       "decode_tok_s_median_20": 70.62
+    },
+    "mlx_lm": {
+      "version": "0.31.3",
+      "mode": "direct_ar",
+      "decode_tok_s_median_20": 27.90
     }
   },
   "unsupported_same_pack": [

@@ -17,8 +17,11 @@ Same checkpoint directory was offered to every runtime. No GGUF or community
 | --- | --- | ---: |
 | AX Engine | 7.4.0 product-path MTP (recurrent depth 3) | **76.90 tok/s** |
 | MTPLX | **2.11.2** (PyPI / mtplx.com Latest) | 70.62 tok/s |
+| mlx-lm | **0.31.3** (PyPI Latest), direct AR on the same `flappy` prompts | 27.90 tok/s |
 
-Raw: `ax_engine.json`, `mtplx.json`.
+Raw: `ax_engine.json`, `mtplx.json`, `mlx_lm.json`. mlx-lm is greedy
+`stream_generate` (temp 0), 256 tokens, 2 warmups + 5 reps per case; decode
+excludes the first generated token. It does **not** use the MTP sidecar.
 
 ## Latest runtimes that could not load this pack
 
