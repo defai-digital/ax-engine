@@ -70,7 +70,7 @@
     "try_eval": 1
   },
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": {
-    "try_eval": 1
+    "try_eval": 4
   },
   "crates/ax-engine-mlx/src/model/shared/utils.rs": {
     "async_eval": 1,

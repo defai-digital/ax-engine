@@ -108,6 +108,12 @@ the existing full-resident estimate plus 48 GiB admission rule; set the expected
 streaming value for the pack and host being tested. The 2-bit export also needs
 `AX_ENGINE_2BIT_EXPERIMENTAL=1` in every process.
 
+For selected-expert controls, keep `AX_STREAM_EXPERTS=on` and add
+`AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1`, writing a separate result file. The
+`selected_expert_payload_bytes` field must be positive; without the flag it
+must be zero. This field counts successful row reads, including successful
+earlier projections if a later projection fails.
+
 Compare `generated_ids` and every `records` entry across modes of the same pack,
 with the same prompt and prefill schedule. This test alone does not establish
 checkpoint quality, long-context correctness, throughput, or SKU qualification.

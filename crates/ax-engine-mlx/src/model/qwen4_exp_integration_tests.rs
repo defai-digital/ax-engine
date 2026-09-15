@@ -205,6 +205,103 @@ fn compare_dedicated_and_production_generation(
 }
 
 #[test]
+#[ignore = "requires a synthetic affine Flash Next expert fixture"]
+fn qwen4_exp_selected_experts_preserve_hybrid_state_and_recover_io() {
+    use crate::expert_stream::StreamExpertsMode;
+    use crate::weights::qwen4_exp::load_with_paging_policy;
+    let source = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_SELECTED_FIXTURE").unwrap());
+    let root = std::env::temp_dir().join(format!(
+        "ax-selected-state-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    for name in [
+        "config.json",
+        "model.safetensors",
+        "experts.safetensors",
+        "ax_expert_stream.json",
+    ] {
+        assert!(
+            std::fs::metadata(source.join(name)).unwrap().len() < 16 * 1024 * 1024,
+            "IO injection accepts only bounded synthetic fixtures"
+        );
+        std::fs::copy(source.join(name), root.join(name)).unwrap();
+    }
+    let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+    manifest.weight_sanitize = WeightSanitize::HfToMlx;
+    manifest.runtime_status = NativeRuntimeStatus::default();
+    let resident = load_with_paging_policy(&root, &manifest, StreamExpertsMode::Off, 1).unwrap();
+    let mut selected = load_with_paging_policy(&root, &manifest, StreamExpertsMode::On, 1).unwrap();
+    for layer in &mut selected.layers {
+        layer.moe.enable_selected_decode_for_test();
+    }
+    let pager = selected.expert_stream.as_ref().unwrap();
+    assert_eq!(pager.selected_payload_bytes_read().unwrap(), 0);
+    assert_eq!(pager.cached_layer_count(), 0);
+    let encode = |state: &qwen4_exp::Qwen4ExpState| {
+        let mut cache = MlxKVCache::new_contiguous(manifest.layer_count as usize);
+        cache.qwen4_exp = Some(state.clone());
+        cache.advance(state.position());
+        cache.serialize_to_bytes()
+    };
+    let mut control = qwen4_exp::Qwen4ExpState::new(&resident, 71);
+    let mut state = qwen4_exp::Qwen4ExpState::new(&selected, 71);
+    for tokens in [&[1, 2, 3, 4][..], &[5][..], &[6][..], &[7, 8][..]] {
+        let expected = qwen4_exp::forward(
+            &resident,
+            tokens,
+            &control,
+            71,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        let actual =
+            qwen4_exp::forward(&selected, tokens, &state, 71, ProjectionBatchPolicy::Shared)
+                .unwrap();
+        assert_equal(&actual.logits, &expected.logits);
+        assert_eq!(encode(&actual.state), encode(&expected.state));
+        state = actual.state;
+        control = expected.state;
+    }
+    assert!(pager.selected_payload_bytes_read().unwrap() > 0);
+    let before = encode(&state);
+    let expected =
+        qwen4_exp::forward(&resident, &[9], &control, 71, ProjectionBatchPolicy::Shared).unwrap();
+    let file = root.join("experts.safetensors");
+    let saved = std::fs::read(&file).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_len(0)
+        .unwrap();
+    let error = qwen4_exp::forward(&selected, &[9], &state, 71, ProjectionBatchPolicy::Shared)
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("read row"),
+        "unexpected selected IO failure: {error}"
+    );
+    assert_eq!(encode(&state), before);
+    std::fs::write(file, saved).unwrap();
+    let recovered =
+        qwen4_exp::forward(&selected, &[9], &state, 71, ProjectionBatchPolicy::Shared).unwrap();
+    assert_equal(&recovered.logits, &expected.logits);
+    assert_eq!(encode(&recovered.state), encode(&expected.state));
+}
+
+#[test]
 #[ignore = "requires an isolated real Flash Next candidate pack"]
 fn qwen4_exp_real_pack_production_pipeline_matches_dedicated() {
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR").unwrap());
@@ -333,6 +430,8 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
         "cached_expert_layers_at_load": streaming.then_some(0), "table_payload_bytes_at_load": 0,
         "active_after_load": active_after_load, "peak_mlx_bytes": mlx_sys::get_peak_memory(),
         "table_payload_bytes_after_run": table_bytes(), "records": records,
+        "selected_expert_payload_bytes": weights.expert_stream.as_ref()
+            .map(|pager| pager.selected_payload_bytes_read().unwrap()).unwrap_or(0),
         "cached_expert_layers": weights.expert_stream.as_ref().map(|p| p.cached_layer_count()),
         "expert_layer_budget": weights.expert_stream.as_ref().map(|p| p.budget_layers()),
     });

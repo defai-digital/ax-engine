@@ -11,6 +11,9 @@
 //! v1 is layer-stack paging only: the existing `gather_qmm` kernel runs
 //! unchanged on the paged packed tensors. No per-expert unfused kernels.
 
+mod selected;
+pub(crate) use selected::take_selected_expert_read_stats;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -611,6 +614,7 @@ pub struct ExpertStackPager {
     /// MiniMax packs are stream-required, so this must stay false for them.
     fuse_split_experts: bool,
     cache: Mutex<PagerCache>,
+    selected_readers: Mutex<HashMap<u32, Arc<selected::SelectedExpertRows>>>,
 }
 
 impl ExpertStackPager {
@@ -629,6 +633,7 @@ impl ExpertStackPager {
             root,
             budget_layers: budget_layers.max(1),
             fuse_split_experts,
+            selected_readers: Mutex::new(HashMap::new()),
             cache: Mutex::new(PagerCache {
                 entries: HashMap::new(),
                 order: VecDeque::new(),
@@ -661,6 +666,47 @@ impl ExpertStackPager {
             .iter()
             .copied()
             .collect()
+    }
+
+    fn selected_stack(
+        &self,
+        layer: u32,
+        ids: &[u64],
+    ) -> Result<LayerExpertStack, ExpertStreamError> {
+        let reader = {
+            let mut readers = self
+                .selected_readers
+                .lock()
+                .map_err(|_| ExpertStreamError::Paging("selected reader lock poisoned".into()))?;
+            if let Some(reader) = readers.get(&layer) {
+                Arc::clone(reader)
+            } else {
+                let reader = Arc::new(
+                    selected::SelectedExpertRows::open(
+                        &self.manifest,
+                        &self.root,
+                        layer,
+                        mlx_sys::DEFAULT_MAX_GATHER_BYTES,
+                    )
+                    .map_err(ExpertStreamError::Paging)?,
+                );
+                readers.insert(layer, Arc::clone(&reader));
+                reader
+            }
+        };
+        reader.gather(ids).map_err(ExpertStreamError::Paging)
+    }
+
+    /// Successful selected-row payload reads; excludes headers and full-layer reads.
+    pub fn selected_payload_bytes_read(&self) -> Result<u64, ExpertStreamError> {
+        let readers = self
+            .selected_readers
+            .lock()
+            .map_err(|_| ExpertStreamError::Paging("selected reader lock poisoned".into()))?;
+        Ok(readers
+            .values()
+            .map(|reader| reader.payload_bytes_read())
+            .sum())
     }
 
     /// Make layer `layer`'s expert stack resident and return cheap clones of
@@ -822,6 +868,14 @@ impl ExpertLayerSource {
 
     pub fn layer(&self) -> u32 {
         self.layer
+    }
+
+    /// Gather a compact stack in exactly the requested expert order.
+    pub(crate) fn selected_stack(
+        &self,
+        ids: &[u64],
+    ) -> Result<LayerExpertStack, ExpertStreamError> {
+        self.pager.selected_stack(self.layer, ids)
     }
 
     /// Resolve this layer's expert stack, paging it in when needed.

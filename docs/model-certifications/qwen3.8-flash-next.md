@@ -86,3 +86,36 @@ additional blockers remain rejected. Removing a required opt-in rejects the
 manifest again. Expert residency uses the existing Auto/On/Off policy; forced whole-layer paging has substantial
 transfer cost. MTP remains a separate opt-in candidate and is not certified.
 See [Testing](../TESTING.md) and [Supported Models](../SUPPORTED-MODELS.md).
+
+## Selected expert reads (experimental)
+
+With expert streaming active, `AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1` enables
+bounded reads of only the routed experts for singleton forwards, including the
+singleton prefill completion. Multi-token and batch>1 forwards keep whole-layer
+paging. Auto/On/Off residency decisions are unchanged; a resident pack stays
+resident even when this flag is set.
+
+The path preserves MLX routing weights and top-k reduction order, and reads the
+same compact expert IDs from affine weight/scales/biases triplets. It limits
+selected payload to 256 MiB per layer call and evaluates the MoE output before
+releasing its owned arrays. No compiled expert closure captures these arrays.
+
+Tiny F32/BF16 controls and bounded M2 2/4/6-bit controls match full logits and
+serialized state against their whole-layer controls. This does not qualify
+long-context quality, MTP combinations or the M5 Ultra SKU. Cold/warm filesystem
+state materially affects paging latency.
+
+The native `/metrics` endpoint exposes
+`ax_engine_mlx_flash_next_selected_expert_gathers_total` and
+`ax_engine_mlx_flash_next_selected_expert_payload_kib_total`. These count
+successful selected gathers observed in engine steps. Payload KiB excludes
+headers, whole-layer traffic and failed gathers; it is not physical disk I/O
+or total memory. The counters establish actual route use, not just flag state.
+
+Native completion and SSE repeat also pass for all three affine packs with
+MTP disabled. Each repeat increases actual selected-gather and payload counters;
+output tokens match the same-pack control. The
+[selected-expert development evidence](../../benchmarks/results/flash-next-selected-experts-m2-20260915.json)
+retains numerical fingerprints, API responses, source/binary hashes and all
+repeated process times. Whole-layer prefill remains costly; these controls do
+not establish overall serving performance.

@@ -3676,6 +3676,9 @@ impl ExecutionRunner for MlxRunner {
             crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(relaxed_mtp_session);
         let _qwen_linear_mtp_exact_scope =
             crate::fastpath::scoped_qwen_linear_mtp_exact(exact_arithmetic_enabled);
+        // Selected reads execute synchronously on this worker. Drain warmup
+        // work before attributing successful gathers to the current step.
+        let _ = crate::expert_stream::take_selected_expert_read_stats();
         let step_id = input.execution_batch.step_id;
         let mut request_updates = Vec::new();
         let logits_handles = Vec::new();
@@ -4315,6 +4318,15 @@ impl ExecutionRunner for MlxRunner {
             let mut route_decisions =
                 IndexedRouteDecisions::new(&mut route_metadata.crossover_decisions);
             decode_telemetry.append_route_decisions(&mut route_decisions);
+            let selected_reads = crate::expert_stream::take_selected_expert_read_stats();
+            route_decisions.upsert_route_decision(
+                "ax_mlx_flash_next_selected_expert_gathers",
+                u32::try_from(selected_reads.gathers).unwrap_or(u32::MAX),
+            );
+            route_decisions.upsert_route_decision(
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                u32::try_from(selected_reads.payload_bytes / 1024).unwrap_or(u32::MAX),
+            );
             if !skip_route_telemetry {
                 ngram_acceleration.append_route_decisions(&mut route_decisions);
                 mtp_telemetry.append_route_decisions(&mut route_decisions);

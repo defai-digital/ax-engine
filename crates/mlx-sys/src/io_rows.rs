@@ -14,7 +14,8 @@
 //! norms, integer multipliers, or rank-3 experts. Use
 //! [`SafetensorsRowReader::open_selected`] to validate only the requested
 //! tensors: the header is still read once and unrelated payload is never
-//! touched.
+//! touched. [`SafetensorsRowReader::open_selected_stacks`] explicitly selects
+//! rank-3 expert stacks, preserving their trailing matrix dimensions.
 //!
 //! Gathers preserve caller order (including duplicates), copy only the
 //! requested rows, enforce an immutable per-reader output byte budget checked
@@ -46,7 +47,7 @@ pub const MAX_HEADER_BYTES: u64 = 100_000_000;
 /// Default cap for a single [`SafetensorsRowReader::gather_rows`] output (256 MiB).
 pub const DEFAULT_MAX_GATHER_BYTES: usize = 256 * 1024 * 1024;
 
-/// Validated rank-2 tensor entry exposed by [`SafetensorsRowReader`].
+/// Validated tensor entry exposed by [`SafetensorsRowReader`].
 #[derive(Clone, Debug)]
 pub struct RowTensorMeta {
     /// MLX dtype used for gathered rows.
@@ -55,9 +56,9 @@ pub struct RowTensorMeta {
     pub dtype_str: String,
     /// Number of rows (shape[0]).
     pub rows: usize,
-    /// Number of columns (shape[1]).
+    /// Elements per axis-zero row (product of the trailing dimensions).
     pub cols: usize,
-    /// `[rows, cols]` as `i32` for direct [`MlxArray`] construction.
+    /// Original dimensions as `i32` for direct [`MlxArray`] construction.
     pub shape: Vec<i32>,
     /// Bytes per row (`cols * elem_bytes`).
     pub row_bytes: usize,
@@ -163,9 +164,9 @@ fn parse_row_dtype(s: &str) -> Option<MlxDtype> {
     })
 }
 
-/// Strictly validate one header entry as a gatherable rank-2 tensor.
+/// Strictly validate one header entry with the constructor-selected rank.
 ///
-/// Checks dtype support, rank-2 positive dimensions within `i32::MAX`, exact
+/// Checks dtype support, positive dimensions within `i32::MAX`, exact
 /// `rows * cols * elem_size` byte length with checked arithmetic, ordered
 /// offsets, and absolute file bounds. [`SafetensorsRowReader::open`] applies
 /// this to every entry; [`SafetensorsRowReader::open_selected`] applies it to
@@ -175,6 +176,7 @@ fn validate_entry(
     entry: &serde_json::Value,
     data_base: u64,
     file_len: u64,
+    rank: usize,
 ) -> Result<RowTensorMeta, String> {
     let entry_obj = entry
         .as_object()
@@ -189,13 +191,13 @@ fn validate_entry(
         .get("shape")
         .and_then(|v| v.as_array())
         .ok_or_else(|| format!("tensor entry {name} missing shape"))?;
-    if shape_json.len() != 2 {
+    if shape_json.len() != rank {
         return Err(format!(
-            "tensor entry {name}: expected rank-2 shape, got rank {}",
+            "tensor entry {name}: expected rank-{rank} shape, got rank {}",
             shape_json.len()
         ));
     }
-    let mut dims_u64 = [0u64; 2];
+    let mut dims_u64 = vec![0u64; rank];
     for (i, v) in shape_json.iter().enumerate() {
         let d = v
             .as_u64()
@@ -213,7 +215,11 @@ fn validate_entry(
         dims_u64[i] = d;
     }
     let rows = dims_u64[0] as usize;
-    let cols = dims_u64[1] as usize;
+    let cols = dims_u64[1..].iter().try_fold(1usize, |product, &dim| {
+        product
+            .checked_mul(dim as usize)
+            .ok_or_else(|| format!("tensor entry {name}: trailing dimensions overflow usize"))
+    })?;
     let elem_bytes = dtype.size_bytes();
     let numel = rows
         .checked_mul(cols)
@@ -247,8 +253,7 @@ fn validate_entry(
     if byte_len != expected_u64 {
         return Err(format!(
             "tensor entry {name}: data_offsets byte length {byte_len} does not match \
-             shape [{},{}] dtype {dtype_str} expected {expected_u64}",
-            dims_u64[0], dims_u64[1]
+             shape {dims_u64:?} dtype {dtype_str} expected {expected_u64}"
         ));
     }
     let abs_start = data_base
@@ -266,7 +271,7 @@ fn validate_entry(
     let row_bytes = cols
         .checked_mul(elem_bytes)
         .ok_or_else(|| format!("tensor entry {name}: row byte length overflows"))?;
-    let shape_i32 = vec![rows as i32, cols as i32];
+    let shape_i32 = dims_u64.iter().map(|&dim| dim as i32).collect();
     Ok(RowTensorMeta {
         dtype,
         dtype_str: dtype_str.to_string(),
@@ -288,7 +293,7 @@ impl SafetensorsRowReader {
     /// that mix rank-2 tables with unrelated ranks or dtypes need
     /// [`Self::open_selected`] instead.
     pub fn open(path: &Path) -> Result<Self, String> {
-        Self::open_inner(path, None, DEFAULT_MAX_GATHER_BYTES)
+        Self::open_inner(path, None, DEFAULT_MAX_GATHER_BYTES, 2)
     }
 
     /// Open with an explicit per-gather output byte budget.
@@ -296,7 +301,7 @@ impl SafetensorsRowReader {
     /// The budget is immutable for the life of the reader. Like [`Self::open`],
     /// validates every tensor entry strictly.
     pub fn open_with_budget(path: &Path, max_gather_bytes: usize) -> Result<Self, String> {
-        Self::open_inner(path, None, max_gather_bytes)
+        Self::open_inner(path, None, max_gather_bytes, 2)
     }
 
     /// Open only the requested tensors with an explicit byte budget.
@@ -312,13 +317,28 @@ impl SafetensorsRowReader {
         tensor_names: &[&str],
         max_gather_bytes: usize,
     ) -> Result<Self, String> {
-        Self::open_inner(path, Some(tensor_names), max_gather_bytes)
+        Self::open_inner(path, Some(tensor_names), max_gather_bytes, 2)
+    }
+
+    /// Open selected rank-3 stacks for bounded axis-zero gathers.
+    ///
+    /// Each row is one complete matrix: `[experts, output, packed_input]`
+    /// becomes `[selected_experts, output, packed_input]` after gather. The
+    /// output/scales/biases encodings are unchanged; this reader performs no
+    /// quantization interpretation. Existing rank-2 constructors stay strict.
+    pub fn open_selected_stacks(
+        path: &Path,
+        tensor_names: &[&str],
+        max_gather_bytes: usize,
+    ) -> Result<Self, String> {
+        Self::open_inner(path, Some(tensor_names), max_gather_bytes, 3)
     }
 
     fn open_inner(
         path: &Path,
         select: Option<&[&str]>,
         max_gather_bytes: usize,
+        rank: usize,
     ) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
         let file_len = file
@@ -374,7 +394,7 @@ impl SafetensorsRowReader {
                     if name == "__metadata__" {
                         continue;
                     }
-                    let meta = validate_entry(name, entry, data_base, file_len)?;
+                    let meta = validate_entry(name, entry, data_base, file_len, rank)?;
                     tensors.insert(name.clone(), meta);
                 }
             }
@@ -393,7 +413,7 @@ impl SafetensorsRowReader {
                             path.display()
                         )
                     })?;
-                    let meta = validate_entry(name, entry, data_base, file_len)?;
+                    let meta = validate_entry(name, entry, data_base, file_len, rank)?;
                     tensors.insert(name.to_string(), meta);
                 }
             }
@@ -436,7 +456,7 @@ impl SafetensorsRowReader {
         self.tensors.get(name).cloned()
     }
 
-    /// Gather arbitrary rows into a new `[row_ids.len(), cols]` [`MlxArray`].
+    /// Gather axis-zero rows, preserving all trailing dimensions.
     ///
     /// Preserves caller order and duplicates; reads only the requested rows
     /// (one positional read per row, no whole-table scan). Fails when the
@@ -472,7 +492,8 @@ impl SafetensorsRowReader {
             ));
         }
         if num_rows == 0 {
-            let shape = [0i32, meta.cols as i32];
+            let mut shape = meta.shape.clone();
+            shape[0] = 0;
             let empty: Vec<u8> = Vec::new();
             return Ok(MlxArray::from_raw_data(
                 empty.as_ptr(),
@@ -528,7 +549,8 @@ impl SafetensorsRowReader {
         }
         self.payload_bytes_read
             .fetch_add(output_bytes as u64, Ordering::Relaxed);
-        let shape = [num_rows as i32, meta.cols as i32];
+        let mut shape = meta.shape.clone();
+        shape[0] = num_rows as i32;
         Ok(MlxArray::from_raw_data(
             out.as_ptr(),
             out.len(),
@@ -544,6 +566,138 @@ mod tests {
     use crate::ops::add;
     use crate::transforms::eval;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn rank3_selected_stacks_preserve_shape_dtype_order_and_owned_storage() {
+        let dir = test_dir("rank3-dtypes");
+        for (name, dtype, elem) in [
+            ("F32", MlxDtype::Float32, 4usize),
+            ("U32", MlxDtype::Uint32, 4),
+            ("BF16", MlxDtype::Bfloat16, 2),
+            ("F16", MlxDtype::Float16, 2),
+        ] {
+            let values: Vec<u32> = (0..24).map(|n| (n / 6 + n % 6) % 4).collect();
+            let payload: Vec<u8> = values
+                .iter()
+                .flat_map(|&value| match name {
+                    "F32" => (value as f32).to_le_bytes().to_vec(),
+                    "U32" => value.to_le_bytes().to_vec(),
+                    "BF16" => (((value as f32).to_bits() >> 16) as u16)
+                        .to_le_bytes()
+                        .to_vec(),
+                    _ => [0u16, 0x3c00, 0x4000, 0x4200][value as usize]
+                        .to_le_bytes()
+                        .to_vec(),
+                })
+                .collect();
+            let path = dir.join(format!("{name}.safetensors"));
+            write_st_file(
+                &path,
+                serde_json::json!({
+                    "experts": {"dtype": name, "shape": [4,2,3], "data_offsets": [0,payload.len()]},
+                    "ignored": {"dtype": "I64", "shape": [1], "data_offsets": [0,8]}
+                }),
+                &payload,
+            );
+            assert!(SafetensorsRowReader::open_selected(&path, &["experts"], 1024).is_err());
+            let reader =
+                SafetensorsRowReader::open_selected_stacks(&path, &["experts"], 1024).unwrap();
+            let meta = reader.tensor_meta("experts").unwrap();
+            assert_eq!(meta.shape, [4, 2, 3]);
+            assert_eq!(meta.cols, 6);
+            assert_eq!(meta.row_bytes, 6 * elem);
+            assert_eq!(reader.payload_bytes_read(), 0);
+            let first = reader.gather_rows("experts", &[3, 1, 3]).unwrap();
+            let next = reader.gather_rows("experts", &[0]).unwrap();
+            let empty = reader.gather_rows("experts", &[]).unwrap();
+            assert_eq!(first.dtype(), dtype);
+            assert_eq!(first.shape(), [3, 2, 3]);
+            assert_eq!(empty.shape(), [0, 2, 3]);
+            assert_eq!(reader.payload_bytes_read(), (24 * elem) as u64);
+            drop(reader);
+            let first = crate::ops::astype(&first, MlxDtype::Float32, None);
+            eval(&[&first, &next]);
+            let expected: Vec<f32> = [3usize, 1, 3]
+                .iter()
+                .flat_map(|&expert| {
+                    values[expert * 6..(expert + 1) * 6]
+                        .iter()
+                        .map(|&v| v as f32)
+                })
+                .collect();
+            assert_eq!(first.data_f32(), expected);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rank3_stack_budget_and_all_indices_are_checked_before_payload_io() {
+        let dir = test_dir("rank3-bounds");
+        let path = dir.join("stack.safetensors");
+        write_st_file(
+            &path,
+            serde_json::json!({
+                "experts": {"dtype": "U32", "shape": [4,2,3], "data_offsets": [0,96]}
+            }),
+            &[0u8; 96],
+        );
+        let reader = SafetensorsRowReader::open_selected_stacks(&path, &["experts"], 24).unwrap();
+        assert!(
+            reader
+                .gather_rows("experts", &[0, 1])
+                .unwrap_err()
+                .contains("budget")
+        );
+        assert_eq!(reader.payload_bytes_read(), 0);
+        let reader = SafetensorsRowReader::open_selected_stacks(&path, &["experts"], 96).unwrap();
+        assert!(
+            reader
+                .gather_rows("experts", &[0, 4])
+                .unwrap_err()
+                .contains("out of bounds")
+        );
+        assert_eq!(reader.payload_bytes_read(), 0);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(reader.tensor_meta("experts").unwrap().data_start + 24)
+            .unwrap();
+        assert!(
+            reader
+                .gather_rows("experts", &[0, 1])
+                .unwrap_err()
+                .contains("read row 1")
+        );
+        assert_eq!(reader.payload_bytes_read(), 0);
+        assert_eq!(
+            reader.gather_rows("experts", &[0]).unwrap().shape(),
+            [1, 2, 3]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rank3_stack_metadata_rejects_wrong_rank_length_and_overflow() {
+        let dir = test_dir("rank3-invalid");
+        let path = dir.join("stack.safetensors");
+        for shape in [
+            vec![4, 6],
+            vec![4, 2, 4],
+            vec![4, 0, 3],
+            vec![2147483647u64; 3],
+        ] {
+            write_st_file(
+                &path,
+                serde_json::json!({
+                    "experts": {"dtype": "U32", "shape": shape, "data_offsets": [0,96]}
+                }),
+                &[0u8; 96],
+            );
+            assert!(SafetensorsRowReader::open_selected_stacks(&path, &["experts"], 1024).is_err());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn test_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ax_io_rows_{}_{}", std::process::id(), name));
