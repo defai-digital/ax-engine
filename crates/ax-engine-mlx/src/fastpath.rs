@@ -738,6 +738,24 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_MTP_PROFITABILITY_THROUGHPUT` — admit the existing request-local
+    /// MTP profitability latch on greedy Qwen linear throughput (relaxed
+    /// verify, projected replay, recurrent depth ≤ 3). Default OFF: probes
+    /// tax a winning depth-3 path, and the 0.96× natural-prompt loss was
+    /// measured on exact depth-one.
+    mtp_profitability_throughput_enabled,
+    "AX_MLX_MTP_PROFITABILITY_THROUGHPUT"
+);
+
+env_flag!(
+    /// `AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS` — build greedy target-verifier
+    /// logits with the native greedy post-norm path instead of the sampled
+    /// softmax contract. Default OFF; opt-in A/B only.
+    mtp_native_greedy_verify_logits_enabled,
+    "AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS"
+);
+
+env_flag!(
     /// `AX_MLX_MTP_LINEAR_LAYER_COMPILE` — compile each complete gated-delta
     /// layer in a short Qwen3.5 target-verifier step while leaving the
     /// full-attention layers on their existing paged route. The closure
@@ -6154,6 +6172,23 @@ mod tests {
     #[test]
     fn parse_bool_env_unset_is_false() {
         assert!(!parse_bool_env("AX_FASTPATH_TEST_DEFINITELY_UNSET"));
+    }
+
+    #[test]
+    fn qwen_mtp_opt_in_gates_stay_off_when_unset() {
+        for var in [
+            "AX_MLX_MTP_PROFITABILITY_THROUGHPUT",
+            "AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS",
+            "AX_MLX_MTP_WHOLE_VERIFY_COMPILE",
+        ] {
+            unsafe {
+                std::env::remove_var(var);
+            }
+            assert!(
+                !parse_bool_env(var),
+                "{var} must stay default-off when unset"
+            );
+        }
     }
 
     #[test]

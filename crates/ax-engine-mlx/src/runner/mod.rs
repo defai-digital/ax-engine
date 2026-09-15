@@ -8623,6 +8623,13 @@ impl MlxRunner {
     /// a cloned target cache, then fully materialize its token before return.
     fn measure_mtp_direct_probe(&self, cache: &MlxKVCache, last_token: u32) -> u32 {
         let mut probe_cache = cache.clone();
+        // Lazy-adopt throughput leaves the previous verify graph unevaluated.
+        // Materialize it before the probe timer so the reference is a true
+        // singleton step, not the leftover verifier eval.
+        let pending_eval = probe_cache.collect_eval_refs();
+        if !pending_eval.is_empty() {
+            eval(&pending_eval);
+        }
         let _direct_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
         let started = Instant::now();
         let pending = start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut probe_cache);
@@ -9077,9 +9084,11 @@ impl MlxRunner {
             pending = tokens;
         }
 
-        let profitability_mtp_round = pending.len() == 1
-            && state.mtp_pending_draft_sources.len() == pending.len()
-            && state.mtp_pending_draft_sources[0] == MtpDraftSource::Mtp;
+        let profitability_mtp_round = is_profitability_mtp_round(
+            pending.len(),
+            &state.mtp_pending_draft_sources,
+            self.mtp_max_depth(),
+        );
 
         // Build verify sequence: [primary_token] ++ pending_draft.
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + pending.len());
@@ -9121,9 +9130,7 @@ impl MlxRunner {
                 crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(relaxed_target_verify);
             let native_greedy_logits = sampling.temperature <= 0.0
                 && !sampling.uses_logits_processors()
-                && std::env::var("AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS")
-                    .ok()
-                    .is_some_and(|raw| matches!(raw.trim(), "1" | "true" | "TRUE" | "yes" | "on"));
+                && crate::fastpath::mtp_native_greedy_verify_logits_enabled();
             if optimistic {
                 // ── Explicit approximate optimistic shortcut ──
                 // Accept all drafts without rejection sampling. The full draft
@@ -11413,19 +11420,36 @@ impl MlxRunner {
         state.mtp_bypassed = false;
         state.mtp_suspended_for_batched_decode = false;
         let profitability_config = mtp_profitability_config_from_env();
+        let profitability_max_tokens_per_round =
+            if crate::fastpath::mtp_profitability_throughput_enabled()
+                && crate::fastpath::qwen_linear_throughput_mtp_enabled()
+            {
+                4
+            } else {
+                2
+            };
         let profitability_eligible = MtpProfitabilityEligibility {
             mtp_requested: self.mtp_requested,
             exact_qwen_linear: self.qwen_linear_mtp_exact_enabled,
+            relaxed_projected: crate::fastpath::mtp_relaxed_target_verify_enabled()
+                && crate::fastpath::mtp_linear_projected_replay_enabled(),
             has_linear_attention,
             has_qwen_mtp: self.weights.mtp.is_some(),
             depth_one: self.mtp_max_depth() == 1,
+            throughput_depth3: crate::fastpath::mtp_profitability_throughput_enabled()
+                && crate::fastpath::qwen_linear_throughput_mtp_enabled()
+                && self.mtp_max_depth() > 0
+                && self.mtp_max_depth() <= crate::fastpath::QWEN_LINEAR_THROUGHPUT_MTP_DEPTH,
             dense_lm_head: !self.weights.lm_head.is_quantized(),
             greedy: is_greedy,
             skip_state_disabled: !self.mtp_skip_state,
             optimistic_disabled: !self.mtp_optimistic && !mtp_auto_optimistic_enabled_from_env(),
             automatic_bypass_allowed: mtp_bypass_threshold() > 0.0,
-            output_budget_sufficient: profitability_config
-                .has_observation_budget(max_output, mtp_min_remaining_tokens()),
+            output_budget_sufficient: profitability_config.has_observation_budget(
+                max_output,
+                mtp_min_remaining_tokens(),
+                profitability_max_tokens_per_round,
+            ),
         }
         .eligible();
         state

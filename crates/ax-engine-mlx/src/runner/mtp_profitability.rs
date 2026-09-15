@@ -52,16 +52,23 @@ impl MtpProfitabilityConfig {
 
     /// Whether a request can reach a profitability decision before its normal
     /// short-tail MTP cutoff. The prefill output and empty-draft bootstrap use
-    /// two tokens before the first measurable round; each depth-one round can
-    /// then emit at most two tokens.
+    /// two tokens before the first measurable round; each recorded round can
+    /// then emit at most `max_tokens_per_round` tokens (2 for depth-one, 4
+    /// for throughput depth 3).
     pub(super) const fn has_observation_budget(
         self,
         max_output_tokens: u32,
         min_remaining_tokens: u32,
+        max_tokens_per_round: u32,
     ) -> bool {
+        let per_round = if max_tokens_per_round == 0 {
+            1
+        } else {
+            max_tokens_per_round
+        };
         let rounds = self.required_observation_rounds();
         let tokens_before_final_round =
-            2_u32.saturating_add(rounds.saturating_sub(1).saturating_mul(2));
+            2_u32.saturating_add(rounds.saturating_sub(1).saturating_mul(per_round));
         let required_tail = if min_remaining_tokens > 0 {
             min_remaining_tokens
         } else {
@@ -75,9 +82,13 @@ impl MtpProfitabilityConfig {
 pub(super) struct MtpProfitabilityEligibility {
     pub(super) mtp_requested: bool,
     pub(super) exact_qwen_linear: bool,
+    /// Relaxed target verify plus projected replay (throughput MTP).
+    pub(super) relaxed_projected: bool,
     pub(super) has_linear_attention: bool,
     pub(super) has_qwen_mtp: bool,
     pub(super) depth_one: bool,
+    /// Opt-in throughput depth ≤ 3 (`AX_MLX_MTP_PROFITABILITY_THROUGHPUT`).
+    pub(super) throughput_depth3: bool,
     pub(super) dense_lm_head: bool,
     pub(super) greedy: bool,
     pub(super) skip_state_disabled: bool,
@@ -91,10 +102,10 @@ pub(super) struct MtpProfitabilityEligibility {
 impl MtpProfitabilityEligibility {
     pub(super) const fn eligible(self) -> bool {
         self.mtp_requested
-            && self.exact_qwen_linear
+            && (self.exact_qwen_linear || self.relaxed_projected)
             && self.has_linear_attention
             && self.has_qwen_mtp
-            && self.depth_one
+            && (self.depth_one || self.throughput_depth3)
             && self.dense_lm_head
             && self.greedy
             && self.skip_state_disabled
@@ -102,6 +113,21 @@ impl MtpProfitabilityEligibility {
             && self.automatic_bypass_allowed
             && self.output_budget_sufficient
     }
+}
+
+/// A complete, pure-MTP round: every pending draft came from the MTP head
+/// and the window is within the configured depth.
+pub(super) fn is_profitability_mtp_round(
+    pending_len: usize,
+    sources: &[super::mtp_routing::MtpDraftSource],
+    max_depth: usize,
+) -> bool {
+    pending_len >= 1
+        && pending_len <= max_depth
+        && sources.len() == pending_len
+        && sources
+            .iter()
+            .all(|source| *source == super::mtp_routing::MtpDraftSource::Mtp)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -322,9 +348,11 @@ mod tests {
         let eligible = MtpProfitabilityEligibility {
             mtp_requested: true,
             exact_qwen_linear: true,
+            relaxed_projected: false,
             has_linear_attention: true,
             has_qwen_mtp: true,
             depth_one: true,
+            throughput_depth3: false,
             dense_lm_head: true,
             greedy: true,
             skip_state_disabled: true,
@@ -368,16 +396,91 @@ mod tests {
             }
             .eligible()
         );
+        assert!(
+            !MtpProfitabilityEligibility {
+                exact_qwen_linear: false,
+                depth_one: false,
+                relaxed_projected: true,
+                throughput_depth3: false,
+                ..eligible
+            }
+            .eligible(),
+            "throughput depth 3 stays ineligible without the opt-in"
+        );
+        assert!(
+            MtpProfitabilityEligibility {
+                exact_qwen_linear: false,
+                depth_one: false,
+                relaxed_projected: true,
+                throughput_depth3: true,
+                ..eligible
+            }
+            .eligible()
+        );
+        assert!(
+            !MtpProfitabilityEligibility {
+                exact_qwen_linear: false,
+                depth_one: false,
+                relaxed_projected: false,
+                throughput_depth3: true,
+                ..eligible
+            }
+            .eligible(),
+            "throughput depth 3 still requires relaxed projected replay"
+        );
+    }
+
+    #[test]
+    fn profitability_round_requires_pure_mtp_sources_within_depth() {
+        use super::super::mtp_routing::MtpDraftSource;
+        assert!(is_profitability_mtp_round(
+            3,
+            &[
+                MtpDraftSource::Mtp,
+                MtpDraftSource::Mtp,
+                MtpDraftSource::Mtp
+            ],
+            3
+        ));
+        assert!(is_profitability_mtp_round(1, &[MtpDraftSource::Mtp], 3));
+        assert!(!is_profitability_mtp_round(0, &[], 3));
+        assert!(!is_profitability_mtp_round(4, &[MtpDraftSource::Mtp; 4], 3));
+        assert!(!is_profitability_mtp_round(
+            2,
+            &[MtpDraftSource::Mtp, MtpDraftSource::Ngram],
+            3
+        ));
+        assert!(!is_profitability_mtp_round(1, &[MtpDraftSource::Mtp], 0));
+    }
+
+    #[test]
+    fn depth_three_variable_yield_still_latches_on_losing_cost() {
+        let mut state = MtpProfitabilityState::default();
+        state.reset(true, config());
+        state.record_direct_probe(30_000);
+        for _ in 0..4 {
+            assert!(!state.record_mtp_round(500_000, 4));
+        }
+        state.record_direct_probe(30_000);
+        for round in 0..8 {
+            let bypassed = state.record_mtp_round(140_000, 4);
+            assert_eq!(bypassed, round == 7);
+        }
+        let snapshot = state.snapshot();
+        assert!(snapshot.bypassed);
+        assert_eq!(snapshot.mtp_emitted_tokens, 32);
     }
 
     #[test]
     fn observation_budget_accounts_for_bootstrap_rounds_and_tail_cutoff() {
         let cfg = config();
         assert_eq!(cfg.required_observation_rounds(), 12);
-        assert!(!cfg.has_observation_budget(39, 16));
-        assert!(cfg.has_observation_budget(40, 16));
-        assert!(!cfg.has_observation_budget(24, 0));
-        assert!(cfg.has_observation_budget(25, 0));
+        assert!(!cfg.has_observation_budget(39, 16, 2));
+        assert!(cfg.has_observation_budget(40, 16, 2));
+        assert!(!cfg.has_observation_budget(24, 0, 2));
+        assert!(cfg.has_observation_budget(25, 0, 2));
+        assert!(!cfg.has_observation_budget(61, 16, 4));
+        assert!(cfg.has_observation_budget(62, 16, 4));
 
         let spaced = MtpProfitabilityConfig {
             probe_rounds: 4,
