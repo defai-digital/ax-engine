@@ -926,7 +926,7 @@ pub fn mtp_lazy_adopt_state_enabled() -> bool {
     mtp_lazy_adopt_state_env() || qwen_linear_throughput_mtp_enabled()
 }
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_MTP_REBIND_VERIFY_FA` — after a relaxed Qwen verifier has
     /// produced replacement full-attention K/V buffers, rebind the rollback
     /// source cache to those outputs before the evaluation fence.  The source
@@ -934,8 +934,8 @@ env_flag!(
     /// replay and fallback recompute remain valid, while the superseded K/V
     /// handles no longer prevent MLX from donating `slice_update` inputs.
     ///
-    /// **Default: OFF.** M5 Max 2026-09-15 depth-3 flappy A/B: greedy identity
-    /// held, decode GM 1.005 vs off (below ADR-003 D5 1.01).
+    /// **Default: ON** (kill-switch `AX_MLX_MTP_REBIND_VERIFY_FA=0`).
+    /// M5 Max 2026-09-15 depth-3 flappy: greedy identity held, decode GM 1.005.
     mtp_rebind_verify_fa_enabled,
     "AX_MLX_MTP_REBIND_VERIFY_FA"
 );
@@ -954,22 +954,18 @@ pub fn mtp_linear_tape_capture_enabled() -> bool {
     mtp_linear_tape_capture_env()
 }
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT` — retain the verifier's projected
     /// QKV/A/B inputs but do not write a full recurrent-state checkpoint at
     /// the confirmed row. Fused GDN verify stays eligible via the
     /// no-checkpoint fused kernel.
-    mtp_skip_prefix_checkpoint_env,
+    ///
+    /// **Default: ON** (kill-switch `AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT=0`).
+    /// M5 Max 2026-09-15 flappy: greedy identity held at depth 1 and 3
+    /// (decode GM 1.001 / 1.000). Avoids the 144 MiB/cycle row-0 write.
+    mtp_skip_prefix_checkpoint_enabled,
     "AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT"
 );
-
-/// Skip the confirmed-row recurrent checkpoint. Kept env-only: M5 Max
-/// 2026-09-15 flappy A/B (depth 1 and product depth 3) held greedy identity
-/// at decode GM 1.001 / 1.000, below ADR-003 D5 1.01. When fused GDN verify
-/// is also eligible, skip uses the no-checkpoint fused kernel.
-pub fn mtp_skip_prefix_checkpoint_enabled() -> bool {
-    mtp_skip_prefix_checkpoint_env()
-}
 
 env_flag!(
     /// `AX_MLX_MTP_REUSE_PROCESSED_GDN` — retain the verifier's already
@@ -5971,14 +5967,14 @@ env_flag_default_on!(
     "AX_MTP_COMPILED_HEAD"
 );
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MTP_COMPILED_HEAD_FIXED_KV` — give the compiled multi-depth Qwen
     /// draft head a fixed-capacity K/V buffer and an explicit tensor write
     /// offset. This avoids concatenating the complete MTP history at every
     /// draft depth and makes one compiled closure reusable across steps.
     ///
-    /// **Default: OFF.** M5 Max 2026-09-15 depth-3 flappy A/B: greedy identity
-    /// held, decode GM 1.002 vs off (below ADR-003 D5 1.01).
+    /// **Default: ON** (kill-switch `AX_MTP_COMPILED_HEAD_FIXED_KV=0`).
+    /// M5 Max 2026-09-15 depth-3 flappy: greedy identity held, decode GM 1.002.
     mtp_compiled_head_fixed_kv_enabled,
     "AX_MTP_COMPILED_HEAD_FIXED_KV"
 );
@@ -6158,6 +6154,30 @@ mod tests {
     #[test]
     fn parse_bool_env_unset_is_false() {
         assert!(!parse_bool_env("AX_FASTPATH_TEST_DEFINITELY_UNSET"));
+    }
+
+    #[test]
+    fn qwen_mtp_eager_gates_default_on_unless_kill_switched() {
+        for var in [
+            "AX_MLX_MTP_SKIP_PREFIX_CHECKPOINT",
+            "AX_MLX_MTP_REBIND_VERIFY_FA",
+            "AX_MTP_COMPILED_HEAD_FIXED_KV",
+        ] {
+            unsafe {
+                std::env::remove_var(var);
+            }
+            assert!(
+                parse_bool_env_default_on(var),
+                "{var} must default on when unset"
+            );
+            unsafe {
+                std::env::set_var(var, "0");
+            }
+            assert!(!parse_bool_env_default_on(var), "{var}=0 must kill-switch");
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
     }
 
     #[test]
