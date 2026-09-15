@@ -1612,6 +1612,176 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires a real Flash Next pack and captured QSA inputs"]
+    fn qsa_real_pack_same_input_replay() {
+        use crate::model::qwen4_exp::profiling;
+        use crate::model::shared::ProjectionBatchPolicy;
+        use crate::model::shared::qwen4_exp_attention::Qwen4ExpAttentionCache;
+        use sha2::{Digest, Sha256};
+
+        let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR").unwrap());
+        let replay = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_QSA_REPLAY_DIR").unwrap());
+        let output = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT").unwrap());
+        let mut manifest: NativeModelManifest =
+            serde_json::from_slice(&std::fs::read(root.join("model-manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest.model_family, "qwen4_exp");
+        let roles = [
+            NativeTensorRole::AttentionQ,
+            NativeTensorRole::AttentionK,
+            NativeTensorRole::AttentionV,
+            NativeTensorRole::AttentionO,
+            NativeTensorRole::AttentionQNorm,
+            NativeTensorRole::AttentionKNorm,
+            NativeTensorRole::Qwen4ExpIndexerQkProj,
+            NativeTensorRole::Qwen4ExpIndexerQNorm,
+            NativeTensorRole::Qwen4ExpIndexerKNorm,
+        ];
+        manifest
+            .tensors
+            .retain(|spec| spec.layer_index == Some(3) && roles.contains(&spec.role));
+        assert_eq!(manifest.tensors.len(), roles.len());
+        for role in roles {
+            assert_eq!(
+                manifest.tensors.iter().filter(|s| s.role == role).count(),
+                1
+            );
+        }
+        let mut name_map = load_resident_tensors(
+            &root,
+            &root.canonicalize().unwrap(),
+            &manifest,
+            &HashSet::new(),
+        )
+        .unwrap();
+        let loaded_names: Vec<_> = {
+            let mut names: Vec<_> = name_map.keys().cloned().collect();
+            names.sort();
+            names
+        };
+        sanitize_norms_and_convs(manifest.weight_sanitize, &manifest.tensors, &mut name_map)
+            .unwrap();
+        let hidden = manifest.hidden_size as usize;
+        let rotary =
+            (manifest.attention_head_dim as f32 * manifest.partial_rotary_factor.unwrap()) as usize;
+        let rope = manifest.rope_theta.unwrap() as f32;
+        let eps = manifest.rms_norm_eps.unwrap();
+        let cfg = &manifest.qwen4_exp;
+        let main = Qwen4ExpAttentionConfig::new(
+            hidden,
+            manifest.attention_head_count as usize,
+            manifest.kv_head_count as usize,
+            manifest.attention_head_dim as usize,
+            rotary,
+            rope,
+            eps,
+        )
+        .unwrap();
+        let indexer = QsaConfig::new(
+            cfg.indexer_n_heads.unwrap() as usize,
+            cfg.indexer_kv_heads.unwrap() as usize,
+            cfg.indexer_head_dim.unwrap() as usize,
+            rotary,
+            cfg.indexer_compress_ratio.unwrap() as usize,
+            cfg.indexer_budget.unwrap() as usize,
+            hidden,
+            eps,
+            rope,
+        )
+        .unwrap();
+        let attention =
+            build_qsa_attention(&manifest.tensors, &mut name_map, 3, main, indexer).unwrap();
+        assert!(name_map.is_empty());
+        let inputs: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(replay.join("manifest.json")).unwrap()).unwrap();
+        let tokens = inputs["input_ids"].as_array().unwrap().len();
+        let chunk = inputs["prefill_chunk_size"].as_u64().unwrap() as usize;
+        let singles = 1 + inputs["teacher_force_ids"].as_array().unwrap().len();
+        assert!((2..=4096).contains(&tokens) && (1..=128).contains(&chunk));
+        assert!(tokens + singles - 1 <= 4096);
+        let prefix_steps = (tokens - 1).div_ceil(chunk);
+        let stages = replay.join("native-observed/stages");
+        let bytes = |array: &MlxArray| {
+            let array = astype(array, MlxDtype::Float32, None);
+            mlx_sys::try_eval(&[&array]).unwrap();
+            array
+                .data_f32()
+                .iter()
+                .flat_map(|value| {
+                    assert!(value.is_finite());
+                    value.to_le_bytes()
+                })
+                .collect::<Vec<_>>()
+        };
+        let fingerprint = |array: &MlxArray| {
+            serde_json::json!({"shape": array.shape(), "dtype": format!("{:?}", array.dtype()),
+                "sha256": format!("{:x}", Sha256::digest(bytes(array)))})
+        };
+        let mut cache = Qwen4ExpAttentionCache::empty();
+        let mut position = 0;
+        let mut records = Vec::new();
+        for step in 0..prefix_steps + singles {
+            let name = format!("forward-{}", step + 1);
+            let meta: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(stages.join(format!("{name}-attention_hc_read.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(meta["layer"], 3);
+            assert_eq!(meta["dtype"], "Bfloat16");
+            let seq = if step < prefix_steps {
+                chunk.min(tokens - 1 - position)
+            } else {
+                1
+            };
+            assert_eq!(meta["shape"], serde_json::json!([1, seq, hidden]));
+            let payload =
+                std::fs::read(stages.join(format!("{name}-attention_hc_read.f32le"))).unwrap();
+            assert_eq!(payload.len(), seq * hidden * 4);
+            let values: Vec<f32> = payload
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                .collect();
+            let input = mlx_sys::reshape(
+                &MlxArray::from_f32_slice(&values),
+                &[1, seq as i32, hidden as i32],
+                None,
+            );
+            let input = astype(&input, MlxDtype::Bfloat16, None);
+            assert_eq!(bytes(&input), payload);
+            profiling::begin_forward_dump();
+            profiling::layer(3);
+            let result = attention
+                .forward(&input, &cache, position, ProjectionBatchPolicy::Shared)
+                .unwrap();
+            let delta = bytes(result.delta());
+            assert_eq!(
+                delta,
+                std::fs::read(stages.join(format!("{name}-qsa_output.f32le"))).unwrap(),
+                "full-model output at step {step}"
+            );
+            position += seq;
+            cache = result.into_next_state();
+            assert_eq!(cache.token_count().unwrap(), position);
+            assert_eq!(cache.index().token_count().unwrap(), position);
+            records.push(serde_json::json!({"step": step, "position": position,
+                "output_sha256": format!("{:x}", Sha256::digest(&delta)),
+                "input_sha256": format!("{:x}", Sha256::digest(&payload)),
+                "cache": [fingerprint(cache.keys().unwrap()), fingerprint(cache.values().unwrap()),
+                    fingerprint(cache.index().keys().unwrap())]}));
+            eprintln!("qsa replay position={position}");
+        }
+        assert_eq!(position, tokens + singles - 1);
+        std::fs::write(
+            output,
+            serde_json::to_vec_pretty(&serde_json::json!({"completed": true,
+                "qualification": false, "loaded_names": loaded_names, "records": records,
+                "full_model_outputs_exact": true, "peak_mlx_bytes": mlx_sys::get_peak_memory()}))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn paging_plan_binds_native_metadata_without_reading_payloads() {
         use ax_engine_core::{NativeTensorDataType, NativeTensorQuantization};
         let root = std::env::temp_dir().join(format!(

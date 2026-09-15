@@ -37,11 +37,15 @@ pub(crate) fn layer(index: usize) {
     });
 }
 
+pub(crate) fn begin_forward_dump() {
+    DUMP_LAYER.set(usize::MAX);
+    DUMP_FORWARD.set(DUMP_FORWARD.get() + 1);
+}
+
 pub(crate) fn dump(stage: &'static str, arrays: &[&MlxArray]) {
     if let Some(root) = std::env::var_os("AX_FLASH_NEXT_FIRST_LAYER_DUMP") {
         if stage == "embedding" {
-            DUMP_LAYER.set(usize::MAX);
-            DUMP_FORWARD.set(DUMP_FORWARD.get() + 1);
+            begin_forward_dump();
         }
         let selected_layer = std::env::var("AX_FLASH_NEXT_DUMP_LAYER")
             .map(|value| value.parse::<usize>().expect("diagnostic layer index"))

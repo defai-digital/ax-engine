@@ -440,6 +440,14 @@ impl Qwen4ExpAttention {
         let q_packed = qw_with_policy(hidden, &self.q_proj, policy);
         let k_raw = qw_with_policy(hidden, &self.k_proj, policy);
         let v_raw = qw_with_policy(hidden, &self.v_proj, policy);
+        #[cfg(test)]
+        for (stage, array) in [
+            ("qsa_projected_query_gate", &q_packed),
+            ("qsa_projected_key", &k_raw),
+            ("qsa_projected_value", &v_raw),
+        ] {
+            crate::model::qwen4_exp::profiling::dump(stage, &[array]);
+        }
 
         let packed = reshape(
             &q_packed,
@@ -452,6 +460,8 @@ impl Qwen4ExpAttention {
             .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("query/gate split"))?;
 
         let queries = rms_with_gain(&queries, &self.q_norm, cfg.rms_eps);
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::dump("qsa_normalized_query", &[&queries]);
         let queries = rope_bhsd(
             &transpose(&queries, &[0, 2, 1, 3], None),
             cfg.rotary_dim,
@@ -461,6 +471,8 @@ impl Qwen4ExpAttention {
 
         let keys = reshape(&k_raw, &[batch, seq, cfg.kv_heads, cfg.head_dim], None);
         let keys = rms_with_gain(&keys, &self.k_norm, cfg.rms_eps);
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::dump("qsa_normalized_key", &[&keys]);
         let keys = rope_bhsd(
             &transpose(&keys, &[0, 2, 1, 3], None),
             cfg.rotary_dim,
@@ -475,6 +487,14 @@ impl Qwen4ExpAttention {
         let values = astype(&values, dtype, None);
         let staged_keys = append_cache(cache.keys(), &keys)?;
         let staged_values = append_cache(cache.values(), &values)?;
+        #[cfg(test)]
+        for (stage, array) in [
+            ("qsa_queries", &queries),
+            ("qsa_keys", &staged_keys),
+            ("qsa_values", &staged_values),
+        ] {
+            crate::model::qwen4_exp::profiling::dump(stage, &[array]);
+        }
 
         let attn = attend_selected(&queries, &staged_keys, &staged_values, &selection, cfg)?;
         let attn = reshape(

@@ -393,3 +393,24 @@ changes no production math or admission setting. Workspace tests pass with
 3,644 passed and 40 ignored. It covers one first-pruning trajectory, not broad
 quality, all-layer mask equivalence, throughput or target-hardware
 qualification. See the [curated QSA boundary evidence](../../benchmarks/results/flash-next-qsa-pruning-boundary-m2-20260915.json).
+
+### Same-input attention attribution
+
+On the saved 2,055-token M2 trajectory, the new ignored first-QSA replay test
+runs separately in plain and observed modes and reproduces all 21 saved
+full-model branch outputs exactly. Original MLX-VLM attention on those same inputs retains exact
+output/cache fingerprints across plain, observed and explicit-position runs.
+All 63 projected Q/K/V tensors and 21 gates agree across implementations.
+
+Controlled experiments separately vary prepared Q/K and SDPA execution,
+then normalization and rotation. All original/native endpoint controls
+reproduce their saved tensors exactly. Given the saved boundary inputs, these
+isolated controls reproduce the endpoints without re-running the rest of the model.
+The SDPA comparison jointly changes query grouping, KV expansion, gather
+order, masking and kernel selection; it does not isolate any one mechanism.
+Matching controls does not establish which implementation is more accurate
+or explain the entire full-model logit difference.
+
+Only an ignored replay test and test-only captures changed. Workspace tests
+report 3,644 passed and 41 ignored. No production math or qualification
+setting changed. See the [curated attention attribution evidence](../../benchmarks/results/flash-next-qsa-attention-attribution-m2-20260915.json).
