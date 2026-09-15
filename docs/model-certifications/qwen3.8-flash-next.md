@@ -313,3 +313,29 @@ AX differs from the recurrent reference by up to 2.09375. This attributes
 schedule sensitivity on one request; it neither replaces the original oracle
 nor establishes full-model accuracy. No production GDN code changed. See the
 [schedule attribution evidence](../../benchmarks/results/flash-next-gdn-schedule-attribution-m2-20260915.json).
+
+### Extended functional QA
+
+On the authorized M2 development host, a frozen 24-item English cohort from
+eight existing QA categories scores 23/24 with direct AX, required verified
+MTP, and the unchanged MLX-VLM reference. All three answer `9` to the gravity
+item; the expected answer and failure remain unchanged. This shared failure
+does not identify its root cause or establish correctness.
+
+Direct and MTP text matches on all 24 items. AX and the reference match on
+22; two explanations differ while retaining the correct conclusion. All
+responses stop normally. Four additional native repeat controls match, both
+owned servers exit successfully, and selected-expert counters confirm actual
+reads. Required MTP records 399 draft and 335 accepted tokens across its 26
+requests; these counters do not establish a speed improvement.
+Prefix hits and direct-fallback steps are zero, so this cohort does not
+exercise those paths. Direct fallback counts non-speculative decode steps,
+separately from unaccepted draft proposals.
+
+The original reference first reproduces five saved complete logit tensors
+from one prior control request, separately from the 24 QA prompts.
+Prompts, token IDs, source hashes, full answers, checker reports and route
+counters accompany the [functional QA evidence](../../benchmarks/results/flash-next-extended-qa-m2-20260915.json).
+This short closed-answer cohort does not close full numerical, broad quality,
+trained-MTP, profitability or target-hardware qualification gates. No runtime
+source or public readiness setting changed.
