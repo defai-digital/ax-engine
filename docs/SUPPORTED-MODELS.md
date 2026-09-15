@@ -6,9 +6,16 @@ paths for migration, validation, or external reference rows. The path matters
 because it defines who runs the model graph, which API features are available,
 and what benchmark claims are allowed.
 
+**Primary model:** `qwen3.8-27b:axq`
+([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
+@ `3e290738e96972307c6aeb9934ab170ca0eae1c1`). Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+
+Record: [Qwen 3.8 27B AXQ certification](model-certifications/qwen3.8-27b-axq.md).
+Super-class Qwen 3.8 (2.4T) is experimental and is not this pack.
+
 **Related:** [Getting Started](GETTING-STARTED.md) · [CLI](CLI.md) ·
 [Model Support Policy](MODEL-SUPPORT-POLICY.md) · [MTP Docs](mtp/README.md) ·
-[FAQ](FAQ.md)
+[FAQ](FAQ.md) · [Testing](TESTING.md)
 
 | Path | Use it for | Who runs the model | What the result means |
 | --- | --- | --- | --- |
@@ -52,7 +59,8 @@ resolved session*, not how well a family is supported.
 | --- | --- |
 | **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
-| **64 GB+** | Comfortable always-on multi-role local server. Qwen 3.8 Super-class (2.4T) packs are still not a production choice — local decode stays too slow even at 2-bit. For Qwen 3.8, use the production-size 27B AXQ packs added in v7.0.0. |
+| **64 GB (Mac mini M5)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
+| **256 GB (Mac Studio M5 Ultra)** | Best experience for Qwen 3.8 Flash Next (125B-A6B). Not a certified AX default yet. Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
 Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
@@ -98,9 +106,14 @@ Qwen 3.8 caveat:
   published throughput claim. Do not present Super-class Qwen 3.8 as a
   Qwen 3.5 / 3.6 substitute.
 - AX Engine v7.0.0 adds the production-size Qwen 3.8 27B catalog and serve
-  path. Start with `qwen3.8-27b:axq` (the pinned AXQ 6-bit MTP pack). The
-  checkpoint path is Tier 1; MTP Tier 2 performance certification remains
-  pending.
+  path. Start with `qwen3.8-27b:axq` (the pinned AXQ 6-bit MTP pack). This is
+  the unique general-purpose default and primary optimization target.
+  Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
+- **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU
+  for Mac Studio M5 Ultra 256 GB. It is **incubating**: convert fails closed;
+  there is no repo-owned graph and no download alias. Do not treat it as 27B
+  or as Super-class 2.4T. Record:
+  [Qwen 3.8 Flash Next](model-certifications/qwen3.8-flash-next.md).
 
 A model moves between tiers by landing evidence, not by renaming:
 
@@ -299,7 +312,7 @@ serve them through the idempotent resolution flow:
 | --- | --- |
 | `ax-qwen3.5-9b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.5-9B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3.6-27b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-27B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
-| `ax-qwen3.8-27b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-{4,6}bit-MTP` (candidate; production-size 27B) |
+| `ax-qwen3.8-27b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-{4,6}bit-MTP` (primary 27B pack; 6-bit is the default serve target) |
 | `ax-qwen3.6-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` (OptiQ flagship; AXQ is `:axq`) |
 | `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-a3b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-{4,6}bit` (**Tier 1 certified**, no MTP) |
 | `ax-qwen3-vl-8b`[`-4bit`] | `AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-{4,6}bit` (development AXQ, no MTP) |
@@ -317,13 +330,18 @@ serve them through the idempotent resolution flow:
 | `ax-qwen3-embedding-4b` | `AutomatosX/AX-Qwen3-Embedding-4B-MLX-4bit-DWQ` |
 | `ax-qwen3-embedding-8b` | `AutomatosX/AX-Qwen3-Embedding-8B-MLX-4bit-DWQ` |
 
-**AXQ flagship candidates — revision-pinned, not yet default**
+**Primary pack (revision-pinned default serve target)**
 
 | Alias | Repo | Pinned revision | Status |
 | --- | --- | --- | --- |
-| `qwen3.6-27b:axq`, `qwen3.6-27b:axq-6bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP` | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` | Candidate; preferred quality/default candidate |
+| `qwen3.8-27b:axq`, `qwen3.8-27b:axq-6bit`, `ax-qwen3.8-27b` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `3e290738e96972307c6aeb9934ab170ca0eae1c1` | Primary optimization target; Hub checkpoint Tier 1; MTP Tier 2 pending; AX record Candidate |
+
+**Other AXQ selectors — revision-pinned**
+
+| Alias | Repo | Pinned revision | Status |
+| --- | --- | --- | --- |
+| `qwen3.6-27b:axq`, `qwen3.6-27b:axq-6bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP` | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` | Secondary; Candidate; evidence-richest AXQ soak (8h, not 72h) |
 | `qwen3.6-27b:axq-4bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP` | `6182ccbc41c7397ff90670f740c6d9eacfa4b09f` | Candidate; compact fallback |
-| `qwen3.8-27b:axq`, `qwen3.8-27b:axq-6bit`, `ax-qwen3.8-27b` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `3e290738e96972307c6aeb9934ab170ca0eae1c1` | Tier 1 checkpoint; MTP Tier 2 not certified |
 | `qwen3.8-27b:axq-4bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP` | `7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e` | Candidate; compact 4-bit MTP sibling |
 | `qwen3.6-35b:axq`, `qwen3.6-35b:axq-6bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP` | `6a4c220734f81112555ee8783d91e0065c54301c` | Candidate; 35B-A3B AXQ 6-bit MTP |
 | `qwen3.6-35b:axq-4bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP` | `952031cbfbb9cf31414a57eeb681c34dc08ec1e9` | Candidate; compact 4-bit MTP sibling |

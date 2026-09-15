@@ -415,6 +415,15 @@ class AxEngineCliTests(unittest.TestCase):
             assert profile is not None
             self.assertEqual(profile.preset, preset, alias)
 
+    def test_qwen38_27b_axq_is_primary_pinned_pack(self) -> None:
+        repo, profile, revision = _cli._download_repo_id("qwen3.8-27b:axq")
+        self.assertEqual(repo, "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP")
+        self.assertEqual(revision, "3e290738e96972307c6aeb9934ab170ca0eae1c1")
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(profile.preset, "qwen3.8-27b")
+        self.assertIsNone(_cli._profile_certification(profile))
+
     def test_mxfp4_repo_quant_bits(self) -> None:
         profile = _cli._profile_for_model("gpt-oss-20b")
         self.assertIsNotNone(profile)

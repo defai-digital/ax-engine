@@ -5,6 +5,11 @@ Silicon. Linux jobs are limited to artifact transfer, PyPI upload, Homebrew
 formula metadata, supply-chain checks, and CI aggregation; they do not build or
 execute AX Engine.
 
+Primary-pack qualification for Qwen 3.8 27B AXQ is in
+[Testing](TESTING.md) and
+[the 3.8 certification record](model-certifications/qwen3.8-27b-axq.md).
+It is operator-run on Mac mini M5 64 GB; CI never mounts that 27B snapshot.
+
 ## Publish a release
 
 Commit and push the synchronized version change, then wait for the exact commit

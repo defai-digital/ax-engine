@@ -9,6 +9,20 @@ Compatibility adapters for upstream `mlx_lm.server` and `llama.cpp` are
 explicit migration and validation paths. They do not widen the AX-owned runtime
 surface and must not be described as AX inference performance.
 
+## Product focus vs support tier
+
+Support tier is not the same as product focus. Keep the axes separate:
+
+| Axis | Values | What it decides |
+| --- | --- | --- |
+| Support tier | Certified / Compatible / Experimental (this page and [Supported Models](SUPPORTED-MODELS.md)) | Whether AX owns the graph and which claims are allowed |
+| Product focus | Primary / Secondary | What README, first-run, and qualification center on |
+| Capability certification | Checkpoint Tier 1 / MTP Tier 2 / AX record | Evidence for one pack |
+
+The unique **primary optimization target** is Qwen 3.8 27B AXQ 6-bit MTP
+(`qwen3.8-27b:axq`). Other Certified families stay supported and secondary.
+Do not put `Primary` on the runtime `support_tier` enum.
+
 ## Support Tiers
 
 | Tier | Meaning | Requirements |

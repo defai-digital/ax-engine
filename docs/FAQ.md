@@ -64,9 +64,8 @@ configurations:
 
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
-| Mac mini M4 Pro | 64 GB RAM | Compact always-on local chatbot and agent server |
-| MacBook Pro M5 Max | 128 GB RAM | Portable high-throughput chatbot, agent, and coding stack |
-| Mac Studio M3 Ultra | 256 GB RAM | Larger local model portfolio, longer contexts, and heavier parallel workloads |
+| Mac mini M5 | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
+| Mac Studio M5 Ultra | 256 GB RAM | Best experience for Qwen 3.8 Flash Next (125B-A6B; not yet a certified AX default) |
 
 ## What model stack should I run on high-memory Apple Silicon?
 
@@ -75,22 +74,22 @@ but the better local setup is to match the model to the workflow.
 
 | Role | Recommended model | Setup | App | Why |
 | --- | --- | --- | --- | --- |
-| Default chatbot | Gemma 4 26B-A4B / 31B | 4-bit or 6-bit, 16K-32K | [ax-studio](https://github.com/defai-digital/ax-studio) | General assistant path for reasoning, chat, JSON/function calling, and on-device agent workflows |
-| General agentic model | Qwen3.6-35B-A3B / Qwen3.6-27B | 35B A3B 4-bit; 27B 4/5/6-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
+| Default chatbot | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) | 6-bit MTP, 16K-32K, Mac mini M5 64 GB | [ax-studio](https://github.com/defai-digital/ax-studio) | Primary optimization target; general chat and agent path |
+| Secondary dense / MoE | Qwen 3.6 27B or 35B-A3B | 27B 4/6-bit; 35B A3B 4-bit, 16K-32K | AX server / SDK | Certified secondary families; 3.6 holds the published 8h soak |
 | Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
 | Embedding / RAG ingest | Qwen3-Embedding or EmbeddingGemma | 0.6B / 4B / 8B (Qwen3); 300M (EmbeddingGemma) | AX server `/v1/embeddings` | Sustained ingest-scale throughput; AX last-token pooling (Qwen3) or mean pooling + Dense head (EmbeddingGemma) |
 
 Suggested default stack (primary productivity):
 
 ```text
-Chatbot:
-Gemma 4 31B 4-bit/6-bit + 16K
-
-General agent:
-Qwen3.6-35B-A3B 4-bit + 32K
+Chatbot / general agent:
+qwen3.8-27b:axq (6-bit MTP) + 16K
 
 Coding agent:
 Qwen3-Coder-Next 6-bit + 16K
+
+Secondary dense:
+qwen3.6-27b:axq when you need the 3.6 soak path
 ```
 
 Optional secondary stacks (same 128 GB class; one large model at a time).

@@ -13,8 +13,9 @@ from 2026-07-27.
 
 | AX target | Chat and tools | Thinking | Image input | OpenClaw role |
 | --- | --- | --- | --- | --- |
+| Qwen 3.8 27B (`qwen3.8-27b:axq`) | Yes | On/off | Not a P0 multimodal claim for this pack | Default dense general agent (primary pack) |
 | Qwen3.5 9B | Yes | On/off | Yes when the loaded manifest advertises it | Lower-memory local agent |
-| Qwen3.6 27B | Yes | On/off | Yes when the loaded manifest advertises it | Strong dense general agent |
+| Qwen3.6 27B | Yes | On/off | Yes when the loaded manifest advertises it | Secondary dense general agent |
 | Qwen3.6 35B-A3B | Yes | On/off | Yes when the loaded manifest advertises it | Larger MoE general agent |
 | Qwen3-VL Instruct | Yes | No | Yes | Dedicated vision agent |
 | Qwen3-VL Thinking | Yes | On/off | Yes | Vision plus reasoning |
@@ -34,12 +35,13 @@ budget. That meets OpenClaw's 16K guided-setup minimum, but a 32K context and an
 8K output budget are more practical for tool-heavy agent sessions:
 
 ```bash
-ax-engine serve ax-qwen3.6-27b --port 31418 -- \
+ax-engine serve qwen3.8-27b:axq --port 31418 -- \
   --total-blocks 2048 \
   --max-batch-tokens 8192
 ```
 
 Equivalent managed aliases are `ax-qwen3.5-9b` and `ax-qwen3.6-35b`.
+`ax-qwen3.6-27b` remains a secondary dense pack.
 Qwen3-VL can be served from a prepared local model directory, or from the
 managed Qwen3-VL 30B-A3B Instruct AXQ aliases:
 

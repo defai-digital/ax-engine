@@ -258,6 +258,11 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: true,
             uses_decoder_prefix: false,
         }),
+        // Qwen 3.8 Flash Next (`qwen4_exp`): incubating dedicated-trunk family.
+        // Fail closed until a repo-owned graph exists. Never remap onto qwen3_5.
+        "qwen4_exp" => Err(ConvertError::IncubatingQwen38FlashNext {
+            model_type: "qwen4_exp".to_string(),
+        }),
         other => Err(ConvertError::UnsupportedModelType {
             model_type: other.to_string(),
         }),

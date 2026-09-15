@@ -210,6 +210,13 @@ bash scripts/check-qa.sh
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/check_no_mlxcel_public_docs.py \
   scripts/test_check_no_mlxcel_public_docs.py \
+  scripts/check_qwen38_primary_claims.py \
+  scripts/test_check_qwen38_primary_claims.py \
+  scripts/qualify_qwen38_27b.py \
+  scripts/test_qualify_qwen38_27b.py \
+  scripts/qualify_qwen38_flash_next.py \
+  scripts/test_qualify_qwen38_flash_next.py \
+  scripts/test_qwen38_primary_alias.py \
   scripts/check_no_turboquant_references.py \
   scripts/test_check_no_turboquant_references.py \
   scripts/check_disk_prefix_cache_promotion.py \
@@ -288,6 +295,10 @@ bash scripts/check-qa.sh
   scripts/test_offline_policy_search_artifact.py \
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_check_no_mlxcel_public_docs.py \
+  scripts/test_check_qwen38_primary_claims.py \
+  scripts/test_qualify_qwen38_27b.py \
+  scripts/test_qualify_qwen38_flash_next.py \
+  scripts/test_qwen38_primary_alias.py \
   scripts/test_check_no_turboquant_references.py \
   scripts/test_check_disk_prefix_cache_promotion.py \
   scripts/test_check_direct_mlx_hotpath_probe_artifact.py \
@@ -333,6 +344,9 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_mla_prefix_restore_retirement.py
 "$PYTHON_BIN" scripts/render_readme_performance_charts.py --check
 "$PYTHON_BIN" scripts/check_no_mlxcel_public_docs.py
+"$PYTHON_BIN" scripts/check_qwen38_primary_claims.py
+"$PYTHON_BIN" scripts/qualify_qwen38_27b.py --dry-run
+"$PYTHON_BIN" scripts/qualify_qwen38_flash_next.py --dry-run
 "$PYTHON_BIN" scripts/check_no_turboquant_references.py
 "$PYTHON_BIN" scripts/test_check_disk_prefix_cache_promotion.py
 "$PYTHON_BIN" scripts/check_disk_prefix_cache_promotion.py --help >/dev/null

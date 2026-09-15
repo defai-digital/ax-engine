@@ -4753,6 +4753,42 @@ fn rejects_unsupported_model_type() {
 }
 
 #[test]
+fn rejects_qwen38_flash_next_as_incubating_not_qwen35() {
+    for model_type in ["qwen4_exp", "qwen3.8-flash-next", "qwen38_flash_next"] {
+        let dir = unique_test_dir(&format!("flash-next-{model_type}"));
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": model_type,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "num_hidden_layers": 2,
+                "vocab_size": 151936,
+            }),
+        );
+        write_fake_safetensors(&dir, "model.safetensors", &[]);
+
+        let error = convert_hf_model_dir(&dir)
+            .expect_err("Qwen 3.8 Flash Next must fail closed until a repo-owned graph exists");
+        assert!(
+            matches!(error, ConvertError::IncubatingQwen38FlashNext { .. }),
+            "{model_type}: {error}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("Mac Studio M5 Ultra 256 GB"),
+            "{model_type}: {message}"
+        );
+        assert!(
+            message.contains("Do not load this checkpoint as qwen3_5"),
+            "{model_type}: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
 fn converts_muse_glimmer_text_config_and_layer_types() {
     let dir = unique_test_dir("muse_glimmer");
     write_config(

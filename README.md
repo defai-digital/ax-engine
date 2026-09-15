@@ -1,10 +1,17 @@
 # AX Engine
 
-AX Engine is a **Mac-first** LLM inference runtime for Apple Silicon. Install
-with Homebrew, download a curated model, and serve OpenAI-compatible endpoints
-locally — with a repo-owned MLX path for Gemma, Qwen, and GLM, first-class MTP,
-multi-model serving with exact-prompt prefix reuse, and peer-backed benchmarks
-against `mlx-lm`, MTPLX, and OMLX.
+AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
+for Qwen 3.8 27B AXQ**, with maintained support for additional Qwen, Gemma, GLM,
+and other certified families. Install with Homebrew, download the pinned 27B
+pack, and serve OpenAI-compatible endpoints locally.
+
+Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+
+The default pack is `qwen3.8-27b:axq`
+([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
+@ `3e290738e96972307c6aeb9934ab170ca0eae1c1`). Other families stay supported;
+they are not the first-run or qualification center. Super-class Qwen 3.8 (2.4T)
+is experimental only.
 
 NVIDIA/CUDA fleet serving lives in
 [AX Serving](https://github.com/defai-digital/ax-serving). AX Engine remains the
@@ -17,26 +24,32 @@ Additional native families (GLM 4.7 Flash, Nemotron Omni, Unlimited-OCR, Whisper
 MiniCPM-V, and others) are documented under
 [Supported Models](docs/SUPPORTED-MODELS.md).
 
-**Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 or newer).** For compact
-single models (Qwen 3.5 9B 4-bit preferred; 6-bit also fits), **16 GB** unified
-memory is enough — including base **Mac mini M4 16 GB**. Prefer 4-bit for
-headroom. For multi-model serving, longer contexts, and larger packs
-(27B/35B class), plan on **32 GB+** (64 GB recommended).
+**Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 or newer).** Product SKUs:
+
+- **Mac mini M5 64 GB** — best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`)
+- **Mac Studio M5 Ultra 256 GB** — best experience for Qwen 3.8 Flash Next
+  (125B-A6B; family not yet a certified AX default)
+
+Compact single models (Qwen 3.5 9B 4-bit preferred) still fit **16 GB**. Prefer
+4-bit for headroom on that class.
 
 ## Why AX Engine
 
-- **Faster speculative decode** — AutomatosX chat snapshots bundle their MTP
-  sidecar or assistant weights, so one standard download is serve-ready; AX
-  speeds up **14 of 15** exact same-package 6-bit MTP rows (**1.68×**
-  geometric mean; **0.88×–2.56×** range). In the newest Qwen3.6 peer campaign,
-  The latest AXQ MTP campaign compares AX Engine with MTPLX 2.9.0 and OMLX
-  0.6.4 on Qwen3.8/Qwen3.6; Gemma4 assistant-MTP peer lanes are unsupported
-  where the peers reject the AXQ contract
-- **Faster single-model serving** — on the path users actually measure
-  (streaming OpenAI chat), AX Engine **6.13.1** leads a peer MLX serving
-  engine **0.4.3** in **8/8** Qwen 3.6 decode cells, with **+12.9%**
-  matrix-wide geometric-mean throughput and ~**21–24%** MoE wins
-  (2026-08-06, M5 Max) — see [Performance](#performance)
+- **Optimized first for Qwen 3.8 27B AXQ** — one download of
+  `qwen3.8-27b:axq` is the default serve path. Direct and MTP refresh rows
+  live in [Performance](#performance); MTP speedup is workload-dependent and
+  MTP Tier 2 is still pending
+- **Also supported: Qwen 3.6 serving** — on streaming OpenAI chat, AX Engine
+  **6.13.1** leads a peer MLX serving engine **0.4.3** in **8/8** Qwen 3.6
+  decode cells, with **+12.9%** matrix-wide geometric-mean throughput and
+  ~**21–24%** MoE wins (2026-08-06, Apple M5 Max, 128 GB) — see
+  [Performance](#performance). These rows are Qwen 3.6 evidence, not 3.8
+- **Speculative decode across families** — AutomatosX chat snapshots bundle
+  their MTP sidecar or assistant weights. AX speeds up **14 of 15** exact
+  same-package 6-bit MTP rows (**1.68×** geometric mean; **0.88×–2.56×**
+  range). The latest AXQ MTP campaign compares AX Engine with MTPLX 2.9.0
+  and OMLX 0.6.4 on Qwen 3.8 / Qwen 3.6; Gemma 4 assistant-MTP peer lanes
+  are unsupported where the peers reject the AXQ contract
 - **Strong direct decode on Apple Silicon** — the fresh v6.13.3 snapshot wins
   **30/30** comparable decode cells against a separate-run `mlx_lm` 0.31.3
   reference (**+4.6%** geometric mean)
@@ -380,8 +393,8 @@ throughput ratio **5.03×** (TTFT and stream-gap p95 also win). Detail:
 
 ### MTP: AX Engine vs MTPLX vs OMLX
 
-This is the current AXQ campaign on `df-macbookpro-m5` (Apple M5 Max, 128 GB,
-macOS 26.6.2). It uses the repository `flappy` prompt suite, four prompt
+This is the current AXQ campaign on Apple M5 Max, 128 GB
+(macOS 26.6.2). It uses the repository `flappy` prompt suite, four prompt
 cases, 256 generated tokens, greedy sampling, two warmups, five measured
 repetitions, three-second cooldowns, and disabled prefix-cache/n-gram
 stacking. Values are the median decode throughput over 20 measured runs.
@@ -410,8 +423,7 @@ Per-runtime raw artifacts and the full contract: [AXQ MTP peer campaign](benchma
 
 ### Qwen3.8 27B AXQ 6-bit refresh (2026-08-30)
 
-The default Qwen3.8 package was rerun on `df-macbookpro-m5` (Apple M5 Max,
-128 GB) using
+The default Qwen3.8 package was rerun on Apple M5 Max, 128 GB using
 [`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP),
 pinned to snapshot `3e290738e96972307c6aeb9934ab170ca0eae1c1`. Direct rows use
 the `mlx_lm.benchmark`-compatible random-token contract with 128 generated

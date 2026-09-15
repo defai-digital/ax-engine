@@ -238,8 +238,8 @@ Exactness is checked with per-mode seed reproducibility. Summary artifacts:
 
 #### AXQ MTP peer decode comparison (2026-08-31)
 
-The current campaign was rerun serially on `df-macbookpro-m5` (Apple M5 Max,
-128 GB, macOS 26.6.2) with AX Engine 7.2.0, MTPLX 2.9.0, and the latest OMLX
+The current campaign was rerun serially on Apple M5 Max, 128 GB
+(macOS 26.6.2) with AX Engine 7.2.0, MTPLX 2.9.0, and the latest OMLX
 release used for this campaign, 0.6.4. It uses four `flappy` prompt cases,
 256 generated tokens, greedy sampling, two warmups, five measurements,
 three-second cooldowns, disabled prefix caches, and disabled n-gram stacking.

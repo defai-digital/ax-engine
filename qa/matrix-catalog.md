@@ -4,6 +4,19 @@ This documents the model matrix used for local verification. Paths are resolved
 from the active Hugging Face hub cache at runtime by `scripts/run_qa_matrix.py`
 (via inventory written to `$QA_SCRATCH/qa-matrix.txt`).
 
+## Primary cell (not CI)
+
+Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) is the product primary pack. Qualify it on
+Mac mini M5 64 GB with:
+
+```text
+OK|direct|qwen3.8-27b:axq|/path/to/pinned/6bit/snapshot
+OK|mtp|qwen3.8-27b:axq|/path/to/pinned/6bit/snapshot
+```
+
+Do not put this 27B snapshot on CI. Operator entry:
+`python3 scripts/qualify_qwen38_27b.py --dry-run`.
+
 ## Direct catalog aliases attempted
 
 See `MODEL_PROFILES` / server presets: Gemma 4, Qwen 3.5/3.6, GLM 4.7 Flash,

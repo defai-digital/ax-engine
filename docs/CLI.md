@@ -28,9 +28,10 @@ Use `serve` as the normal local-server entrypoint. Default listen is
 
 ```text
 ax-engine serve /path/to/mlx-model --port 31418
+ax-engine serve qwen3.8-27b:axq --port 31418
+ax-engine serve qwen3.8-27b:axq --offline --port 31418
 ax-engine serve ax-qwen3.6-35b --port 31418
 ax-engine serve qwen3.6-27b:axq --port 31418
-ax-engine serve qwen3.6-27b:axq --offline --port 31418
 ax-engine serve qwen36-35b --dry-run --json
 ax-engine serve qwen36-35b -- --max-batch-tokens 1024
 ```
@@ -50,11 +51,13 @@ a repository revision. In list and resolution JSON, `revision` records that
 commit and `certification` distinguishes a `candidate` checkpoint from a
 certified/default target.
 
-The AXQ flagship candidate uses explicit aliases while checkpoint-level
-certification is still open:
+The primary pack and other AXQ selectors use explicit aliases:
 
 ```text
-qwen3.6-27b:axq          # pinned AXQ 6-bit candidate
+qwen3.8-27b:axq          # primary 27B AXQ 6-bit MTP (default serve target)
+qwen3.8-27b:axq-6bit     # same checkpoint, explicit precision
+qwen3.8-27b:axq-4bit     # compact 4-bit sibling
+qwen3.6-27b:axq          # secondary AXQ 6-bit candidate
 qwen3.6-27b:axq-6bit     # same checkpoint, explicit precision
 qwen3.6-27b:axq-4bit     # smaller AXQ candidate
 qwen3.6-35b:axq          # pinned 35B-A3B AXQ 6-bit
@@ -67,8 +70,10 @@ muse-glimmer-30b:axq     # pinned Muse-Glimmer 30B AXQ 6-bit (development)
 
 `:axq` is the AXQ selector. Bare `qwen3.6-27b` / `gemma4-12b` stay
 mlx-community, and `ax-qwen3.6-27b` / `ax-qwen3.6-35b` / `ax-gemma4-12b`
-stay AutomatosX OptiQ/QAT. Do not retarget those defaults at AXQ. See the
-[AXQ certification record](model-certifications/qwen3.6-27b-axq.md).
+stay AutomatosX OptiQ/QAT. Do not retarget those defaults at AXQ. Primary
+pack record:
+[Qwen 3.8 27B AXQ](model-certifications/qwen3.8-27b-axq.md). Secondary 3.6
+record: [Qwen 3.6 27B AXQ](model-certifications/qwen3.6-27b-axq.md).
 
 Use `download` when you want model acquisition as a separate step. Managed
 aliases cover the curated [AutomatosX catalog](https://huggingface.co/AutomatosX)
@@ -79,6 +84,7 @@ with a bare `org/repo` id, a full Hugging Face link, or a pinned revision
 
 ```text
 ax-engine download --list
+ax-engine download qwen3.8-27b:axq
 ax-engine download ax-qwen3.5-9b
 ax-engine download ax-qwen3.6-27b
 ax-engine download ax-qwen3.6-27b-6bit

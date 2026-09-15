@@ -72,6 +72,8 @@ pub(crate) fn resolve_model_type(config: &serde_json::Value) -> Result<String, C
         "unlimited-ocr" => "unlimited_ocr".to_string(),
         "NemotronH_Nano_Omni_Reasoning_V3" => "nemotron_h_nano_omni".to_string(),
         "nemotron3_embed" | "nemotron_embed" => "nemotron_embed".to_string(),
+        "qwen4-exp" | "qwen3.8-flash-next" | "qwen3_8_flash_next" | "qwen38_flash_next"
+        | "qwen38-flash-next" => "qwen4_exp".to_string(),
         other => other.to_string(),
     };
     // Nemotron 3 Embed ships as Ministral3Model with encoder-embedding signals.

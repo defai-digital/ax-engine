@@ -1,9 +1,13 @@
 # Getting Started
 
-AX Engine is a Mac-first inference runtime with a local server, SDK bindings,
-and benchmark tooling. It is not only an MLX experiment: the repo-owned MLX
-runtime is one path, and delegated compatibility paths let users keep the same
-AX surface for broader model coverage.
+AX Engine is a Mac-first inference runtime **optimized first for Qwen 3.8 27B
+AXQ** (`qwen3.8-27b:axq`), with a local server, SDK bindings, and benchmark
+tooling. Other Certified families stay supported; they are not the first-run
+path. It is not only an MLX experiment: the repo-owned MLX runtime is one path,
+and delegated compatibility paths let users keep the same AX surface for
+broader model coverage.
+
+Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 Fleet orchestration and NVIDIA/CUDA worker integration are provided by the
 separate [AX Serving](AX-SERVING.md) product.
@@ -323,19 +327,20 @@ work via raw `org/repo` ids; raw Hugging Face checkpoints need
 ```text
 ax-engine tui                          # interactive: pick, download, serve, chat
 ax-engine download --list              # list managed aliases
-ax-engine serve ax-qwen3.6-35b --port 31418
-# Reuse the exact cached snapshot, or download it when absent
+ax-engine serve qwen3.8-27b:axq --port 31418
+# Require the pinned Qwen 3.8 27B AXQ 6-bit MTP cache
+ax-engine serve qwen3.8-27b:axq --offline --port 31418
+# Secondary dense AXQ candidate (not the primary pack)
 ax-engine serve qwen3.6-27b:axq --port 31418
-# Require the pinned AXQ 6-bit candidate to be present locally
-ax-engine serve qwen3.6-27b:axq --offline --port 31418
 # Default is already 127.0.0.1:31418 if you omit --host/--port; see docs/PORTS.md
 ax-engine download ax-embeddinggemma-300m   # embedding sibling for /v1/embeddings
 ```
 
-`qwen3.6-27b:axq` is the explicit, revision-pinned AXQ 6-bit flagship
-candidate. It is intentionally not the bare Qwen 3.6 alias until the
-[checkpoint certification gates](model-certifications/qwen3.6-27b-axq.md)
-are complete.
+`qwen3.8-27b:axq` is the unique general-purpose default. Record:
+[Qwen 3.8 27B AXQ certification](model-certifications/qwen3.8-27b-axq.md).
+`qwen3.6-27b:axq` remains an explicit secondary AXQ candidate;
+[its certification gates](model-certifications/qwen3.6-27b-axq.md) are still
+open and its 8-hour soak is 3.6 evidence, not 3.8.
 
 To keep a second allowlisted model resident while that server runs, use
 `POST /v1/model/load` with `load_mode=add` (Qwen 3.5 9B, Qwen 3.6 27B/35B,
