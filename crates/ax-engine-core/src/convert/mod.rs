@@ -1178,6 +1178,10 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         if name.contains(".self_attn.indexer.") {
             return Some((NativeTensorRole::Other, None));
         }
+        // Speculative MTP sidecar: preserve names, do not load as the primary trunk.
+        if name.starts_with("mtp.") || name.contains(".mtp.") {
+            return Some((NativeTensorRole::Other, None));
+        }
     }
 
     // Nemotron-H: backbone.embeddings / backbone.norm_f / backbone.layers.N.* / lm_head.
@@ -1429,6 +1433,10 @@ fn match_nemotron_h_tensor(
 }
 
 fn match_qwen4_exp_ngram_tensor(name: &str) -> Option<(NativeTensorRole, Option<u32>)> {
+    // Scalar FP8 scale next to the PLE table; same skip-at-load contract as shards.
+    if name.contains("ngram_embedding.weight_scale") {
+        return Some((NativeTensorRole::NgramEmbedding, None));
+    }
     // HF: ngram_embedding.shard_N ; mlx-vlm sanitize: ngram_embedding.shards.N
     for marker in ["ngram_embedding.shard_", "ngram_embedding.shards."] {
         if let Some(idx) = name.find(marker) {

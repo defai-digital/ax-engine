@@ -125,6 +125,10 @@ pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         "mlp.shared_expert.down_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
     ),
+    (
+        "mlp.shared_expert_gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGateInp),
+    ),
 ];
 
 pub(crate) const QWEN4_EXP_HC_GLOBAL_TENSOR_MAP: &[(&str, TensorMapping)] = &[

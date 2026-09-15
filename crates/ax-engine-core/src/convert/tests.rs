@@ -4887,6 +4887,18 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
                     &[16, 8],
                 ),
                 (
+                    "language_model.model.layers.0.mlp.shared_expert_gate.weight",
+                    "BF16",
+                    &[4],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.q_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                ("language_model.ngram_embedding.weight_scale", "BF16", &[1]),
+                ("mtp.layers.0.mlp.gate.weight", "BF16", &[4, 8]),
+                (
                     "language_model.ngram_embedding.shard_0.weight",
                     "BF16",
                     &[8, 8],
@@ -4968,6 +4980,27 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
             "{model_type}: shared_expert.gate_proj"
         );
         assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::FfnSharedExpertGateInp, Some(0)),
+            "{model_type}: shared_expert_gate"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::AttentionQ, Some(0)),
+            "{model_type}: full-attn q_proj"
+        );
+        assert!(
+            manifest.tensors.iter().any(|tensor| {
+                tensor.role == NativeTensorRole::NgramEmbedding
+                    && tensor.name.contains("ngram_embedding.weight_scale")
+            }),
+            "{model_type}: n-gram weight_scale must skip-eval"
+        );
+        assert!(
+            manifest.tensors.iter().any(|tensor| {
+                tensor.role == NativeTensorRole::Other && tensor.name.starts_with("mtp.")
+            }),
+            "{model_type}: mtp sidecar must not be dropped"
+        );
+        assert!(
             manifest.tensors.iter().any(|tensor| {
                 tensor.role == NativeTensorRole::NgramEmbedding
                     && tensor.name.contains("ngram_embedding.shard_0")
@@ -4987,6 +5020,12 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
                 .any(|n| n.contains("ngram_embedding.shards.1")),
             "{model_type}: {skipped:?}"
         );
+        assert!(
+            skipped
+                .iter()
+                .any(|n| n.contains("ngram_embedding.weight_scale")),
+            "{model_type}: {skipped:?}"
+        );
         for keep in [
             "attn_hyper_connection",
             "ple.key_proj",
@@ -4994,6 +5033,8 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
             "mlp.experts",
             "mlp.gate",
             "shared_expert",
+            "mtp.",
+            "q_proj",
         ] {
             assert!(
                 skipped.iter().all(|n| !n.contains(keep)),

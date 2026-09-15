@@ -4,7 +4,7 @@ Status: **Incubating** (no repo-owned graph)
 
 Best-experience SKU: **Mac Studio M5 Ultra, 256 GB**
 
-Last reviewed: **2026-09-14**
+Last reviewed: **2026-09-15**
 
 Qwen 3.8 Flash Next is a **second product SKU**, not a rename of Qwen 3.8 27B
 and not Super-class Qwen 3.8 (2.4T). Upstream identity is HF
@@ -15,7 +15,8 @@ Convert maps `qwen4_exp` metadata (family label, GDN/MoE dims, n-gram/HC/QSA
 contract with `never_eval_ngram_at_load`), gated-residual hyper-connection
 and PLE inject tensors, QSA `index_qk_proj` plus q/k layernorms, packed
 `mlp.experts.{gate_up,down}_proj` and `shared_expert` routers, and PLE shards
-as `NgramEmbedding`. `load_weights` excludes n-gram shards from the resident
+as `NgramEmbedding` (including `weight_scale`). MTP sidecars are preserved as
+`Other`. `load_weights` excludes n-gram shards and scale from the resident
 eval set. Auto-generate / load / serve stay fail-closed until the trunk is
 implemented. Layer-forward panics if entered.
 There is no download alias and no Compatible generic load path. Never remap
