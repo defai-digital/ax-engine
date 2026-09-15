@@ -152,6 +152,12 @@ output. State uses AX's `[batch, value_heads, value_dim, key_dim]` layout; an
 official Transformers comparison must transpose its final two axes. Preserve
 the original dtype metadata when restoring captured BF16 values.
 
+MoE stage dumps include router logits, original expert IDs and weights, expert
+and shared gate/up activations, down projections, weighted outputs and the
+complete delta. Compare activation on identical captured projections; separately
+record tied top-k selections and expert accumulation order. Conditioning an
+oracle on captured routing/projections does not establish full-model agreement.
+
 The ignored `qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact` test
 also accepts `AX_FLASH_NEXT_REAL_PACK`, `AX_FLASH_NEXT_PROMPT_IDS` (3-16 tokens),
 and `AX_FLASH_NEXT_RESULT_PATH`. This real-pack mode requires both selected

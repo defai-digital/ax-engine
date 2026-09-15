@@ -96,6 +96,23 @@ impl ResolvedExperts<'_> {
     }
 }
 
+fn silu_projection_dtype(input: &MlxArray) -> MlxArray {
+    // Official SiLU rounds once before the separate low-precision up product.
+    astype(
+        &silu(&astype(input, MlxDtype::Float32, None), None),
+        input.dtype(),
+        None,
+    )
+}
+
+fn sigmoid_projection_dtype(input: &MlxArray) -> MlxArray {
+    astype(
+        &sigmoid(&astype(input, MlxDtype::Float32, None), None),
+        input.dtype(),
+        None,
+    )
+}
+
 impl Qwen4ExpMoe {
     pub(crate) fn new(
         hidden: usize,
@@ -350,6 +367,12 @@ impl Qwen4ExpMoe {
             routing
         };
         let routing = astype(&routing, logits.dtype(), None);
+        #[cfg(test)]
+        {
+            crate::model::qwen4_exp::profiling::dump("moe_router_logits", &[&logits]);
+            crate::model::qwen4_exp::profiling::dump("moe_indices", &[&indices]);
+            crate::model::qwen4_exp::profiling::dump("moe_routing", &[&routing]);
+        }
         (indices, routing)
     }
 
@@ -411,22 +434,43 @@ impl Qwen4ExpMoe {
         let expanded = expand_dims_axes(input, &[-2, -3], None);
         let gate = qw_gather(&expanded, experts.gate(), indices, false);
         let up = qw_gather(&expanded, experts.up(), indices, false);
-        let activated = multiply(&silu(&gate, None), &up, None);
+        let gate_activation = silu_projection_dtype(&gate);
+        let activated = multiply(&gate_activation, &up, None);
         let down = squeeze_switch_singleton(&qw_gather(&activated, experts.down(), indices, false));
         let weighted = multiply(&down, &expand_dims_axes(routing, &[-1], None), None);
         let routed = sum_axis(&weighted, -2, false, None);
-        let shared = multiply(
-            &silu(&qw_with_policy(input, &w.shared_gate, policy), None),
-            &qw_with_policy(input, &w.shared_up, policy),
-            None,
-        );
-        let shared = qw_with_policy(&shared, &w.shared_down, policy);
-        let shared = multiply(
-            &shared,
-            &sigmoid(&qw_with_policy(input, &w.shared_router, policy), None),
-            None,
-        );
-        Ok(reshape(&add(&routed, &shared, None), &shape, None))
+        let shared_gate = qw_with_policy(input, &w.shared_gate, policy);
+        let shared_activation = silu_projection_dtype(&shared_gate);
+        let shared_up = qw_with_policy(input, &w.shared_up, policy);
+        let shared_input = multiply(&shared_activation, &shared_up, None);
+        let shared = qw_with_policy(&shared_input, &w.shared_down, policy);
+        let shared_router = qw_with_policy(input, &w.shared_router, policy);
+        let shared_score = sigmoid_projection_dtype(&shared_router);
+        let shared_output = multiply(&shared, &shared_score, None);
+        let output = reshape(&add(&routed, &shared_output, None), &shape, None);
+        #[cfg(test)]
+        {
+            for (stage, array) in [
+                ("moe_gate", &gate),
+                ("moe_up", &up),
+                ("moe_gate_activation", &gate_activation),
+                ("moe_activated", &activated),
+                ("moe_down", &down),
+                ("moe_routed", &routed),
+                ("moe_shared_gate", &shared_gate),
+                ("moe_shared_up", &shared_up),
+                ("moe_shared_activation", &shared_activation),
+                ("moe_shared_input", &shared_input),
+                ("moe_shared_down", &shared),
+                ("moe_shared_router", &shared_router),
+                ("moe_shared_score", &shared_score),
+                ("moe_shared_output", &shared_output),
+                ("moe_delta", &output),
+            ] {
+                crate::model::qwen4_exp::profiling::dump(stage, &[array]);
+            }
+        }
+        Ok(output)
     }
 }
 
@@ -483,6 +527,60 @@ mod tests {
     use super::*;
     use mlx_sys::{contiguous, eval};
     use serde_json::Value;
+
+    fn activation_fixture() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../tests/fixtures/flash_next/moe_bf16_activations.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn moe_bf16_silu_product_matches_official_rounding() {
+        let fixture = activation_fixture();
+        let length = fixture["gate"].as_array().unwrap().len() as i32;
+        let gate = astype(
+            &array(&fixture["gate"], &[1, length]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let up = astype(
+            &array(&fixture["up"], &[1, length]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let actual = astype(
+            &multiply(&silu_projection_dtype(&gate), &up, None),
+            MlxDtype::Float32,
+            None,
+        );
+        let expected = array(&fixture["activated"], &[1, length]);
+        eval(&[&actual, &expected]);
+        assert_eq!(
+            actual.data_f32(),
+            expected.data_f32(),
+            "expert/shared SiLU then multiply"
+        );
+    }
+
+    #[test]
+    fn moe_bf16_shared_score_matches_official_rounding() {
+        let fixture = activation_fixture();
+        let length = fixture["gate"].as_array().unwrap().len() as i32;
+        let gate = astype(
+            &array(&fixture["gate"], &[1, length]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let actual = astype(&sigmoid_projection_dtype(&gate), MlxDtype::Float32, None);
+        let expected = array(&fixture["score"], &[1, length]);
+        eval(&[&actual, &expected]);
+        assert_eq!(
+            actual.data_f32(),
+            expected.data_f32(),
+            "shared expert sigmoid"
+        );
+    }
 
     #[test]
     fn compact_ids_preserve_slots_and_duplicate_contributions() {

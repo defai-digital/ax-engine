@@ -219,3 +219,30 @@ native HTTP/SSE requests with MTP disabled/required. Workspace tests report
 3,638 passed and 39 ignored; relevant MLX/server Clippy passes. Full workspace
 Clippy retains existing core test errors. See the
 [GDN precision evidence](../../benchmarks/results/flash-next-gdn-precision-m2-20260915.json).
+
+### MoE activation precision correction
+
+Flash Next expert/shared SiLU and shared-router sigmoid now follow the official
+projection-dtype rounding boundary: FP32 activation, cast back, then the
+separate low-precision multiplication. Two regressions fail the old arithmetic
+and pass the correction. Before changing math, test-only observations preserve
+all committed logits and state fingerprints exactly.
+
+On identical real first-layer inputs, 30 corrected activation/product checks
+are byte-exact with official Torch, and 30 input-identity checks pass. Router
+score checks also pass, with two explicitly recorded equal-score top-k ties
+that select different valid expert IDs. An official expert replay isolates
+ordered low-precision accumulation differences up to 0.001953125. Routing,
+reduction and QMM are unchanged by this correction.
+
+Full numerical agreement remains open: maximum teacher-forced decode difference
+against unchanged MLX-VLM increases to 2.453125. That reference's compiled
+activation also differs from official Torch on the recorded inputs. This is
+operator-alignment evidence, not a full-model accuracy improvement.
+
+The three affine state/runner matrices and 12 completion/SSE requests pass.
+Six additional 4-bit chat checks return Paris, 42 and 2, 3, 5 identically with
+direct and required MTP. Workspace tests report 3,640 passed and 39 ignored;
+relevant strict Clippy passes, with existing full-workspace core test errors
+retained. See the
+[MoE precision evidence](../../benchmarks/results/flash-next-moe-precision-m2-20260915.json).
