@@ -728,18 +728,21 @@ impl ModelConfig {
             _ => (None, 1.0),
         };
 
-        let moe_norm_topk_prob =
-            if matches!(m.model_family.as_str(), "qwen3_5" | "qwen3_next") && m.moe.is_enabled() {
-                // mlx_lm / Transformers default norm_topk_prob to true for Qwen MoE
-                // hybrids (qwen3_5 MoE and qwen3_next / Qwen3.6-35B-A3B). Older AX
-                // manifests emitted false when config.json omitted the field, which
-                // routes experts with the wrong weights. Keep the loader compatible
-                // with those cached manifests while the converter emits the correct
-                // default for both families.
-                true
-            } else {
-                m.moe_norm_topk_prob
-            };
+        let moe_norm_topk_prob = if matches!(
+            m.model_family.as_str(),
+            "qwen3_5" | "qwen3_next" | "qwen4_exp"
+        ) && m.moe.is_enabled()
+        {
+            // mlx_lm / Transformers default norm_topk_prob to true for Qwen MoE
+            // hybrids (qwen3_5 MoE and qwen3_next / Qwen3.6-35B-A3B). Older AX
+            // manifests emitted false when config.json omitted the field, which
+            // routes experts with the wrong weights. Keep the loader compatible
+            // with those cached manifests while the converter emits the correct
+            // default for both families.
+            true
+        } else {
+            m.moe_norm_topk_prob
+        };
 
         Self {
             compile_cache_identity: NEXT_COMPILE_CACHE_IDENTITY.fetch_add(1, Ordering::Relaxed),
@@ -875,7 +878,7 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
     // transitions and DeepSeek V4 think-aware MTP draft temperature is inert
     // (DI-DS-A001).
     let family_defaults = match m.model_family.as_str() {
-        "qwen3" | "qwen3_5" | "qwen3_next" | "minicpmv4_6" => {
+        "qwen3" | "qwen3_5" | "qwen3_next" | "qwen4_exp" | "minicpmv4_6" => {
             if m.vocab_size >= 200_000 {
                 (Some(248_068), Some(248_069))
             } else {

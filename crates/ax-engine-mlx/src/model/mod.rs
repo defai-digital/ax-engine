@@ -4790,6 +4790,15 @@ mod tests {
             (Some(248_068), Some(248_069)),
             "partial think ids must complete from family defaults"
         );
+        // Flash Next uses the 248k Qwen tokenizer generation.
+        let mut m = qwen35_linear_manifest();
+        m.model_family = "qwen4_exp".to_string();
+        m.vocab_size = 248_320;
+        let cfg = ModelConfig::from_manifest(&m);
+        assert_eq!(
+            (cfg.think_start_token_id, cfg.think_end_token_id),
+            (Some(248_068), Some(248_069))
+        );
     }
 
     fn deepseek_think_id_manifest(family: &str) -> NativeModelManifest {

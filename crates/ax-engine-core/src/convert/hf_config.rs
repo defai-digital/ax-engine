@@ -376,7 +376,9 @@ pub(crate) fn is_mla_family(model_type: &str) -> bool {
 }
 
 pub(crate) fn defaults_attn_output_gate(model_type: &str) -> bool {
-    is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+    is_qwen3_5_family(model_type)
+        || is_qwen4_exp_family(model_type)
+        || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
 }
 
 pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
@@ -387,6 +389,7 @@ pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
     // MiniMax M3's mlx-vlm router always L1-normalizes the selected sigmoid
     // scores before `routed_scaling_factor`, even when config omits the field.
     is_qwen3_5_family(model_type)
+        || is_qwen4_exp_family(model_type)
         || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
         || is_nemotron_h(model_type)
         || is_minimax_m3(model_type)

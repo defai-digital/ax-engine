@@ -5044,6 +5044,14 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         );
         assert_eq!(manifest.linear_attention.full_attention_interval, Some(4));
         assert_eq!(manifest.moe.expert_count, Some(4));
+        assert!(
+            manifest.moe_norm_topk_prob,
+            "{model_type}: Flash Next MoE must default norm_topk_prob=true"
+        );
+        assert!(
+            manifest.attn_output_gate,
+            "{model_type}: Flash Next full-attn uses a sigmoid output gate"
+        );
         assert_eq!(manifest.layer_types, vec!["linear_attention"]);
         assert_eq!(manifest.qwen4_exp.ngram_size, Some(3));
         assert!(manifest.qwen4_exp.never_eval_ngram_at_load);
