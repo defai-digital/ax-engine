@@ -6,7 +6,7 @@ Primary optimization target: **AXQ 6-bit MTP** (`qwen3.8-27b:axq`)
 
 Compact sibling: **AXQ 4-bit MTP** (`qwen3.8-27b:axq-4bit`)
 
-Last reviewed: **2026-09-14**
+Last reviewed: **2026-09-15**
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -51,6 +51,10 @@ Landed, labeled:
   [AX MTP](../../benchmarks/results/speculative/mtp-6bit/2026-08-30-v7.2.0-qwen38-27b-axq-6bit-m5-readme-refresh/).
 - 2026-08-31 AXQ MTP peer campaign row for this pack (Apple M5 Max, 128 GB):
   [campaign](../../benchmarks/results/mtp-axq-peer/2026-08-31-df-macbookpro-m5/).
+- 2026-09-15 same-pack latest-runtime campaign (Apple M5 Max, 128 GB; product-path
+  MTP depth 3, 20-run median): AX Engine **76.90 tok/s**, MTPLX 2.11.2
+  **70.62 tok/s**. Other latest runtimes failed to load this snapshot.
+  [campaign](../../benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).
 
 Not claimed:
 
