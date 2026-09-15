@@ -53,7 +53,9 @@ Landed, labeled:
   [campaign](../../benchmarks/results/mtp-axq-peer/2026-08-31-df-macbookpro-m5/).
 - 2026-09-15 same-pack latest-runtime campaign (Apple M5 Max, 128 GB; product-path
   MTP depth 3, 20-run median): AX Engine **76.90 tok/s**, MTPLX 2.11.2
-  **70.62 tok/s**. Other latest runtimes failed to load this snapshot.
+  **70.62 tok/s**, mlx-lm 0.31.3 direct AR baseline **27.90 tok/s** (same
+  `flappy` greedy 256-token prompts; no MTP head). Other latest runtimes failed
+  to load this snapshot.
   [campaign](../../benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).
 
 Not claimed:
