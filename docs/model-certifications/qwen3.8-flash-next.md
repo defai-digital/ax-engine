@@ -12,9 +12,10 @@ and not Super-class Qwen 3.8 (2.4T). Upstream identity is HF
 plus a 51B n-gram embedding table.
 
 Convert maps `qwen4_exp` metadata (family label, GDN/MoE dims, n-gram/HC/QSA
-contract with `never_eval_ngram_at_load`) onto a dedicated trunk route. It
-**does not** produce a runtime-ready manifest. Auto-generate / load / serve
-fail closed until the trunk is implemented. Layer-forward panics if entered.
+contract with `never_eval_ngram_at_load`) and PLE shards as `NgramEmbedding`.
+`load_weights` excludes those shards from the resident eval set. Auto-generate
+/ load / serve stay fail-closed until the trunk is implemented. Layer-forward
+panics if entered.
 There is no download alias and no Compatible generic load path. Never remap
 onto `qwen3_5` or Super-class 2.4T.
 

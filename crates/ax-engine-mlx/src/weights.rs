@@ -1158,6 +1158,15 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let expert_stream_skip: Option<std::collections::HashSet<String>> = expert_stream_manifest
         .as_ref()
         .map(crate::expert_stream::streamed_skip_names);
+    let mut load_skip: std::collections::HashSet<String> = expert_stream_skip.unwrap_or_default();
+    load_skip.extend(ax_engine_core::tensor_names_skipped_at_load(
+        artifacts.manifest(),
+    ));
+    let expert_stream_skip = if load_skip.is_empty() {
+        None
+    } else {
+        Some(load_skip)
+    };
     // AX_MMAP_WEIGHTS=1 uses the memory-mapped safetensors path. No bytes
     // are read into a heap buffer up front; pages are pulled in by the
     // OS on first access (CPU touch or GPU dispatch). On warm page cache

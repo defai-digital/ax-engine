@@ -1149,6 +1149,12 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         return (name != "alignment_heads").then_some((NativeTensorRole::Other, None));
     }
 
+    if family.family_name == "qwen4_exp" {
+        if let Some(result) = match_qwen4_exp_ngram_tensor(name) {
+            return Some(result);
+        }
+    }
+
     // Nemotron-H: backbone.embeddings / backbone.norm_f / backbone.layers.N.* / lm_head.
     if family.family_name == "nemotron_h" {
         if let Some(result) = match_nemotron_h_tensor(name, family.tensor_map) {
@@ -1204,10 +1210,12 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
     // runtime loader is config-driven and consumes exact names, while the
     // generic `Other` role keeps converter validation from pretending these
     // tensors are language layers.
-    if matches!(family.family_name, "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5")
-        && (name.starts_with("vision_tower.")
-            || name.starts_with("visual.")
-            || name.starts_with("model.visual."))
+    if matches!(
+        family.family_name,
+        "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5" | "qwen4_exp"
+    ) && (name.starts_with("vision_tower.")
+        || name.starts_with("visual.")
+        || name.starts_with("model.visual."))
     {
         return Some((NativeTensorRole::Other, None));
     }
@@ -1391,6 +1399,22 @@ fn match_nemotron_h_tensor(
     }
     if let Some(result) = match_prefixed_per_layer(name, "backbone.layers.", tensor_map) {
         return Some(result);
+    }
+    None
+}
+
+fn match_qwen4_exp_ngram_tensor(name: &str) -> Option<(NativeTensorRole, Option<u32>)> {
+    // HF: ngram_embedding.shard_N ; mlx-vlm sanitize: ngram_embedding.shards.N
+    for marker in ["ngram_embedding.shard_", "ngram_embedding.shards."] {
+        if let Some(idx) = name.find(marker) {
+            let after = &name[idx + marker.len()..];
+            let digits_end = after
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(after.len());
+            if digits_end > 0 && after[..digits_end].parse::<u32>().is_ok() {
+                return Some((NativeTensorRole::NgramEmbedding, None));
+            }
+        }
     }
     None
 }

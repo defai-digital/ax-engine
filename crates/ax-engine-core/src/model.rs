@@ -267,6 +267,10 @@ pub enum NativeTensorRole {
     FinalNorm,
     LmHead,
     RopeFreqs,
+    /// Qwen 3.8 Flash Next PLE n-gram embedding shard (`ngram_embedding.shard_N`
+    /// / `ngram_embedding.shards.N`). Must not be eval'd at `load_weights` when
+    /// [`NativeQwen4ExpConfig::never_eval_ngram_at_load`] is set.
+    NgramEmbedding,
     /// Catch-all for extension roles (e.g. MTP sidecar tensors) not yet enumerated here.
     #[serde(other)]
     Other,
@@ -365,6 +369,21 @@ impl NativeTensorRole {
                 | Self::Qwen3VlVisionLayerFc2
         )
     }
+
+    /// Roles that must not be materialized/`eval`'d at `load_weights`.
+    pub fn skip_eval_at_load(self, manifest: &NativeModelManifest) -> bool {
+        matches!(self, Self::NgramEmbedding) && manifest.qwen4_exp.never_eval_ngram_at_load
+    }
+}
+
+/// Tensor names whose weights must not be opened or eval'd at load.
+pub fn tensor_names_skipped_at_load(manifest: &NativeModelManifest) -> Vec<String> {
+    manifest
+        .tensors
+        .iter()
+        .filter(|tensor| tensor.role.skip_eval_at_load(manifest))
+        .map(|tensor| tensor.name.clone())
+        .collect()
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

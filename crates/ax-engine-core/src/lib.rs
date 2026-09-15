@@ -98,6 +98,7 @@ pub use model::{
     NativeModelManifest, NativeMoeConfig, NativeQwen4ExpConfig, NativeRuntimeStatus,
     NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
     NativeTensorSpec, SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, WeightSanitize,
+    tensor_names_skipped_at_load,
 };
 pub use multimodal_adapter::{MultimodalPrefillAdapter, PrefillModality};
 pub use nemotron_omni::{

@@ -4825,6 +4825,16 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
                     "BF16",
                     &[8, 16],
                 ),
+                (
+                    "language_model.ngram_embedding.shard_0.weight",
+                    "BF16",
+                    &[8, 8],
+                ),
+                (
+                    "language_model.ngram_embedding.shards.1.weight",
+                    "BF16",
+                    &[8, 8],
+                ),
             ],
         );
 
@@ -4856,6 +4866,26 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         assert_eq!(manifest.layer_types, vec!["linear_attention"]);
         assert_eq!(manifest.qwen4_exp.ngram_size, Some(3));
         assert!(manifest.qwen4_exp.never_eval_ngram_at_load);
+        assert!(
+            manifest.tensors.iter().any(|tensor| {
+                tensor.role == NativeTensorRole::NgramEmbedding
+                    && tensor.name.contains("ngram_embedding.shard_0")
+            }),
+            "{model_type}: n-gram shard must map to NgramEmbedding"
+        );
+        let skipped = crate::tensor_names_skipped_at_load(&manifest);
+        assert!(
+            skipped
+                .iter()
+                .any(|n| n.contains("ngram_embedding.shard_0")),
+            "{model_type}: {skipped:?}"
+        );
+        assert!(
+            skipped
+                .iter()
+                .any(|n| n.contains("ngram_embedding.shards.1")),
+            "{model_type}: {skipped:?}"
+        );
         assert_eq!(
             crate::resolve_layer_forward_route("qwen4_exp"),
             Some(crate::LayerForwardRoute::Qwen4Exp)
