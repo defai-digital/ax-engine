@@ -335,7 +335,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             ),
             (
                 "ax_engine_mlx_flash_next_selected_expert_gathers_total",
-                "Successful singleton selected-expert stack gathers observed in engine steps.",
+                "Successful selected-expert stack gathers observed in engine steps.",
                 |step: &crate::app_state::EngineStepGauges| {
                     step.mlx_flash_next_selected_expert_gathers_total
                 },

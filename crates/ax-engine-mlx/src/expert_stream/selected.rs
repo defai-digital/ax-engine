@@ -186,20 +186,36 @@ impl SelectedExpertRows {
             .sum()
     }
 
-    pub(super) fn gather(&self, ids: &[u64]) -> Result<LayerExpertStack, String> {
+    fn requested_payload_bytes(&self, ids: &[u64]) -> Result<usize, String> {
         if ids.is_empty() || ids.iter().any(|&id| id >= u64::from(self.experts)) {
             return Err("selected experts: empty or out-of-range expert IDs".into());
         }
-        let bytes = ids
-            .len()
+        ids.len()
             .checked_mul(self.bytes_per_expert)
-            .ok_or_else(|| "selected experts: output byte count overflow".to_string())?;
+            .ok_or_else(|| "selected experts: output byte count overflow".to_string())
+    }
+
+    /// A capacity miss is the only condition that permits a whole-layer fallback.
+    pub(super) fn gather_if_fits(&self, ids: &[u64]) -> Result<Option<LayerExpertStack>, String> {
+        let bytes = self.requested_payload_bytes(ids)?;
+        if bytes > self.max_gather_bytes {
+            return Ok(None);
+        }
+        self.gather_validated(ids, bytes).map(Some)
+    }
+
+    pub(super) fn gather(&self, ids: &[u64]) -> Result<LayerExpertStack, String> {
+        let bytes = self.requested_payload_bytes(ids)?;
         if bytes > self.max_gather_bytes {
             return Err(format!(
                 "selected experts: output {bytes} bytes exceeds budget {}",
                 self.max_gather_bytes
             ));
         }
+        self.gather_validated(ids, bytes)
+    }
+
+    fn gather_validated(&self, ids: &[u64], bytes: usize) -> Result<LayerExpertStack, String> {
         let read = |rows: &TensorRows| self.readers[rows.reader].gather_rows(&rows.name, ids);
         let mut stack = LayerExpertStack::default();
         for projection in &self.projections {
@@ -377,6 +393,155 @@ mod tests {
             let b = astype(b, MlxDtype::Float32, None);
             eval(&[&a, &b]);
             assert_eq!(a.data_f32(), b.data_f32());
+        }
+    }
+
+    #[test]
+    fn selected_prefill_union_and_capacity_fallback_preserve_shared_outputs() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+            for (bits, group) in [(2, 32), (4, 64), (6, 64)] {
+                let root = std::env::temp_dir().join(format!(
+                    "ax-selected-prefill-{}-{dtype:?}-{bits}",
+                    std::process::id()
+                ));
+                std::fs::create_dir_all(&root).unwrap();
+                let (manifest, resident) = fixture(&root, bits, group, dtype);
+                let reader = SelectedExpertRows::open(&manifest, &root, 0, 1 << 20).unwrap();
+                let row_bytes = reader.bytes_per_expert;
+                let exact = SelectedExpertRows::open(&manifest, &root, 0, 6 * row_bytes).unwrap();
+                assert!(exact.gather_if_fits(&[7, 0, 4, 1, 7, 2]).unwrap().is_some());
+                let before = exact.payload_bytes_read();
+                assert!(
+                    exact
+                        .gather_if_fits(&[7, 0, 4, 1, 7, 2, 3])
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(exact.payload_bytes_read(), before);
+                assert!(exact.gather_if_fits(&[8]).is_err());
+                assert!(exact.gather_if_fits(&[]).is_err());
+                assert_eq!(exact.payload_bytes_read(), before);
+
+                let pager = Arc::new(ExpertStackPager::new(Arc::new(manifest), root.clone(), 1));
+                let source = Arc::new(ExpertLayerSource::new(Arc::clone(&pager), 0));
+                let resident = module(Qwen4ExpExpertWeights::Resident(Box::new(resident)), dtype);
+                let mut selected = module(Qwen4ExpExpertWeights::Streamed(source), dtype);
+                selected.enable_selected_prefill_for_test();
+                let input = dense(&[1, 2, 64], 31, dtype);
+                equal(
+                    &resident
+                        .forward(&input, ProjectionBatchPolicy::Shared)
+                        .unwrap(),
+                    &selected
+                        .forward(&input, ProjectionBatchPolicy::Shared)
+                        .unwrap(),
+                );
+                assert_eq!(
+                    pager.selected_payload_bytes_read().unwrap(),
+                    0,
+                    "the prefill flag alone must not enable selected reads"
+                );
+                selected.enable_selected_decode_for_test();
+                let mut saw_compact_union = false;
+                let mut saw_multi_row_union = false;
+                for tokens in [2, 3, 7] {
+                    for shift in [1, 7, 31, 51] {
+                        let input = dense(&[1, tokens, 64], shift, dtype);
+                        let before = pager.selected_payload_bytes_read().unwrap();
+                        equal(
+                            &resident
+                                .forward(&input, ProjectionBatchPolicy::Shared)
+                                .unwrap(),
+                            &selected
+                                .forward(&input, ProjectionBatchPolicy::Shared)
+                                .unwrap(),
+                        );
+                        let rows = (pager.selected_payload_bytes_read().unwrap() - before)
+                            / row_bytes as u64;
+                        assert!((4..=8).contains(&rows));
+                        saw_compact_union |= rows < 8;
+                        saw_multi_row_union |= rows > 4;
+                    }
+                }
+                assert!(saw_compact_union && saw_multi_row_union);
+                let before = pager.selected_payload_bytes_read().unwrap();
+                let input = dense(&[1, 3, 64], 31, dtype);
+                equal(
+                    &resident
+                        .forward(&input, ProjectionBatchPolicy::RowExact)
+                        .unwrap(),
+                    &selected
+                        .forward(&input, ProjectionBatchPolicy::RowExact)
+                        .unwrap(),
+                );
+                let batch = dense(&[2, 3, 64], 17, dtype);
+                equal(
+                    &resident
+                        .forward(&batch, ProjectionBatchPolicy::Shared)
+                        .unwrap(),
+                    &selected
+                        .forward(&batch, ProjectionBatchPolicy::Shared)
+                        .unwrap(),
+                );
+                assert_eq!(pager.selected_payload_bytes_read().unwrap(), before);
+
+                let small =
+                    Arc::new(SelectedExpertRows::open(pager.manifest(), &root, 0, 1).unwrap());
+                pager
+                    .selected_readers
+                    .lock()
+                    .unwrap()
+                    .insert(0, Arc::clone(&small));
+                equal(
+                    &resident
+                        .forward(&input, ProjectionBatchPolicy::Shared)
+                        .unwrap(),
+                    &selected
+                        .forward(&input, ProjectionBatchPolicy::Shared)
+                        .unwrap(),
+                );
+                assert_eq!(small.payload_bytes_read(), 0);
+                assert_eq!(pager.cached_layer_count(), 1);
+                let singleton = dense(&[1, 1, 64], 5, dtype);
+                assert!(
+                    selected
+                        .forward(&singleton, ProjectionBatchPolicy::Shared)
+                        .is_err(),
+                    "singleton retains its strict cap error"
+                );
+
+                pager
+                    .selected_readers
+                    .lock()
+                    .unwrap()
+                    .insert(0, Arc::new(reader));
+                let file = root.join("up-biases.safetensors");
+                let saved = std::fs::read(&file).unwrap();
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&file)
+                    .unwrap()
+                    .set_len(0)
+                    .unwrap();
+                let error = selected
+                    .forward(&input, ProjectionBatchPolicy::Shared)
+                    .err()
+                    .unwrap();
+                assert!(
+                    error.contains("read row"),
+                    "I/O error must not use the cached whole layer: {error}"
+                );
+                std::fs::write(file, saved).unwrap();
+                equal(
+                    &resident
+                        .forward(&input, ProjectionBatchPolicy::Shared)
+                        .unwrap(),
+                    &selected
+                        .forward(&input, ProjectionBatchPolicy::Shared)
+                        .unwrap(),
+                );
+                std::fs::remove_dir_all(root).unwrap();
+            }
         }
     }
 

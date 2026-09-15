@@ -91,8 +91,8 @@ See [Testing](../TESTING.md) and [Supported Models](../SUPPORTED-MODELS.md).
 
 With expert streaming active, `AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1` enables
 bounded reads of only the routed experts for singleton forwards, including the
-singleton prefill completion. Multi-token and batch>1 forwards keep whole-layer
-paging. Auto/On/Off residency decisions are unchanged; a resident pack stays
+singleton prefill completion. With this flag alone, multi-token and batch>1
+forwards keep whole-layer paging. Auto/On/Off residency decisions are unchanged; a resident pack stays
 resident even when this flag is set.
 
 The path preserves MLX routing weights and top-k reduction order, and reads the
@@ -119,3 +119,29 @@ output tokens match the same-pack control. The
 retains numerical fingerprints, API responses, source/binary hashes and all
 repeated process times. Whole-layer prefill remains costly; these controls do
 not establish overall serving performance.
+
+### Bounded selected prefill
+
+An additional default-off flag, `AX_MLX_FLASH_NEXT_SELECTED_PREFILL=1`, enables
+selected expert unions for batch=1 multi-token Shared forwards. It requires
+`AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1`. The original prefill token shape, routing
+slots and MLX gather-QMM arithmetic are retained. Router indices are made
+contiguous before host access, including strided multi-token top-k views.
+
+The union must fit the existing 256 MiB affine payload cap across all projections.
+A capacity miss falls back to whole-layer paging before selected payload I/O;
+invalid metadata, invalid IDs and I/O failures remain errors. This cap excludes
+allocator padding and scratch and is not a total-memory bound. Multi-token
+RowExact verification and batch>1 keep the existing whole-layer path. Singleton
+forwards retain their strict selected payload cap. The prefill flag alone has
+no effect, and resident packs retain resident execution.
+
+Tiny F32/BF16 controls for all three affine formats cover exact Shared outputs,
+overlapping token selections, capacity fallback, and full hybrid-state recovery
+after selected prefill I/O failure. Same-binary M2 controls for all three real
+packs match complete prefill and generated logits/state across whole-layer,
+singleton-selected and prefill-selected modes. Native completion/SSE also passes
+with actual additional prefill gather counts. A 258-token control exercises
+capacity fallback with exact logits/state. These bounded controls do not qualify
+long-context quality, MTP combinations, sustained throughput or the target SKU.
+See the [selected-prefill development evidence](../../benchmarks/results/flash-next-selected-prefill-m2-20260915.json).

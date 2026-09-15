@@ -1,0 +1,2896 @@
+{
+  "qualification": false,
+  "kind": "flash_next_bounded_selected_prefill_development",
+  "hardware": {
+    "chip": "Apple M2 Ultra",
+    "memory_bytes": 206158430208
+  },
+  "runtime": {
+    "mlx": "0.32.2",
+    "rust": "1.97.1"
+  },
+  "model": {
+    "id": "Qwen/Qwen3.8-Flash-Next",
+    "revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+    "exporter": "AXQuant 1.9.0"
+  },
+  "opt_ins": [
+    "AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1",
+    "AX_MLX_FLASH_NEXT_SELECTED_PREFILL=1"
+  ],
+  "payload_cap_per_layer_bytes": 268435456,
+  "source_provenance": {
+    "fingerprint": {
+      "base_commit": "4e24bc0554534579dea9ca4f6eb0c7626869dee1",
+      "profile": "release-server",
+      "binary_sha256": "0fe39d492c9fa8d25213ae2bb103b5f5cd990fe5bb1eca61f1b6ce0d759ec1cf",
+      "sources": {
+        "crates/ax-engine-mlx/src/expert_stream.rs": "c8b49fd17ec2af3358294f51b2818923d8c6b3df2cc6a03add3d2ba2d4b65d85",
+        "crates/ax-engine-mlx/src/expert_stream/selected.rs": "59d04fd246a052378f9e57fadc4139d832cda341d711ab3752f054bbd75f3e33",
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "110abfa96cfe7e3a47b391cf17033a1f8f1bd64b3bebf3d86f0ec71c80569ca2",
+        "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "dae1f33d51b50d017bc43f16b095e84df8f650e7c4c777cfd549576a191c1674",
+        "crates/ax-engine-mlx/src/runner/mod.rs": "b4b95258e58bed7eae22ccda7a96fff88fc7717e9b185e98192739ba5c5a5f55",
+        "crates/mlx-sys/src/io_rows.rs": "40657cf47515d5648864287b20fcd78e2182cc7ff3435c1d4110f02ba3f6fde2",
+        "crates/ax-engine-server/src/app_state.rs": "286cb4d954db5e9d1e4d804cb0b3ef838c127e52260fb212614d8d159e368305",
+        "crates/ax-engine-server/src/metrics.rs": "ead95bc7270a4f2f9dc03f3cd19df8a0eea43677ebf3e901595559122faaf98c"
+      }
+    },
+    "server": {
+      "base_commit": "4e24bc0554534579dea9ca4f6eb0c7626869dee1",
+      "profile": "release-server",
+      "binary_sha256": "7eb9d062bf1b52cd425a3c6fe04fb12ea5e87da7d1c647433cb698bec5d57f79",
+      "sources": {
+        "crates/ax-engine-mlx/src/expert_stream.rs": "c8b49fd17ec2af3358294f51b2818923d8c6b3df2cc6a03add3d2ba2d4b65d85",
+        "crates/ax-engine-mlx/src/expert_stream/selected.rs": "59d04fd246a052378f9e57fadc4139d832cda341d711ab3752f054bbd75f3e33",
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "110abfa96cfe7e3a47b391cf17033a1f8f1bd64b3bebf3d86f0ec71c80569ca2",
+        "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "dae1f33d51b50d017bc43f16b095e84df8f650e7c4c777cfd549576a191c1674",
+        "crates/ax-engine-mlx/src/runner/mod.rs": "b4b95258e58bed7eae22ccda7a96fff88fc7717e9b185e98192739ba5c5a5f55",
+        "crates/mlx-sys/src/io_rows.rs": "40657cf47515d5648864287b20fcd78e2182cc7ff3435c1d4110f02ba3f6fde2",
+        "crates/ax-engine-server/src/app_state.rs": "286cb4d954db5e9d1e4d804cb0b3ef838c127e52260fb212614d8d159e368305",
+        "crates/ax-engine-server/src/metrics.rs": "ead95bc7270a4f2f9dc03f3cd19df8a0eea43677ebf3e901595559122faaf98c"
+      }
+    },
+    "long-fingerprint": {
+      "base_commit": "4e24bc0554534579dea9ca4f6eb0c7626869dee1",
+      "profile": "release-server",
+      "binary_sha256": "debaaf12548f876b15b7143d99edfd83341a447c89d2031bc7fee8131b9daf3f",
+      "sources": {
+        "crates/ax-engine-mlx/src/expert_stream.rs": "c8b49fd17ec2af3358294f51b2818923d8c6b3df2cc6a03add3d2ba2d4b65d85",
+        "crates/ax-engine-mlx/src/expert_stream/selected.rs": "59d04fd246a052378f9e57fadc4139d832cda341d711ab3752f054bbd75f3e33",
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "110abfa96cfe7e3a47b391cf17033a1f8f1bd64b3bebf3d86f0ec71c80569ca2",
+        "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "82e4177a9d9c0e157e31c660f403efc726839acd6ae823f5cda36253222bc3e5",
+        "crates/ax-engine-mlx/src/runner/mod.rs": "b4b95258e58bed7eae22ccda7a96fff88fc7717e9b185e98192739ba5c5a5f55",
+        "crates/mlx-sys/src/io_rows.rs": "40657cf47515d5648864287b20fcd78e2182cc7ff3435c1d4110f02ba3f6fde2",
+        "crates/ax-engine-server/src/app_state.rs": "286cb4d954db5e9d1e4d804cb0b3ef838c127e52260fb212614d8d159e368305",
+        "crates/ax-engine-server/src/metrics.rs": "ead95bc7270a4f2f9dc03f3cd19df8a0eea43677ebf3e901595559122faaf98c"
+      }
+    }
+  },
+  "numerical_matrix": {
+    "completed": true,
+    "qualification": false,
+    "binary_sha256": "0fe39d492c9fa8d25213ae2bb103b5f5cd990fe5bb1eca61f1b6ce0d759ec1cf",
+    "packs": {
+      "2bit": {
+        "whole": {
+          "active_after_load": 4606954240,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 16.225239375,
+          "peak_mlx_bytes": 6852742992,
+          "prefill_schedule": "n-1 then singleton",
+          "prefix_record": {
+            "logits_f32_le_sha256": "43312d1105f7b3b643e539e11925b78506207ca4e567629c50479555f76e8a37",
+            "logits_shape": [
+              4,
+              248320
+            ],
+            "position": 4,
+            "state_bytes": 115757425,
+            "state_sha256": "5ab1596b5f021a62e48547862e3e9ea93a2ca7cf2cff85f77cd3b3c6c598ee14"
+          },
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "bc81cd9856811073e3de736d2f86f0ce92e538a9edeadfed9c683cae432e29b1",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "a3bc3412327a5be4ef5a4f579762470073b640cf679a9a619b2fb10356d28dcd",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "4b2c93fe97a8c007f4b4dd085c4d0b04f7c8f38d17362cf306d261c55779cf48",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "7346b77053020adbf7bfc8ef475b8ac80831025f7fcc02d9b9ad8ccf9a3c36a7",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "2c9c63d181c3b2769395d1962004e5d333315d003b663c1fb65c245cd09d1c02",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "bdaa460f1e7003037bb7aec175f22cf78f5c31ee0326f6406d1b59097cf186b6",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "d6aa69093f14783eb0df67b968213b95772dbd352d32673764fabda73d7cd148",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "4d35c568fe8fd6230ec7e23213aec64889f09ee2a19cbb0fc8cef3a9c7adb453",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "selected_expert_payload_bytes_after_prefill": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 273.51475812500576,
+          "manifest_sha256": "77c52b2f6d53ca9f67f4ac00a7020ed9a55f5cf43bb07968a1b8d70a0e0241c1"
+        },
+        "singleton": {
+          "active_after_load": 4606954240,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.821739416,
+          "peak_mlx_bytes": 6614133848,
+          "prefill_schedule": "n-1 then singleton",
+          "prefix_record": {
+            "logits_f32_le_sha256": "43312d1105f7b3b643e539e11925b78506207ca4e567629c50479555f76e8a37",
+            "logits_shape": [
+              4,
+              248320
+            ],
+            "position": 4,
+            "state_bytes": 115757425,
+            "state_sha256": "5ab1596b5f021a62e48547862e3e9ea93a2ca7cf2cff85f77cd3b3c6c598ee14"
+          },
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "bc81cd9856811073e3de736d2f86f0ce92e538a9edeadfed9c683cae432e29b1",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "a3bc3412327a5be4ef5a4f579762470073b640cf679a9a619b2fb10356d28dcd",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "4b2c93fe97a8c007f4b4dd085c4d0b04f7c8f38d17362cf306d261c55779cf48",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "7346b77053020adbf7bfc8ef475b8ac80831025f7fcc02d9b9ad8ccf9a3c36a7",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "2c9c63d181c3b2769395d1962004e5d333315d003b663c1fb65c245cd09d1c02",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "bdaa460f1e7003037bb7aec175f22cf78f5c31ee0326f6406d1b59097cf186b6",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "d6aa69093f14783eb0df67b968213b95772dbd352d32673764fabda73d7cd148",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "4d35c568fe8fd6230ec7e23213aec64889f09ee2a19cbb0fc8cef3a9c7adb453",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 3538944000,
+          "selected_expert_payload_bytes_after_prefill": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 7.886893292001332,
+          "manifest_sha256": "77c52b2f6d53ca9f67f4ac00a7020ed9a55f5cf43bb07968a1b8d70a0e0241c1"
+        },
+        "prefill": {
+          "active_after_load": 4606954240,
+          "cached_expert_layers": 0,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.765636666,
+          "peak_mlx_bytes": 4993726246,
+          "prefill_schedule": "n-1 then singleton",
+          "prefix_record": {
+            "logits_f32_le_sha256": "43312d1105f7b3b643e539e11925b78506207ca4e567629c50479555f76e8a37",
+            "logits_shape": [
+              4,
+              248320
+            ],
+            "position": 4,
+            "state_bytes": 115757425,
+            "state_sha256": "5ab1596b5f021a62e48547862e3e9ea93a2ca7cf2cff85f77cd3b3c6c598ee14"
+          },
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "bc81cd9856811073e3de736d2f86f0ce92e538a9edeadfed9c683cae432e29b1",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "a3bc3412327a5be4ef5a4f579762470073b640cf679a9a619b2fb10356d28dcd",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "4b2c93fe97a8c007f4b4dd085c4d0b04f7c8f38d17362cf306d261c55779cf48",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "7346b77053020adbf7bfc8ef475b8ac80831025f7fcc02d9b9ad8ccf9a3c36a7",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "2c9c63d181c3b2769395d1962004e5d333315d003b663c1fb65c245cd09d1c02",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "bdaa460f1e7003037bb7aec175f22cf78f5c31ee0326f6406d1b59097cf186b6",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "d6aa69093f14783eb0df67b968213b95772dbd352d32673764fabda73d7cd148",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "4d35c568fe8fd6230ec7e23213aec64889f09ee2a19cbb0fc8cef3a9c7adb453",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 6019891200,
+          "selected_expert_payload_bytes_after_prefill": 2480947200,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 3.858617833000608,
+          "manifest_sha256": "77c52b2f6d53ca9f67f4ac00a7020ed9a55f5cf43bb07968a1b8d70a0e0241c1"
+        }
+      },
+      "4bit": {
+        "whole": {
+          "active_after_load": 4440456448,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "load_seconds": 52.673180416,
+          "peak_mlx_bytes": 7629964112,
+          "prefill_schedule": "n-1 then singleton",
+          "prefix_record": {
+            "logits_f32_le_sha256": "b7e1bb353f51f2bb77f35485cf24b57e377c50208600fa2fb4458b75a4d227c1",
+            "logits_shape": [
+              4,
+              248320
+            ],
+            "position": 4,
+            "state_bytes": 115757425,
+            "state_sha256": "0d45eb46f9856dfa9a9080e467e0db10198f72cb3404513b9959b2b6836fdf69"
+          },
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "5d422951f70a861f2ab8d99d81ebf0f5b4e1ebeecfc9d19e2bf77ff39cb81880",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "3a37ee9b4ee2b719be63ca8adc72f323380d0e62480b9991a23383fb79e91f45",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "60a59b5415c6f04a1c8b044b9bb65ddfe7693cab634ae22e109b9d5a711b42b7",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "61ab9324ea86e8052b28eed0a01a9e076e06438f60dbe642280843040036df62",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "7a3fb7e65872a4e580826f99d54411ab150e307ca719ff1f04a29f901d708418",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "7723cd96102583a1ebb45127c6df8e0b9277ffea721c973b5713a797966ec2a7",
+              "step": 2,
+              "token": 271
+            },
+            {
+              "logits_f32_le_sha256": "93a7a2b3b2ee947e6ca59e10affd9c779fa4b51f47b2734f741c7e9d0e03c0c6",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "7bba986e27e73e0ff424b37a2e7d5a221361b748a431b597d4c2545e124b8781",
+              "step": 3,
+              "token": 760
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "selected_expert_payload_bytes_after_prefill": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 881.0062909169937,
+          "manifest_sha256": "25c5b6e3882111d6be90b44a17f2f22e822447dd7336f3084c11a09c39a464aa"
+        },
+        "singleton": {
+          "active_after_load": 4440456448,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "load_seconds": 11.282336416,
+          "peak_mlx_bytes": 7391354456,
+          "prefill_schedule": "n-1 then singleton",
+          "prefix_record": {
+            "logits_f32_le_sha256": "b7e1bb353f51f2bb77f35485cf24b57e377c50208600fa2fb4458b75a4d227c1",
+            "logits_shape": [
+              4,
+              248320
+            ],
+            "position": 4,
+            "state_bytes": 115757425,
+            "state_sha256": "0d45eb46f9856dfa9a9080e467e0db10198f72cb3404513b9959b2b6836fdf69"
+          },
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "5d422951f70a861f2ab8d99d81ebf0f5b4e1ebeecfc9d19e2bf77ff39cb81880",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "3a37ee9b4ee2b719be63ca8adc72f323380d0e62480b9991a23383fb79e91f45",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "60a59b5415c6f04a1c8b044b9bb65ddfe7693cab634ae22e109b9d5a711b42b7",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "61ab9324ea86e8052b28eed0a01a9e076e06438f60dbe642280843040036df62",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "7a3fb7e65872a4e580826f99d54411ab150e307ca719ff1f04a29f901d708418",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "7723cd96102583a1ebb45127c6df8e0b9277ffea721c973b5713a797966ec2a7",
+              "step": 2,
+              "token": 271
+            },
+            {
+              "logits_f32_le_sha256": "93a7a2b3b2ee947e6ca59e10affd9c779fa4b51f47b2734f741c7e9d0e03c0c6",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "7bba986e27e73e0ff424b37a2e7d5a221361b748a431b597d4c2545e124b8781",
+              "step": 3,
+              "token": 760
+            }
+          ],
+          "selected_expert_payload_bytes": 5308416000,
+          "selected_expert_payload_bytes_after_prefill": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 20.50716854100756,
+          "manifest_sha256": "25c5b6e3882111d6be90b44a17f2f22e822447dd7336f3084c11a09c39a464aa"
+        },
+        "prefill": {
+          "active_after_load": 4440456448,
+          "cached_expert_layers": 0,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "load_seconds": 0.746214417,
+          "peak_mlx_bytes": 4826695578,
+          "prefill_schedule": "n-1 then singleton",
+          "prefix_record": {
+            "logits_f32_le_sha256": "b7e1bb353f51f2bb77f35485cf24b57e377c50208600fa2fb4458b75a4d227c1",
+            "logits_shape": [
+              4,
+              248320
+            ],
+            "position": 4,
+            "state_bytes": 115757425,
+            "state_sha256": "0d45eb46f9856dfa9a9080e467e0db10198f72cb3404513b9959b2b6836fdf69"
+          },
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "5d422951f70a861f2ab8d99d81ebf0f5b4e1ebeecfc9d19e2bf77ff39cb81880",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "3a37ee9b4ee2b719be63ca8adc72f323380d0e62480b9991a23383fb79e91f45",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "60a59b5415c6f04a1c8b044b9bb65ddfe7693cab634ae22e109b9d5a711b42b7",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "61ab9324ea86e8052b28eed0a01a9e076e06438f60dbe642280843040036df62",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "7a3fb7e65872a4e580826f99d54411ab150e307ca719ff1f04a29f901d708418",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "7723cd96102583a1ebb45127c6df8e0b9277ffea721c973b5713a797966ec2a7",
+              "step": 2,
+              "token": 271
+            },
+            {
+              "logits_f32_le_sha256": "93a7a2b3b2ee947e6ca59e10affd9c779fa4b51f47b2734f741c7e9d0e03c0c6",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "7bba986e27e73e0ff424b37a2e7d5a221361b748a431b597d4c2545e124b8781",
+              "step": 3,
+              "token": 760
+            }
+          ],
+          "selected_expert_payload_bytes": 9018777600,
+          "selected_expert_payload_bytes_after_prefill": 3710361600,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 4.352882249993854,
+          "manifest_sha256": "25c5b6e3882111d6be90b44a17f2f22e822447dd7336f3084c11a09c39a464aa"
+        }
+      },
+      "6bit": {
+        "whole": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 16.981091333,
+          "peak_mlx_bytes": 9622979408,
+          "prefill_schedule": "n-1 then singleton",
+          "prefix_record": {
+            "logits_f32_le_sha256": "70c0d09039a3814d764b58de5ece4bfe613aadb994a16eb1f1aa1723a7911923",
+            "logits_shape": [
+              4,
+              248320
+            ],
+            "position": 4,
+            "state_bytes": 115757425,
+            "state_sha256": "b5d37a254e4ffcf4f16454e5a7ef21873b1beb93b910e1b96d90e74c6d1a49b7"
+          },
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "selected_expert_payload_bytes_after_prefill": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 542.7537722080015,
+          "manifest_sha256": "9749c40ab16554026320e5283b90825ee06f2cda4f3cf74302437fd8068967ad"
+        },
+        "singleton": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.899409166,
+          "peak_mlx_bytes": 9384369752,
+          "prefill_schedule": "n-1 then singleton",
+          "prefix_record": {
+            "logits_f32_le_sha256": "70c0d09039a3814d764b58de5ece4bfe613aadb994a16eb1f1aa1723a7911923",
+            "logits_shape": [
+              4,
+              248320
+            ],
+            "position": 4,
+            "state_bytes": 115757425,
+            "state_sha256": "b5d37a254e4ffcf4f16454e5a7ef21873b1beb93b910e1b96d90e74c6d1a49b7"
+          },
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 7667712000,
+          "selected_expert_payload_bytes_after_prefill": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 13.451518833011505,
+          "manifest_sha256": "9749c40ab16554026320e5283b90825ee06f2cda4f3cf74302437fd8068967ad"
+        },
+        "prefill": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 0,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.868834959,
+          "peak_mlx_bytes": 5573708186,
+          "prefill_schedule": "n-1 then singleton",
+          "prefix_record": {
+            "logits_f32_le_sha256": "70c0d09039a3814d764b58de5ece4bfe613aadb994a16eb1f1aa1723a7911923",
+            "logits_shape": [
+              4,
+              248320
+            ],
+            "position": 4,
+            "state_bytes": 115757425,
+            "state_sha256": "b5d37a254e4ffcf4f16454e5a7ef21873b1beb93b910e1b96d90e74c6d1a49b7"
+          },
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 13055078400,
+          "selected_expert_payload_bytes_after_prefill": 5387366400,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 4.87607579199539,
+          "manifest_sha256": "9749c40ab16554026320e5283b90825ee06f2cda4f3cf74302437fd8068967ad"
+        }
+      }
+    },
+    "swap": "vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
+  },
+  "larger_prefill_capacity_control": {
+    "completed": true,
+    "qualification": false,
+    "binary_sha256": "debaaf12548f876b15b7143d99edfd83341a447c89d2031bc7fee8131b9daf3f",
+    "pack": "4bit",
+    "prompt_ids": [
+      814,
+      20139,
+      279,
+      11461,
+      1881,
+      78319,
+      11,
+      27987,
+      11,
+      19132,
+      14246,
+      11,
+      4477,
+      11,
+      16725,
+      11,
+      51356,
+      11,
+      36352,
+      11,
+      3061,
+      7262,
+      11,
+      17120,
+      11,
+      37225,
+      5414,
+      11,
+      3712,
+      11,
+      23009,
+      11,
+      28829,
+      11,
+      69022,
+      11,
+      17367,
+      11,
+      71105,
+      11,
+      16698,
+      11,
+      12760,
+      11,
+      321,
+      3762,
+      2369,
+      13,
+      1690,
+      1754,
+      3704,
+      11,
+      2873,
+      264,
+      13769,
+      3010,
+      11,
+      7276,
+      799,
+      18100,
+      11,
+      321,
+      10033,
+      1204,
+      310,
+      1716,
+      264,
+      16198,
+      2272,
+      22980,
+      13,
+      23024,
+      2136,
+      321,
+      3521,
+      5757,
+      11,
+      2716,
+      321,
+      1248,
+      854,
+      27477,
+      11,
+      4581,
+      33633,
+      321,
+      54315,
+      11,
+      49282,
+      321,
+      14835,
+      944,
+      11,
+      321,
+      279,
+      3364,
+      314,
+      4939,
+      13001,
+      13,
+      5272,
+      9989,
+      15394,
+      264,
+      53952,
+      11,
+      13159,
+      11,
+      15746,
+      11,
+      59505,
+      11,
+      10793,
+      11,
+      14367,
+      11,
+      22868,
+      11,
+      1957,
+      11,
+      13759,
+      11,
+      10675,
+      11,
+      17593,
+      11,
+      6053,
+      11,
+      6093,
+      11,
+      13245,
+      11,
+      37714,
+      11,
+      11661,
+      11,
+      11183,
+      11,
+      10258,
+      11,
+      321,
+      23380,
+      13,
+      63074,
+      25969,
+      1973,
+      16525,
+      286,
+      12688,
+      13,
+      79091,
+      279,
+      11461,
+      1881,
+      78319,
+      11,
+      27987,
+      11,
+      19132,
+      14246,
+      11,
+      4477,
+      11,
+      16725,
+      11,
+      51356,
+      11,
+      36352,
+      11,
+      3061,
+      7262,
+      11,
+      17120,
+      11,
+      37225,
+      5414,
+      11,
+      3712,
+      11,
+      23009,
+      11,
+      28829,
+      11,
+      69022,
+      11,
+      17367,
+      11,
+      71105,
+      11,
+      16698,
+      11,
+      12760,
+      11,
+      321,
+      3762,
+      2369,
+      13,
+      1690,
+      1754,
+      3704,
+      11,
+      2873,
+      264,
+      13769,
+      3010,
+      11,
+      7276,
+      799,
+      18100,
+      11,
+      321,
+      10033,
+      1204,
+      310,
+      1716,
+      264,
+      16198,
+      2272,
+      22980,
+      13,
+      23024,
+      2136,
+      321,
+      3521,
+      5757,
+      11,
+      2716,
+      321,
+      1248,
+      854,
+      27477,
+      11,
+      4581,
+      33633,
+      321,
+      54315,
+      11,
+      49282,
+      321,
+      14835,
+      944,
+      11,
+      321,
+      279,
+      3364,
+      314,
+      4939,
+      13001,
+      13,
+      5272,
+      9989,
+      15394,
+      264,
+      53952,
+      11,
+      13159,
+      11,
+      15746
+    ],
+    "runs": {
+      "whole": {
+        "active_after_load": 4440456448,
+        "cached_expert_layers": 1,
+        "cached_expert_layers_at_load": 0,
+        "expert_layer_budget": 1,
+        "expert_streaming": true,
+        "family": "qwen4_exp",
+        "generated_ids": [
+          11,
+          59505,
+          11,
+          10793
+        ],
+        "load_seconds": 0.765958208,
+        "peak_mlx_bytes": 9617402472,
+        "prefill_schedule": "n-1 then singleton",
+        "prefix_record": {
+          "logits_f32_le_sha256": "ced3cff0b31a69446406155b23f5c598be384a5f7d6dd8f384496f26fc5994d9",
+          "logits_shape": [
+            257,
+            248320
+          ],
+          "position": 257,
+          "state_bytes": 122752369,
+          "state_sha256": "a3c255888f4f98c4226c70c0d24d222f212c37db9006cee9e39f7d6aade2ba17"
+        },
+        "prompt_ids": [
+          814,
+          20139,
+          279,
+          11461,
+          1881,
+          78319,
+          11,
+          27987,
+          11,
+          19132,
+          14246,
+          11,
+          4477,
+          11,
+          16725,
+          11,
+          51356,
+          11,
+          36352,
+          11,
+          3061,
+          7262,
+          11,
+          17120,
+          11,
+          37225,
+          5414,
+          11,
+          3712,
+          11,
+          23009,
+          11,
+          28829,
+          11,
+          69022,
+          11,
+          17367,
+          11,
+          71105,
+          11,
+          16698,
+          11,
+          12760,
+          11,
+          321,
+          3762,
+          2369,
+          13,
+          1690,
+          1754,
+          3704,
+          11,
+          2873,
+          264,
+          13769,
+          3010,
+          11,
+          7276,
+          799,
+          18100,
+          11,
+          321,
+          10033,
+          1204,
+          310,
+          1716,
+          264,
+          16198,
+          2272,
+          22980,
+          13,
+          23024,
+          2136,
+          321,
+          3521,
+          5757,
+          11,
+          2716,
+          321,
+          1248,
+          854,
+          27477,
+          11,
+          4581,
+          33633,
+          321,
+          54315,
+          11,
+          49282,
+          321,
+          14835,
+          944,
+          11,
+          321,
+          279,
+          3364,
+          314,
+          4939,
+          13001,
+          13,
+          5272,
+          9989,
+          15394,
+          264,
+          53952,
+          11,
+          13159,
+          11,
+          15746,
+          11,
+          59505,
+          11,
+          10793,
+          11,
+          14367,
+          11,
+          22868,
+          11,
+          1957,
+          11,
+          13759,
+          11,
+          10675,
+          11,
+          17593,
+          11,
+          6053,
+          11,
+          6093,
+          11,
+          13245,
+          11,
+          37714,
+          11,
+          11661,
+          11,
+          11183,
+          11,
+          10258,
+          11,
+          321,
+          23380,
+          13,
+          63074,
+          25969,
+          1973,
+          16525,
+          286,
+          12688,
+          13,
+          79091,
+          279,
+          11461,
+          1881,
+          78319,
+          11,
+          27987,
+          11,
+          19132,
+          14246,
+          11,
+          4477,
+          11,
+          16725,
+          11,
+          51356,
+          11,
+          36352,
+          11,
+          3061,
+          7262,
+          11,
+          17120,
+          11,
+          37225,
+          5414,
+          11,
+          3712,
+          11,
+          23009,
+          11,
+          28829,
+          11,
+          69022,
+          11,
+          17367,
+          11,
+          71105,
+          11,
+          16698,
+          11,
+          12760,
+          11,
+          321,
+          3762,
+          2369,
+          13,
+          1690,
+          1754,
+          3704,
+          11,
+          2873,
+          264,
+          13769,
+          3010,
+          11,
+          7276,
+          799,
+          18100,
+          11,
+          321,
+          10033,
+          1204,
+          310,
+          1716,
+          264,
+          16198,
+          2272,
+          22980,
+          13,
+          23024,
+          2136,
+          321,
+          3521,
+          5757,
+          11,
+          2716,
+          321,
+          1248,
+          854,
+          27477,
+          11,
+          4581,
+          33633,
+          321,
+          54315,
+          11,
+          49282,
+          321,
+          14835,
+          944,
+          11,
+          321,
+          279,
+          3364,
+          314,
+          4939,
+          13001,
+          13,
+          5272,
+          9989,
+          15394,
+          264,
+          53952,
+          11,
+          13159,
+          11,
+          15746
+        ],
+        "qualification": false,
+        "records": [
+          {
+            "logits_f32_le_sha256": "da63353fe1e2eb78b05242dfbf5e428c43b28cf75e66e649838476af976c3c9a",
+            "logits_shape": [
+              1,
+              248320
+            ],
+            "position": 258,
+            "state_bytes": 122780017,
+            "state_sha256": "e3d966e9448ab6d2565a003ac86dba71d74c1c350556ecee6ee574b95a0257a9",
+            "step": 0,
+            "token": 11
+          },
+          {
+            "logits_f32_le_sha256": "f06c811138efcbf16b670c03f466c50de3e0dad8bdcac681d9740b2f68577cda",
+            "logits_shape": [
+              1,
+              248320
+            ],
+            "position": 259,
+            "state_bytes": 122807665,
+            "state_sha256": "cab7b120ab1058f0eed97e14be4278cf6cdc62fa9b9c66a75d30bf22e3c538fa",
+            "step": 1,
+            "token": 59505
+          },
+          {
+            "logits_f32_le_sha256": "05f97dfde1843c61a4b9ffafedf38a1ead31f376369994491bf4aa7a30997a52",
+            "logits_shape": [
+              1,
+              248320
+            ],
+            "position": 260,
+            "state_bytes": 122835313,
+            "state_sha256": "701885fc31d1121e154dbe5c515d73f2385c9f0a925d58423edd0c3a927d3a5e",
+            "step": 2,
+            "token": 11
+          },
+          {
+            "logits_f32_le_sha256": "b29d5175d9a62ba3f122586f533116fcdf457cefec1ca2f8940e5bc32addd6db",
+            "logits_shape": [
+              1,
+              248320
+            ],
+            "position": 261,
+            "state_bytes": 122862961,
+            "state_sha256": "59d44785cbbc3d6c4e4024cb6b30f1bce0665afbcbb47bf561e1737ab70edcdd",
+            "step": 3,
+            "token": 10793
+          }
+        ],
+        "selected_expert_payload_bytes": 0,
+        "selected_expert_payload_bytes_after_prefill": 0,
+        "table_payload_bytes_after_run": 751680,
+        "table_payload_bytes_at_load": 0,
+        "process_seconds": 39.041244249994634
+      },
+      "prefill": {
+        "active_after_load": 4440456448,
+        "cached_expert_layers": 1,
+        "cached_expert_layers_at_load": 0,
+        "expert_layer_budget": 1,
+        "expert_streaming": true,
+        "family": "qwen4_exp",
+        "generated_ids": [
+          11,
+          59505,
+          11,
+          10793
+        ],
+        "load_seconds": 0.7489825,
+        "peak_mlx_bytes": 9586620514,
+        "prefill_schedule": "n-1 then singleton",
+        "prefix_record": {
+          "logits_f32_le_sha256": "ced3cff0b31a69446406155b23f5c598be384a5f7d6dd8f384496f26fc5994d9",
+          "logits_shape": [
+            257,
+            248320
+          ],
+          "position": 257,
+          "state_bytes": 122752369,
+          "state_sha256": "a3c255888f4f98c4226c70c0d24d222f212c37db9006cee9e39f7d6aade2ba17"
+        },
+        "prompt_ids": [
+          814,
+          20139,
+          279,
+          11461,
+          1881,
+          78319,
+          11,
+          27987,
+          11,
+          19132,
+          14246,
+          11,
+          4477,
+          11,
+          16725,
+          11,
+          51356,
+          11,
+          36352,
+          11,
+          3061,
+          7262,
+          11,
+          17120,
+          11,
+          37225,
+          5414,
+          11,
+          3712,
+          11,
+          23009,
+          11,
+          28829,
+          11,
+          69022,
+          11,
+          17367,
+          11,
+          71105,
+          11,
+          16698,
+          11,
+          12760,
+          11,
+          321,
+          3762,
+          2369,
+          13,
+          1690,
+          1754,
+          3704,
+          11,
+          2873,
+          264,
+          13769,
+          3010,
+          11,
+          7276,
+          799,
+          18100,
+          11,
+          321,
+          10033,
+          1204,
+          310,
+          1716,
+          264,
+          16198,
+          2272,
+          22980,
+          13,
+          23024,
+          2136,
+          321,
+          3521,
+          5757,
+          11,
+          2716,
+          321,
+          1248,
+          854,
+          27477,
+          11,
+          4581,
+          33633,
+          321,
+          54315,
+          11,
+          49282,
+          321,
+          14835,
+          944,
+          11,
+          321,
+          279,
+          3364,
+          314,
+          4939,
+          13001,
+          13,
+          5272,
+          9989,
+          15394,
+          264,
+          53952,
+          11,
+          13159,
+          11,
+          15746,
+          11,
+          59505,
+          11,
+          10793,
+          11,
+          14367,
+          11,
+          22868,
+          11,
+          1957,
+          11,
+          13759,
+          11,
+          10675,
+          11,
+          17593,
+          11,
+          6053,
+          11,
+          6093,
+          11,
+          13245,
+          11,
+          37714,
+          11,
+          11661,
+          11,
+          11183,
+          11,
+          10258,
+          11,
+          321,
+          23380,
+          13,
+          63074,
+          25969,
+          1973,
+          16525,
+          286,
+          12688,
+          13,
+          79091,
+          279,
+          11461,
+          1881,
+          78319,
+          11,
+          27987,
+          11,
+          19132,
+          14246,
+          11,
+          4477,
+          11,
+          16725,
+          11,
+          51356,
+          11,
+          36352,
+          11,
+          3061,
+          7262,
+          11,
+          17120,
+          11,
+          37225,
+          5414,
+          11,
+          3712,
+          11,
+          23009,
+          11,
+          28829,
+          11,
+          69022,
+          11,
+          17367,
+          11,
+          71105,
+          11,
+          16698,
+          11,
+          12760,
+          11,
+          321,
+          3762,
+          2369,
+          13,
+          1690,
+          1754,
+          3704,
+          11,
+          2873,
+          264,
+          13769,
+          3010,
+          11,
+          7276,
+          799,
+          18100,
+          11,
+          321,
+          10033,
+          1204,
+          310,
+          1716,
+          264,
+          16198,
+          2272,
+          22980,
+          13,
+          23024,
+          2136,
+          321,
+          3521,
+          5757,
+          11,
+          2716,
+          321,
+          1248,
+          854,
+          27477,
+          11,
+          4581,
+          33633,
+          321,
+          54315,
+          11,
+          49282,
+          321,
+          14835,
+          944,
+          11,
+          321,
+          279,
+          3364,
+          314,
+          4939,
+          13001,
+          13,
+          5272,
+          9989,
+          15394,
+          264,
+          53952,
+          11,
+          13159,
+          11,
+          15746
+        ],
+        "qualification": false,
+        "records": [
+          {
+            "logits_f32_le_sha256": "da63353fe1e2eb78b05242dfbf5e428c43b28cf75e66e649838476af976c3c9a",
+            "logits_shape": [
+              1,
+              248320
+            ],
+            "position": 258,
+            "state_bytes": 122780017,
+            "state_sha256": "e3d966e9448ab6d2565a003ac86dba71d74c1c350556ecee6ee574b95a0257a9",
+            "step": 0,
+            "token": 11
+          },
+          {
+            "logits_f32_le_sha256": "f06c811138efcbf16b670c03f466c50de3e0dad8bdcac681d9740b2f68577cda",
+            "logits_shape": [
+              1,
+              248320
+            ],
+            "position": 259,
+            "state_bytes": 122807665,
+            "state_sha256": "cab7b120ab1058f0eed97e14be4278cf6cdc62fa9b9c66a75d30bf22e3c538fa",
+            "step": 1,
+            "token": 59505
+          },
+          {
+            "logits_f32_le_sha256": "05f97dfde1843c61a4b9ffafedf38a1ead31f376369994491bf4aa7a30997a52",
+            "logits_shape": [
+              1,
+              248320
+            ],
+            "position": 260,
+            "state_bytes": 122835313,
+            "state_sha256": "701885fc31d1121e154dbe5c515d73f2385c9f0a925d58423edd0c3a927d3a5e",
+            "step": 2,
+            "token": 11
+          },
+          {
+            "logits_f32_le_sha256": "b29d5175d9a62ba3f122586f533116fcdf457cefec1ca2f8940e5bc32addd6db",
+            "logits_shape": [
+              1,
+              248320
+            ],
+            "position": 261,
+            "state_bytes": 122862961,
+            "state_sha256": "59d44785cbbc3d6c4e4024cb6b30f1bce0665afbcbb47bf561e1737ab70edcdd",
+            "step": 3,
+            "token": 10793
+          }
+        ],
+        "selected_expert_payload_bytes": 5308416000,
+        "selected_expert_payload_bytes_after_prefill": 0,
+        "table_payload_bytes_after_run": 751680,
+        "table_payload_bytes_at_load": 0,
+        "process_seconds": 12.657327042004908
+      }
+    },
+    "manifest_sha256": "25c5b6e3882111d6be90b44a17f2f22e822447dd7336f3084c11a09c39a464aa",
+    "swap": "vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
+  },
+  "native_api_controls": {
+    "qualification": false,
+    "completed": true,
+    "binary_sha256": "7eb9d062bf1b52cd425a3c6fe04fb12ea5e87da7d1c647433cb698bec5d57f79",
+    "packs": {
+      "6bit": {
+        "singleton": {
+          "expected_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "expected_text": " Paris. The capital",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789488800,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris. The capital",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 10.821375792002073
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488809,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488810,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488810,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488810,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " capital",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488810,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488810,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris. The capital",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 10.176937208001618
+            }
+          ],
+          "ok": true,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 144.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 5616000.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 288.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 11232000.0
+          },
+          "rss_kib": 7426544,
+          "stopped": true,
+          "exit_code": 0
+        },
+        "prefill": {
+          "expected_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "expected_text": " Paris. The capital",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789488815,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris. The capital",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 2.5778888749919133
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488817,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488817,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488818,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488818,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " capital",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488818,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789488818,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris. The capital",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 2.516542165991268
+            }
+          ],
+          "ok": true,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 10877100.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 21754200.0
+          },
+          "rss_kib": 5465840,
+          "stopped": true,
+          "exit_code": 0
+        }
+      },
+      "4bit": {
+        "singleton": {
+          "expected_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "expected_text": " Paris.\n\nThe",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789489087,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris.\n\nThe",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 259.75659325000015
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489342,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489343,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489343,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "\n\n",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489343,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489343,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489343,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris.\n\nThe",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 256.1637070829893
+            }
+          ],
+          "ok": true,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 144.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 3888000.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 288.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 7776000.0
+          },
+          "rss_kib": 6081072,
+          "stopped": true,
+          "exit_code": 0
+        },
+        "prefill": {
+          "expected_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "expected_text": " Paris.\n\nThe",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789489357,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris.\n\nThe",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 1.703474791996996
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489358,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489358,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489359,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "\n\n",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489359,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489359,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489359,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris.\n\nThe",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 1.6824215829983586
+            }
+          ],
+          "ok": true,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 7511400.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 15022800.0
+          },
+          "rss_kib": 4729440,
+          "stopped": true,
+          "exit_code": 0
+        }
+      },
+      "2bit": {
+        "singleton": {
+          "expected_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "expected_text": " Paris. The capital",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789489620,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris. The capital",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 243.37930570899334
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489624,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489624,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489624,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489624,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " capital",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489624,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489624,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris. The capital",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 4.8322880000050645
+            }
+          ],
+          "ok": true,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 144.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 2592000.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 288.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 5184000.0
+          },
+          "rss_kib": 5775616,
+          "stopped": true,
+          "exit_code": 0
+        },
+        "prefill": {
+          "expected_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "expected_text": " Paris. The capital",
+          "cases": [
+            {
+              "name": "completion",
+              "request": {
+                "model": "flash-next-candidate",
+                "prompt": [
+                  760,
+                  6511,
+                  314,
+                  9338,
+                  369
+                ],
+                "temperature": 0,
+                "max_tokens": 4,
+                "stream": false
+              },
+              "response": {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 1789489628,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris. The capital",
+                    "finish_reason": "length"
+                  }
+                ],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              },
+              "seconds": 1.2807327500049723
+            },
+            {
+              "name": "sse_repeat",
+              "events": [
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489629,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " Paris",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489629,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": ".",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489629,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " The",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489629,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": " capital",
+                      "finish_reason": null
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489629,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [
+                    {
+                      "index": 0,
+                      "text": "",
+                      "finish_reason": "length"
+                    }
+                  ]
+                },
+                {
+                  "id": "cmpl-2",
+                  "object": "text_completion.chunk",
+                  "created": 1789489629,
+                  "model": "flash-next-candidate",
+                  "system_fingerprint": null,
+                  "choices": [],
+                  "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 4,
+                    "total_tokens": 9
+                  }
+                }
+              ],
+              "text": " Paris. The capital",
+              "done": true,
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              },
+              "seconds": 1.1765355839888798
+            }
+          ],
+          "ok": true,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 5014800.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 10029600.0
+          },
+          "rss_kib": 4875248,
+          "stopped": true,
+          "exit_code": 0
+        }
+      }
+    },
+    "swap": "vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
+  },
+  "raw_input_sha256": {
+    "selected-prefill-matrix.json": "70e597875900a49f31e015e0eebf5801c44d5418b5754fc6c3b03fdba9460650",
+    "selected-prefill-long-control.json": "eb83f34cd0ff8e2f1f54089e77ee16ed945ff79e807088dae5d5c82c672ba992",
+    "selected-prefill-http.json": "becfcdf8a70008d3f0f80ecc65844559f148e3cac306de8b622e400857286781"
+  },
+  "raw_harness_sha256": {
+    "run-selected-prefill-matrix.py": "c5d7bcb825ed58033228b97bd6808cc3470e9526abbf920f1dc4ab8154a36584",
+    "run-selected-prefill-long-control.py": "82712aee93413a2b9b009f1d89f6820c6007b8805ff4243692d2363cca4928c2",
+    "run-selected-prefill-http.py": "8421a51559bd9f871d48deec1868b9482b3bf696dd40054fd6ff366db1dc8751"
+  },
+  "validation": {
+    "workspace_passed": 3637,
+    "workspace_failed": 0,
+    "workspace_ignored": 39,
+    "gates": {
+      "workspace-tests": 0,
+      "server-production-clippy": 0,
+      "workspace-clippy": 101,
+      "script-gates": 0,
+      "format": 0
+    },
+    "final_test_guard_gates": {
+      "workspace-tests": 0,
+      "mlx-clippy": 0,
+      "script-gates": 0,
+      "format": 0
+    },
+    "mlx_lib_tests_clippy_passed": true,
+    "tiny_hybrid_controls": {
+      "selected-prefill-weighted-slots": 0,
+      "selected-prefill-hybrid-f32-2bit": 0,
+      "selected-prefill-hybrid-f32-4bit": 0,
+      "selected-prefill-hybrid-f32-6bit": 0,
+      "selected-prefill-hybrid-bf16-2bit": 0,
+      "selected-prefill-hybrid-bf16-4bit": 0,
+      "selected-prefill-hybrid-bf16-6bit": 0
+    },
+    "added_line_audit": {
+      "findings_on_added_lines": [],
+      "compile_error_summaries": [
+        "error: could not compile `ax-engine-core` (test \"kv_rollback_after_eviction_repro\") due to 7 previous errors",
+        "error: could not compile `ax-engine-core` (test \"engine_step_err_after_shared_prefix_eviction\") due to 3 previous errors",
+        "error: could not compile `ax-engine-core` (bin \"generate-manifest\" test) due to 5 previous errors",
+        "error: could not compile `ax-engine-core` (lib test) due to 1779 previous errors"
+      ],
+      "source_log": "selected-prefill-guard-workspace-clippy.txt"
+    }
+  },
+  "reviews": {
+    "plan": {
+      "claude": {
+        "completed": true,
+        "exit_code": 0
+      },
+      "grok": {
+        "completed": true,
+        "exit_code": 0
+      },
+      "muse": {
+        "completed": true,
+        "exit_code": 0
+      }
+    },
+    "muse_final_code": {
+      "completed": true,
+      "exit_code": 0
+    }
+  },
+  "regression": {
+    "initial_test_passed": false,
+    "initial_failure": "Non-row-contiguous multi-token top-k indices caused raw U32 access to fail. Materialize contiguous indices before the existing fallible evaluation and host read.",
+    "initial_log_sha256": "593931b110ed5ad800f32bafc294dab7f2a71e0cd91af80f9d60220bcedc15a8",
+    "six_format_regression_passed": true,
+    "larger_control_initial_failure": "The existing 128-token test input cap rejected 258 tokens before model load. Expanded the diagnostic guard to 512 and rebuilt only the test binary.",
+    "larger_control_initial_log_sha256": "95f14f320c613deca4fc90b0b72401859d1565d932792caef901df9eb7b3b250"
+  },
+  "limitations": [
+    "The long-control test binary differs only in a test input cap expanded from 128 to 512 tokens. Production source is unchanged; current and prior source hashes are verified. Each control comparison uses one binary.",
+    "Exact full logits/state comparisons are within each pack and the same prefill schedule, not between quantization formats.",
+    "The 258-token control exercises at least one capacity fallback; it is not long-context qualification or a model-quality benchmark.",
+    "Process timing includes load, prefill and output/state fingerprinting. Native request timings include retained prefill work. Filesystem cache and shared-host conditions were not controlled; no clean speedup, throughput or peer comparison is claimed.",
+    "Payload bytes count logical successful row reads and exclude headers, allocator padding/scratch and whole-layer traffic. They are not physical-device I/O or a total-memory bound; successful earlier rows in a failed triplet may increase diagnostics.",
+    "Only Shared batch1 multi-token forwards are admitted by the child flag. RowExact multi-token and batch>1 remain whole-layer. Capacity miss alone permits fallback; other errors propagate.",
+    "Selected prefill/MTP combinations, broad quality and checkpoint coverage, MXFP4 and target-SKU qualification remain open. Public readiness and default residency policy are unchanged."
+  ],
+  "slow_control_observation": {
+    "worker_samples": 144,
+    "whole_layer_materialization_samples": 144,
+    "sample_duration_seconds": 2,
+    "sample_sha256": "0fa4f6dee25e94c5c3fafc65c59947bfd5b51119aa5444de85cf9c2606bc87fa",
+    "host_memory_io_sha256": "86a2708165fee5c7deb38b0b0465e7eaa8e6aed2bb75848fad4cc7e95c76806e",
+    "volume_io_sha256": "caf6c720dd295c5510b549b97af6c03fcea4e72dbf0c3aa9bdbbae1fc00c1a3f",
+    "limitations": "The sample locates a slow control in existing whole-layer materialization, not fingerprint hashing. Sampling adds overhead. Device counters include layered devices and other traffic; they are not model throughput."
+  }
+}

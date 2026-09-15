@@ -207,6 +207,16 @@ fn compare_dedicated_and_production_generation(
 #[test]
 #[ignore = "requires a synthetic affine Flash Next expert fixture"]
 fn qwen4_exp_selected_experts_preserve_hybrid_state_and_recover_io() {
+    selected_experts_hybrid_state_and_recover_io(false);
+}
+
+#[test]
+#[ignore = "requires a synthetic affine Flash Next expert fixture"]
+fn qwen4_exp_selected_prefill_preserves_hybrid_state_and_recovers_io() {
+    selected_experts_hybrid_state_and_recover_io(true);
+}
+
+fn selected_experts_hybrid_state_and_recover_io(prefill: bool) {
     use crate::expert_stream::StreamExpertsMode;
     use crate::weights::qwen4_exp::load_with_paging_policy;
     let source = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_SELECTED_FIXTURE").unwrap());
@@ -245,6 +255,9 @@ fn qwen4_exp_selected_experts_preserve_hybrid_state_and_recover_io() {
     let mut selected = load_with_paging_policy(&root, &manifest, StreamExpertsMode::On, 1).unwrap();
     for layer in &mut selected.layers {
         layer.moe.enable_selected_decode_for_test();
+        if prefill {
+            layer.moe.enable_selected_prefill_for_test();
+        }
     }
     let pager = selected.expert_stream.as_ref().unwrap();
     assert_eq!(pager.selected_payload_bytes_read().unwrap(), 0);
@@ -258,6 +271,7 @@ fn qwen4_exp_selected_experts_preserve_hybrid_state_and_recover_io() {
     let mut control = qwen4_exp::Qwen4ExpState::new(&resident, 71);
     let mut state = qwen4_exp::Qwen4ExpState::new(&selected, 71);
     for tokens in [&[1, 2, 3, 4][..], &[5][..], &[6][..], &[7, 8][..]] {
+        let bytes_before = pager.selected_payload_bytes_read().unwrap();
         let expected = qwen4_exp::forward(
             &resident,
             tokens,
@@ -271,13 +285,25 @@ fn qwen4_exp_selected_experts_preserve_hybrid_state_and_recover_io() {
                 .unwrap();
         assert_equal(&actual.logits, &expected.logits);
         assert_eq!(encode(&actual.state), encode(&expected.state));
+        if prefill || tokens.len() == 1 {
+            assert!(pager.selected_payload_bytes_read().unwrap() > bytes_before);
+        } else {
+            assert_eq!(pager.selected_payload_bytes_read().unwrap(), bytes_before);
+        }
         state = actual.state;
         control = expected.state;
     }
     assert!(pager.selected_payload_bytes_read().unwrap() > 0);
     let before = encode(&state);
-    let expected =
-        qwen4_exp::forward(&resident, &[9], &control, 71, ProjectionBatchPolicy::Shared).unwrap();
+    let retry_tokens = if prefill { &[9, 10][..] } else { &[9][..] };
+    let expected = qwen4_exp::forward(
+        &resident,
+        retry_tokens,
+        &control,
+        71,
+        ProjectionBatchPolicy::Shared,
+    )
+    .unwrap();
     let file = root.join("experts.safetensors");
     let saved = std::fs::read(&file).unwrap();
     std::fs::OpenOptions::new()
@@ -286,17 +312,29 @@ fn qwen4_exp_selected_experts_preserve_hybrid_state_and_recover_io() {
         .unwrap()
         .set_len(0)
         .unwrap();
-    let error = qwen4_exp::forward(&selected, &[9], &state, 71, ProjectionBatchPolicy::Shared)
-        .err()
-        .unwrap();
+    let error = qwen4_exp::forward(
+        &selected,
+        retry_tokens,
+        &state,
+        71,
+        ProjectionBatchPolicy::Shared,
+    )
+    .err()
+    .unwrap();
     assert!(
         error.contains("read row"),
         "unexpected selected IO failure: {error}"
     );
     assert_eq!(encode(&state), before);
     std::fs::write(file, saved).unwrap();
-    let recovered =
-        qwen4_exp::forward(&selected, &[9], &state, 71, ProjectionBatchPolicy::Shared).unwrap();
+    let recovered = qwen4_exp::forward(
+        &selected,
+        retry_tokens,
+        &state,
+        71,
+        ProjectionBatchPolicy::Shared,
+    )
+    .unwrap();
     assert_equal(&recovered.logits, &expected.logits);
     assert_eq!(encode(&recovered.state), encode(&expected.state));
 }
@@ -334,7 +372,7 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
     let output_path = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT").unwrap());
     let tokens: Vec<u32> =
         serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
-    assert!((2..=128).contains(&tokens.len()));
+    assert!((2..=512).contains(&tokens.len()));
     let expected_streaming = match std::env::var("AX_FLASH_NEXT_EXPECT_STREAMING")
         .unwrap()
         .as_str()
@@ -376,6 +414,26 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
         ProjectionBatchPolicy::Shared,
     )
     .unwrap();
+    let selected_bytes_after_prefill = weights
+        .expert_stream
+        .as_ref()
+        .map(|p| p.selected_payload_bytes_read().unwrap())
+        .unwrap_or(0);
+    let mut prefix_digest = Sha256::new();
+    for value in prefix.logits.data_f32() {
+        assert!(value.is_finite());
+        prefix_digest.update(value.to_bits().to_le_bytes());
+    }
+    let mut prefix_cache = MlxKVCache::new_contiguous(cfg.layer_count);
+    prefix_cache.advance(prefix.state.position());
+    prefix_cache.qwen4_exp = Some(prefix.state.clone());
+    let prefix_state = prefix_cache.serialize_to_bytes();
+    let prefix_record = serde_json::json!({
+        "position": prefix.state.position(), "logits_shape": prefix.logits.shape(),
+        "logits_f32_le_sha256": format!("{:x}", prefix_digest.finalize()),
+        "state_bytes": prefix_state.len(),
+        "state_sha256": format!("{:x}", Sha256::digest(&prefix_state)),
+    });
     let mut output = qwen4_exp::forward(
         trunk,
         &tokens[tokens.len() - 1..],
@@ -430,6 +488,8 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
         "cached_expert_layers_at_load": streaming.then_some(0), "table_payload_bytes_at_load": 0,
         "active_after_load": active_after_load, "peak_mlx_bytes": mlx_sys::get_peak_memory(),
         "table_payload_bytes_after_run": table_bytes(), "records": records,
+        "prefix_record": prefix_record,
+        "selected_expert_payload_bytes_after_prefill": selected_bytes_after_prefill,
         "selected_expert_payload_bytes": weights.expert_stream.as_ref()
             .map(|pager| pager.selected_payload_bytes_read().unwrap()).unwrap_or(0),
         "cached_expert_layers": weights.expert_stream.as_ref().map(|p| p.cached_layer_count()),

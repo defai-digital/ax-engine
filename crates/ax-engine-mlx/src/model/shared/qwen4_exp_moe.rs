@@ -8,8 +8,8 @@
 
 use mlx_sys::ops::silu;
 use mlx_sys::{
-    MlxArray, MlxDtype, add, astype, concatenate, divide, expand_dims_axes, multiply, reshape,
-    sigmoid, slice, softmax, sum_axis, take, try_eval,
+    MlxArray, MlxDtype, add, astype, concatenate, contiguous, divide, expand_dims_axes, multiply,
+    reshape, sigmoid, slice, softmax, sum_axis, take, try_eval,
 };
 
 use super::mlp::top_k_by_argpartition;
@@ -52,6 +52,7 @@ pub(crate) struct Qwen4ExpMoe {
     normalize_top_k: bool,
     weights: Qwen4ExpMoeWeights,
     selected_decode: bool,
+    selected_prefill: bool,
 }
 
 /// A resolved streamed expert stack: split (or already-split) gate/up plus
@@ -145,6 +146,8 @@ impl Qwen4ExpMoe {
             normalize_top_k,
             weights,
             selected_decode: std::env::var_os("AX_MLX_FLASH_NEXT_SELECTED_EXPERTS")
+                .is_some_and(|v| v == "1"),
+            selected_prefill: std::env::var_os("AX_MLX_FLASH_NEXT_SELECTED_PREFILL")
                 .is_some_and(|v| v == "1"),
         })
     }
@@ -246,6 +249,11 @@ impl Qwen4ExpMoe {
         self.selected_decode = true;
     }
 
+    #[cfg(test)]
+    pub(crate) fn enable_selected_prefill_for_test(&mut self) {
+        self.selected_prefill = true;
+    }
+
     fn validate_input(&self, input: &MlxArray) -> Result<Vec<i32>, String> {
         let shape = input.shape();
         if shape.len() != 3
@@ -274,10 +282,11 @@ impl Qwen4ExpMoe {
         let shape = self.validate_input(input)?;
         if self.selected_decode
             && shape[0] == 1
-            && shape[1] == 1
+            && (shape[1] == 1 || (self.selected_prefill && policy == ProjectionBatchPolicy::Shared))
             && let Qwen4ExpExpertWeights::Streamed(source) = &self.weights.experts
+            && let Some(output) = self.forward_selected(input, policy, source)?
         {
-            return self.forward_selected(input, policy, source);
+            return Ok(output);
         }
         let experts = self.resolve_experts()?;
         #[cfg(test)]
@@ -349,17 +358,27 @@ impl Qwen4ExpMoe {
         input: &MlxArray,
         policy: ProjectionBatchPolicy,
         source: &ExpertLayerSource,
-    ) -> Result<MlxArray, String> {
+    ) -> Result<Option<MlxArray>, String> {
         let (indices, routing) = self.route(input, policy);
         try_eval(&[&indices, &routing])
             .map_err(|e| format!("qwen4_exp selected router eval failed: {e}"))?;
-        let host_indices = astype(&indices, MlxDtype::Uint32, None);
+        let host_indices = contiguous(&astype(&indices, MlxDtype::Uint32, None), None);
         try_eval(&[&host_indices])
             .map_err(|e| format!("qwen4_exp selected indices eval failed: {e}"))?;
         let (selected, remapped) = compact_expert_ids(host_indices.data_u32(), self.experts)?;
-        let stack = source
-            .selected_stack(&selected)
-            .map_err(|e| e.to_string())?;
+        let stack = if input.shape()[1] == 1 {
+            source
+                .selected_stack(&selected)
+                .map_err(|e| e.to_string())?
+        } else {
+            let Some(stack) = source
+                .selected_stack_if_fits(&selected)
+                .map_err(|e| e.to_string())?
+            else {
+                return Ok(None);
+            };
+            stack
+        };
         let experts = ResolvedExperts::Streamed(Box::new(
             self.resolve_streamed_experts_count(stack, selected.len())?,
         ));
@@ -376,7 +395,7 @@ impl Qwen4ExpMoe {
         let output = self.forward_routed(input, policy, &experts, &indices, &routing)?;
         try_eval(&[&output])
             .map_err(|e| format!("qwen4_exp selected MoE output eval failed: {e}"))?;
-        Ok(output)
+        Ok(Some(output))
     }
 
     fn forward_routed(
@@ -471,6 +490,13 @@ mod tests {
             compact_expert_ids(&[5, 2, 5, 2], 8).unwrap(),
             (vec![5, 2], vec![0, 1, 0, 1])
         );
+        let ids = [7, 1, 7, 3, 1, 5, 7, 1];
+        let (union, remapped) = compact_expert_ids(&ids, 8).unwrap();
+        assert_eq!(union, vec![7, 1, 3, 5]);
+        assert_eq!(remapped, vec![0, 1, 0, 2, 1, 3, 0, 1]);
+        for (original, compact) in ids.iter().zip(remapped) {
+            assert_eq!(u64::from(*original), union[compact as usize]);
+        }
         assert!(compact_expert_ids(&[1, 8], 8).is_err());
         assert!(compact_expert_ids(&[], 8).is_err());
     }
@@ -479,8 +505,8 @@ mod tests {
     fn compact_experts_keep_original_weighted_reduction_slots() {
         let (module, _) = build_resident_module();
         let resolved = module.resolve_experts().unwrap();
-        let ids = [3i32, 1, 3, 2];
-        let indices = MlxArray::from_raw_data(ids.as_ptr().cast(), 16, &[1, 1, 4], MlxDtype::Int32);
+        let ids = [3i32, 1, 3, 2, 1, 2, 1, 1];
+        let indices = MlxArray::from_raw_data(ids.as_ptr().cast(), 32, &[1, 2, 4], MlxDtype::Int32);
         let selected = [3i32, 1, 2];
         let selected = MlxArray::from_raw_data(selected.as_ptr().cast(), 12, &[3], MlxDtype::Int32);
         let gather = |projection: &QuantizedWeight| {
@@ -501,14 +527,15 @@ mod tests {
             up: gather(resolved.up()),
             down: gather(resolved.down()),
         }));
-        let remap = [0i32, 1, 0, 2];
-        let remap = MlxArray::from_raw_data(remap.as_ptr().cast(), 16, &[1, 1, 4], MlxDtype::Int32);
+        let remap = [0i32, 1, 0, 2, 1, 2, 1, 1];
+        let remap = MlxArray::from_raw_data(remap.as_ptr().cast(), 32, &[1, 2, 4], MlxDtype::Int32);
         let routing = reshape(
-            &MlxArray::from_f32_slice(&[0.1, 0.25, 0.2, 0.45]),
-            &[1, 1, 4],
+            &MlxArray::from_f32_slice(&[0.1, 0.25, 0.2, 0.45, 0.3, 0.4, 0.1, 0.2]),
+            &[1, 2, 4],
             None,
         );
-        let input = reshape(&MlxArray::from_f32_slice(&[0.5; 16]), &[1, 1, 16], None);
+        let values: Vec<f32> = (0..32).map(|i| (i as f32 - 8.0) / 32.0).collect();
+        let input = reshape(&MlxArray::from_f32_slice(&values), &[1, 2, 16], None);
         let expected = module
             .forward_routed(
                 &input,

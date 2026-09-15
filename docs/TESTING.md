@@ -114,6 +114,17 @@ For selected-expert controls, keep `AX_STREAM_EXPERTS=on` and add
 must be zero. This field counts successful row reads, including successful
 earlier projections if a later projection fails.
 
+The fingerprint harness accepts 2-512 prompt tokens; broader context validation
+uses the dedicated qualification and serving campaigns.
+
+For bounded multi-token Shared prefill, additionally set
+`AX_MLX_FLASH_NEXT_SELECTED_PREFILL=1`. Both selected flags are required. The
+`selected_expert_payload_bytes_after_prefill` field is positive when a layer's
+expert union fits the selected payload cap. With a multi-token test prefix, it
+remains zero for the singleton-only control. Compare `prefix_record` as well as generated records to cover logits
+and serialized state immediately after the same multi-token prefill. Capacity
+misses alone retain whole-layer reads; malformed metadata and I/O errors fail.
+
 Compare `generated_ids` and every `records` entry across modes of the same pack,
 with the same prompt and prefill schedule. This test alone does not establish
 checkpoint quality, long-context correctness, throughput, or SKU qualification.

@@ -668,11 +668,10 @@ impl ExpertStackPager {
             .collect()
     }
 
-    fn selected_stack(
+    fn selected_reader(
         &self,
         layer: u32,
-        ids: &[u64],
-    ) -> Result<LayerExpertStack, ExpertStreamError> {
+    ) -> Result<Arc<selected::SelectedExpertRows>, ExpertStreamError> {
         let reader = {
             let mut readers = self
                 .selected_readers
@@ -694,7 +693,27 @@ impl ExpertStackPager {
                 reader
             }
         };
-        reader.gather(ids).map_err(ExpertStreamError::Paging)
+        Ok(reader)
+    }
+
+    fn selected_stack(
+        &self,
+        layer: u32,
+        ids: &[u64],
+    ) -> Result<LayerExpertStack, ExpertStreamError> {
+        self.selected_reader(layer)?
+            .gather(ids)
+            .map_err(ExpertStreamError::Paging)
+    }
+
+    fn selected_stack_if_fits(
+        &self,
+        layer: u32,
+        ids: &[u64],
+    ) -> Result<Option<LayerExpertStack>, ExpertStreamError> {
+        self.selected_reader(layer)?
+            .gather_if_fits(ids)
+            .map_err(ExpertStreamError::Paging)
     }
 
     /// Successful selected-row payload reads; excludes headers and full-layer reads.
@@ -876,6 +895,14 @@ impl ExpertLayerSource {
         ids: &[u64],
     ) -> Result<LayerExpertStack, ExpertStreamError> {
         self.pager.selected_stack(self.layer, ids)
+    }
+
+    /// Return None only when the validated union exceeds the selected payload cap.
+    pub(crate) fn selected_stack_if_fits(
+        &self,
+        ids: &[u64],
+    ) -> Result<Option<LayerExpertStack>, ExpertStreamError> {
+        self.pager.selected_stack_if_fits(self.layer, ids)
     }
 
     /// Resolve this layer's expert stack, paging it in when needed.
