@@ -4752,6 +4752,66 @@ fn rejects_unsupported_model_type() {
     let _ = fs::remove_dir_all(dir);
 }
 
+#[test]
+fn maps_qwen4_exp_published_hf_checkpoint_names() {
+    let family = model_family_for_type(
+        "qwen4_exp",
+        &serde_json::json!({"model_type": "qwen4_exp", "text_config": {"num_experts": 4}}),
+    )
+    .expect("qwen4_exp family");
+    assert_eq!(family.family_name, "qwen4_exp");
+
+    let names = [
+        "model.language_model.embed_tokens.weight",
+        "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+        "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+        "model.language_model.layers.0.linear_attn.in_proj_a.weight",
+        "model.language_model.layers.0.linear_attn.in_proj_b.weight",
+        "model.language_model.layers.0.linear_attn.out_proj.weight",
+        "model.language_model.layers.0.linear_attn.conv1d.weight",
+        "model.language_model.layers.0.linear_attn.dt_bias",
+        "model.language_model.layers.0.linear_attn.A_log",
+        "model.language_model.layers.0.linear_attn.norm.weight",
+        "model.language_model.layers.0.self_attn.q_proj.weight",
+        "model.language_model.layers.0.self_attn.k_proj.weight",
+        "model.language_model.layers.0.self_attn.v_proj.weight",
+        "model.language_model.layers.0.self_attn.o_proj.weight",
+        "model.language_model.layers.0.self_attn.q_norm.weight",
+        "model.language_model.layers.0.self_attn.k_norm.weight",
+        "model.language_model.layers.0.self_attn.indexer.index_qk_proj.weight",
+        "model.language_model.layers.0.self_attn.indexer.q_layernorm.weight",
+        "model.language_model.layers.0.self_attn.indexer.k_layernorm.weight",
+        "model.language_model.layers.0.attn_hyper_connection.input_mix_weight_down.weight",
+        "model.language_model.layers.0.mlp_hyper_connection.hc_norm.weight",
+        "model.language_model.layers.0.mlp.gate.weight",
+        "model.language_model.layers.0.mlp.experts.gate_up_proj",
+        "model.language_model.layers.0.mlp.experts.down_proj",
+        "model.language_model.layers.0.mlp.experts.gate_proj.weight",
+        "model.language_model.layers.0.mlp.experts.up_proj.weight",
+        "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight",
+        "model.language_model.layers.0.mlp.shared_expert.up_proj.weight",
+        "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
+        "model.language_model.layers.0.mlp.shared_expert_gate.weight",
+        "model.language_model.layers.1.ple.key_proj.weight",
+        "model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shards.0.weight",
+        "model.language_model.hyper_connection_mixer.hc_norm.weight",
+        "model.language_model.ngram_embedding.weight_scale",
+        "lm_head.weight",
+        "model.visual.pos_embed",
+        "mtp.layers.0.mlp.gate.weight",
+    ];
+    let mut missing = Vec::new();
+    for name in names {
+        if match_tensor(name, &family).is_none() {
+            missing.push(name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "qwen4_exp convert still drops HF names: {missing:?}"
+    );
+}
+
 fn has_qwen4_role(
     manifest: &crate::NativeModelManifest,
     role: NativeTensorRole,
@@ -4882,6 +4942,16 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
                     &[4, 8, 16],
                 ),
                 (
+                    "language_model.model.layers.0.mlp.experts.gate_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.experts.up_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                (
                     "language_model.model.layers.0.mlp.shared_expert.gate_proj.weight",
                     "BF16",
                     &[16, 8],
@@ -4974,6 +5044,14 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         assert!(
             has_qwen4_role(&manifest, NativeTensorRole::FfnDownExps, Some(0)),
             "{model_type}: mlp.experts.down_proj"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::FfnGateExps, Some(0)),
+            "{model_type}: split mlp.experts.gate_proj"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::FfnUpExps, Some(0)),
+            "{model_type}: split mlp.experts.up_proj"
         );
         assert!(
             has_qwen4_role(&manifest, NativeTensorRole::FfnSharedExpertGate, Some(0)),

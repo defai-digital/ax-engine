@@ -114,6 +114,14 @@ pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
     ),
     (
+        "mlp.experts.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "mlp.experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
         "mlp.shared_expert.gate_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
     ),
