@@ -1,0 +1,217 @@
+{
+  "schema_version": "ax.mtp_peer_omlx.v1",
+  "host_label": "apple-m5-max-128gb",
+  "runtime": {
+    "name": "OMLX",
+    "version": "0.6.4-or-newer",
+    "model_settings": {
+      "mtp_enabled": true,
+      "mtp_num_draft_tokens": 1,
+      "enable_thinking": false
+    }
+  },
+  "model": "/Users/akiralam/code/ax-engine-mtp-skip-ckpt-20260915/omlx-axq6-imported",
+  "model_repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+  "prompt_suite": "flappy",
+  "prompt_source": "benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "prompt_token_source": "OMLX tokenizer",
+  "warmup_repetitions": 2,
+  "repetitions": 5,
+  "generation_tokens": 256,
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "seed": 0
+  },
+  "results": [
+    {
+      "prompt_case_id": "flappy_pipes",
+      "prompt_category": "game_code",
+      "prompt_tokens": 273,
+      "prompt_text_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+      "prompt_token_ids_sha256": "45be5a01976effc3c6f5e9750249b6a10ff3a33261ae2a16c44809e965c96eec",
+      "generation_tokens": 256,
+      "trials": [
+        {
+          "elapsed_s": 6.4642034160060575,
+          "completion_tokens": 256,
+          "decode_tok_s": 39.60271413583872
+        },
+        {
+          "elapsed_s": 6.626374999992549,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.633491162255055
+        },
+        {
+          "elapsed_s": 6.641648499993607,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.544647462184486
+        },
+        {
+          "elapsed_s": 6.633545416989364,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.59173095345832
+        },
+        {
+          "elapsed_s": 6.636832541000331,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.57261704563283
+        }
+      ],
+      "decode_tok_s": {
+        "mean": 38.789040151873884,
+        "median": 38.59173095345832,
+        "min": 38.544647462184486,
+        "max": 39.60271413583872
+      },
+      "completion_tokens": [
+        256
+      ],
+      "output_text_sha256": [
+        "7031a7d9a5a08760cddff999eda723f11289bba5e0698be457e285cefd9fefd3"
+      ]
+    },
+    {
+      "prompt_case_id": "flappy_score_gates",
+      "prompt_category": "game_code",
+      "prompt_tokens": 374,
+      "prompt_text_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+      "prompt_token_ids_sha256": "23ff241d857ea3f8ab79ca31098ce96b1c947db13c98259703f6077feb38f7e8",
+      "generation_tokens": 256,
+      "trials": [
+        {
+          "elapsed_s": 6.90060983299918,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.0981704799177
+        },
+        {
+          "elapsed_s": 6.896360166996601,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.12103106579616
+        },
+        {
+          "elapsed_s": 6.798010458005592,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.65807681253635
+        },
+        {
+          "elapsed_s": 6.78982299999916,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.70348652682576
+        },
+        {
+          "elapsed_s": 6.776492709002923,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.7776544583145
+        }
+      ],
+      "decode_tok_s": {
+        "mean": 37.47168386867809,
+        "median": 37.65807681253635,
+        "min": 37.0981704799177,
+        "max": 37.7776544583145
+      },
+      "completion_tokens": [
+        256
+      ],
+      "output_text_sha256": [
+        "91d999668dcd39ac37cfbf0b8eaf612c740b07d68c1bd13e00cb445e8419b392"
+      ]
+    },
+    {
+      "prompt_case_id": "flappy_collision_checks",
+      "prompt_category": "game_code",
+      "prompt_tokens": 432,
+      "prompt_text_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+      "prompt_token_ids_sha256": "1ea3f7af947e63e18e4dea665f0a66152ec9c6176970be43d14674f9928e7dba",
+      "generation_tokens": 256,
+      "trials": [
+        {
+          "elapsed_s": 7.0185779580060625,
+          "completion_tokens": 256,
+          "decode_tok_s": 36.47462513513608
+        },
+        {
+          "elapsed_s": 6.921289292004076,
+          "completion_tokens": 256,
+          "decode_tok_s": 36.987328400757335
+        },
+        {
+          "elapsed_s": 6.818333417002577,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.54583185410442
+        },
+        {
+          "elapsed_s": 6.799308999994537,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.65088481788454
+        },
+        {
+          "elapsed_s": 6.785116125000059,
+          "completion_tokens": 256,
+          "decode_tok_s": 37.72964165738546
+        }
+      ],
+      "decode_tok_s": {
+        "mean": 37.277662373053566,
+        "median": 37.54583185410442,
+        "min": 36.47462513513608,
+        "max": 37.72964165738546
+      },
+      "completion_tokens": [
+        256
+      ],
+      "output_text_sha256": [
+        "8cfe43104fb4d4db87281d35f49038804513302191380e48876b500f7ab84e17"
+      ]
+    },
+    {
+      "prompt_case_id": "flappy_sound_channels",
+      "prompt_category": "game_code",
+      "prompt_tokens": 264,
+      "prompt_text_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+      "prompt_token_ids_sha256": "0926289b8b583016811b7e062a63205a23e19514639b58f78eb5539237bb3442",
+      "generation_tokens": 256,
+      "trials": [
+        {
+          "elapsed_s": 6.570611250004731,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.96136755919256
+        },
+        {
+          "elapsed_s": 6.654609834004077,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.46957318096663
+        },
+        {
+          "elapsed_s": 6.638057124990155,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.565501197065956
+        },
+        {
+          "elapsed_s": 6.64661220900598,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.51586220919086
+        },
+        {
+          "elapsed_s": 6.62670608398912,
+          "completion_tokens": 256,
+          "decode_tok_s": 38.631560952812634
+        }
+      ],
+      "decode_tok_s": {
+        "mean": 38.628773019845724,
+        "median": 38.565501197065956,
+        "min": 38.46957318096663,
+        "max": 38.96136755919256
+      },
+      "completion_tokens": [
+        256
+      ],
+      "output_text_sha256": [
+        "0f5c81288e448289926fc1f6d74f6ef87cf8626c0b700f4cb5351a2d6ab4e75d"
+      ]
+    }
+  ]
+}

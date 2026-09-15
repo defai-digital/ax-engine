@@ -338,7 +338,7 @@ no GGUF or community-4-bit substitute.
 | [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** | PyPI / mtplx.com Latest | 70.62 tok/s |
 | [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 27.90 tok/s |
 | [mlxcel](https://github.com/lablup/mlxcel) **0.7.0** | GitHub Latest (2026-09-09) | unsupported (AXQ 6-bit affine group layout) |
-| [OMLX](https://github.com/jundot/omlx) **0.6.4** | GitHub Latest release | unsupported (`mtp.*` Lightning tensors) |
+| [OMLX](https://github.com/jundot/omlx) **0.6.4** (imported sidecar, Lightning depth 1) | GitHub Latest release | 38.47 tok/s |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) **0.4.0** (formula 0.4.1) | Homebrew | unsupported (not GGUF) |
 | [mistral.rs](https://github.com/EricLBuehler/mistral.rs) **0.9.3** | GitHub Latest | unsupported (no AXQ MLX loader on host) |
 | [exo](https://github.com/exo-explore/exo) **1.0.71** | GitHub Latest | unsupported (cluster runtime) |
@@ -348,8 +348,10 @@ no GGUF or community-4-bit substitute.
 
 AX and MTPLX loaded the snapshot and completed the MTP contract. mlx-lm 0.31.3
 loaded the **same directory** and ran the same `flappy` greedy 256-token
-decode as an autoregressive baseline (no MTP head). mlxcel 0.7.0 and
-OMLX 0.6.4 were started against that directory and failed in load.
+decode as an autoregressive baseline (no MTP head). OMLX 0.6.4 required a
+writable snapshot plus `import_mtplx_sidecar` (sidecar tensors stay out of
+the language index); Lightning MTP ran at draft depth 1. mlxcel 0.7.0 still
+fails to load this AXQ affine layout.
 Unsupported is not replaced with another checkpoint. MTP Tier 2 remains
 pending. Artifacts:
 [2026-09-15 campaign](benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).

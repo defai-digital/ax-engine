@@ -18,6 +18,7 @@ Same checkpoint directory was offered to every runtime. No GGUF or community
 | AX Engine | 7.4.0 product-path MTP (recurrent depth 3) | **76.90 tok/s** |
 | MTPLX | **2.11.2** (PyPI / mtplx.com Latest) | 70.62 tok/s |
 | mlx-lm | **0.31.3** (PyPI Latest), direct AR on the same `flappy` prompts | 27.90 tok/s |
+| OMLX | **0.6.4**, `import_mtplx_sidecar` then Lightning MTP depth 1 | 38.47 tok/s |
 
 Raw: `ax_engine.json`, `mtplx.json`, `mlx_lm.json`. mlx-lm is greedy
 `stream_generate` (temp 0), 256 tokens, 2 warmups + 5 reps per case; decode
@@ -28,7 +29,7 @@ excludes the first generated token. It does **not** use the MTP sidecar.
 | Runtime | Latest checked | Result |
 | --- | --- | --- |
 | mlxcel | **v0.7.0** (GitHub Latest, 2026-09-09) | Load error: AXQ affine 6-bit embed `group_size=32` inferred bits=16 |
-| OMLX | **0.6.4** (GitHub Latest release, 2026-08-29) | Load error: Lightning MTP expects `mtp.*` tensors this snapshot does not expose in that layout |
+| OMLX | **0.6.4** (GitHub Latest release, 2026-08-29) | Raw Hub tree still fails Lightning load; **imported snapshot measured 38.47 tok/s** (see Measured) |
 | llama.cpp | Homebrew **0.4.1** formula; host binary **0.4.0** (b10809) | Not GGUF (`gguf_init_from_reader: failed to read magic`) |
 | mistral.rs | **v0.9.3** (GitHub Latest, 2026-09-07) | Not installed on the campaign host; GGUF/HF path, not this MLX AXQ snapshot |
 | exo | **v1.0.71** | Cluster runtime; not a single-host load of this snapshot |

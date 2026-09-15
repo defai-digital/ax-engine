@@ -27,6 +27,11 @@
       "version": "0.31.3",
       "mode": "direct_ar",
       "decode_tok_s_median_20": 27.90
+    },
+    "omlx": {
+      "version": "0.6.4",
+      "mode": "imported_sidecar_lightning_depth_1",
+      "decode_tok_s_median_20": 38.47
     }
   },
   "unsupported_same_pack": [
