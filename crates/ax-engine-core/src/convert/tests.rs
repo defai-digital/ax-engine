@@ -4752,6 +4752,17 @@ fn rejects_unsupported_model_type() {
     let _ = fs::remove_dir_all(dir);
 }
 
+fn has_qwen4_role(
+    manifest: &crate::NativeModelManifest,
+    role: NativeTensorRole,
+    layer: Option<u32>,
+) -> bool {
+    manifest
+        .tensors
+        .iter()
+        .any(|tensor| tensor.role == role && tensor.layer_index == layer)
+}
+
 #[test]
 fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
     for model_type in ["qwen4_exp", "qwen3.8-flash-next", "qwen38_flash_next"] {
@@ -4826,6 +4837,31 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
                     &[8, 16],
                 ),
                 (
+                    "language_model.model.layers.0.attn_hyper_connection.input_mix_weight_down.weight",
+                    "BF16",
+                    &[4, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp_hyper_connection.hc_norm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                (
+                    "language_model.model.layers.0.ple.key_proj.weight",
+                    "BF16",
+                    &[8, 8],
+                ),
+                (
+                    "language_model.hyper_connection_mixer.input_mix_weight_up.weight",
+                    "BF16",
+                    &[8, 4],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.indexer.q_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                (
                     "language_model.ngram_embedding.shard_0.weight",
                     "BF16",
                     &[8, 8],
@@ -4866,6 +4902,26 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         assert_eq!(manifest.layer_types, vec!["linear_attention"]);
         assert_eq!(manifest.qwen4_exp.ngram_size, Some(3));
         assert!(manifest.qwen4_exp.never_eval_ngram_at_load);
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::Qwen4ExpAttnHcMixDown, Some(0)),
+            "{model_type}: attn HC mix-down"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::Qwen4ExpMlpHcNorm, Some(0)),
+            "{model_type}: mlp HC norm"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::Qwen4ExpPleKeyProj, Some(0)),
+            "{model_type}: PLE key_proj"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::Qwen4ExpHcMixerMixUp, None),
+            "{model_type}: HC mixer"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::Qwen4ExpIndexerQNorm, Some(0)),
+            "{model_type}: QSA indexer q-norm"
+        );
         assert!(
             manifest.tensors.iter().any(|tensor| {
                 tensor.role == NativeTensorRole::NgramEmbedding

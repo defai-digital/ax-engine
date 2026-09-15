@@ -1153,6 +1153,31 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         if let Some(result) = match_qwen4_exp_ngram_tensor(name) {
             return Some(result);
         }
+        if let Some(result) = match_tensor_in_map(name, QWEN4_EXP_HC_GLOBAL_TENSOR_MAP) {
+            return Some(result);
+        }
+        if let Some(result) = match_prefixed_per_layer(
+            name,
+            "language_model.model.layers.",
+            QWEN4_EXP_HC_TENSOR_MAP,
+        ) {
+            return Some(result);
+        }
+        if let Some(result) = match_prefixed_per_layer(
+            name,
+            "model.language_model.layers.",
+            QWEN4_EXP_HC_TENSOR_MAP,
+        ) {
+            return Some(result);
+        }
+        if let Some(result) =
+            match_prefixed_per_layer(name, "model.layers.", QWEN4_EXP_HC_TENSOR_MAP)
+        {
+            return Some(result);
+        }
+        if name.contains(".self_attn.indexer.") {
+            return Some((NativeTensorRole::Other, None));
+        }
     }
 
     // Nemotron-H: backbone.embeddings / backbone.norm_f / backbone.layers.N.* / lm_head.

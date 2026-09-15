@@ -15,6 +15,101 @@ pub(crate) const MUSE_GLIMMER_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[(
     TensorMapping::PerLayer(NativeTensorRole::AttentionOutputGate),
 )];
 
+/// Qwen 3.8 Flash Next gated-residual + PLE inject tensors (not DeepSeek V4 HC).
+pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "attn_hyper_connection.hc_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpAttnHcNorm),
+    ),
+    (
+        "attn_hyper_connection.input_mix_weight_down.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpAttnHcMixDown),
+    ),
+    (
+        "attn_hyper_connection.input_mix_weight_up.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpAttnHcMixUp),
+    ),
+    (
+        "attn_hyper_connection.block_inject_weight.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpAttnHcInject),
+    ),
+    (
+        "mlp_hyper_connection.hc_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpMlpHcNorm),
+    ),
+    (
+        "mlp_hyper_connection.input_mix_weight_down.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpMlpHcMixDown),
+    ),
+    (
+        "mlp_hyper_connection.input_mix_weight_up.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpMlpHcMixUp),
+    ),
+    (
+        "mlp_hyper_connection.block_inject_weight.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpMlpHcInject),
+    ),
+    (
+        "ple.key_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleKeyProj),
+    ),
+    (
+        "ple.value_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleValueProj),
+    ),
+    (
+        "ple.conv1d.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleConv1d),
+    ),
+    (
+        "ple.norm_query.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleNormQuery),
+    ),
+    (
+        "ple.norm_key.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleNormKey),
+    ),
+    (
+        "ple.norm_conv.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleNormConv),
+    ),
+    (
+        "self_attn.indexer.q_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpIndexerQNorm),
+    ),
+    (
+        "self_attn.indexer.k_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpIndexerKNorm),
+    ),
+];
+
+pub(crate) const QWEN4_EXP_HC_GLOBAL_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "language_model.hyper_connection_mixer.hc_norm.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerNorm),
+    ),
+    (
+        "language_model.hyper_connection_mixer.input_mix_weight_down.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerMixDown),
+    ),
+    (
+        "language_model.hyper_connection_mixer.input_mix_weight_up.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerMixUp),
+    ),
+    (
+        "model.language_model.hyper_connection_mixer.hc_norm.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerNorm),
+    ),
+    (
+        "model.language_model.hyper_connection_mixer.input_mix_weight_down.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerMixDown),
+    ),
+    (
+        "model.language_model.hyper_connection_mixer.input_mix_weight_up.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerMixUp),
+    ),
+];
+
 pub(crate) const QWEN3_MOE_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "mlp.gate.weight",

@@ -267,6 +267,26 @@ pub enum NativeTensorRole {
     FinalNorm,
     LmHead,
     RopeFreqs,
+    /// Qwen 3.8 Flash Next gated-residual RMS at the attention HC site.
+    Qwen4ExpAttnHcNorm,
+    Qwen4ExpAttnHcMixDown,
+    Qwen4ExpAttnHcMixUp,
+    Qwen4ExpAttnHcInject,
+    Qwen4ExpMlpHcNorm,
+    Qwen4ExpMlpHcMixDown,
+    Qwen4ExpMlpHcMixUp,
+    Qwen4ExpMlpHcInject,
+    Qwen4ExpHcMixerNorm,
+    Qwen4ExpHcMixerMixDown,
+    Qwen4ExpHcMixerMixUp,
+    Qwen4ExpPleKeyProj,
+    Qwen4ExpPleValueProj,
+    Qwen4ExpPleConv1d,
+    Qwen4ExpPleNormQuery,
+    Qwen4ExpPleNormKey,
+    Qwen4ExpPleNormConv,
+    Qwen4ExpIndexerQNorm,
+    Qwen4ExpIndexerKNorm,
     /// Qwen 3.8 Flash Next PLE n-gram embedding shard (`ngram_embedding.shard_N`
     /// / `ngram_embedding.shards.N`). Must not be eval'd at `load_weights` when
     /// [`NativeQwen4ExpConfig::never_eval_ngram_at_load`] is set.
@@ -367,6 +387,22 @@ impl NativeTensorRole {
                 | Self::Qwen3VlVisionLayerNorm2
                 | Self::Qwen3VlVisionLayerFc1
                 | Self::Qwen3VlVisionLayerFc2
+                | Self::Qwen4ExpAttnHcNorm
+                | Self::Qwen4ExpAttnHcMixDown
+                | Self::Qwen4ExpAttnHcMixUp
+                | Self::Qwen4ExpAttnHcInject
+                | Self::Qwen4ExpMlpHcNorm
+                | Self::Qwen4ExpMlpHcMixDown
+                | Self::Qwen4ExpMlpHcMixUp
+                | Self::Qwen4ExpMlpHcInject
+                | Self::Qwen4ExpPleKeyProj
+                | Self::Qwen4ExpPleValueProj
+                | Self::Qwen4ExpPleConv1d
+                | Self::Qwen4ExpPleNormQuery
+                | Self::Qwen4ExpPleNormKey
+                | Self::Qwen4ExpPleNormConv
+                | Self::Qwen4ExpIndexerQNorm
+                | Self::Qwen4ExpIndexerKNorm
         )
     }
 
