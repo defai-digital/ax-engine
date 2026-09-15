@@ -77,8 +77,9 @@ Campaign-only (does not block unrelated patches): MTP Tier 2 promotion, 8h/72h
 endurance, long-context decode-at-depth, peer ranking, multi-model residency,
 multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
 Mac mini M5 64 GB SKU. Qwen 3.8 Flash Next is incubating on Mac Studio M5 Ultra
-256 GB (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`). Convert of
-`qwen4_exp` must fail closed. Do not treat a laptop campaign host as either SKU.
+256 GB (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`). Convert may
+map `qwen4_exp` metadata; load/serve stay fail-closed. Do not treat a laptop
+campaign host as either SKU.
 
 ## Secondary families
 

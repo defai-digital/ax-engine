@@ -16,8 +16,8 @@ from typing import Any, Sequence
 FAMILY = "qwen4_exp"
 HOST_CLASS = "Mac Studio M5 Ultra, 256 GB"
 STATUS = (
-    "Incubating. No repo-owned graph. Convert fails closed. "
-    "Not Qwen 3.8 27B and not Super-class 2.4T."
+    "Incubating. Convert maps qwen4_exp metadata; load/serve stay fail-closed "
+    "(qwen4_exp_native_trunk_not_implemented). Not Qwen 3.8 27B and not Super-class 2.4T."
 )
 
 
@@ -33,6 +33,8 @@ def contract() -> dict[str, Any]:
         "status": STATUS,
         "ci": "dry-run only; do not mount Flash Next weights on CI",
         "fail_closed": True,
+        "convert": "metadata mapping; runtime_status.ready=false",
+        "load_blocker": "qwen4_exp_native_trunk_not_implemented",
         "not": [
             "qwen3.8-27b:axq",
             "qwen3_5",

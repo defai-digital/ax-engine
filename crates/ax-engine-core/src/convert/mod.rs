@@ -359,7 +359,15 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         model_family: family.family_name.to_string(),
         tensor_format: NativeTensorFormat::Safetensors,
         source_quantization: None,
-        runtime_status: runtime_status_for_model_type(&model_type),
+        runtime_status: {
+            let mut status = runtime_status_for_model_type(&model_type);
+            if is_qwen4_exp_family(&model_type)
+                && let Some(ngram_size) = arch_u64(&config, &model_type, "ngram_size")
+            {
+                status.notes.push(format!("ngram_size={ngram_size}"));
+            }
+            status
+        },
         layer_count: arch.layer_count,
         hidden_size: arch.hidden_size,
         intermediate_size: arch.intermediate_size,
@@ -786,9 +794,15 @@ pub fn ensure_manifest_for_hf_model_dir(model_dir: &Path) -> Result<bool, Conver
     // `from_dir_or_convert` from retrying conversion (only the NotFound arm
     // converts) and flips AX-ready detection in other tools.
     crate::model::validate_native_model_manifest(model_dir, &manifest).map_err(|error| {
-        ConvertError::GeneratedManifestInvalid {
-            dir: model_dir.to_path_buf(),
-            message: error.to_string(),
+        if manifest.model_family == "qwen4_exp" {
+            ConvertError::IncubatingQwen38FlashNext {
+                model_type: "qwen4_exp".to_string(),
+            }
+        } else {
+            ConvertError::GeneratedManifestInvalid {
+                dir: model_dir.to_path_buf(),
+                message: error.to_string(),
+            }
         }
     })?;
     write_manifest(model_dir, &manifest)?;

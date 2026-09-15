@@ -187,6 +187,21 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         },
     },
     ArchitectureRegistration {
+        family_label: "qwen4_exp",
+        mlx_runner_admission: MlxRunnerAdmission::AuxiliaryOnly,
+        default_generation: GenerationKind::Autoregressive,
+        layer_forward_route: LayerForwardRoute::Standard,
+        dense_batched_decode_candidate: false,
+        cert_gate_note: "Qwen 3.8 Flash Next incubating: convert maps metadata; dedicated trunk not implemented; n-gram table must not eval at load_weights",
+        support_tier: ModelSupportTier::Experimental,
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::QwenChatMl,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
+    },
+    ArchitectureRegistration {
         family_label: "qwen3_next",
         mlx_runner_admission: MlxRunnerAdmission::Primary,
         default_generation: GenerationKind::Autoregressive,
@@ -718,15 +733,20 @@ mod tests {
             .map(|entry| entry.family_label)
             .collect::<Vec<_>>();
 
-        assert_eq!(auxiliary_families, vec!["gemma4_assistant"]);
+        assert_eq!(auxiliary_families, vec!["qwen4_exp", "gemma4_assistant"]);
         assert_eq!(
             mlx_runner_admission_for_family("gemma4_assistant"),
+            Some(MlxRunnerAdmission::AuxiliaryOnly)
+        );
+        assert_eq!(
+            mlx_runner_admission_for_family("qwen4_exp"),
             Some(MlxRunnerAdmission::AuxiliaryOnly)
         );
         assert_eq!(mlx_runner_admission_for_family("not_a_family"), None);
         assert!(is_primary_mlx_runner_family("qwen3"));
         assert!(is_primary_mlx_runner_family("deepseek_v4"));
         assert!(!is_primary_mlx_runner_family("gemma4_assistant"));
+        assert!(!is_primary_mlx_runner_family("qwen4_exp"));
         assert!(!is_primary_mlx_runner_family("not_a_family"));
     }
 
@@ -812,6 +832,7 @@ mod tests {
             "qwen3_next",
             "qwen3_vl",
             "qwen3_vl_moe",
+            "qwen4_exp",
             "unlimited_ocr",
             "whisper",
         ];

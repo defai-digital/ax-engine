@@ -11,9 +11,11 @@ and not Super-class Qwen 3.8 (2.4T). Upstream identity is HF
 `model_type=qwen4_exp`: 125B-A6B hybrid Gated-DeltaNet / sparse-attention MoE
 plus a 51B n-gram embedding table.
 
-AX Engine does **not** convert, serve, or benchmark this family yet. Convert
-fails closed with `IncubatingQwen38FlashNext`. There is no download alias and
-no Compatible generic load path.
+Convert maps `qwen4_exp` metadata (family label, GDN/MoE dims, n-gram notes)
+but **does not** produce a runtime-ready manifest. Auto-generate / load / serve
+fail closed with `IncubatingQwen38FlashNext` until a dedicated trunk exists.
+There is no download alias and no Compatible generic load path. Never remap
+onto `qwen3_5` or Super-class 2.4T.
 
 The default local pack remains Qwen 3.8 27B AXQ on Mac mini M5 64 GB:
 [Qwen 3.8 27B AXQ certification](qwen3.8-27b-axq.md).

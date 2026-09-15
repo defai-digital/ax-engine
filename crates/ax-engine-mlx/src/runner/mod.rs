@@ -19837,6 +19837,7 @@ mod tests {
         assert!(!ax_engine_core::is_primary_mlx_runner_family(
             "gemma4_assistant"
         ));
+        assert!(!ax_engine_core::is_primary_mlx_runner_family("qwen4_exp"));
         assert!(!ax_engine_core::is_primary_mlx_runner_family("gpt2"));
     }
 

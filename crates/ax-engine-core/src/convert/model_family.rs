@@ -258,10 +258,15 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: true,
             uses_decoder_prefix: false,
         }),
-        // Qwen 3.8 Flash Next (`qwen4_exp`): incubating dedicated-trunk family.
-        // Fail closed until a repo-owned graph exists. Never remap onto qwen3_5.
-        "qwen4_exp" => Err(ConvertError::IncubatingQwen38FlashNext {
-            model_type: "qwen4_exp".to_string(),
+        // Qwen 3.8 Flash Next (`qwen4_exp`): convert maps tensors and n-gram
+        // contract notes. Runtime stays not-ready until a dedicated trunk exists.
+        // Never remap onto qwen3_5 / Super-class 2.4T.
+        "qwen4_exp" | "qwen4_exp_text" => Ok(ModelFamily {
+            family_name: "qwen4_exp",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(QWEN3_MOE_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
         }),
         other => Err(ConvertError::UnsupportedModelType {
             model_type: other.to_string(),

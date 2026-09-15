@@ -128,6 +128,8 @@ pub(crate) fn uses_text_config(model_type: &str) -> bool {
             | "muse_glimmer_text"
             | "minimax_m3"
             | "minimax_m3_vl"
+            | "qwen4_exp"
+            | "qwen4_exp_text"
     )
 }
 
@@ -176,8 +178,14 @@ pub(crate) fn is_qwen3_5_family(model_type: &str) -> bool {
     )
 }
 
+pub(crate) fn is_qwen4_exp_family(model_type: &str) -> bool {
+    matches!(model_type, "qwen4_exp" | "qwen4_exp_text")
+}
+
 pub(crate) fn is_qwen_gated_delta_family(model_type: &str) -> bool {
-    is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+    is_qwen3_5_family(model_type)
+        || is_qwen4_exp_family(model_type)
+        || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
 }
 
 pub(crate) fn is_gemma4_target_model_type(model_type: &str) -> bool {
@@ -384,7 +392,17 @@ pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
         || is_minimax_m3(model_type)
 }
 
-pub(crate) fn runtime_status_for_model_type(_model_type: &str) -> NativeRuntimeStatus {
+pub(crate) fn runtime_status_for_model_type(model_type: &str) -> NativeRuntimeStatus {
+    if is_qwen4_exp_family(model_type) {
+        return NativeRuntimeStatus {
+            ready: false,
+            blockers: vec!["qwen4_exp_native_trunk_not_implemented".to_string()],
+            notes: vec![
+                "n-gram embedding table must not be eval'd at load_weights".to_string(),
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB".to_string(),
+            ],
+        };
+    }
     NativeRuntimeStatus::default()
 }
 
@@ -609,6 +627,8 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
             | "qwen3_5_text"
             | "qwen3_vl_moe"
             | "qwen3-vl-moe"
+            | "qwen4_exp"
+            | "qwen4_exp_text"
     ) || (is_qwen3_5_family(model_type)
         && config_has_moe_experts(config, model_type));
     let is_qwen3_next_moe = matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6");
@@ -903,6 +923,7 @@ pub(crate) fn parse_layer_types(
         && !is_muse_glimmer_model_type(model_type)
         && !is_gpt_oss
         && !is_nemotron
+        && !is_qwen4_exp_family(model_type)
     {
         return Vec::new();
     }

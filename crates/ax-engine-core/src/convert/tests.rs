@@ -4753,39 +4753,160 @@ fn rejects_unsupported_model_type() {
 }
 
 #[test]
-fn rejects_qwen38_flash_next_as_incubating_not_qwen35() {
+fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
     for model_type in ["qwen4_exp", "qwen3.8-flash-next", "qwen38_flash_next"] {
         let dir = unique_test_dir(&format!("flash-next-{model_type}"));
         write_config(
             &dir,
             serde_json::json!({
                 "model_type": model_type,
-                "hidden_size": 4096,
-                "num_attention_heads": 32,
-                "num_hidden_layers": 2,
-                "vocab_size": 151936,
+                "vocab_size": 32,
+                "text_config": {
+                    "hidden_size": 8,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "head_dim": 4,
+                    "num_hidden_layers": 1,
+                    "vocab_size": 32,
+                    "linear_num_value_heads": 2,
+                    "linear_num_key_heads": 1,
+                    "linear_key_head_dim": 4,
+                    "linear_value_head_dim": 2,
+                    "linear_conv_kernel_dim": 4,
+                    "full_attention_interval": 4,
+                    "num_experts": 4,
+                    "num_experts_per_tok": 2,
+                    "moe_intermediate_size": 8,
+                    "shared_expert_intermediate_size": 8,
+                    "ngram_size": 3,
+                    "layer_types": ["linear_attention"]
+                }
             }),
         );
-        write_fake_safetensors(&dir, "model.safetensors", &[]);
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("language_model.model.embed_tokens.weight", "BF16", &[32, 8]),
+                ("language_model.model.norm.weight", "BF16", &[8]),
+                ("language_model.lm_head.weight", "BF16", &[32, 8]),
+                (
+                    "language_model.model.layers.0.input_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.in_proj_qkv.weight",
+                    "BF16",
+                    &[12, 8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.out_proj.weight",
+                    "BF16",
+                    &[8, 4],
+                ),
+                (
+                    "language_model.model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.gate_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.up_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.down_proj.weight",
+                    "BF16",
+                    &[8, 16],
+                ),
+            ],
+        );
 
-        let error = convert_hf_model_dir(&dir)
-            .expect_err("Qwen 3.8 Flash Next must fail closed until a repo-owned graph exists");
+        let manifest =
+            convert_hf_model_dir(&dir).expect("Qwen 3.8 Flash Next convert should map metadata");
+        assert_eq!(manifest.model_family, "qwen4_exp", "{model_type}");
+        assert_ne!(manifest.model_family, "qwen3_5");
+        assert!(!manifest.runtime_status.ready);
         assert!(
-            matches!(error, ConvertError::IncubatingQwen38FlashNext { .. }),
-            "{model_type}: {error}"
+            manifest
+                .runtime_status
+                .blockers
+                .iter()
+                .any(|b| b == "qwen4_exp_native_trunk_not_implemented"),
+            "{model_type}: {:?}",
+            manifest.runtime_status.blockers
         );
-        let message = error.to_string();
         assert!(
-            message.contains("Mac Studio M5 Ultra 256 GB"),
-            "{model_type}: {message}"
+            manifest
+                .runtime_status
+                .notes
+                .iter()
+                .any(|n| n.contains("n-gram")),
+            "{model_type}: {:?}",
+            manifest.runtime_status.notes
         );
+        assert_eq!(manifest.linear_attention.full_attention_interval, Some(4));
+        assert_eq!(manifest.moe.expert_count, Some(4));
+        assert_eq!(manifest.layer_types, vec!["linear_attention"]);
+
+        write_manifest(&dir, &manifest).expect("write not-ready manifest");
+        let load_err = crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect_err("Flash Next must not load until a dedicated trunk exists");
         assert!(
-            message.contains("Do not load this checkpoint as qwen3_5"),
-            "{model_type}: {message}"
+            load_err.to_string().contains("not runtime ready"),
+            "{model_type}: {load_err}"
         );
+
+        let ensure_err = ensure_manifest_for_hf_model_dir(&dir);
+        // Manifest already exists from write_manifest, so ensure is a no-op.
+        assert_eq!(ensure_err.ok(), Some(false));
 
         let _ = fs::remove_dir_all(dir);
     }
+}
+
+#[test]
+fn ensure_manifest_fail_closes_qwen4_exp_without_writing() {
+    let dir = unique_test_dir("flash-next-ensure");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "qwen4_exp",
+            "vocab_size": 32,
+            "text_config": {
+                "hidden_size": 8,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 4,
+                "num_hidden_layers": 1,
+                "vocab_size": 32
+            }
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[("language_model.model.embed_tokens.weight", "BF16", &[32, 8])],
+    );
+
+    let error = ensure_manifest_for_hf_model_dir(&dir)
+        .expect_err("auto-manifest must fail closed for Flash Next");
+    assert!(
+        matches!(error, ConvertError::IncubatingQwen38FlashNext { .. }),
+        "{error}"
+    );
+    assert!(
+        !dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE)
+            .exists()
+    );
+
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
