@@ -4798,7 +4798,16 @@ fn maps_qwen4_exp_published_hf_checkpoint_names() {
         "model.language_model.ngram_embedding.weight_scale",
         "lm_head.weight",
         "model.visual.pos_embed",
+        "model.visual.patch_embed.proj.weight",
         "mtp.layers.0.mlp.gate.weight",
+        "mtp.layers.0.attn_hyper_connection.hc_norm.weight",
+        "model.language_model.layers.0.mlp.shared_experts.gate_proj.weight",
+        "model.language_model.layers.0.mlp.experts.gate_up_proj.weight",
+        "model.language_model.layers.0.attn_hyper_connection.block_inject_weight",
+        "model.language_model.layers.1.ple.ngram_heads_offsets",
+        "model.language_model.layers.1.ple.ngram_heads_vocab_sizes",
+        "language_model.model.layers.0.self_attn.indexer.index_qk_proj.weight",
+        "language_model.model.embed_tokens.weight",
     ];
     let mut missing = Vec::new();
     for name in names {
@@ -4957,6 +4966,21 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
                     &[16, 8],
                 ),
                 (
+                    "language_model.model.layers.0.mlp.shared_experts.up_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                (
+                    "language_model.model.layers.0.attn_hyper_connection.block_inject_weight",
+                    "BF16",
+                    &[4, 8],
+                ),
+                (
+                    "language_model.model.layers.0.ple.ngram_heads_offsets",
+                    "U32",
+                    &[8],
+                ),
+                (
                     "language_model.model.layers.0.mlp.shared_expert_gate.weight",
                     "BF16",
                     &[4],
@@ -5058,6 +5082,18 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
             "{model_type}: shared_expert.gate_proj"
         );
         assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::FfnSharedExpertUp, Some(0)),
+            "{model_type}: shared_experts.up_proj (plural)"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::Qwen4ExpAttnHcInject, Some(0)),
+            "{model_type}: attn HC inject without .weight suffix"
+        );
+        assert!(
+            has_qwen4_role(&manifest, NativeTensorRole::Qwen4ExpPleHeadOffsets, Some(0)),
+            "{model_type}: PLE ngram_heads_offsets must stay resident"
+        );
+        assert!(
             has_qwen4_role(&manifest, NativeTensorRole::FfnSharedExpertGateInp, Some(0)),
             "{model_type}: shared_expert_gate"
         );
@@ -5113,6 +5149,8 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
             "shared_expert",
             "mtp.",
             "q_proj",
+            "ngram_heads_offsets",
+            "block_inject",
         ] {
             assert!(
                 skipped.iter().all(|n| !n.contains(keep)),

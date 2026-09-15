@@ -285,6 +285,8 @@ pub enum NativeTensorRole {
     Qwen4ExpPleNormQuery,
     Qwen4ExpPleNormKey,
     Qwen4ExpPleNormConv,
+    Qwen4ExpPleHeadOffsets,
+    Qwen4ExpPleHeadVocabSizes,
     Qwen4ExpIndexerQNorm,
     Qwen4ExpIndexerKNorm,
     /// Qwen 3.8 Flash Next fused QSA indexer Q/K projection (`index_qk_proj`).
@@ -403,6 +405,8 @@ impl NativeTensorRole {
                 | Self::Qwen4ExpPleNormQuery
                 | Self::Qwen4ExpPleNormKey
                 | Self::Qwen4ExpPleNormConv
+                | Self::Qwen4ExpPleHeadOffsets
+                | Self::Qwen4ExpPleHeadVocabSizes
                 | Self::Qwen4ExpIndexerQNorm
                 | Self::Qwen4ExpIndexerKNorm
                 | Self::Qwen4ExpIndexerQkProj

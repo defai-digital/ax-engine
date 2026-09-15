@@ -34,6 +34,10 @@ pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpAttnHcInject),
     ),
     (
+        "attn_hyper_connection.block_inject_weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpAttnHcInject),
+    ),
+    (
         "mlp_hyper_connection.hc_norm.weight",
         TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpMlpHcNorm),
     ),
@@ -47,6 +51,10 @@ pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
     (
         "mlp_hyper_connection.block_inject_weight.weight",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpMlpHcInject),
+    ),
+    (
+        "mlp_hyper_connection.block_inject_weight",
         TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpMlpHcInject),
     ),
     (
@@ -72,6 +80,14 @@ pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "ple.norm_conv.weight",
         TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleNormConv),
+    ),
+    (
+        "ple.ngram_heads_offsets",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleHeadOffsets),
+    ),
+    (
+        "ple.ngram_heads_vocab_sizes",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleHeadVocabSizes),
     ),
     (
         "self_attn.indexer.q_layernorm.weight",
@@ -136,6 +152,18 @@ pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "mlp.shared_expert_gate.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGateInp),
+    ),
+    (
+        "mlp.shared_experts.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "mlp.shared_experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "mlp.shared_experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
     ),
 ];
 
