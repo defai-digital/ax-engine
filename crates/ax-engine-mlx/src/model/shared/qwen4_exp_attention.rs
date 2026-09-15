@@ -15,16 +15,24 @@
 
 use mlx_sys::{
     MlxArray, MlxDtype, astype, concatenate, contiguous, multiply, repeat_axis, reshape, rms_norm,
-    rope, scaled_dot_product_attention, sigmoid, slice, split, take, transpose,
+    rope, scaled_dot_product_attention, slice, split, take, transpose,
 };
 use thiserror::Error;
 
-use super::qwen4_exp_residual::{Qwen4ExpResidualError, validate_projection};
+use super::qwen4_exp_residual::{
+    Qwen4ExpResidualError, sigmoid_projection_dtype, validate_projection,
+};
 use super::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::qwen4_exp_qsa::{QsaError, QsaIndexKeyCache, QsaIndexer, QsaSelection};
 use crate::weights::QuantizedWeight;
 
 type Result<T> = std::result::Result<T, Qwen4ExpAttentionError>;
+
+fn gated_attention_output(attention: &MlxArray, gate: &MlxArray, dtype: MlxDtype) -> MlxArray {
+    // Official QSA rounds sigmoid before the separate attention product.
+    let gated = multiply(attention, &sigmoid_projection_dtype(gate), None);
+    astype(&gated, dtype, None)
+}
 
 #[derive(Debug, Error)]
 pub(crate) enum Qwen4ExpAttentionError {
@@ -475,13 +483,19 @@ impl Qwen4ExpAttention {
             None,
         );
         let gate = reshape(&gate, &[batch, seq, cfg.query_width], None);
-        let gated = multiply(
-            &astype(&attn, MlxDtype::Float32, None),
-            &sigmoid(&astype(&gate, MlxDtype::Float32, None), None),
-            None,
-        );
-        let gated = astype(&gated, dtype, None);
+        let gated = gated_attention_output(&attn, &gate, dtype);
         let delta = qw_with_policy(&gated, &self.o_proj, policy);
+        #[cfg(test)]
+        {
+            for (stage, array) in [
+                ("qsa_attention_before_gate", &attn),
+                ("qsa_gate", &gate),
+                ("qsa_gated", &gated),
+                ("qsa_output", &delta),
+            ] {
+                crate::model::qwen4_exp::profiling::dump(stage, &[array]);
+            }
+        }
 
         Ok(Qwen4ExpAttentionOutput {
             delta,
@@ -756,6 +770,29 @@ mod tests {
     const EPS: f32 = 1e-6;
     const BASE: f32 = 10_000.0;
     const TOL: f32 = 3e-6;
+
+    #[test]
+    fn qsa_bf16_gate_matches_official_product_rounding() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/flash_next/qsa_bf16_gate.json"
+        ))
+        .unwrap();
+        let shape = [1, fixture["gate"].as_array().unwrap().len() as i32];
+        let attention = astype(
+            &array(&fixture["attention"], &shape),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let gate = astype(&array(&fixture["gate"], &shape), MlxDtype::Bfloat16, None);
+        let actual = astype(
+            &gated_attention_output(&attention, &gate, MlxDtype::Bfloat16),
+            MlxDtype::Float32,
+            None,
+        );
+        let expected = array(&fixture["gated"], &shape);
+        eval(&[&actual, &expected]);
+        assert_eq!(actual.data_f32(), expected.data_f32());
+    }
 
     fn values(value: &Value) -> Vec<f32> {
         match value {

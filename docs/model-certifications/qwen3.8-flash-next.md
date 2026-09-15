@@ -268,3 +268,33 @@ direct/required-MTP chat checks pass. Workspace tests report 3,643 passed,
 39 ignored and zero failed. Relevant strict Clippy passes; the existing core
 test failures remain in full-workspace Clippy. See the
 [HC/PLE precision evidence](../../benchmarks/results/flash-next-hc-ple-precision-m2-20260915.json).
+
+### Complete official eager graph and QSA gate correction
+
+The original official graph now executes the real 4-bit checkpoint with
+independent CPU routing and request state. All 1,164 parameters have explicit
+bindings; quantized projections and embedding rows share MLX operators.
+Eager attention and experts are selected explicitly, so this does not certify
+independent QMM or the framework's default grouped expert implementation.
+The unchanged MLX-VLM control reproduces its saved complete logits exactly.
+See the [official graph evidence](../../benchmarks/results/flash-next-official-full-graph-m2-20260915.json)
+for the pre-QSA-correction comparison and retained numerical discrepancies.
+
+QSA now rounds sigmoid to the gate dtype before its separate attention
+product. A BF16 regression fails the previous formula; all five actual
+post-change products match official same-input math exactly. Ten incoming
+attention/gate tensors remain unchanged, and observations preserve complete
+logits and state against plain controls.
+
+This local correction does not establish full-model agreement. Current
+maximum error is 1.9609375 against MLX-VLM and 2.26953125 against the official
+eager graph. Neither comparison improves uniformly; one prefix position and
+one decode position have different highest-scoring tokens. Full numerical,
+quality, MTP profitability and hardware qualification gates remain open.
+
+All six affine state/runner controls, 12 HTTP/SSE requests and six short chat
+checks pass with this correction. Direct and required MTP return the same
+chat responses. Workspace tests report 3,644 passed, 39 ignored and zero
+failed; relevant strict Clippy passes, while full-workspace Clippy retains
+existing core test failures. See the
+[QSA gate evidence](../../benchmarks/results/flash-next-qsa-gate-precision-m2-20260915.json).
