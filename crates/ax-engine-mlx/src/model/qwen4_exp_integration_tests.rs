@@ -1198,10 +1198,19 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     if let Some(bytes) = selected_after_prefill {
         assert!(bytes > 0);
         let pager = trunk.expert_stream.as_ref().unwrap();
-        assert_eq!(
-            pager.cached_layer_count(),
-            pager.selected_prefill_capacity_fallback_layers()
-        );
+        {
+            // Whole-layer paging keeps at most the current layer resident, so the
+            // cache can hold fewer layers than the number that missed the cap.
+            let cached = pager.cached_layer_count();
+            let fallbacks = pager.selected_prefill_capacity_fallback_layers();
+            assert!(
+                cached <= fallbacks,
+                "cached {cached} layers exceed {fallbacks} capacity fallbacks"
+            );
+            if fallbacks == 0 {
+                assert_eq!(cached, 0);
+            }
+        }
     }
     let initial = qwen4_exp::Qwen4ExpState::new(&trunk, owner);
     let prefix = qwen4_exp::forward(
