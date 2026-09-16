@@ -603,6 +603,14 @@ struct FlashNextMtpTelemetry {
     direct_fallback_steps: u32,
     /// Cursor steps that returned an error before publishing any state.
     step_errors: u32,
+    /// Batched length-2 correction forward time across verified steps.
+    correction_wall_us: u32,
+    /// Bonus-token forward time. Zero on the batched acceptance path.
+    bonus_wall_us: u32,
+    /// Rejection singleton forward time. Zero on acceptance.
+    rejection_wall_us: u32,
+    /// Tokens returned by verified cursor steps, including the next primary.
+    emitted_tokens: u32,
 }
 
 impl FlashNextMtpTelemetry {
@@ -623,6 +631,14 @@ impl FlashNextMtpTelemetry {
             .direct_fallback_steps
             .saturating_add(other.direct_fallback_steps);
         self.step_errors = self.step_errors.saturating_add(other.step_errors);
+        self.correction_wall_us = self
+            .correction_wall_us
+            .saturating_add(other.correction_wall_us);
+        self.bonus_wall_us = self.bonus_wall_us.saturating_add(other.bonus_wall_us);
+        self.rejection_wall_us = self
+            .rejection_wall_us
+            .saturating_add(other.rejection_wall_us);
+        self.emitted_tokens = self.emitted_tokens.saturating_add(other.emitted_tokens);
     }
 
     fn append_route_decisions(self, decisions: &mut impl RouteDecisionSink) {
@@ -647,6 +663,16 @@ impl FlashNextMtpTelemetry {
                 self.direct_fallback_steps,
             ),
             ("ax_mlx_flash_next_mtp_step_errors", self.step_errors),
+            (
+                "ax_mlx_flash_next_mtp_correction_wall_us",
+                self.correction_wall_us,
+            ),
+            ("ax_mlx_flash_next_mtp_bonus_wall_us", self.bonus_wall_us),
+            (
+                "ax_mlx_flash_next_mtp_rejection_wall_us",
+                self.rejection_wall_us,
+            ),
+            ("ax_mlx_flash_next_mtp_emitted_tokens", self.emitted_tokens),
         ] {
             decisions.upsert_route_decision(key, value);
         }
@@ -8557,6 +8583,22 @@ impl MlxRunner {
             .telemetry
             .accepted_steps
             .saturating_add(u32::from(step.accepted));
+        flash_next.telemetry.correction_wall_us = flash_next
+            .telemetry
+            .correction_wall_us
+            .saturating_add(step.correction_wall_us);
+        flash_next.telemetry.bonus_wall_us = flash_next
+            .telemetry
+            .bonus_wall_us
+            .saturating_add(step.bonus_wall_us);
+        flash_next.telemetry.rejection_wall_us = flash_next
+            .telemetry
+            .rejection_wall_us
+            .saturating_add(step.rejection_wall_us);
+        flash_next.telemetry.emitted_tokens = flash_next
+            .telemetry
+            .emitted_tokens
+            .saturating_add(saturating_u32(step.emitted.len()));
         // Mirror the direct pipeline's buffer-cache cadence without relying
         // on an exact modulo hit, since accepted steps emit two tokens.
         flash_next.emitted_since_clear = flash_next

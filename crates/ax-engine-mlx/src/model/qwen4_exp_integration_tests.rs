@@ -1079,7 +1079,7 @@ fn flash_mtp_state_bytes(state: &qwen4_exp::Qwen4ExpState, layers: usize) -> Vec
 #[test]
 #[ignore = "requires synthetic Flash Next MTP artifacts or an explicit real selected-prefill pack"]
 fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
-    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, verify_one};
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity, verify_one};
     let (artifacts, tokens, mode, budget) =
         if let Some(root) = std::env::var_os("AX_FLASH_NEXT_REAL_PACK") {
             let artifacts = NativeModelArtifacts::from_dir(PathBuf::from(root)).unwrap();
@@ -1201,6 +1201,7 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     let vocabulary = artifacts.manifest().vocab_size;
     assert!(vocabulary > 1);
     let wrong_draft = (correct_draft + 1) % vocabulary;
+    let dtype = target.stream_hidden.dtype();
     for (draft, remaining, accepted) in [
         (correct_draft, 2, true),
         (wrong_draft, 2, false),
@@ -1210,10 +1211,6 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             verify_one(&trunk, &direct.state, owner, primary, draft, remaining, &[]).unwrap();
         assert_eq!(verified.accepted, accepted);
         assert_eq!(verified.committed.len(), if accepted { 2 } else { 1 });
-        assert_eq!(
-            flash_mtp_state_bytes(&verified.after_primary.state, trunk.layers.len()),
-            flash_mtp_state_bytes(&target.state, trunk.layers.len())
-        );
         if accepted {
             let second = qwen4_exp::forward(
                 &trunk,
@@ -1223,15 +1220,23 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
                 ProjectionBatchPolicy::Shared,
             )
             .unwrap();
-            assert_eq!(
-                flash_mtp_state_bytes(
-                    &verified.after_draft.as_ref().unwrap().state,
-                    trunk.layers.len()
-                ),
-                flash_mtp_state_bytes(&second.state, trunk.layers.len())
+            assert_eq!(greedy(&verified.after_primary), greedy(&target));
+            mtp_parity::assert_mtp_logits_close(
+                &verified.after_primary.logits,
+                &target.logits,
+                dtype,
             );
+            let after_draft = verified.after_draft.as_ref().unwrap();
+            assert_eq!(verified.next_primary, greedy(&second));
+            mtp_parity::assert_mtp_logits_close(&after_draft.logits, &second.logits, dtype);
+            mtp_parity::assert_mtp_state_close(&after_draft.state, &second.state, dtype);
         } else {
             assert!(verified.after_draft.is_none());
+            assert_eq!(verified.next_primary, greedy(&target));
+            assert_eq!(
+                flash_mtp_state_bytes(&verified.after_primary.state, trunk.layers.len()),
+                flash_mtp_state_bytes(&target.state, trunk.layers.len())
+            );
         }
     }
     let terminal = verify_one(
@@ -1296,18 +1301,12 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
         }
         generated.extend(committed);
         assert_eq!(session.primary, greedy(&direct));
-        assert_eq!(
-            flash_mtp_state_bytes(&session.trunk_state, trunk.layers.len()),
-            flash_mtp_state_bytes(&direct.state, trunk.layers.len())
-        );
+        mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
         assert_eq!(
             session.draft_state.position() + 1,
             session.trunk_state.position()
         );
-        assert_eq!(
-            flash_mtp_state_bytes(&session.draft_state, 1),
-            flash_mtp_state_bytes(&draft_reference, 1)
-        );
+        mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
     }
     assert_eq!(generated.len(), budget);
     eprintln!(
@@ -1478,7 +1477,7 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
 #[test]
 #[ignore = "requires synthetic Flash Next MTP candidate artifacts"]
 fn qwen4_exp_mtp_candidate_accepts_with_exact_draft_history_and_budget() {
-    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward};
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity};
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
     let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
     manifest.weight_sanitize = WeightSanitize::HfToMlx;
@@ -1548,13 +1547,15 @@ fn qwen4_exp_mtp_candidate_accepts_with_exact_draft_history_and_budget() {
             .unwrap();
             count += 1;
         }
-        assert_eq!(
-            flash_mtp_state_bytes(&session.trunk_state, trunk.layers.len()),
-            flash_mtp_state_bytes(&direct.state, trunk.layers.len())
+        mtp_parity::assert_mtp_state_close(
+            &session.trunk_state,
+            &direct.state,
+            direct.stream_hidden.dtype(),
         );
-        assert_eq!(
-            flash_mtp_state_bytes(&session.draft_state, 1),
-            flash_mtp_state_bytes(&draft_reference, 1)
+        mtp_parity::assert_mtp_state_close(
+            &session.draft_state,
+            &draft_reference,
+            direct.stream_hidden.dtype(),
         );
     }
     assert_eq!(count, 5);
@@ -1602,7 +1603,7 @@ fn qwen4_exp_mtp_prefill_cursor_matches_primary_across_quanta_and_budgets() {
         CacheOnlyBarrier, CacheOnlyPrefillLayout, chunked_prefill_cache_only,
         chunked_prefill_flash_next_mtp,
     };
-    use crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor;
+    use crate::model::qwen4_exp_mtp::{Qwen4ExpDraftCursor, mtp_parity};
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
     let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
     manifest.weight_sanitize = WeightSanitize::HfToMlx;
@@ -1721,7 +1722,12 @@ fn qwen4_exp_mtp_prefill_cursor_matches_primary_across_quanta_and_budgets() {
                     }
                     actual.qwen4_exp = Some(step.trunk_state);
                     actual.advance(step.committed_len);
-                    assert_eq!(actual.serialize_to_bytes(), reference.serialize_to_bytes());
+                    mtp_parity::assert_mtp_state_close(
+                        actual.qwen4_exp.as_ref().unwrap(),
+                        reference.qwen4_exp.as_ref().unwrap(),
+                        trunk.token_embedding.weight.dtype(),
+                    );
+                    assert_eq!(actual.seq_len(), reference.seq_len());
                     assert!(cursor.aligned(actual.qwen4_exp.as_ref().unwrap()));
                 }
                 assert_eq!(emitted, budget);

@@ -1,11 +1,20 @@
 //! Experimental Flash Next draft graph with authoritative primary verification.
 //!
+//! Flash Next MTP guarantees greedy-token identity with direct decode for the
+//! same request, and bounds the logit and state divergence introduced by
+//! batched verification. Bit-exact logits and serialized state versus direct
+//! decode are no longer part of the contract. This matches the 27B route's
+//! ADR-003 D5 greedy-parity rule.
+//!
 //! The sidecar has no published official forward oracle. Its candidate input
 //! combiner uses a shared hidden projection per residual stream and adds a
 //! separately projected token embedding. This hypothesis is never authority
-//! for committed tokens; the primary singleton graph verifies every proposal.
+//! for committed tokens; the primary graph verifies every proposal.
 
 use std::time::Instant;
+
+#[cfg(test)]
+use std::cell::Cell;
 
 use super::qwen4_exp::{self, Qwen4ExpOutput, Qwen4ExpState};
 use super::shared::utils::{ProjectionBatchPolicy, qw_with_policy};
@@ -116,18 +125,84 @@ fn head_advance_cache(
     )
 }
 
-fn next_token(output: &Qwen4ExpOutput) -> Result<u32, String> {
-    let shape = output.logits.shape();
-    let last = slice(
-        &output.logits,
-        &[shape[0] - 1, 0],
-        &[shape[0], shape[1]],
-        &[1, 1],
-        None,
-    );
-    let token = argmax(&last, None);
+#[cfg(test)]
+thread_local! {
+    static TRUNK_FORWARD_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+fn trunk_forward(
+    trunk: &Qwen4ExpWeights,
+    tokens: &[u32],
+    state: &Qwen4ExpState,
+    owner: u64,
+) -> Result<Qwen4ExpOutput, String> {
+    #[cfg(test)]
+    TRUNK_FORWARD_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    qwen4_exp::forward(trunk, tokens, state, owner, ProjectionBatchPolicy::Shared)
+}
+
+fn token_at_row(logits: &MlxArray, row: i32) -> Result<u32, String> {
+    let shape = logits.shape();
+    if shape.len() != 2 || row < 0 || row >= shape[0] {
+        return Err("Flash Next MTP logits row is missing".into());
+    }
+    let row_logits = slice(logits, &[row, 0], &[row + 1, shape[1]], &[1, 1], None);
+    let token = argmax(&row_logits, None);
     try_eval(&[&token])?;
     Ok(token.data_u32()[0])
+}
+
+fn next_token(output: &Qwen4ExpOutput) -> Result<u32, String> {
+    let shape = output.logits.shape();
+    if shape.len() != 2 || shape[0] <= 0 {
+        return Err("Flash Next MTP logits row is missing".into());
+    }
+    token_at_row(&output.logits, shape[0] - 1)
+}
+
+fn take_sequence_row(array: &MlxArray, row: i32) -> Result<MlxArray, String> {
+    let shape = array.shape();
+    if shape.len() != 3 || shape[0] != 1 || row < 0 || row >= shape[1] {
+        return Err("Flash Next MTP batched sequence row is missing".into());
+    }
+    Ok(slice(
+        array,
+        &[0, row, 0],
+        &[1, row + 1, shape[2]],
+        &[1, 1, 1],
+        None,
+    ))
+}
+
+fn output_row(output: &Qwen4ExpOutput, row: i32) -> Result<Qwen4ExpOutput, String> {
+    let logits = {
+        let shape = output.logits.shape();
+        if shape.len() != 2 || row < 0 || row >= shape[0] {
+            return Err("Flash Next MTP batched logits row is missing".into());
+        }
+        slice(
+            &output.logits,
+            &[row, 0],
+            &[row + 1, shape[1]],
+            &[1, 1],
+            None,
+        )
+    };
+    let stream_hidden = take_sequence_row(&output.stream_hidden, row)?;
+    let hidden = take_sequence_row(&output.hidden, row)?;
+    try_eval(&[&logits, &stream_hidden, &hidden])?;
+    Ok(Qwen4ExpOutput {
+        stream_hidden,
+        hidden,
+        logits,
+        state: output.state.clone(),
+    })
+}
+
+fn sum_verify_wall_us(correction_wall_us: u32, bonus_wall_us: u32, rejection_wall_us: u32) -> u32 {
+    correction_wall_us
+        .saturating_add(bonus_wall_us)
+        .saturating_add(rejection_wall_us)
 }
 
 pub(crate) struct VerifiedStep {
@@ -136,10 +211,30 @@ pub(crate) struct VerifiedStep {
     pub after_primary: Qwen4ExpOutput,
     pub after_draft: Option<Qwen4ExpOutput>,
     pub next_primary: u32,
+    pub correction_wall_us: u32,
+    pub bonus_wall_us: u32,
+    pub rejection_wall_us: u32,
+}
+
+impl VerifiedStep {
+    fn verify_wall_us(&self) -> u32 {
+        sum_verify_wall_us(
+            self.correction_wall_us,
+            self.bonus_wall_us,
+            self.rejection_wall_us,
+        )
+    }
 }
 
 /// `primary` must be the authoritative token from this checkpoint's logits.
 /// A mismatched or truncated draft is never evaluated as a committed token.
+///
+/// When more than one output slot remains, verification is one length-2 Shared
+/// trunk forward of `[primary, draft]`. The correction token is logits row 0.
+/// Acceptance commits the two-token state and reads the bonus from row 1
+/// (`bonus_wall_us` is then zero). Rejection runs one extra singleton forward
+/// of `[primary]` from the original state so the committed state matches
+/// direct decode (`rejection_wall_us`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_one(
     trunk: &Qwen4ExpWeights,
@@ -153,44 +248,60 @@ pub(crate) fn verify_one(
     if remaining == 0 {
         return Err("Flash Next MTP requires remaining output budget".into());
     }
-    let after_primary = qwen4_exp::forward(
-        trunk,
-        &[primary],
-        state,
-        owner,
-        ProjectionBatchPolicy::Shared,
-    )?;
-    let correction = next_token(&after_primary)?;
-    let accepted = remaining > 1
-        && !terminal_ids.contains(&primary)
+    if remaining == 1 {
+        let started = Instant::now();
+        let after_primary = trunk_forward(trunk, &[primary], state, owner)?;
+        let correction_wall_us = elapsed_us(started);
+        let correction = next_token(&after_primary)?;
+        return Ok(VerifiedStep {
+            committed: vec![primary],
+            accepted: false,
+            after_primary,
+            after_draft: None,
+            next_primary: correction,
+            correction_wall_us,
+            bonus_wall_us: 0,
+            rejection_wall_us: 0,
+        });
+    }
+    let started = Instant::now();
+    let batched = trunk_forward(trunk, &[primary, draft], state, owner)?;
+    let correction_wall_us = elapsed_us(started);
+    if batched.logits.shape().first().copied() != Some(2) {
+        return Err("Flash Next MTP batched verify requires two logit rows".into());
+    }
+    let correction = token_at_row(&batched.logits, 0)?;
+    let accepted = !terminal_ids.contains(&primary)
         && !terminal_ids.contains(&correction)
         && draft == correction;
-    let mut committed = vec![primary];
-    let after_draft = if accepted {
-        let output = qwen4_exp::forward(
-            trunk,
-            &[draft],
-            &after_primary.state,
-            owner,
-            ProjectionBatchPolicy::Shared,
-        )?;
-        committed.push(draft);
-        Some(output)
+    if accepted {
+        let bonus = token_at_row(&batched.logits, 1)?;
+        Ok(VerifiedStep {
+            committed: vec![primary, draft],
+            accepted: true,
+            after_primary: output_row(&batched, 0)?,
+            after_draft: Some(output_row(&batched, 1)?),
+            next_primary: bonus,
+            correction_wall_us,
+            bonus_wall_us: 0,
+            rejection_wall_us: 0,
+        })
     } else {
-        None
-    };
-    let next_primary = if let Some(output) = &after_draft {
-        next_token(output)?
-    } else {
-        correction
-    };
-    Ok(VerifiedStep {
-        committed,
-        accepted,
-        after_primary,
-        after_draft,
-        next_primary,
-    })
+        let started = Instant::now();
+        let after_primary = trunk_forward(trunk, &[primary], state, owner)?;
+        let rejection_wall_us = elapsed_us(started);
+        let next_primary = next_token(&after_primary)?;
+        Ok(VerifiedStep {
+            committed: vec![primary],
+            accepted: false,
+            after_primary,
+            after_draft: None,
+            next_primary,
+            correction_wall_us,
+            bonus_wall_us: 0,
+            rejection_wall_us,
+        })
+    }
 }
 
 /// Request-owned draft history, kept separate from the authoritative KV cache.
@@ -209,6 +320,9 @@ pub(crate) struct CursorStep {
     pub emitted: Vec<u32>,
     pub accepted: bool,
     pub draft_wall_us: u32,
+    pub correction_wall_us: u32,
+    pub bonus_wall_us: u32,
+    pub rejection_wall_us: u32,
     pub verify_wall_us: u32,
 }
 
@@ -218,6 +332,9 @@ struct AdvancedStep {
     next_primary: u32,
     accepted: bool,
     draft_wall_us: u32,
+    correction_wall_us: u32,
+    bonus_wall_us: u32,
+    rejection_wall_us: u32,
     verify_wall_us: u32,
 }
 
@@ -316,15 +433,9 @@ impl Qwen4ExpDraftCursor {
                 head_advance_cache(head, hidden, &[primary], &self.draft_state, self.owner)?;
             let draft_wall_us = elapsed_us(started);
             let started = Instant::now();
-            let output = qwen4_exp::forward(
-                trunk,
-                &[primary],
-                state,
-                trunk_owner,
-                ProjectionBatchPolicy::Shared,
-            )?;
+            let output = trunk_forward(trunk, &[primary], state, trunk_owner)?;
             let next_primary = next_token(&output)?;
-            let verify_wall_us = elapsed_us(started);
+            let correction_wall_us = elapsed_us(started);
             self.draft_state = draft_state;
             self.stream_hidden = Some(output.stream_hidden);
             return Ok(AdvancedStep {
@@ -333,14 +444,16 @@ impl Qwen4ExpDraftCursor {
                 next_primary,
                 accepted: false,
                 draft_wall_us,
-                verify_wall_us,
+                correction_wall_us,
+                bonus_wall_us: 0,
+                rejection_wall_us: 0,
+                verify_wall_us: correction_wall_us,
             });
         }
         let draft_started = Instant::now();
         let proposed = head_forward(head, hidden, &[primary], &self.draft_state, self.owner)?;
         let draft = next_token(&proposed)?;
         let mut draft_wall_us = elapsed_us(draft_started);
-        let verify_started = Instant::now();
         let verified = verify_one(
             trunk,
             state,
@@ -350,7 +463,13 @@ impl Qwen4ExpDraftCursor {
             remaining,
             terminal_ids,
         )?;
-        let verify_wall_us = elapsed_us(verify_started);
+        let accepted = verified.accepted;
+        let next_primary = verified.next_primary;
+        let correction_wall_us = verified.correction_wall_us;
+        let bonus_wall_us = verified.bonus_wall_us;
+        let rejection_wall_us = verified.rejection_wall_us;
+        let verify_wall_us = verified.verify_wall_us();
+        let consumed = verified.committed;
         let (draft_state, final_output) = if let Some(after_draft) = verified.after_draft {
             let alignment_started = Instant::now();
             let aligned = head_advance_cache(
@@ -368,13 +487,16 @@ impl Qwen4ExpDraftCursor {
         self.draft_state = draft_state;
         self.stream_hidden = Some(final_output.stream_hidden);
         self.proposed += 1;
-        self.accepted += usize::from(verified.accepted);
+        self.accepted += usize::from(accepted);
         Ok(AdvancedStep {
             trunk_state: final_output.state,
-            consumed: verified.committed,
-            next_primary: verified.next_primary,
-            accepted: verified.accepted,
+            consumed,
+            next_primary,
+            accepted,
             draft_wall_us,
+            correction_wall_us,
+            bonus_wall_us,
+            rejection_wall_us,
             verify_wall_us,
         })
     }
@@ -410,6 +532,9 @@ impl Qwen4ExpDraftCursor {
             emitted,
             accepted: advanced.accepted,
             draft_wall_us: advanced.draft_wall_us,
+            correction_wall_us: advanced.correction_wall_us,
+            bonus_wall_us: advanced.bonus_wall_us,
+            rejection_wall_us: advanced.rejection_wall_us,
             verify_wall_us: advanced.verify_wall_us,
         })
     }
@@ -512,6 +637,85 @@ impl CandidateSession {
         self.proposed = cursor.proposed;
         self.accepted = cursor.accepted;
         Ok(advanced.consumed)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod mtp_parity {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    pub(crate) fn mtp_numeric_tolerance(dtype: MlxDtype) -> f32 {
+        match dtype {
+            MlxDtype::Float32 => 1e-3,
+            _ => 3e-2,
+        }
+    }
+
+    fn f32_values(array: &MlxArray) -> Vec<f32> {
+        let array = mlx_sys::contiguous(&astype(array, MlxDtype::Float32, None), None);
+        try_eval(&[&array]).unwrap();
+        array.data_f32().to_vec()
+    }
+
+    fn max_abs_relative_to_scale(actual: &[f32], expected: &[f32]) -> f32 {
+        assert_eq!(actual.len(), expected.len(), "MTP tensor length mismatch");
+        let scale = expected
+            .iter()
+            .copied()
+            .map(f32::abs)
+            .fold(0.0f32, f32::max);
+        let max_abs = actual
+            .iter()
+            .zip(expected)
+            .map(|(a, b)| {
+                assert!(a.is_finite() && b.is_finite());
+                (a - b).abs()
+            })
+            .fold(0.0f32, f32::max);
+        if scale > 0.0 {
+            max_abs / scale
+        } else {
+            max_abs
+        }
+    }
+
+    pub(crate) fn assert_mtp_logits_close(actual: &MlxArray, expected: &MlxArray, dtype: MlxDtype) {
+        let relative = max_abs_relative_to_scale(&f32_values(actual), &f32_values(expected));
+        let limit = mtp_numeric_tolerance(dtype);
+        assert!(
+            relative <= limit,
+            "MTP logit relative max abs {relative} exceeds {limit}"
+        );
+    }
+
+    pub(crate) fn assert_mtp_state_close(
+        actual: &Qwen4ExpState,
+        expected: &Qwen4ExpState,
+        dtype: MlxDtype,
+    ) {
+        assert_eq!(actual.position(), expected.position());
+        let actual_arrays = actual.arrays();
+        let expected_arrays = expected.arrays();
+        assert_eq!(actual_arrays.len(), expected_arrays.len());
+        let limit = mtp_numeric_tolerance(dtype);
+        for (index, (actual, expected)) in actual_arrays.iter().zip(&expected_arrays).enumerate() {
+            let relative = max_abs_relative_to_scale(&f32_values(actual), &f32_values(expected));
+            assert!(
+                relative <= limit,
+                "MTP state array {index} relative max abs {relative} exceeds {limit}"
+            );
+        }
+    }
+
+    pub(crate) fn take_trunk_forward_count() -> usize {
+        TRUNK_FORWARD_COUNT.with(|count| count.replace(0))
+    }
+
+    #[test]
+    fn mtp_numeric_tolerance_matches_f32_and_bf16_fixtures() {
+        assert_eq!(mtp_numeric_tolerance(MlxDtype::Float32), 1e-3);
+        assert_eq!(mtp_numeric_tolerance(MlxDtype::Bfloat16), 3e-2);
     }
 }
 
@@ -921,5 +1125,83 @@ mod cursor_tests {
             assert_eq!(bytes(&actual.state), bytes(&expected.state));
             assert_eq!(next_token(&actual).unwrap(), next_token(&expected).unwrap());
         }
+    }
+
+    #[test]
+    #[ignore = "requires synthetic Flash Next MTP artifacts"]
+    fn flash_next_mtp_verify_one_counts_trunk_forwards() {
+        let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
+        let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+        manifest.weight_sanitize = ax_engine_core::WeightSanitize::HfToMlx;
+        let trunk = crate::weights::qwen4_exp::load(&root, &manifest).unwrap();
+        let owner = 1901;
+        let tokens = [1_u32, 2, 3, 4];
+        let prefill = qwen4_exp::forward(
+            &trunk,
+            &tokens,
+            &Qwen4ExpState::new(&trunk, owner),
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        let primary = next_token(&prefill).unwrap();
+        let target = qwen4_exp::forward(
+            &trunk,
+            &[primary],
+            &prefill.state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        let correct_draft = next_token(&target).unwrap();
+        let vocabulary = trunk.token_embedding.weight.shape()[0] as u32;
+        assert!(vocabulary > 1);
+        let wrong_draft = (correct_draft + 1) % vocabulary;
+
+        mtp_parity::take_trunk_forward_count();
+        let accepted = verify_one(
+            &trunk,
+            &prefill.state,
+            owner,
+            primary,
+            correct_draft,
+            2,
+            &[],
+        )
+        .unwrap();
+        assert!(accepted.accepted);
+        assert_eq!(accepted.bonus_wall_us, 0);
+        assert_eq!(accepted.rejection_wall_us, 0);
+        assert_eq!(accepted.verify_wall_us(), accepted.correction_wall_us);
+        assert_eq!(mtp_parity::take_trunk_forward_count(), 1);
+
+        let rejected =
+            verify_one(&trunk, &prefill.state, owner, primary, wrong_draft, 2, &[]).unwrap();
+        assert!(!rejected.accepted);
+        assert_eq!(rejected.bonus_wall_us, 0);
+        assert_eq!(
+            rejected.verify_wall_us(),
+            sum_verify_wall_us(
+                rejected.correction_wall_us,
+                rejected.bonus_wall_us,
+                rejected.rejection_wall_us
+            )
+        );
+        assert_eq!(mtp_parity::take_trunk_forward_count(), 2);
+
+        let last = verify_one(
+            &trunk,
+            &prefill.state,
+            owner,
+            primary,
+            correct_draft,
+            1,
+            &[],
+        )
+        .unwrap();
+        assert!(!last.accepted);
+        assert_eq!(last.bonus_wall_us, 0);
+        assert_eq!(last.rejection_wall_us, 0);
+        assert_eq!(mtp_parity::take_trunk_forward_count(), 1);
     }
 }

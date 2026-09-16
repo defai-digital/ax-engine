@@ -184,11 +184,13 @@ See the [official GDN evidence](../../benchmarks/results/flash-next-official-gdn
 
 Bounded M2 controls now exercise both selected flags with MTP on all three
 audited affine packs. Primary and draft state match the direct/full-head
-controls immediately after prefill and after each committed step. The tests
-separately count selected payload read by MTP steps, retain zero cached whole
-expert layers, and cover verifier acceptance, rejection, budget and EOS
-boundaries. Synthetic forced-acceptance tests also cover session and runner
-terminal behavior.
+controls immediately after prefill. Flash Next MTP guarantees greedy-token
+identity with direct decode for the same request, and bounds the logit and
+state divergence introduced by batched verification rather than requiring
+bit-exact logits or serialized state. The tests separately count selected
+payload read by MTP steps, retain zero cached whole expert layers, and cover
+verifier acceptance, rejection, budget and EOS boundaries. Synthetic
+forced-acceptance tests also cover session and runner terminal behavior.
 
 The same production executable passes completion and SSE with MTP disabled and
 required for each pack: 12 requests, matching the corresponding direct output.
@@ -351,8 +353,9 @@ source or public readiness setting changed.
 When only one output slot remains, the candidate now updates its required QSA
 history and runs the authoritative primary graph without computing a draft
 that cannot be accepted. It publishes state only after both operations succeed
-and records no proposal for this step. Larger budgets retain the existing
-verification path.
+and records no proposal for this step. Larger budgets run one length-2 Shared
+verification forward and keep greedy-token identity with direct decode, with
+bounded logit and state divergence rather than a bit-exact match.
 
 F32 and BF16 regressions fail the old path on a poisoned draft projection and
 pass the correction. Full serialized state, hidden values, failure recovery

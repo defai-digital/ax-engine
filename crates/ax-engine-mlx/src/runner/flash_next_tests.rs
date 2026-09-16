@@ -551,6 +551,12 @@ fn flash_next_real_runner_mtp_paired_cost() {
                     "generated_ids": result.tokens,
                     "token_parity": parity,
                     "routes": result.routes,
+                    "verified_steps": verified,
+                    "emitted_tokens": result.maximum("ax_mlx_flash_next_mtp_emitted_tokens"),
+                    "correction_wall_us": result.maximum("ax_mlx_flash_next_mtp_correction_wall_us"),
+                    "bonus_wall_us": result.maximum("ax_mlx_flash_next_mtp_bonus_wall_us"),
+                    "rejection_wall_us": result.maximum("ax_mlx_flash_next_mtp_rejection_wall_us"),
+                    "verify_wall_us": result.maximum("ax_mtp_verify_forward_wall_us"),
                     "mlx_buffer_cache_bytes": mlx_sys::get_cache_memory(),
                     "mlx_peak_bytes": mlx_sys::get_peak_memory(),
                 }));
