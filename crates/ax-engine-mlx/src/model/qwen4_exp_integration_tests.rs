@@ -3,7 +3,7 @@
 
 use super::*;
 use ax_engine_core::{NativeModelArtifacts, NativeRuntimeStatus, WeightSanitize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn assert_equal(a: &MlxArray, b: &MlxArray) {
     mlx_sys::eval(&[a, b]);
@@ -1610,8 +1610,9 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         crate::weights::qwen4_exp_mtp::load(&root, artifacts.manifest(), &trunk).unwrap();
     let (head_permuted, permute_seed) = flash_next_mtp_permute_draft_head(&mut head);
     let head_seconds = start.elapsed().as_secs_f64();
+    let terminal_ids = flash_next_mtp_load_terminal_ids(&root);
     eprintln!(
-        "Flash Next MTP loaded: trunk_seconds={trunk_seconds}, head_seconds={head_seconds}, head_permuted={head_permuted}, active_bytes={}",
+        "Flash Next MTP loaded: trunk_seconds={trunk_seconds}, head_seconds={head_seconds}, head_permuted={head_permuted}, terminal_ids={terminal_ids:?}, active_bytes={}",
         mlx_sys::mempressure::device_active_bytes().unwrap()
     );
     let owner = 1201;
@@ -1661,7 +1662,29 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     let tie_margin = mtp_parity::mtp_tie_margin();
     let mut identity = mtp_parity::GreedyIdentityReport::exact();
     let mut comparing = true;
+    let mut stopped_at_terminal = false;
+    let mut terminal_position = None;
     while generated.len() < expected.len() {
+        if terminal_ids.contains(&session.primary) {
+            if comparing {
+                observe_greedy_mismatch(
+                    &mut identity,
+                    &mut comparing,
+                    generated.len(),
+                    flash_next_mtp_greedy_token(&direct),
+                    session.primary,
+                    top_two_margin(&direct.logits, 0).unwrap(),
+                    tie_margin,
+                );
+            }
+            flash_next_mtp_note_terminal(
+                &mut generated,
+                session.primary,
+                &mut stopped_at_terminal,
+                &mut terminal_position,
+            );
+            break;
+        }
         let remaining = expected.len() - generated.len();
         let draft_token = (remaining > 1).then(|| {
             flash_next_mtp_greedy_token(
@@ -1675,7 +1698,9 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
                 .unwrap(),
             )
         });
-        let committed = session.step(&trunk, &head, remaining, &[]).unwrap();
+        let committed = session
+            .step(&trunk, &head, remaining, &terminal_ids)
+            .unwrap();
         eprintln!("Flash Next MTP committed: {committed:?}");
         assert!(!committed.is_empty());
         if let Some(draft_token) = draft_token {
@@ -1698,7 +1723,8 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
                     tie_margin,
                 );
             }
-            if comparing {
+            let is_terminal = terminal_ids.contains(token);
+            if comparing && !is_terminal {
                 draft_reference = head_forward(
                     &head,
                     &direct.stream_hidden,
@@ -1718,6 +1744,14 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
                 .unwrap();
             }
             generated.push(*token);
+            if is_terminal {
+                stopped_at_terminal = true;
+                terminal_position = Some(generated.len() - 1);
+                break;
+            }
+        }
+        if stopped_at_terminal {
+            break;
         }
         if comparing {
             assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
@@ -1736,14 +1770,15 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
             mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
         }
     }
+    let (expected_cut, _, _) = flash_next_mtp_truncate_at_terminal(&expected, &terminal_ids);
     let tolerance = mtp_parity::mtp_run_tolerance(dtype);
-    if generated != expected {
+    if generated != expected_cut {
         assert!(
             !identity.tie_divergences.is_empty(),
-            "generated_ids differ from expected_ids without a documented near-tie: generated={generated:?} expected={expected:?}"
+            "generated_ids differ from expected_ids without a documented near-tie: generated={generated:?} expected={expected_cut:?}"
         );
     }
-    let greedy_identity = identity.greedy_identity && generated == expected;
+    let greedy_identity = identity.greedy_identity && generated == expected_cut;
     let within_tolerance =
         max_state_divergence.relative <= tolerance.limit && identity.identity_until_first_tie;
     let agreement_rate = crate::model::qwen4_exp_mtp::trained_head::agreement_rate(&agreement);
@@ -1782,6 +1817,10 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "tolerance": tolerance.limit,
         "tolerance_source": tolerance.source,
         "within_tolerance": within_tolerance,
+        "stopped_at_terminal": stopped_at_terminal,
+        "terminal_position": terminal_position,
+        "compared_positions": generated.len(),
+        "terminal_ids": terminal_ids,
         "state_arrays": mtp_parity::mtp_state_arrays_json(&last_trunk_arrays),
         "note":"Reconstructed candidate head; primary verification is authoritative; no throughput claim"
     });
@@ -1820,12 +1859,141 @@ struct FlashNextMtpOracleManifest {
     requests: Vec<FlashNextMtpOraclePrompt>,
 }
 
+const FLASH_NEXT_TERMINAL_IDS_ENV: &str = "AX_FLASH_NEXT_TERMINAL_IDS";
+
+struct FlashNextMtpOracleRun {
+    generated: Vec<u32>,
+    agreement: Vec<bool>,
+    proposed: usize,
+    accepted: usize,
+    identity: crate::model::qwen4_exp_mtp::mtp_parity::GreedyIdentityReport,
+    stopped_at_terminal: bool,
+    terminal_position: Option<usize>,
+    compared_positions: usize,
+    too_short: bool,
+}
+
+fn flash_next_mtp_push_unique_id(ids: &mut Vec<u32>, value: u32) {
+    if !ids.contains(&value) {
+        ids.push(value);
+    }
+}
+
+fn flash_next_mtp_collect_token_ids(value: &serde_json::Value, ids: &mut Vec<u32>) {
+    match value {
+        serde_json::Value::Number(number) => {
+            if let Some(id) = number.as_u64().and_then(|raw| u32::try_from(raw).ok()) {
+                flash_next_mtp_push_unique_id(ids, id);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                flash_next_mtp_collect_token_ids(item, ids);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if let Some(id) = object.get("id") {
+                flash_next_mtp_collect_token_ids(id, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn flash_next_mtp_ids_from_eos_fields(value: &serde_json::Value) -> Vec<u32> {
+    let mut ids = Vec::new();
+    for key in ["eos_token_id", "eos_token_ids"] {
+        if let Some(field) = value.get(key) {
+            flash_next_mtp_collect_token_ids(field, &mut ids);
+        }
+    }
+    if let Some(nested) = value.get("generation_config") {
+        for id in flash_next_mtp_ids_from_eos_fields(nested) {
+            flash_next_mtp_push_unique_id(&mut ids, id);
+        }
+    }
+    ids
+}
+
+fn flash_next_mtp_parse_terminal_ids(raw: &str) -> Vec<u32> {
+    let parsed: Vec<u32> = serde_json::from_str(raw).unwrap();
+    assert!(
+        !parsed.is_empty(),
+        "{FLASH_NEXT_TERMINAL_IDS_ENV} must be a non-empty JSON array of token ids"
+    );
+    parsed
+}
+
+fn flash_next_mtp_terminal_ids_from_pack(root: &Path) -> Vec<u32> {
+    let mut ids = Vec::new();
+    for name in [
+        "generation_config.json",
+        "tokenizer_config.json",
+        "config.json",
+    ] {
+        let path = root.join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        for id in flash_next_mtp_ids_from_eos_fields(&value) {
+            flash_next_mtp_push_unique_id(&mut ids, id);
+        }
+    }
+    ids
+}
+
+fn flash_next_mtp_load_terminal_ids(root: &Path) -> Vec<u32> {
+    if let Ok(raw) = std::env::var(FLASH_NEXT_TERMINAL_IDS_ENV) {
+        return flash_next_mtp_parse_terminal_ids(&raw);
+    }
+    let ids = flash_next_mtp_terminal_ids_from_pack(root);
+    assert!(
+        !ids.is_empty(),
+        "Flash Next pack is missing eos_token_id in generation_config.json / tokenizer_config.json"
+    );
+    ids
+}
+
+fn flash_next_mtp_truncate_at_terminal(
+    tokens: &[u32],
+    terminal_ids: &[u32],
+) -> (Vec<u32>, bool, Option<usize>) {
+    match tokens.iter().position(|token| terminal_ids.contains(token)) {
+        Some(index) => (tokens[..=index].to_vec(), true, Some(index)),
+        None => (tokens.to_vec(), false, None),
+    }
+}
+
+fn flash_next_mtp_too_short(generated: &[u32], terminal_ids: &[u32]) -> bool {
+    match generated
+        .iter()
+        .position(|token| terminal_ids.contains(token))
+    {
+        Some(index) => index < 2,
+        None => generated.len() < 2,
+    }
+}
+
+fn flash_next_mtp_note_terminal(
+    generated: &mut Vec<u32>,
+    token: u32,
+    stopped_at_terminal: &mut bool,
+    terminal_position: &mut Option<usize>,
+) {
+    generated.push(token);
+    *stopped_at_terminal = true;
+    *terminal_position = Some(generated.len() - 1);
+}
+
 fn flash_next_mtp_oracle_prompts() -> (Vec<FlashNextMtpOraclePrompt>, usize) {
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROMPT_MANIFEST") {
         let parsed: FlashNextMtpOracleManifest =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert!(!parsed.requests.is_empty());
-        let max_new = parsed.max_new_tokens.unwrap_or(8);
+        let max_new = parsed.max_new_tokens.unwrap_or(16);
         assert!((3..=32).contains(&max_new));
         return (parsed.requests, max_new);
     }
@@ -1838,7 +2006,7 @@ fn flash_next_mtp_oracle_prompts() -> (Vec<FlashNextMtpOraclePrompt>, usize) {
         .ok()
         .map(|raw| raw.parse().unwrap())
         .or_else(|| expected.as_ref().map(Vec::len))
-        .unwrap_or(8);
+        .unwrap_or(16);
     assert!((3..=32).contains(&max_new));
     (
         vec![FlashNextMtpOraclePrompt {
@@ -1857,13 +2025,8 @@ fn flash_next_mtp_oracle_generate(
     max_new: usize,
     owner: u64,
     draft_owner: u64,
-) -> (
-    Vec<u32>,
-    Vec<bool>,
-    usize,
-    usize,
-    crate::model::qwen4_exp_mtp::mtp_parity::GreedyIdentityReport,
-) {
+    terminal_ids: &[u32],
+) -> FlashNextMtpOracleRun {
     use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity, top_two_margin};
     assert!(!tokens.is_empty());
     let mut session = CandidateSession::prefill(trunk, head, tokens, owner, draft_owner).unwrap();
@@ -1894,7 +2057,29 @@ fn flash_next_mtp_oracle_generate(
     let tie_margin = mtp_parity::mtp_tie_margin();
     let mut identity = mtp_parity::GreedyIdentityReport::exact();
     let mut comparing = true;
+    let mut stopped_at_terminal = false;
+    let mut terminal_position = None;
     while generated.len() < max_new {
+        if terminal_ids.contains(&session.primary) {
+            if comparing {
+                observe_greedy_mismatch(
+                    &mut identity,
+                    &mut comparing,
+                    generated.len(),
+                    flash_next_mtp_greedy_token(&direct),
+                    session.primary,
+                    top_two_margin(&direct.logits, 0).unwrap(),
+                    tie_margin,
+                );
+            }
+            flash_next_mtp_note_terminal(
+                &mut generated,
+                session.primary,
+                &mut stopped_at_terminal,
+                &mut terminal_position,
+            );
+            break;
+        }
         let remaining = max_new - generated.len();
         let draft_token = (remaining > 1).then(|| {
             flash_next_mtp_greedy_token(
@@ -1908,7 +2093,7 @@ fn flash_next_mtp_oracle_generate(
                 .unwrap(),
             )
         });
-        let committed = session.step(trunk, head, remaining, &[]).unwrap();
+        let committed = session.step(trunk, head, remaining, terminal_ids).unwrap();
         assert!(!committed.is_empty() && committed.len() <= remaining);
         if let Some(draft_token) = draft_token {
             let primary_next = if committed.len() >= 2 {
@@ -1930,7 +2115,8 @@ fn flash_next_mtp_oracle_generate(
                     tie_margin,
                 );
             }
-            if comparing {
+            let is_terminal = terminal_ids.contains(token);
+            if comparing && !is_terminal {
                 direct = qwen4_exp::forward(
                     trunk,
                     &[*token],
@@ -1941,8 +2127,16 @@ fn flash_next_mtp_oracle_generate(
                 .unwrap();
             }
             generated.push(*token);
+            if is_terminal {
+                stopped_at_terminal = true;
+                terminal_position = Some(generated.len() - 1);
+                break;
+            }
         }
-        if comparing {
+        if stopped_at_terminal {
+            break;
+        }
+        if comparing && generated.len() < max_new {
             observe_greedy_mismatch(
                 &mut identity,
                 &mut comparing,
@@ -1959,13 +2153,79 @@ fn flash_next_mtp_oracle_generate(
         agreement.iter().filter(|agreed| **agreed).count(),
         session.accepted
     );
-    (
+    FlashNextMtpOracleRun {
+        too_short: flash_next_mtp_too_short(&generated, terminal_ids),
+        compared_positions: generated.len(),
         generated,
         agreement,
-        session.proposed,
-        session.accepted,
+        proposed: session.proposed,
+        accepted: session.accepted,
         identity,
+        stopped_at_terminal,
+        terminal_position,
+    }
+}
+
+#[test]
+fn flash_next_mtp_oracle_does_not_compare_past_im_end() {
+    const IM_END: u32 = 248046;
+    const END_OF_TEXT: u32 = 248044;
+    const IM_START: u32 = 248045;
+    const USER: u32 = 846;
+    const NEWLINE: u32 = 198;
+    let terminal = [IM_END, END_OF_TEXT];
+    // M2 4-bit chat-template failure: after <|im_end|>, direct continued
+    // with "\n", "<|im_start|>", "user" while MTP continued from a rejected
+    // terminal draft. Those tokens are past the product stop.
+    let direct = vec![1, 2, 3, 4, 5, IM_END, NEWLINE, IM_START, USER];
+    let mtp = vec![1, 2, 3, 4, 5, IM_END, IM_START, USER];
+    let (direct_cut, direct_stopped, direct_at) =
+        flash_next_mtp_truncate_at_terminal(&direct, &terminal);
+    let (mtp_cut, mtp_stopped, mtp_at) = flash_next_mtp_truncate_at_terminal(&mtp, &terminal);
+    assert_eq!(direct_cut, vec![1, 2, 3, 4, 5, IM_END]);
+    assert_eq!(mtp_cut, direct_cut);
+    assert!(direct_stopped && mtp_stopped);
+    assert_eq!(direct_at, Some(5));
+    assert_eq!(mtp_at, Some(5));
+    assert!(!flash_next_mtp_too_short(&direct_cut, &terminal));
+    assert_eq!(direct_cut.len(), 6);
+}
+
+#[test]
+fn flash_next_mtp_oracle_marks_too_short_before_eos_and_parses_pack_ids() {
+    const IM_END: u32 = 248046;
+    const END_OF_TEXT: u32 = 248044;
+    let terminal = [IM_END, END_OF_TEXT];
+    assert!(flash_next_mtp_too_short(&[IM_END], &terminal));
+    assert!(flash_next_mtp_too_short(&[846, IM_END], &terminal));
+    assert!(!flash_next_mtp_too_short(&[1, 2, IM_END], &terminal));
+    assert!(!flash_next_mtp_too_short(&[1, 2, 3], &terminal));
+    assert!(flash_next_mtp_too_short(&[1], &terminal));
+    assert_eq!(
+        flash_next_mtp_parse_terminal_ids("[248046, 248044]"),
+        vec![IM_END, END_OF_TEXT]
+    );
+    let root = std::env::temp_dir().join(format!(
+        "ax_flash_next_mtp_terminal_ids_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("generation_config.json"),
+        r#"{"eos_token_id":[248046,248044],"pad_token_id":248044}"#,
     )
+    .unwrap();
+    std::fs::write(
+        root.join("tokenizer_config.json"),
+        r#"{"eos_token":"<|im_end|>","pad_token":"<|endoftext|>"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        flash_next_mtp_terminal_ids_from_pack(&root),
+        vec![IM_END, END_OF_TEXT]
+    );
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -1979,6 +2239,7 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
     );
     let (prompts, default_max_new) = flash_next_mtp_oracle_prompts();
     let artifacts = NativeModelArtifacts::from_dir(&root).unwrap();
+    let terminal_ids = flash_next_mtp_load_terminal_ids(&root);
     let start = std::time::Instant::now();
     let trunk = crate::weights::qwen4_exp::load(&root, artifacts.manifest()).unwrap();
     let trunk_seconds = start.elapsed().as_secs_f64();
@@ -1991,6 +2252,7 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
     let mut proposed = 0usize;
     let mut accepted = 0usize;
     let mut agreed = 0usize;
+    let mut too_short_requests = 0usize;
     let mut greedy_identity = true;
     let mut identity_until_first_tie = true;
     let mut tie_divergences = Vec::new();
@@ -2002,42 +2264,51 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
             .unwrap_or(default_max_new);
         assert!((3..=32).contains(&max_new));
         let owner = 2200 + (index as u64) * 2;
-        let (generated, agreement, request_proposed, request_accepted, request_identity) =
-            flash_next_mtp_oracle_generate(
-                &trunk,
-                &head,
-                &prompt.prompt_ids,
-                max_new,
-                owner,
-                owner + 1,
-            );
-        if let Some(expected) = &prompt.expected_ids
-            && generated != *expected
-        {
-            assert!(
-                !request_identity.tie_divergences.is_empty(),
-                "generated_ids differ from expected_ids without a documented near-tie"
-            );
+        let run = flash_next_mtp_oracle_generate(
+            &trunk,
+            &head,
+            &prompt.prompt_ids,
+            max_new,
+            owner,
+            owner + 1,
+            &terminal_ids,
+        );
+        if let Some(expected) = &prompt.expected_ids {
+            let (expected_cut, _, _) = flash_next_mtp_truncate_at_terminal(expected, &terminal_ids);
+            if run.generated != expected_cut {
+                assert!(
+                    !run.identity.tie_divergences.is_empty(),
+                    "generated_ids differ from expected_ids without a documented near-tie"
+                );
+            }
         }
-        greedy_identity &= request_identity.greedy_identity;
-        identity_until_first_tie &= request_identity.identity_until_first_tie;
-        tie_divergences.extend(request_identity.tie_divergences.iter().cloned());
-        proposed += request_proposed;
-        accepted += request_accepted;
-        agreed += agreement.iter().filter(|step| **step).count();
+        greedy_identity &= run.identity.greedy_identity;
+        identity_until_first_tie &= run.identity.identity_until_first_tie;
+        tie_divergences.extend(run.identity.tie_divergences.iter().cloned());
+        if run.too_short {
+            too_short_requests += 1;
+        } else {
+            proposed += run.proposed;
+            accepted += run.accepted;
+            agreed += run.agreement.iter().filter(|step| **step).count();
+        }
         requests.push(serde_json::json!({
             "id": prompt.id.clone().unwrap_or_else(|| format!("request-{index}")),
             "prompt_ids": prompt.prompt_ids,
             "expected_ids": prompt.expected_ids,
-            "greedy_tokens": generated.clone(),
-            "generated_ids": generated,
-            "proposed": request_proposed,
-            "accepted": request_accepted,
-            "draft_vs_primary_top1_agreement": agreement,
-            "draft_vs_primary_top1_agreement_rate": trained_head::agreement_rate(&agreement),
-            "greedy_identity": request_identity.greedy_identity,
-            "identity_until_first_tie": request_identity.identity_until_first_tie,
-            "tie_divergences": request_identity
+            "greedy_tokens": run.generated.clone(),
+            "generated_ids": run.generated,
+            "proposed": run.proposed,
+            "accepted": run.accepted,
+            "stopped_at_terminal": run.stopped_at_terminal,
+            "terminal_position": run.terminal_position,
+            "compared_positions": run.compared_positions,
+            "too_short": run.too_short,
+            "draft_vs_primary_top1_agreement": run.agreement,
+            "draft_vs_primary_top1_agreement_rate": trained_head::agreement_rate(&run.agreement),
+            "greedy_identity": run.identity.greedy_identity,
+            "identity_until_first_tie": run.identity.identity_until_first_tie,
+            "tie_divergences": run.identity
                 .tie_divergences
                 .iter()
                 .map(crate::model::qwen4_exp_mtp::mtp_parity::TieDivergence::to_json)
@@ -2065,6 +2336,8 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
         "accepted": accepted,
         "acceptance_rate": acceptance_rate,
         "draft_vs_primary_top1_agreement_rate": agreement_rate,
+        "too_short_requests": too_short_requests,
+        "terminal_ids": terminal_ids,
         "greedy_identity": greedy_identity,
         "identity_until_first_tie": identity_until_first_tie,
         "tie_divergences": tie_divergences
