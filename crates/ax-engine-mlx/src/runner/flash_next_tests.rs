@@ -510,14 +510,21 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
     let greedy_identity = candidate.tokens == direct.tokens;
     // The runner drops request state on the terminal step, so decode-state
     // divergence is measured by the CandidateSession controls, not here.
+    let tolerance = mtp_parity::mtp_run_tolerance(dtype);
     let evidence = serde_json::json!({
         "qualification":false,"block_size_tokens":4,"direct_ids":direct.tokens,
         "mtp_ids":candidate.tokens,"direct_routes":direct.routes,"mtp_routes":candidate.routes,
         "greedy_identity": greedy_identity,
         "prefill_state_exact": true,
         "decode_state_compared": false,
+        "logit_scale": serde_json::Value::Null,
+        "max_logit_abs_difference": serde_json::Value::Null,
+        "max_logit_relative_divergence": serde_json::Value::Null,
+        "max_state_abs_difference": serde_json::Value::Null,
         "max_state_relative_divergence": serde_json::Value::Null,
-        "state_tolerance": mtp_parity::mtp_numeric_tolerance(dtype),
+        "tolerance": tolerance.limit,
+        "tolerance_source": tolerance.source,
+        "state_tolerance": tolerance.limit,
         "within_tolerance": greedy_identity,
     });
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_RESULT_PATH") {

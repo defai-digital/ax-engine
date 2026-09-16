@@ -645,10 +645,98 @@ pub(crate) mod mtp_parity {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
+    const DEFAULT_REAL_PACK_TOLERANCE: f32 = 0.1;
+    const REAL_PACK_TOLERANCE_ENV: &str = "AX_FLASH_NEXT_MTP_REAL_TOLERANCE";
+    const TOLERANCE_SOURCE_SYNTHETIC: &str = "synthetic";
+    const TOLERANCE_SOURCE_REAL_PACK: &str = "real-pack-env";
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(crate) struct MtpTolerance {
+        pub limit: f32,
+        pub source: &'static str,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(crate) struct MtpDivergence {
+        pub scale: f32,
+        pub max_abs: f32,
+        pub relative: f32,
+    }
+
+    impl MtpDivergence {
+        pub(crate) fn zero() -> Self {
+            Self {
+                scale: 0.0,
+                max_abs: 0.0,
+                relative: 0.0,
+            }
+        }
+
+        pub(crate) fn max_relative(self, other: Self) -> Self {
+            if other.relative > self.relative {
+                other
+            } else {
+                self
+            }
+        }
+    }
+
     pub(crate) fn mtp_numeric_tolerance(dtype: MlxDtype) -> f32 {
         match dtype {
             MlxDtype::Float32 => 1e-3,
             _ => 3e-2,
+        }
+    }
+
+    fn real_pack_env_set() -> bool {
+        std::env::var_os("AX_FLASH_NEXT_REAL_PACK").is_some()
+            || std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR").is_some()
+    }
+
+    pub(crate) fn parse_mtp_real_pack_tolerance(raw: Option<&str>) -> f32 {
+        let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+            return DEFAULT_REAL_PACK_TOLERANCE;
+        };
+        let parsed = value.parse::<f32>();
+        assert!(
+            matches!(parsed, Ok(limit) if limit.is_finite() && limit >= 0.0),
+            "{REAL_PACK_TOLERANCE_ENV} must be a finite non-negative f32, got {value:?}"
+        );
+        parsed.unwrap()
+    }
+
+    /// Selects the relative MTP numeric tolerance for this run.
+    ///
+    /// Fixture runs keep the synthetic floors (1e-3 F32, 3e-2 otherwise). On a
+    /// real quantized 125B graph the batched two-token verify schedule can
+    /// diverge from two singletons by the same order as the official
+    /// chunked-versus-recurrent prefill schedule difference (max abs 2.2
+    /// logits). When `AX_FLASH_NEXT_REAL_PACK` or
+    /// `AX_FLASH_NEXT_CANDIDATE_PACK_DIR` is set, the relative limit is
+    /// `AX_FLASH_NEXT_MTP_REAL_TOLERANCE` (default 0.1).
+    pub(crate) fn mtp_run_tolerance(dtype: MlxDtype) -> MtpTolerance {
+        mtp_run_tolerance_from_parts(
+            dtype,
+            real_pack_env_set(),
+            std::env::var(REAL_PACK_TOLERANCE_ENV).ok().as_deref(),
+        )
+    }
+
+    pub(crate) fn mtp_run_tolerance_from_parts(
+        dtype: MlxDtype,
+        real_pack: bool,
+        real_tolerance_env: Option<&str>,
+    ) -> MtpTolerance {
+        if real_pack {
+            MtpTolerance {
+                limit: parse_mtp_real_pack_tolerance(real_tolerance_env),
+                source: TOLERANCE_SOURCE_REAL_PACK,
+            }
+        } else {
+            MtpTolerance {
+                limit: mtp_numeric_tolerance(dtype),
+                source: TOLERANCE_SOURCE_SYNTHETIC,
+            }
         }
     }
 
@@ -658,7 +746,7 @@ pub(crate) mod mtp_parity {
         array.data_f32().to_vec()
     }
 
-    fn max_abs_relative_to_scale(actual: &[f32], expected: &[f32]) -> f32 {
+    fn max_abs_relative_to_scale(actual: &[f32], expected: &[f32]) -> MtpDivergence {
         assert_eq!(actual.len(), expected.len(), "MTP tensor length mismatch");
         let scale = expected
             .iter()
@@ -673,21 +761,26 @@ pub(crate) mod mtp_parity {
                 (a - b).abs()
             })
             .fold(0.0f32, f32::max);
-        if scale > 0.0 {
+        let relative = if scale > 0.0 {
             max_abs / scale
         } else {
             max_abs
+        };
+        MtpDivergence {
+            scale,
+            max_abs,
+            relative,
         }
     }
 
-    pub(crate) fn mtp_logits_relative_divergence(actual: &MlxArray, expected: &MlxArray) -> f32 {
+    pub(crate) fn mtp_logits_divergence(actual: &MlxArray, expected: &MlxArray) -> MtpDivergence {
         max_abs_relative_to_scale(&f32_values(actual), &f32_values(expected))
     }
 
-    pub(crate) fn mtp_state_relative_divergence(
+    pub(crate) fn mtp_state_divergence(
         actual: &Qwen4ExpState,
         expected: &Qwen4ExpState,
-    ) -> f32 {
+    ) -> MtpDivergence {
         assert_eq!(actual.position(), expected.position());
         let actual_arrays = actual.arrays();
         let expected_arrays = expected.arrays();
@@ -695,16 +788,21 @@ pub(crate) mod mtp_parity {
         actual_arrays
             .iter()
             .zip(&expected_arrays)
-            .map(|(actual, expected)| mtp_logits_relative_divergence(actual, expected))
-            .fold(0.0f32, f32::max)
+            .map(|(actual, expected)| mtp_logits_divergence(actual, expected))
+            .fold(MtpDivergence::zero(), MtpDivergence::max_relative)
     }
 
     pub(crate) fn assert_mtp_logits_close(actual: &MlxArray, expected: &MlxArray, dtype: MlxDtype) {
-        let relative = mtp_logits_relative_divergence(actual, expected);
-        let limit = mtp_numeric_tolerance(dtype);
+        let divergence = mtp_logits_divergence(actual, expected);
+        let tolerance = mtp_run_tolerance(dtype);
         assert!(
-            relative <= limit,
-            "MTP logit relative max abs {relative} exceeds {limit}"
+            divergence.relative <= tolerance.limit,
+            "MTP logit relative max abs {} exceeds {} (source={}, logit_scale={}, max_abs={})",
+            divergence.relative,
+            tolerance.limit,
+            tolerance.source,
+            divergence.scale,
+            divergence.max_abs
         );
     }
 
@@ -717,12 +815,17 @@ pub(crate) mod mtp_parity {
         let actual_arrays = actual.arrays();
         let expected_arrays = expected.arrays();
         assert_eq!(actual_arrays.len(), expected_arrays.len());
-        let limit = mtp_numeric_tolerance(dtype);
+        let tolerance = mtp_run_tolerance(dtype);
         for (index, (actual, expected)) in actual_arrays.iter().zip(&expected_arrays).enumerate() {
-            let relative = mtp_logits_relative_divergence(actual, expected);
+            let divergence = mtp_logits_divergence(actual, expected);
             assert!(
-                relative <= limit,
-                "MTP state array {index} relative max abs {relative} exceeds {limit}"
+                divergence.relative <= tolerance.limit,
+                "MTP state array {index} relative max abs {} exceeds {} (source={}, scale={}, max_abs={})",
+                divergence.relative,
+                tolerance.limit,
+                tolerance.source,
+                divergence.scale,
+                divergence.max_abs
             );
         }
     }
@@ -738,13 +841,36 @@ pub(crate) mod mtp_parity {
     }
 
     #[test]
+    fn mtp_run_tolerance_parses_real_pack_env_and_keeps_synthetic_default() {
+        let unset = mtp_run_tolerance_from_parts(MlxDtype::Bfloat16, true, None);
+        assert_eq!(unset.limit, 0.1);
+        assert_eq!(unset.source, "real-pack-env");
+        let empty = mtp_run_tolerance_from_parts(MlxDtype::Bfloat16, true, Some(""));
+        assert_eq!(empty.limit, 0.1);
+        assert_eq!(empty.source, "real-pack-env");
+        let override_limit = mtp_run_tolerance_from_parts(MlxDtype::Float32, true, Some(" 0.08 "));
+        assert_eq!(override_limit.limit, 0.08);
+        assert_eq!(override_limit.source, "real-pack-env");
+        assert_eq!(parse_mtp_real_pack_tolerance(None), 0.1);
+        assert_eq!(parse_mtp_real_pack_tolerance(Some("0.2")), 0.2);
+        let synthetic = mtp_run_tolerance_from_parts(MlxDtype::Float32, false, Some("0.9"));
+        assert_eq!(synthetic.limit, 1e-3);
+        assert_eq!(synthetic.source, "synthetic");
+        let synthetic_bf16 = mtp_run_tolerance_from_parts(MlxDtype::Bfloat16, false, Some("0.9"));
+        assert_eq!(synthetic_bf16.limit, 3e-2);
+        assert_eq!(synthetic_bf16.source, "synthetic");
+    }
+
+    #[test]
     fn mtp_relative_divergence_is_zero_for_identical_values() {
-        assert_eq!(
-            max_abs_relative_to_scale(&[1.0, -2.0, 0.5], &[1.0, -2.0, 0.5]),
-            0.0
-        );
-        let relative = max_abs_relative_to_scale(&[1.02, 0.0], &[1.0, 0.0]);
-        assert!(relative > 0.0 && relative <= 0.021);
+        let identical = max_abs_relative_to_scale(&[1.0, -2.0, 0.5], &[1.0, -2.0, 0.5]);
+        assert_eq!(identical.relative, 0.0);
+        assert_eq!(identical.max_abs, 0.0);
+        assert_eq!(identical.scale, 2.0);
+        let shifted = max_abs_relative_to_scale(&[1.02, 0.0], &[1.0, 0.0]);
+        assert_eq!(shifted.scale, 1.0);
+        assert!((shifted.max_abs - 0.02).abs() <= 1e-6);
+        assert!(shifted.relative > 0.0 && shifted.relative <= 0.021);
     }
 }
 

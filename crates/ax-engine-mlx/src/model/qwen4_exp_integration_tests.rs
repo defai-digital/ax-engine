@@ -1224,8 +1224,8 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     assert!(vocabulary > 1);
     let wrong_draft = (correct_draft + 1) % vocabulary;
     let dtype = target.stream_hidden.dtype();
-    let mut max_state_relative_divergence = 0.0f32;
-    let mut max_logit_relative_divergence = 0.0f32;
+    let mut max_state_divergence = mtp_parity::MtpDivergence::zero();
+    let mut max_logit_divergence = mtp_parity::MtpDivergence::zero();
     for (draft, remaining, accepted) in [
         (correct_draft, 2, true),
         (wrong_draft, 2, false),
@@ -1245,11 +1245,9 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             )
             .unwrap();
             assert_eq!(greedy(&verified.after_primary), greedy(&target));
-            max_logit_relative_divergence =
-                max_logit_relative_divergence.max(mtp_parity::mtp_logits_relative_divergence(
-                    &verified.after_primary.logits,
-                    &target.logits,
-                ));
+            max_logit_divergence = max_logit_divergence.max_relative(
+                mtp_parity::mtp_logits_divergence(&verified.after_primary.logits, &target.logits),
+            );
             mtp_parity::assert_mtp_logits_close(
                 &verified.after_primary.logits,
                 &target.logits,
@@ -1257,11 +1255,11 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             );
             let after_draft = verified.after_draft.as_ref().unwrap();
             assert_eq!(verified.next_primary, greedy(&second));
-            max_logit_relative_divergence = max_logit_relative_divergence.max(
-                mtp_parity::mtp_logits_relative_divergence(&after_draft.logits, &second.logits),
+            max_logit_divergence = max_logit_divergence.max_relative(
+                mtp_parity::mtp_logits_divergence(&after_draft.logits, &second.logits),
             );
-            max_state_relative_divergence = max_state_relative_divergence.max(
-                mtp_parity::mtp_state_relative_divergence(&after_draft.state, &second.state),
+            max_state_divergence = max_state_divergence.max_relative(
+                mtp_parity::mtp_state_divergence(&after_draft.state, &second.state),
             );
             mtp_parity::assert_mtp_logits_close(&after_draft.logits, &second.logits, dtype);
             mtp_parity::assert_mtp_state_close(&after_draft.state, &second.state, dtype);
@@ -1336,17 +1334,19 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
         }
         generated.extend(committed);
         assert_eq!(session.primary, greedy(&direct));
-        max_state_relative_divergence = max_state_relative_divergence.max(
-            mtp_parity::mtp_state_relative_divergence(&session.trunk_state, &direct.state),
-        );
+        max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
+            &session.trunk_state,
+            &direct.state,
+        ));
         mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
         assert_eq!(
             session.draft_state.position() + 1,
             session.trunk_state.position()
         );
-        max_state_relative_divergence = max_state_relative_divergence.max(
-            mtp_parity::mtp_state_relative_divergence(&session.draft_state, &draft_reference),
-        );
+        max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
+            &session.draft_state,
+            &draft_reference,
+        ));
         mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
     }
     assert_eq!(generated.len(), budget);
@@ -1361,9 +1361,9 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             trunk.expert_stream.as_ref().unwrap().cached_layer_count(),
             0
         );
-        let limit = mtp_parity::mtp_numeric_tolerance(dtype);
-        let within_tolerance =
-            max_state_relative_divergence <= limit && max_logit_relative_divergence <= limit;
+        let tolerance = mtp_parity::mtp_run_tolerance(dtype);
+        let within_tolerance = max_state_divergence.relative <= tolerance.limit
+            && max_logit_divergence.relative <= tolerance.limit;
         let result = serde_json::json!({
             "qualification": false, "generated_ids": generated,
             "selected_payload_after_prefill": bytes,
@@ -1377,8 +1377,13 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             "primary_state_exact_each_step": true,
             "forced_acceptance_rejection_budget_and_eos": true,
             "zero_budget_preserves_primary_and_draft_state": true,
-            "max_state_relative_divergence": max_state_relative_divergence,
-            "max_logit_relative_divergence": max_logit_relative_divergence,
+            "logit_scale": max_logit_divergence.scale,
+            "max_logit_abs_difference": max_logit_divergence.max_abs,
+            "max_logit_relative_divergence": max_logit_divergence.relative,
+            "max_state_abs_difference": max_state_divergence.max_abs,
+            "max_state_relative_divergence": max_state_divergence.relative,
+            "tolerance": tolerance.limit,
+            "tolerance_source": tolerance.source,
             "within_tolerance": within_tolerance,
             "greedy_identity": true,
         });
@@ -1540,7 +1545,7 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         flash_mtp_state_bytes(&draft_reference, 1)
     );
     let mut generated = Vec::new();
-    let mut max_state_relative_divergence = 0.0f32;
+    let mut max_state_divergence = mtp_parity::MtpDivergence::zero();
     while generated.len() < expected.len() {
         let committed = session
             .step(&trunk, &head, expected.len() - generated.len(), &[])
@@ -1569,18 +1574,20 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         }
         generated.extend(committed);
         assert_eq!(session.primary, greedy(&direct));
-        max_state_relative_divergence = max_state_relative_divergence.max(
-            mtp_parity::mtp_state_relative_divergence(&session.trunk_state, &direct.state),
-        );
+        max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
+            &session.trunk_state,
+            &direct.state,
+        ));
         mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
-        max_state_relative_divergence = max_state_relative_divergence.max(
-            mtp_parity::mtp_state_relative_divergence(&session.draft_state, &draft_reference),
-        );
+        max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
+            &session.draft_state,
+            &draft_reference,
+        ));
         mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
     }
-    let limit = mtp_parity::mtp_numeric_tolerance(dtype);
+    let tolerance = mtp_parity::mtp_run_tolerance(dtype);
     let greedy_identity = generated == expected;
-    let within_tolerance = max_state_relative_divergence <= limit;
+    let within_tolerance = max_state_divergence.relative <= tolerance.limit;
     let result = serde_json::json!({
         "qualification":false,"route":"flash_next_mtp_candidate_sequential_primary_verify",
         "trunk_load_seconds":trunk_seconds,"head_load_seconds":head_seconds,
@@ -1591,7 +1598,13 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "trunk_position":session.trunk_state.position(),"draft_position":session.draft_state.position(),
         "prefill_primary_and_draft_state_exact": true,
         "greedy_identity": greedy_identity,
-        "max_state_relative_divergence": max_state_relative_divergence,
+        "logit_scale": serde_json::Value::Null,
+        "max_logit_abs_difference": serde_json::Value::Null,
+        "max_logit_relative_divergence": serde_json::Value::Null,
+        "max_state_abs_difference": max_state_divergence.max_abs,
+        "max_state_relative_divergence": max_state_divergence.relative,
+        "tolerance": tolerance.limit,
+        "tolerance_source": tolerance.source,
         "within_tolerance": within_tolerance,
         "note":"Reconstructed candidate head; primary verification is authoritative; no throughput claim"
     });
