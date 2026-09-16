@@ -388,6 +388,9 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
     if let Some(dir) = &logits_dir {
         std::fs::create_dir_all(dir).unwrap();
     }
+    let dump_all_rows = std::env::var("AX_FLASH_NEXT_LOGITS_ALL_ROWS")
+        .ok()
+        .is_some_and(|value| value == "1");
     let save_logits = |name: &str, logits: &MlxArray| {
         if let Some(dir) = &logits_dir {
             let bytes: Vec<u8> = logits
@@ -456,6 +459,25 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
         );
         mlx_sys::try_eval(&[&last]).unwrap();
         save_logits(&format!("prefill-{index}-last"), &last);
+        if dump_all_rows {
+            mlx_sys::try_eval(&[&output.logits]).unwrap();
+            save_logits(&format!("prefill-{index}-rows"), &output.logits);
+            if let Some(dir) = &logits_dir {
+                let chunk_len = usize::try_from(shape[0]).unwrap();
+                let end = output.state.position();
+                let start = end.saturating_sub(chunk_len);
+                let positions: Vec<usize> = (start..end).collect();
+                let sidecar = serde_json::json!({
+                    "shape": shape,
+                    "positions": positions,
+                });
+                std::fs::write(
+                    dir.join(format!("prefill-{index}-rows.json")),
+                    serde_json::to_vec_pretty(&sidecar).unwrap(),
+                )
+                .unwrap();
+            }
+        }
         let digest = |array: &MlxArray| {
             let mut hash = Sha256::new();
             for value in array.data_f32() {
