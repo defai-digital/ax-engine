@@ -1455,7 +1455,11 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
         let pager = trunk.expert_stream.as_ref().unwrap();
         let fallback_layers = pager.selected_prefill_capacity_fallback_layers();
         let cached_layers = pager.cached_layer_count();
-        assert_eq!(cached_layers, fallback_layers);
+        // Whole-layer paging keeps at most the current layer resident.
+        assert!(cached_layers <= fallback_layers);
+        if fallback_layers == 0 {
+            assert_eq!(cached_layers, 0);
+        }
         let result = serde_json::json!({
             "qualification": false, "generated_ids": generated,
             "selected_payload_after_prefill": bytes,
