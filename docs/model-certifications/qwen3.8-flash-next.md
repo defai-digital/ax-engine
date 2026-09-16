@@ -414,3 +414,28 @@ or explain the entire full-model logit difference.
 Only an ignored replay test and test-only captures changed. Workspace tests
 report 3,644 passed and 41 ignored. No production math or qualification
 setting changed. See the [curated attention attribution evidence](../../benchmarks/results/flash-next-qsa-attention-attribution-m2-20260915.json).
+
+### QSA GQA and selected-key order factorial
+
+The next M2 diagnostic holds the captured native Q/K/V tensors and selected
+indices fixed while varying only KV-head expansion and selected-key order.
+Across all 2,055 query positions, the current ranked-expanded path reproduces
+the saved native attention-before-gate tensor bit-for-bit. Leaving KV heads
+grouped (ranked-GQA) produces the same tensor on this MLX build. Sorting each
+selected set into chronological order changes the result slightly, so the
+native ranked gather order remains a meaningful numerical detail.
+
+An independent NumPy FP64 logical-GQA attention calculation agrees with a Torch
+FP64 calculation on nine frozen rows within 1e-10. Native ranked-expanded
+output differs from that mathematical reference by at most 0.0195060913, with
+the BF16 round-to-nearest-even floor recorded separately. This is an operator
+diagnostic for one saved trajectory, not an official BF16 oracle or a complete
+model-quality result.
+
+A separate M2 cost probe covers five fixed positions, four variants, two
+warmups and eight interleaved rotated cycles (160 samples). Inputs and weight
+loading are outside the clock; Python dispatch is included. MLX's peak counter
+was reset after warmups and returned zero before every timed sample. The small
+single-query timings are dispatch probes, not serving throughput or a target-
+SKU performance claim. No production math or admission setting changed. See
+the [curated GQA/order evidence](../../benchmarks/results/flash-next-qsa-gqa-order-m2-20260915.json).
