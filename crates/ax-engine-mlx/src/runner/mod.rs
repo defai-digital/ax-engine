@@ -585,7 +585,7 @@ impl FlashNextMtpRequestState {
 }
 
 /// Cumulative per-request Flash Next MTP route counters.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FlashNextMtpTelemetry {
     /// Cold prefills that created a draft cursor.
     cursor_initialized: u32,
@@ -611,6 +611,29 @@ struct FlashNextMtpTelemetry {
     rejection_wall_us: u32,
     /// Tokens returned by verified cursor steps, including the next primary.
     emitted_tokens: u32,
+    /// Minimum correction-row top-two margin over verified steps, milli-logits.
+    /// `u32::MAX` until the first verified step.
+    min_correction_margin_milli: u32,
+}
+
+impl Default for FlashNextMtpTelemetry {
+    fn default() -> Self {
+        Self {
+            cursor_initialized: 0,
+            resumed_without_cursor: 0,
+            prefill_absorb_failures: 0,
+            cursor_dropped: 0,
+            verified_steps: 0,
+            accepted_steps: 0,
+            direct_fallback_steps: 0,
+            step_errors: 0,
+            correction_wall_us: 0,
+            bonus_wall_us: 0,
+            rejection_wall_us: 0,
+            emitted_tokens: 0,
+            min_correction_margin_milli: u32::MAX,
+        }
+    }
 }
 
 impl FlashNextMtpTelemetry {
@@ -639,6 +662,9 @@ impl FlashNextMtpTelemetry {
             .rejection_wall_us
             .saturating_add(other.rejection_wall_us);
         self.emitted_tokens = self.emitted_tokens.saturating_add(other.emitted_tokens);
+        self.min_correction_margin_milli = self
+            .min_correction_margin_milli
+            .min(other.min_correction_margin_milli);
     }
 
     fn append_route_decisions(self, decisions: &mut impl RouteDecisionSink) {
@@ -673,6 +699,10 @@ impl FlashNextMtpTelemetry {
                 self.rejection_wall_us,
             ),
             ("ax_mlx_flash_next_mtp_emitted_tokens", self.emitted_tokens),
+            (
+                "ax_mlx_flash_next_mtp_min_correction_margin_milli",
+                self.min_correction_margin_milli,
+            ),
         ] {
             decisions.upsert_route_decision(key, value);
         }
@@ -8599,6 +8629,12 @@ impl MlxRunner {
             .telemetry
             .emitted_tokens
             .saturating_add(saturating_u32(step.emitted.len()));
+        let correction_milli =
+            crate::model::qwen4_exp_mtp::correction_margin_milli(step.correction_margin);
+        flash_next.telemetry.min_correction_margin_milli = flash_next
+            .telemetry
+            .min_correction_margin_milli
+            .min(correction_milli);
         // Mirror the direct pipeline's buffer-cache cadence without relying
         // on an exact modulo hit, since accepted steps emit two tokens.
         flash_next.emitted_since_clear = flash_next

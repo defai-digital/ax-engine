@@ -1104,6 +1104,30 @@ fn flash_next_mtp_greedy_token(output: &qwen4_exp::Qwen4ExpOutput) -> u32 {
     token.data_u32()[0]
 }
 
+fn observe_greedy_mismatch(
+    identity: &mut crate::model::qwen4_exp_mtp::mtp_parity::GreedyIdentityReport,
+    comparing: &mut bool,
+    position: usize,
+    expected: u32,
+    actual: u32,
+    margin: f32,
+    tie_margin: f32,
+) {
+    use crate::model::qwen4_exp_mtp::mtp_parity;
+    if expected == actual || !*comparing {
+        return;
+    }
+    identity.greedy_identity = false;
+    match mtp_parity::classify_greedy_mismatch(position, expected, actual, margin, tie_margin) {
+        Ok(Some(tie)) => {
+            identity.tie_divergences.push(tie);
+            *comparing = false;
+        }
+        Ok(None) => {}
+        Err(error) => panic!("{error}"),
+    }
+}
+
 fn flash_next_mtp_permute_draft_head(
     head: &mut crate::weights::qwen4_exp_mtp::Qwen4ExpMtpWeights,
 ) -> (bool, Option<u64>) {
@@ -1118,13 +1142,19 @@ fn flash_next_mtp_permute_draft_head(
 #[test]
 #[ignore = "requires synthetic Flash Next MTP artifacts or an explicit real selected-prefill pack"]
 fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
-    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity, verify_one};
+    use crate::model::qwen4_exp_mtp::{
+        CandidateSession, head_forward, mtp_parity, top_two_margin, verify_one,
+    };
     let (artifacts, tokens, mode, budget) =
         if let Some(root) = std::env::var_os("AX_FLASH_NEXT_REAL_PACK") {
             let artifacts = NativeModelArtifacts::from_dir(PathBuf::from(root)).unwrap();
             let tokens: Vec<u32> =
                 serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
-            assert!((3..=16).contains(&tokens.len()));
+            assert!(
+                !tokens.is_empty() && tokens.len() <= 128,
+                "AX_FLASH_NEXT_PROMPT_IDS must have 1..=128 tokens, got {}",
+                tokens.len()
+            );
             assert_eq!(
                 std::env::var("AX_MLX_FLASH_NEXT_SELECTED_EXPERTS").unwrap(),
                 "1"
@@ -1322,6 +1352,9 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     );
     let mut generated = Vec::new();
     let mut mtp_selected_decode_bytes = 0;
+    let tie_margin = mtp_parity::mtp_tie_margin();
+    let mut identity = mtp_parity::GreedyIdentityReport::exact();
+    let mut comparing = true;
     while generated.len() < budget {
         let selected_before = trunk
             .expert_stream
@@ -1339,43 +1372,59 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
         mtp_selected_decode_bytes += selected_after - selected_before;
         assert!(!committed.is_empty() && committed.len() <= budget - generated.len());
         for token in &committed {
-            assert_eq!(*token, greedy(&direct));
-            draft_reference = head_forward(
-                &head,
-                &direct.stream_hidden,
-                &[*token],
-                &draft_reference,
-                owner + 1,
-            )
-            .unwrap()
-            .state;
-            direct = qwen4_exp::forward(
-                &trunk,
-                &[*token],
-                &direct.state,
-                owner,
-                ProjectionBatchPolicy::Shared,
-            )
-            .unwrap();
+            if comparing {
+                observe_greedy_mismatch(
+                    &mut identity,
+                    &mut comparing,
+                    generated.len(),
+                    greedy(&direct),
+                    *token,
+                    top_two_margin(&direct.logits, 0).unwrap(),
+                    tie_margin,
+                );
+            }
+            if comparing {
+                draft_reference = head_forward(
+                    &head,
+                    &direct.stream_hidden,
+                    &[*token],
+                    &draft_reference,
+                    owner + 1,
+                )
+                .unwrap()
+                .state;
+                direct = qwen4_exp::forward(
+                    &trunk,
+                    &[*token],
+                    &direct.state,
+                    owner,
+                    ProjectionBatchPolicy::Shared,
+                )
+                .unwrap();
+            }
+            generated.push(*token);
         }
-        generated.extend(committed);
-        assert_eq!(session.primary, greedy(&direct));
-        max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
-            &session.trunk_state,
-            &direct.state,
-        ));
-        mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
-        assert_eq!(
-            session.draft_state.position() + 1,
-            session.trunk_state.position()
-        );
-        max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
-            &session.draft_state,
-            &draft_reference,
-        ));
-        mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
+        if comparing {
+            assert_eq!(session.primary, greedy(&direct));
+            max_state_divergence = max_state_divergence.max_relative(
+                mtp_parity::mtp_state_divergence(&session.trunk_state, &direct.state),
+            );
+            mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
+            assert_eq!(
+                session.draft_state.position() + 1,
+                session.trunk_state.position()
+            );
+            max_state_divergence = max_state_divergence.max_relative(
+                mtp_parity::mtp_state_divergence(&session.draft_state, &draft_reference),
+            );
+            mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
+        }
     }
     assert_eq!(generated.len(), budget);
+    assert!(
+        identity.identity_until_first_tie,
+        "MTP greedy identity failed before a documented near-tie"
+    );
     eprintln!(
         "Flash Next MTP control: proposed={}, accepted={}, tokens={generated:?}",
         session.proposed, session.accepted
@@ -1405,9 +1454,9 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             "proposed": session.proposed, "accepted": session.accepted,
             "mtp_only_selected_decode_payload_bytes": mtp_selected_decode_bytes,
             "prefill_primary_and_draft_state_exact": true,
-            "draft_state_exact_each_step": true,
+            "draft_state_exact_each_step": identity.greedy_identity,
             "cached_whole_layers_after_run": 0,
-            "primary_state_exact_each_step": true,
+            "primary_state_exact_each_step": identity.greedy_identity,
             "forced_acceptance_rejection_budget_and_eos": true,
             "zero_budget_preserves_primary_and_draft_state": true,
             "logit_scale": max_logit_divergence.scale,
@@ -1418,7 +1467,13 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             "tolerance": tolerance.limit,
             "tolerance_source": tolerance.source,
             "within_tolerance": within_tolerance,
-            "greedy_identity": true,
+            "greedy_identity": identity.greedy_identity,
+            "identity_until_first_tie": identity.identity_until_first_tie,
+            "tie_divergences": identity
+                .tie_divergences
+                .iter()
+                .map(mtp_parity::TieDivergence::to_json)
+                .collect::<Vec<_>>(),
             "state_arrays": state_arrays,
         });
         std::fs::write(
@@ -1440,7 +1495,13 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             "tolerance": tolerance.limit,
             "tolerance_source": tolerance.source,
             "within_tolerance": within_tolerance,
-            "greedy_identity": true,
+            "greedy_identity": identity.greedy_identity,
+            "identity_until_first_tie": identity.identity_until_first_tie,
+            "tie_divergences": identity
+                .tie_divergences
+                .iter()
+                .map(mtp_parity::TieDivergence::to_json)
+                .collect::<Vec<_>>(),
             "state_arrays": state_arrays,
         });
         std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
@@ -1529,7 +1590,7 @@ fn qwen4_exp_mtp_candidate_io_failure_restores_both_states() {
 #[test]
 #[ignore = "requires an isolated real Flash Next pack with the MTP sidecar"]
 fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
-    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity};
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity, top_two_margin};
     let root = PathBuf::from(
         std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR")
             .or_else(|| std::env::var_os("AX_FLASH_NEXT_REAL_PACK"))
@@ -1597,6 +1658,9 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     let mut agreement = Vec::new();
     let mut max_state_divergence = mtp_parity::MtpDivergence::zero();
     let mut last_trunk_arrays = Vec::new();
+    let tie_margin = mtp_parity::mtp_tie_margin();
+    let mut identity = mtp_parity::GreedyIdentityReport::exact();
+    let mut comparing = true;
     while generated.len() < expected.len() {
         let remaining = expected.len() - generated.len();
         let draft_token = (remaining > 1).then(|| {
@@ -1623,45 +1687,65 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
             agreement.push(draft_token == primary_next);
         }
         for token in &committed {
-            assert_eq!(*token, flash_next_mtp_greedy_token(&direct));
-            draft_reference = head_forward(
-                &head,
-                &direct.stream_hidden,
-                &[*token],
-                &draft_reference,
-                draft_owner,
-            )
-            .unwrap()
-            .state;
-            direct = qwen4_exp::forward(
-                &trunk,
-                &[*token],
-                &direct.state,
-                owner,
-                ProjectionBatchPolicy::Shared,
-            )
-            .unwrap();
+            if comparing {
+                observe_greedy_mismatch(
+                    &mut identity,
+                    &mut comparing,
+                    generated.len(),
+                    flash_next_mtp_greedy_token(&direct),
+                    *token,
+                    top_two_margin(&direct.logits, 0).unwrap(),
+                    tie_margin,
+                );
+            }
+            if comparing {
+                draft_reference = head_forward(
+                    &head,
+                    &direct.stream_hidden,
+                    &[*token],
+                    &draft_reference,
+                    draft_owner,
+                )
+                .unwrap()
+                .state;
+                direct = qwen4_exp::forward(
+                    &trunk,
+                    &[*token],
+                    &direct.state,
+                    owner,
+                    ProjectionBatchPolicy::Shared,
+                )
+                .unwrap();
+            }
+            generated.push(*token);
         }
-        generated.extend(committed);
-        assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
-        last_trunk_arrays =
-            mtp_parity::mtp_state_array_records(&session.trunk_state, &direct.state);
-        max_state_divergence = max_state_divergence.max_relative(
-            last_trunk_arrays
-                .iter()
-                .map(|record| record.divergence)
-                .fold(mtp_parity::MtpDivergence::zero(), |a, b| a.max_relative(b)),
-        );
-        mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
-        max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
-            &session.draft_state,
-            &draft_reference,
-        ));
-        mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
+        if comparing {
+            assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
+            last_trunk_arrays =
+                mtp_parity::mtp_state_array_records(&session.trunk_state, &direct.state);
+            max_state_divergence = max_state_divergence.max_relative(
+                last_trunk_arrays
+                    .iter()
+                    .map(|record| record.divergence)
+                    .fold(mtp_parity::MtpDivergence::zero(), |a, b| a.max_relative(b)),
+            );
+            mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
+            max_state_divergence = max_state_divergence.max_relative(
+                mtp_parity::mtp_state_divergence(&session.draft_state, &draft_reference),
+            );
+            mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
+        }
     }
     let tolerance = mtp_parity::mtp_run_tolerance(dtype);
-    let greedy_identity = generated == expected;
-    let within_tolerance = max_state_divergence.relative <= tolerance.limit;
+    if generated != expected {
+        assert!(
+            !identity.tie_divergences.is_empty(),
+            "generated_ids differ from expected_ids without a documented near-tie: generated={generated:?} expected={expected:?}"
+        );
+    }
+    let greedy_identity = identity.greedy_identity && generated == expected;
+    let within_tolerance =
+        max_state_divergence.relative <= tolerance.limit && identity.identity_until_first_tie;
     let agreement_rate = crate::model::qwen4_exp_mtp::trained_head::agreement_rate(&agreement);
     assert_eq!(agreement.len(), session.proposed);
     assert_eq!(
@@ -1684,6 +1768,12 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "trunk_position":session.trunk_state.position(),"draft_position":session.draft_state.position(),
         "prefill_primary_and_draft_state_exact": true,
         "greedy_identity": greedy_identity,
+        "identity_until_first_tie": identity.identity_until_first_tie,
+        "tie_divergences": identity
+            .tie_divergences
+            .iter()
+            .map(mtp_parity::TieDivergence::to_json)
+            .collect::<Vec<_>>(),
         "logit_scale": serde_json::Value::Null,
         "max_logit_abs_difference": serde_json::Value::Null,
         "max_logit_relative_divergence": serde_json::Value::Null,
@@ -1701,8 +1791,10 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
     eprintln!("{result}");
-    assert_eq!(generated, expected);
-    assert!(greedy_identity);
+    assert!(
+        identity.identity_until_first_tie,
+        "MTP greedy identity failed before a documented near-tie"
+    );
     assert!(within_tolerance);
     assert!(session.proposed > 0);
     assert_eq!(
@@ -1765,8 +1857,14 @@ fn flash_next_mtp_oracle_generate(
     max_new: usize,
     owner: u64,
     draft_owner: u64,
-) -> (Vec<u32>, Vec<bool>, usize, usize, bool) {
-    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward};
+) -> (
+    Vec<u32>,
+    Vec<bool>,
+    usize,
+    usize,
+    crate::model::qwen4_exp_mtp::mtp_parity::GreedyIdentityReport,
+) {
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity, top_two_margin};
     assert!(!tokens.is_empty());
     let mut session = CandidateSession::prefill(trunk, head, tokens, owner, draft_owner).unwrap();
     let prefix_state = if tokens.len() > 1 {
@@ -1793,7 +1891,9 @@ fn flash_next_mtp_oracle_generate(
     assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
     let mut generated = Vec::new();
     let mut agreement = Vec::new();
-    let mut greedy_identity = true;
+    let tie_margin = mtp_parity::mtp_tie_margin();
+    let mut identity = mtp_parity::GreedyIdentityReport::exact();
+    let mut comparing = true;
     while generated.len() < max_new {
         let remaining = max_new - generated.len();
         let draft_token = (remaining > 1).then(|| {
@@ -1819,21 +1919,40 @@ fn flash_next_mtp_oracle_generate(
             agreement.push(draft_token == primary_next);
         }
         for token in &committed {
-            let expected = flash_next_mtp_greedy_token(&direct);
-            greedy_identity &= *token == expected;
-            assert_eq!(*token, expected);
-            direct = qwen4_exp::forward(
-                trunk,
-                &[*token],
-                &direct.state,
-                owner,
-                ProjectionBatchPolicy::Shared,
-            )
-            .unwrap();
+            if comparing {
+                observe_greedy_mismatch(
+                    &mut identity,
+                    &mut comparing,
+                    generated.len(),
+                    flash_next_mtp_greedy_token(&direct),
+                    *token,
+                    top_two_margin(&direct.logits, 0).unwrap(),
+                    tie_margin,
+                );
+            }
+            if comparing {
+                direct = qwen4_exp::forward(
+                    trunk,
+                    &[*token],
+                    &direct.state,
+                    owner,
+                    ProjectionBatchPolicy::Shared,
+                )
+                .unwrap();
+            }
+            generated.push(*token);
         }
-        generated.extend(committed);
-        greedy_identity &= session.primary == flash_next_mtp_greedy_token(&direct);
-        assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
+        if comparing {
+            observe_greedy_mismatch(
+                &mut identity,
+                &mut comparing,
+                generated.len(),
+                flash_next_mtp_greedy_token(&direct),
+                session.primary,
+                top_two_margin(&direct.logits, 0).unwrap(),
+                tie_margin,
+            );
+        }
     }
     assert_eq!(agreement.len(), session.proposed);
     assert_eq!(
@@ -1845,7 +1964,7 @@ fn flash_next_mtp_oracle_generate(
         agreement,
         session.proposed,
         session.accepted,
-        greedy_identity,
+        identity,
     )
 }
 
@@ -1873,6 +1992,8 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
     let mut accepted = 0usize;
     let mut agreed = 0usize;
     let mut greedy_identity = true;
+    let mut identity_until_first_tie = true;
+    let mut tie_divergences = Vec::new();
     for (index, prompt) in prompts.iter().enumerate() {
         let max_new = prompt
             .expected_ids
@@ -1890,10 +2011,17 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
                 owner,
                 owner + 1,
             );
-        if let Some(expected) = &prompt.expected_ids {
-            assert_eq!(&generated, expected);
+        if let Some(expected) = &prompt.expected_ids
+            && generated != *expected
+        {
+            assert!(
+                !request_identity.tie_divergences.is_empty(),
+                "generated_ids differ from expected_ids without a documented near-tie"
+            );
         }
-        greedy_identity &= request_identity;
+        greedy_identity &= request_identity.greedy_identity;
+        identity_until_first_tie &= request_identity.identity_until_first_tie;
+        tie_divergences.extend(request_identity.tie_divergences.iter().cloned());
         proposed += request_proposed;
         accepted += request_accepted;
         agreed += agreement.iter().filter(|step| **step).count();
@@ -1907,7 +2035,13 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
             "accepted": request_accepted,
             "draft_vs_primary_top1_agreement": agreement,
             "draft_vs_primary_top1_agreement_rate": trained_head::agreement_rate(&agreement),
-            "greedy_identity": request_identity,
+            "greedy_identity": request_identity.greedy_identity,
+            "identity_until_first_tie": request_identity.identity_until_first_tie,
+            "tie_divergences": request_identity
+                .tie_divergences
+                .iter()
+                .map(crate::model::qwen4_exp_mtp::mtp_parity::TieDivergence::to_json)
+                .collect::<Vec<_>>(),
         }));
     }
     let acceptance_rate = if proposed == 0 {
@@ -1932,6 +2066,11 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
         "acceptance_rate": acceptance_rate,
         "draft_vs_primary_top1_agreement_rate": agreement_rate,
         "greedy_identity": greedy_identity,
+        "identity_until_first_tie": identity_until_first_tie,
+        "tie_divergences": tie_divergences
+            .iter()
+            .map(crate::model::qwen4_exp_mtp::mtp_parity::TieDivergence::to_json)
+            .collect::<Vec<_>>(),
         "requests": requests,
         "note": "Trained-head oracle; primary verification is authoritative; no throughput claim"
     });
@@ -1941,7 +2080,10 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
         std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
     eprintln!("{result}");
-    assert!(greedy_identity);
+    assert!(
+        identity_until_first_tie,
+        "MTP greedy identity failed before a documented near-tie"
+    );
     assert!(proposed > 0);
 }
 

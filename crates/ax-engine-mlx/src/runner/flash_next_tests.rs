@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::model::qwen4_exp::Qwen4ExpState;
-use crate::model::qwen4_exp_mtp::mtp_parity;
+use crate::model::qwen4_exp_mtp::{mtp_parity, top_two_margin};
+use crate::model::shared::ProjectionBatchPolicy;
 use ax_engine_core::{
     ExecutionBatch, ExecutionItem, PositionRange, RouteMetadata, StepId, WorkUnitKind,
 };
@@ -105,6 +106,7 @@ fn execute_with_block_size(
     })
 }
 
+#[derive(Clone)]
 struct Generation {
     tokens: Vec<u32>,
     routes: Vec<Vec<(String, u32)>>,
@@ -156,6 +158,81 @@ impl Generation {
             .max()
             .unwrap_or_default()
     }
+
+    fn min_correction_margin(&self) -> Option<f32> {
+        self.routes
+            .iter()
+            .flat_map(|route| route.iter())
+            .filter(|(name, value)| {
+                name == "ax_mlx_flash_next_mtp_min_correction_margin_milli" && *value != u32::MAX
+            })
+            .map(|(_, value)| *value)
+            .min()
+            .map(|milli| milli as f32 / 1000.0)
+    }
+}
+
+fn direct_margin_at_divergence(
+    runner: &MlxRunner,
+    prefill: Option<&Qwen4ExpState>,
+    matching_prefix: &[u32],
+) -> Option<f32> {
+    let trunk = runner.weights.qwen4_exp.as_ref()?;
+    let prefill = prefill?;
+    if matching_prefix.is_empty() {
+        return None;
+    }
+    let owner = runner.cfg.compile_cache_identity;
+    let mut state = prefill.clone();
+    let mut output = None;
+    for &token in matching_prefix {
+        let next = crate::model::qwen4_exp::forward(
+            trunk,
+            &[token],
+            &state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .ok()?;
+        state = next.state.clone();
+        output = Some(next);
+    }
+    let output = output?;
+    let row = output.logits.shape().first().copied()?.saturating_sub(1);
+    top_two_margin(&output.logits, row).ok()
+}
+
+fn runner_greedy_identity(
+    direct: &Generation,
+    mtp: &Generation,
+    runner: &MlxRunner,
+) -> mtp_parity::GreedyIdentityReport {
+    let tie_margin = mtp_parity::mtp_tie_margin();
+    let shared = direct.tokens.len().min(mtp.tokens.len());
+    let mut position = shared;
+    for index in 0..shared {
+        if direct.tokens[index] != mtp.tokens[index] {
+            position = index;
+            break;
+        }
+    }
+    if position == shared && direct.tokens.len() == mtp.tokens.len() {
+        return mtp_parity::GreedyIdentityReport::exact();
+    }
+    let direct_margin = if position < shared {
+        direct_margin_at_divergence(
+            runner,
+            direct.prefill_state.as_ref(),
+            &direct.tokens[..position],
+        )
+    } else {
+        None
+    };
+    let margin = direct_margin
+        .or_else(|| mtp.min_correction_margin())
+        .unwrap_or(f32::INFINITY);
+    mtp_parity::greedy_identity_until_tie(&direct.tokens, &mtp.tokens, margin, tie_margin)
+        .unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn generate(
@@ -353,22 +430,35 @@ fn flash_next_real_runner_mtp_matches_recorded_resident_control() {
         context(701, prompt.len(), expected.len() as u32),
         16,
     );
-    let greedy_identity = result.tokens == expected;
+    let tie_margin = mtp_parity::mtp_tie_margin();
+    let margin = result.min_correction_margin().unwrap_or(f32::INFINITY);
+    let identity =
+        mtp_parity::greedy_identity_until_tie(&expected, &result.tokens, margin, tie_margin)
+            .unwrap_or_else(|error| panic!("{error}"));
+    let greedy_identity = identity.greedy_identity;
     let evidence = serde_json::json!({
         "qualification":false, "route":"production_flash_next_mtp_candidate",
         "block_size_tokens":16,
         "load_seconds":load_seconds,"generation_seconds":generation_started.elapsed().as_secs_f64(),
         "tokens":result.tokens,"expected_ids":expected,"routes":result.routes,
         "greedy_identity": greedy_identity,
-        "within_tolerance": greedy_identity,
+        "identity_until_first_tie": identity.identity_until_first_tie,
+        "tie_divergences": identity
+            .tie_divergences
+            .iter()
+            .map(mtp_parity::TieDivergence::to_json)
+            .collect::<Vec<_>>(),
+        "within_tolerance": identity.identity_until_first_tie,
         "mlx_peak_bytes":mlx_sys::get_peak_memory(),
     });
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_RESULT_PATH") {
         std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
     }
     eprintln!("{evidence}");
-    assert_eq!(result.tokens, expected);
-    assert!(greedy_identity);
+    assert!(
+        identity.identity_until_first_tie,
+        "MTP greedy identity failed before a documented near-tie"
+    );
     assert!(result.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
     assert_eq!(result.maximum("ax_mlx_flash_next_mtp_step_errors"), 0);
 }
@@ -554,16 +644,24 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
         .iter()
         .map(|record| record.divergence)
         .fold(mtp_parity::MtpDivergence::zero(), |a, b| a.max_relative(b));
-    let greedy_identity = candidate.tokens == direct.tokens;
+    let identity = runner_greedy_identity(&direct, &candidate, &runner);
+    let greedy_identity = identity.greedy_identity;
     // The runner drops request state on the terminal step, so decode-state
     // divergence is measured by the CandidateSession controls, not here.
     let tolerance = mtp_parity::mtp_run_tolerance(dtype);
     mtp_parity::assert_mtp_state_close(mtp_prefill, direct_prefill, dtype);
-    let within_tolerance = greedy_identity && prefill_divergence.relative <= tolerance.limit;
+    let within_tolerance =
+        identity.identity_until_first_tie && prefill_divergence.relative <= tolerance.limit;
     let evidence = serde_json::json!({
         "qualification":false,"block_size_tokens":4,"direct_ids":direct.tokens,
         "mtp_ids":candidate.tokens,"direct_routes":direct.routes,"mtp_routes":candidate.routes,
         "greedy_identity": greedy_identity,
+        "identity_until_first_tie": identity.identity_until_first_tie,
+        "tie_divergences": identity
+            .tie_divergences
+            .iter()
+            .map(mtp_parity::TieDivergence::to_json)
+            .collect::<Vec<_>>(),
         "prefill_state_exact": false,
         "prefill_state_byte_exact_is_non_goal": true,
         "prefill_seq_len_field": "AXKB header seq_len u64 LE at bytes 8..16",
@@ -583,8 +681,10 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_RESULT_PATH") {
         std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
     }
-    assert_eq!(candidate.tokens, direct.tokens);
-    assert!(greedy_identity);
+    assert!(
+        identity.identity_until_first_tie,
+        "MTP greedy identity failed before a documented near-tie"
+    );
     assert!(candidate.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
 }
 
@@ -633,7 +733,11 @@ fn flash_next_real_runner_mtp_paired_cost() {
         ],
         "samples": [],
     });
-    let mut expected = None;
+    let mut direct_reference: Option<Vec<u32>> = None;
+    let mut mtp_reference: Option<Vec<u32>> = None;
+    let mut last_direct: Option<Generation> = None;
+    let mut last_mtp: Option<Generation> = None;
+    let mut pair_identity = mtp_parity::GreedyIdentityReport::exact();
     // Two warmup pairs, then at least twelve measured pairs. Reverse order on
     // alternate pairs to avoid assigning all later, warmer requests to one mode.
     for pair in 0..pair_count {
@@ -657,8 +761,24 @@ fn flash_next_real_runner_mtp_paired_cost() {
                 16,
             );
             let total_seconds = started.elapsed().as_secs_f64();
-            let reference = expected.get_or_insert_with(|| result.tokens.clone());
-            let parity = result.tokens == *reference;
+            if candidate {
+                let reference = mtp_reference.get_or_insert_with(|| result.tokens.clone());
+                assert_eq!(
+                    result.tokens, *reference,
+                    "paired MTP output changed at pair={pair}"
+                );
+                last_mtp = Some(result.clone());
+            } else {
+                let reference = direct_reference.get_or_insert_with(|| result.tokens.clone());
+                assert_eq!(
+                    result.tokens, *reference,
+                    "paired direct output changed at pair={pair}"
+                );
+                last_direct = Some(result.clone());
+            }
+            if let (Some(direct_run), Some(mtp_run)) = (&last_direct, &last_mtp) {
+                pair_identity = runner_greedy_identity(direct_run, mtp_run, &runner);
+            }
             let verified = result.maximum("ax_mlx_flash_next_mtp_verified_steps");
             let errors = result.maximum("ax_mlx_flash_next_mtp_step_errors");
             evidence["samples"]
@@ -671,8 +791,15 @@ fn flash_next_real_runner_mtp_paired_cost() {
                     "prefill_seconds": result.prefill_seconds,
                     "decode_seconds": result.decode_seconds,
                     "generated_ids": result.tokens,
-                    "token_parity": parity,
-                    "greedy_identity": parity,
+                    "token_parity": pair_identity.greedy_identity,
+                    "greedy_identity": pair_identity.greedy_identity,
+                    "identity_until_first_tie": pair_identity.identity_until_first_tie,
+                    "tie_divergences": pair_identity
+                        .tie_divergences
+                        .iter()
+                        .map(mtp_parity::TieDivergence::to_json)
+                        .collect::<Vec<_>>(),
+                    "min_correction_margin": result.min_correction_margin(),
                     "routes": result.routes,
                     "verified_steps": verified,
                     "accepted": result.maximum("ax_mlx_flash_next_mtp_accepted_steps"),
@@ -686,11 +813,12 @@ fn flash_next_real_runner_mtp_paired_cost() {
                 }));
             std::fs::write(&output_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
             eprintln!(
-                "pair={pair} candidate={candidate} total_seconds={total_seconds:.6} parity={parity}"
+                "pair={pair} candidate={candidate} total_seconds={total_seconds:.6} identity_until_first_tie={}",
+                pair_identity.identity_until_first_tie
             );
             assert!(
-                parity,
-                "paired runner output changed at pair={pair} candidate={candidate}"
+                pair_identity.identity_until_first_tie,
+                "MTP greedy identity failed before a documented near-tie at pair={pair} candidate={candidate}"
             );
             assert_eq!(result.tokens.len(), 32);
             assert_eq!(errors, 0);
@@ -698,5 +826,15 @@ fn flash_next_real_runner_mtp_paired_cost() {
         }
     }
     evidence["completed"] = true.into();
+    evidence["greedy_identity_all_requests"] = pair_identity.identity_until_first_tie.into();
+    evidence["identity_until_first_tie"] = pair_identity.identity_until_first_tie.into();
+    evidence["tie_divergences"] = serde_json::json!(
+        pair_identity
+            .tie_divergences
+            .iter()
+            .map(mtp_parity::TieDivergence::to_json)
+            .collect::<Vec<_>>()
+    );
+    evidence["tie_count"] = pair_identity.tie_divergences.len().into();
     std::fs::write(output_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
 }

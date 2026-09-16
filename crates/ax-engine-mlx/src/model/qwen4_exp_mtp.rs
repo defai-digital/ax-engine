@@ -1,9 +1,11 @@
 //! Experimental Flash Next draft graph with authoritative primary verification.
 //!
-//! Flash Next MTP guarantees greedy-token identity with direct decode for the
-//! same request, and bounds the logit and state divergence introduced by
-//! batched verification. Bit-exact logits and serialized state versus direct
-//! decode are no longer part of the contract. This matches the 27B route's
+//! Flash Next MTP guarantees greedy-token identity with direct decode until a
+//! near-tie: batched length-2 verify and singleton decode may pick different
+//! argmax tokens when the top-two margin is at or below
+//! `AX_FLASH_NEXT_MTP_TIE_MARGIN`. Identity checks stop at the first such
+//! position and record it. Bit-exact logits and serialized state versus
+//! direct decode are not part of the contract. This matches the 27B route's
 //! ADR-003 D5 greedy-parity rule.
 //!
 //! The sidecar has no published official forward oracle. Its candidate input
@@ -21,7 +23,7 @@ use super::shared::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::weights::qwen4_exp::{Qwen4ExpAttentionBranch, Qwen4ExpWeights};
 use crate::weights::qwen4_exp_mtp::Qwen4ExpMtpWeights;
 use mlx_sys::{
-    MlxArray, MlxDtype, add, argmax, astype, concatenate, multiply, reshape, rms_norm, slice,
+    MlxArray, MlxDtype, add, argmax, astype, concatenate, multiply, reshape, rms_norm, slice, topk,
     try_eval,
 };
 
@@ -160,6 +162,44 @@ fn next_token(output: &Qwen4ExpOutput) -> Result<u32, String> {
     token_at_row(&output.logits, shape[0] - 1)
 }
 
+/// Top-1 minus top-2 of one logits row, in the row's native logit units.
+pub(crate) fn top_two_margin(logits: &MlxArray, row: i32) -> Result<f32, String> {
+    let shape = logits.shape();
+    if shape.len() != 2 || row < 0 || row >= shape[0] {
+        return Err("Flash Next MTP logits row is missing".into());
+    }
+    if shape[1] < 2 {
+        return Ok(0.0);
+    }
+    let row_logits = slice(logits, &[row, 0], &[row + 1, shape[1]], &[1, 1], None);
+    let top = astype(&topk(&row_logits, 2, None), MlxDtype::Float32, None);
+    try_eval(&[&top])?;
+    let values = top.data_f32();
+    if values.len() < 2 {
+        return Ok(0.0);
+    }
+    let first = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let second = values.iter().copied().fold(f32::INFINITY, f32::min);
+    if !first.is_finite() || !second.is_finite() {
+        return Err("Flash Next MTP top-two logits are not finite".into());
+    }
+    Ok(first - second)
+}
+
+/// Integer milli-logits for route decisions. Negative and non-finite margins
+/// saturate to 0; values above `u32::MAX` saturate to `u32::MAX`.
+pub(crate) fn correction_margin_milli(margin: f32) -> u32 {
+    if margin.is_nan() || margin <= 0.0 {
+        return 0;
+    }
+    let milli = margin * 1000.0;
+    if !milli.is_finite() || milli >= u32::MAX as f32 {
+        u32::MAX
+    } else {
+        milli as u32
+    }
+}
+
 fn take_sequence_row(array: &MlxArray, row: i32) -> Result<MlxArray, String> {
     let shape = array.shape();
     if shape.len() != 3 || shape[0] != 1 || row < 0 || row >= shape[1] {
@@ -214,6 +254,10 @@ pub(crate) struct VerifiedStep {
     pub correction_wall_us: u32,
     pub bonus_wall_us: u32,
     pub rejection_wall_us: u32,
+    /// Top-two margin of the correction logits row (row 0).
+    pub correction_margin: f32,
+    /// Top-two margin of the bonus logits row on acceptance; 0 otherwise.
+    pub bonus_margin: f32,
 }
 
 impl VerifiedStep {
@@ -253,6 +297,7 @@ pub(crate) fn verify_one(
         let after_primary = trunk_forward(trunk, &[primary], state, owner)?;
         let correction_wall_us = elapsed_us(started);
         let correction = next_token(&after_primary)?;
+        let correction_margin = top_two_margin(&after_primary.logits, 0)?;
         return Ok(VerifiedStep {
             committed: vec![primary],
             accepted: false,
@@ -262,6 +307,8 @@ pub(crate) fn verify_one(
             correction_wall_us,
             bonus_wall_us: 0,
             rejection_wall_us: 0,
+            correction_margin,
+            bonus_margin: 0.0,
         });
     }
     let started = Instant::now();
@@ -271,11 +318,13 @@ pub(crate) fn verify_one(
         return Err("Flash Next MTP batched verify requires two logit rows".into());
     }
     let correction = token_at_row(&batched.logits, 0)?;
+    let correction_margin = top_two_margin(&batched.logits, 0)?;
     let accepted = !terminal_ids.contains(&primary)
         && !terminal_ids.contains(&correction)
         && draft == correction;
     if accepted {
         let bonus = token_at_row(&batched.logits, 1)?;
+        let bonus_margin = top_two_margin(&batched.logits, 1)?;
         Ok(VerifiedStep {
             committed: vec![primary, draft],
             accepted: true,
@@ -285,6 +334,8 @@ pub(crate) fn verify_one(
             correction_wall_us,
             bonus_wall_us: 0,
             rejection_wall_us: 0,
+            correction_margin,
+            bonus_margin,
         })
     } else {
         let started = Instant::now();
@@ -300,6 +351,8 @@ pub(crate) fn verify_one(
             correction_wall_us,
             bonus_wall_us: 0,
             rejection_wall_us,
+            correction_margin,
+            bonus_margin: 0.0,
         })
     }
 }
@@ -324,6 +377,9 @@ pub(crate) struct CursorStep {
     pub bonus_wall_us: u32,
     pub rejection_wall_us: u32,
     pub verify_wall_us: u32,
+    pub correction_margin: f32,
+    #[allow(dead_code)]
+    pub bonus_margin: f32,
 }
 
 struct AdvancedStep {
@@ -336,6 +392,8 @@ struct AdvancedStep {
     bonus_wall_us: u32,
     rejection_wall_us: u32,
     verify_wall_us: u32,
+    correction_margin: f32,
+    bonus_margin: f32,
 }
 
 fn elapsed_us(started: Instant) -> u32 {
@@ -436,6 +494,7 @@ impl Qwen4ExpDraftCursor {
             let output = trunk_forward(trunk, &[primary], state, trunk_owner)?;
             let next_primary = next_token(&output)?;
             let correction_wall_us = elapsed_us(started);
+            let correction_margin = top_two_margin(&output.logits, 0)?;
             self.draft_state = draft_state;
             self.stream_hidden = Some(output.stream_hidden);
             return Ok(AdvancedStep {
@@ -448,6 +507,8 @@ impl Qwen4ExpDraftCursor {
                 bonus_wall_us: 0,
                 rejection_wall_us: 0,
                 verify_wall_us: correction_wall_us,
+                correction_margin,
+                bonus_margin: 0.0,
             });
         }
         let draft_started = Instant::now();
@@ -469,6 +530,8 @@ impl Qwen4ExpDraftCursor {
         let bonus_wall_us = verified.bonus_wall_us;
         let rejection_wall_us = verified.rejection_wall_us;
         let verify_wall_us = verified.verify_wall_us();
+        let correction_margin = verified.correction_margin;
+        let bonus_margin = verified.bonus_margin;
         let consumed = verified.committed;
         let (draft_state, final_output) = if let Some(after_draft) = verified.after_draft {
             let alignment_started = Instant::now();
@@ -498,6 +561,8 @@ impl Qwen4ExpDraftCursor {
             bonus_wall_us,
             rejection_wall_us,
             verify_wall_us,
+            correction_margin,
+            bonus_margin,
         })
     }
 
@@ -536,6 +601,8 @@ impl Qwen4ExpDraftCursor {
             bonus_wall_us: advanced.bonus_wall_us,
             rejection_wall_us: advanced.rejection_wall_us,
             verify_wall_us: advanced.verify_wall_us,
+            correction_margin: advanced.correction_margin,
+            bonus_margin: advanced.bonus_margin,
         })
     }
 }
@@ -647,8 +714,131 @@ pub(crate) mod mtp_parity {
 
     const DEFAULT_REAL_PACK_TOLERANCE: f32 = 0.1;
     const REAL_PACK_TOLERANCE_ENV: &str = "AX_FLASH_NEXT_MTP_REAL_TOLERANCE";
+    const TIE_MARGIN_ENV: &str = "AX_FLASH_NEXT_MTP_TIE_MARGIN";
+    const DEFAULT_TIE_MARGIN: f32 = 0.5;
     const TOLERANCE_SOURCE_SYNTHETIC: &str = "synthetic";
     const TOLERANCE_SOURCE_REAL_PACK: &str = "real-pack-env";
+
+    #[derive(Clone, Debug, PartialEq)]
+    pub(crate) struct TieDivergence {
+        pub position: usize,
+        pub tokens: [u32; 2],
+        pub margin: f32,
+    }
+
+    impl TieDivergence {
+        pub(crate) fn to_json(&self) -> serde_json::Value {
+            serde_json::json!({
+                "position": self.position,
+                "tokens": self.tokens,
+                "margin": self.margin,
+            })
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    pub(crate) struct GreedyIdentityReport {
+        pub greedy_identity: bool,
+        pub identity_until_first_tie: bool,
+        pub tie_divergences: Vec<TieDivergence>,
+    }
+
+    impl GreedyIdentityReport {
+        pub(crate) fn exact() -> Self {
+            Self {
+                greedy_identity: true,
+                identity_until_first_tie: true,
+                tie_divergences: Vec::new(),
+            }
+        }
+    }
+
+    pub(crate) fn parse_mtp_tie_margin(raw: Option<&str>) -> f32 {
+        let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+            return DEFAULT_TIE_MARGIN;
+        };
+        let parsed = value.parse::<f32>();
+        assert!(
+            matches!(parsed, Ok(limit) if limit.is_finite() && limit >= 0.0),
+            "{TIE_MARGIN_ENV} must be a finite non-negative f32, got {value:?}"
+        );
+        parsed.unwrap()
+    }
+
+    pub(crate) fn mtp_tie_margin() -> f32 {
+        parse_mtp_tie_margin(std::env::var(TIE_MARGIN_ENV).ok().as_deref())
+    }
+
+    pub(crate) fn greedy_mismatch_is_not_a_near_tie(
+        position: usize,
+        direct: u32,
+        mtp: u32,
+        margin: f32,
+        tie_margin: f32,
+    ) -> String {
+        format!(
+            "MTP greedy mismatch at position {position} is not a documented near-tie: direct={direct} mtp={mtp} margin={margin} tie_margin={tie_margin}"
+        )
+    }
+
+    /// Classify one greedy mismatch. `Ok(Some(tie))` means stop comparing.
+    pub(crate) fn classify_greedy_mismatch(
+        position: usize,
+        direct: u32,
+        mtp: u32,
+        margin: f32,
+        tie_margin: f32,
+    ) -> Result<Option<TieDivergence>, String> {
+        if direct == mtp {
+            return Ok(None);
+        }
+        if margin <= tie_margin {
+            Ok(Some(TieDivergence {
+                position,
+                tokens: [direct, mtp],
+                margin,
+            }))
+        } else {
+            Err(greedy_mismatch_is_not_a_near_tie(
+                position, direct, mtp, margin, tie_margin,
+            ))
+        }
+    }
+
+    pub(crate) fn greedy_identity_until_tie(
+        direct: &[u32],
+        mtp: &[u32],
+        margin: f32,
+        tie_margin: f32,
+    ) -> Result<GreedyIdentityReport, String> {
+        let shared = direct.len().min(mtp.len());
+        let mut report = GreedyIdentityReport::exact();
+        for position in 0..shared {
+            if direct[position] == mtp[position] {
+                continue;
+            }
+            report.greedy_identity = false;
+            if let Some(tie) = classify_greedy_mismatch(
+                position,
+                direct[position],
+                mtp[position],
+                margin,
+                tie_margin,
+            )? {
+                report.tie_divergences.push(tie);
+                return Ok(report);
+            }
+        }
+        if direct.len() != mtp.len() {
+            report.greedy_identity = false;
+            return Err(format!(
+                "MTP greedy length mismatch without a documented near-tie: direct_len={} mtp_len={} margin={margin} tie_margin={tie_margin}",
+                direct.len(),
+                mtp.len()
+            ));
+        }
+        Ok(report)
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub(crate) struct MtpTolerance {
@@ -928,6 +1118,46 @@ pub(crate) mod mtp_parity {
         let synthetic_bf16 = mtp_run_tolerance_from_parts(MlxDtype::Bfloat16, false, Some("0.9"));
         assert_eq!(synthetic_bf16.limit, 3e-2);
         assert_eq!(synthetic_bf16.source, "synthetic");
+    }
+
+    #[test]
+    fn mtp_tie_margin_default_and_env_parse() {
+        assert_eq!(parse_mtp_tie_margin(None), 0.5);
+        assert_eq!(parse_mtp_tie_margin(Some("")), 0.5);
+        assert_eq!(parse_mtp_tie_margin(Some(" 0.25 ")), 0.25);
+        assert_eq!(parse_mtp_tie_margin(Some("0")), 0.0);
+    }
+
+    #[test]
+    fn correction_margin_milli_saturates() {
+        assert_eq!(correction_margin_milli(0.5), 500);
+        assert_eq!(correction_margin_milli(0.0), 0);
+        assert_eq!(correction_margin_milli(-0.1), 0);
+        assert_eq!(correction_margin_milli(f32::NAN), 0);
+        assert_eq!(correction_margin_milli(f32::INFINITY), u32::MAX);
+        assert_eq!(correction_margin_milli(1.0e12), u32::MAX);
+    }
+
+    #[test]
+    fn greedy_identity_until_tie_records_near_tie_and_rejects_wide_margin() {
+        let direct = [11751, 13, 271, 760];
+        let mtp = [11751, 13, 561, 6511];
+        let tied = greedy_identity_until_tie(&direct, &mtp, 0.0, 0.5).unwrap();
+        assert!(!tied.greedy_identity);
+        assert!(tied.identity_until_first_tie);
+        assert_eq!(tied.tie_divergences.len(), 1);
+        assert_eq!(tied.tie_divergences[0].position, 2);
+        assert_eq!(tied.tie_divergences[0].tokens, [271, 561]);
+        let exact = greedy_identity_until_tie(&direct, &direct, 0.0, 0.5).unwrap();
+        assert!(exact.greedy_identity);
+        assert!(exact.identity_until_first_tie);
+        assert!(exact.tie_divergences.is_empty());
+        let wide = greedy_identity_until_tie(&direct, &mtp, 1.25, 0.5).unwrap_err();
+        assert_eq!(
+            wide,
+            greedy_mismatch_is_not_a_near_tie(2, 271, 561, 1.25, 0.5)
+        );
+        assert!(wide.contains("MTP greedy mismatch at position 2 is not a documented near-tie"));
     }
 
     #[test]
@@ -1425,12 +1655,16 @@ mod cursor_tests {
         assert_eq!(accepted.bonus_wall_us, 0);
         assert_eq!(accepted.rejection_wall_us, 0);
         assert_eq!(accepted.verify_wall_us(), accepted.correction_wall_us);
+        assert!(accepted.correction_margin.is_finite() && accepted.correction_margin >= 0.0);
+        assert!(accepted.bonus_margin.is_finite() && accepted.bonus_margin >= 0.0);
         assert_eq!(mtp_parity::take_trunk_forward_count(), 1);
 
         let rejected =
             verify_one(&trunk, &prefill.state, owner, primary, wrong_draft, 2, &[]).unwrap();
         assert!(!rejected.accepted);
         assert_eq!(rejected.bonus_wall_us, 0);
+        assert_eq!(rejected.bonus_margin, 0.0);
+        assert!(rejected.correction_margin.is_finite() && rejected.correction_margin >= 0.0);
         assert_eq!(
             rejected.verify_wall_us(),
             sum_verify_wall_us(
@@ -1454,6 +1688,8 @@ mod cursor_tests {
         assert!(!last.accepted);
         assert_eq!(last.bonus_wall_us, 0);
         assert_eq!(last.rejection_wall_us, 0);
+        assert_eq!(last.bonus_margin, 0.0);
+        assert!(last.correction_margin.is_finite() && last.correction_margin >= 0.0);
         assert_eq!(mtp_parity::take_trunk_forward_count(), 1);
     }
 }
