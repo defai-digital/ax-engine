@@ -6,8 +6,9 @@ publish = false
 version.workspace = true
 
 [features]
-# Preserve the historical Mac shipping build while allowing compatibility-only
-# artifacts to compile without linking MLX.
+# Mac shipping build. `delegated-server` is the same Mac HTTP/SSE control plane
+# without MLX linkage (llama.cpp / mlx_lm adapters only). There is no Linux
+# engine or server artifact.
 default = ["mlx-native-server"]
 mlx-native-server = ["ax-engine-sdk/mlx-native", "dep:mlx-sys"]
 delegated-server = []

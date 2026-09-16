@@ -1011,7 +1011,7 @@ fn max_recommended_working_set_size() -> u64 {
 fn max_recommended_working_set_size() -> u64 {
     // Delegated-only control planes do not own a local MLX allocator. Returning
     // zero preserves the documented "unknown budget skips admission" behavior
-    // without linking or probing MLX on Linux.
+    // without linking or probing MLX.
     0
 }
 
@@ -1042,7 +1042,7 @@ fn combined_metal_budget(device_budget: u64, floor: Option<u64>) -> u64 {
 /// unset: two thirds of system RAM up to 36 GiB, three quarters above.
 ///
 /// Only consulted from the macOS IOGPU floor path; keep the helper available
-/// under `test` so Linux delegated builds can still unit-test the policy.
+/// under `test` so delegated-server unit tests can still exercise the policy.
 #[cfg(any(test, target_os = "macos"))]
 fn default_iogpu_floor_mb(total_ram_mb: u64) -> u64 {
     if total_ram_mb <= 36 * 1024 {

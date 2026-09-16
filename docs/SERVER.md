@@ -19,7 +19,8 @@ The current preview server is intentionally narrow:
 - built entirely on the Rust SDK contract
 - native MLX builds fail closed outside supported Apple Silicon (M2 or newer
   on macOS 26+); 16 GB is fine for compact single models, 32 GB+ for
-  multi-model / larger packs; Linux uses the explicit delegated-only build
+  multi-model / larger packs. AX Engine is Mac-only; NVIDIA/CUDA fleet
+  serving uses [AX Serving](AX-SERVING.md)
 - explicit backend and support-tier reporting
 - multi-model registry: optional concurrent loaded models with per-request
   `model` routing (`POST /v1/model/load` `load_mode=add` / unload) — scoped
@@ -101,9 +102,9 @@ the model as unavailable, sibling models keep serving, and
 and remains right for `ax-engine-bench` and other CLI tools — but under it
 a single MLX eval failure aborts the whole server process.
 
-### Portable delegated-only build
+### Delegated-only Mac build
 
-Portable compatibility builds can exclude MLX linkage:
+Compatibility builds on macOS can exclude MLX linkage:
 
 ```text
 cargo build -p ax-engine-server \
@@ -112,11 +113,11 @@ cargo build -p ax-engine-server \
   --features delegated-server
 ```
 
-This is the same HTTP/SSE control plane, compiled with only delegated backend
-capabilities. It supports the explicit `mlx_lm.server` and llama.cpp
+This is the same Mac HTTP/SSE control plane, compiled with only delegated
+backend capabilities. It supports the explicit `mlx_lm.server` and llama.cpp
 compatibility routes; it must reject native MLX selection and omit unavailable
-MLX-only process metrics. NVIDIA/CUDA fleet serving uses
-[AX Serving](AX-SERVING.md).
+MLX-only process metrics. There is no Linux AX Engine server. NVIDIA/CUDA
+fleet serving uses [AX Serving](AX-SERVING.md).
 
 ## Authentication
 

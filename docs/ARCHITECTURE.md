@@ -24,7 +24,8 @@ consistent across the workspace.
 - `ax-engine-sdk`: backend resolution, session management, request lifecycle
   contract, and delegated backend bridges for `mlx_lm.server` and llama.cpp
 - `ax-engine-server`: HTTP/SSE adapter over the SDK; default Mac builds include
-  native MLX, while portable `delegated-server` builds omit MLX linkage
+  native MLX, while Mac `delegated-server` builds omit MLX linkage. There is
+  no Linux engine or server artifact
 - `ax-engine-py`: Python binding surface over the SDK contract
 - `ax-engine-bench`: workload-contract CLI, replay harness, reporting,
   bounded autotune, readiness, and bring-up checks

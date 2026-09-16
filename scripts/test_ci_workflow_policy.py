@@ -178,6 +178,19 @@ class CiWorkflowPolicyTests(unittest.TestCase):
                 ci,
                 f"{job_name} must validate AX Engine on macOS 26",
             )
+        self.assertNotIn(
+            "linux-delegated",
+            ci,
+            "CI must not build or validate an AX Engine Linux artifact",
+        )
+        self.assertNotIn("Linux Delegated", ci)
+        self.assertNotIn("ubuntu-24.04", ci)
+        self.assertNotIn("ubuntu-24.04-arm", ci)
+        self.assertIn(
+            "cargo test -p ax-engine-server\n          --no-default-features --features delegated-server",
+            ci,
+            "delegated-server coverage must stay on the macOS Rust job",
+        )
         self.assertIn(
             "name: Supply Chain\n    runs-on: ubuntu-latest",
             ci,

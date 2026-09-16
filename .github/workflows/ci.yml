@@ -26,7 +26,7 @@ jobs:
   rust:
     name: Rust
     runs-on: macos-26
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -60,37 +60,6 @@ jobs:
           --force-warn clippy::dbg-macro
           --force-warn clippy::large-enum-variant
 
-  linux-delegated:
-    name: Linux Delegated (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
-
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-          shared-key: delegated-${{ matrix.arch }}
-
-      - name: Install delegated build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes protobuf-compiler
-
-      - name: Test SDK
-        run: cargo test -p ax-engine-sdk
-
       - name: Test delegated-only server
         run: >-
           cargo test -p ax-engine-server
@@ -105,21 +74,6 @@ jobs:
           --force-warn clippy::panic
           --force-warn clippy::dbg-macro
           --force-warn clippy::large-enum-variant
-
-      - name: Build and inspect portable artifact
-        run: |
-          cargo build -p ax-engine-server \
-            --no-default-features --features delegated-server
-          file target/debug/ax-engine-server
-          ldd target/debug/ax-engine-server
-          if ldd target/debug/ax-engine-server | grep -qi mlx; then
-            echo "delegated artifact unexpectedly links MLX" >&2
-            exit 1
-          fi
-          if strings target/debug/ax-engine-server | grep -qi mlx_sys; then
-            echo "delegated artifact unexpectedly contains mlx_sys" >&2
-            exit 1
-          fi
 
   supply-chain:
     name: Supply Chain
@@ -448,7 +402,6 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - rust
-      - linux-delegated
       - supply-chain
       - scripts
       - python-package
@@ -472,7 +425,6 @@ jobs:
             echo "| Job | Result |"
             echo "|-----|--------|"
             echo "| Rust | ${{ needs.rust.result }} |"
-            echo "| Linux Delegated | ${{ needs.linux-delegated.result }} |"
             echo "| Supply Chain | ${{ needs.supply-chain.result }} |"
             echo "| Scripts & Bench Smoke | ${{ needs.scripts.result }} |"
             echo "| Python Package | ${{ needs.python-package.result }} |"
