@@ -781,15 +781,86 @@ pub(crate) mod mtp_parity {
         actual: &Qwen4ExpState,
         expected: &Qwen4ExpState,
     ) -> MtpDivergence {
+        mtp_state_array_records(actual, expected)
+            .into_iter()
+            .map(|record| record.divergence)
+            .fold(MtpDivergence::zero(), MtpDivergence::max_relative)
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    pub(crate) struct MtpStateArrayRecord {
+        pub index: usize,
+        pub layer: usize,
+        pub kind: &'static str,
+        pub dtype: String,
+        pub shape: Vec<i32>,
+        pub divergence: MtpDivergence,
+    }
+
+    impl MtpStateArrayRecord {
+        pub(crate) fn to_json(&self) -> serde_json::Value {
+            serde_json::json!({
+                "index": self.index,
+                "layer": self.layer,
+                "kind": self.kind,
+                "dtype": self.dtype,
+                "shape": self.shape,
+                "scale": self.divergence.scale,
+                "max_abs": self.divergence.max_abs,
+                "relative": self.divergence.relative,
+            })
+        }
+    }
+
+    pub(crate) fn mtp_state_array_records(
+        actual: &Qwen4ExpState,
+        expected: &Qwen4ExpState,
+    ) -> Vec<MtpStateArrayRecord> {
         assert_eq!(actual.position(), expected.position());
         let actual_arrays = actual.arrays();
         let expected_arrays = expected.arrays();
+        let descriptors = actual.array_descriptors();
         assert_eq!(actual_arrays.len(), expected_arrays.len());
+        assert_eq!(descriptors.len(), actual_arrays.len());
+        assert_eq!(expected.array_descriptors(), descriptors);
         actual_arrays
             .iter()
             .zip(&expected_arrays)
-            .map(|(actual, expected)| mtp_logits_divergence(actual, expected))
-            .fold(MtpDivergence::zero(), MtpDivergence::max_relative)
+            .zip(descriptors)
+            .map(|((actual_array, expected_array), descriptor)| {
+                assert_eq!(actual_array.shape(), expected_array.shape());
+                assert_eq!(actual_array.dtype(), expected_array.dtype());
+                MtpStateArrayRecord {
+                    index: descriptor.index,
+                    layer: descriptor.layer,
+                    kind: descriptor.kind,
+                    dtype: format!("{:?}", actual_array.dtype()),
+                    shape: actual_array.shape(),
+                    divergence: mtp_logits_divergence(actual_array, expected_array),
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn mtp_state_arrays_json(records: &[MtpStateArrayRecord]) -> serde_json::Value {
+        serde_json::Value::Array(records.iter().map(MtpStateArrayRecord::to_json).collect())
+    }
+
+    pub(crate) fn eprint_mtp_state_array_table(label: &str, records: &[MtpStateArrayRecord]) {
+        eprintln!("MTP {label} per-array state:");
+        for record in records {
+            eprintln!(
+                "  [{index}] layer={layer} kind={kind} dtype={dtype} shape={shape:?} scale={scale} max_abs={max_abs} relative={relative}",
+                index = record.index,
+                layer = record.layer,
+                kind = record.kind,
+                dtype = record.dtype,
+                shape = record.shape,
+                scale = record.divergence.scale,
+                max_abs = record.divergence.max_abs,
+                relative = record.divergence.relative,
+            );
+        }
     }
 
     pub(crate) fn assert_mtp_logits_close(actual: &MlxArray, expected: &MlxArray, dtype: MlxDtype) {
@@ -811,21 +882,19 @@ pub(crate) mod mtp_parity {
         expected: &Qwen4ExpState,
         dtype: MlxDtype,
     ) {
-        assert_eq!(actual.position(), expected.position());
-        let actual_arrays = actual.arrays();
-        let expected_arrays = expected.arrays();
-        assert_eq!(actual_arrays.len(), expected_arrays.len());
         let tolerance = mtp_run_tolerance(dtype);
-        for (index, (actual, expected)) in actual_arrays.iter().zip(&expected_arrays).enumerate() {
-            let divergence = mtp_logits_divergence(actual, expected);
+        for record in mtp_state_array_records(actual, expected) {
             assert!(
-                divergence.relative <= tolerance.limit,
-                "MTP state array {index} relative max abs {} exceeds {} (source={}, scale={}, max_abs={})",
-                divergence.relative,
+                record.divergence.relative <= tolerance.limit,
+                "MTP state array {} layer {} kind {} relative max abs {} exceeds {} (source={}, scale={}, max_abs={})",
+                record.index,
+                record.layer,
+                record.kind,
+                record.divergence.relative,
                 tolerance.limit,
                 tolerance.source,
-                divergence.scale,
-                divergence.max_abs
+                record.divergence.scale,
+                record.divergence.max_abs
             );
         }
     }
@@ -871,6 +940,34 @@ pub(crate) mod mtp_parity {
         assert_eq!(shifted.scale, 1.0);
         assert!((shifted.max_abs - 0.02).abs() <= 1e-6);
         assert!(shifted.relative > 0.0 && shifted.relative <= 0.021);
+    }
+
+    #[test]
+    fn mtp_state_array_json_lists_kind_layer_and_divergence() {
+        let record = MtpStateArrayRecord {
+            index: 69,
+            layer: 31,
+            kind: "qsa.k",
+            dtype: "Bfloat16".into(),
+            shape: vec![1, 8, 2, 4],
+            divergence: MtpDivergence {
+                scale: 0.34330982,
+                max_abs: 0.09761965,
+                relative: 0.28434855,
+            },
+        };
+        let json = record.to_json();
+        assert_eq!(json["index"], 69);
+        assert_eq!(json["layer"], 31);
+        assert_eq!(json["kind"], "qsa.k");
+        assert_eq!(json["dtype"], "Bfloat16");
+        assert_eq!(json["shape"], serde_json::json!([1, 8, 2, 4]));
+        assert!(json["scale"].as_f64().unwrap() > 0.0);
+        assert!(json["max_abs"].as_f64().unwrap() > 0.0);
+        assert!(json["relative"].as_f64().unwrap() > 0.2);
+        let table = mtp_state_arrays_json(&[record]);
+        assert_eq!(table.as_array().unwrap().len(), 1);
+        assert_eq!(table[0]["kind"], "qsa.k");
     }
 }
 

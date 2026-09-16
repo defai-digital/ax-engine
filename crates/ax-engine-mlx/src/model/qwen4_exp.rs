@@ -101,6 +101,22 @@ fn read_u64(reader: &mut dyn Read) -> Result<u64, MlxKVCacheSerializeError> {
     Ok(u64::from_le_bytes(buf))
 }
 
+/// One entry of [`Qwen4ExpState::arrays`], named for MTP diagnostics.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Qwen4ExpStateArray {
+    pub index: usize,
+    pub layer: usize,
+    pub kind: &'static str,
+}
+
+#[cfg(test)]
+impl Qwen4ExpStateArray {
+    fn new(index: usize, layer: usize, kind: &'static str) -> Self {
+        Self { index, layer, kind }
+    }
+}
+
 /// A request checkpoint is a cheap clone of immutable tensor handles.
 /// Rejected speculative tokens are discarded by restoring the checkpoint
 /// and replaying the accepted prefix; recurrent state cannot be sliced.
@@ -156,6 +172,47 @@ impl Qwen4ExpState {
             }
             if let Some(conv) = layer.ple.as_ref().and_then(|s| s.conv.as_ref()) {
                 result.push(conv.array());
+            }
+        }
+        result
+    }
+
+    /// Names for [`Self::arrays`] in the same order. PLE n-gram token
+    /// history is a `Vec<u32>`, not an array, and is omitted. Hyper-connection
+    /// streams are residual activations, not request state.
+    #[cfg(test)]
+    pub(crate) fn array_descriptors(&self) -> Vec<Qwen4ExpStateArray> {
+        let mut result = Vec::new();
+        for (layer, layer_state) in self.layers.iter().enumerate() {
+            match &layer_state.attention {
+                AttentionState::Gdn(Some(_)) => {
+                    result.push(Qwen4ExpStateArray::new(result.len(), layer, "gdn.conv"));
+                    result.push(Qwen4ExpStateArray::new(
+                        result.len(),
+                        layer,
+                        "gdn.recurrent",
+                    ));
+                }
+                AttentionState::Gdn(None) => {}
+                AttentionState::Qsa(state) => {
+                    if state.keys().is_some() {
+                        result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.k"));
+                    }
+                    if state.values().is_some() {
+                        result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.v"));
+                    }
+                    if state.index().keys().is_some() {
+                        result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.index"));
+                    }
+                }
+            }
+            if layer_state
+                .ple
+                .as_ref()
+                .and_then(|state| state.conv.as_ref())
+                .is_some()
+            {
+                result.push(Qwen4ExpStateArray::new(result.len(), layer, "ple.conv"));
             }
         }
         result
@@ -1001,6 +1058,28 @@ mod tests {
             Some(state) => assert_eq!(state.history.recent(), ple_history.as_slice()),
             None => panic!("expected ple state"),
         }
+
+        assert_eq!(
+            populated.array_descriptors().len(),
+            populated.arrays().len()
+        );
+        assert_eq!(
+            populated
+                .array_descriptors()
+                .into_iter()
+                .map(|array| (array.index, array.layer, array.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 0, "gdn.conv"),
+                (1, 0, "gdn.recurrent"),
+                (2, 1, "qsa.k"),
+                (3, 1, "qsa.v"),
+                (4, 1, "qsa.index"),
+                (5, 1, "ple.conv"),
+            ]
+        );
+        assert!(fresh.arrays().is_empty());
+        assert!(fresh.array_descriptors().is_empty());
     }
 
     #[test]

@@ -1243,6 +1243,7 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     let dtype = target.stream_hidden.dtype();
     let mut max_state_divergence = mtp_parity::MtpDivergence::zero();
     let mut max_logit_divergence = mtp_parity::MtpDivergence::zero();
+    let mut accepted_step_arrays = Vec::new();
     for (draft, remaining, accepted) in [
         (correct_draft, 2, true),
         (wrong_draft, 2, false),
@@ -1275,9 +1276,17 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             max_logit_divergence = max_logit_divergence.max_relative(
                 mtp_parity::mtp_logits_divergence(&after_draft.logits, &second.logits),
             );
+            let records = mtp_parity::mtp_state_array_records(&after_draft.state, &second.state);
+            mtp_parity::eprint_mtp_state_array_table("accepted verify_one", &records);
             max_state_divergence = max_state_divergence.max_relative(
-                mtp_parity::mtp_state_divergence(&after_draft.state, &second.state),
+                records
+                    .iter()
+                    .map(|record| record.divergence)
+                    .fold(mtp_parity::MtpDivergence::zero(), |a, b| a.max_relative(b)),
             );
+            if accepted_step_arrays.is_empty() {
+                accepted_step_arrays = records;
+            }
             mtp_parity::assert_mtp_logits_close(&after_draft.logits, &second.logits, dtype);
             mtp_parity::assert_mtp_state_close(&after_draft.state, &second.state, dtype);
         } else {
@@ -1371,6 +1380,16 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
         "Flash Next MTP control: proposed={}, accepted={}, tokens={generated:?}",
         session.proposed, session.accepted
     );
+    let ulp_kinds: Vec<&str> = accepted_step_arrays
+        .iter()
+        .filter(|record| record.divergence.relative > 1e-5)
+        .map(|record| record.kind)
+        .collect();
+    eprintln!("MTP accepted verify_one kinds with relative > 1e-5: {ulp_kinds:?}");
+    let tolerance = mtp_parity::mtp_run_tolerance(dtype);
+    let within_tolerance = max_state_divergence.relative <= tolerance.limit
+        && max_logit_divergence.relative <= tolerance.limit;
+    let state_arrays = mtp_parity::mtp_state_arrays_json(&accepted_step_arrays);
     if let Some(bytes) = selected_after_prefill {
         assert!(session.proposed > 0);
         assert!(mtp_selected_decode_bytes > 0);
@@ -1378,9 +1397,6 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             trunk.expert_stream.as_ref().unwrap().cached_layer_count(),
             0
         );
-        let tolerance = mtp_parity::mtp_run_tolerance(dtype);
-        let within_tolerance = max_state_divergence.relative <= tolerance.limit
-            && max_logit_divergence.relative <= tolerance.limit;
         let result = serde_json::json!({
             "qualification": false, "generated_ids": generated,
             "selected_payload_after_prefill": bytes,
@@ -1403,12 +1419,31 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             "tolerance_source": tolerance.source,
             "within_tolerance": within_tolerance,
             "greedy_identity": true,
+            "state_arrays": state_arrays,
         });
         std::fs::write(
             std::env::var_os("AX_FLASH_NEXT_RESULT_PATH").unwrap(),
             serde_json::to_vec_pretty(&result).unwrap(),
         )
         .unwrap();
+    } else if let Some(path) = std::env::var_os("AX_FLASH_NEXT_RESULT_PATH") {
+        let result = serde_json::json!({
+            "qualification": false,
+            "generated_ids": generated,
+            "proposed": session.proposed,
+            "accepted": session.accepted,
+            "logit_scale": max_logit_divergence.scale,
+            "max_logit_abs_difference": max_logit_divergence.max_abs,
+            "max_logit_relative_divergence": max_logit_divergence.relative,
+            "max_state_abs_difference": max_state_divergence.max_abs,
+            "max_state_relative_divergence": max_state_divergence.relative,
+            "tolerance": tolerance.limit,
+            "tolerance_source": tolerance.source,
+            "within_tolerance": within_tolerance,
+            "greedy_identity": true,
+            "state_arrays": state_arrays,
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
 }
 
@@ -1561,6 +1596,7 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     let mut generated = Vec::new();
     let mut agreement = Vec::new();
     let mut max_state_divergence = mtp_parity::MtpDivergence::zero();
+    let mut last_trunk_arrays = Vec::new();
     while generated.len() < expected.len() {
         let remaining = expected.len() - generated.len();
         let draft_token = (remaining > 1).then(|| {
@@ -1608,10 +1644,14 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         }
         generated.extend(committed);
         assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
-        max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
-            &session.trunk_state,
-            &direct.state,
-        ));
+        last_trunk_arrays =
+            mtp_parity::mtp_state_array_records(&session.trunk_state, &direct.state);
+        max_state_divergence = max_state_divergence.max_relative(
+            last_trunk_arrays
+                .iter()
+                .map(|record| record.divergence)
+                .fold(mtp_parity::MtpDivergence::zero(), |a, b| a.max_relative(b)),
+        );
         mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
         max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
             &session.draft_state,
@@ -1652,6 +1692,7 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "tolerance": tolerance.limit,
         "tolerance_source": tolerance.source,
         "within_tolerance": within_tolerance,
+        "state_arrays": mtp_parity::mtp_state_arrays_json(&last_trunk_arrays),
         "note":"Reconstructed candidate head; primary verification is authoritative; no throughput claim"
     });
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT")
