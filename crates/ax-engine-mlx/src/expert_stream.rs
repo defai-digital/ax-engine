@@ -615,6 +615,10 @@ pub struct ExpertStackPager {
     fuse_split_experts: bool,
     cache: Mutex<PagerCache>,
     selected_readers: Mutex<HashMap<u32, Arc<selected::SelectedExpertRows>>>,
+    /// Layers that missed the selected-prefill payload cap and fell back to
+    /// whole-layer paging. Distinct from `cached_layer_count`, which also
+    /// includes resident stacks loaded for any other reason.
+    selected_prefill_capacity_fallbacks: Mutex<HashSet<u32>>,
 }
 
 impl ExpertStackPager {
@@ -638,6 +642,7 @@ impl ExpertStackPager {
                 entries: HashMap::new(),
                 order: VecDeque::new(),
             }),
+            selected_prefill_capacity_fallbacks: Mutex::new(HashSet::new()),
         }
     }
 
@@ -711,9 +716,17 @@ impl ExpertStackPager {
         layer: u32,
         ids: &[u64],
     ) -> Result<Option<LayerExpertStack>, ExpertStreamError> {
-        self.selected_reader(layer)?
+        let stack = self
+            .selected_reader(layer)?
             .gather_if_fits(ids)
-            .map_err(ExpertStreamError::Paging)
+            .map_err(ExpertStreamError::Paging)?;
+        if stack.is_none() {
+            self.selected_prefill_capacity_fallbacks
+                .lock()
+                .expect("expert stream fallback lock")
+                .insert(layer);
+        }
+        Ok(stack)
     }
 
     /// Successful selected-row payload reads; excludes headers and full-layer reads.
@@ -726,6 +739,14 @@ impl ExpertStackPager {
             .values()
             .map(|reader| reader.payload_bytes_read())
             .sum())
+    }
+
+    /// Distinct layers that missed the selected-prefill payload cap.
+    pub fn selected_prefill_capacity_fallback_layers(&self) -> usize {
+        self.selected_prefill_capacity_fallbacks
+            .lock()
+            .expect("expert stream fallback lock")
+            .len()
     }
 
     /// Make layer `layer`'s expert stack resident and return cheap clones of
@@ -1437,6 +1458,7 @@ mod tests {
         );
         assert_eq!(pager.budget_layers(), 1);
         assert_eq!(pager.cached_layer_count(), 0);
+        assert_eq!(pager.selected_prefill_capacity_fallback_layers(), 0);
 
         let stack = pager.ensure_layer(0).expect("layer 0 must page in");
         let gate_up = stack
@@ -1459,6 +1481,7 @@ mod tests {
         // Layer 1 must still be absent after paging layer 0.
         assert_eq!(pager.cached_layer_count(), 1);
         assert_eq!(pager.cached_layer_indices(), vec![0]);
+        assert_eq!(pager.selected_prefill_capacity_fallback_layers(), 0);
 
         // The paged weight must flow through the existing gather kernel.
         // Dense fixture (no .scales sidecar) exercises the same lane

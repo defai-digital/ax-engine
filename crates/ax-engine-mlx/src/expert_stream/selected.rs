@@ -484,6 +484,7 @@ mod tests {
                         .unwrap(),
                 );
                 assert_eq!(pager.selected_payload_bytes_read().unwrap(), before);
+                assert_eq!(pager.selected_prefill_capacity_fallback_layers(), 0);
 
                 let small =
                     Arc::new(SelectedExpertRows::open(pager.manifest(), &root, 0, 1).unwrap());
@@ -501,6 +502,7 @@ mod tests {
                         .unwrap(),
                 );
                 assert_eq!(small.payload_bytes_read(), 0);
+                assert_eq!(pager.selected_prefill_capacity_fallback_layers(), 1);
                 assert_eq!(pager.cached_layer_count(), 1);
                 let singleton = dense(&[1, 1, 64], 5, dtype);
                 assert!(
