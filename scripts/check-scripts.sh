@@ -82,6 +82,9 @@ bash scripts/check-qa.sh
   qa/question_bank.py \
   qa/reporter.py \
   qa/client.py \
+  qa/run_ds4_qa.py \
+  qa/ds4_questions.py \
+  scripts/test_ds4_qa_grader.py \
   scripts/render_ax_serving_benchmark_report.py \
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/bench_mlx_inference_stack.py \
