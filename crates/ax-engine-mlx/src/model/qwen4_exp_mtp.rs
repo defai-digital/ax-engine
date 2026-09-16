@@ -1360,3 +1360,133 @@ mod cursor_tests {
         assert_eq!(mtp_parity::take_trunk_forward_count(), 1);
     }
 }
+
+/// Test-only trained-head oracle: permute draft `lm_head` rows in memory.
+#[cfg(test)]
+pub(crate) mod trained_head {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use crate::weights::QuantizedWeight;
+    use mlx_sys::{eval, take};
+
+    pub(crate) const PERMUTE_HEAD_ENV: &str = "AX_FLASH_NEXT_MTP_PERMUTE_HEAD";
+    pub(crate) const PERMUTE_HEAD_SEED: u64 = 20260916;
+
+    pub(crate) fn permute_head_opt_in(raw: Option<&str>) -> bool {
+        raw.map(str::trim).is_some_and(|value| {
+            value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+        })
+    }
+
+    pub(crate) fn permute_head_requested() -> bool {
+        permute_head_opt_in(std::env::var(PERMUTE_HEAD_ENV).ok().as_deref())
+    }
+
+    /// SplitMix-style Fisher–Yates. Deterministic for a fixed seed.
+    pub(crate) fn row_permutation(rows: usize, seed: u64) -> Vec<u32> {
+        assert!(rows > 1, "draft output projection needs at least two rows");
+        let mut order: Vec<u32> = (0..u32::try_from(rows).expect("vocab fits u32")).collect();
+        let mut state = seed ^ 0x9E37_79B9_7F4A_7C15;
+        for i in (1..rows).rev() {
+            state = state
+                .wrapping_mul(0xD1B5_4A32_D192_ED03)
+                .wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let j = (state as usize) % (i + 1);
+            order.swap(i, j);
+        }
+        order
+    }
+
+    pub(crate) fn agreement_rate(agreed: &[bool]) -> f64 {
+        if agreed.is_empty() {
+            0.0
+        } else {
+            agreed.iter().filter(|agreed| **agreed).count() as f64 / agreed.len() as f64
+        }
+    }
+
+    fn u32_vector(values: &[u32]) -> MlxArray {
+        let bytes = std::mem::size_of_val(values);
+        MlxArray::from_raw_data(
+            values.as_ptr().cast(),
+            bytes,
+            &[i32::try_from(values.len()).expect("permutation length fits i32")],
+            MlxDtype::Uint32,
+        )
+    }
+
+    fn take_output_rows(array: &MlxArray, indices: &MlxArray) -> MlxArray {
+        assert!(
+            !array.shape().is_empty() && array.shape()[0] == indices.shape()[0],
+            "permuted tensor must share the output-row axis"
+        );
+        take(array, indices, 0, None)
+    }
+
+    pub(crate) fn permute_quantized_output_rows(
+        weight: &QuantizedWeight,
+        seed: u64,
+    ) -> QuantizedWeight {
+        let rows = usize::try_from(weight.weight.shape()[0]).expect("output rows fit usize");
+        let indices = u32_vector(&row_permutation(rows, seed));
+        let mut out = weight.clone();
+        out.weight = take_output_rows(&weight.weight, &indices);
+        if let Some(scales) = &weight.scales {
+            out.scales = Some(take_output_rows(scales, &indices));
+        }
+        if let Some(biases) = &weight.biases {
+            out.biases = Some(take_output_rows(biases, &indices));
+        }
+        if let Some(bias) = &weight.linear_bias {
+            out.linear_bias = Some(take_output_rows(bias, &indices));
+        }
+        // Decode caches still index the unpermuted vocab axis.
+        out.decode_weight_t = None;
+        out.decode_q2_weight = None;
+        out.decode_q2_scales = None;
+        out.decode_q2_biases = None;
+        let mut live = vec![&out.weight];
+        if let Some(scales) = &out.scales {
+            live.push(scales);
+        }
+        if let Some(biases) = &out.biases {
+            live.push(biases);
+        }
+        if let Some(bias) = &out.linear_bias {
+            live.push(bias);
+        }
+        eval(&live);
+        out
+    }
+
+    /// Shuffle the draft graph's output projection in memory. Trunk `lm_head`
+    /// stays untouched because the sidecar originally shared that handle.
+    pub(crate) fn permute_draft_output_projection(head: &mut Qwen4ExpMtpWeights, seed: u64) {
+        head.graph.lm_head = permute_quantized_output_rows(&head.graph.lm_head, seed);
+    }
+
+    #[test]
+    fn flash_next_mtp_permute_head_opt_in_is_strictly_truthy() {
+        for enabled in ["1", "true", "TRUE", "yes", " Yes "] {
+            assert!(permute_head_opt_in(Some(enabled)), "{enabled:?}");
+        }
+        for disabled in ["", "0", "false", "no", "permute", "2"] {
+            assert!(!permute_head_opt_in(Some(disabled)), "{disabled:?}");
+        }
+        assert!(!permute_head_opt_in(None));
+    }
+
+    #[test]
+    fn flash_next_mtp_permute_head_rows_is_deterministic_non_identity_permutation() {
+        let first = row_permutation(32, PERMUTE_HEAD_SEED);
+        let again = row_permutation(32, PERMUTE_HEAD_SEED);
+        assert_eq!(first, again);
+        let mut sorted = first.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..32).collect::<Vec<u32>>());
+        assert_ne!(first, (0..32).collect::<Vec<u32>>());
+        assert_ne!(row_permutation(32, PERMUTE_HEAD_SEED ^ 1), first);
+        assert_eq!(agreement_rate(&[]), 0.0);
+        assert_eq!(agreement_rate(&[true, true, false, true]), 0.75);
+    }
+}

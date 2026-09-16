@@ -1098,6 +1098,23 @@ fn flash_mtp_state_bytes(state: &qwen4_exp::Qwen4ExpState, layers: usize) -> Vec
     cache.serialize_to_bytes()
 }
 
+fn flash_next_mtp_greedy_token(output: &qwen4_exp::Qwen4ExpOutput) -> u32 {
+    let token = mlx_sys::argmax(&output.logits, None);
+    mlx_sys::eval(&[&token]);
+    token.data_u32()[0]
+}
+
+fn flash_next_mtp_permute_draft_head(
+    head: &mut crate::weights::qwen4_exp_mtp::Qwen4ExpMtpWeights,
+) -> (bool, Option<u64>) {
+    use crate::model::qwen4_exp_mtp::trained_head;
+    if !trained_head::permute_head_requested() {
+        return (false, None);
+    }
+    trained_head::permute_draft_output_projection(head, trained_head::PERMUTE_HEAD_SEED);
+    (true, Some(trained_head::PERMUTE_HEAD_SEED))
+}
+
 #[test]
 #[ignore = "requires synthetic Flash Next MTP artifacts or an explicit real selected-prefill pack"]
 fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
@@ -1493,10 +1510,12 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     let trunk = crate::weights::qwen4_exp::load(&root, artifacts.manifest()).unwrap();
     let trunk_seconds = start.elapsed().as_secs_f64();
     let start = std::time::Instant::now();
-    let head = crate::weights::qwen4_exp_mtp::load(&root, artifacts.manifest(), &trunk).unwrap();
+    let mut head =
+        crate::weights::qwen4_exp_mtp::load(&root, artifacts.manifest(), &trunk).unwrap();
+    let (head_permuted, permute_seed) = flash_next_mtp_permute_draft_head(&mut head);
     let head_seconds = start.elapsed().as_secs_f64();
     eprintln!(
-        "Flash Next MTP loaded: trunk_seconds={trunk_seconds}, head_seconds={head_seconds}, active_bytes={}",
+        "Flash Next MTP loaded: trunk_seconds={trunk_seconds}, head_seconds={head_seconds}, head_permuted={head_permuted}, active_bytes={}",
         mlx_sys::mempressure::device_active_bytes().unwrap()
     );
     let owner = 1201;
@@ -1530,12 +1549,7 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         ProjectionBatchPolicy::Shared,
     )
     .unwrap();
-    let greedy = |output: &qwen4_exp::Qwen4ExpOutput| {
-        let token = mlx_sys::argmax(&output.logits, None);
-        mlx_sys::eval(&[&token]);
-        token.data_u32()[0]
-    };
-    assert_eq!(session.primary, greedy(&direct));
+    assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
     assert_eq!(
         flash_mtp_state_bytes(&session.trunk_state, trunk.layers.len()),
         flash_mtp_state_bytes(&direct.state, trunk.layers.len())
@@ -1545,15 +1559,35 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         flash_mtp_state_bytes(&draft_reference, 1)
     );
     let mut generated = Vec::new();
+    let mut agreement = Vec::new();
     let mut max_state_divergence = mtp_parity::MtpDivergence::zero();
     while generated.len() < expected.len() {
-        let committed = session
-            .step(&trunk, &head, expected.len() - generated.len(), &[])
-            .unwrap();
+        let remaining = expected.len() - generated.len();
+        let draft_token = (remaining > 1).then(|| {
+            flash_next_mtp_greedy_token(
+                &head_forward(
+                    &head,
+                    &session.stream_hidden,
+                    &[session.primary],
+                    &session.draft_state,
+                    draft_owner,
+                )
+                .unwrap(),
+            )
+        });
+        let committed = session.step(&trunk, &head, remaining, &[]).unwrap();
         eprintln!("Flash Next MTP committed: {committed:?}");
         assert!(!committed.is_empty());
+        if let Some(draft_token) = draft_token {
+            let primary_next = if committed.len() >= 2 {
+                committed[1]
+            } else {
+                session.primary
+            };
+            agreement.push(draft_token == primary_next);
+        }
         for token in &committed {
-            assert_eq!(*token, greedy(&direct));
+            assert_eq!(*token, flash_next_mtp_greedy_token(&direct));
             draft_reference = head_forward(
                 &head,
                 &direct.stream_hidden,
@@ -1573,7 +1607,7 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
             .unwrap();
         }
         generated.extend(committed);
-        assert_eq!(session.primary, greedy(&direct));
+        assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
         max_state_divergence = max_state_divergence.max_relative(mtp_parity::mtp_state_divergence(
             &session.trunk_state,
             &direct.state,
@@ -1588,12 +1622,24 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     let tolerance = mtp_parity::mtp_run_tolerance(dtype);
     let greedy_identity = generated == expected;
     let within_tolerance = max_state_divergence.relative <= tolerance.limit;
+    let agreement_rate = crate::model::qwen4_exp_mtp::trained_head::agreement_rate(&agreement);
+    assert_eq!(agreement.len(), session.proposed);
+    assert_eq!(
+        agreement.iter().filter(|agreed| **agreed).count(),
+        session.accepted
+    );
     let result = serde_json::json!({
         "qualification":false,"route":"flash_next_mtp_candidate_sequential_primary_verify",
         "trunk_load_seconds":trunk_seconds,"head_load_seconds":head_seconds,
         "generation_seconds":start.elapsed().as_secs_f64(),"prompt_ids":tokens,
-        "expected_ids":expected,"generated_ids":generated,"proposed":session.proposed,
-        "accepted":session.accepted,"peak_mlx_bytes":mlx_sys::get_peak_memory(),
+        "expected_ids":expected,"generated_ids":generated.clone(),"greedy_tokens":generated.clone(),
+        "proposed":session.proposed,
+        "accepted":session.accepted,
+        "head_permuted":head_permuted,
+        "permute_seed":permute_seed,
+        "draft_vs_primary_top1_agreement":agreement,
+        "draft_vs_primary_top1_agreement_rate":agreement_rate,
+        "peak_mlx_bytes":mlx_sys::get_peak_memory(),
         "active_bytes":mlx_sys::mempressure::device_active_bytes().unwrap(),
         "trunk_position":session.trunk_state.position(),"draft_position":session.draft_state.position(),
         "prefill_primary_and_draft_state_exact": true,
@@ -1622,6 +1668,240 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         session.draft_state.position() + 1,
         session.trunk_state.position()
     );
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct FlashNextMtpOraclePrompt {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(alias = "input_ids")]
+    prompt_ids: Vec<u32>,
+    #[serde(default)]
+    expected_ids: Option<Vec<u32>>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct FlashNextMtpOracleManifest {
+    #[serde(default)]
+    max_new_tokens: Option<usize>,
+    requests: Vec<FlashNextMtpOraclePrompt>,
+}
+
+fn flash_next_mtp_oracle_prompts() -> (Vec<FlashNextMtpOraclePrompt>, usize) {
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROMPT_MANIFEST") {
+        let parsed: FlashNextMtpOracleManifest =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert!(!parsed.requests.is_empty());
+        let max_new = parsed.max_new_tokens.unwrap_or(8);
+        assert!((3..=32).contains(&max_new));
+        return (parsed.requests, max_new);
+    }
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    let expected: Option<Vec<u32>> = std::env::var("AX_FLASH_NEXT_EXPECTED_IDS")
+        .ok()
+        .map(|raw| serde_json::from_str(&raw).unwrap());
+    let max_new = std::env::var("AX_FLASH_NEXT_MAX_NEW_TOKENS")
+        .ok()
+        .map(|raw| raw.parse().unwrap())
+        .or_else(|| expected.as_ref().map(Vec::len))
+        .unwrap_or(8);
+    assert!((3..=32).contains(&max_new));
+    (
+        vec![FlashNextMtpOraclePrompt {
+            id: Some("env".into()),
+            prompt_ids: tokens,
+            expected_ids: expected,
+        }],
+        max_new,
+    )
+}
+
+fn flash_next_mtp_oracle_generate(
+    trunk: &crate::weights::qwen4_exp::Qwen4ExpWeights,
+    head: &crate::weights::qwen4_exp_mtp::Qwen4ExpMtpWeights,
+    tokens: &[u32],
+    max_new: usize,
+    owner: u64,
+    draft_owner: u64,
+) -> (Vec<u32>, Vec<bool>, usize, usize, bool) {
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward};
+    assert!(!tokens.is_empty());
+    let mut session = CandidateSession::prefill(trunk, head, tokens, owner, draft_owner).unwrap();
+    let prefix_state = if tokens.len() > 1 {
+        qwen4_exp::forward(
+            trunk,
+            &tokens[..tokens.len() - 1],
+            &qwen4_exp::Qwen4ExpState::new(trunk, owner),
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap()
+        .state
+    } else {
+        qwen4_exp::Qwen4ExpState::new(trunk, owner)
+    };
+    let mut direct = qwen4_exp::forward(
+        trunk,
+        &tokens[tokens.len() - 1..],
+        &prefix_state,
+        owner,
+        ProjectionBatchPolicy::Shared,
+    )
+    .unwrap();
+    assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
+    let mut generated = Vec::new();
+    let mut agreement = Vec::new();
+    let mut greedy_identity = true;
+    while generated.len() < max_new {
+        let remaining = max_new - generated.len();
+        let draft_token = (remaining > 1).then(|| {
+            flash_next_mtp_greedy_token(
+                &head_forward(
+                    head,
+                    &session.stream_hidden,
+                    &[session.primary],
+                    &session.draft_state,
+                    draft_owner,
+                )
+                .unwrap(),
+            )
+        });
+        let committed = session.step(trunk, head, remaining, &[]).unwrap();
+        assert!(!committed.is_empty() && committed.len() <= remaining);
+        if let Some(draft_token) = draft_token {
+            let primary_next = if committed.len() >= 2 {
+                committed[1]
+            } else {
+                session.primary
+            };
+            agreement.push(draft_token == primary_next);
+        }
+        for token in &committed {
+            let expected = flash_next_mtp_greedy_token(&direct);
+            greedy_identity &= *token == expected;
+            assert_eq!(*token, expected);
+            direct = qwen4_exp::forward(
+                trunk,
+                &[*token],
+                &direct.state,
+                owner,
+                ProjectionBatchPolicy::Shared,
+            )
+            .unwrap();
+        }
+        generated.extend(committed);
+        greedy_identity &= session.primary == flash_next_mtp_greedy_token(&direct);
+        assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
+    }
+    assert_eq!(agreement.len(), session.proposed);
+    assert_eq!(
+        agreement.iter().filter(|agreed| **agreed).count(),
+        session.accepted
+    );
+    (
+        generated,
+        agreement,
+        session.proposed,
+        session.accepted,
+        greedy_identity,
+    )
+}
+
+#[test]
+#[ignore = "requires an isolated real Flash Next pack with the MTP sidecar"]
+fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
+    use crate::model::qwen4_exp_mtp::trained_head;
+    let root = PathBuf::from(
+        std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR")
+            .or_else(|| std::env::var_os("AX_FLASH_NEXT_REAL_PACK"))
+            .unwrap(),
+    );
+    let (prompts, default_max_new) = flash_next_mtp_oracle_prompts();
+    let artifacts = NativeModelArtifacts::from_dir(&root).unwrap();
+    let start = std::time::Instant::now();
+    let trunk = crate::weights::qwen4_exp::load(&root, artifacts.manifest()).unwrap();
+    let trunk_seconds = start.elapsed().as_secs_f64();
+    let start = std::time::Instant::now();
+    let mut head =
+        crate::weights::qwen4_exp_mtp::load(&root, artifacts.manifest(), &trunk).unwrap();
+    let (head_permuted, permute_seed) = flash_next_mtp_permute_draft_head(&mut head);
+    let head_seconds = start.elapsed().as_secs_f64();
+    let mut requests = Vec::new();
+    let mut proposed = 0usize;
+    let mut accepted = 0usize;
+    let mut agreed = 0usize;
+    let mut greedy_identity = true;
+    for (index, prompt) in prompts.iter().enumerate() {
+        let max_new = prompt
+            .expected_ids
+            .as_ref()
+            .map(Vec::len)
+            .unwrap_or(default_max_new);
+        assert!((3..=32).contains(&max_new));
+        let owner = 2200 + (index as u64) * 2;
+        let (generated, agreement, request_proposed, request_accepted, request_identity) =
+            flash_next_mtp_oracle_generate(
+                &trunk,
+                &head,
+                &prompt.prompt_ids,
+                max_new,
+                owner,
+                owner + 1,
+            );
+        if let Some(expected) = &prompt.expected_ids {
+            assert_eq!(&generated, expected);
+        }
+        greedy_identity &= request_identity;
+        proposed += request_proposed;
+        accepted += request_accepted;
+        agreed += agreement.iter().filter(|step| **step).count();
+        requests.push(serde_json::json!({
+            "id": prompt.id.clone().unwrap_or_else(|| format!("request-{index}")),
+            "prompt_ids": prompt.prompt_ids,
+            "expected_ids": prompt.expected_ids,
+            "greedy_tokens": generated.clone(),
+            "generated_ids": generated,
+            "proposed": request_proposed,
+            "accepted": request_accepted,
+            "draft_vs_primary_top1_agreement": agreement,
+            "draft_vs_primary_top1_agreement_rate": trained_head::agreement_rate(&agreement),
+            "greedy_identity": request_identity,
+        }));
+    }
+    let acceptance_rate = if proposed == 0 {
+        0.0
+    } else {
+        accepted as f64 / proposed as f64
+    };
+    let agreement_rate = if proposed == 0 {
+        0.0
+    } else {
+        agreed as f64 / proposed as f64
+    };
+    let result = serde_json::json!({
+        "qualification": false,
+        "route": "flash_next_mtp_trained_head_oracle",
+        "head_permuted": head_permuted,
+        "permute_seed": permute_seed,
+        "trunk_load_seconds": trunk_seconds,
+        "head_load_seconds": head_seconds,
+        "proposed": proposed,
+        "accepted": accepted,
+        "acceptance_rate": acceptance_rate,
+        "draft_vs_primary_top1_agreement_rate": agreement_rate,
+        "greedy_identity": greedy_identity,
+        "requests": requests,
+        "note": "Trained-head oracle; primary verification is authoritative; no throughput claim"
+    });
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT")
+        .or_else(|| std::env::var_os("AX_FLASH_NEXT_RESULT_PATH"))
+    {
+        std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+    }
+    eprintln!("{result}");
+    assert!(greedy_identity);
+    assert!(proposed > 0);
 }
 
 #[test]
