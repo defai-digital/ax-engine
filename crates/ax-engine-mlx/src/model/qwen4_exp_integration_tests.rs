@@ -1657,6 +1657,8 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     );
     let mut generated = Vec::new();
     let mut agreement = Vec::new();
+    let mut proposed = 0usize;
+    let mut accepted = 0usize;
     let mut max_state_divergence = mtp_parity::MtpDivergence::zero();
     let mut last_trunk_arrays = Vec::new();
     let tie_margin = mtp_parity::mtp_tie_margin();
@@ -1686,6 +1688,8 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
             break;
         }
         let remaining = expected.len() - generated.len();
+        let proposed_before = session.proposed;
+        let accepted_before = session.accepted;
         let draft_token = (remaining > 1).then(|| {
             flash_next_mtp_greedy_token(
                 &head_forward(
@@ -1703,14 +1707,16 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
             .unwrap();
         eprintln!("Flash Next MTP committed: {committed:?}");
         assert!(!committed.is_empty());
-        if let Some(draft_token) = draft_token {
-            let primary_next = if committed.len() >= 2 {
-                committed[1]
-            } else {
-                session.primary
-            };
-            agreement.push(draft_token == primary_next);
-        }
+        flash_next_mtp_note_proposal_agreement(
+            &mut agreement,
+            &mut proposed,
+            &mut accepted,
+            (proposed_before, accepted_before),
+            (session.proposed, session.accepted),
+            draft_token.map(|draft| {
+                flash_next_mtp_draft_matches_committed(draft, &committed, session.primary)
+            }),
+        );
         for token in &committed {
             if comparing {
                 observe_greedy_mismatch(
@@ -1782,18 +1788,15 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     let within_tolerance =
         max_state_divergence.relative <= tolerance.limit && identity.identity_until_first_tie;
     let agreement_rate = crate::model::qwen4_exp_mtp::trained_head::agreement_rate(&agreement);
-    assert_eq!(agreement.len(), session.proposed);
-    assert_eq!(
-        agreement.iter().filter(|agreed| **agreed).count(),
-        session.accepted
-    );
+    assert_eq!(agreement.len(), proposed);
+    assert_eq!(agreement.iter().filter(|agreed| **agreed).count(), accepted);
     let result = serde_json::json!({
         "qualification":false,"route":"flash_next_mtp_candidate_sequential_primary_verify",
         "trunk_load_seconds":trunk_seconds,"head_load_seconds":head_seconds,
         "generation_seconds":start.elapsed().as_secs_f64(),"prompt_ids":tokens,
         "expected_ids":expected,"generated_ids":generated.clone(),"greedy_tokens":generated.clone(),
-        "proposed":session.proposed,
-        "accepted":session.accepted,
+        "proposed":proposed,
+        "accepted":accepted,
         "head_permuted":head_permuted,
         "permute_seed":permute_seed,
         "draft_vs_primary_top1_agreement":agreement,
@@ -1835,7 +1838,7 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "MTP greedy identity failed before a documented near-tie"
     );
     assert!(within_tolerance);
-    assert!(session.proposed > 0);
+    assert!(proposed > 0);
     assert_eq!(
         session.draft_state.position() + 1,
         session.trunk_state.position()
@@ -1988,6 +1991,41 @@ fn flash_next_mtp_note_terminal(
     *terminal_position = Some(generated.len() - 1);
 }
 
+/// CandidateSession does not propose on every loop step: the final-budget
+/// path (`remaining == 1`) and a terminal stop skip the proposal. Count an
+/// agreement sample only when `proposed` increased during that step.
+fn flash_next_mtp_note_proposal_agreement(
+    agreement: &mut Vec<bool>,
+    proposed: &mut usize,
+    accepted: &mut usize,
+    before: (usize, usize),
+    after: (usize, usize),
+    draft_matches: Option<bool>,
+) {
+    let (proposed_before, accepted_before) = before;
+    let (proposed_after, accepted_after) = after;
+    *proposed += proposed_after.saturating_sub(proposed_before);
+    *accepted += accepted_after.saturating_sub(accepted_before);
+    if proposed_after > proposed_before {
+        agreement.push(
+            draft_matches.expect("Flash Next MTP proposal requires a pre-step draft comparison"),
+        );
+    }
+}
+
+fn flash_next_mtp_draft_matches_committed(
+    draft_token: u32,
+    committed: &[u32],
+    primary: u32,
+) -> bool {
+    let primary_next = if committed.len() >= 2 {
+        committed[1]
+    } else {
+        primary
+    };
+    draft_token == primary_next
+}
+
 fn flash_next_mtp_oracle_prompts() -> (Vec<FlashNextMtpOraclePrompt>, usize) {
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROMPT_MANIFEST") {
         let parsed: FlashNextMtpOracleManifest =
@@ -2054,6 +2092,8 @@ fn flash_next_mtp_oracle_generate(
     assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
     let mut generated = Vec::new();
     let mut agreement = Vec::new();
+    let mut proposed = 0usize;
+    let mut accepted = 0usize;
     let tie_margin = mtp_parity::mtp_tie_margin();
     let mut identity = mtp_parity::GreedyIdentityReport::exact();
     let mut comparing = true;
@@ -2081,6 +2121,8 @@ fn flash_next_mtp_oracle_generate(
             break;
         }
         let remaining = max_new - generated.len();
+        let proposed_before = session.proposed;
+        let accepted_before = session.accepted;
         let draft_token = (remaining > 1).then(|| {
             flash_next_mtp_greedy_token(
                 &head_forward(
@@ -2095,14 +2137,16 @@ fn flash_next_mtp_oracle_generate(
         });
         let committed = session.step(trunk, head, remaining, terminal_ids).unwrap();
         assert!(!committed.is_empty() && committed.len() <= remaining);
-        if let Some(draft_token) = draft_token {
-            let primary_next = if committed.len() >= 2 {
-                committed[1]
-            } else {
-                session.primary
-            };
-            agreement.push(draft_token == primary_next);
-        }
+        flash_next_mtp_note_proposal_agreement(
+            &mut agreement,
+            &mut proposed,
+            &mut accepted,
+            (proposed_before, accepted_before),
+            (session.proposed, session.accepted),
+            draft_token.map(|draft| {
+                flash_next_mtp_draft_matches_committed(draft, &committed, session.primary)
+            }),
+        );
         for token in &committed {
             if comparing {
                 observe_greedy_mismatch(
@@ -2148,18 +2192,15 @@ fn flash_next_mtp_oracle_generate(
             );
         }
     }
-    assert_eq!(agreement.len(), session.proposed);
-    assert_eq!(
-        agreement.iter().filter(|agreed| **agreed).count(),
-        session.accepted
-    );
+    assert_eq!(agreement.len(), proposed);
+    assert_eq!(agreement.iter().filter(|agreed| **agreed).count(), accepted);
     FlashNextMtpOracleRun {
         too_short: flash_next_mtp_too_short(&generated, terminal_ids),
         compared_positions: generated.len(),
         generated,
         agreement,
-        proposed: session.proposed,
-        accepted: session.accepted,
+        proposed,
+        accepted,
         identity,
         stopped_at_terminal,
         terminal_position,
@@ -2226,6 +2267,71 @@ fn flash_next_mtp_oracle_marks_too_short_before_eos_and_parses_pack_ids() {
         vec![IM_END, END_OF_TEXT]
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn flash_next_mtp_oracle_counts_proposals_only_when_session_proposes() {
+    let mut agreement = Vec::new();
+    let mut proposed = 0usize;
+    let mut accepted = 0usize;
+    // Final-budget / remaining == 1: the session does not propose.
+    flash_next_mtp_note_proposal_agreement(
+        &mut agreement,
+        &mut proposed,
+        &mut accepted,
+        (0, 0),
+        (0, 0),
+        None,
+    );
+    // Two real proposals, then a terminal stop that does not propose.
+    flash_next_mtp_note_proposal_agreement(
+        &mut agreement,
+        &mut proposed,
+        &mut accepted,
+        (0, 0),
+        (1, 0),
+        Some(false),
+    );
+    flash_next_mtp_note_proposal_agreement(
+        &mut agreement,
+        &mut proposed,
+        &mut accepted,
+        (1, 0),
+        (2, 1),
+        Some(true),
+    );
+    flash_next_mtp_note_proposal_agreement(
+        &mut agreement,
+        &mut proposed,
+        &mut accepted,
+        (2, 1),
+        (2, 1),
+        None,
+    );
+    assert_eq!(agreement, vec![false, true]);
+    assert_eq!(agreement.len(), proposed);
+    assert_eq!(agreement.iter().filter(|agreed| **agreed).count(), accepted);
+
+    // Too-short: first token is already terminal, so there is no proposal.
+    let mut too_short_agreement = Vec::new();
+    let mut too_short_proposed = 0usize;
+    let mut too_short_accepted = 0usize;
+    flash_next_mtp_note_proposal_agreement(
+        &mut too_short_agreement,
+        &mut too_short_proposed,
+        &mut too_short_accepted,
+        (0, 0),
+        (0, 0),
+        None,
+    );
+    assert!(flash_next_mtp_too_short(&[248046], &[248046, 248044]));
+    assert_eq!(too_short_agreement.len(), too_short_proposed);
+    assert_eq!((too_short_proposed, too_short_accepted), (0, 0));
+
+    // Stopped-at-terminal inside the budget still counts only real proposals.
+    let stopped = vec![1, 2, 248046];
+    assert!(!flash_next_mtp_too_short(&stopped, &[248046, 248044]));
+    assert_eq!(agreement.len(), proposed);
 }
 
 #[test]
@@ -2480,6 +2586,116 @@ fn qwen4_exp_mtp_candidate_accepts_with_exact_draft_history_and_budget() {
         );
         assert!(trial.aligned(&step.trunk_state));
     }
+}
+
+#[test]
+#[ignore = "requires synthetic Flash Next MTP candidate artifacts"]
+fn flash_next_mtp_oracle_agreement_matches_proposals_when_stopped_inside_budget() {
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward};
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
+    let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+    manifest.weight_sanitize = WeightSanitize::HfToMlx;
+    manifest.runtime_status = NativeRuntimeStatus::default();
+    let artifacts = NativeModelArtifacts::from_manifest_and_root(root.clone(), manifest).unwrap();
+    let mut trunk = crate::weights::qwen4_exp::load_with_paging_policy(
+        &root,
+        artifacts.manifest(),
+        crate::expert_stream::StreamExpertsMode::Off,
+        1,
+    )
+    .unwrap();
+    let shape = [
+        artifacts.manifest().vocab_size as i32,
+        artifacts.manifest().hidden_size as i32,
+    ];
+    let zeros = vec![0.0f32; (shape[0] * shape[1]) as usize];
+    trunk.lm_head = QuantizedWeight::new(
+        MlxArray::from_raw_data(
+            zeros.as_ptr().cast(),
+            std::mem::size_of_val(zeros.as_slice()),
+            &shape,
+            MlxDtype::Float32,
+        ),
+        None,
+        None,
+    );
+    let head = crate::weights::qwen4_exp_mtp::load(&root, artifacts.manifest(), &trunk).unwrap();
+    let (owner, draft_owner) = (1601, 1602);
+
+    let too_short =
+        flash_next_mtp_oracle_generate(&trunk, &head, &[1], 5, owner, draft_owner, &[0]);
+    assert!(too_short.too_short);
+    assert!(too_short.stopped_at_terminal);
+    assert_eq!(too_short.agreement.len(), too_short.proposed);
+    assert_eq!(too_short.proposed, 0);
+
+    let full_budget =
+        flash_next_mtp_oracle_generate(&trunk, &head, &[1], 5, owner + 2, draft_owner + 2, &[]);
+    assert!(!full_budget.stopped_at_terminal);
+    assert_eq!(full_budget.generated.len(), 5);
+    assert_eq!(full_budget.agreement.len(), full_budget.proposed);
+    assert_eq!(full_budget.proposed, 2);
+
+    let mut session =
+        CandidateSession::prefill(&trunk, &head, &[1], owner + 4, draft_owner + 4).unwrap();
+    let mut agreement = Vec::new();
+    let mut proposed = 0usize;
+    let mut accepted = 0usize;
+    let mut generated = Vec::new();
+    let max_new = 5;
+    let mut stopped_at_terminal = false;
+    while generated.len() < max_new {
+        let remaining = max_new - generated.len();
+        let terminal_ids: &[u32] = if session.proposed > 0 { &[0] } else { &[] };
+        if terminal_ids.contains(&session.primary) {
+            generated.push(session.primary);
+            stopped_at_terminal = true;
+            break;
+        }
+        let proposed_before = session.proposed;
+        let accepted_before = session.accepted;
+        let draft_token = (remaining > 1).then(|| {
+            flash_next_mtp_greedy_token(
+                &head_forward(
+                    &head,
+                    &session.stream_hidden,
+                    &[session.primary],
+                    &session.draft_state,
+                    draft_owner + 4,
+                )
+                .unwrap(),
+            )
+        });
+        let committed = session
+            .step(&trunk, &head, remaining, terminal_ids)
+            .unwrap();
+        flash_next_mtp_note_proposal_agreement(
+            &mut agreement,
+            &mut proposed,
+            &mut accepted,
+            (proposed_before, accepted_before),
+            (session.proposed, session.accepted),
+            draft_token.map(|draft| {
+                flash_next_mtp_draft_matches_committed(draft, &committed, session.primary)
+            }),
+        );
+        for token in &committed {
+            generated.push(*token);
+            if terminal_ids.contains(token) {
+                stopped_at_terminal = true;
+                break;
+            }
+        }
+        if stopped_at_terminal {
+            break;
+        }
+    }
+    assert!(stopped_at_terminal);
+    assert!(generated.len() < max_new);
+    assert!(session.proposed > 0);
+    assert_eq!(agreement.len(), proposed);
+    assert_eq!(agreement.len(), session.proposed);
+    assert_eq!(agreement.iter().filter(|agreed| **agreed).count(), accepted);
 }
 
 #[test]
