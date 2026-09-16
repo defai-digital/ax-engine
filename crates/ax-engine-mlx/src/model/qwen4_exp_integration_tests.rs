@@ -1202,6 +1202,8 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     assert!(vocabulary > 1);
     let wrong_draft = (correct_draft + 1) % vocabulary;
     let dtype = target.stream_hidden.dtype();
+    let mut max_state_relative_divergence = 0.0f32;
+    let mut max_logit_relative_divergence = 0.0f32;
     for (draft, remaining, accepted) in [
         (correct_draft, 2, true),
         (wrong_draft, 2, false),
@@ -1221,6 +1223,11 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             )
             .unwrap();
             assert_eq!(greedy(&verified.after_primary), greedy(&target));
+            max_logit_relative_divergence =
+                max_logit_relative_divergence.max(mtp_parity::mtp_logits_relative_divergence(
+                    &verified.after_primary.logits,
+                    &target.logits,
+                ));
             mtp_parity::assert_mtp_logits_close(
                 &verified.after_primary.logits,
                 &target.logits,
@@ -1228,6 +1235,12 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             );
             let after_draft = verified.after_draft.as_ref().unwrap();
             assert_eq!(verified.next_primary, greedy(&second));
+            max_logit_relative_divergence = max_logit_relative_divergence.max(
+                mtp_parity::mtp_logits_relative_divergence(&after_draft.logits, &second.logits),
+            );
+            max_state_relative_divergence = max_state_relative_divergence.max(
+                mtp_parity::mtp_state_relative_divergence(&after_draft.state, &second.state),
+            );
             mtp_parity::assert_mtp_logits_close(&after_draft.logits, &second.logits, dtype);
             mtp_parity::assert_mtp_state_close(&after_draft.state, &second.state, dtype);
         } else {
@@ -1301,10 +1314,16 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
         }
         generated.extend(committed);
         assert_eq!(session.primary, greedy(&direct));
+        max_state_relative_divergence = max_state_relative_divergence.max(
+            mtp_parity::mtp_state_relative_divergence(&session.trunk_state, &direct.state),
+        );
         mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
         assert_eq!(
             session.draft_state.position() + 1,
             session.trunk_state.position()
+        );
+        max_state_relative_divergence = max_state_relative_divergence.max(
+            mtp_parity::mtp_state_relative_divergence(&session.draft_state, &draft_reference),
         );
         mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
     }
@@ -1320,6 +1339,9 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             trunk.expert_stream.as_ref().unwrap().cached_layer_count(),
             0
         );
+        let limit = mtp_parity::mtp_numeric_tolerance(dtype);
+        let within_tolerance =
+            max_state_relative_divergence <= limit && max_logit_relative_divergence <= limit;
         let result = serde_json::json!({
             "qualification": false, "generated_ids": generated,
             "selected_payload_after_prefill": bytes,
@@ -1333,6 +1355,10 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             "primary_state_exact_each_step": true,
             "forced_acceptance_rejection_budget_and_eos": true,
             "zero_budget_preserves_primary_and_draft_state": true,
+            "max_state_relative_divergence": max_state_relative_divergence,
+            "max_logit_relative_divergence": max_logit_relative_divergence,
+            "within_tolerance": within_tolerance,
+            "greedy_identity": true,
         });
         std::fs::write(
             std::env::var_os("AX_FLASH_NEXT_RESULT_PATH").unwrap(),
@@ -1424,8 +1450,12 @@ fn qwen4_exp_mtp_candidate_io_failure_restores_both_states() {
 #[test]
 #[ignore = "requires an isolated real Flash Next pack with the MTP sidecar"]
 fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
-    use crate::model::qwen4_exp_mtp::CandidateSession;
-    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR").unwrap());
+    use crate::model::qwen4_exp_mtp::{CandidateSession, head_forward, mtp_parity};
+    let root = PathBuf::from(
+        std::env::var_os("AX_FLASH_NEXT_CANDIDATE_PACK_DIR")
+            .or_else(|| std::env::var_os("AX_FLASH_NEXT_REAL_PACK"))
+            .unwrap(),
+    );
     let tokens: Vec<u32> =
         serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
     let expected: Vec<u32> =
@@ -1442,16 +1472,93 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "Flash Next MTP loaded: trunk_seconds={trunk_seconds}, head_seconds={head_seconds}, active_bytes={}",
         mlx_sys::mempressure::device_active_bytes().unwrap()
     );
+    let owner = 1201;
+    let draft_owner = 1202;
+    let dtype = trunk.token_embedding.weight.dtype();
     let start = std::time::Instant::now();
-    let mut session = CandidateSession::prefill(&trunk, &head, &tokens, 1201, 1202).unwrap();
+    let mut session =
+        CandidateSession::prefill(&trunk, &head, &tokens, owner, draft_owner).unwrap();
+    let prefix = qwen4_exp::forward(
+        &trunk,
+        &tokens[..tokens.len() - 1],
+        &qwen4_exp::Qwen4ExpState::new(&trunk, owner),
+        owner,
+        ProjectionBatchPolicy::Shared,
+    )
+    .unwrap();
+    let mut draft_reference = head_forward(
+        &head,
+        &prefix.stream_hidden,
+        &tokens[1..],
+        &qwen4_exp::Qwen4ExpState::new(&head.graph, draft_owner),
+        draft_owner,
+    )
+    .unwrap()
+    .state;
+    let mut direct = qwen4_exp::forward(
+        &trunk,
+        &tokens[tokens.len() - 1..],
+        &prefix.state,
+        owner,
+        ProjectionBatchPolicy::Shared,
+    )
+    .unwrap();
+    let greedy = |output: &qwen4_exp::Qwen4ExpOutput| {
+        let token = mlx_sys::argmax(&output.logits, None);
+        mlx_sys::eval(&[&token]);
+        token.data_u32()[0]
+    };
+    assert_eq!(session.primary, greedy(&direct));
+    assert_eq!(
+        flash_mtp_state_bytes(&session.trunk_state, trunk.layers.len()),
+        flash_mtp_state_bytes(&direct.state, trunk.layers.len())
+    );
+    assert_eq!(
+        flash_mtp_state_bytes(&session.draft_state, 1),
+        flash_mtp_state_bytes(&draft_reference, 1)
+    );
     let mut generated = Vec::new();
+    let mut max_state_relative_divergence = 0.0f32;
     while generated.len() < expected.len() {
         let committed = session
             .step(&trunk, &head, expected.len() - generated.len(), &[])
             .unwrap();
         eprintln!("Flash Next MTP committed: {committed:?}");
+        assert!(!committed.is_empty());
+        for token in &committed {
+            assert_eq!(*token, greedy(&direct));
+            draft_reference = head_forward(
+                &head,
+                &direct.stream_hidden,
+                &[*token],
+                &draft_reference,
+                draft_owner,
+            )
+            .unwrap()
+            .state;
+            direct = qwen4_exp::forward(
+                &trunk,
+                &[*token],
+                &direct.state,
+                owner,
+                ProjectionBatchPolicy::Shared,
+            )
+            .unwrap();
+        }
         generated.extend(committed);
+        assert_eq!(session.primary, greedy(&direct));
+        max_state_relative_divergence = max_state_relative_divergence.max(
+            mtp_parity::mtp_state_relative_divergence(&session.trunk_state, &direct.state),
+        );
+        mtp_parity::assert_mtp_state_close(&session.trunk_state, &direct.state, dtype);
+        max_state_relative_divergence = max_state_relative_divergence.max(
+            mtp_parity::mtp_state_relative_divergence(&session.draft_state, &draft_reference),
+        );
+        mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
     }
+    let limit = mtp_parity::mtp_numeric_tolerance(dtype);
+    let greedy_identity = generated == expected;
+    let within_tolerance = max_state_relative_divergence <= limit;
     let result = serde_json::json!({
         "qualification":false,"route":"flash_next_mtp_candidate_sequential_primary_verify",
         "trunk_load_seconds":trunk_seconds,"head_load_seconds":head_seconds,
@@ -1460,13 +1567,21 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "accepted":session.accepted,"peak_mlx_bytes":mlx_sys::get_peak_memory(),
         "active_bytes":mlx_sys::mempressure::device_active_bytes().unwrap(),
         "trunk_position":session.trunk_state.position(),"draft_position":session.draft_state.position(),
+        "prefill_primary_and_draft_state_exact": true,
+        "greedy_identity": greedy_identity,
+        "max_state_relative_divergence": max_state_relative_divergence,
+        "within_tolerance": within_tolerance,
         "note":"Reconstructed candidate head; primary verification is authoritative; no throughput claim"
     });
-    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT") {
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT")
+        .or_else(|| std::env::var_os("AX_FLASH_NEXT_RESULT_PATH"))
+    {
         std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
     eprintln!("{result}");
     assert_eq!(generated, expected);
+    assert!(greedy_identity);
+    assert!(within_tolerance);
     assert!(session.proposed > 0);
     assert_eq!(
         session.draft_state.position() + 1,

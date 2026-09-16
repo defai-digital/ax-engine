@@ -680,8 +680,27 @@ pub(crate) mod mtp_parity {
         }
     }
 
+    pub(crate) fn mtp_logits_relative_divergence(actual: &MlxArray, expected: &MlxArray) -> f32 {
+        max_abs_relative_to_scale(&f32_values(actual), &f32_values(expected))
+    }
+
+    pub(crate) fn mtp_state_relative_divergence(
+        actual: &Qwen4ExpState,
+        expected: &Qwen4ExpState,
+    ) -> f32 {
+        assert_eq!(actual.position(), expected.position());
+        let actual_arrays = actual.arrays();
+        let expected_arrays = expected.arrays();
+        assert_eq!(actual_arrays.len(), expected_arrays.len());
+        actual_arrays
+            .iter()
+            .zip(&expected_arrays)
+            .map(|(actual, expected)| mtp_logits_relative_divergence(actual, expected))
+            .fold(0.0f32, f32::max)
+    }
+
     pub(crate) fn assert_mtp_logits_close(actual: &MlxArray, expected: &MlxArray, dtype: MlxDtype) {
-        let relative = max_abs_relative_to_scale(&f32_values(actual), &f32_values(expected));
+        let relative = mtp_logits_relative_divergence(actual, expected);
         let limit = mtp_numeric_tolerance(dtype);
         assert!(
             relative <= limit,
@@ -700,7 +719,7 @@ pub(crate) mod mtp_parity {
         assert_eq!(actual_arrays.len(), expected_arrays.len());
         let limit = mtp_numeric_tolerance(dtype);
         for (index, (actual, expected)) in actual_arrays.iter().zip(&expected_arrays).enumerate() {
-            let relative = max_abs_relative_to_scale(&f32_values(actual), &f32_values(expected));
+            let relative = mtp_logits_relative_divergence(actual, expected);
             assert!(
                 relative <= limit,
                 "MTP state array {index} relative max abs {relative} exceeds {limit}"
@@ -716,6 +735,16 @@ pub(crate) mod mtp_parity {
     fn mtp_numeric_tolerance_matches_f32_and_bf16_fixtures() {
         assert_eq!(mtp_numeric_tolerance(MlxDtype::Float32), 1e-3);
         assert_eq!(mtp_numeric_tolerance(MlxDtype::Bfloat16), 3e-2);
+    }
+
+    #[test]
+    fn mtp_relative_divergence_is_zero_for_identical_values() {
+        assert_eq!(
+            max_abs_relative_to_scale(&[1.0, -2.0, 0.5], &[1.0, -2.0, 0.5]),
+            0.0
+        );
+        let relative = max_abs_relative_to_scale(&[1.02, 0.0], &[1.0, 0.0]);
+        assert!(relative > 0.0 && relative <= 0.021);
     }
 }
 

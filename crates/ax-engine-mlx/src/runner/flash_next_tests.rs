@@ -2,6 +2,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
+use crate::model::qwen4_exp::Qwen4ExpState;
+use crate::model::qwen4_exp_mtp::mtp_parity;
 use ax_engine_core::{
     ExecutionBatch, ExecutionItem, PositionRange, RouteMetadata, StepId, WorkUnitKind,
 };
@@ -108,6 +110,22 @@ struct Generation {
     routes: Vec<Vec<(String, u32)>>,
     prefill_seconds: f64,
     decode_seconds: f64,
+    prefill_state: Option<Qwen4ExpState>,
+}
+
+fn snapshot_trunk(runner: &MlxRunner, request_id: RequestId) -> Option<Qwen4ExpState> {
+    runner
+        .states
+        .lock()
+        .get(&request_id)
+        .and_then(|state| state.cache.qwen4_exp.clone())
+}
+
+fn flash_runner_state_bytes(state: &Qwen4ExpState, layers: usize) -> Vec<u8> {
+    let mut cache = MlxKVCache::new_contiguous(layers);
+    cache.qwen4_exp = Some(state.clone());
+    cache.advance(state.position());
+    cache.serialize_to_bytes()
 }
 
 impl Generation {
@@ -143,6 +161,7 @@ fn generate_with_block_size(
         routes: Vec::new(),
         prefill_seconds: 0.0,
         decode_seconds: 0.0,
+        prefill_state: None,
     };
     for chunk in prompt.chunks(quantum) {
         let prefill_started = Instant::now();
@@ -156,6 +175,9 @@ fn generate_with_block_size(
         result
             .routes
             .push(output.route_metadata.crossover_decisions);
+        if let Some(state) = snapshot_trunk(runner, ctx.request_id) {
+            result.prefill_state = Some(state);
+        }
         ctx.processed_prompt_tokens += chunk.len() as u32;
         if ctx.processed_prompt_tokens < ctx.prompt_len {
             assert!(result.tokens.is_empty());
@@ -313,11 +335,14 @@ fn flash_next_real_runner_mtp_matches_recorded_resident_control() {
         context(701, prompt.len(), expected.len() as u32),
         16,
     );
+    let greedy_identity = result.tokens == expected;
     let evidence = serde_json::json!({
         "qualification":false, "route":"production_flash_next_mtp_candidate",
         "block_size_tokens":16,
         "load_seconds":load_seconds,"generation_seconds":generation_started.elapsed().as_secs_f64(),
         "tokens":result.tokens,"expected_ids":expected,"routes":result.routes,
+        "greedy_identity": greedy_identity,
+        "within_tolerance": greedy_identity,
         "mlx_peak_bytes":mlx_sys::get_peak_memory(),
     });
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_RESULT_PATH") {
@@ -325,6 +350,7 @@ fn flash_next_real_runner_mtp_matches_recorded_resident_control() {
     }
     eprintln!("{evidence}");
     assert_eq!(result.tokens, expected);
+    assert!(greedy_identity);
     assert!(result.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
     assert_eq!(result.maximum("ax_mlx_flash_next_mtp_step_errors"), 0);
 }
@@ -466,14 +492,39 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
         context(1002, prompt.len(), 3),
         4,
     );
+    let layers = runner.weights.qwen4_exp.as_ref().unwrap().layers.len();
+    let dtype = runner
+        .weights
+        .qwen4_exp
+        .as_ref()
+        .unwrap()
+        .token_embedding
+        .weight
+        .dtype();
+    let direct_prefill = direct.prefill_state.as_ref().unwrap();
+    let mtp_prefill = candidate.prefill_state.as_ref().unwrap();
+    assert_eq!(
+        flash_runner_state_bytes(mtp_prefill, layers),
+        flash_runner_state_bytes(direct_prefill, layers)
+    );
+    let greedy_identity = candidate.tokens == direct.tokens;
+    // The runner drops request state on the terminal step, so decode-state
+    // divergence is measured by the CandidateSession controls, not here.
     let evidence = serde_json::json!({
         "qualification":false,"block_size_tokens":4,"direct_ids":direct.tokens,
         "mtp_ids":candidate.tokens,"direct_routes":direct.routes,"mtp_routes":candidate.routes,
+        "greedy_identity": greedy_identity,
+        "prefill_state_exact": true,
+        "decode_state_compared": false,
+        "max_state_relative_divergence": serde_json::Value::Null,
+        "state_tolerance": mtp_parity::mtp_numeric_tolerance(dtype),
+        "within_tolerance": greedy_identity,
     });
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_RESULT_PATH") {
         std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
     }
     assert_eq!(candidate.tokens, direct.tokens);
+    assert!(greedy_identity);
     assert!(candidate.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
 }
 
@@ -491,6 +542,15 @@ fn flash_next_real_runner_mtp_paired_cost() {
     let load_seconds = load_started.elapsed().as_secs_f64();
     assert!(runner.has_mtp());
     assert!(!runner.mtp_model_policy.certified_default_on());
+    let pair_count = std::env::var("AX_FLASH_NEXT_PAIRED_PAIRS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(14usize);
+    assert!(
+        pair_count >= 12,
+        "paired cost needs at least 12 pairs, got {pair_count}"
+    );
+    let warmup_pairs = 2usize;
     let mut evidence = serde_json::json!({
         "qualification": false,
         "kind": "paired_production_runner_cost",
@@ -500,6 +560,8 @@ fn flash_next_real_runner_mtp_paired_cost() {
         "block_size_tokens": 16,
         "prefill_quantum": "whole_prompt",
         "load_seconds": load_seconds,
+        "pair_count": pair_count,
+        "warmup_pairs": warmup_pairs,
         "head_attached_in_both_modes": true,
         "prefix_stores": "cleared_before_every_request",
         "timing_boundary": "runner_call_with_host_visible_tokens",
@@ -512,10 +574,10 @@ fn flash_next_real_runner_mtp_paired_cost() {
         "samples": [],
     });
     let mut expected = None;
-    // Pair zero warms both routes. Reverse order on alternate pairs to avoid
-    // assigning all later, warmer requests to one mode.
-    for pair in 0..7 {
-        for mode in 0..2 {
+    // Two warmup pairs, then at least twelve measured pairs. Reverse order on
+    // alternate pairs to avoid assigning all later, warmer requests to one mode.
+    for pair in 0..pair_count {
+        for mode in 0..2usize {
             let candidate = (pair + mode) % 2 == 1;
             *runner.prefix_cache.lock() = MlxPrefixCache::new(MlxPrefixCachePolicy {
                 max_bytes: 64 * 1024 * 1024,
@@ -531,7 +593,7 @@ fn flash_next_real_runner_mtp_paired_cost() {
                 &runner,
                 &prompt,
                 usize::MAX,
-                context(1100 + pair * 2 + mode, prompt.len(), 32),
+                context(1100 + pair as u64 * 2 + mode as u64, prompt.len(), 32),
                 16,
             );
             let total_seconds = started.elapsed().as_secs_f64();
@@ -543,15 +605,17 @@ fn flash_next_real_runner_mtp_paired_cost() {
                 .as_array_mut()
                 .unwrap()
                 .push(serde_json::json!({
-                    "pair": pair, "warmup": pair == 0,
+                    "pair": pair, "warmup": pair < warmup_pairs,
                     "mtp_requested": candidate,
                     "total_seconds": total_seconds,
                     "prefill_seconds": result.prefill_seconds,
                     "decode_seconds": result.decode_seconds,
                     "generated_ids": result.tokens,
                     "token_parity": parity,
+                    "greedy_identity": parity,
                     "routes": result.routes,
                     "verified_steps": verified,
+                    "accepted": result.maximum("ax_mlx_flash_next_mtp_accepted_steps"),
                     "emitted_tokens": result.maximum("ax_mlx_flash_next_mtp_emitted_tokens"),
                     "correction_wall_us": result.maximum("ax_mlx_flash_next_mtp_correction_wall_us"),
                     "bonus_wall_us": result.maximum("ax_mlx_flash_next_mtp_bonus_wall_us"),
