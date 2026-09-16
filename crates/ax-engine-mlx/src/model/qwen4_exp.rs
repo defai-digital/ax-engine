@@ -747,6 +747,8 @@ pub(crate) fn forward_prepared(
         match (&layer.ple, &mut staged.ple) {
             (Some(ple), Some(cache)) => {
                 let lookup = ple.layout.plan(&cache.history, tokens)?;
+                #[cfg(test)]
+                profiling::mark("ngram_lookup", &[]);
                 let rows = ple.table.gather(&lookup.rows)?;
                 #[cfg(test)]
                 {
@@ -833,6 +835,8 @@ pub(crate) fn forward_prepared(
     let mut arrays = next.arrays();
     arrays.extend([&logits, &mixed, &hidden]);
     mlx_sys::try_eval(&arrays).map_err(|e| format!("qwen4_exp evaluation failed: {e}"))?;
+    #[cfg(test)]
+    profiling::note_eval();
     #[cfg(test)]
     profiling::mark("lm_head", &[&logits]);
     next.position = end;

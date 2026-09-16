@@ -31,11 +31,13 @@ const DEFAULT_POSITION_STAGES: &[&str] = &[
     "lm_head",
 ];
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 struct Sample {
     layer: Option<usize>,
     stage: &'static str,
     seconds: f64,
+    chunk_offset: usize,
+    chunk_len: usize,
 }
 
 struct Capture {
@@ -51,7 +53,20 @@ thread_local! {
     static DUMP_HC: Cell<usize> = const { Cell::new(0) };
     static DUMP_OFFSET: Cell<usize> = const { Cell::new(0) };
     static DUMP_CHUNK_LEN: Cell<usize> = const { Cell::new(0) };
+    static EVALS: Cell<u64> = const { Cell::new(0) };
 }
+
+/// Per-layer operator splits requested by the prefill stage profile.
+const LAYER_SPLIT_STAGES: &[&str] = &[
+    "ngram_lookup",
+    "ple_rows",
+    "qsa_indexer",
+    "qsa",
+    "gdn_chunked",
+    "gdn",
+    "moe_routing",
+    "moe_compute",
+];
 
 pub(crate) fn layer(index: usize) {
     DUMP_LAYER.set(index);
@@ -71,6 +86,23 @@ pub(crate) fn begin_forward_dump() {
 pub(crate) fn begin_chunk(offset: usize, len: usize) {
     DUMP_OFFSET.set(offset);
     DUMP_CHUNK_LEN.set(len);
+    CAPTURE.with_borrow_mut(|capture| {
+        if let Some(capture) = capture {
+            capture.previous = Instant::now();
+        }
+    });
+}
+
+pub(crate) fn reset_evals() {
+    EVALS.set(0);
+}
+
+pub(crate) fn note_eval() {
+    EVALS.set(EVALS.get().saturating_add(1));
+}
+
+fn evals() -> u64 {
+    EVALS.get()
 }
 
 fn parse_usize_csv(value: &str) -> Vec<usize> {
@@ -421,11 +453,14 @@ pub(crate) fn mark(stage: &'static str, arrays: &[&MlxArray]) {
     CAPTURE.with_borrow_mut(|capture| {
         if let Some(capture) = capture {
             eval(arrays);
+            note_eval();
             let now = Instant::now();
             capture.samples.push(Sample {
                 layer: capture.layer,
                 stage,
                 seconds: now.duration_since(capture.previous).as_secs_f64(),
+                chunk_offset: DUMP_OFFSET.get(),
+                chunk_len: DUMP_CHUNK_LEN.get(),
             });
             capture.previous = now;
         }
@@ -445,6 +480,118 @@ fn snapshot(state: Qwen4ExpState) -> Vec<u8> {
     cache.advance(state.position());
     cache.qwen4_exp = Some(state);
     cache.serialize_to_bytes()
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    let value = std::env::var(name).ok()?;
+    if value.trim().is_empty() {
+        return None;
+    }
+    Some(value.parse::<usize>().expect(name))
+}
+
+fn chunk_ranges(token_count: usize, chunk_size: usize) -> Vec<(usize, usize)> {
+    let chunk_size = chunk_size.max(1);
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < token_count {
+        let end = start.saturating_add(chunk_size).min(token_count);
+        ranges.push((start, end));
+        start = end;
+    }
+    ranges
+}
+
+fn deterministic_prompt_ids(len: usize, vocab: u32) -> Vec<u32> {
+    assert!(vocab > 16, "vocab must exceed reserved prompt ids");
+    let span = vocab - 16;
+    (0..len)
+        .map(|index| 16 + ((index as u32).wrapping_mul(131).wrapping_add(17) % span))
+        .collect()
+}
+
+fn profile_prompt_ids(vocab: u32) -> Vec<u32> {
+    if let Ok(raw) = std::env::var("AX_FLASH_NEXT_PROMPT_IDS") {
+        let tokens: Vec<u32> = serde_json::from_str(&raw).unwrap();
+        assert!(
+            !tokens.is_empty(),
+            "AX_FLASH_NEXT_PROMPT_IDS must not be empty"
+        );
+        assert!(
+            tokens.iter().all(|&id| id < vocab),
+            "AX_FLASH_NEXT_PROMPT_IDS contains an out-of-vocab id"
+        );
+        return tokens;
+    }
+    let len = env_usize("AX_FLASH_NEXT_PROFILE_TOKENS")
+        .expect("AX_FLASH_NEXT_PROMPT_IDS or AX_FLASH_NEXT_PROFILE_TOKENS");
+    assert!(
+        (1..=32768).contains(&len),
+        "AX_FLASH_NEXT_PROFILE_TOKENS {len} is out of range"
+    );
+    deterministic_prompt_ids(len, vocab)
+}
+
+fn stage_totals(samples: &[Sample]) -> BTreeMap<String, f64> {
+    let mut totals = BTreeMap::new();
+    for sample in samples {
+        *totals.entry(sample.stage.to_string()).or_insert(0.0) += sample.seconds;
+    }
+    totals
+}
+
+fn layer_stage_records(samples: &[Sample]) -> Vec<serde_json::Value> {
+    let mut by_layer: BTreeMap<usize, BTreeMap<String, f64>> = BTreeMap::new();
+    for sample in samples {
+        let Some(layer) = sample.layer else {
+            continue;
+        };
+        if !LAYER_SPLIT_STAGES.contains(&sample.stage) {
+            continue;
+        }
+        *by_layer
+            .entry(layer)
+            .or_default()
+            .entry(sample.stage.to_string())
+            .or_insert(0.0) += sample.seconds;
+    }
+    by_layer
+        .into_iter()
+        .map(|(layer, stages)| {
+            let mut value = serde_json::Map::new();
+            value.insert("layer".to_string(), serde_json::json!(layer));
+            for (stage, seconds) in stages {
+                value.insert(stage, serde_json::json!(seconds));
+            }
+            serde_json::Value::Object(value)
+        })
+        .collect()
+}
+
+fn samples_for_chunk(samples: &[Sample], offset: usize, len: usize) -> Vec<Sample> {
+    samples
+        .iter()
+        .filter(|sample| sample.chunk_offset == offset && sample.chunk_len == len)
+        .cloned()
+        .collect()
+}
+
+fn chunk_json(
+    index: usize,
+    offset: usize,
+    tokens: usize,
+    seconds: f64,
+    samples: &[Sample],
+) -> serde_json::Value {
+    serde_json::json!({
+        "index": index,
+        "offset": offset,
+        "tokens": tokens,
+        "seconds": seconds,
+        "stage_seconds": stage_totals(samples),
+        "layer_stage_seconds": layer_stage_records(samples),
+        "samples": samples,
+    })
 }
 
 #[test]
@@ -495,6 +642,77 @@ fn extract_position_takes_one_token_and_grouped_rows() {
     let (grouped, grouped_shape) = extract_position(&rows, &[8, 3], 0, 2, 1);
     assert_eq!(grouped_shape, vec![2, 3]);
     assert_eq!(grouped, vec![6.0, 7.0, 8.0, 9.0, 10.0, 11.0]);
+}
+
+#[test]
+fn chunk_ranges_match_server_prefill_schedule() {
+    assert_eq!(crate::generate::DEFAULT_PREFILL_CHUNK, 2048);
+    assert_eq!(chunk_ranges(512, 2048), vec![(0, 512)]);
+    assert_eq!(chunk_ranges(2048, 2048), vec![(0, 2048)]);
+    assert_eq!(
+        chunk_ranges(8192, 2048),
+        vec![(0, 2048), (2048, 4096), (4096, 6144), (6144, 8192)]
+    );
+    assert_eq!(
+        chunk_ranges(5000, 2048),
+        vec![(0, 2048), (2048, 4096), (4096, 5000)]
+    );
+    assert_eq!(chunk_ranges(0, 2048), Vec::<(usize, usize)>::new());
+}
+
+#[test]
+fn deterministic_prompt_ids_stay_in_vocab() {
+    let ids = deterministic_prompt_ids(8192, 151_936);
+    assert_eq!(ids.len(), 8192);
+    assert!(ids.iter().all(|&id| (16..151_936).contains(&id)));
+    assert_eq!(ids, deterministic_prompt_ids(8192, 151_936));
+    assert_ne!(ids[0], ids[1]);
+}
+
+#[test]
+fn layer_stage_records_split_qsa_gdn_moe_and_ple() {
+    let sample =
+        |layer: Option<usize>, stage: &'static str, seconds: f64, offset: usize, len: usize| {
+            Sample {
+                layer,
+                stage,
+                seconds,
+                chunk_offset: offset,
+                chunk_len: len,
+            }
+        };
+    let samples = vec![
+        sample(None, "embedding", 0.01, 0, 512),
+        sample(Some(0), "ngram_lookup", 0.02, 0, 512),
+        sample(Some(0), "ple_rows", 0.03, 0, 512),
+        sample(Some(0), "gdn_chunked", 0.40, 0, 512),
+        sample(Some(0), "gdn", 0.05, 0, 512),
+        sample(Some(1), "qsa_indexer", 0.20, 0, 512),
+        sample(Some(1), "qsa", 0.30, 0, 512),
+        sample(Some(1), "moe_routing", 0.07, 0, 512),
+        sample(Some(1), "moe_compute", 0.50, 0, 512),
+        sample(Some(1), "attention_hc_read", 0.01, 0, 512),
+        sample(None, "lm_head", 0.04, 0, 512),
+        sample(Some(1), "moe_compute", 0.10, 2048, 2048),
+    ];
+    let first = samples_for_chunk(&samples, 0, 512);
+    let records = layer_stage_records(&first);
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["layer"], 0);
+    assert_eq!(records[0]["ngram_lookup"], 0.02);
+    assert_eq!(records[0]["ple_rows"], 0.03);
+    assert_eq!(records[0]["gdn_chunked"], 0.40);
+    assert_eq!(records[0]["gdn"], 0.05);
+    assert!(records[0].get("qsa").is_none());
+    assert_eq!(records[1]["layer"], 1);
+    assert_eq!(records[1]["qsa_indexer"], 0.20);
+    assert_eq!(records[1]["qsa"], 0.30);
+    assert_eq!(records[1]["moe_routing"], 0.07);
+    assert_eq!(records[1]["moe_compute"], 0.50);
+    assert!(records[1].get("attention_hc_read").is_none());
+    let totals = stage_totals(&first);
+    assert!((totals["moe_compute"] - 0.50).abs() < f64::EPSILON);
+    assert_eq!(samples_for_chunk(&samples, 2048, 2048).len(), 1);
 }
 
 #[test]
@@ -713,4 +931,141 @@ fn flash_next_real_gdn_metal_control() {
         );
         assert!(state_exact, "elementwise fusion must preserve exact state");
     }
+}
+
+struct ChunkedPrefillTiming {
+    seconds: f64,
+    samples: Vec<Sample>,
+    chunks: Vec<(usize, usize, f64)>,
+    mlx_evals: u64,
+    peak_bytes: usize,
+}
+
+fn run_chunked_prefill(
+    trunk: &Qwen4ExpWeights,
+    tokens: &[u32],
+    owner: u64,
+    chunk_size: usize,
+    capture: bool,
+) -> ChunkedPrefillTiming {
+    reset_evals();
+    mlx_sys::reset_peak_memory();
+    let ranges = chunk_ranges(tokens.len(), chunk_size);
+    let guard = if capture {
+        CAPTURE.with_borrow_mut(|slot| {
+            assert!(slot.is_none());
+            *slot = Some(Capture {
+                layer: None,
+                previous: Instant::now(),
+                samples: Vec::new(),
+            });
+        });
+        Some(CaptureGuard)
+    } else {
+        None
+    };
+    let mut state = Qwen4ExpState::new(trunk, owner);
+    let wall = Instant::now();
+    let mut chunk_times = Vec::new();
+    for (offset, end) in ranges {
+        let chunk_start = Instant::now();
+        state = forward(
+            trunk,
+            &tokens[offset..end],
+            &state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap()
+        .state;
+        chunk_times.push((offset, end - offset, chunk_start.elapsed().as_secs_f64()));
+    }
+    let seconds = wall.elapsed().as_secs_f64();
+    let samples = if capture {
+        CAPTURE.with_borrow_mut(Option::take).unwrap().samples
+    } else {
+        Vec::new()
+    };
+    drop(guard);
+    ChunkedPrefillTiming {
+        seconds,
+        samples,
+        chunks: chunk_times,
+        mlx_evals: evals(),
+        peak_bytes: mlx_sys::get_peak_memory(),
+    }
+}
+
+#[test]
+#[ignore = "requires the real campaign pack on the authorized M2 host; synchronized attribution only"]
+fn flash_next_prefill_stage_profile() {
+    use crate::model::ModelConfig;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let vocab = artifacts.manifest().vocab_size;
+    let tokens = profile_prompt_ids(vocab);
+    let chunk_size = env_usize("AX_FLASH_NEXT_PREFILL_CHUNK_SIZE")
+        .unwrap_or(crate::generate::DEFAULT_PREFILL_CHUNK);
+    assert!(chunk_size >= 1, "prefill chunk size must be positive");
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let unsync = run_chunked_prefill(trunk, &tokens, owner, chunk_size, false);
+    let sync = run_chunked_prefill(trunk, &tokens, owner, chunk_size, true);
+    let mut synchronized_chunks = Vec::new();
+    for (index, &(offset, len, seconds)) in sync.chunks.iter().enumerate() {
+        let chunk_samples = samples_for_chunk(&sync.samples, offset, len);
+        synchronized_chunks.push(chunk_json(index, offset, len, seconds, &chunk_samples));
+    }
+    let unsynchronized_chunks: Vec<serde_json::Value> = unsync
+        .chunks
+        .iter()
+        .enumerate()
+        .map(|(index, &(offset, len, seconds))| {
+            serde_json::json!({
+                "index": index,
+                "offset": offset,
+                "tokens": len,
+                "seconds": seconds,
+            })
+        })
+        .collect();
+    let ratio = if unsync.seconds > 0.0 {
+        Some(sync.seconds / unsync.seconds)
+    } else {
+        None
+    };
+    let evidence = serde_json::json!({
+        "qualification": false,
+        "method": "chunked prefill synchronized stage attribution with unsynchronized wall-clock control",
+        "cache_state": "unsynchronized control first in this process; synchronized replay after that control; no OS cache purge",
+        "expert_streaming": trunk.expert_stream.is_some(),
+        "prompt_tokens": tokens.len(),
+        "chunk_size": chunk_size,
+        "chunk_schedule": chunk_ranges(tokens.len(), chunk_size),
+        "unsynchronized": {
+            "seconds": unsync.seconds,
+            "peak_bytes": unsync.peak_bytes,
+            "mlx_evals": unsync.mlx_evals,
+            "chunks": unsynchronized_chunks,
+        },
+        "synchronized": {
+            "seconds": sync.seconds,
+            "peak_bytes": sync.peak_bytes,
+            "mlx_evals": sync.mlx_evals,
+            "stage_seconds": stage_totals(&sync.samples),
+            "layer_stage_seconds": layer_stage_records(&sync.samples),
+            "chunks": synchronized_chunks,
+        },
+        "sync_unsync_ratio": ratio,
+        "peak_bytes": sync.peak_bytes.max(unsync.peak_bytes),
+    });
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+    eprintln!("{evidence}");
 }

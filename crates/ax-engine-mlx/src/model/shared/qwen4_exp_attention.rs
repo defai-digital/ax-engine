@@ -438,6 +438,8 @@ impl Qwen4ExpAttention {
                 |input, weight| qw_with_policy(input, weight, ProjectionBatchPolicy::RowExact),
             )?,
         };
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_indexer", &[selection.gather_indices()]);
 
         let q_packed = qw_with_policy(hidden, &self.q_proj, policy);
         let k_raw = qw_with_policy(hidden, &self.k_proj, policy);

@@ -323,6 +323,8 @@ impl Qwen4ExpMoe {
         if experts.is_streamed() {
             try_eval(&[&output])
                 .map_err(|e| format!("qwen4_exp streamed MoE output eval failed: {e}"))?;
+            #[cfg(test)]
+            crate::model::qwen4_exp::profiling::note_eval();
         }
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("moe_compute", &[&output]);
@@ -352,6 +354,8 @@ impl Qwen4ExpMoe {
             return Ok(concatenate(&outputs.iter().collect::<Vec<_>>(), 1, None));
         }
         let (indices, routing) = self.route(input, policy);
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("moe_routing", &[&indices, &routing]);
         self.forward_routed(input, policy, experts, &indices, &routing)
     }
 

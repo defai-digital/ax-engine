@@ -315,6 +315,8 @@ impl Qwen4ExpGdn {
             (concatenate(&refs, 1, None), recurrent)
         };
         #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("gdn_chunked", &[&output, &recurrent]);
+        #[cfg(test)]
         {
             crate::model::qwen4_exp::profiling::dump("gdn_core_output", &[&output]);
             crate::model::qwen4_exp::profiling::dump("gdn_final_state", &[&recurrent]);
