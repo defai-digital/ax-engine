@@ -835,6 +835,21 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     generation_tokens=2,
                 )
 
+    def test_long_prompt_artifact_is_compact_and_round_trips(self) -> None:
+        tokens = [index % 151936 for index in range(131072)]
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = bench.write_prompt_tokens(
+                Path(tmp), prompt_tokens=len(tokens), generation_tokens=64,
+                vocab_size=151936, tokens=tokens,
+            )
+            raw = Path(prompt["token_ids_path"]).read_bytes()
+            payload = json.loads(raw)
+            self.assertEqual(payload["token_ids"], tokens)
+            self.assertEqual(payload["sha256"], bench.token_sha256(tokens))
+            previous = (json.dumps(payload, indent=2) + "\n").encode()
+            self.assertLess(len(raw), len(previous) * 0.7)
+            bench.validate_prompt_doc(prompt, prompt_tokens=len(tokens), generation_tokens=64)
+
     def test_axengine_summary_includes_ttft_and_memory(self) -> None:
         runs = [
             {

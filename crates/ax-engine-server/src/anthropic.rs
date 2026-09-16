@@ -295,7 +295,7 @@ async fn run_anthropic_messages_generation(
         generate_request,
         stream,
         response_options,
-    } = build_openai_chat_request_offloading_media(&live, request).await?;
+    } = build_openai_chat_request_offloading_media(&live, &state.media, request).await?;
     reject_unexpected_stream(stream)?;
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;

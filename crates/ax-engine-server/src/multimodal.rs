@@ -17,14 +17,17 @@
 
 use std::path::Path;
 
+mod process;
+use crate::tasks::BlockingTaskControl;
+
 use ax_engine_sdk::{
     Gemma4UnifiedAudioProcessor, Gemma4UnifiedProcessorConfig, Gemma4UnifiedVisionProcessor,
 };
 use base64::Engine as _;
 use serde_json::Value;
 
-/// Failure modes for media decoding/preprocessing. Callers map these onto HTTP
-/// 400 responses.
+/// Failure modes for media decoding/preprocessing. Invalid media maps to HTTP
+/// 400; interrupted preprocessing maps to HTTP 408.
 #[derive(Debug)]
 pub(crate) enum MediaError {
     /// The bytes could not be decoded as the declared media type.
@@ -33,6 +36,8 @@ pub(crate) enum MediaError {
     Unsupported(String),
     /// The model's processor config could not be loaded or is incomplete.
     Config(String),
+    /// The request was cancelled or exceeded its preprocessing deadline.
+    Interrupted(String),
 }
 
 impl std::fmt::Display for MediaError {
@@ -40,7 +45,9 @@ impl std::fmt::Display for MediaError {
         match self {
             MediaError::Decode(message) => write!(f, "{message}"),
             MediaError::Unsupported(message) => write!(f, "{message}"),
-            MediaError::Config(message) => write!(f, "{message}"),
+            MediaError::Config(message) | MediaError::Interrupted(message) => {
+                write!(f, "{message}")
+            }
         }
     }
 }
@@ -99,8 +106,7 @@ pub(crate) const DEFAULT_VIDEO_FPS: f32 = 2.0;
 /// at most this side length before piping (the patchify resize target never
 /// exceeds it for realistic aspect ratios, so quality is unaffected), and the
 /// piped PNG stream is capped so a pathological video cannot exhaust server
-/// RAM — `Command::output` buffers the whole stream. Videos whose decoded
-/// stream exceeds the cap are sampled from the decoded prefix.
+/// RAM. Both output pipes have independent enforced byte limits.
 const FFMPEG_VIDEO_MAX_FRAME_SIDE: u32 = 1600;
 const FFMPEG_VIDEO_MAX_OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -436,22 +442,38 @@ fn patchify_rgb(
 /// `DEFAULT_VIDEO_FPS`. MP4/WebM are decoded by an optional `ffmpeg` process:
 /// video codecs are not MLX tensor kernels, while the downstream Gemma4 tensor
 /// path stays native MLX.
+#[cfg(test)]
 pub(crate) fn decode_video_frames(
     bytes: &[u8],
     max_frames: usize,
 ) -> Result<Vec<VideoFrame>, MediaError> {
+    decode_video_frames_with_control(bytes, max_frames, &BlockingTaskControl::default())
+}
+
+pub(crate) fn decode_video_frames_with_control(
+    bytes: &[u8],
+    max_frames: usize,
+    control: &BlockingTaskControl,
+) -> Result<Vec<VideoFrame>, MediaError> {
+    control
+        .check()
+        .map_err(|message| MediaError::Interrupted(message.to_string()))?;
     if looks_like_gif(bytes) {
-        return decode_gif_video_frames(bytes, max_frames);
+        return decode_gif_video_frames(bytes, max_frames, control);
     }
     if looks_like_ffmpeg_video(bytes) {
-        return decode_video_frames_ffmpeg(bytes, max_frames);
+        return decode_video_frames_with_ffmpeg_path(bytes, max_frames, "ffmpeg", control);
     }
     Err(MediaError::Unsupported(
         "inline video must be GIF, MP4, or WebM; MP4/WebM require ffmpeg on PATH, or send pre-extracted frame tensors via /v1/generate".to_string(),
     ))
 }
 
-fn decode_gif_video_frames(bytes: &[u8], max_frames: usize) -> Result<Vec<VideoFrame>, MediaError> {
+fn decode_gif_video_frames(
+    bytes: &[u8],
+    max_frames: usize,
+    control: &BlockingTaskControl,
+) -> Result<Vec<VideoFrame>, MediaError> {
     use image::{AnimationDecoder, ImageDecoder};
 
     let mut decoder =
@@ -469,6 +491,9 @@ fn decode_gif_video_frames(bytes: &[u8], max_frames: usize) -> Result<Vec<VideoF
     let mut frames = Vec::new();
     let mut decoded_bytes: u64 = 0;
     for frame in decoder.into_frames() {
+        control
+            .check()
+            .map_err(|message| MediaError::Interrupted(message.to_string()))?;
         let frame = frame.map_err(|error| {
             MediaError::Decode(format!("failed to decode video frames: {error}"))
         })?;
@@ -512,17 +537,11 @@ fn decode_gif_video_frames(bytes: &[u8], max_frames: usize) -> Result<Vec<VideoF
         .collect())
 }
 
-fn decode_video_frames_ffmpeg(
-    bytes: &[u8],
-    max_frames: usize,
-) -> Result<Vec<VideoFrame>, MediaError> {
-    decode_video_frames_with_ffmpeg_path(bytes, max_frames, "ffmpeg")
-}
-
 fn decode_video_frames_with_ffmpeg_path(
     bytes: &[u8],
     max_frames: usize,
     ffmpeg_path: impl AsRef<Path>,
+    control: &BlockingTaskControl,
 ) -> Result<Vec<VideoFrame>, MediaError> {
     let input = TempVideoInput::new(bytes)?;
     // Downscale before piping: `min(iw, SIDE)` never upscales, and
@@ -533,7 +552,8 @@ fn decode_video_frames_with_ffmpeg_path(
         "scale=w=min(iw\\,{side}):h=min(ih\\,{side}):force_original_aspect_ratio=decrease,showinfo",
         side = FFMPEG_VIDEO_MAX_FRAME_SIDE
     );
-    let output = std::process::Command::new(ffmpeg_path.as_ref())
+    let mut command = std::process::Command::new(ffmpeg_path.as_ref());
+    command
         .arg("-hide_banner")
         .arg("-nostdin")
         .arg("-v")
@@ -546,25 +566,21 @@ fn decode_video_frames_with_ffmpeg_path(
         .arg("-sn")
         .arg("-vf")
         .arg(video_filter)
-        .arg("-vsync")
-        .arg("0")
+        .arg("-fps_mode")
+        .arg("passthrough")
         .arg("-fs")
         .arg(FFMPEG_VIDEO_MAX_OUTPUT_BYTES.to_string())
         .arg("-f")
         .arg("image2pipe")
         .arg("-vcodec")
         .arg("png")
-        .arg("pipe:1")
-        .output()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                MediaError::Unsupported(
-                    "inline MP4/WebM video requires ffmpeg on PATH to extract frames; install ffmpeg or send pre-extracted frame tensors via /v1/generate".to_string(),
-                )
-            } else {
-                MediaError::Decode(format!("failed to run ffmpeg video decoder: {error}"))
-            }
-        })?;
+        .arg("pipe:1");
+    let output = process::run_bounded(
+        &mut command,
+        control,
+        FFMPEG_VIDEO_MAX_OUTPUT_BYTES as usize,
+        1024 * 1024,
+    )?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -587,6 +603,9 @@ fn decode_video_frames_with_ffmpeg_path(
     let indices = sample_frame_indices(pngs.len(), max_frames);
     let mut frames = Vec::with_capacity(indices.len());
     for index in indices {
+        control
+            .check()
+            .map_err(|message| MediaError::Interrupted(message.to_string()))?;
         let image = image::load_from_memory_with_format(pngs[index], image::ImageFormat::Png)
             .map_err(|error| {
                 MediaError::Decode(format!("failed to decode ffmpeg PNG frame: {error}"))
@@ -1550,6 +1569,46 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "requires ffmpeg with lavfi and MPEG-4 support"]
+    fn ffmpeg_native_video_smoke() {
+        let mut command = std::process::Command::new("ffmpeg");
+        command.args([
+            "-hide_banner",
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=32x16:r=2",
+            "-frames:v",
+            "3",
+            "-c:v",
+            "mpeg4",
+            "-f",
+            "mp4",
+            "-movflags",
+            "frag_keyframe+empty_moov",
+            "pipe:1",
+        ]);
+        let control = BlockingTaskControl::default();
+        let video = process::run_bounded(&mut command, &control, 1024 * 1024, 1024 * 1024)
+            .expect("generate smoke video with ffmpeg");
+        assert!(
+            video.status.success(),
+            "{}",
+            String::from_utf8_lossy(&video.stderr)
+        );
+        let frames = decode_video_frames_with_control(&video.stdout, 2, &control).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].image.dimensions(), (32, 16));
+        assert_eq!(frames[0].timestamp_seconds, 0.0);
+        assert_eq!(frames[1].timestamp_seconds, 1.0);
+        assert!(frames[0].image.get_pixel(0, 0)[0] > 240);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn ffmpeg_video_decode_path_samples_fake_png_pipe() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -1589,8 +1648,13 @@ mod tests {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&ffmpeg_path, permissions).expect("chmod fake ffmpeg");
 
-        let frames = decode_video_frames_with_ffmpeg_path(b"fake mp4", 2, &ffmpeg_path)
-            .expect("fake ffmpeg should decode frames");
+        let frames = decode_video_frames_with_ffmpeg_path(
+            b"fake mp4",
+            2,
+            &ffmpeg_path,
+            &BlockingTaskControl::default(),
+        )
+        .expect("fake ffmpeg should decode frames");
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].timestamp_seconds, 0.0);
         assert_eq!(frames[1].timestamp_seconds, 1.0);

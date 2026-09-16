@@ -2578,9 +2578,10 @@ async fn openai_chat_media_build_offloads_to_blocking_pool_and_matches_inline_bu
 
     // Media requests run on the blocking pool and must build the same request
     // the inline (sync) build produces.
-    let offloaded = build_openai_chat_request_offloading_media(&live, media_request())
-        .await
-        .expect("offloaded media build should succeed");
+    let offloaded =
+        build_openai_chat_request_offloading_media(&live, &state.media, media_request())
+            .await
+            .expect("offloaded media build should succeed");
     let inline = build_openai_chat_request(&live, media_request())
         .expect("inline media build should succeed");
     assert_eq!(
@@ -2595,14 +2596,40 @@ async fn openai_chat_media_build_offloads_to_blocking_pool_and_matches_inline_bu
             .is_some()
     );
 
-    // Text-only requests take the inline fast path and still build.
+    // Occupy both preprocessing slots and verify all requests share the bound.
+    let mut occupied = Vec::new();
+    for _ in 0..2 {
+        let pool = state.media.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let task = tokio::spawn(async move {
+            pool.run(move |_| {
+                let _ = started_tx.send(());
+                release_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                Ok(())
+            })
+            .await
+        });
+        started_rx.await.unwrap();
+        occupied.push((release_tx, task));
+    }
+    let saturated =
+        build_openai_chat_request_offloading_media(&live, &state.media, media_request())
+            .await
+            .err()
+            .expect("media must share the server's preprocessing capacity");
+    assert_eq!(saturated.0, StatusCode::TOO_MANY_REQUESTS);
+
+    // Text-only requests take the inline fast path even at media capacity.
     let text_request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "qwen3",
         "messages": [{"role": "user", "content": "hello"}],
         "max_tokens": 8
     }))
     .expect("text chat request should deserialize");
-    let built = build_openai_chat_request_offloading_media(&live, text_request)
+    let built = build_openai_chat_request_offloading_media(&live, &state.media, text_request)
         .await
         .expect("text-only build should succeed");
     assert!(
@@ -2612,6 +2639,11 @@ async fn openai_chat_media_build_offloads_to_blocking_pool_and_matches_inline_bu
             .gemma4_unified
             .is_none()
     );
+
+    for (release, task) in occupied {
+        release.send(()).unwrap();
+        task.await.unwrap().unwrap();
+    }
 
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }

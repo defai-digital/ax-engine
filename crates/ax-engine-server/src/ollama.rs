@@ -397,7 +397,7 @@ async fn ollama_chat_inner(
             generate_request,
             response_options,
             ..
-        } = build_openai_chat_request_offloading_media(&live, openai_request).await?;
+        } = build_openai_chat_request_offloading_media(&live, &state.media, openai_request).await?;
         return stream_ollama_native(
             state,
             live,
@@ -1215,7 +1215,7 @@ async fn run_ollama_chat_completion(
         generate_request,
         response_options,
         ..
-    } = build_openai_chat_request_offloading_media(&live, request).await?;
+    } = build_openai_chat_request_offloading_media(&live, &state.media, request).await?;
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
     let native_reasoning = populate_native_mlx_output_text(

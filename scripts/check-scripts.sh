@@ -36,7 +36,7 @@ assert_exit_status 1 bash -c 'set -euo pipefail; source scripts/lib/common.sh; c
 assert_exit_status 7 bash -c 'set -euo pipefail; source scripts/lib/common.sh; cleanup(){ return 7; }; trap '\''ax_run_cleanup "$?" cleanup'\'' EXIT; true'
 assert_exit_status 1 bash -c 'set -euo pipefail; source scripts/lib/common.sh; cleanup(){ return 7; }; trap '\''ax_run_cleanup "$?" cleanup'\'' EXIT; false'
 
-bash -n scripts/*.sh scripts/lib/common.sh scripts/check-qa.sh
+bash -n scripts/*.sh scripts/lib/*.sh scripts/check-qa.sh
 # Dedicated offline QA harness gate (bank + unit tests + py_compile).
 bash scripts/check-qa.sh
 "$PYTHON_BIN" -m py_compile \
@@ -255,7 +255,9 @@ bash scripts/check-qa.sh
   scripts/test_release_candidate.py \
   scripts/test_release_signing.py \
   scripts/test_standalone_release.py \
-  scripts/test_minisign_artifact.py
+  scripts/test_minisign_artifact.py \
+  scripts/test_cargo_pinned.py \
+  scripts/test_source_distribution.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_download_model.py \
   scripts/test_bench_ax_serving.py \
@@ -334,7 +336,9 @@ bash scripts/check-qa.sh
   scripts/test_release_candidate.py \
   scripts/test_release_signing.py \
   scripts/test_standalone_release.py \
-  scripts/test_minisign_artifact.py
+  scripts/test_minisign_artifact.py \
+  scripts/test_cargo_pinned.py \
+  scripts/test_source_distribution.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_decode_hot_path_kernel_admission.py

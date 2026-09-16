@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+mod build_pin;
 mod build_provenance;
 
 use build_provenance::is_homebrew_mlx_path;
@@ -117,7 +118,7 @@ fn find_mlx_dirs() -> (MlxDirs, MlxProvenance) {
              {prefix}. Install MLX with `pip install mlx=={}` (preferred — \
              Homebrew's formula builds without NAX acceleration on macOS 26.x \
              hosts) or point MLX_LIB_DIR/MLX_INCLUDE_DIR at an MLX build.",
-            pinned_mlx_version().unwrap_or_else(|| "<see mlx.version>".to_string())
+            pinned_mlx_version()
         );
     }
     (dirs, MlxProvenance::Homebrew)
@@ -225,76 +226,16 @@ fn mlx_root_from_python(python: &std::ffi::OsStr) -> Option<PathBuf> {
     root.is_dir().then_some(root)
 }
 
-/// The admitted MLX runtime, pinned in `mlx.version` at the repo root.
-///
-/// Two formats are accepted:
-///   - `0.32.2`               — a published wheel (install via pip);
-///   - `git:<sha>@<version>`  — an admitted source build of upstream MLX at
-///     `<sha>` whose `mlx/version.h` reports `<version>` (build recipe and
-///     admission evidence: docs/performance/mlx-main-admission-2026-07-28.md).
-///
-/// Bumping either form is a deliberate act: rerun the qmm microbench parity
-/// gate and the bit-exactness suites first (see docs/GETTING-STARTED.md).
-enum MlxPin {
-    Wheel(String),
-    Source { commit: String, version: String },
-}
-
-impl MlxPin {
-    fn expected_header_version(&self) -> &str {
-        match self {
-            Self::Wheel(version) => version,
-            Self::Source { version, .. } => version,
-        }
-    }
-
-    fn describe(&self) -> String {
-        match self {
-            Self::Wheel(version) => version.clone(),
-            Self::Source { commit, version } => format!("source build {commit} ({version})"),
-        }
-    }
-
-    fn install_hint(&self) -> String {
-        match self {
-            Self::Wheel(version) => format!("python3 -m pip install mlx=={version}"),
-            Self::Source { commit, .. } => format!(
-                "build upstream MLX at {commit} per \
-                 docs/performance/mlx-main-admission-2026-07-28.md and point \
-                 MLX_LIB_DIR/MLX_INCLUDE_DIR at its install prefix"
-            ),
-        }
-    }
-}
-
-fn parse_mlx_pin(raw: &str) -> Option<MlxPin> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    if let Some(rest) = raw.strip_prefix("git:") {
-        let (commit, version) = rest.split_once('@')?;
-        let (commit, version) = (commit.trim(), version.trim());
-        if commit.is_empty() || version.is_empty() {
-            return None;
-        }
-        return Some(MlxPin::Source {
-            commit: commit.to_string(),
-            version: version.to_string(),
-        });
-    }
-    Some(MlxPin::Wheel(raw.to_string()))
-}
-
-fn pinned_mlx() -> Option<MlxPin> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn pinned_mlx() -> build_pin::MlxPin {
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("Cargo must provide CARGO_MANIFEST_DIR");
     let pin_path = PathBuf::from(manifest_dir).join("../../mlx.version");
-    let raw = std::fs::read_to_string(pin_path).ok()?;
-    parse_mlx_pin(&raw)
+    build_pin::read_mlx_pin(&pin_path)
+        .unwrap_or_else(|message| panic!("{message}; restore mlx.version before building"))
 }
 
-fn pinned_mlx_version() -> Option<String> {
-    pinned_mlx().map(|pin| pin.expected_header_version().to_string())
+fn pinned_mlx_version() -> String {
+    pinned_mlx().expected_header_version().to_string()
 }
 
 /// Parse `MLX_VERSION_MAJOR/MINOR/PATCH` out of `mlx/version.h`.
@@ -326,13 +267,13 @@ fn env_flag(name: &str) -> bool {
 /// depends on this: a Homebrew fallback or a version drift changes kernels
 /// silently and invalidates every certified benchmark and bit-exactness gate.
 fn enforce_mlx_provenance_and_version(dirs: &MlxDirs, provenance: MlxProvenance) {
-    let version = resolved_mlx_version(&dirs.mlx_include_dir);
-    let pin = pinned_mlx_version();
+    let pin = pinned_mlx();
+    let version = resolved_mlx_version(&dirs.mlx_include_dir).unwrap_or_else(|| {
+        panic!("cannot read MLX version identity from {}/mlx/version.h; refusing to link an unidentified runtime", dirs.mlx_include_dir)
+    });
     println!(
         "cargo:warning=mlx-sys: linking MLX {} from {} ({:?})",
-        version.as_deref().unwrap_or("<unknown version>"),
-        dirs.mlx_lib_dir,
-        provenance
+        version, dirs.mlx_lib_dir, provenance
     );
 
     if provenance == MlxProvenance::Homebrew {
@@ -350,14 +291,12 @@ fn enforce_mlx_provenance_and_version(dirs: &MlxDirs, provenance: MlxProvenance)
                  `python3 -m pip install mlx=={}`. Set AX_MLX_ALLOW_HOMEBREW=1 only for \
                  bring-up experiments.",
                 dirs.mlx_lib_dir,
-                pin.as_deref().unwrap_or("<see mlx.version>")
+                pin.expected_header_version()
             );
         }
     }
 
-    if let (Some(version), Some(pin)) = (version.as_deref(), pinned_mlx())
-        && version != pin.expected_header_version()
-    {
+    if version != pin.expected_header_version() {
         let expected = pin.describe();
         let hint = pin.install_hint();
         if env_flag("AX_MLX_VERSION_OVERRIDE") {
@@ -435,9 +374,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AX_MLX_VERSION_OVERRIDE");
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let pin = PathBuf::from(manifest_dir).join("../../mlx.version");
-        if pin.exists() {
-            println!("cargo:rerun-if-changed={}", pin.display());
-        }
+        println!("cargo:rerun-if-changed={}", pin.display());
     }
     // A Homebrew `mlx` upgrade swaps the dylib and headers under the
     // version-stable `/opt/homebrew/opt/mlx` symlink without touching any

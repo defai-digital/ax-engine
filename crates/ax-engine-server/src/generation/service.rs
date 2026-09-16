@@ -600,6 +600,16 @@ impl NativeGenerationService {
     where
         F: FnMut() -> Result<EngineSession, EngineSessionError> + Send + 'static,
     {
+        Self::spawn_with_recycle_threshold(factory, worker_recycle_after_ticks())
+    }
+
+    fn spawn_with_recycle_threshold<F>(
+        factory: F,
+        recycle_after: u64,
+    ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError>
+    where
+        F: FnMut() -> Result<EngineSession, EngineSessionError> + Send + 'static,
+    {
         let (sender, receiver) = std::sync::mpsc::channel::<ServiceCommand>();
         let (startup_sender, startup_receiver) = std::sync::mpsc::sync_channel(1);
         let state = Arc::new(ServiceState {
@@ -624,7 +634,15 @@ impl NativeGenerationService {
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
             .name("ax-native-generation".to_string())
-            .spawn(move || run_worker(Box::new(factory), receiver, startup_sender, &worker_state))
+            .spawn(move || {
+                run_worker(
+                    Box::new(factory),
+                    receiver,
+                    startup_sender,
+                    &worker_state,
+                    recycle_after,
+                )
+            })
             .map_err(GenerationServiceStartError::ThreadStart)?;
         match startup_receiver.recv() {
             Ok(Ok(runtime_report)) => Ok((
@@ -982,6 +1000,7 @@ fn run_worker(
     receiver: std::sync::mpsc::Receiver<ServiceCommand>,
     startup_sender: std::sync::mpsc::SyncSender<Result<RuntimeReport, EngineSessionError>>,
     state: &ServiceState,
+    recycle_after: u64,
 ) {
     let _exit_guard = WorkerExitGuard(state);
     let mut factory = factory;
@@ -1014,7 +1033,7 @@ fn run_worker(
     // recovery path (same contract as a stopped worker). Under
     // `panic = "abort"` builds this is a no-op by construction.
     let loop_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_worker_loop(session, receiver, state, &mut factory);
+        run_worker_loop(session, receiver, state, &mut factory, recycle_after);
     }));
     if let Err(payload) = loop_outcome {
         tracing::error!(
@@ -1038,7 +1057,7 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
 
 /// `AX_SERVER_WORKER_RECYCLE_AFTER_TICKS` — rebuild the engine session
 /// after this many worker engine ticks, at the next fully idle moment
-/// (no active streams, no queued commands). `0`/unset = off.
+/// (no active streams, no queued commands, no live stepwise requests). `0`/unset = off.
 ///
 /// ADR-RUNTIME-TOOLCHAIN-PINNING decision C1: the eval-wall steady-state
 /// degradation accumulates one-way per process on the admitted MLX wheel
@@ -1061,13 +1080,13 @@ fn run_worker_loop(
     receiver: std::sync::mpsc::Receiver<ServiceCommand>,
     state: &ServiceState,
     factory: &mut SessionFactory,
+    recycle_after: u64,
 ) {
     let mut active_streams: BTreeMap<u64, ActiveStream> = BTreeMap::new();
     let mut stepwise_permits: BTreeMap<u64, AdmissionPermit> = BTreeMap::new();
     let mut latency_commands = VecDeque::new();
     let mut bulk_commands = VecDeque::new();
     let mut disconnected = false;
-    let recycle_after = worker_recycle_after_ticks();
     let mut ticks_since_recycle: u64 = 0;
     // Permanent factory failure (OOM, bad config) must not retry every
     // `recycle_after` ticks — the log promised disable, so honor it.
@@ -1079,7 +1098,14 @@ fn run_worker_loop(
             && bulk_commands.is_empty()
             && !disconnected
         {
-            if recycle_after > 0 && !recycle_disabled && ticks_since_recycle >= recycle_after {
+            // Stepwise work waits for an external advance command. Keep the
+            // blocking receive below, but never replace its live session.
+            if recycle_after > 0
+                && !recycle_disabled
+                && ticks_since_recycle >= recycle_after
+                && stepwise_permits.is_empty()
+                && state.queued_commands.load(Ordering::Acquire) == 0
+            {
                 match factory() {
                     Ok(new_session) => {
                         session = new_session;
@@ -2358,6 +2384,54 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         assert!(!service.is_busy());
+    }
+
+    #[tokio::test]
+    async fn recycling_preserves_live_stepwise_requests_and_releases_capacity() {
+        let factories = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&factories);
+        let (service, _) = NativeGenerationService::spawn_with_recycle_threshold(
+            move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(EngineSession::new_deterministic_native_for_tests())
+            },
+            1,
+        )
+        .unwrap();
+        let admission = Arc::new(crate::admission::AdmissionController::new(Some(1)));
+        service
+            .submit_stepwise(
+                42,
+                GenerateRequest {
+                    model_id: "qwen3".to_string(),
+                    input_tokens: vec![1, 2, 3, 4],
+                    input_text: None,
+                    multimodal_inputs: Default::default(),
+                    max_output_tokens: 100,
+                    sampling: Default::default(),
+                    stop_sequences: Vec::new(),
+                    metadata: None,
+                },
+                admission.try_admit().unwrap(),
+            )
+            .await
+            .unwrap();
+        service.advance().await.unwrap();
+        // Let the worker reach its idle receive, then query the same session.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(service.request_snapshot(42).await.is_ok());
+        assert!(service.has_active_stepwise().await.unwrap());
+        assert_eq!(factories.load(Ordering::SeqCst), 1);
+        assert_eq!(admission.active_jobs(), 1);
+        service.cancel_stepwise(42).await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while factories.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(factories.load(Ordering::SeqCst), 2);
+        assert_eq!(admission.active_jobs(), 0);
+        assert_eq!(service.pending_jobs(), 0);
+        service.shutdown().await.unwrap();
     }
 
     #[tokio::test]

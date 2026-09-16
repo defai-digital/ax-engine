@@ -1,0 +1,38 @@
+{
+  "scope": "New reference prompt JSON only; historical files and installed runtime unchanged",
+  "measurements": [
+    {
+      "prompt_tokens": 4096,
+      "generation_tokens": 64,
+      "vocab_size": 151936,
+      "token_rule": "list(range(prompt_tokens))",
+      "token_sha256": "cb2249fa75b0f55c6f8922ce37038f8596d44b3ecf325f1ddc6d9d8a301d7e66",
+      "previous_pretty_bytes": 40213,
+      "compact_bytes": 19693,
+      "saved_bytes": 20520,
+      "saved_percent": 51.028274438614375
+    },
+    {
+      "prompt_tokens": 32768,
+      "generation_tokens": 64,
+      "vocab_size": 151936,
+      "token_rule": "list(range(prompt_tokens))",
+      "token_sha256": "6b3290c6362159966185514afb5e2e662e7e105eeb626a64f1c1e013aab8f582",
+      "previous_pretty_bytes": 349702,
+      "compact_bytes": 185822,
+      "saved_bytes": 163880,
+      "saved_percent": 46.86275743347193
+    },
+    {
+      "prompt_tokens": 131072,
+      "generation_tokens": 64,
+      "vocab_size": 151936,
+      "token_rule": "list(range(prompt_tokens))",
+      "token_sha256": "42f3d6c5cd1ad484496e9e222e02965e6e7da73548aefbda15a16c92265313cb",
+      "previous_pretty_bytes": 1462119,
+      "compact_bytes": 806719,
+      "saved_bytes": 655400,
+      "saved_percent": 44.82535279276174
+    }
+  ]
+}
