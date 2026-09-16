@@ -28,6 +28,12 @@ control tokens, and explicit MTP runner/HTTP checks. This is not M5 Ultra
 certification, a trained MTP-head oracle, or a published throughput result.
 Quantized prefill comparisons must use the same chunk schedule.
 
+A fresh direct smoke on the authorized M2 production test binary also completes
+with the experimental pack: load 512.264 seconds, prefill 1.082 seconds, eight
+finite decode steps, and zero n-gram table payload bytes read during load. The
+run is an execution proof only; its external-disk load time is not a serving
+throughput claim, and qualification remains closed.
+
 Additional 2-bit and 6-bit controls each match all four generated tokens, full
 F32 logits and serialized request state exactly across resident, forced paging
 and Auto modes. On the M2, Auto selects resident for the 2-bit pack and paging
