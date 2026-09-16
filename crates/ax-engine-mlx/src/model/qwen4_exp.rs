@@ -736,6 +736,8 @@ pub(crate) fn forward_prepared(
 ) -> Result<Qwen4ExpOutput, String> {
     let (end, vocabulary) = validate_prepared_input(weights, tokens, &hidden, state, owner)?;
     #[cfg(test)]
+    profiling::begin_chunk(state.position, tokens.len());
+    #[cfg(test)]
     profiling::mark("embedding", &[&hidden]);
     let mut next = state.clone();
     for (index, layer) in weights.layers.iter().enumerate() {
@@ -747,7 +749,10 @@ pub(crate) fn forward_prepared(
                 let lookup = ple.layout.plan(&cache.history, tokens)?;
                 let rows = ple.table.gather(&lookup.rows)?;
                 #[cfg(test)]
-                profiling::mark("ple_rows", &[&rows]);
+                {
+                    profiling::dump_ngram_lookup(tokens.len(), &lookup.rows, &rows);
+                    profiling::mark("ple_rows", &[&rows]);
+                }
                 let embeddings = reshape(
                     &astype(&rows, hidden.dtype(), None),
                     &[1, tokens.len() as i32, ple.embedding_width as i32],

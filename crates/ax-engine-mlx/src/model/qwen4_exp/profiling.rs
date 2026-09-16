@@ -3,9 +3,29 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// Stages dumped when `AX_FLASH_NEXT_DUMP_POSITIONS` is set and no stage
+/// allow-list is provided. Full-sequence dumps of every stage at 2k tokens
+/// are too large for the records-attribution campaign.
+const DEFAULT_POSITION_STAGES: &[&str] = &[
+    "embedding",
+    "ple_rows",
+    "ngram_lookup",
+    "ple_delta",
+    "ple_conv_activated",
+    "ple_operator",
+    "qsa_gather_indices",
+    "qsa",
+    "qsa_output",
+    "attention_hc_write",
+    "mlp_hc_write",
+    "lm_head",
+];
 
 #[derive(serde::Serialize)]
 struct Sample {
@@ -25,6 +45,8 @@ thread_local! {
     static DUMP_LAYER: Cell<usize> = const { Cell::new(usize::MAX) };
     static DUMP_FORWARD: Cell<usize> = const { Cell::new(0) };
     static DUMP_HC: Cell<usize> = const { Cell::new(0) };
+    static DUMP_OFFSET: Cell<usize> = const { Cell::new(0) };
+    static DUMP_CHUNK_LEN: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(crate) fn layer(index: usize) {
@@ -42,49 +64,351 @@ pub(crate) fn begin_forward_dump() {
     DUMP_FORWARD.set(DUMP_FORWARD.get() + 1);
 }
 
-pub(crate) fn dump(stage: &'static str, arrays: &[&MlxArray]) {
-    if let Some(root) = std::env::var_os("AX_FLASH_NEXT_FIRST_LAYER_DUMP") {
-        if stage == "embedding" {
-            begin_forward_dump();
-        }
-        let selected_layer = std::env::var("AX_FLASH_NEXT_DUMP_LAYER")
-            .map(|value| value.parse::<usize>().expect("diagnostic layer index"))
-            .unwrap_or(0);
-        if (stage == "embedding" || DUMP_LAYER.get() == selected_layer)
-            && let Some(array) = arrays.first()
-        {
-            if stage == "hc_scaled" {
-                DUMP_HC.set(DUMP_HC.get() + 1);
-            }
-            let values = mlx_sys::astype(array, MlxDtype::Float32, None);
-            mlx_sys::try_eval(&[&values]).expect("first-layer diagnostic evaluation");
-            let root = std::path::PathBuf::from(root);
-            std::fs::create_dir_all(&root).unwrap();
-            let name = if stage.starts_with("hc_") {
-                format!(
-                    "forward-{}-hc-{}-{stage}",
-                    DUMP_FORWARD.get(),
-                    DUMP_HC.get()
-                )
-            } else {
-                format!("forward-{}-{stage}", DUMP_FORWARD.get())
-            };
-            let bytes: Vec<u8> = values
-                .data_f32()
+pub(crate) fn begin_chunk(offset: usize, len: usize) {
+    DUMP_OFFSET.set(offset);
+    DUMP_CHUNK_LEN.set(len);
+}
+
+fn parse_usize_csv(value: &str) -> Vec<usize> {
+    value
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse::<usize>().expect("diagnostic dump position"))
+        .collect()
+}
+
+fn parse_stage_csv(value: &str) -> Vec<String> {
+    value
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_string())
+        .collect()
+}
+
+fn dump_positions() -> Option<BTreeSet<usize>> {
+    let value = std::env::var("AX_FLASH_NEXT_DUMP_POSITIONS").ok()?;
+    if value.trim().is_empty() {
+        return None;
+    }
+    Some(parse_usize_csv(&value).into_iter().collect())
+}
+
+fn dump_layer_env() -> Option<usize> {
+    std::env::var("AX_FLASH_NEXT_DUMP_LAYER")
+        .ok()
+        .map(|value| value.parse::<usize>().expect("diagnostic layer index"))
+}
+
+fn dump_stages() -> Option<Vec<String>> {
+    match std::env::var("AX_FLASH_NEXT_DUMP_STAGES") {
+        Ok(value) if !value.trim().is_empty() => Some(parse_stage_csv(&value)),
+        _ if dump_positions().is_some() => Some(
+            DEFAULT_POSITION_STAGES
                 .iter()
-                .flat_map(|value| value.to_le_bytes())
-                .collect();
-            std::fs::write(root.join(format!("{name}.f32le")), bytes).unwrap();
-            std::fs::write(
-                root.join(format!("{name}.json")),
-                serde_json::to_vec(&serde_json::json!({
-                    "shape": array.shape(), "dtype": format!("{:?}", array.dtype()),
-                    "layer": DUMP_LAYER.get(),
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                .map(|stage| (*stage).to_string())
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn stage_allowed(stage: &str) -> bool {
+    let Some(list) = dump_stages() else {
+        return true;
+    };
+    if list.iter().any(|item| item == "*" || item == "all") {
+        return true;
+    }
+    list.iter().any(|item| item == stage)
+}
+
+fn dump_root() -> Option<PathBuf> {
+    if let Some(root) = std::env::var_os("AX_FLASH_NEXT_FIRST_LAYER_DUMP") {
+        return Some(PathBuf::from(root));
+    }
+    if dump_positions().is_some() {
+        let root = std::env::var_os("AX_FLASH_NEXT_LOGITS_DIR")?;
+        return Some(PathBuf::from(root).join("stages"));
+    }
+    None
+}
+
+fn should_dump(stage: &str) -> bool {
+    if !stage_allowed(stage) {
+        return false;
+    }
+    if stage == "embedding" {
+        return true;
+    }
+    let layer = DUMP_LAYER.get();
+    if let Some(selected) = dump_layer_env() {
+        return layer == selected;
+    }
+    if dump_positions().is_some() {
+        return true;
+    }
+    layer == 0
+}
+
+/// Sequence axis and grouping for a chunk-length tensor.
+/// Prefers `[1, chunk, ...]`, then an axis equal to `chunk_len`, then an
+/// axis that is an integer multiple of `chunk_len` (token-major grouped
+/// rows such as PLE n-gram gathers).
+fn sequence_axis(shape: &[i32], chunk_len: i32) -> Option<(usize, i32)> {
+    if chunk_len <= 0 || shape.is_empty() {
+        return None;
+    }
+    if shape.len() >= 2 && shape[0] == 1 && shape[1] == chunk_len {
+        return Some((1, 1));
+    }
+    for (axis, &dim) in shape.iter().enumerate() {
+        if dim == chunk_len {
+            return Some((axis, 1));
         }
+    }
+    // Token-major grouped rows (PLE n-gram gathers): [seq * heads, width].
+    // Do not treat a trailing feature dim that happens to be a multiple of
+    // the chunk length as a sequence axis.
+    let dim0 = shape[0];
+    if dim0 > chunk_len && dim0 % chunk_len == 0 {
+        let group = dim0 / chunk_len;
+        if group <= 64 {
+            return Some((0, group));
+        }
+    }
+    None
+}
+
+fn extract_position(
+    data: &[f32],
+    shape: &[i32],
+    axis: usize,
+    group: i32,
+    local: usize,
+) -> (Vec<f32>, Vec<i32>) {
+    let dims: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
+    let before: usize = dims[..axis].iter().copied().product();
+    let dim = dims[axis];
+    let after: usize = dims[axis + 1..].iter().copied().product();
+    let group = group as usize;
+    let start = local.checked_mul(group).expect("dump position grouping");
+    let end = start.checked_add(group).expect("dump position grouping");
+    assert!(end <= dim, "dump position {local} exceeds axis {dim}");
+    let mut out = Vec::with_capacity(before.saturating_mul(group).saturating_mul(after));
+    for prefix in 0..before {
+        for index in start..end {
+            let offset = (prefix * dim + index) * after;
+            out.extend_from_slice(&data[offset..offset + after]);
+        }
+    }
+    let mut out_shape = shape.to_vec();
+    out_shape[axis] = group as i32;
+    (out, out_shape)
+}
+
+fn write_f32le(path: &Path, values: &[f32]) {
+    let bytes: Vec<u8> = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    std::fs::write(path, bytes).unwrap();
+}
+
+fn layer_label() -> serde_json::Value {
+    let layer = DUMP_LAYER.get();
+    if layer == usize::MAX {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(layer)
+    }
+}
+
+fn layer_name() -> String {
+    let layer = DUMP_LAYER.get();
+    if layer == usize::MAX {
+        "none".to_string()
+    } else {
+        layer.to_string()
+    }
+}
+
+fn stage_stem(stage: &str) -> String {
+    if stage.starts_with("hc_") {
+        format!("hc-{}-{stage}", DUMP_HC.get())
+    } else {
+        stage.to_string()
+    }
+}
+
+fn dump_full(root: &Path, stage: &str, array: &MlxArray) {
+    let values = mlx_sys::astype(array, MlxDtype::Float32, None);
+    mlx_sys::try_eval(&[&values]).expect("first-layer diagnostic evaluation");
+    std::fs::create_dir_all(root).unwrap();
+    let name = if stage.starts_with("hc_") {
+        format!(
+            "forward-{}-hc-{}-{stage}",
+            DUMP_FORWARD.get(),
+            DUMP_HC.get()
+        )
+    } else {
+        format!("forward-{}-{stage}", DUMP_FORWARD.get())
+    };
+    write_f32le(&root.join(format!("{name}.f32le")), values.data_f32());
+    std::fs::write(
+        root.join(format!("{name}.json")),
+        serde_json::to_vec(&serde_json::json!({
+            "shape": array.shape(), "dtype": format!("{:?}", array.dtype()),
+            "layer": DUMP_LAYER.get(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+fn dump_selected(root: &Path, stage: &str, array: &MlxArray, wanted: &BTreeSet<usize>) {
+    let chunk_len = DUMP_CHUNK_LEN.get();
+    let offset = DUMP_OFFSET.get();
+    if chunk_len == 0 {
+        return;
+    }
+    let locals: Vec<usize> = wanted
+        .iter()
+        .copied()
+        .filter(|&pos| pos >= offset && pos < offset + chunk_len)
+        .map(|pos| pos - offset)
+        .collect();
+    if locals.is_empty() {
+        return;
+    }
+    let values = mlx_sys::astype(array, MlxDtype::Float32, None);
+    mlx_sys::try_eval(&[&values]).expect("position diagnostic evaluation");
+    let shape = array.shape();
+    let Some((axis, group)) = sequence_axis(&shape, chunk_len as i32) else {
+        return;
+    };
+    std::fs::create_dir_all(root).unwrap();
+    let data = values.data_f32();
+    let stem = stage_stem(stage);
+    let layer = layer_name();
+    for local in locals {
+        let position = offset + local;
+        let (slice, out_shape) = extract_position(data, &shape, axis, group, local);
+        let name = format!("layer-{layer}-{stem}-pos-{position}");
+        write_f32le(&root.join(format!("{name}.f32le")), &slice);
+        std::fs::write(
+            root.join(format!("{name}.json")),
+            serde_json::to_vec(&serde_json::json!({
+                "shape": out_shape,
+                "original_shape": shape,
+                "dtype": format!("{:?}", array.dtype()),
+                "layer": layer_label(),
+                "stage": stage,
+                "position": position,
+                "sequence_axis": axis,
+                "group": group,
+                "chunk_start": offset,
+                "chunk_len": chunk_len,
+                "local_index": local,
+                "forward": DUMP_FORWARD.get(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+pub(crate) fn dump(stage: &'static str, arrays: &[&MlxArray]) {
+    let Some(root) = dump_root() else {
+        return;
+    };
+    if stage == "embedding" {
+        begin_forward_dump();
+    }
+    if !should_dump(stage) {
+        return;
+    }
+    let Some(array) = arrays.first() else {
+        return;
+    };
+    if stage == "hc_scaled" {
+        DUMP_HC.set(DUMP_HC.get() + 1);
+    }
+    if let Some(wanted) = dump_positions() {
+        dump_selected(&root, stage, array, &wanted);
+    } else {
+        dump_full(&root, stage, array);
+    }
+}
+
+/// Test-only n-gram row IDs and per-row hashes at dumped positions.
+pub(crate) fn dump_ngram_lookup(token_count: usize, row_ids: &[u64], rows: &MlxArray) {
+    if token_count == 0 || !row_ids.len().is_multiple_of(token_count) {
+        return;
+    }
+    let Some(root) = dump_root() else {
+        return;
+    };
+    let Some(wanted) = dump_positions() else {
+        return;
+    };
+    if !should_dump("ngram_lookup") {
+        return;
+    }
+    let heads = row_ids.len() / token_count;
+    let chunk_len = DUMP_CHUNK_LEN.get();
+    let offset = DUMP_OFFSET.get();
+    if chunk_len == 0 || chunk_len != token_count {
+        return;
+    }
+    let values = mlx_sys::astype(rows, MlxDtype::Float32, None);
+    mlx_sys::try_eval(&[&values]).expect("n-gram lookup diagnostic evaluation");
+    let data = values.data_f32();
+    let width = if rows.shape().len() == 2 {
+        rows.shape()[1] as usize
+    } else {
+        return;
+    };
+    if data.len() != token_count * heads * width {
+        return;
+    }
+    std::fs::create_dir_all(&root).unwrap();
+    let layer = layer_name();
+    for pos in wanted {
+        if pos < offset || pos >= offset + chunk_len {
+            continue;
+        }
+        let local = pos - offset;
+        let start = local * heads;
+        let ids = &row_ids[start..start + heads];
+        let mut hashes = Vec::with_capacity(heads);
+        for head in 0..heads {
+            let row_start = (start + head) * width;
+            let row = &data[row_start..row_start + width];
+            let mut hash = Sha256::new();
+            for value in row {
+                hash.update(value.to_le_bytes());
+            }
+            hashes.push(format!("{:x}", hash.finalize()));
+        }
+        let name = format!("layer-{layer}-ngram_lookup-pos-{pos}");
+        std::fs::write(
+            root.join(format!("{name}.json")),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "stage": "ngram_lookup",
+                "layer": layer_label(),
+                "position": pos,
+                "heads_per_token": heads,
+                "row_ids": ids,
+                "row_sha256": hashes,
+                "embedding_width": width,
+                "chunk_start": offset,
+                "chunk_len": chunk_len,
+                "local_index": local,
+                "forward": DUMP_FORWARD.get(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     }
 }
 
@@ -117,6 +441,35 @@ fn snapshot(state: Qwen4ExpState) -> Vec<u8> {
     cache.advance(state.position());
     cache.qwen4_exp = Some(state);
     cache.serialize_to_bytes()
+}
+
+#[test]
+fn dump_position_csv_parses_commas_and_spaces() {
+    assert_eq!(parse_usize_csv("345,396, 479"), vec![345, 396, 479]);
+    assert_eq!(
+        parse_stage_csv("ple_rows,qsa_gather_indices"),
+        vec!["ple_rows".to_string(), "qsa_gather_indices".to_string()]
+    );
+}
+
+#[test]
+fn sequence_axis_prefers_batch_seq_layout() {
+    assert_eq!(sequence_axis(&[1, 128, 2560], 128), Some((1, 1)));
+    assert_eq!(sequence_axis(&[128, 151936], 128), Some((0, 1)));
+    assert_eq!(sequence_axis(&[512, 64], 128), Some((0, 4)));
+    assert_eq!(sequence_axis(&[4, 2560], 128), None);
+}
+
+#[test]
+fn extract_position_takes_one_token_and_grouped_rows() {
+    let hidden: Vec<f32> = (0..12).map(|value| value as f32).collect();
+    let (slice, shape) = extract_position(&hidden, &[1, 4, 3], 1, 1, 2);
+    assert_eq!(shape, vec![1, 1, 3]);
+    assert_eq!(slice, vec![6.0, 7.0, 8.0]);
+    let rows: Vec<f32> = (0..24).map(|value| value as f32).collect();
+    let (grouped, grouped_shape) = extract_position(&rows, &[8, 3], 0, 2, 1);
+    assert_eq!(grouped_shape, vec![2, 3]);
+    assert_eq!(grouped, vec![6.0, 7.0, 8.0, 9.0, 10.0, 11.0]);
 }
 
 #[test]
