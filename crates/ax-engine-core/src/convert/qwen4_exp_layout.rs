@@ -2,7 +2,6 @@
 //!
 //! The audited legacy exporter stores raw norm deltas with MLX conv1d axes.
 //! Its identity tuple selects `HfNormOnly`; unknown exports remain blocked.
-//! This interpretation reads metadata only and never grants runtime readiness.
 
 use std::path::Path;
 
@@ -30,54 +29,26 @@ const HF_NORM_ONLY: &str = "hf_norm_only";
 /// exporter tuple).
 pub const QWEN4_EXP_WEIGHT_LAYOUT_UNKNOWN_BLOCKER: &str = "qwen4_exp_weight_layout_unknown";
 
-/// An explicit development opt-in may admit the audited affine 2/4/6-bit packs
-/// through ordinary manifest validation. It never changes on-disk readiness
-/// and never skips tensor, architecture, file or quantization validation.
-pub(crate) fn experimental_runtime_admission(
-    model_dir: &Path,
-    manifest: &NativeModelManifest,
-    enabled: bool,
-) -> bool {
-    if !enabled
-        || manifest.model_family != "qwen4_exp"
-        || manifest.runtime_status.ready
-        || manifest.runtime_status.blockers != ["qwen4_exp_native_trunk_not_implemented"]
-        || manifest.weight_sanitize != WeightSanitize::HfNormOnly
-    {
-        return false;
-    }
-    let mut expert_layout = None;
-    for tensor in &manifest.tensors {
-        let expert = matches!(
-            tensor.role,
-            NativeTensorRole::FfnGateExps
-                | NativeTensorRole::FfnUpExps
-                | NativeTensorRole::FfnDownExps
-                | NativeTensorRole::FfnGateUpExpsPacked
-        );
-        if let Some(quantization) = &tensor.quantization {
-            if quantization.mode != "affine" {
-                return false;
-            }
-            if expert {
-                let layout = (quantization.bits, quantization.group_size);
-                if !matches!(layout, (2, 32) | (4 | 6, 64))
-                    || expert_layout.is_some_and(|expected| expected != layout)
-                {
-                    return false;
-                }
-                expert_layout = Some(layout);
-            }
-        } else if expert {
-            return false;
-        }
-    }
-    let Some(expert_layout) = expert_layout else {
-        return false;
-    };
-    // Each audited pack has its own protected-projection layout. A union of
-    // their tuples would also admit untested mixtures between pack variants.
-    if !manifest
+fn is_expert_role(role: NativeTensorRole) -> bool {
+    matches!(
+        role,
+        NativeTensorRole::FfnGateExps
+            | NativeTensorRole::FfnUpExps
+            | NativeTensorRole::FfnDownExps
+            | NativeTensorRole::FfnGateUpExpsPacked
+    )
+}
+
+fn has_unknown_layout_blocker(manifest: &NativeModelManifest) -> bool {
+    manifest
+        .runtime_status
+        .blockers
+        .iter()
+        .any(|blocker| blocker == QWEN4_EXP_WEIGHT_LAYOUT_UNKNOWN_BLOCKER)
+}
+
+fn protected_projections_match(manifest: &NativeModelManifest, expert_layout: (u32, u32)) -> bool {
+    manifest
         .tensors
         .iter()
         .filter_map(|tensor| tensor.quantization.as_ref())
@@ -87,21 +58,134 @@ pub(crate) fn experimental_runtime_admission(
             (6, 64) => matches!((quant.bits, quant.group_size), (6, 64) | (8, 32 | 64)),
             _ => false,
         })
-    {
-        return false;
+}
+
+/// Inspect expert quantization. Mixed layouts, MXFP4, and unquantized experts
+/// are hard errors; a uniform (2,32) / (4,64) / (6,64) affine layout is `Ok`.
+fn inspect_expert_layout(manifest: &NativeModelManifest) -> Result<Option<(u32, u32)>, String> {
+    let mut expert_layout = None;
+    for tensor in &manifest.tensors {
+        if let Some(quantization) = &tensor.quantization {
+            if quantization.mode != "affine" {
+                return Err(format!(
+                    "qwen4_exp rejects quantization mode {} on tensor {} (MXFP4 and other \
+non-affine formats are not product)",
+                    quantization.mode, tensor.name
+                ));
+            }
+            if is_expert_role(tensor.role) {
+                let layout = (quantization.bits, quantization.group_size);
+                if !matches!(layout, (2, 32) | (4 | 6, 64)) {
+                    return Err(format!(
+                        "qwen4_exp expert tensor {} has unsupported affine layout bits={} \
+group_size={} (product is 4-bit/group64 or 6-bit/group64; 2-bit/group32 is experimental)",
+                        tensor.name, layout.0, layout.1
+                    ));
+                }
+                if expert_layout.is_some_and(|expected| expected != layout) {
+                    return Err(format!(
+                        "qwen4_exp mixed expert layouts are rejected (saw {expert_layout:?} and \
+{layout:?})"
+                    ));
+                }
+                expert_layout = Some(layout);
+            }
+        } else if is_expert_role(tensor.role) {
+            return Err(format!(
+                "qwen4_exp expert tensor {} must be affine-quantized",
+                tensor.name
+            ));
+        }
     }
+    Ok(expert_layout)
+}
+
+fn layout_apply_matches(model_dir: &Path, manifest: &NativeModelManifest) -> bool {
     let mut checked = manifest.clone();
     apply(model_dir, &mut checked).is_ok()
         && checked.runtime_status.blockers == manifest.runtime_status.blockers
         && checked.weight_sanitize == manifest.weight_sanitize
 }
 
+/// Product 4-bit/group64 and 6-bit/group64 packs admit without an environment
+/// variable. 2-bit/group32 still requires `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL`.
+/// Mixed layouts, MXFP4, and unknown exporters stay rejected.
+pub(crate) fn experimental_runtime_admission(
+    model_dir: &Path,
+    manifest: &NativeModelManifest,
+    enabled: bool,
+) -> bool {
+    if manifest.model_family != "qwen4_exp"
+        || has_unknown_layout_blocker(manifest)
+        || manifest
+            .runtime_status
+            .blockers
+            .iter()
+            .any(|blocker| blocker != "qwen4_exp_native_trunk_not_implemented")
+        || manifest.weight_sanitize != WeightSanitize::HfNormOnly
+    {
+        return false;
+    }
+    let Ok(Some(expert_layout)) = inspect_expert_layout(manifest) else {
+        return false;
+    };
+    if !protected_projections_match(manifest, expert_layout) {
+        return false;
+    }
+    if !layout_apply_matches(model_dir, manifest) {
+        return false;
+    }
+    match expert_layout {
+        (4 | 6, 64) => true,
+        (2, 32) => enabled,
+        _ => false,
+    }
+}
+
+/// Hard-error format gate for Flash Next. Product 4/6-bit packs pass without
+/// env. 2-bit still needs the family opt-in. Mixed layouts, MXFP4, and
+/// protected-projection mismatches are errors, not silent admission failures.
+pub(crate) fn validate_qwen4_exp_runtime_formats(
+    model_dir: &Path,
+    manifest: &NativeModelManifest,
+    experimental: bool,
+) -> Result<(), String> {
+    if manifest.model_family != "qwen4_exp" || has_unknown_layout_blocker(manifest) {
+        return Ok(());
+    }
+    if manifest.weight_sanitize != WeightSanitize::HfNormOnly {
+        return Ok(());
+    }
+    let expert_layout = inspect_expert_layout(manifest)?;
+    let Some(expert_layout) = expert_layout else {
+        return Ok(());
+    };
+    if !protected_projections_match(manifest, expert_layout) {
+        return Err(format!(
+            "qwen4_exp protected-projection layout does not match expert format {expert_layout:?}"
+        ));
+    }
+    if expert_layout == (2, 32) && !experimental {
+        return Err(
+            "qwen4_exp 2-bit/group32 is not a product format (set AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1; \
+AX_ENGINE_2BIT_EXPERIMENTAL=1 is also required)"
+                .to_string(),
+        );
+    }
+    if !layout_apply_matches(model_dir, manifest) {
+        return Err(
+            "qwen4_exp audited exporter identity or convolution layout check failed".to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Interpret a freshly-converted `qwen4_exp` manifest's weight layout from
 /// `axquant_manifest.json` in `model_dir`, when present.
 ///
-/// Never touches `manifest.runtime_status.ready` or removes any existing
-/// blocker; only appends to `blockers` / `notes` and, for the one audited
-/// legacy tuple, sets `manifest.weight_sanitize`.
+/// The audited legacy tuple sets `weight_sanitize=hf_norm_only` and leaves
+/// `ready=true`. Unrecognized or missing exporters append
+/// `qwen4_exp_weight_layout_unknown` and clear readiness.
 pub(super) fn apply(
     model_dir: &Path,
     manifest: &mut NativeModelManifest,
@@ -153,13 +237,14 @@ pub(super) fn apply(
 legacy export from {EXPECTED_RUNTIME_NAME} (source {EXPECTED_MODEL_ID}@{EXPECTED_REVISION}): \
 weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis \
 order. This is a legacy interpretation exception for one audited exporter, not proof the \
-layout is correct, and does not mark this manifest ready."
+layout is correct."
     ));
 
     Ok(())
 }
 
 fn push_layout_unknown(manifest: &mut NativeModelManifest) {
+    manifest.runtime_status.ready = false;
     manifest
         .runtime_status
         .blockers
@@ -416,8 +501,8 @@ mod tests {
             tensor_format: NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: NativeRuntimeStatus {
-                ready: false,
-                blockers: vec!["qwen4_exp_native_trunk_not_implemented".to_string()],
+                ready: true,
+                blockers: Vec::new(),
                 notes: Vec::new(),
             },
             layer_count: 1,
@@ -539,9 +624,13 @@ mod tests {
             true,
         ));
         let before = serde_json::to_vec(&manifest).unwrap();
-        assert!(!experimental_runtime_admission(&dir, &manifest, false));
+        assert!(
+            experimental_runtime_admission(&dir, &manifest, false),
+            "product 4-bit/group64 must admit without env"
+        );
         assert!(experimental_runtime_admission(&dir, &manifest, true));
         assert_eq!(serde_json::to_vec(&manifest).unwrap(), before);
+        validate_qwen4_exp_runtime_formats(&dir, &manifest, false).unwrap();
         for bits in [2, 3, 5, 8] {
             let mut changed = manifest.clone();
             changed
@@ -566,6 +655,7 @@ mod tests {
             quant.mode = mode.into();
             quant.group_size = group;
             assert!(!experimental_runtime_admission(&dir, &changed, true));
+            assert!(validate_qwen4_exp_runtime_formats(&dir, &changed, true).is_err());
         }
         let mut missing = manifest.clone();
         missing.tensors.pop();
@@ -577,8 +667,15 @@ mod tests {
             .push("unresolved_contract".into());
         assert!(!experimental_runtime_admission(&dir, &changed, true));
         changed = manifest.clone();
-        changed.runtime_status.blockers.clear();
-        assert!(!experimental_runtime_admission(&dir, &changed, true));
+        changed.runtime_status.ready = false;
+        changed
+            .runtime_status
+            .blockers
+            .push("qwen4_exp_native_trunk_not_implemented".into());
+        assert!(
+            experimental_runtime_admission(&dir, &changed, false),
+            "legacy not-ready 4-bit manifests still admit without env"
+        );
         changed = manifest.clone();
         changed.model_family = "qwen3_5".into();
         assert!(!experimental_runtime_admission(&dir, &changed, true));
@@ -614,8 +711,16 @@ mod tests {
             let mut candidate = manifest.clone();
             candidate.tensors.push(expert.clone());
             let before = serde_json::to_vec(&candidate).unwrap();
-            assert!(!experimental_runtime_admission(&dir, &candidate, false));
-            assert!(experimental_runtime_admission(&dir, &candidate, true));
+            if bits == 2 {
+                assert!(!experimental_runtime_admission(&dir, &candidate, false));
+                assert!(experimental_runtime_admission(&dir, &candidate, true));
+                assert!(validate_qwen4_exp_runtime_formats(&dir, &candidate, false).is_err());
+                validate_qwen4_exp_runtime_formats(&dir, &candidate, true).unwrap();
+            } else {
+                assert!(experimental_runtime_admission(&dir, &candidate, false));
+                assert!(experimental_runtime_admission(&dir, &candidate, true));
+                validate_qwen4_exp_runtime_formats(&dir, &candidate, false).unwrap();
+            }
             assert_eq!(serde_json::to_vec(&candidate).unwrap(), before);
 
             let mut mixed = expert.clone();
@@ -624,6 +729,11 @@ mod tests {
             (other.bits, other.group_size) = if bits == 2 { (4, 64) } else { (2, 32) };
             candidate.tensors.push(mixed);
             assert!(!experimental_runtime_admission(&dir, &candidate, true));
+            assert!(
+                validate_qwen4_exp_runtime_formats(&dir, &candidate, true)
+                    .unwrap_err()
+                    .contains("mixed expert layouts")
+            );
             candidate.tensors.pop();
 
             let mut projection = expert.clone();
@@ -635,6 +745,11 @@ mod tests {
                 quant.group_size = bad_group;
                 candidate.tensors.push(projection.clone());
                 assert!(!experimental_runtime_admission(&dir, &candidate, true));
+                assert!(
+                    validate_qwen4_exp_runtime_formats(&dir, &candidate, true)
+                        .unwrap_err()
+                        .contains("protected-projection")
+                );
                 candidate.tensors.pop();
             }
             let outside_pack = projection.quantization.as_mut().unwrap();
@@ -679,13 +794,9 @@ mod tests {
                 .contains(&QWEN4_EXP_WEIGHT_LAYOUT_UNKNOWN_BLOCKER.to_string())
         );
         assert!(
-            manifest
-                .runtime_status
-                .blockers
-                .contains(&"qwen4_exp_native_trunk_not_implemented".to_string()),
-            "existing blocker must survive untouched"
+            !manifest.runtime_status.ready,
+            "unknown layout must clear readiness"
         );
-        assert!(!manifest.runtime_status.ready, "ready must stay untouched");
         assert!(
             manifest
                 .runtime_status
@@ -771,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn matching_tuple_with_valid_convs_sets_hf_norm_only_and_stays_not_ready() {
+    fn matching_tuple_with_valid_convs_sets_hf_norm_only_and_stays_ready() {
         let dir = temp_model_dir("matching");
         write_axquant_manifest(&dir, &audited_legacy_json());
         let mut manifest = base_manifest();
@@ -779,14 +890,8 @@ mod tests {
         apply(&dir, &mut manifest).expect("audited tuple with valid convs should apply");
 
         assert_eq!(manifest.weight_sanitize, WeightSanitize::HfNormOnly);
-        assert!(!manifest.runtime_status.ready, "ready must stay untouched");
-        assert!(
-            manifest
-                .runtime_status
-                .blockers
-                .contains(&"qwen4_exp_native_trunk_not_implemented".to_string()),
-            "existing blocker must survive untouched"
-        );
+        assert!(manifest.runtime_status.ready);
+        assert!(manifest.runtime_status.blockers.is_empty());
         assert!(
             !manifest
                 .runtime_status

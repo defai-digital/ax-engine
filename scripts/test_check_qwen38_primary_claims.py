@@ -19,9 +19,12 @@ sys.modules[MODULE_SPEC.name] = checker
 MODULE_SPEC.loader.exec_module(checker)
 
 STATUS = checker.STATUS_SENTENCE
+FLASH_NEXT_STATUS = checker.FLASH_NEXT_STATUS_SENTENCE
 BODY = (
     f"{STATUS}\n"
+    f"{FLASH_NEXT_STATUS}\n"
     "ax-engine serve qwen3.8-27b:axq\n"
+    "qwen3.8-flash-next:axq\n"
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP "
     "3e290738e96972307c6aeb9934ab170ca0eae1c1\n"
 )
@@ -39,7 +42,7 @@ class CheckQwen38PrimaryClaimsTest(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
 
     def seed_required(self) -> None:
-        for relative in checker.STATUS_FILES:
+        for relative in (*checker.STATUS_FILES, *checker.FLASH_NEXT_STATUS_FILES):
             self.write(relative, BODY)
 
     def test_clean_docs_pass(self) -> None:
@@ -80,6 +83,17 @@ class CheckQwen38PrimaryClaimsTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             checker.PrimaryClaimError, "unearned Qwen 3.8 MTP Tier 2"
+        ):
+            checker.check_qwen38_primary_claims(self.root)
+
+    def test_missing_flash_next_status_sentence_fails(self) -> None:
+        self.seed_required()
+        self.write(
+            "docs/model-certifications/qwen3.8-flash-next.md",
+            "qwen3.8-flash-next:axq\n",
+        )
+        with self.assertRaisesRegex(
+            checker.PrimaryClaimError, "canonical Qwen 3.8 Flash Next status sentence"
         ):
             checker.check_qwen38_primary_claims(self.root)
 

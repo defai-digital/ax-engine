@@ -27,6 +27,7 @@ class MatrixValidationTests(unittest.TestCase):
     def test_registry_parse_includes_known_tiers(self) -> None:
         tiers = smoke.parse_registry_tiers()
         self.assertEqual(tiers.get("qwen3"), "certified")
+        self.assertEqual(tiers.get("qwen4_exp"), "certified")
         self.assertEqual(tiers.get("diffusion_gemma"), "experimental")
         self.assertEqual(tiers.get("llama3"), "compatible")
 

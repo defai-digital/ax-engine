@@ -410,7 +410,10 @@ fn qwen4_exp_real_pack_residency_fingerprint() {
         other => panic!("invalid expected streaming flag {other}"),
     };
     let artifacts = NativeModelArtifacts::from_dir_or_convert(&root).unwrap();
-    assert!(!artifacts.manifest().runtime_status.ready);
+    assert!(
+        artifacts.manifest().runtime_status.ready,
+        "audited Flash Next packs must convert ready"
+    );
     let teacher_force: Option<Vec<u32>> = std::env::var("AX_FLASH_NEXT_TEACHER_FORCE_IDS")
         .ok()
         .map(|value| serde_json::from_str(&value).unwrap());
@@ -618,7 +621,7 @@ fn qwen4_exp_production_cache_round_trip_and_verify_replay() {
     let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
     assert!(
         !manifest.runtime_status.ready,
-        "production admission remains closed during integration"
+        "oracle fixture has no axquant_manifest.json so layout stays unknown"
     );
     manifest.weight_sanitize = WeightSanitize::HfToMlx;
     // Only this in-memory synthetic fixture is admitted for integration tests.
@@ -1128,6 +1131,87 @@ fn observe_greedy_mismatch(
     }
 }
 
+/// Batched `verify_one` vs sequential singleton `forward` may flip argmax at a
+/// documented near-tie. `sequential` is the singleton greedy token; `margin` is
+/// top-two of that singleton logits row.
+#[derive(Clone, Debug, PartialEq)]
+struct VerifyOneGreedyDecision {
+    position: &'static str,
+    matched: bool,
+    sequential: u32,
+    batched: u32,
+    margin: f32,
+}
+
+impl VerifyOneGreedyDecision {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "position": self.position,
+            "matched": self.matched,
+            "sequential": self.sequential,
+            "batched": self.batched,
+            "margin": self.margin,
+        })
+    }
+}
+
+fn classify_verify_one_greedy(
+    batched: u32,
+    sequential: u32,
+    margin: f32,
+    tie_margin: f32,
+    position: &'static str,
+) -> Result<VerifyOneGreedyDecision, String> {
+    if batched != sequential && margin > tie_margin {
+        return Err(format!(
+            "MTP verify_one {position} greedy mismatch is not a documented near-tie: sequential={sequential} batched={batched} margin={margin} tie_margin={tie_margin}"
+        ));
+    }
+    Ok(VerifyOneGreedyDecision {
+        position,
+        matched: batched == sequential,
+        sequential,
+        batched,
+        margin,
+    })
+}
+
+fn assert_verify_one_greedy_within_tie(
+    batched: u32,
+    sequential: u32,
+    sequential_logits: &MlxArray,
+    position: &'static str,
+    tie_margin: f32,
+) -> VerifyOneGreedyDecision {
+    let margin = crate::model::qwen4_exp_mtp::top_two_margin(sequential_logits, 0).unwrap();
+    classify_verify_one_greedy(batched, sequential, margin, tie_margin, position)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+#[test]
+fn qwen4_exp_mtp_verify_one_batched_greedy_tie_helper_matches_campaign_contract() {
+    let tie_margin = 0.5;
+    let matched = classify_verify_one_greedy(271, 271, 1.25, tie_margin, "bonus").unwrap();
+    assert!(matched.matched);
+    assert_eq!(matched.position, "bonus");
+    let near = classify_verify_one_greedy(198, 271, 0.0, tie_margin, "bonus").unwrap();
+    assert!(!near.matched);
+    assert_eq!(near.sequential, 271);
+    assert_eq!(near.batched, 198);
+    assert_eq!(near.margin, 0.0);
+    let wide = classify_verify_one_greedy(198, 271, 1.25, tie_margin, "bonus").unwrap_err();
+    assert_eq!(
+        wide,
+        "MTP verify_one bonus greedy mismatch is not a documented near-tie: sequential=271 batched=198 margin=1.25 tie_margin=0.5"
+    );
+    let correction =
+        classify_verify_one_greedy(561, 271, 1.25, tie_margin, "correction").unwrap_err();
+    assert_eq!(
+        correction,
+        "MTP verify_one correction greedy mismatch is not a documented near-tie: sequential=271 batched=561 margin=1.25 tie_margin=0.5"
+    );
+}
+
 fn flash_next_mtp_permute_draft_head(
     head: &mut crate::weights::qwen4_exp_mtp::Qwen4ExpMtpWeights,
 ) -> (bool, Option<u64>) {
@@ -1284,6 +1368,9 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     let mut max_state_divergence = mtp_parity::MtpDivergence::zero();
     let mut max_logit_divergence = mtp_parity::MtpDivergence::zero();
     let mut accepted_step_arrays = Vec::new();
+    let tie_margin = mtp_parity::mtp_tie_margin();
+    let mut verify_one_correction = None;
+    let mut verify_one_bonus = None;
     for (draft, remaining, accepted) in [
         (correct_draft, 2, true),
         (wrong_draft, 2, false),
@@ -1302,7 +1389,13 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
                 ProjectionBatchPolicy::Shared,
             )
             .unwrap();
-            assert_eq!(greedy(&verified.after_primary), greedy(&target));
+            verify_one_correction = Some(assert_verify_one_greedy_within_tie(
+                greedy(&verified.after_primary),
+                greedy(&target),
+                &target.logits,
+                "correction",
+                tie_margin,
+            ));
             max_logit_divergence = max_logit_divergence.max_relative(
                 mtp_parity::mtp_logits_divergence(&verified.after_primary.logits, &target.logits),
             );
@@ -1312,7 +1405,13 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
                 dtype,
             );
             let after_draft = verified.after_draft.as_ref().unwrap();
-            assert_eq!(verified.next_primary, greedy(&second));
+            verify_one_bonus = Some(assert_verify_one_greedy_within_tie(
+                verified.next_primary,
+                greedy(&second),
+                &second.logits,
+                "bonus",
+                tie_margin,
+            ));
             max_logit_divergence = max_logit_divergence.max_relative(
                 mtp_parity::mtp_logits_divergence(&after_draft.logits, &second.logits),
             );
@@ -1362,7 +1461,6 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     );
     let mut generated = Vec::new();
     let mut mtp_selected_decode_bytes = 0;
-    let tie_margin = mtp_parity::mtp_tie_margin();
     let mut identity = mtp_parity::GreedyIdentityReport::exact();
     let mut comparing = true;
     while generated.len() < budget {
@@ -1415,7 +1513,21 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             generated.push(*token);
         }
         if comparing {
-            assert_eq!(session.primary, greedy(&direct));
+            // Accepted steps read next_primary from the batched bonus row;
+            // rejection is a singleton forward and stays bit-exact.
+            if committed.len() > 1 {
+                observe_greedy_mismatch(
+                    &mut identity,
+                    &mut comparing,
+                    generated.len(),
+                    greedy(&direct),
+                    session.primary,
+                    top_two_margin(&direct.logits, 0).unwrap(),
+                    tie_margin,
+                );
+            } else {
+                assert_eq!(session.primary, greedy(&direct));
+            }
             max_state_divergence = max_state_divergence.max_relative(
                 mtp_parity::mtp_state_divergence(&session.trunk_state, &direct.state),
             );
@@ -1479,6 +1591,13 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             "max_logit_relative_divergence": max_logit_divergence.relative,
             "max_state_abs_difference": max_state_divergence.max_abs,
             "max_state_relative_divergence": max_state_divergence.relative,
+            "tie_margin": tie_margin,
+            "verify_one_correction": verify_one_correction
+                .as_ref()
+                .map(VerifyOneGreedyDecision::to_json),
+            "verify_one_bonus": verify_one_bonus
+                .as_ref()
+                .map(VerifyOneGreedyDecision::to_json),
             "tolerance": tolerance.limit,
             "tolerance_source": tolerance.source,
             "within_tolerance": within_tolerance,
@@ -1507,6 +1626,13 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             "max_logit_relative_divergence": max_logit_divergence.relative,
             "max_state_abs_difference": max_state_divergence.max_abs,
             "max_state_relative_divergence": max_state_divergence.relative,
+            "tie_margin": tie_margin,
+            "verify_one_correction": verify_one_correction
+                .as_ref()
+                .map(VerifyOneGreedyDecision::to_json),
+            "verify_one_bonus": verify_one_bonus
+                .as_ref()
+                .map(VerifyOneGreedyDecision::to_json),
             "tolerance": tolerance.limit,
             "tolerance_source": tolerance.source,
             "within_tolerance": within_tolerance,

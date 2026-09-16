@@ -130,6 +130,35 @@ fn flash_runner_state_bytes(state: &Qwen4ExpState, layers: usize) -> Vec<u8> {
     cache.serialize_to_bytes()
 }
 
+/// Expected `Qwen4ExpState::position` after one production `MlxRunner::run`
+/// prefill for this file's runner setup: `from_artifacts(..., true)` disables
+/// n-gram, Flash Next has no generic MTP, sampling is greedy.
+///
+/// Direct policy primes `start_direct_pipeline` with the first generated
+/// token when `max_output > 1`, so the snapshot is `prompt_len + 1`. A live
+/// Flash Next MTP cursor skips that prime (`flash_next_cursor_owns_decode`)
+/// and stays at `prompt_len`. The extra token is the mlx_lm-style double-
+/// buffer lookahead, not a round-up of `block_size_tokens`, QSA ratio, or
+/// PLE/n-gram window.
+fn flash_next_run_prefill_snapshot_len(
+    prompt_len: usize,
+    max_output: u32,
+    mtp_requested: bool,
+) -> usize {
+    let session_direct = true;
+    let request_ngram_disabled = max_output < NGRAM_MIN_OUTPUT_FOR_ACCELERATION;
+    let bootstrap_pipeline = should_bootstrap_direct_pipeline(
+        session_direct,
+        request_ngram_disabled,
+        false,
+        false,
+        mtp_requested,
+    );
+    let flash_next_cursor_owns_decode = mtp_requested;
+    let primes = bootstrap_pipeline && !flash_next_cursor_owns_decode && max_output > 1;
+    prompt_len + usize::from(primes)
+}
+
 /// AXKB header: magic[4] + version u32 + seq_len u64. Byte 8 is the first
 /// byte of `seq_len`. Values 5 versus 6 mean the snapshots are at different
 /// token counts, not a later tensor payload difference.
@@ -146,6 +175,49 @@ fn axkb_header_seq_len_is_little_endian_u64_at_byte_8() {
     assert_eq!(&five_bytes[8..16], &5u64.to_le_bytes());
     assert_eq!(&six_bytes[8..16], &6u64.to_le_bytes());
     assert_ne!(five_bytes[8], six_bytes[8]);
+}
+
+#[test]
+fn flash_next_direct_prefill_snapshot_is_prompt_plus_pipeline_bootstrap() {
+    // The real-pack failure at prompt_len=69 / block_size=4 was 70 vs 69 on
+    // the direct policy only. MTP at the same schedule stayed at 69. That
+    // extra position is `start_direct_pipeline` after greedy prefill with
+    // max_output=3, not a partial-block round-up: every length in 65..=72
+    // (both sides of the 4-token and 69-token boundaries) gets the same +1
+    // on direct and +0 on MTP.
+    const BLOCK: usize = 4;
+    const MAX_OUTPUT: u32 = 3;
+    for prompt_len in 65..=72 {
+        let head = MlxRunner::linear_boundary_capture_head_len(BLOCK, 0, prompt_len);
+        if prompt_len.is_multiple_of(BLOCK) {
+            assert_eq!(head, None, "aligned prompt_len={prompt_len}");
+        } else {
+            assert_eq!(
+                head,
+                Some(prompt_len - prompt_len % BLOCK),
+                "unaligned prompt_len={prompt_len}"
+            );
+        }
+        assert_eq!(
+            flash_next_run_prefill_snapshot_len(prompt_len, MAX_OUTPUT, false),
+            prompt_len + 1,
+            "direct greedy prefill snapshot at prompt_len={prompt_len}"
+        );
+        assert_eq!(
+            flash_next_run_prefill_snapshot_len(prompt_len, MAX_OUTPUT, true),
+            prompt_len,
+            "MTP cursor prefill snapshot at prompt_len={prompt_len}"
+        );
+        assert_eq!(
+            flash_next_run_prefill_snapshot_len(prompt_len, 1, false),
+            prompt_len,
+            "max_output=1 skips the direct-pipeline prime at prompt_len={prompt_len}"
+        );
+    }
+    assert_eq!(flash_next_run_prefill_snapshot_len(5, 3, false), 6);
+    assert_eq!(flash_next_run_prefill_snapshot_len(5, 3, true), 5);
+    assert_eq!(flash_next_run_prefill_snapshot_len(69, 3, false), 70);
+    assert_eq!(flash_next_run_prefill_snapshot_len(69, 3, true), 69);
 }
 
 impl Generation {
@@ -327,7 +399,7 @@ fn flash_next_runner_mtp_matches_direct_across_prefill_quanta_and_budgets() {
     let mut runner = MlxRunner::from_artifacts(&artifacts, 2, true).unwrap();
     assert!(
         runner.has_mtp(),
-        "run with AX_MLX_FLASH_NEXT_MTP_CANDIDATE=1"
+        "synthetic Flash Next artifacts must include mtp.safetensors"
     );
     assert!(runner.weights.mtp.is_none());
     assert!(!runner.mtp_model_policy.certified_default_on());
@@ -612,22 +684,28 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
     let direct_prefill = direct.prefill_state.as_ref().unwrap();
     let mtp_prefill = candidate.prefill_state.as_ref().unwrap();
     // Byte 8 of the AXKB snapshot is seq_len (u64 LE). MTP prefill is n-1
-    // plus a singleton of the last prompt token; direct greedy prefill uses
-    // the same split through cache-only + decode_step. Serialized bytes can
-    // still differ (QMM shape / eval order) at the same position, so
-    // byte-exact prefill identity is a documented non-goal. Compare position
-    // plus numeric tolerance instead.
+    // plus a singleton of the last prompt token and stays at prompt.len():
+    // a live draft cursor owns the first decode step, so
+    // `initialize_generation_state` skips `start_direct_pipeline`. Direct
+    // greedy prefill uses the same n-1 / singleton split, then primes the
+    // mlx_lm-style double-buffer with the first generated token whenever
+    // max_output > 1. That lookahead is independent of prompt length and of
+    // `block_size_tokens` (see
+    // `flash_next_direct_prefill_snapshot_is_prompt_plus_pipeline_bootstrap`).
+    // Serialized bytes can still differ (QMM shape / eval order) at the
+    // same position, so byte-exact prefill identity is a documented
+    // non-goal. Positions are compared against the production `run()`
+    // contract, not against each other.
     assert_eq!(
         mtp_prefill.position(),
-        prompt.len(),
+        flash_next_run_prefill_snapshot_len(prompt.len(), 3, true),
         "MTP prefill snapshot seq_len (AXKB byte 8) must equal the prompt"
     );
     assert_eq!(
         direct_prefill.position(),
-        prompt.len(),
-        "direct prefill snapshot seq_len (AXKB byte 8) must equal the prompt"
+        flash_next_run_prefill_snapshot_len(prompt.len(), 3, false),
+        "direct prefill snapshot seq_len (AXKB byte 8) includes the pipeline bootstrap token"
     );
-    assert_eq!(mtp_prefill.position(), direct_prefill.position());
     let mtp_bytes = flash_runner_state_bytes(mtp_prefill, layers);
     let direct_bytes = flash_runner_state_bytes(direct_prefill, layers);
     assert_eq!(
@@ -638,7 +716,14 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
         &direct_bytes[8..16],
         &(direct_prefill.position() as u64).to_le_bytes()
     );
-    let prefill_records = mtp_parity::mtp_state_array_records(mtp_prefill, direct_prefill);
+    // Recurrent QSA/GDN/PLE state is not comparable across the extra
+    // generated token the direct pipeline already committed.
+    let same_position = mtp_prefill.position() == direct_prefill.position();
+    let prefill_records = if same_position {
+        mtp_parity::mtp_state_array_records(mtp_prefill, direct_prefill)
+    } else {
+        Vec::new()
+    };
     mtp_parity::eprint_mtp_state_array_table("runner prefill", &prefill_records);
     let prefill_divergence = prefill_records
         .iter()
@@ -649,9 +734,14 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
     // The runner drops request state on the terminal step, so decode-state
     // divergence is measured by the CandidateSession controls, not here.
     let tolerance = mtp_parity::mtp_run_tolerance(dtype);
-    mtp_parity::assert_mtp_state_close(mtp_prefill, direct_prefill, dtype);
-    let within_tolerance =
-        identity.identity_until_first_tie && prefill_divergence.relative <= tolerance.limit;
+    if same_position {
+        mtp_parity::assert_mtp_state_close(mtp_prefill, direct_prefill, dtype);
+    }
+    let within_tolerance = if same_position {
+        identity.identity_until_first_tie && prefill_divergence.relative <= tolerance.limit
+    } else {
+        identity.identity_until_first_tie
+    };
     let evidence = serde_json::json!({
         "qualification":false,"block_size_tokens":4,"direct_ids":direct.tokens,
         "mtp_ids":candidate.tokens,"direct_routes":direct.routes,"mtp_routes":candidate.routes,
@@ -666,6 +756,8 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
         "prefill_state_byte_exact_is_non_goal": true,
         "prefill_seq_len_field": "AXKB header seq_len u64 LE at bytes 8..16",
         "prefill_position": mtp_prefill.position(),
+        "direct_prefill_position": direct_prefill.position(),
+        "direct_prefill_includes_pipeline_bootstrap_token": true,
         "decode_state_compared": false,
         "logit_scale": serde_json::Value::Null,
         "max_logit_abs_difference": serde_json::Value::Null,

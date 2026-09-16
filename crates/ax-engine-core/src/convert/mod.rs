@@ -148,12 +148,6 @@ pub enum ConvertError {
         "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper, minimax_m3, minimax_m3_vl"
     )]
     UnsupportedModelType { model_type: String },
-    #[error(
-        "Qwen 3.8 Flash Next (`{model_type}`) is incubating: its dedicated AX graph has not passed public artifact qualification. \
-Best-experience SKU is Mac Studio M5 Ultra 256 GB. Do not load this checkpoint as qwen3_5, \
-Super-class 2.4T, or a Compatible generic family. See docs/model-certifications/qwen3.8-flash-next.md"
-    )]
-    IncubatingQwen38FlashNext { model_type: String },
     #[error("missing config field: {field}")]
     MissingConfigField { field: &'static str },
     #[error("no safetensors files found in {dir}")]
@@ -797,43 +791,31 @@ pub fn ensure_manifest_for_hf_model_dir(model_dir: &Path) -> Result<bool, Conver
     // not reach disk, because its mere presence stops every later
     // `from_dir_or_convert` from retrying conversion (only the NotFound arm
     // converts) and flips AX-ready detection in other tools.
-    crate::model::validate_native_model_manifest(model_dir, &manifest).map_err(|error| {
-        generated_manifest_validation_error(
-            model_dir,
-            &manifest.model_family,
-            std::env::var_os(crate::model::AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV)
-                .is_some_and(|value| value == "1"),
-            error,
-        )
-    })?;
+    crate::model::validate_native_model_manifest(model_dir, &manifest)
+        .map_err(|error| generated_manifest_validation_error(model_dir, error))?;
     write_manifest(model_dir, &manifest)?;
     Ok(true)
 }
 
 fn generated_manifest_validation_error(
     model_dir: &Path,
-    model_family: &str,
-    experimental_flash_next: bool,
     error: crate::model::NativeModelError,
 ) -> ConvertError {
-    if model_family == "qwen4_exp" && !experimental_flash_next {
-        ConvertError::IncubatingQwen38FlashNext {
-            model_type: "qwen4_exp".to_string(),
-        }
-    } else {
-        // An opted-in graph can reach ordinary shape/file/quantization checks.
-        // Preserve that failure instead of relabeling it as missing support.
-        ConvertError::GeneratedManifestInvalid {
-            dir: model_dir.to_path_buf(),
-            message: error.to_string(),
-        }
+    // Surface the underlying tensor, quantization, or geometry failure instead of
+    // remapping Flash Next validation into a missing-support incubating error.
+    ConvertError::GeneratedManifestInvalid {
+        dir: model_dir.to_path_buf(),
+        message: error.to_string(),
     }
 }
 
 mod hf_config;
 mod model_family;
 mod qwen4_exp_layout;
-pub(crate) use qwen4_exp_layout::experimental_runtime_admission as admit_experimental_flash_next;
+pub(crate) use qwen4_exp_layout::{
+    experimental_runtime_admission as admit_experimental_flash_next,
+    validate_qwen4_exp_runtime_formats,
+};
 mod tensor_mapping;
 #[cfg(test)]
 mod tests;

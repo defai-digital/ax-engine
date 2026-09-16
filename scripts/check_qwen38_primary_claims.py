@@ -24,6 +24,20 @@ STATUS_FILES = (
     "docs/model-certifications/qwen3.8-27b-axq.md",
     "docs/TESTING.md",
 )
+FLASH_NEXT_ALIAS = "qwen3.8-flash-next:axq"
+FLASH_NEXT_STATUS_SENTENCE = (
+    "Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. "
+    "AX certification record: Candidate (gates open)."
+)
+FLASH_NEXT_STATUS_FILES = (
+    "README.md",
+    "docs/SUPPORTED-MODELS.md",
+    "docs/TESTING.md",
+    "docs/ROADMAP.md",
+    "docs/FAQ.md",
+    "docs/README.md",
+    "docs/model-certifications/qwen3.8-flash-next.md",
+)
 HOST_ALIAS_RE = re.compile(
     r"\b(?:df-macbookpro-m5|df-macbookpro-m3|tn-macstudio-m3|df-macstudio-m2)\b"
 )
@@ -146,12 +160,40 @@ def find_primary_claim_issues(root: Path) -> list[Hit]:
     return hits
 
 
+def find_flash_next_claim_issues(root: Path) -> list[Hit]:
+    hits: list[Hit] = []
+    for relative in FLASH_NEXT_STATUS_FILES:
+        path = root / relative
+        if not path.is_file():
+            hits.append(Hit(path=relative, line_number=1, message="missing required file"))
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if FLASH_NEXT_STATUS_SENTENCE not in text:
+            hits.append(
+                Hit(
+                    path=relative,
+                    line_number=1,
+                    message="missing canonical Qwen 3.8 Flash Next status sentence",
+                )
+            )
+        if FLASH_NEXT_ALIAS not in text:
+            hits.append(
+                Hit(
+                    path=relative,
+                    line_number=1,
+                    message=f"missing alias {FLASH_NEXT_ALIAS}",
+                )
+            )
+    return hits
+
+
 def check_qwen38_primary_claims(root: Path) -> None:
     hits = find_primary_claim_issues(root)
+    hits.extend(find_flash_next_claim_issues(root))
     if hits:
         rendered = "\n".join(f"- {hit.render()}" for hit in hits)
         raise PrimaryClaimError(
-            "Qwen 3.8 27B primary-pack contract failed:\n" f"{rendered}"
+            "Qwen 3.8 primary-pack contract failed:\n" f"{rendered}"
         )
 
 

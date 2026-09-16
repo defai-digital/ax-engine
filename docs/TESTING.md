@@ -76,12 +76,15 @@ Silent direct-fallback on the MTP path is a fail.
 Campaign-only (does not block unrelated patches): MTP Tier 2 promotion, 8h/72h
 endurance, long-context decode-at-depth, peer ranking, multi-model residency,
 multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
-Mac mini M5 64 GB SKU. Qwen 3.8 Flash Next is incubating on Mac Studio M5 Ultra
-256 GB (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`). Convert may
-map `qwen4_exp` metadata; default load/serve stay fail-closed. Audited affine
-exports have an explicit experimental development path documented in the
-[Flash Next record](model-certifications/qwen3.8-flash-next.md). Do not treat a
-campaign host as either SKU.
+Mac mini M5 64 GB SKU. Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`) is a
+second SKU on Mac Studio M5 Ultra 256 GB
+(`python3 scripts/qualify_qwen38_flash_next.py --dry-run`).
+Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
+variable. Flash Next throughput uses the MLX-VLM reference through
+`--skip-mlx-lm` because `mlx_lm` has no `qwen4_exp` model, and never claims an
+`mlx_lm` ratio. See the [Flash Next record](model-certifications/qwen3.8-flash-next.md).
+Do not treat a campaign host as either SKU.
 
 ## Flash Next residency control (development only)
 
@@ -91,7 +94,6 @@ copy of an audited pack; ordinary auto-conversion may create its manifest.
 Run on an adequately sized Apple Silicon development host with MLX 0.32.2:
 
 ```bash
-AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1 \
 AX_STREAM_EXPERTS=on AX_STREAM_EXPERT_LAYERS=1 \
 AX_FLASH_NEXT_EXPECT_STREAMING=1 \
 AX_FLASH_NEXT_CANDIDATE_PACK_DIR=/path/to/private-flash-next-6bit \
@@ -105,8 +107,10 @@ cargo test -p ax-engine-mlx --profile release-server \
 For a resident control set `AX_STREAM_EXPERTS=off` and
 `AX_FLASH_NEXT_EXPECT_STREAMING=0`, using a different output filename. Auto uses
 the existing full-resident estimate plus 48 GiB admission rule; set the expected
-streaming value for the pack and host being tested. The 2-bit export also needs
-`AX_ENGINE_2BIT_EXPERIMENTAL=1` in every process.
+streaming value for the pack and host being tested. Audited 4-bit/group64 and
+6-bit/group64 packs need no family opt-in. The 2-bit export still needs
+`AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and `AX_ENGINE_2BIT_EXPERIMENTAL=1` in
+every process.
 
 For selected-expert controls, keep `AX_STREAM_EXPERTS=on` and add
 `AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1`, writing a separate result file. The
@@ -171,9 +175,9 @@ also accepts `AX_FLASH_NEXT_REAL_PACK`, `AX_FLASH_NEXT_PROMPT_IDS` (3-16 tokens)
 and `AX_FLASH_NEXT_RESULT_PATH`. This real-pack mode requires both selected
 expert flags, forces paging, and checks primary and draft state against a
 same-schedule direct/full-head control. Its MTP-only selected payload counter
-excludes reference forwards. Keep the experimental family and 2-bit admission
-gates enabled where required. Without the real-pack variable, the existing
-synthetic MTP oracle mode is unchanged.
+excludes reference forwards. Audited 4-bit and 6-bit packs need no family
+opt-in; keep `AX_ENGINE_2BIT_EXPERIMENTAL=1` for 2-bit. Without the real-pack
+variable, the existing synthetic MTP oracle mode is unchanged.
 
 ## Secondary families
 

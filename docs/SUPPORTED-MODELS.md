@@ -60,14 +60,15 @@ resolved session*, not how well a family is supported.
 | **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
 | **64 GB (Mac mini M5)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| **256 GB (Mac Studio M5 Ultra)** | Best experience for Qwen 3.8 Flash Next (125B-A6B). Not a certified AX default yet. Super-class Qwen 3.8 (2.4T) stays experimental. |
+| **256 GB (Mac Studio M5 Ultra)** | Best experience for Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`, 125B-A6B). Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. AX certification record: Candidate (gates open). Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
 Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
 
 The current Certified families are `qwen3` (dense and MoE), `qwen3_5` /
-`qwen3_next` (Qwen 3.5/3.6), `qwen3_vl`, `gemma4` / `gemma4_vl`,
-`glm4_moe_lite`, `gpt_oss`, and `deepseek_v3` / `deepseek_v32`. Registered
+`qwen3_next` (Qwen 3.5/3.6), `qwen4_exp` (Qwen 3.8 Flash Next), `qwen3_vl`,
+`gemma4` / `gemma4_vl`, `glm4_moe_lite`, `gpt_oss`, and `deepseek_v3` /
+`deepseek_v32`. Registered
 families without certification evidence are Compatible; `diffusion_gemma` is
 Experimental. A manifest whose structural signals force a feature-gated
 generation kind (for example a diffusion canvas) resolves to Experimental even
@@ -110,12 +111,12 @@ Qwen 3.8 caveat:
   the unique general-purpose default and primary optimization target.
   Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
 - **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU
-  for Mac Studio M5 Ultra 256 GB. It is **incubating**: a dedicated graph and
-  development serving path exist; public artifact qualification remains open.
-  Default load/serve retain the legacy blocker `qwen4_exp_native_trunk_not_implemented`;
-  the audited affine 2/4/6-bit native paths require `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1`.
-  The 2-bit export also requires `AX_ENGINE_2BIT_EXPERIMENTAL=1`.
-  No download alias. Do not treat it as 27B or as Super-class 2.4T. Record:
+  for Mac Studio M5 Ultra 256 GB. Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+  Download `qwen3.8-flash-next:axq` (4-bit) or `qwen3.8-flash-next:axq-6bit`.
+  Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
+  variable. 2-bit still needs `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
+  `AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4 stays rejected. Do not treat it as 27B
+  or as Super-class 2.4T. Record:
   [Qwen 3.8 Flash Next](model-certifications/qwen3.8-flash-next.md).
 
 A model moves between tiers by landing evidence, not by renaming:

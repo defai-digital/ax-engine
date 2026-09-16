@@ -27,34 +27,23 @@ use super::{
 fn experimental_flash_next_auto_convert_preserves_quantization_failure() {
     let dir = Path::new("flash-next-fixture");
     let reason = "tensor expert quantization bits 2 requires experimental gate (set AX_ENGINE_2BIT_EXPERIMENTAL=1)";
-    for experimental in [false, true] {
-        let error = super::generated_manifest_validation_error(
-            dir,
-            "qwen4_exp",
-            experimental,
-            crate::model::NativeModelError::InvalidManifest {
-                message: reason.into(),
-            },
-        );
-        if experimental {
-            assert!(matches!(
-                error,
-                ConvertError::GeneratedManifestInvalid { .. }
-            ));
-            if let ConvertError::GeneratedManifestInvalid {
-                dir: actual_dir,
-                message,
-            } = error
-            {
-                assert_eq!(actual_dir, dir);
-                assert!(message.contains(reason));
-            }
-        } else {
-            assert!(matches!(
-                error,
-                ConvertError::IncubatingQwen38FlashNext { .. }
-            ));
-        }
+    let error = super::generated_manifest_validation_error(
+        dir,
+        crate::model::NativeModelError::InvalidManifest {
+            message: reason.into(),
+        },
+    );
+    assert!(matches!(
+        error,
+        ConvertError::GeneratedManifestInvalid { .. }
+    ));
+    if let ConvertError::GeneratedManifestInvalid {
+        dir: actual_dir,
+        message,
+    } = error
+    {
+        assert_eq!(actual_dir, dir);
+        assert!(message.contains(reason));
     }
 }
 
@@ -4831,7 +4820,17 @@ fn qwen4_exp_official_oracle_metadata_maps_and_validates() {
         .collect();
     write_fake_safetensors(&dir, "model.safetensors", &tensors);
     let mut manifest = convert_hf_model_dir(&dir).unwrap();
-    assert!(!manifest.runtime_status.ready);
+    assert!(
+        !manifest.runtime_status.ready,
+        "oracle fixture has no axquant_manifest.json so layout stays unknown"
+    );
+    assert!(
+        manifest
+            .runtime_status
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "qwen4_exp_weight_layout_unknown")
+    );
     assert_eq!(manifest.qwen4_exp.ple_layer_ids, [2]);
     assert_eq!(
         manifest.qwen4_exp.output_gate_type.as_deref(),
@@ -5235,15 +5234,27 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
             convert_hf_model_dir(&dir).expect("Qwen 3.8 Flash Next convert should map metadata");
         assert_eq!(manifest.model_family, "qwen4_exp", "{model_type}");
         assert_ne!(manifest.model_family, "qwen3_5");
-        assert!(!manifest.runtime_status.ready);
+        assert!(
+            !manifest.runtime_status.ready,
+            "{model_type}: fixture has no axquant_manifest.json"
+        );
         assert!(
             manifest
                 .runtime_status
                 .blockers
                 .iter()
-                .any(|b| b == "qwen4_exp_native_trunk_not_implemented"),
+                .any(|b| b == "qwen4_exp_weight_layout_unknown"),
             "{model_type}: {:?}",
             manifest.runtime_status.blockers
+        );
+        assert!(
+            manifest
+                .runtime_status
+                .notes
+                .iter()
+                .any(|n| n.contains("Mac Studio M5 Ultra")),
+            "{model_type}: {:?}",
+            manifest.runtime_status.notes
         );
         assert!(
             manifest
@@ -5411,9 +5422,9 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
             Some(crate::LayerForwardRoute::Qwen4Exp)
         );
 
-        write_manifest(&dir, &manifest).expect("write not-ready manifest");
+        write_manifest(&dir, &manifest).expect("write unaudited manifest");
         let load_err = crate::model::NativeModelArtifacts::from_dir(&dir)
-            .expect_err("Flash Next must not load until a dedicated trunk exists");
+            .expect_err("unaudited Flash Next layout must not load");
         assert!(
             load_err.to_string().contains("not runtime ready"),
             "{model_type}: {load_err}"
@@ -5452,9 +5463,9 @@ fn ensure_manifest_fail_closes_qwen4_exp_without_writing() {
     );
 
     let error = ensure_manifest_for_hf_model_dir(&dir)
-        .expect_err("auto-manifest must fail closed for Flash Next");
+        .expect_err("incomplete Flash Next convert must not write a manifest");
     assert!(
-        matches!(error, ConvertError::IncubatingQwen38FlashNext { .. }),
+        matches!(error, ConvertError::GeneratedManifestInvalid { .. }),
         "{error}"
     );
     assert!(
@@ -8602,7 +8613,10 @@ fn qwen4_exp_campaign_pack_metadata_validates_without_loading_weights() {
     )
     .unwrap();
     let mut manifest = convert_hf_model_dir(&dir).unwrap();
-    assert!(!manifest.runtime_status.ready);
+    assert!(
+        !manifest.runtime_status.ready,
+        "campaign metadata fixture has no axquant_manifest.json"
+    );
     assert_eq!(manifest.qwen4_exp.ple_layer_ids, [2]);
     assert_eq!(manifest.weight_sanitize, WeightSanitize::None);
     manifest.runtime_status.ready = true;
@@ -8630,20 +8644,18 @@ fn qwen4_exp_write_real_server_candidate_manifest() {
             .join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE)
             .exists()
     );
-    let mut manifest = convert_hf_model_dir(&root).unwrap();
+    let manifest = convert_hf_model_dir(&root).unwrap();
     assert_eq!(manifest.model_family, "qwen4_exp");
     assert_eq!(manifest.weight_sanitize, WeightSanitize::HfNormOnly);
-    assert!(!manifest.runtime_status.ready);
-    assert_eq!(
-        manifest.runtime_status.blockers,
-        ["qwen4_exp_native_trunk_not_implemented"],
-        "do not bypass unresolved format or feature blockers",
-    );
-    manifest.runtime_status.blockers.clear();
-    manifest.runtime_status.ready = true;
-    manifest.runtime_status.notes.push(
-        "Development candidate for real-server validation; not a release or MTP certification"
-            .into(),
+    assert!(manifest.runtime_status.ready);
+    assert!(
+        !manifest
+            .runtime_status
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "qwen4_exp_weight_layout_unknown"),
+        "do not bypass unresolved format or feature blockers: {:?}",
+        manifest.runtime_status.blockers
     );
     crate::model::validate_native_model_manifest(&root, &manifest).unwrap();
     write_manifest(&root, &manifest).unwrap();

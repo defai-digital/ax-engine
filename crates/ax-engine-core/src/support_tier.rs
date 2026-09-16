@@ -176,10 +176,10 @@ mod tests {
     fn expected_tier(family_label: &str) -> ModelSupportTier {
         match family_label {
             "qwen3" | "qwen3_5" | "qwen3_next" | "qwen3_vl" | "gemma4" | "gemma4_vl"
-            | "glm4_moe_lite" | "gpt_oss" | "deepseek_v3" | "deepseek_v32" => {
+            | "glm4_moe_lite" | "gpt_oss" | "deepseek_v3" | "deepseek_v32" | "qwen4_exp" => {
                 ModelSupportTier::Certified
             }
-            "diffusion_gemma" | "deepseek_v4" | "muse_glimmer" | "minimax_m3" | "qwen4_exp" => {
+            "diffusion_gemma" | "deepseek_v4" | "muse_glimmer" | "minimax_m3" => {
                 ModelSupportTier::Experimental
             }
             _ => ModelSupportTier::Compatible,
@@ -220,6 +220,7 @@ mod tests {
             "gpt_oss",
             "deepseek_v3",
             "deepseek_v32",
+            "qwen4_exp",
         ] {
             assert_eq!(
                 support_tier_for_family(label),

@@ -1996,7 +1996,7 @@ impl MlxRunner {
         let flash_next_mtp_candidate_attached =
             weights.qwen4_exp.is_some() && weights.qwen4_exp_mtp.is_some();
         let flash_next_mtp_candidate_attach_failed = cfg.model_family == "qwen4_exp"
-            && crate::weights::flash_next_mtp_candidate_requested()
+            && crate::weights::flash_next_mtp_sidecar_present(artifacts.root_dir())
             && !flash_next_mtp_candidate_attached;
         let mtp_model_policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
             qwen_depth: weights.mtp.as_ref().map(|head| head.max_depth),
@@ -2043,8 +2043,7 @@ impl MlxRunner {
             tracing::error!(
                 target: "ax_engine_mlx::runner",
                 model_family = %cfg.model_family,
-                env = crate::weights::FLASH_NEXT_MTP_CANDIDATE_ENV,
-                "Flash Next MTP candidate was requested but its sidecar is not attached; \
+                "Flash Next MTP sidecar is present but not attached; \
                  no MTP drafter is advertised and MlxMtpPolicy::Required sessions will fail",
             );
         }
@@ -12362,6 +12361,8 @@ impl MlxRunner {
             && gemma4_moe_long_mt_enabled();
         // A live Flash Next cursor must see the first decode step: a primed
         // lazy direct token would occupy that position and strand the cursor.
+        // Direct greedy prefill therefore snapshots at prompt_len+1;
+        // MTP-with-cursor stays at prompt_len.
         let flash_next_cursor_owns_decode = self.flash_next_mtp_session()
             && state.flash_next_mtp.cursor.is_some()
             && is_greedy
@@ -17247,6 +17248,24 @@ mod tests {
         // Degenerate inputs.
         assert_eq!(head(0, 0, 61), None);
         assert_eq!(head(16, 0, 0), None);
+        // Four-token blocks around the 69-token real-pack prompt: capture
+        // never invents a token. The extra direct-prefill position at 70 is
+        // the pipeline bootstrap, not this boundary.
+        for prompt_len in 65..=72 {
+            let captured = head(4, 0, prompt_len);
+            if prompt_len.is_multiple_of(4) {
+                assert_eq!(captured, None, "aligned prompt_len={prompt_len}");
+            } else {
+                assert_eq!(
+                    captured,
+                    Some(prompt_len - prompt_len % 4),
+                    "unaligned prompt_len={prompt_len}"
+                );
+            }
+        }
+        assert_eq!(head(4, 0, 69), Some(68));
+        assert_eq!(head(4, 0, 68), None);
+        assert_eq!(head(4, 0, 72), None);
     }
 
     #[test]

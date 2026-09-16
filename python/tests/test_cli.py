@@ -94,6 +94,8 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
@@ -124,7 +126,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 88)
+        self.assertEqual(len(targets), 90)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
@@ -233,6 +235,16 @@ class AxEngineCliTests(unittest.TestCase):
             "qwen3.8-27b:axq-4bit": (
                 "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
                 "7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e",
+                "candidate",
+            ),
+            "qwen3.8-flash-next:axq": (
+                "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+                None,
+                "candidate",
+            ),
+            "qwen3.8-flash-next:axq-6bit": (
+                "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+                None,
                 "candidate",
             ),
             "ax-qwen3-vl-30b": (

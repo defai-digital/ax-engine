@@ -89,10 +89,10 @@ pub(super) enum MtpModelPolicyKind {
     /// Product default until Tier 2 evidence: MTP attached but not requested.
     DeepseekV4UncertifiedDirectFallback,
     ConflictingDrafters,
-    /// Development-only Flash Next (`qwen4_exp`) sidecar attached through
-    /// `AX_MLX_FLASH_NEXT_MTP_CANDIDATE` (route code 10). Depth one, never
-    /// default-on, and served by its own request-local draft cursor rather
-    /// than the generic MTP decode machinery.
+    /// Flash Next (`qwen4_exp`) sidecar attached when `mtp.safetensors` is
+    /// present (route code 10). Depth one, never default-on, greedy identity
+    /// until documented ties, and served by its own request-local draft
+    /// cursor rather than the generic MTP decode machinery.
     FlashNextCertificationCandidate,
 }
 
@@ -143,7 +143,7 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) runtime_certification: MtpRuntimeCertification,
     /// Product default-on for Qwen linear sidecar packs (throughput MTP).
     pub(super) qwen_linear_throughput_default: bool,
-    /// The Flash Next sidecar is attached (explicit env opt-in succeeded).
+    /// The Flash Next sidecar is attached (`mtp.safetensors` loaded).
     pub(super) flash_next_candidate_attached: bool,
     /// The Flash Next sidecar was requested but failed to attach. Reported
     /// through route telemetry; the model then advertises no drafter.
@@ -330,8 +330,9 @@ impl MtpModelPolicy {
                     || (self.qwen_linear_throughput_default
                         && self.runtime_certification.enabled_by_default)
             }
-            // Development candidate: only an explicit session request (or the
-            // operator force override) may activate it.
+            // Sidecar may attach automatically; only an explicit session
+            // request (or the operator force override) may activate it.
+            // MTP Tier 2 remains pending (greedy identity until documented ties).
             MtpModelPolicyKind::FlashNextCertificationCandidate => false,
             _ => true,
         }

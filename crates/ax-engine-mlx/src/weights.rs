@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use mlx_sys::{
@@ -91,36 +91,28 @@ pub struct ModelWeights {
     /// trunk (`layers`, per-layer embed/proj, MTP, vision towers, …) stays
     /// at its empty/`None` default on the qwen4_exp load path.
     pub(crate) qwen4_exp: Option<Box<qwen4_exp::Qwen4ExpWeights>>,
-    /// Flash Next MTP draft sidecar. Attached only when the trunk is
-    /// `qwen4_exp` and [`FLASH_NEXT_MTP_CANDIDATE_ENV`] opts in; kept separate
-    /// from the generic `mtp` head, which stays `None` for this family.
+    /// Flash Next MTP draft sidecar. Attached automatically when `mtp.safetensors`
+    /// is present next to a `qwen4_exp` trunk; kept separate from the generic
+    /// `mtp` head, which stays `None` for this family. Attachment never makes
+    /// this route default-on (`certified_default_on` stays false).
     pub(crate) qwen4_exp_mtp: Option<Box<qwen4_exp_mtp::Qwen4ExpMtpWeights>>,
 }
 
-/// Development opt-in that attaches the uncertified Flash Next MTP sidecar.
-/// Attachment alone never activates speculation: the session must still
-/// request MTP, and the model policy never makes this route default-on.
-pub(crate) const FLASH_NEXT_MTP_CANDIDATE_ENV: &str = "AX_MLX_FLASH_NEXT_MTP_CANDIDATE";
+const FLASH_NEXT_MTP_SIDECAR_FILE: &str = "mtp.safetensors";
 
-fn flash_next_mtp_candidate_opt_in(raw: Option<&str>) -> bool {
-    raw.map(str::trim).is_some_and(|value| {
-        value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
-    })
+pub(crate) fn flash_next_mtp_sidecar_present(root: &Path) -> bool {
+    root.join(FLASH_NEXT_MTP_SIDECAR_FILE).is_file()
 }
 
-pub(crate) fn flash_next_mtp_candidate_requested() -> bool {
-    flash_next_mtp_candidate_opt_in(std::env::var(FLASH_NEXT_MTP_CANDIDATE_ENV).ok().as_deref())
-}
-
-/// Load the requested Flash Next sidecar. A missing or invalid sidecar leaves
-/// the head detached and is reported loudly; the runner then refuses to
-/// advertise an MTP drafter, so an explicit `Required` session fails instead
-/// of silently decoding direct.
+/// Load the Flash Next sidecar when present. A missing file leaves the head
+/// detached. An invalid sidecar is reported loudly and left detached; the
+/// runner then refuses to advertise an MTP drafter, so an explicit `Required`
+/// session fails instead of silently decoding direct.
 fn load_flash_next_mtp_candidate(
     artifacts: &NativeModelArtifacts,
     trunk: &qwen4_exp::Qwen4ExpWeights,
 ) -> Option<Box<qwen4_exp_mtp::Qwen4ExpMtpWeights>> {
-    if !flash_next_mtp_candidate_requested() {
+    if !flash_next_mtp_sidecar_present(artifacts.root_dir()) {
         return None;
     }
     match qwen4_exp_mtp::load(artifacts.root_dir(), artifacts.manifest(), trunk) {
@@ -129,8 +121,7 @@ fn load_flash_next_mtp_candidate(
             tracing::error!(
                 target: "ax_engine_mlx::weights",
                 %error,
-                env = FLASH_NEXT_MTP_CANDIDATE_ENV,
-                "requested Flash Next MTP sidecar failed to attach; MTP is unavailable for this model"
+                "Flash Next MTP sidecar failed to attach; MTP is unavailable for this model"
             );
             None
         }
@@ -7003,20 +6994,20 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn flash_next_mtp_candidate_opt_in_is_strictly_truthy() {
-        for enabled in ["1", "true", "TRUE", "yes", " Yes "] {
-            assert!(
-                flash_next_mtp_candidate_opt_in(Some(enabled)),
-                "{enabled:?}"
-            );
-        }
-        for disabled in ["", "0", "false", "no", "candidate", "2"] {
-            assert!(
-                !flash_next_mtp_candidate_opt_in(Some(disabled)),
-                "{disabled:?}"
-            );
-        }
-        assert!(!flash_next_mtp_candidate_opt_in(None));
+    fn flash_next_mtp_sidecar_present_requires_mtp_safetensors() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-flash-next-mtp-sidecar-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        assert!(!flash_next_mtp_sidecar_present(&dir));
+        std::fs::write(dir.join(FLASH_NEXT_MTP_SIDECAR_FILE), b"stub").expect("sidecar");
+        assert!(flash_next_mtp_sidecar_present(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

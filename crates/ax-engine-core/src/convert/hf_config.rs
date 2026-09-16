@@ -398,8 +398,8 @@ pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
 pub(crate) fn runtime_status_for_model_type(model_type: &str) -> NativeRuntimeStatus {
     if is_qwen4_exp_family(model_type) {
         return NativeRuntimeStatus {
-            ready: false,
-            blockers: vec!["qwen4_exp_native_trunk_not_implemented".to_string()],
+            ready: true,
+            blockers: Vec::new(),
             notes: vec![
                 "n-gram embedding table must not be eval'd at load_weights".to_string(),
                 "best-experience SKU: Mac Studio M5 Ultra 256 GB".to_string(),

@@ -22,8 +22,9 @@ pub const EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[3];
 /// natively; production validation still rejects it by default.
 pub const AX_ENGINE_2BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_2BIT_EXPERIMENTAL";
 pub const EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[2];
-/// Explicit opt-in for audited Flash Next affine 2/4/6-bit development packs.
-/// Runtime readiness and certification records remain unchanged.
+/// Opt-in for Flash Next formats that are not product (currently 2-bit/group32).
+/// Audited affine 4-bit/group64 and 6-bit/group64 packs load without this gate.
+/// 2-bit still also requires [`AX_ENGINE_2BIT_EXPERIMENTAL_ENV`]. MXFP4 stays rejected.
 pub const AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1487,12 +1488,20 @@ pub(crate) fn validate_native_model_manifest(
             message: "model_family must not be empty".to_string(),
         });
     }
+    let flash_next_experimental =
+        std::env::var_os(AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV).is_some_and(|value| value == "1");
+    if let Err(message) = crate::convert::validate_qwen4_exp_runtime_formats(
+        root_dir,
+        manifest,
+        flash_next_experimental,
+    ) {
+        return Err(NativeModelError::InvalidManifest { message });
+    }
     if (!manifest.runtime_status.ready || !manifest.runtime_status.blockers.is_empty())
         && !crate::convert::admit_experimental_flash_next(
             root_dir,
             manifest,
-            std::env::var_os(AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV)
-                .is_some_and(|value| value == "1"),
+            flash_next_experimental,
         )
     {
         return Err(NativeModelError::InvalidManifest {
