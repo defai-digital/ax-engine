@@ -732,7 +732,9 @@ env_flag!(
     /// gated-delta cache tensor inputs/outputs. Exact target semantics are
     /// preserved; failure falls back to the ordinary verifier.
     ///
-    /// **Default: OFF** pending matched M5 admission.
+    /// **Default: OFF.** M5 Max 2026-09-15 depth-3 flappy A/B: greedy identity
+    /// held and compile actually ran (774 hits / 12 fallbacks) but decode GM
+    /// 0.976 vs off (below ADR-003 D5 1.01; slower).
     mtp_whole_verify_compile_enabled,
     "AX_MLX_MTP_WHOLE_VERIFY_COMPILE"
 );
@@ -741,8 +743,9 @@ env_flag!(
     /// `AX_MLX_MTP_PROFITABILITY_THROUGHPUT` — admit the existing request-local
     /// MTP profitability latch on greedy Qwen linear throughput (relaxed
     /// verify, projected replay, recurrent depth ≤ 3). Default OFF: probes
-    /// tax a winning depth-3 path, and the 0.96× natural-prompt loss was
-    /// measured on exact depth-one.
+    /// tax a winning depth-3 path. M5 2026-09-15 `python_modules_long` product
+    /// MTP / direct GM 2.03 (accept 0.81–0.91); the 0.96× loss was exact
+    /// depth-one, not this path.
     mtp_profitability_throughput_enabled,
     "AX_MLX_MTP_PROFITABILITY_THROUGHPUT"
 );
@@ -750,7 +753,10 @@ env_flag!(
 env_flag!(
     /// `AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS` — build greedy target-verifier
     /// logits with the native greedy post-norm path instead of the sampled
-    /// softmax contract. Default OFF; opt-in A/B only.
+    /// softmax contract.
+    ///
+    /// **Default: OFF.** M5 Max 2026-09-15 depth-3 flappy A/B: greedy identity
+    /// held, decode GM 0.997 vs off (below ADR-003 D5 1.01).
     mtp_native_greedy_verify_logits_enabled,
     "AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS"
 );

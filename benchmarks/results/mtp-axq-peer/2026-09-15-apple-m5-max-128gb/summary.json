@@ -1,0 +1,49 @@
+{
+  "campaign": "qwen38-27b-axq-6bit-latest-runtimes-2026-09-15",
+  "host": "Apple M5 Max, 128 GB",
+  "sku_note": "campaign host, not Mac mini M5 64 GB",
+  "pack": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+  "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+  "contract": {
+    "suite": "flappy",
+    "cases": 4,
+    "generation_tokens": 256,
+    "sampling": "greedy",
+    "warmup": 2,
+    "repetitions": 5,
+    "cooldown_s": 3,
+    "decode": "median of 20 measured runs"
+  },
+  "measured": {
+    "ax_engine": {
+      "version": "7.4.0",
+      "decode_tok_s_median_20": 76.90,
+      "prefill_tok_s_median_20": 795.3
+    },
+    "mtplx": {
+      "version": "2.11.2",
+      "decode_tok_s_median_20": 70.62,
+      "prefill_tok_s_median_20": 686.6
+    },
+    "mlx_lm": {
+      "version": "0.31.3",
+      "mode": "direct_ar",
+      "decode_tok_s_median_20": 27.90
+    },
+    "omlx": {
+      "version": "0.6.4",
+      "mode": "imported_sidecar_lightning_depth_1",
+      "decode_tok_s_median_20": 38.47
+    }
+  },
+  "unsupported_same_pack": [
+    {"runtime": "mlxcel", "version": "0.7.0", "reason": "AXQ affine 6-bit embed group layout"},
+    {"runtime": "omlx", "version": "0.6.4", "reason": "Lightning MTP expects mtp.* tensors"},
+    {"runtime": "llama.cpp", "version": "0.4.0 (formula 0.4.1)", "reason": "not GGUF"},
+    {"runtime": "mistral.rs", "version": "0.9.3", "reason": "no AXQ MLX loader on host"},
+    {"runtime": "exo", "version": "1.0.71", "reason": "cluster runtime"},
+    {"runtime": "rMLX", "version": "0.4.1", "reason": "no campaign binary"},
+    {"runtime": "uzu", "version": "0.5.26", "reason": "Mirai checkpoints only"},
+    {"runtime": "vLLM", "version": "0.29.0", "reason": "CUDA, not Apple Silicon"}
+  ]
+}
