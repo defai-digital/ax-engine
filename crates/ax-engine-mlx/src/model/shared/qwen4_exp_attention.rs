@@ -1,9 +1,9 @@
 //! Bounded sparse attention for Flash Next (`qwen4_exp`).
 //!
 //! Query projection is packed as `[head0 query, head0 gate, head1 query,
-//! head1 gate, ...]`, each chunk `head_dim`. After Q/K RMS (float32, sanitized)
-//! gain `1 + raw delta`) and RoPE on the main rotary width, keys and values
-//! are appended to a request-owned cache. Attention gathers only the token
+//! head1 gate, ...]`, each chunk `head_dim`. After Q/K RMS (float32, sanitized
+//! gain `1 + raw delta`) and official QSA rotary on the main rotary width,
+//! keys and values are appended to a request-owned cache. Attention gathers only the token
 //! rows chosen by [`QsaIndexer`]; it does not build a dense sequence-squared
 //! mask. A per-query MLX gather plus unmasked `scaled_dot_product_attention`
 //! is a correctness baseline, not a speed claim.
@@ -15,7 +15,7 @@
 
 use mlx_sys::{
     MlxArray, MlxDtype, astype, concatenate, contiguous, multiply, repeat_axis, reshape, rms_norm,
-    rope, scaled_dot_product_attention, slice, split, take, transpose,
+    scaled_dot_product_attention, slice, split, take, transpose,
 };
 use thiserror::Error;
 
@@ -23,7 +23,9 @@ use super::qwen4_exp_residual::{
     Qwen4ExpResidualError, sigmoid_projection_dtype, validate_projection,
 };
 use super::utils::{ProjectionBatchPolicy, qw_with_policy};
-use crate::qwen4_exp_qsa::{QsaError, QsaIndexKeyCache, QsaIndexer, QsaSelection};
+use crate::qwen4_exp_qsa::{
+    QsaError, QsaIndexKeyCache, QsaIndexer, QsaSelection, apply_qsa_rotary_offset,
+};
 use crate::weights::QuantizedWeight;
 
 type Result<T> = std::result::Result<T, Qwen4ExpAttentionError>;
@@ -462,22 +464,24 @@ impl Qwen4ExpAttention {
         let queries = rms_with_gain(&queries, &self.q_norm, cfg.rms_eps);
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::dump("qsa_normalized_query", &[&queries]);
-        let queries = rope_bhsd(
+        let queries = apply_qsa_rotary_offset(
             &transpose(&queries, &[0, 2, 1, 3], None),
             cfg.rotary_dim,
             cfg.rope_base,
             rope_offset,
+            2,
         );
 
         let keys = reshape(&k_raw, &[batch, seq, cfg.kv_heads, cfg.head_dim], None);
         let keys = rms_with_gain(&keys, &self.k_norm, cfg.rms_eps);
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::dump("qsa_normalized_key", &[&keys]);
-        let keys = rope_bhsd(
+        let keys = apply_qsa_rotary_offset(
             &transpose(&keys, &[0, 2, 1, 3], None),
             cfg.rotary_dim,
             cfg.rope_base,
             rope_offset,
+            2,
         );
         let keys = transpose(&keys, &[0, 2, 1, 3], None);
         let values = reshape(&v_raw, &[batch, seq, cfg.kv_heads, cfg.head_dim], None);
@@ -671,8 +675,9 @@ fn append_cache(past: Option<&MlxArray>, new: &MlxArray) -> Result<MlxArray> {
     Ok(contiguous(&staged, None))
 }
 
+#[cfg(test)]
 fn rope_bhsd(x: &MlxArray, rotary_dim: i32, rope_base: f32, offset: i32) -> MlxArray {
-    rope(
+    mlx_sys::rope(
         x,
         rotary_dim,
         false,
@@ -813,6 +818,87 @@ mod tests {
         let expected = array(&fixture["gated"], &shape);
         eval(&[&actual, &expected]);
         assert_eq!(actual.data_f32(), expected.data_f32());
+    }
+
+    #[test]
+    fn qsa_bf16_rotary_matches_official_product_rounding() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/flash_next/qsa_bf16_rotary.json");
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!(
+                "missing qsa_bf16_rotary.json at {}: {err}; generate it with scripts/flash_next_oracle.py",
+                path.display()
+            )
+        });
+        let fixture: Value = serde_json::from_str(&raw).unwrap();
+        let rotary_dim = fixture["rotary_dim"].as_u64().unwrap() as i32;
+        let rope_base = fixture["rope_base"].as_f64().unwrap() as f32;
+        let offset = fixture["offset"].as_i64().unwrap() as i32;
+        let seq = fixture["position_ids"].as_array().unwrap().len() as i32;
+        let head_dim = fixture["head_dim"].as_u64().unwrap() as i32;
+        let query_heads = fixture["query_heads"].as_u64().unwrap() as i32;
+        let key_heads = fixture["key_heads"].as_u64().unwrap() as i32;
+        let q_shape = [1, query_heads, seq, head_dim];
+        let k_shape = [1, key_heads, seq, head_dim];
+        let queries = astype(
+            &array(&fixture["queries"], &q_shape),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let keys = astype(&array(&fixture["keys"], &k_shape), MlxDtype::Bfloat16, None);
+        let actual_q = astype(
+            &apply_qsa_rotary_offset(&queries, rotary_dim, rope_base, offset, 2),
+            MlxDtype::Float32,
+            None,
+        );
+        let actual_k = astype(
+            &apply_qsa_rotary_offset(&keys, rotary_dim, rope_base, offset, 2),
+            MlxDtype::Float32,
+            None,
+        );
+        let expected_q = array(&fixture["queries_official"], &q_shape);
+        let expected_k = array(&fixture["keys_official"], &k_shape);
+        eval(&[&actual_q, &actual_k, &expected_q, &expected_k]);
+        assert_eq!(
+            actual_q.data_f32(),
+            expected_q.data_f32(),
+            "official query rotary"
+        );
+        assert_eq!(
+            actual_k.data_f32(),
+            expected_k.data_f32(),
+            "official key rotary"
+        );
+
+        let fused_q = astype(
+            &rope_bhsd(&queries, rotary_dim, rope_base, offset),
+            MlxDtype::Float32,
+            None,
+        );
+        let fused_k = astype(
+            &rope_bhsd(&keys, rotary_dim, rope_base, offset),
+            MlxDtype::Float32,
+            None,
+        );
+        let old_q = array(&fixture["queries_single_rounding"], &q_shape);
+        let old_k = array(&fixture["keys_single_rounding"], &k_shape);
+        eval(&[&fused_q, &fused_k, &old_q, &old_k]);
+        assert_eq!(
+            fused_q.data_f32(),
+            old_q.data_f32(),
+            "fused single-rounding query rotary"
+        );
+        assert_eq!(
+            fused_k.data_f32(),
+            old_k.data_f32(),
+            "fused single-rounding key rotary"
+        );
+        let mismatch = fixture["first_query_mismatch"].as_u64().unwrap() as usize;
+        assert_ne!(
+            actual_q.data_f32()[mismatch],
+            fused_q.data_f32()[mismatch],
+            "old fused path must differ from official at recorded index {mismatch}"
+        );
     }
 
     fn values(value: &Value) -> Vec<f32> {

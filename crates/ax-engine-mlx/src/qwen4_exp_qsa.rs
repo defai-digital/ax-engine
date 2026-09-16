@@ -3,8 +3,8 @@
 //! Shared indexer weights project index queries and raw keys. Each request
 //! owns the raw key history. Completed causal blocks are mean-pooled in
 //! float32, restored to the input dtype, RMS-normalized, and rotated at the
-//! block start. Queries are RMS-normalized and rotated at their absolute
-//! positions. The score of a block is the sum over query heads of
+//! block start with the official QSA rotary rounding. Queries are
+//! RMS-normalized and rotated at their absolute positions the same way. The score of a block is the sum over query heads of
 //! `relu(dot(query_head, block_key)) / sqrt(index_head_dim)`. Each query keeps
 //! `token_budget / compression_ratio` complete blocks plus the current
 //! partial block, and never a future key.
@@ -21,9 +21,9 @@
 #[cfg(test)]
 use mlx_sys::eval;
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, arange, astype, broadcast_to, concatenate, contiguous,
-    divide, matmul, maximum, quantized_matmul_with_mode, reshape, rms_norm, rope, rope_dynamic,
-    slice, slice_last_dim, sum_axis, transpose,
+    MlxArray, MlxDtype, MlxQuantizationMode, add, arange, astype, concatenate, contiguous, cos,
+    divide, matmul, maximum, multiply, negative, outer, quantized_matmul_with_mode, reshape,
+    rms_norm, sin, slice, slice_last_dim, sum_axis, transpose,
 };
 use thiserror::Error;
 
@@ -360,12 +360,13 @@ impl QsaIndexer {
         let queries = reshape(&queries, &[batch, seq, cfg.query_heads, cfg.head_dim], None);
         let raw_keys = reshape(&raw_keys, &[batch, seq, cfg.head_dim], None);
         let queries = rms_with_gain(&queries, &self.q_norm, cfg.rms_eps);
-        let queries = rope_at_offset(
+        let queries = apply_qsa_rotary_offset(
             &queries,
             cfg.rotary_dim,
             cfg.rope_base,
             i32::try_from(position_offset)
                 .map_err(|_| QsaError::InvalidScalar("position offset"))?,
+            1,
         );
 
         let staged_keys = match cache.keys() {
@@ -436,19 +437,95 @@ fn rms_with_gain(x: &MlxArray, weight: &MlxArray, eps: f32) -> MlxArray {
     astype(&rms_norm(&x32, Some(&scale), eps, None), dtype, None)
 }
 
-fn rope_at_offset(queries: &MlxArray, rotary_dim: i32, rope_base: f32, offset: i32) -> MlxArray {
-    let bhsd = transpose(queries, &[0, 2, 1, 3], None);
-    let roped = rope(
-        &bhsd,
-        rotary_dim,
-        false,
-        Some(rope_base),
-        1.0,
-        offset,
-        None,
+/// Official Flash Next QSA rotary.
+///
+/// Inverse frequencies and angles stay float32. Cos and sin are cast to the
+/// projection dtype once. `rotate_half` and the products/sum then run in that
+/// dtype on the first `rotary_dim` channels; later channels pass through.
+/// Certification notes must record this as a production-math correction with
+/// M2 evidence.
+pub(crate) fn apply_qsa_rotary(
+    x: &MlxArray,
+    rotary_dim: i32,
+    rope_base: f32,
+    positions: &MlxArray,
+    seq_axis: i32,
+) -> MlxArray {
+    let shape = x.shape();
+    let ndim = shape.len();
+    let head_dim = shape[ndim - 1];
+    let seq = shape[seq_axis as usize];
+    let (cos, sin) = qsa_rotary_cos_sin(positions, rotary_dim, rope_base, x.dtype());
+    let mut trig_shape = vec![1i32; ndim];
+    trig_shape[seq_axis as usize] = seq;
+    trig_shape[ndim - 1] = rotary_dim;
+    let cos = reshape(&cos, &trig_shape, None);
+    let sin = reshape(&sin, &trig_shape, None);
+    let rope_part = slice_last_dim(x, 0, rotary_dim, None);
+    let rotated = add(
+        &multiply(&rope_part, &cos, None),
+        &multiply(&rotate_half_last(&rope_part), &sin, None),
         None,
     );
-    transpose(&roped, &[0, 2, 1, 3], None)
+    if rotary_dim < head_dim {
+        concatenate(
+            &[&rotated, &slice_last_dim(x, rotary_dim, head_dim, None)],
+            -1,
+            None,
+        )
+    } else {
+        rotated
+    }
+}
+
+pub(crate) fn apply_qsa_rotary_offset(
+    x: &MlxArray,
+    rotary_dim: i32,
+    rope_base: f32,
+    offset: i32,
+    seq_axis: i32,
+) -> MlxArray {
+    let seq = x.shape()[seq_axis as usize];
+    let positions = arange(
+        f64::from(offset),
+        f64::from(offset) + f64::from(seq),
+        1.0,
+        MlxDtype::Float32,
+        None,
+    );
+    apply_qsa_rotary(x, rotary_dim, rope_base, &positions, seq_axis)
+}
+
+fn qsa_rotary_cos_sin(
+    positions: &MlxArray,
+    rotary_dim: i32,
+    rope_base: f32,
+    dtype: MlxDtype,
+) -> (MlxArray, MlxArray) {
+    let half = rotary_dim / 2;
+    let inv: Vec<f32> = (0..half)
+        .map(|index| 1.0 / rope_base.powf((2 * index) as f32 / rotary_dim as f32))
+        .collect();
+    let inv_freq = MlxArray::from_f32_slice(&inv);
+    let theta = outer(&astype(positions, MlxDtype::Float32, None), &inv_freq, None);
+    let cos_h = cos(&theta, None);
+    let sin_h = sin(&theta, None);
+    let cos = concatenate(&[&cos_h, &cos_h], -1, None);
+    let sin = concatenate(&[&sin_h, &sin_h], -1, None);
+    (astype(&cos, dtype, None), astype(&sin, dtype, None))
+}
+
+fn rotate_half_last(x: &MlxArray) -> MlxArray {
+    let dim = x.shape()[x.ndim() - 1];
+    let half = dim / 2;
+    concatenate(
+        &[
+            &negative(&slice_last_dim(x, half, dim, None), None),
+            &slice_last_dim(x, 0, half, None),
+        ],
+        -1,
+        None,
+    )
 }
 
 fn pooled_block_keys(
@@ -475,42 +552,24 @@ fn pooled_block_keys(
     );
     let pooled = astype(&mean, keys.dtype(), None);
     let pooled = rms_with_gain(&pooled, k_norm, cfg.rms_eps);
-    rope_block_starts(&pooled, cfg.rotary_dim, cfg.rope_base, cfg.compress_ratio)
+    Ok(rope_block_starts(
+        &pooled,
+        cfg.rotary_dim,
+        cfg.rope_base,
+        cfg.compress_ratio,
+    ))
 }
 
-fn rope_block_starts(
-    blocks: &MlxArray,
-    rotary_dim: i32,
-    rope_base: f32,
-    ratio: i32,
-) -> Result<MlxArray> {
-    let shape = blocks.shape();
-    let (batch, n_blocks, dim) = (shape[0], shape[1], shape[2]);
-    let rows = batch
-        .checked_mul(n_blocks)
-        .ok_or(QsaError::InvalidScalar("block row count"))?;
-    let flat = reshape(blocks, &[rows, 1, 1, dim], None);
+fn rope_block_starts(blocks: &MlxArray, rotary_dim: i32, rope_base: f32, ratio: i32) -> MlxArray {
+    let n_blocks = blocks.shape()[1];
     let starts = arange(
         0.0,
         f64::from(n_blocks) * f64::from(ratio),
         f64::from(ratio),
-        MlxDtype::Int32,
+        MlxDtype::Float32,
         None,
     );
-    let starts = reshape(&starts, &[1, n_blocks], None);
-    let starts = broadcast_to(&starts, &[batch, n_blocks], None);
-    let starts = reshape(&starts, &[rows], None);
-    let roped = rope_dynamic(
-        &flat,
-        rotary_dim,
-        false,
-        Some(rope_base),
-        1.0,
-        &starts,
-        None,
-        None,
-    );
-    Ok(reshape(&roped, &[batch, n_blocks, dim], None))
+    apply_qsa_rotary(blocks, rotary_dim, rope_base, &starts, 1)
 }
 
 fn block_scores(queries: &MlxArray, blocks: &MlxArray) -> MlxArray {

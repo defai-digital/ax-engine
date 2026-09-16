@@ -183,6 +183,7 @@ def main() -> None:
             "ratio": config.indexer_compress_ratio,
             "budget": config.indexer_budget,
         })
+        dump_qsa_bf16_rotary(dump, upstream, model, config)
         moe = model.model.layers[0].mlp
         moe_input = torch.randn(2, 5, config.hidden_size)
         dump("moe.json", {
@@ -256,6 +257,95 @@ def main() -> None:
         "synthetic_mtp_candidate": args.mtp_candidate,
     })
     print(f"Oracle artifacts written to {output_dir}")
+
+
+def _bf16_pattern(count: int, start: int) -> list[float]:
+    return [((start + i * 3) % 65 - 32) / 8.0 for i in range(count)]
+
+
+def _nest(flat: list[float], shape: list[int]) -> list:
+    if len(shape) == 1:
+        return list(flat[: shape[0]])
+    step = 1
+    for dim in shape[1:]:
+        step *= dim
+    return [_nest(flat[i * step:(i + 1) * step], shape[1:]) for i in range(shape[0])]
+
+
+def dump_qsa_bf16_rotary(dump, upstream, model, config) -> None:
+    """Official BF16 rotary fixture. Cos/sin stay FP32 until one cast."""
+    import torch
+
+    rotary_dim = int(config.head_dim * config.rope_parameters.get("partial_rotary_factor", 1.0))
+    head_dim = config.head_dim
+    query_heads = config.num_attention_heads
+    key_heads = config.num_key_value_heads
+    seq = 4
+    offset = 3
+    queries = torch.tensor(
+        _nest(_bf16_pattern(query_heads * seq * head_dim, 1), [1, query_heads, seq, head_dim]),
+        dtype=torch.bfloat16,
+    )
+    keys = torch.tensor(
+        _nest(_bf16_pattern(key_heads * seq * head_dim, 7), [1, key_heads, seq, head_dim]),
+        dtype=torch.bfloat16,
+    )
+    position_ids = torch.arange(offset, offset + seq).reshape(1, 1, seq).expand(3, 1, seq)
+    dummy = queries.reshape(1, seq, -1)
+    rotary_emb = model.model.rotary_emb
+    cos_fp32, sin_fp32 = rotary_emb(dummy.float(), position_ids)
+    cos_bf16, sin_bf16 = rotary_emb(dummy, position_ids)
+    queries_official, keys_official = upstream.apply_rotary_pos_emb(
+        queries, keys, cos_bf16, sin_bf16
+    )
+    queries_fp32, keys_fp32 = upstream.apply_rotary_pos_emb(
+        queries.float(), keys.float(), cos_fp32, sin_fp32
+    )
+    queries_single = queries_fp32.to(torch.bfloat16)
+    keys_single = keys_fp32.to(torch.bfloat16)
+    mismatch = (queries_official.float() != queries_single.float()).reshape(-1).nonzero(as_tuple=False)
+    if mismatch.numel() == 0:
+        raise SystemExit("qsa_bf16_rotary fixture needs an official vs single-rounding mismatch")
+
+    def as_list(tensor) -> list:
+        return tensor.detach().float().cpu().tolist()
+
+    dump("qsa_bf16_rotary.json", {
+        "source": (
+            "Pinned official Qwen4ExpTextRotaryEmbedding and apply_rotary_pos_emb, "
+            "CPU bfloat16"
+        ),
+        "transformers_commit": TRANSFORMERS_COMMIT,
+        "modeling_sha256": hashlib.sha256(Path(upstream.__file__).read_bytes()).hexdigest(),
+        "torch_version": torch.__version__,
+        "scope": (
+            "Official eager rotary: FP32 inv_freq and angles, cos/sin cast once to "
+            "BF16, then BF16 rotate_half products. Single-rounding is FP32 apply "
+            "then one BF16 cast."
+        ),
+        "note": (
+            "Certification notes must record this as a production-math correction "
+            "with M2 evidence."
+        ),
+        "rope_base": float(config.rope_parameters["rope_theta"]),
+        "rotary_dim": rotary_dim,
+        "head_dim": head_dim,
+        "query_heads": query_heads,
+        "key_heads": key_heads,
+        "offset": offset,
+        "position_ids": list(range(offset, offset + seq)),
+        "queries": as_list(queries),
+        "keys": as_list(keys),
+        "cos_fp32": as_list(cos_fp32[0]),
+        "sin_fp32": as_list(sin_fp32[0]),
+        "cos_bf16": as_list(cos_bf16[0]),
+        "sin_bf16": as_list(sin_bf16[0]),
+        "queries_official": as_list(queries_official),
+        "keys_official": as_list(keys_official),
+        "queries_single_rounding": as_list(queries_single),
+        "keys_single_rounding": as_list(keys_single),
+        "first_query_mismatch": int(mismatch[0].item()),
+    })
 
 
 if __name__ == "__main__":
