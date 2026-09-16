@@ -19,10 +19,14 @@ const DEFAULT_POSITION_STAGES: &[&str] = &[
     "ple_delta",
     "ple_conv_activated",
     "ple_operator",
+    "attention_hc_read",
+    "gdn",
     "qsa_gather_indices",
     "qsa",
     "qsa_output",
     "attention_hc_write",
+    "mlp_hc_read",
+    "moe_compute",
     "mlp_hc_write",
     "lm_head",
 ];
@@ -450,6 +454,27 @@ fn dump_position_csv_parses_commas_and_spaces() {
         parse_stage_csv("ple_rows,qsa_gather_indices"),
         vec!["ple_rows".to_string(), "qsa_gather_indices".to_string()]
     );
+}
+
+#[test]
+fn default_position_stages_cover_attribution_pairs() {
+    for stage in [
+        "gdn",
+        "qsa_output",
+        "moe_compute",
+        "attention_hc_read",
+        "attention_hc_write",
+        "mlp_hc_read",
+        "mlp_hc_write",
+        "ple_operator",
+        "ngram_lookup",
+        "ple_rows",
+    ] {
+        assert!(
+            DEFAULT_POSITION_STAGES.contains(&stage),
+            "{stage} must be in the records-attribution dump set"
+        );
+    }
 }
 
 #[test]
