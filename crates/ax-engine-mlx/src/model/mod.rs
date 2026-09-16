@@ -189,15 +189,6 @@ use mlx_sys::{
 #[cfg(test)]
 use profile::record_linear_attention_profile_layer;
 
-/// Forward pass for one transformer layer.
-///
-/// `shared_mask`: pre-computed SDPA mask for this layer — `None` computes it
-/// internally from `seq`, `key_len`, and `sliding_window`.  Pass `Some(&m)`
-/// from `build_layer_masks` in `forward*` to avoid creating identical mask
-/// graphs for every layer of the same attention type.
-///
-/// Returns updated hidden states.
-#[allow(clippy::too_many_arguments)]
 /// Flash Next owns a packed gated-residual trunk. GDN layers must not take the
 /// Qwen 3.5 linear-attention short-circuit (that path has no HC mix/combine).
 pub(crate) fn reject_unimplemented_qwen4_exp(cfg: &ModelConfig) {
@@ -208,6 +199,15 @@ pub(crate) fn reject_unimplemented_qwen4_exp(cfg: &ModelConfig) {
     }
 }
 
+/// Forward pass for one transformer layer.
+///
+/// `shared_mask`: pre-computed SDPA mask for this layer — `None` computes it
+/// internally from `seq`, `key_len`, and `sliding_window`.  Pass `Some(&m)`
+/// from `build_layer_masks` in `forward*` to avoid creating identical mask
+/// graphs for every layer of the same attention type.
+///
+/// Returns updated hidden states.
+#[allow(clippy::too_many_arguments)]
 pub fn layer_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
