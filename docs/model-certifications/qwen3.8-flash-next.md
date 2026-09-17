@@ -33,7 +33,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
 | Pack delivery | Public packs, immutable CLI revisions and all 63 LFS payload files match native test packs | Verify fresh download, doctor, and installed-runtime admission |
 | Numerical | Eight prompts, 3,260 aligned positions; aggregate statistical rule passes | Independent holdout verification; retain 22 high-margin disagreements and the revised 1% rule |
-| Functional QA | Historical 105-item run: direct 102, required MTP 102, reference 101 hard passes. HC replay fixes both recorded text mismatches with normal stop and answer checks | Full 105-item native rerun remains pending; historical acceptance is false |
+| Functional QA | HC native rerun: direct/required text matches on all 105 items; each mode has 102 hard passes, 105 normal stops and clean shutdown | Final installed/default-route and target-SKU qualification remain open; reference/NLL were not rerun |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
 | MTP integration | HC verifier correction: all 12 state/runner controls pass; six state controls record zero logit/state divergence and six runner controls have identical tokens | Complete full QA, independent holdout and target qualification before promotion |
@@ -122,8 +122,17 @@ direct/required text: `reasoning_cause_effect` emits 160 tokens and
 normal stop and server shutdown pass. The
 [focused QA evidence](../../benchmarks/results/flash-next-hc-focused-qa-m2-20260917.json)
 records the exact inputs and responses. A process sample overlapped direct
-decode, so recorded durations are diagnostic only. This two-item replay does
-not replace the pending 105-item native replay or rerun reference/NLL evidence.
+decode, so recorded durations are diagnostic only.
+
+The later [full HC QA rerun](../../benchmarks/results/flash-next-hc-full-qa-m2-20260917.json)
+completes all 105 items in both modes with identical text and checker results.
+Every response stops normally and both servers exit cleanly. Each mode passes
+102 closed-answer checks; the three failures retain the same text and verdict
+as the prior reference run. Both modes answer the 29,774-token lookup with
+`1734`. [Raw inputs and responses](../../benchmarks/results/flash-next-hc-full-qa-raw-m2-20260917.json.gz)
+retain the exact binary and harness identities. This run uses selected-expert
+opt-ins on M2; final installed/default-route and target-SKU qualification remain
+separate. Reference and NLL were not rerun.
 
 Full local payload hashing now verifies every LFS file at both immutable public
 revisions: 28 files for 4-bit and 35 for 6-bit, including the model shards and
@@ -224,8 +233,8 @@ disabled. Explicit `--mlx-mtp-policy required` exercises the experimental
 verified path. The test contract records identity until an observed tie and
 bounded numerical divergence; it does not promise universal text identity.
 The historical QA mismatches remain recorded failures under the original
-all-items identity rule. The HC two-item replay above fixes both observed
-mismatches; the full all-items contract still requires a fresh complete run.
+all-items identity rule. The HC two-item replay fixes both observed mismatches,
+and the full HC rerun above now passes the 105-item text-identity contract.
 The historical 4-bit tie runner margin of 1.3125 was measured after replaying
 the pipeline bootstrap token twice. It is not a valid margin for the divergent
 position. The corrected diagnostic skips tokens already represented by the
