@@ -1004,6 +1004,8 @@ struct ChunkedPrefillTiming {
     chunks: Vec<(usize, usize, f64)>,
     mlx_evals: u64,
     peak_bytes: usize,
+    final_logits: Vec<f32>,
+    final_state: Vec<u8>,
 }
 
 fn run_chunked_prefill(
@@ -1033,17 +1035,23 @@ fn run_chunked_prefill(
     let mut state = Qwen4ExpState::new(trunk, owner);
     let wall = Instant::now();
     let mut chunk_times = Vec::new();
+    let mut final_logits = None;
     for (offset, end) in ranges {
         let chunk_start = Instant::now();
-        state = forward(
+        let output = forward(
             trunk,
             &tokens[offset..end],
             &state,
             owner,
             ProjectionBatchPolicy::Shared,
         )
-        .unwrap()
-        .state;
+        .unwrap();
+        state = output.state;
+        if end == tokens.len() {
+            final_logits = Some(output.logits);
+        } else {
+            drop(output.logits);
+        }
         chunk_times.push((offset, end - offset, chunk_start.elapsed().as_secs_f64()));
     }
     let seconds = wall.elapsed().as_secs_f64();
@@ -1054,13 +1062,21 @@ fn run_chunked_prefill(
         (Vec::new(), Vec::new())
     };
     drop(guard);
+    let mlx_evals = evals();
+    let peak_bytes = mlx_sys::get_peak_memory();
+    // Host copies and serialization belong outside the measured forward and
+    // capture scope. These controls cover the final chunk and complete state.
+    let final_logits = final_logits.unwrap().data_f32().to_vec();
+    let final_state = snapshot(state);
     ChunkedPrefillTiming {
         seconds,
         samples,
         paging,
         chunks: chunk_times,
-        mlx_evals: evals(),
-        peak_bytes: mlx_sys::get_peak_memory(),
+        mlx_evals,
+        peak_bytes,
+        final_logits,
+        final_state,
     }
 }
 
@@ -1084,6 +1100,14 @@ fn flash_next_prefill_stage_profile() {
     let owner = cfg.compile_cache_identity;
     let unsync = run_chunked_prefill(trunk, &tokens, owner, chunk_size, false);
     let sync = run_chunked_prefill(trunk, &tokens, owner, chunk_size, true);
+    assert!(
+        sync.final_logits == unsync.final_logits,
+        "synchronized prefill changed final chunk logits"
+    );
+    assert!(
+        sync.final_state == unsync.final_state,
+        "synchronized prefill changed final serialized state"
+    );
     let mut synchronized_chunks = Vec::new();
     for (index, &(offset, len, seconds)) in sync.chunks.iter().enumerate() {
         let chunk_samples = samples_for_chunk(&sync.samples, offset, len);
@@ -1112,6 +1136,10 @@ fn flash_next_prefill_stage_profile() {
         "method": "chunked prefill synchronized stage attribution with unsynchronized wall-clock control",
         "cache_state": "unsynchronized control first in this process; synchronized replay after that control; no OS cache purge",
         "expert_streaming": trunk.expert_stream.is_some(),
+        "final_chunk_logits_exact": true,
+        "final_state_bytes_exact": true,
+        "correctness_scope": "final chunk logits and complete final serialized state; not intermediate chunk logits",
+        "host_control_capture": "outside forward timing and MLX counters; control host buffers retained during synchronized replay",
         "prompt_tokens": tokens.len(),
         "chunk_size": chunk_size,
         "chunk_schedule": chunk_ranges(tokens.len(), chunk_size),
