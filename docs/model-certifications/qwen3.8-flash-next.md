@@ -31,7 +31,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Gate | Current result | Remaining requirement |
 | --- | --- | --- |
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
-| Pack delivery | Fresh default-transport and two-worker downloads each verify both public revisions and all 63 LFS files. The a7 installed follow-up exposed a Hub snapshot link rejection; c101 corrects path resolution and its native acceptance is in progress. | Complete installed acceptance of the snapshot-path correction and target-SKU admission |
+| Pack delivery | Fresh default-transport and two-worker downloads each verify both public revisions and all 63 LFS files. The a7 installed follow-up exposed a Hub snapshot link rejection; c101 snapshot controls now complete eight requests; the original six-bit 600-second timeout remains open. | Complete full installed QA, cold-latency acceptance and target-SKU admission |
 | Numerical | Frozen 4-bit and 6-bit holdouts pass unchanged aggregate bounds across 3,316 aligned positions each | Target and installed qualification remain open; retain historical 22 high-margin disagreements and the earlier threshold revision |
 | Functional QA | HC native rerun: direct/required text matches on all 105 items; each mode has 102 hard passes, 105 normal stops and clean shutdown | Full installed/default-route QA and target-SKU qualification remain open; eight installed smoke completions are narrower evidence; reference/NLL were not rerun |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
@@ -108,7 +108,7 @@ are publicly accessible. Their config, AXQuant manifest, tensor index and expert
 stream manifest match the native test packs byte-for-byte. See the
 [metadata identity record](../../benchmarks/results/flash-next-public-pack-metadata-20260917.json).
 Metadata alone does not verify weight bytes. The full payload check below
-adds that evidence; fresh download and installed-runtime qualification remain open.
+adds that evidence; later fresh-download results are recorded below, while full installed-runtime qualification remains open.
 
 ## MTP state and runner coverage
 
@@ -267,7 +267,7 @@ The [installed offline alias check](../../benchmarks/results/flash-next-offline-
 passes for both pinned 4-bit and 6-bit aliases after correcting the download
 helper's HC role requirements and I64 metadata binding. Both manifests are
 regenerated and validated by the native tool. The fixture reuses previously
-verified payloads, so fresh network download qualification remains open.
+verified payloads, so that fixture alone does not establish fresh network download; the later delivery campaigns below provide separate evidence.
 The rebuilt wheel passes 79 installed/packaging tests and has byte-identical
 native binaries, MLX runtime and Metal assets to the earlier packaging wheel.
 
@@ -354,9 +354,8 @@ transfer recovered from one shard read timeout. This uses the explicit existing
 The [raw record](../../benchmarks/results/flash-next-fresh-delivery-workers2-m2-20260917-raw.json.gz)
 retains the retry and the subsequent a7 wheel's four-bit load failure: its path
 resolver rejected a legitimate Hub snapshot link into its own blob store.
-No inference, throughput or full QA completed in that follow-up. The snapshot
-path correction requires rebuilt-wheel native verification before this gate can
-close. Earlier installed controls are separate evidence, not a pass for this
+No inference, throughput or full QA completed in that follow-up. The later c101 controls below verify the snapshot path correction; full QA and
+cold-latency acceptance remain open. Earlier installed controls are separate evidence, not a pass for this
 fresh-snapshot attempt.
 
 
@@ -374,3 +373,20 @@ retains those messages and the earlier failed default attempt. This successful
 retry is not a measured reliability rate. It exercises the a7 downloader;
 the c101 native runtime has separate installed acceptance. No numerical,
 throughput, MTP-default or target-SKU gate is promoted by this download result.
+
+
+## c101 installed snapshot controls
+
+The [c101 snapshot controls](../../benchmarks/results/flash-next-installed-snapshots-c101-m2-20260917.json)
+complete eight HTTP requests on the verified public four-/six-bit snapshots,
+without rewriting their links or manifests. Selected and default route pairs
+produce identical text and usage for one 46-token input and 32-token outputs,
+with ready native health and clean server exits.
+
+The [raw bundle](../../benchmarks/results/flash-next-installed-snapshots-c101-m2-20260917-raw.json.gz)
+also retains the original six-bit selected request's 600-second timeout and
+the subsequent default recovery's port-preflight failure before model load.
+Later six-bit retries completed; the default request took 1,045.268 seconds and
+required MTP took 186.209 seconds with different cache histories. These are not
+a speedup comparison or cold-latency acceptance. Full installed QA, streaming
+lifecycle, the complete current matrix and target-SKU qualification remain open.
