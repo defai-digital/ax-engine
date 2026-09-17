@@ -49,6 +49,7 @@ def _extract_version_ge() -> str:
 class ExtensionLoadPolicyTests(unittest.TestCase):
     def test_release_extension_keeps_unwind_and_disables_both_strip_layers(self):
         cargo = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text())
+        self.assertEqual(cargo["profile"]["release"]["build-override"]["strip"], "none")
         profile = cargo["profile"]["release-pyext"]
         self.assertEqual(profile["panic"], "unwind")
         self.assertEqual(profile["strip"], "none")

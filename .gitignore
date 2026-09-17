@@ -72,3 +72,6 @@ python/ax_engine/_ax_engine*.so
 python/ax_engine.dylibs/mlx.metallib
 python/ax_engine.data/
 python/ax_engine/_bin/
+
+# Staged by the wheel builder; never source artifacts.
+python/ax_engine.dylibs/libjaccl.dylib
