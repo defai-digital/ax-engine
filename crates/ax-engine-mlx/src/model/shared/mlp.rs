@@ -1129,6 +1129,10 @@ const GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE: &str = r#"
 /// Distinct from the scalar Gemma dual GEMM (8.5× reject) and from host-FFI
 /// `dual_qmm_swiglu` (875 vs 891). Each TG is one simdgroup owning an
 /// 8-token × 8-output tile.
+///
+/// Opt-in only (default OFF). The activation is fused in float with a single
+/// output cast, so it does not preserve the BF16/FP16 tensor boundaries that
+/// the default decode matvec and packed SwiGLU paths keep.
 const QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL_SOURCE: &str = r#"
     constexpr uint Tile = 8;
     uint token0 = threadgroup_position_in_grid.x * Tile;
@@ -2576,6 +2580,10 @@ fn identity_moe_unsort_order(top_k: i32) -> MlxArray {
 }
 
 /// Fused activation + squeeze + unsort for MoE decode (seq==1).
+///
+/// Opt-in only (default OFF). The SwiGLU branch is computed in float with a
+/// single output cast and does not preserve the BF16/FP16 activation
+/// boundaries of the default split `silu_mul` path.
 ///
 /// Takes the packed gate_up output `[1, 1, TopK_sorted, 2*ExpertSize]` and
 /// produces the hidden state `[1, 1, TopK_original, ExpertSize]` with the

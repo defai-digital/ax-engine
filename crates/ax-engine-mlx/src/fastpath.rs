@@ -3158,6 +3158,12 @@ env_flag!(
     /// **Default: OFF**. Community remasured p2048 prefill ~179 vs 908
     /// (~0.20×, 2026-08-13). Same class as Gemma dual Metal 8.5× reject.
     /// Host-FFI `dual_qmm_swiglu` also stays OFF (875 vs 891).
+    ///
+    /// Precision caveat (2026-09-17): this kernel still fuses SiLU and the
+    /// up multiply in float with a single output cast. It does not preserve
+    /// the BF16/FP16 activation boundaries restored by `891385f8` for the
+    /// decode matvec and packed paths. Keep OFF unless the kernel is
+    /// reworked to emit gate/up in the input dtype.
     qwen_prefill_dual_qmm_swiglu_metal_enabled,
     "AX_MLX_QWEN_PREFILL_DUAL_QMM_SWIGLU_METAL"
 );
@@ -5368,6 +5374,12 @@ env_flag!(
     /// unsort chain is routed through a fused Metal kernel, reducing
     /// dispatch count per MoE layer. Falls back to the standard dispatch
     /// sequence when ineligible.
+    ///
+    /// Precision caveat (2026-09-17): the SwiGLU branch of that kernel
+    /// still computes SiLU and the up multiply in float with one output
+    /// cast, so BF16/FP16 results can differ from the split `silu_mul`
+    /// path restored by `891385f8`. Keep OFF for Qwen-family packs unless
+    /// the kernel is reworked to match the low-precision semantics.
     moe_fused_expert_block_enabled,
     "AX_MLX_MOE_FUSED_EXPERT_BLOCK"
 );

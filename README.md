@@ -333,8 +333,10 @@ Historical same-pack measurements with the runtimes available on 2026-09-15:
 no GGUF or community-4-bit substitute.
 
 These measurements predate the target-head precision fix that removes the
-automatic 2-bit decode cache. They do not establish throughput or numerical
-parity for the corrected runtime; a new performance qualification is pending.
+automatic 2-bit decode cache and the low-precision SwiGLU correction that
+replaces the fused dense activation with the split MLX operations. They do not
+establish throughput or numerical parity for the corrected runtime; a new
+performance qualification on the same campaign host is pending.
 
 | Runtime | Latest checked | Decode | Prefill |
 | --- | --- | ---: | ---: |

@@ -18,7 +18,14 @@ BF16 test also failed when its 0.02 allowance was replaced with exact equality.
 
 `891385f8` emits gate/up tensors in the input dtype and applies the existing
 MLX `silu_mul`; packed BF16/FP16 rows use the same activation. Float32 packed
-optimization remains. `ad999f3f` additionally rejects invalid dimensions before
+optimization remains. On this 6-bit dense `qwen3_5` checkpoint the default
+runtime exercises only the packed dense SwiGLU path
+(`AX_MLX_DENSE_SWIGLU_PACKED_METAL`, default on); the corrected singleton
+gate/up matvec kernel admits 4-bit weights only unless
+`AX_MLX_QWEN_DENSE_FFN_MATVEC_EXT_BITS` is set, so it did not contribute to
+the evidence below. The opt-in prefill dual-QMM MMA kernel and the opt-in
+fused MoE expert block still use the float-only activation and stay off by
+default. `ad999f3f` additionally rejects invalid dimensions before
 slicing. No optimization environment-variable defaults changed. Tests cover
 exact BF16/FP16 singleton activation, dense S=2/S=4 and MoE packed rows, and
 invalid widths. The float32 projection tolerance is unchanged.

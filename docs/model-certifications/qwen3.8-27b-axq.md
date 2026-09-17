@@ -43,7 +43,11 @@ Landed, labeled:
 
 - 2026-09-17 low-precision SwiGLU correction (`891385f8`, dimension guard
   `ad999f3f`) preserves MLX BF16/FP16 tensor activation semantics in singleton
-  gate/up and packed paths. An isolated exact-projection regression failed
+  gate/up and packed paths. On this 6-bit checkpoint the default runtime
+  reaches only the packed dense path; the singleton matvec kernel admits
+  4-bit weights unless an opt-in flag is set. Two opt-in kernels (prefill
+  dual-QMM MMA, fused MoE expert block) keep the float-only activation and
+  remain off. An isolated exact-projection regression failed
   before repair (BF16 maximum absolute error 0.001953125); all 22 SwiGLU tests
   now pass. On the selected mini, clean installed `891385f8` gives **9/9**
   paired direct/MTP token matches on the original diagnostics and **12/12**
