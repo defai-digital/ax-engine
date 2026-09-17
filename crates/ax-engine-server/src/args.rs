@@ -185,8 +185,8 @@ pub struct ServerArgs {
     #[arg(long = "hf-cache-root")]
     pub hf_cache_root: Option<PathBuf>,
 
-    /// Disable n-gram acceleration and run the direct same-policy decode path.
-    /// Useful for establishing clean benchmark comparisons against mlx_lm.
+    /// Disable n-gram acceleration and automatic model MTP for a direct baseline.
+    /// An explicit --mlx-mtp-policy required still requires the model drafter.
     #[arg(long = "disable-ngram-acceleration", default_value_t = false)]
     pub disable_ngram_acceleration: bool,
 

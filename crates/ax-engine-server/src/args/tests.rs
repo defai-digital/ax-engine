@@ -1212,6 +1212,11 @@ fn disable_ngram_acceleration_flag_sets_mlx_disable_ngram_acceleration() {
         "--disable-ngram-acceleration must propagate to mlx_disable_ngram_acceleration; \
              check args.rs session_config() and EngineSessionConfig::from_preview_request"
     );
+    assert_eq!(
+        actual.mlx_mtp_policy,
+        MlxMtpPolicy::Disabled,
+        "the server direct-baseline flag must disable model MTP as well as n-gram"
+    );
 }
 
 #[test]
@@ -1582,6 +1587,23 @@ fn mlx_mtp_policy_parses_and_preserves_explicit_session_intent() {
                 .expect("valid MTP policy");
         assert_eq!(args.mlx_mtp_policy, expected);
         assert_eq!(args.session_config().unwrap().mlx_mtp_policy, expected);
+    }
+    for (value, expected) in [
+        ("auto", MlxMtpPolicy::Disabled),
+        ("disabled", MlxMtpPolicy::Disabled),
+        ("required", MlxMtpPolicy::Required),
+    ] {
+        let args = ServerArgs::try_parse_from([
+            "ax-engine-server",
+            "--mlx",
+            "--disable-ngram-acceleration",
+            "--mlx-mtp-policy",
+            value,
+        ])
+        .expect("explicit model MTP policy can disable n-gram independently");
+        let config = args.session_config().unwrap();
+        assert!(config.mlx_disable_ngram_acceleration);
+        assert_eq!(config.mlx_mtp_policy, expected);
     }
     let default = ServerArgs::try_parse_from(["ax-engine-server"]).unwrap();
     assert_eq!(default.mlx_mtp_policy, MlxMtpPolicy::Auto);
