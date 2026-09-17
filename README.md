@@ -28,7 +28,7 @@ MiniCPM-V, and others) are documented under
 
 - **Mac mini M5 64 GB** — best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`)
 - **Mac Studio M5 Ultra 256 GB** — best experience for Qwen 3.8 Flash Next
-  (`qwen3.8-flash-next:axq`, 125B-A6B). Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. AX certification record: Candidate (gates open). Mac Studio M5 Ultra 256 GB qualification pending hardware.
+  (`qwen3.8-flash-next:axq`, 125B-A6B). Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Mac Studio M5 Ultra 256 GB qualification pending hardware.
 
 Compact single models (Qwen 3.5 9B 4-bit preferred) still fit **16 GB**. Prefer
 4-bit for headroom on that class.

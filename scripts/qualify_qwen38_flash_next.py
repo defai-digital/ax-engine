@@ -3,13 +3,16 @@
 
 `--dry-run` prints the SKU and admission rule (CI-safe, no weights).
 A live `--model-dir` run checks the converted manifest, tensor geometry,
-expert layout, and readiness without loading weights.
+declared expert layout, and readiness without loading weights.
+This metadata preflight does not validate files, tensor geometry, exporter identity,
+or release qualification; the native loader remains authoritative.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -22,7 +25,7 @@ SIXBIT_ALIAS = "qwen3.8-flash-next:axq-6bit"
 SIXBIT_REPO = "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP"
 SOURCE_REVISION = "de4b8e4d43b917e7706784d8bb445c9af86a3540"
 STATUS = (
-    "Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. "
+    "Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. "
     "AX certification record: Candidate (gates open)."
 )
 PRODUCT_EXPERT_LAYOUTS = (
@@ -58,6 +61,9 @@ def contract() -> dict[str, Any]:
         "ci": "dry-run only; do not mount Flash Next weights on CI",
         "fail_closed": False,
         "ready": True,
+        "release_ready": False,
+        "qualification": False,
+        "validation_scope": "manifest metadata only; native loader validation required",
         "convert": "metadata mapping; runtime_status.ready=true for audited layouts",
         "load_blocker": None,
         "unknown_layout_blocker": "qwen4_exp_weight_layout_unknown",
@@ -121,7 +127,7 @@ def _expert_layouts(manifest: dict[str, Any]) -> list[tuple[int, int]]:
             )
         bits = quant.get("bits")
         group = quant.get("group_size")
-        if not isinstance(bits, int) or not isinstance(group, int):
+        if type(bits) is not int or type(group) is not int:
             raise SystemExit(f"expert tensor {tensor.get('name')} has invalid affine metadata")
         layout = (bits, group)
         if layout not in layouts:
@@ -154,8 +160,8 @@ def _live_preflight(model_dir: Path) -> None:
     blockers = status.get("blockers") or []
     if not isinstance(blockers, list):
         raise SystemExit("runtime_status.blockers must be a list")
-    if "qwen4_exp_weight_layout_unknown" in blockers:
-        raise SystemExit("manifest is blocked: qwen4_exp_weight_layout_unknown")
+    if blockers:
+        raise SystemExit(f"manifest is blocked: {blockers!r}")
     if status.get("ready") is not True:
         raise SystemExit(
             f"native model manifest is not runtime ready: ready={status.get('ready')} "
@@ -177,10 +183,17 @@ def _live_preflight(model_dir: Path) -> None:
     allowed.update(
         (item["bits"], item["group_size"]) for item in EXPERIMENTAL_EXPERT_LAYOUTS
     )
-    if layouts and layouts[0] not in allowed:
+    if not layouts:
+        raise SystemExit("manifest has no affine expert tensors")
+    if layouts[0] == (2, 32) and not all(
+        os.environ.get(name) == "1"
+        for name in ("AX_ENGINE_FLASH_NEXT_EXPERIMENTAL", "AX_ENGINE_2BIT_EXPERIMENTAL")
+    ):
+        raise SystemExit("2-bit requires both experimental opt-ins")
+    if layouts[0] not in allowed:
         raise SystemExit(f"unsupported expert layout {layouts[0]}")
     print(f"live preflight ok: {model_dir}")
-    print("family qwen4_exp; ready; audited affine expert layout")
+    print("family qwen4_exp; declared ready and affine layout; metadata preflight only")
     print("next: ax-engine doctor, then QA surface direct+mtp on this snapshot")
     print("this script does not start the Flash Next server (operator-owned live run)")
 

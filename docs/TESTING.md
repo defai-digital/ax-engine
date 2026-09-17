@@ -79,7 +79,7 @@ multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
 Mac mini M5 64 GB SKU. Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`) is a
 second SKU on Mac Studio M5 Ultra 256 GB
 (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`).
-Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
 variable. Flash Next throughput uses the MLX-VLM reference through
 `--skip-mlx-lm` because `mlx_lm` has no `qwen4_exp` model, and never claims an

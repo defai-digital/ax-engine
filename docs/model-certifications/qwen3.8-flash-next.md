@@ -1,482 +1,112 @@
 # Qwen 3.8 Flash Next
 
-Status: **Candidate**
+Status: **Candidate; release qualification open**
 
-Best-experience SKU: **Mac Studio M5 Ultra, 256 GB**
+Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
-Last reviewed: **2026-09-16**
+Target SKU: **Mac Studio M5 Ultra, 256 GB**. Current real-pack evidence is
+from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-16**.
 
-Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+## Identity and implemented execution
 
-Qwen 3.8 Flash Next is a second product SKU, distinct from Qwen 3.8 27B
-and Super-class Qwen 3.8 (2.4T). Its HF identity is `model_type=qwen4_exp`:
-125B-A6B hybrid Gated-DeltaNet / sparse-attention MoE plus a 51B n-gram table.
-MLX remains the tensor and quantized matrix multiplication engine.
+HF family `qwen4_exp` identifies the 125B-A6B hybrid Gated-DeltaNet / sparse
+attention MoE with its 51B n-gram table. It is distinct from Qwen 3.8 27B
+and Super-class 2.4T. The dedicated AX graph implements GDN, QSA, gated
+residual streams, PLE disk-row gathers, MoE, and the final mixer. MLX owns
+quantized matrix multiplication. This is not a `qwen3_5` remap or an adapter.
 
-Download aliases: `qwen3.8-flash-next:axq` (4-bit) and `qwen3.8-flash-next:axq-6bit`.
-The 4-bit AutomatosX pack is
-[`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP).
-The pack `axquant_manifest.json` records source
-`Qwen/Qwen3.8-Flash-Next` @ `de4b8e4d43b917e7706784d8bb445c9af86a3540`.
+Request-owned state, prefix serialization/restore, expert paging and native
+HTTP/SSE are implemented. N-gram table payloads are excluded from weight-load
+evaluation. Selected-expert and selected-prefill paths remain opt-in.
 
-## Gates
+The CLI maps `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:axq-6bit` to
+`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP` and
+`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP`, respectively. An alias is
+not proof of published-pack availability or successful download qualification.
+Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
+`de4b8e4d43b917e7706784d8bb445c9af86a3540`.
 
-| Axis | This pack |
-| --- | --- |
-| Checkpoint | Tier 1 on M2 evidence (Apple M2 Ultra 192 GB). Mac Studio M5 Ultra 256 GB qualification pending hardware. |
-| AX certification record | Candidate — gates open |
-| MTP | Sidecar attaches when `mtp.safetensors` is present. `certified_default_on` stays false. Tier 2 pending. Greedy identity until documented ties. |
-| Support tier | Family follows the Qwen 3.x Certified graph path; this *checkpoint* is not `release_ready` |
-| Admission | Audited affine 4-bit/group64 and 6-bit/group64 load with no environment variable. 2-bit still needs `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and `AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4 stays rejected. |
+## Current gates
 
-## M2 evidence (2026-09-16)
+| Gate | Current result | Remaining requirement |
+| --- | --- | --- |
+| Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
+| Numerical | Eight prompts, 3,260 aligned positions; aggregate statistical rule passes | Independent holdout verification; retain 22 high-margin disagreements and the revised 1% rule |
+| Functional QA | Completed 105 items per route: direct 102, required MTP 102, reference 101 hard passes | Direct/MTP text differs on two reasoning items; encoded QA acceptance is false |
+| Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
+| Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
+| MTP integration | Primary controls pass for 2/4-bit; tie controls fail unchanged bounds, including 4-bit greedy mismatch outside the tie margin | Complete remaining matrix/API controls; investigate correctness before promotion |
+| Throughput | Partial 4/6-bit matrix; early EOS and skipped cells remain explicit | Complete fixed-output comparisons and establish 6-bit residency/memory behavior |
+| Target hardware | No M5 Ultra 256 GB result | Run target-SKU qualification |
+| Release | Not release-ready | Final merged-tree gates and native validation |
 
-These figures are M2 evidence, not Mac Studio M5 Ultra SKU numbers.
+The statistical threshold was adjusted on the collected sample: the earlier
+zero-high-margin-disagreement rule failed, while the later at-most-1% rule
+passes at 22/3,260 (0.67%). The aggregate mean KL is 0.0860 against a 0.1011
+limit, and top-1 disagreement is 2.85% against 3.22%. Do not describe this as
+an independent confirmation or exact full-model parity.
 
-- **Numerical.** [flash-next-statistical-acceptance-m2-20260916.json](../../benchmarks/results/flash-next-statistical-acceptance-m2-20260916.json): PASS under the encoded rule (mean KL 0.0860 vs limit 0.1011, top-1 2.85% vs 3.22%, AX-only high-margin 0.67% vs 1%).
-- **Quality.** [flash-next-extended-qa-v3-m2-20260916.json](../../benchmarks/results/flash-next-extended-qa-v3-m2-20260916.json) (M2 evidence): AX direct 102/105, AX MTP 102/105, MLX-VLM 100/104; direct == MTP on 103/105.
-- **MTP.** [flash-next-mtp-batched-verify-m2-20260916.json](../../benchmarks/results/flash-next-mtp-batched-verify-m2-20260916.json) and [flash-next-mtp-head-oracle-m2-20260916.json](../../benchmarks/results/flash-next-mtp-head-oracle-m2-20260916.json) (M2 evidence): MTP 24.3 vs direct 21.3 tok/s, ratio 1.136, 82% acceptance, greedy identity until documented ties.
-- **Throughput.** [flash-next-throughput-ab-m2-20260916.json](../../benchmarks/results/flash-next-throughput-ab-m2-20260916.json) (M2 evidence, 4-bit resident): AX prefill 3.8x to 5.4x slower than MLX-VLM, decode within 10 to 20%, MTP closes most of it. Flash Next throughput uses the MLX-VLM reference through `--skip-mlx-lm` because `mlx_lm` has no `qwen4_exp` model; never claim an `mlx_lm` ratio.
-- **Rotary / batched MTP corrections.** `qsa_bf16_rotary` fixture (commit `5bb1d935`); batched MTP verify `c6b7383d`..`3f371ccc`.
+## Reproducible evidence
 
-Selected-expert and selected-prefill flags stay opt-in.
+These artifacts preserve development outcomes, including failures and missing
+cells. `qualification=false` and `release_ready=false` are intentional.
+Recorded binary/harness hashes are never replaced with hashes of newer files.
+A mismatching or unavailable harness is an open reproducibility gate.
 
-## Implemented development path
+- [Statistical acceptance](../../benchmarks/results/flash-next-statistical-acceptance-m2-20260916.json)
+- [Completed QA, long context and NLL](../../benchmarks/results/flash-next-extended-qa-v3-m2-20260916.json)
+- [Trained-head falsification control](../../benchmarks/results/flash-next-mtp-head-oracle-m2-20260916.json)
+- [Batched MTP matrix](../../benchmarks/results/flash-next-mtp-batched-verify-m2-20260916.json)
+- [Throughput matrix, including incomplete cells](../../benchmarks/results/flash-next-throughput-ab-m2-20260916.json)
+- [Earlier affine 2/4/6-bit execution controls](../../benchmarks/results/flash-next-affine-formats-m2-20260915.json)
+- [Earlier native selected-prefill controls](../../benchmarks/results/flash-next-selected-prefill-m2-20260915.json)
 
-- Dedicated GDN, QSA, gated residual streams, MoE, PLE and final mixer.
-- Bounded disk n-gram row reads; table payloads are excluded from weight load.
-- Transactional request state, cache serialization, prefix restore and verified
-  speculative replay across the recurrent, attention and n-gram state.
-- Affine expert paging with explicit resident/streaming admission.
-- MTP sidecar attaches when `mtp.safetensors` is present and stays default-off.
-  Greedy identity holds until documented ties. A sidecar alone does not
-  establish MTP Tier 2.
+Earlier operator-level, cache, QSA-boundary and numerical comparisons remain in
+`benchmarks/results/flash-next-*.json`. They describe their recorded snapshots;
+they do not supersede the current gate table or validate a later merged binary.
 
-Tiny F32/BF16 oracle checks and bounded real 4-bit development tests passed.
-Development evidence on an M2 Ultra 192 GB includes native HTTP/SSE, request
-isolation, cancellation recovery, prefix reuse, long prompts, resident/paged
-control tokens, and explicit MTP runner/HTTP checks. This is not M5 Ultra
-certification, a trained MTP-head oracle, or a published throughput result.
-Quantized prefill comparisons must use the same chunk schedule.
+AX prefill was substantially slower than the pinned MLX-VLM reference in the
+recorded M2 cells. Do not quote a complete-matrix throughput ratio: some AX
+runs emitted fewer than the requested 128 tokens, and the 6-bit matrix was
+interrupted. The comparison is against MLX-VLM because `mlx_lm` has no
+`qwen4_exp` graph; it is not an `mlx_lm.benchmark` result. Serving elapsed
+times and isolated model-runtime measurements are different workloads.
 
-A fresh direct smoke on the authorized M2 production test binary also completes
-with the experimental pack: load 512.264 seconds, prefill 1.082 seconds, eight
-finite decode steps, and zero n-gram table payload bytes read during load. The
-run is an execution proof only; its external-disk load time is not a serving
-throughput claim, and qualification remains closed.
+## Admission and operator contract
 
-Additional 2-bit and 6-bit controls each match all four generated tokens, full
-F32 logits and serialized request state exactly across resident, forced paging
-and Auto modes. On the M2, Auto selects resident for the 2-bit pack and paging
-for the 6-bit pack. These are bounded execution controls, not a model-quality
-comparison between quantization formats. Both packs also pass native completion
-and SSE repeat against their own resident-control tokens, with MTP disabled.
-Raw numerical and API controls are in the
-[affine format evidence](../../benchmarks/results/flash-next-affine-formats-m2-20260915.json).
-
-## Public admission
-
-Conversion preserves the dedicated metadata and validates tensor geometry.
-Audited affine 4-bit/group64 and 6-bit/group64 packs convert `runtime_status.ready=true`
-with no native-trunk blocker and load without an environment variable.
-Unaudited exporters keep the `qwen4_exp_weight_layout_unknown` blocker.
-`AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` remains only as the opt-in for formats
-that are not product. The 2-bit export additionally requires
-`AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4 stays rejected. Mixed expert layouts
-and protected-projection mismatches are hard errors.
-
-Never remap this model onto `qwen3_5` or Super-class 2.4T. Mac Studio M5 Ultra
-256 GB qualification remains pending hardware. Custom Metal experiments require
-numerical and measured controls before promotion.
-
-The default local pack remains Qwen 3.8 27B AXQ on Mac mini M5 64 GB:
-[Qwen 3.8 27B AXQ certification](qwen3.8-27b-axq.md).
-
-## Operator contract
+Audited affine 4-bit/group64 and 6-bit/group64 manifests can be admitted
+without an environment variable. `runtime_status.ready` expresses loader
+admission, not checkpoint certification. Unknown exporter layouts, invalid
+geometry, mixed expert layouts and MXFP4 remain rejected by the native loader.
+2-bit/group32 requires both `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
+`AX_ENGINE_2BIT_EXPERIMENTAL=1`. Auto/On/Off expert residency is unchanged.
 
 ```bash
-python3 scripts/qualify_qwen38_flash_next.py --dry-run
+python3 scripts/qualify_qwen38_flash_next.py --dry-run --json
+python3 scripts/qualify_qwen38_flash_next.py --model-dir /path/to/converted-pack
 ```
 
-The script reports the admission contract without loading weights. A live
-`--model-dir` run checks the converted manifest, tensor geometry, expert
-layout, and readiness, and exits 0 on the audited 4-bit and 6-bit packs.
-
-```bash
-ax-engine serve qwen3.8-flash-next:axq
-```
-
-Or with an already-converted artifacts directory:
+The second command is a metadata preflight only. It does not load tensors,
+validate exporter identity/geometry, exercise generation, or certify the pack.
+Native `ax-engine doctor` and actual server loading remain required. A legacy
+manifest may retain its old trunk blocker; this conservative preflight rejects
+it even when the native loader can re-audit and admit the same artifact.
 
 ```bash
 ax-engine-server --mlx \
-  --mlx-model-artifacts-dir /path/to/flash-next-4bit \
+  --mlx-model-artifacts-dir /path/to/converted-pack \
   --host 127.0.0.1 --port 31418
 ```
 
-The MTP sidecar attaches automatically when `mtp.safetensors` is present.
-`--mlx-mtp-policy required` works without `AX_MLX_FLASH_NEXT_MTP_CANDIDATE`.
-Default-on MTP stays off (Tier 2 pending). Greedy decode matches direct until
-documented ties. Selected-expert flags stay opt-in.
+An available MTP sidecar attaches automatically, but default-on MTP remains
+disabled. Explicit `--mlx-mtp-policy required` exercises the experimental
+verified path. The test contract records identity until an observed tie and
+bounded numerical divergence; it does not promise universal text identity.
+The QA mismatches remain failures under the original all-items identity rule.
+The 4-bit tie runner also diverges outside the allowed tie margin (1.3125
+versus 0.5), and its state control exceeds the logit bound (0.100864 versus
+0.1). These are unresolved correctness failures, not accepted tie exceptions.
 
-The loader rechecks the audited exporter/source identity and convolution layout.
-Unsupported bit/group pairs, mixed expert layouts, MXFP4, missing files and
-unknown-layout blockers remain rejected. Expert residency uses the existing
-Auto/On/Off policy; forced whole-layer paging has substantial transfer cost.
-See [Testing](../TESTING.md) and [Supported Models](../SUPPORTED-MODELS.md).
-
-## Selected expert reads (experimental)
-
-With expert streaming active, `AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1` enables
-bounded reads of only the routed experts for singleton forwards, including the
-singleton prefill completion. With this flag alone, multi-token and batch>1
-forwards keep whole-layer paging. Auto/On/Off residency decisions are unchanged; a resident pack stays
-resident even when this flag is set.
-
-The path preserves MLX routing weights and top-k reduction order, and reads the
-same compact expert IDs from affine weight/scales/biases triplets. It limits
-selected payload to 256 MiB per layer call and evaluates the MoE output before
-releasing its owned arrays. No compiled expert closure captures these arrays.
-
-Tiny F32/BF16 controls and bounded M2 2/4/6-bit controls match full logits and
-serialized state against their whole-layer controls. This does not qualify
-long-context quality, MTP combinations or the M5 Ultra SKU. Cold/warm filesystem
-state materially affects paging latency.
-
-The native `/metrics` endpoint exposes
-`ax_engine_mlx_flash_next_selected_expert_gathers_total` and
-`ax_engine_mlx_flash_next_selected_expert_payload_kib_total`. These count
-successful selected gathers observed in engine steps. Payload KiB excludes
-headers, whole-layer traffic and failed gathers; it is not physical disk I/O
-or total memory. The counters establish actual route use, not just flag state.
-
-Native completion and SSE repeat also pass for all three affine packs with
-MTP disabled. Each repeat increases actual selected-gather and payload counters;
-output tokens match the same-pack control. The
-[selected-expert development evidence](../../benchmarks/results/flash-next-selected-experts-m2-20260915.json)
-retains numerical fingerprints, API responses, source/binary hashes and all
-repeated process times. Whole-layer prefill remains costly; these controls do
-not establish overall serving performance.
-
-### Bounded selected prefill
-
-An additional default-off flag, `AX_MLX_FLASH_NEXT_SELECTED_PREFILL=1`, enables
-selected expert unions for batch=1 multi-token Shared forwards. It requires
-`AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1`. The original prefill token shape, routing
-slots and MLX gather-QMM arithmetic are retained. Router indices are made
-contiguous before host access, including strided multi-token top-k views.
-
-The union must fit the existing 256 MiB affine payload cap across all projections.
-A capacity miss falls back to whole-layer paging before selected payload I/O;
-invalid metadata, invalid IDs and I/O failures remain errors. This cap excludes
-allocator padding and scratch and is not a total-memory bound. Multi-token
-RowExact verification and batch>1 keep the existing whole-layer path. Singleton
-forwards retain their strict selected payload cap. The prefill flag alone has
-no effect, and resident packs retain resident execution.
-
-Tiny F32/BF16 controls for all three affine formats cover exact Shared outputs,
-overlapping token selections, capacity fallback, and full hybrid-state recovery
-after selected prefill I/O failure. Same-binary M2 controls for all three real
-packs match complete prefill and generated logits/state across whole-layer,
-singleton-selected and prefill-selected modes. Native completion/SSE also passes
-with actual additional prefill gather counts. A 258-token control exercises
-capacity fallback with exact logits/state. These bounded controls do not qualify
-long-context quality, MTP combinations, sustained throughput or the target SKU.
-See the [selected-prefill development evidence](../../benchmarks/results/flash-next-selected-prefill-m2-20260915.json).
-
-### Independent full-checkpoint comparison remains open
-
-An unmodified pinned MLX-VLM reference loaded the same 4-bit checkpoint with
-MLX 0.32.2 and the same n-1/singleton schedule. Its four generated tokens matched
-AX, but complete logits did not: maximum absolute error was 0.9609375 during
-prefill and 2.3427734375 at the first decode step. The highest-scoring token at
-the first prefix position also differed. This is retained as an unsuccessful
-numerical comparison, not a quality pass.
-
-Pass-through first-layer captures reproduced each implementation's original
-logits; AX state fingerprints also stayed exact. Embedding outputs matched.
-The first prefill HC difference affected one value, and GDN introduced broader
-differences, including during decode with identical HC input. Reference GDN
-normalizes Q/K in BF16, while the official Transformers fallback and AX use
-FP32 normalization. This identifies a concrete numerical difference, but does
-not explain or accept the complete final-logit error. Independent full-checkpoint
-correctness remains a gate. See the
-[independent comparison evidence](../../benchmarks/results/flash-next-independent-logits-m2-20260915.json).
-
-A subsequent control feeds captured real first-layer Q/K/V, decay, beta and
-state to the pinned official Transformers recurrent/chunked functions. All 32
-component comparisons pass the previously fixed F32/BF16 oracle tolerances.
-Independently carried official recurrent state differs by at most 4.77e-7;
-norm/gate output differs by at most 1.53e-5. Capturing these tensors preserves
-AX's complete logits and state fingerprints. This supports the tested GDN
-arithmetic; it does not qualify the full model or resolve the MLX-VLM mismatch.
-See the [official GDN evidence](../../benchmarks/results/flash-next-official-gdn-m2-20260915.json).
-
-### Selected prefill with MTP
-
-Bounded M2 controls now exercise both selected flags with MTP on all three
-audited affine packs. Primary and draft state match the direct/full-head
-controls immediately after prefill. Flash Next MTP guarantees greedy-token
-identity with direct decode for the same request, and bounds the logit and
-state divergence introduced by batched verification rather than requiring
-bit-exact logits or serialized state. The tests separately count selected
-payload read by MTP steps, retain zero cached whole expert layers, and cover
-verifier acceptance, rejection, budget and EOS boundaries. Synthetic
-forced-acceptance tests also cover session and runner terminal behavior.
-
-The same production executable passes completion and SSE with MTP disabled and
-required for each pack: 12 requests, matching the corresponding direct output.
-Actual draft and selected-read counters confirm execution; the certified
-default-on metric remains zero. These short controls do not establish MTP
-profitability, a trained-head oracle, long-context quality or full-checkpoint
-independent logits agreement. See the
-[selected MTP evidence](../../benchmarks/results/flash-next-selected-mtp-m2-20260915.json).
-
-### GDN activation precision correction
-
-A later same-input M2 diagnostic isolated BF16 SiLU and beta sigmoid rounding.
-Flash Next now evaluates these activation intermediates in FP32, then rounds
-to the original projection dtype before recurrence. Convolution and its cached
-tail retain their original precision; other families retain their existing
-activation path. A pinned official fixture reproduces both old failures and
-passes after the correction, including three cache-boundary splits.
-
-All 20 captured Q/K/V/beta comparisons are now byte-exact with the official
-first-layer inputs, and all 32 recurrence/norm component comparisons pass.
-The entire first-layer output passes the fixed BF16 tolerance on four of five
-forwards; the fifth still fails with maximum error 0.001953125. That residual
-is retained as an open numerical discrepancy.
-
-With identical teacher-forced inputs, maximum decode error against the
-unmodified full MLX-VLM reference falls from 2.3427734375 to 1.43359375. The
-prefix argmax mismatch is resolved, but a decode argmax differs. This is not
-full-model acceptance. An unchanged reference control reproduces its original
-logits exactly; a hybrid graph using whole official GDN modules remains a
-diagnostic, not a complete official model oracle.
-
-The corrected path passes the three affine pack state/runner matrices and 12
-native HTTP/SSE requests with MTP disabled/required. Workspace tests report
-3,638 passed and 39 ignored; relevant MLX/server Clippy passes. Full workspace
-Clippy retains existing core test errors. See the
-[GDN precision evidence](../../benchmarks/results/flash-next-gdn-precision-m2-20260915.json).
-
-### MoE activation precision correction
-
-Flash Next expert/shared SiLU and shared-router sigmoid now follow the official
-projection-dtype rounding boundary: FP32 activation, cast back, then the
-separate low-precision multiplication. Two regressions fail the old arithmetic
-and pass the correction. Before changing math, test-only observations preserve
-all committed logits and state fingerprints exactly.
-
-On identical real first-layer inputs, 30 corrected activation/product checks
-are byte-exact with official Torch, and 30 input-identity checks pass. Router
-score checks also pass, with two explicitly recorded equal-score top-k ties
-that select different valid expert IDs. An official expert replay isolates
-ordered low-precision accumulation differences up to 0.001953125. Routing,
-reduction and QMM are unchanged by this correction.
-
-Full numerical agreement remains open: maximum teacher-forced decode difference
-against unchanged MLX-VLM increases to 2.453125. That reference's compiled
-activation also differs from official Torch on the recorded inputs. This is
-operator-alignment evidence, not a full-model accuracy improvement.
-
-The three affine state/runner matrices and 12 completion/SSE requests pass.
-Six additional 4-bit chat checks return Paris, 42 and 2, 3, 5 identically with
-direct and required MTP. Workspace tests report 3,640 passed and 39 ignored;
-relevant strict Clippy passes, with existing full-workspace core test errors
-retained. See the
-[MoE precision evidence](../../benchmarks/results/flash-next-moe-precision-m2-20260915.json).
-
-### HC and PLE precision correction
-
-Measured real inputs isolate additional rounding differences in HC/PLE
-activations, the HC stream mean, and PLE dot accumulation/scalar division.
-The correction retains each low-precision product, uses FP32 activation or
-accumulation, and preserves the official cast boundaries. Three regressions
-fail old arithmetic and pass the correction. All 115 actual HC/PLE boundary
-comparisons are exact, including the complete PLE short convolution; 32 GDN
-recurrence/norm controls also pass on the changed HC inputs. Test observations
-preserve complete logits and state exactly against their plain controls.
-
-Full-model agreement remains open: teacher-forced decode error against
-unchanged MLX-VLM reaches 1.84375, with one argmax mismatch. Error is not
-uniformly reduced at every step. These operator results do not establish
-full-model quality, MTP profitability or M5 Ultra qualification.
-
-All three affine state/runner matrices, 12 completion/SSE requests and six
-direct/required-MTP chat checks pass. Workspace tests report 3,643 passed,
-39 ignored and zero failed. Relevant strict Clippy passes; the existing core
-test failures remain in full-workspace Clippy. See the
-[HC/PLE precision evidence](../../benchmarks/results/flash-next-hc-ple-precision-m2-20260915.json).
-
-### Complete official eager graph and QSA gate correction
-
-The original official graph now executes the real 4-bit checkpoint with
-independent CPU routing and request state. All 1,164 parameters have explicit
-bindings; quantized projections and embedding rows share MLX operators.
-Eager attention and experts are selected explicitly, so this does not certify
-independent QMM or the framework's default grouped expert implementation.
-The unchanged MLX-VLM control reproduces its saved complete logits exactly.
-See the [official graph evidence](../../benchmarks/results/flash-next-official-full-graph-m2-20260915.json)
-for the pre-QSA-correction comparison and retained numerical discrepancies.
-
-QSA now rounds sigmoid to the gate dtype before its separate attention
-product. A BF16 regression fails the previous formula; all five actual
-post-change products match official same-input math exactly. Ten incoming
-attention/gate tensors remain unchanged, and observations preserve complete
-logits and state against plain controls.
-
-This local correction does not establish full-model agreement. Current
-maximum error is 1.9609375 against MLX-VLM and 2.26953125 against the official
-eager graph. Neither comparison improves uniformly; one prefix position and
-one decode position have different highest-scoring tokens. Full numerical,
-quality, MTP profitability and hardware qualification gates remain open.
-
-All six affine state/runner controls, 12 HTTP/SSE requests and six short chat
-checks pass with this correction. Direct and required MTP return the same
-chat responses. Workspace tests report 3,644 passed, 39 ignored and zero
-failed; relevant strict Clippy passes, while full-workspace Clippy retains
-existing core test failures. See the
-[QSA gate evidence](../../benchmarks/results/flash-next-qsa-gate-precision-m2-20260915.json).
-
-### GDN schedule attribution
-
-A diagnostic changes only the original official prefill from its chunk
-function to its recurrent function. Both unchanged reference controls
-reproduce saved complete logits, and restoring the original function
-reproduces the original prefix. This schedule change alone moves one decode
-choice from 271 to 561, matching AX on all four decode choices; the original
-chunk reference has exactly tied maxima at 271 and 561 on that step.
-
-The official schedules still differ by up to 2.203125 in full logits, and
-AX differs from the recurrent reference by up to 2.09375. This attributes
-schedule sensitivity on one request; it neither replaces the original oracle
-nor establishes full-model accuracy. No production GDN code changed. See the
-[schedule attribution evidence](../../benchmarks/results/flash-next-gdn-schedule-attribution-m2-20260915.json).
-
-### Extended functional QA
-
-On the authorized M2 development host, a frozen 24-item English cohort from
-eight existing QA categories scores 23/24 with direct AX, required verified
-MTP, and the unchanged MLX-VLM reference. All three answer `9` to the gravity
-item; the expected answer and failure remain unchanged. This shared failure
-does not identify its root cause or establish correctness.
-
-Direct and MTP text matches on all 24 items. AX and the reference match on
-22; two explanations differ while retaining the correct conclusion. All
-responses stop normally. Four additional native repeat controls match, both
-owned servers exit successfully, and selected-expert counters confirm actual
-reads. Required MTP records 399 draft and 335 accepted tokens across its 26
-requests; these counters do not establish a speed improvement.
-Prefix hits and direct-fallback steps are zero, so this cohort does not
-exercise those paths. Direct fallback counts non-speculative decode steps,
-separately from unaccepted draft proposals.
-
-The original reference first reproduces five saved complete logit tensors
-from one prior control request, separately from the 24 QA prompts.
-Prompts, token IDs, source hashes, full answers, checker reports and route
-counters accompany the [functional QA evidence](../../benchmarks/results/flash-next-extended-qa-m2-20260915.json).
-This short closed-answer cohort does not close full numerical, broad quality,
-trained-MTP, profitability or target-hardware qualification gates. No runtime
-source or public readiness setting changed.
-
-### MTP final output budget
-
-When only one output slot remains, the candidate now updates its required QSA
-history and runs the authoritative primary graph without computing a draft
-that cannot be accepted. It publishes state only after both operations succeed
-and records no proposal for this step. Larger budgets run one length-2 Shared
-verification forward and keep greedy-token identity with direct decode, with
-bounded logit and state divergence rather than a bit-exact match.
-
-F32 and BF16 regressions fail the old path on a poisoned draft projection and
-pass the correction. Full serialized state, hidden values, failure recovery
-and subsequent continuation agree with the full-head/direct controls. The
-same final-budget control and existing state/runner controls pass on all three
-affine formats on M2. Workspace tests report 3,644 passed, 40 ignored and zero
-failed; all 28 synthetic controls also pass in debug and optimized builds.
-The rebuilt native server passes 12 completion/SSE requests across the three
-formats with MTP disabled and required.
-
-In the bounded 32-token cost probe, with six measured pairs per binary, the
-final step's draft/cache interval has medians of 3.085 ms before and 1.009 ms
-after. Medians of the per-pair MTP/direct decode ratios are 1.013 before and
-1.042 after; both routes also slow between campaigns. These separate runs
-do not demonstrate an end-to-end speed improvement.
-This removes discarded work without establishing trained-head mathematical
-correctness, MTP profitability or public readiness. See the
-[final-budget evidence](../../benchmarks/results/flash-next-mtp-final-budget-m2-20260915.json).
-
-### First QSA pruning boundary
-
-A frozen structural prompt on M2, using the same affine 4-bit pack for both
-graphs, crosses the real first-pruning boundary:
-with a 2,048-token budget and four-token blocks, pruning begins at 2,052
-visible tokens, when the 513th complete block exceeds the 512-block budget.
-AX and the unchanged MLX-VLM full runs retain the same first-QSA-layer token
-sets through 2,055, including partial tails. The original indexer also selects
-the same sets on all 2,055 captured AX hidden inputs at that layer. Five
-original projected-input controls reproduce the reference masks and index
-history; normal and separately projected replay histories agree. Quantized
-projections share MLX. Gather order differs from chronological mask order,
-so equal selected sets do not establish equal attention outputs.
-
-Both full graphs retain identical complete-logit and state fingerprints
-between their own plain and observed runs. At 21 saved last-row positions,
-20 greedy choices agree across implementations. Across the saved full-vocabulary
-rows, logits differ by up to 11.90625; at position 2,054, AX chooses 271 and the reference chooses
-198, each with a unique maximum. This is unresolved numerical disagreement,
-despite matching first-QSA selection sets. It does not identify the cause in
-later operators or layers.
-
-This diagnostic extends an ignored test and its observation capture; it
-changes no production math or admission setting. Workspace tests pass with
-3,644 passed and 40 ignored. It covers one first-pruning trajectory, not broad
-quality, all-layer mask equivalence, throughput or target-hardware
-qualification. See the [curated QSA boundary evidence](../../benchmarks/results/flash-next-qsa-pruning-boundary-m2-20260915.json).
-
-### Same-input attention attribution
-
-On the saved 2,055-token M2 trajectory, the new ignored first-QSA replay test
-runs separately in plain and observed modes and reproduces all 21 saved
-full-model branch outputs exactly. Original MLX-VLM attention on those same inputs retains exact
-output/cache fingerprints across plain, observed and explicit-position runs.
-All 63 projected Q/K/V tensors and 21 gates agree across implementations.
-
-Controlled experiments separately vary prepared Q/K and SDPA execution,
-then normalization and rotation. All original/native endpoint controls
-reproduce their saved tensors exactly. Given the saved boundary inputs, these
-isolated controls reproduce the endpoints without re-running the rest of the model.
-The SDPA comparison jointly changes query grouping, KV expansion, gather
-order, masking and kernel selection; it does not isolate any one mechanism.
-Matching controls does not establish which implementation is more accurate
-or explain the entire full-model logit difference.
-
-Only an ignored replay test and test-only captures changed. Workspace tests
-report 3,644 passed and 41 ignored. No production math or qualification
-setting changed. See the [curated attention attribution evidence](../../benchmarks/results/flash-next-qsa-attention-attribution-m2-20260915.json).
-
-### QSA GQA and selected-key order factorial
-
-The next M2 diagnostic holds the captured native Q/K/V tensors and selected
-indices fixed while varying only KV-head expansion and selected-key order.
-Across all 2,055 query positions, the current ranked-expanded path reproduces
-the saved native attention-before-gate tensor bit-for-bit. Leaving KV heads
-grouped (ranked-GQA) produces the same tensor on this MLX build. Sorting each
-selected set into chronological order changes the result slightly, so the
-native ranked gather order remains a meaningful numerical detail.
-
-An independent NumPy FP64 logical-GQA attention calculation agrees with a Torch
-FP64 calculation on nine frozen rows within 1e-10. Native ranked-expanded
-output differs from that mathematical reference by at most 0.0195060913, with
-the BF16 round-to-nearest-even floor recorded separately. This is an operator
-diagnostic for one saved trajectory, not an official BF16 oracle or a complete
-model-quality result.
-
-A separate M2 cost probe covers five fixed positions, four variants, two
-warmups and eight interleaved rotated cycles (160 samples). Inputs and weight
-loading are outside the clock; Python dispatch is included. MLX's peak counter
-was reset after warmups and returned zero before every timed sample. The small
-single-query timings are dispatch probes, not serving throughput or a target-
-SKU performance claim. No production math or admission setting changed. See
-the [curated GQA/order evidence](../../benchmarks/results/flash-next-qsa-gqa-order-m2-20260915.json).
+The primary default remains [Qwen 3.8 27B AXQ](qwen3.8-27b-axq.md) on
+Mac mini M5 64 GB. See [Supported Models](../SUPPORTED-MODELS.md) and
+[Testing](../TESTING.md) for the wider operator contract.

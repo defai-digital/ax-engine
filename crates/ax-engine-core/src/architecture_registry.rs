@@ -33,7 +33,7 @@ pub enum LayerForwardRoute {
     /// and softcapped scaled final logits.
     MuseGlimmer,
     /// Qwen 3.8 Flash Next (`qwen4_exp`): dedicated trunk (GDN + QSA +
-    /// hyper-connection + n-gram table). Certified checkpoint with MTP pending.
+    /// hyper-connection + n-gram table). Experimental graph; checkpoint qualification and MTP pending.
     Qwen4Exp,
 }
 
@@ -197,8 +197,8 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Qwen4Exp,
         dense_batched_decode_candidate: false,
-        cert_gate_note: "Qwen 3.8 Flash Next certified checkpoint (M2 evidence); MTP Tier 2 pending; greedy-identity-until-tie MTP contract; n-gram table must not eval at load_weights",
-        support_tier: ModelSupportTier::Certified,
+        cert_gate_note: "Qwen 3.8 Flash Next experimental graph (M2 development evidence); checkpoint qualification pending; MTP Tier 2 pending; greedy-identity-until-tie MTP contract; n-gram table must not eval at load_weights",
+        support_tier: ModelSupportTier::Experimental,
         chat_contract: ChatContract {
             template: ChatTemplateKind::QwenChatMl,
             output_policy: ChatOutputPolicy::Plain,

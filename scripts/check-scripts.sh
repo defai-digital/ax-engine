@@ -215,6 +215,7 @@ bash scripts/check-qa.sh
   scripts/qualify_qwen38_27b.py \
   scripts/test_qualify_qwen38_27b.py \
   scripts/qualify_qwen38_flash_next.py \
+  scripts/test_curate_flash_next_evidence.py \
   scripts/test_qualify_qwen38_flash_next.py \
   scripts/test_qwen38_primary_alias.py \
   scripts/check_no_turboquant_references.py \
@@ -297,6 +298,7 @@ bash scripts/check-qa.sh
   scripts/test_check_no_mlxcel_public_docs.py \
   scripts/test_check_qwen38_primary_claims.py \
   scripts/test_qualify_qwen38_27b.py \
+  scripts/test_curate_flash_next_evidence.py \
   scripts/test_qualify_qwen38_flash_next.py \
   scripts/test_qwen38_primary_alias.py \
   scripts/test_check_no_turboquant_references.py \

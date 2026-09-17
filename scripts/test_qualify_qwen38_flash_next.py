@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,6 +129,37 @@ class QualifyFlashNextTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 mod._live_preflight(model_dir)
             self.assertIn("MXFP4", str(raised.exception))
+
+    def test_metadata_preflight_never_establishes_qualification(self) -> None:
+        self.assertFalse(mod.contract()["release_ready"])
+        self.assertFalse(mod.contract()["qualification"])
+        self.assertIn("metadata only", mod.contract()["validation_scope"])
+
+    def test_ready_flag_cannot_hide_other_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config.json").write_text("{}")
+            manifest = _product_manifest()
+            manifest["runtime_status"]["blockers"] = ["geometry_not_validated"]
+            (root / "model-manifest.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(SystemExit, "geometry_not_validated"):
+                mod._live_preflight(root)
+
+    def test_missing_experts_and_ungated_two_bit_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td, patch.dict("os.environ", {}, clear=True):
+            root = Path(td)
+            (root / "config.json").write_text("{}")
+            manifest = _product_manifest()
+            manifest["tensors"][0]["quantization"] = {
+                "mode": "affine", "bits": 2, "group_size": 32,
+            }
+            (root / "model-manifest.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(SystemExit, "both experimental"):
+                mod._live_preflight(root)
+            manifest["tensors"][0]["role"] = "other"
+            (root / "model-manifest.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(SystemExit, "no affine expert"):
+                mod._live_preflight(root)
 
 
 if __name__ == "__main__":

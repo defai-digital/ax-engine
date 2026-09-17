@@ -26,7 +26,7 @@ STATUS_FILES = (
 )
 FLASH_NEXT_ALIAS = "qwen3.8-flash-next:axq"
 FLASH_NEXT_STATUS_SENTENCE = (
-    "Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. "
+    "Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. "
     "AX certification record: Candidate (gates open)."
 )
 FLASH_NEXT_STATUS_FILES = (
@@ -184,6 +184,15 @@ def find_flash_next_claim_issues(root: Path) -> list[Hit]:
                     message=f"missing alias {FLASH_NEXT_ALIAS}",
                 )
             )
+        if relative == "docs/model-certifications/qwen3.8-flash-next.md":
+            for match in re.finditer(r"\]\((\.\./\.\./benchmarks/[^)]+)\)", text):
+                target = path.parent / match.group(1)
+                if not target.is_file():
+                    hits.append(Hit(
+                        path=relative,
+                        line_number=text.count("\n", 0, match.start()) + 1,
+                        message=f"missing Flash Next evidence: {match.group(1)}",
+                    ))
     return hits
 
 

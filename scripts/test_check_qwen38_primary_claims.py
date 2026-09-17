@@ -97,6 +97,17 @@ class CheckQwen38PrimaryClaimsTest(unittest.TestCase):
         ):
             checker.check_qwen38_primary_claims(self.root)
 
+    def test_missing_flash_next_evidence_fails_even_with_candidate_sentence(self) -> None:
+        self.seed_required()
+        self.write(
+            "docs/model-certifications/qwen3.8-flash-next.md",
+            BODY + "[QA](../../benchmarks/results/missing.json)\n",
+        )
+        with self.assertRaisesRegex(checker.PrimaryClaimError, "missing Flash Next evidence"):
+            checker.check_qwen38_primary_claims(self.root)
+        self.write("benchmarks/results/missing.json", "{}")
+        checker.check_qwen38_primary_claims(self.root)
+
 
 if __name__ == "__main__":
     unittest.main()

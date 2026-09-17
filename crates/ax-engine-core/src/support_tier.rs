@@ -176,10 +176,10 @@ mod tests {
     fn expected_tier(family_label: &str) -> ModelSupportTier {
         match family_label {
             "qwen3" | "qwen3_5" | "qwen3_next" | "qwen3_vl" | "gemma4" | "gemma4_vl"
-            | "glm4_moe_lite" | "gpt_oss" | "deepseek_v3" | "deepseek_v32" | "qwen4_exp" => {
+            | "glm4_moe_lite" | "gpt_oss" | "deepseek_v3" | "deepseek_v32" => {
                 ModelSupportTier::Certified
             }
-            "diffusion_gemma" | "deepseek_v4" | "muse_glimmer" | "minimax_m3" => {
+            "diffusion_gemma" | "deepseek_v4" | "muse_glimmer" | "minimax_m3" | "qwen4_exp" => {
                 ModelSupportTier::Experimental
             }
             _ => ModelSupportTier::Compatible,
@@ -220,7 +220,6 @@ mod tests {
             "gpt_oss",
             "deepseek_v3",
             "deepseek_v32",
-            "qwen4_exp",
         ] {
             assert_eq!(
                 support_tier_for_family(label),
@@ -228,6 +227,14 @@ mod tests {
                 "{label} must stay Certified per the explicit certified list"
             );
         }
+    }
+
+    #[test]
+    fn flash_next_execution_does_not_imply_checkpoint_certification() {
+        assert_eq!(
+            support_tier_for_family("qwen4_exp"),
+            ModelSupportTier::Experimental
+        );
     }
 
     #[test]

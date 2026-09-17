@@ -65,7 +65,7 @@ configurations:
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
 | Mac mini M5 | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| Mac Studio M5 Ultra | 256 GB RAM | Best experience for Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`, 125B-A6B). Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. AX certification record: Candidate (gates open). |
+| Mac Studio M5 Ultra | 256 GB RAM | Best experience for Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`, 125B-A6B). Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). |
 
 ## What model stack should I run on high-memory Apple Silicon?
 
@@ -260,7 +260,7 @@ Start with the pinned `qwen3.8-27b:axq` 6-bit MTP pack. Its checkpoint path is
 Tier 1; MTP Tier 2 performance certification remains pending.
 
 Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`) is a second SKU for Mac Studio
-M5 Ultra 256 GB. Second SKU. Checkpoint Tier 1 on M2 evidence. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+M5 Ultra 256 GB. Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 See [Supported Models](SUPPORTED-MODELS.md).
 
 ## Which runtime path should I choose first?
