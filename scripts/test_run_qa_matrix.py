@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import tempfile
+import socket
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,21 @@ def _load():
 
 
 class RunQaMatrixTests(unittest.TestCase):
+    def test_port_preflight_preserves_listener_and_allows_time_wait(self):
+        m = _load()
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+            listener.listen()
+            with self.assertRaises(OSError):
+                m.ensure_port_available("127.0.0.1", port)
+            with socket.create_connection(("127.0.0.1", port)) as client:
+                accepted, _ = listener.accept()
+                accepted.close()
+                self.assertEqual(client.recv(1), b"")
+        m.ensure_port_available("127.0.0.1", port)
+
     def test_live_route_requires_completed_draft_and_verify(self):
         m = _load()
         decisions = {"ax_mtp_draft_tokens": 3, "ax_mtp_verify_tokens": 4}

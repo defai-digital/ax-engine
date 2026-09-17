@@ -93,6 +93,13 @@ def wait_ready(host: str, port: int, timeout: int) -> bool:
     return False
 
 
+def ensure_port_available(host: str, port: int) -> None:
+    # Reuse TIME_WAIT sockets, but never terminate another operator's listener.
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((host, port))
+
+
 def classify_engine_fail(log_text: str, qa_text: str) -> str | None:
     needles = [
         "panic",
@@ -369,9 +376,7 @@ def run_cell(
         )
         return cell
 
-    # Never terminate a listener owned by another operator.
-    with socket.socket() as probe:
-        probe.bind((host, port))
+    ensure_port_available(host, port)
     with server_log.open("w") as slog:
         proc = subprocess.Popen(
             cmd,

@@ -1211,6 +1211,11 @@ fn disable_ngram_acceleration_flag_sets_mlx_disable_ngram_acceleration() {
         "--disable-ngram-acceleration must propagate to mlx_disable_ngram_acceleration; \
              check args.rs session_config() and EngineSessionConfig::from_preview_request"
     );
+    assert_eq!(
+        actual.mlx_mtp_policy,
+        MlxMtpPolicy::Disabled,
+        "the server direct-baseline flag must disable model MTP as well as n-gram"
+    );
 }
 
 #[test]
