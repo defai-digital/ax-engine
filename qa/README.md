@@ -17,7 +17,7 @@ MMMU / …). It is a practical gate for:
 | --- | --- |
 | **Separate engine vs model quality** | `engine_fail` blocks CI; `model_quality` is partial by default |
 | **Capability-honest soft skips** | Soft-skip vision only when `/v1/models` does **not** advertise image |
-| **Fail closed for unsupported media** | Remote image URLs and public `video_url` must 4xx (not 200/5xx) |
+| **Fail closed for unsupported media** | Remote media URLs must 4xx; inline video must work only when advertised |
 | **Prove the path you claim** | MTP telemetry gate; multimodal package detection before probes |
 | **Small stratified bank, large inventory** | Seeded samples beat a fixed dozen “golden” prompts |
 | **Offline tests for the harness** | `check-qa.sh` always runs; GPU matrix is optional |

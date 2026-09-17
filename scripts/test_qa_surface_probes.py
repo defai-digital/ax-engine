@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import base64
+import struct
+import zlib
 import sys
 import unittest
 from pathlib import Path
@@ -18,6 +21,7 @@ from surface_probes import (  # noqa: E402
     extract_chat_content,
     extract_sse_chat_text,
     model_advertises_image,
+    model_advertises_video,
     normalize_answer_text,
     openclaw_sse_contract,
     probe_cancel_request,
@@ -32,6 +36,21 @@ from surface_probes import (  # noqa: E402
 
 
 class SurfaceProbeHelperTests(unittest.TestCase):
+    def test_png_fixture_crc_and_pixel_data(self):
+        data = base64.b64decode(tiny_png_data_url().split(",", 1)[1])
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        offset, image = 8, b""
+        while offset < len(data):
+            length = struct.unpack(">I", data[offset:offset + 4])[0]
+            kind = data[offset + 4:offset + 8]
+            payload = data[offset + 8:offset + 8 + length]
+            crc = struct.unpack(">I", data[offset + 8 + length:offset + 12 + length])[0]
+            self.assertEqual(crc, zlib.crc32(kind + payload))
+            if kind == b"IDAT":
+                image += payload
+            offset += length + 12
+        self.assertEqual(zlib.decompress(image), b"\x00\x00\x00\xff")
+
     def test_chat_completion_payload_with_tools(self) -> None:
         payload = chat_completion_payload(
             "m",
@@ -153,6 +172,17 @@ class SurfaceProbeHelperTests(unittest.TestCase):
                 {"capabilities": {"input": {"image": True}}}
             )
         )
+
+    def test_video_capability_requires_real_success(self):
+        self.assertTrue(model_advertises_video({"capabilities": {"input": {"video": True}}}))
+        self.assertFalse(model_advertises_video({"capabilities": {"input": {"image": True}}}))
+        for response, expected in [((200, {"choices": [{"message": {"content": "One frame"}}]}), True),
+                                   ((200, {"choices": [{"message": {"content": ""}}]}), False),
+                                   ((400, {"error": "unsupported"}), False), ((500, {}), False)]:
+            with unittest.mock.patch("surface_probes._post_json", return_value=response):
+                self.assertEqual(probe_video_rejected("http://x", "m", require_video=True).passed, expected)
+                if response[0] == 200:
+                    self.assertFalse(probe_video_rejected("http://x", "m").passed)
 
     def test_media_policy_probes(self) -> None:
         with unittest.mock.patch(

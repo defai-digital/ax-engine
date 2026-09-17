@@ -8,7 +8,7 @@ These exercise serving paths that pure Q&A sampling does not cover:
 * OpenAI tools schema acceptance (no panic / structured HTTP response)
 * multimodal image chat (**capability-aware**: soft-skip only when the model
   does not advertise image input)
-* fail-closed media policy (remote URL reject, public video reject)
+* capability-aware inline video and fail-closed remote media policy
 
 Best practice: soft-skips are allowed only when the model card does **not**
 claim the capability. Advertised vision that returns 4xx/empty is a hard fail.
@@ -23,6 +23,8 @@ import base64
 import concurrent.futures
 import json
 import re
+import struct
+import zlib
 import time
 import urllib.error
 import urllib.request
@@ -168,6 +170,14 @@ def model_advertises_image(card: Optional[dict[str, Any]]) -> bool:
     return False
 
 
+def model_advertises_video(card: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(card, dict):
+        return False
+    capabilities = card.get("capabilities")
+    inputs = capabilities.get("input") if isinstance(capabilities, dict) else None
+    return isinstance(inputs, dict) and inputs.get("video") is True
+
+
 def normalize_answer_text(text: str) -> str:
     """Collapse whitespace for stream/non-stream parity comparison."""
     return re.sub(r"\s+", " ", (text or "").strip()).lower()
@@ -252,81 +262,14 @@ def chat_completion_payload(
 
 def tiny_png_data_url() -> str:
     """1x1 blue PNG as data URL (stdlib only, no Pillow)."""
-    # Minimal valid 1x1 PNG (blue-ish) — fixed fixture bytes.
-    # Generated offline; stable for unit tests.
-    png = bytes(
-        [
-            0x89,
-            0x50,
-            0x4E,
-            0x47,
-            0x0D,
-            0x0A,
-            0x1A,
-            0x0A,
-            0x00,
-            0x00,
-            0x00,
-            0x0D,
-            0x49,
-            0x48,
-            0x44,
-            0x52,
-            0x00,
-            0x00,
-            0x00,
-            0x01,
-            0x00,
-            0x00,
-            0x00,
-            0x01,
-            0x08,
-            0x02,
-            0x00,
-            0x00,
-            0x00,
-            0x90,
-            0x77,
-            0x53,
-            0xDE,
-            0x00,
-            0x00,
-            0x00,
-            0x0C,
-            0x49,
-            0x44,
-            0x41,
-            0x54,
-            0x08,
-            0xD7,
-            0x63,
-            0xF8,
-            0xCF,
-            0xC0,
-            0x00,
-            0x00,
-            0x03,
-            0x01,
-            0x01,
-            0x00,
-            0x18,
-            0xDD,
-            0x8D,
-            0xB4,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x49,
-            0x45,
-            0x4E,
-            0x44,
-            0xAE,
-            0x42,
-            0x60,
-            0x82,
-        ]
-    )
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (struct.pack(">I", len(payload)) + kind + payload
+                + struct.pack(">I", zlib.crc32(kind + payload)))
+
+    png = (b"\x89PNG\r\n\x1a\n"
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\xff"))
+           + chunk(b"IEND", b""))
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
@@ -777,9 +720,10 @@ def probe_video_rejected(
     model: str,
     *,
     timeout: float = 60.0,
+    require_video: bool = False,
 ) -> SurfaceProbeResult:
-    """Product policy: public routes reject video (unsupported_modality)."""
-    name = "video_rejected"
+    """Require inline video on advertised models; reject it on other models."""
+    name = "multimodal_video" if require_video else "video_rejected"
     start = time.monotonic()
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     # Minimal 1x1 GIF as data URL — still a video_url modality at the API.
@@ -809,6 +753,12 @@ def probe_video_rejected(
             False,
             f"server/connection error HTTP {status}: {str(body)[:160]}",
             elapsed_ms=elapsed,
+        )
+    if require_video:
+        content = extract_chat_content(body) if status == 200 else None
+        return SurfaceProbeResult(
+            name, bool(content and content.strip()),
+            f"advertised video: HTTP {status}, content={content!r}", elapsed_ms=elapsed,
         )
     if status == 200:
         return SurfaceProbeResult(
@@ -877,7 +827,10 @@ def run_surface_probes(
         report.results.append(
             probe_remote_media_rejected(base_url, model, timeout=timeout)
         )
-        report.results.append(probe_video_rejected(base_url, model, timeout=timeout))
+        report.results.append(probe_video_rejected(
+            base_url, model, timeout=timeout,
+            require_video=model_advertises_video(fetch_model_card(base_url, model, timeout=timeout)),
+        ))
     if include_multimodal:
         report.results.append(probe_multimodal_image(base_url, model, timeout=timeout))
     return report
