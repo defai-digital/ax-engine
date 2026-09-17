@@ -32,7 +32,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | --- | --- | --- |
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
 | Pack delivery | Public revisions and all 63 LFS payload files match native packs; both installed offline aliases and eight installed native completions pass | Verify fresh network download and target-SKU admission |
-| Numerical | Frozen 4-bit holdout passes unchanged aggregate bounds across 3,316 aligned positions | Complete 6-bit holdout and post-campaign integrity checks; retain historical 22 high-margin disagreements and the earlier threshold revision |
+| Numerical | Frozen 4-bit and 6-bit holdouts pass unchanged aggregate bounds across 3,316 aligned positions each | Complete post-campaign integrity checks; retain historical 22 high-margin disagreements and the earlier threshold revision |
 | Functional QA | HC native rerun: direct/required text matches on all 105 items; each mode has 102 hard passes, 105 normal stops and clean shutdown | Full installed/default-route QA and target-SKU qualification remain open; eight installed smoke completions are narrower evidence; reference/NLL were not rerun |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
@@ -79,9 +79,25 @@ The original numerical binary and inputs are unchanged. The recovery uses an
 independent derived manifest differing only in runtime status, and reuses the
 three frozen reference collections with artifact hashes. Earlier pre-inference
 failures remain recorded. [Raw comparison statistics](../../benchmarks/results/flash-next-holdout-4bit-raw-m2-20260917.json.gz)
-retain all rows with only the internal host alias/IP removed. Six-bit collection
-and the final post-campaign payload check are still pending. This M2 result does
+retain all rows with only the internal host alias/IP removed. The final
+post-campaign payload check is still pending. This M2 result does
 not qualify installed/default QA, delivery, throughput, or the target Studio SKU.
+
+## Frozen 6-bit holdout result
+
+The [frozen 6-bit holdout](../../benchmarks/results/flash-next-holdout-6bit-m2-20260917.json)
+passes the same predeclared aggregate rule across eight prompts and all 3,316
+aligned positions. Mean KL is 0.01939 against 0.02803; top-1 disagreement is
+8.625% against 11.196%. Four AX-only high-margin disagreements remain
+(0.121%, below the frozen 1% cap), using the same strict margin greater than 1.0.
+All four graphs were freshly collected, including the two official paths and
+MLX-VLM. [Raw comparison statistics](../../benchmarks/results/flash-next-holdout-6bit-raw-m2-20260917.json.gz)
+preserve the numerical results with only the internal host alias/IP removed.
+
+The original numerical binary, prompt IDs, teacher streams and frozen thresholds
+were retained. Final post-campaign payload integrity verification is pending.
+This M2 result does not qualify installed/default QA, fresh delivery, throughput,
+or the target Studio SKU, and does not enable default MTP or Tier 2 status.
 
 ## Immutable public pack metadata
 

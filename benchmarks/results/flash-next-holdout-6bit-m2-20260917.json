@@ -1,0 +1,76 @@
+{
+  "schema": "ax-engine.flash-next.frozen-holdout-summary.v1",
+  "qualification": false,
+  "release_ready": false,
+  "hardware": "Apple M2 Ultra 192 GB",
+  "target_hardware": false,
+  "pack_bits": 6,
+  "pack_revision": "d514dcebf3086068ed7968caf395083c95ebcfca",
+  "source_commit": "cad80818734522f444d106cb9018e20e224b08f1",
+  "native_binary_sha256": "6468d80f60dd1a5135e2e3511afd4c5b3fe2de8e149ffec78fa5b2bfac647e4f",
+  "harness_sha256": "a20d8cd4ad9fc00bce0649dcce5847f68373a7568617e99b958abd260f7e12b2",
+  "prompt_sha256": "64ceeb8966ce4293ada6391f80ab7cc46153dc14cb7cdc6ac8db541d57e9415a",
+  "teacher_sha256": "ddfcba4c5ffa002b95f758c797ecdddb38d937e3cedb1ff416da98557d36bce2",
+  "admission_freeze_sha256": "2627b27828e3b527a83646fedb70b71c925acb44b72fb67c05ae61a94fc6c3fb",
+  "prompt_count": 8,
+  "prompt_token_counts": [
+    35,
+    37,
+    32,
+    42,
+    36,
+    34,
+    1024,
+    2052
+  ],
+  "position_count": 3316,
+  "graphs": [
+    "official-chunked",
+    "official-recurrent",
+    "mlx-vlm",
+    "ax"
+  ],
+  "acceptance": {
+    "evaluated": true,
+    "passed": true,
+    "multiplier": 1.25,
+    "high_margin_threshold": 1.0,
+    "high_margin_max_rate": 0.01,
+    "ax_mean_kl": 0.01938742250971336,
+    "floor_mean_kl": 0.022427325992325588,
+    "mean_kl_limit": 0.028034157490406983,
+    "mean_kl_ok": true,
+    "ax_top1_disagreement_rate": 0.08624849215922799,
+    "floor_top1_disagreement_rate": 0.08956574185765984,
+    "top1_limit": 0.1119571773220748,
+    "top1_ok": true,
+    "high_margin_ax_only_count": 4,
+    "high_margin_rate": 0.0012062726176115801,
+    "high_margin_mlx_vlm_disagrees_with_reference": 1,
+    "high_margin_mlx_vlm_agrees_with_reference": 3,
+    "high_margin_ok": true,
+    "coverage_parity_ok": true,
+    "coverage_parity": true,
+    "floor_graph": "official-recurrent",
+    "ax_position_count": 3316,
+    "floor_position_count": 3316,
+    "coverage_mismatches": []
+  },
+  "high_margin_comparison": "reference_margin > 1.0",
+  "raw": {
+    "path": "flash-next-holdout-6bit-raw-m2-20260917.json.gz",
+    "original_sha256": "9c97effd7e0e6da70096c194a64a0310381ef710b9ed119fec619cdfc8d4531f",
+    "sanitized_sha256": "d76c10cccc7bdb70b6e9cac1963a39273ab4cce7a5504d18dff04e837cc43f94",
+    "gzip_sha256": "4e256d36288cdc23bab9207478ebe9164698a54b7702a01a84eae447a7333521",
+    "redactions": [
+      "Internal host alias and IP removed from hardware string; no numerical fields changed."
+    ]
+  },
+  "limitations": [
+    "Final post-campaign payload immutability verification remains pending.",
+    "All four six-bit graphs are freshly collected under the frozen protocol.",
+    "Admission recovery changes only derived manifest runtime_status; prior pre-inference failures remain retained.",
+    "No threshold, numerical source, token IDs or teacher streams changed after collection began.",
+    "Statistical acceptance is not exact logit or token parity, installed/default QA, throughput, delivery, or target-SKU qualification."
+  ]
+}
