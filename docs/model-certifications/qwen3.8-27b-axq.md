@@ -47,7 +47,9 @@ Landed, labeled:
   reaches only the packed dense path; the singleton matvec kernel admits
   4-bit weights unless an opt-in flag is set. Two opt-in kernels (prefill
   dual-QMM MMA, fused MoE expert block) keep the float-only activation and
-  remain off. An isolated exact-projection regression failed
+  remain off. A same-session A/B on the campaign laptop (M5 Max, peer-table
+  contract) shows decode within 0.3% of the 2026-09-15 binary and prefill
+  0.5-1.4% lower; the README peer table is not refreshed by that check. An isolated exact-projection regression failed
   before repair (BF16 maximum absolute error 0.001953125); all 22 SwiGLU tests
   now pass. On the selected mini, clean installed `891385f8` gives **9/9**
   paired direct/MTP token matches on the original diagnostics and **12/12**
@@ -62,6 +64,10 @@ Landed, labeled:
   paired response texts match. Both 32851-token recovery replays complete but
   still answer B against gold C. This is a 512-token answer-only failure
   diagnostic, not a replacement for the original 32k thinking campaign.
+  A direct-only replay at a 2048-token cap on the final wheel removes eight
+  of nine truncations (3/12 correct, 8/12 wrong, 1/12 truncated); six of
+  the wrong answers carry the grader's detection flag under strict grading. The
+  truncations are answer-format non-compliance, not empty output.
   Final clean `ad999f3f` bundled-wheel qualification passes: each route has
   **32/32 hard QA**, zero soft failures and **7/7 surface probes**; doctor is
   ready, packaged libraries load in the isolated environment, and the paired

@@ -58,6 +58,34 @@ the answer Ridge at 08:30. No post-fix throughput claim is made; preserving
 activation semantics adds operations, so old speed measurements do not qualify
 this implementation.
 
+## Campaign-host throughput A/B
+
+[m5-throughput-ab](m5-throughput-ab/) holds a same-session before/after run
+on the README peer-table campaign host (Apple M5 Max, 128 GB, macOS 27.0),
+not the qualification SKU. Both runs use the peer-campaign contract
+(`flappy` suite, four cases, 256 generated tokens, greedy, non-thinking chat
+template, two warmups, five measured repetitions, three-second cooldown,
+prefix cache off, MTP head only with n-gram stacking off, exact Qwen linear
+MTP verifier) and identical prompt token hashes. "Before" is the retained
+2026-09-15 campaign binary (build commit unknown, as in the published
+campaign); "after" is a clean release build of `d60f9895` against MLX
+0.32.2 from the same venv.
+
+| Case | Decode before | Decode after | Delta | Prefill before | Prefill after | Delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| flappy_pipes | 77.11 | 76.94 | -0.2% | 717.7 | 707.7 | -1.4% |
+| flappy_score_gates | 74.97 | 75.19 | +0.3% | 841.3 | 837.5 | -0.5% |
+| flappy_collision_checks | 74.76 | 74.96 | +0.3% | 846.5 | 842.3 | -0.5% |
+| flappy_sound_channels | 77.11 | 77.03 | -0.1% | 706.5 | 702.3 | -0.6% |
+
+Values are per-case medians of five repetitions in tok/s; every row is
+classified `stable_enough` by the harness. Decode is unchanged within noise
+and prefill is about 0.5-1.4% lower, consistent with the extra split
+activation dispatches at multi-token shapes. This is a regression check for
+the activation correction, not a refreshed peer table: the "before" binary
+has no recorded commit, and the published README numbers remain the
+2026-09-15 campaign values.
+
 ## Source validation
 
 Final runtime source `ad999f3f` passed formatting, the full Rust suite,
@@ -108,6 +136,27 @@ keep broader direct/MTP consistency open despite the 21 matching shorter raw
 token cases. Default throughput-MTP uses relaxed target arithmetic; this
 experiment does not isolate every remaining operation that changes an argmax.
 The single synthetic qualification probe cannot close that broader gate.
+
+The truncations are a harness effect, not silent output. Every truncated
+direct response contains a line-by-line analysis that ignores the answer-only
+system instruction (non-thinking template, `enable_thinking=false`) and runs
+into the 512-token cap before emitting the `Answer:` line.
+[Output-cap ablation](quality-ablation-maxtok2048-direct.json) replays the
+same twelve direct requests on the final `ad999f3f` wheel with a 2048-token
+cap and otherwise unchanged protocol:
+
+| Direct route | Correct | Wrong | Truncated | Detection flag set |
+| --- | --- | --- | --- | --- |
+| 512-token cap | 1/12 | 2/12 | 9/12 | 2/12 |
+| 2048-token cap | 3/12 | 8/12 | 1/12 | 9/12 |
+
+Six of the eight remaining wrong answers carry the grader's detection flag
+(reported lines fall inside the gold span but the span is incomplete or
+over-extended); the other two (compsec-079: 18, 19, 20 against 18-19, compsec-081: 0 against 10-15) do not. This ablation is direct-only, single-cap, and not a
+promotion input; it shifts the open question from "the model produces
+nothing" to "answer-format compliance and span-boundary precision under
+strict grading". The original 32k thinking campaign is still the quality
+gate of record.
 
 There is also a concrete prompt/gold ambiguity: compsec-076 requests a single
 best bug line or smallest adjacent set, while gold 17-20 includes a guard,

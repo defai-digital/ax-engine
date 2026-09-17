@@ -1,0 +1,296 @@
+{
+ "schema": 1,
+ "scope": "Diagnostic-only output-cap ablation on the selected SKU; direct route, original wording, unchanged gold and strict grading; not population accuracy",
+ "host_class": "Mac mini M4 Pro 64 GB (Mac16,11)",
+ "build": {
+  "source_commit": "ad999f3fa9cd8382c1000bcad19cb687fa6d5638",
+  "wheel_sha256": "2bc3f5e1a1bc94d346a5e1bc1aa732840466825b347dead1b05f137be9784409",
+  "model_revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+ },
+ "protocol": {
+  "cases_per_route": 12,
+  "wording": "original",
+  "gold": "unchanged",
+  "thinking": false,
+  "max_output_tokens": 2048,
+  "system": "Return exactly one line: Answer: <answer>. Do not include an explanation.",
+  "temperature": 0,
+  "top_p": 1,
+  "seed": 0,
+  "routes": [
+   "direct"
+  ]
+ },
+ "baseline_512": {
+  "direct": {
+   "wrong": 2,
+   "truncated": 9,
+   "correct": 1
+  }
+ },
+ "counts": {
+  "wrong": 8,
+  "correct": 3,
+  "truncated": 1
+ },
+ "detection_true": 9,
+ "wrong_with_detection": 6,
+ "cases": [
+  {
+   "key": "COMPSEC:compsec-076",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "17-20",
+   "grade": {
+    "status": "wrong",
+    "answer": "20",
+    "detection": true,
+    "span_reported": 1,
+    "span_expected": 4,
+    "span_recall": 0.25
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 273,
+   "prompt_tokens": 434,
+   "elapsed_seconds": 24.8,
+   "request_sha256": "6362dbbfc15cf2607d32d70f1fb38b45d49d4a232e2ccc61a8ac837b7c41bd8f",
+   "response_sha256": "def5f671951d31a2473cf605957b421a8398e5fc637d0ed53fd39a4a2a12fdb1"
+  },
+  {
+   "key": "COMPSEC:compsec-077",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "18-20",
+   "grade": {
+    "status": "correct",
+    "answer": "18,19,20",
+    "detection": true,
+    "span_reported": 3,
+    "span_expected": 3,
+    "span_recall": 1.0
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 608,
+   "prompt_tokens": 378,
+   "elapsed_seconds": 49.7,
+   "request_sha256": "d50117e73dbd4ca5dbc113a71591f3ee16978a3ba7b565ac6d341c91c5b1815d",
+   "response_sha256": "af320e5232f05b24eb6d6fa163684e3976f3fd9e53d0e144e89a33b092edf98d"
+  },
+  {
+   "key": "COMPSEC:compsec-079",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "18-19",
+   "grade": {
+    "status": "wrong",
+    "answer": "18, 19, 20",
+    "detection": false,
+    "span_reported": 3,
+    "span_expected": null,
+    "span_recall": null
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 908,
+   "prompt_tokens": 409,
+   "elapsed_seconds": 73.5,
+   "request_sha256": "b9c90d63c057769d7ba253a7ad241271a0d37effdbd1d233b3f67e4a389cb09f",
+   "response_sha256": "e9d34f3abae094e8f40793d74ae146ead3ea9a7947d78a189a7f02280bf79769"
+  },
+  {
+   "key": "COMPSEC:compsec-080",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "5-6",
+   "grade": {
+    "status": "correct",
+    "answer": "5,6",
+    "detection": true,
+    "span_reported": 2,
+    "span_expected": 2,
+    "span_recall": 1.0
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 267,
+   "prompt_tokens": 308,
+   "elapsed_seconds": 22.9,
+   "request_sha256": "89aaa879394aa7e5d881bc0c58630a86a64e9308fc543663217b31a905d51183",
+   "response_sha256": "eebfbf1081694f25eff33574d9e5651a7d36a0bacad87f9629143f49c3bd77ab"
+  },
+  {
+   "key": "COMPSEC:compsec-081",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "10-15",
+   "grade": {
+    "status": "wrong",
+    "answer": "0",
+    "detection": false,
+    "span_reported": 1,
+    "span_expected": null,
+    "span_recall": null
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 251,
+   "prompt_tokens": 354,
+   "elapsed_seconds": 21.9,
+   "request_sha256": "c405d4d7b1e657a648b7a98fe74d725554aac5cf4a9b633c3b416eeb596cf64a",
+   "response_sha256": "c090d431930cc2599f69453c6f62d38486bedfe5f018c1e5a71c3449dfb80f38"
+  },
+  {
+   "key": "COMPSEC:compsec-083",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "9-11",
+   "grade": {
+    "status": "correct",
+    "answer": "9,10,11",
+    "detection": true,
+    "span_reported": 3,
+    "span_expected": 3,
+    "span_recall": 1.0
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 756,
+   "prompt_tokens": 329,
+   "elapsed_seconds": 61.0,
+   "request_sha256": "f3d16cfba4312e804d5c9ac61cad84d1dc8912a144b4627c7b095cc1fdcd9d38",
+   "response_sha256": "97f078f6c4e608d8eb3abe4ec95b79f346ef5255e064c9dbb4b0ed2e6fe3f60e"
+  },
+  {
+   "key": "COMPSEC:compsec-084",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "6-7",
+   "grade": {
+    "status": "wrong",
+    "answer": "7",
+    "detection": true,
+    "span_reported": 1,
+    "span_expected": 2,
+    "span_recall": 0.5
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 909,
+   "prompt_tokens": 339,
+   "elapsed_seconds": 73.0,
+   "request_sha256": "4ee121968a17a7c5d109235ad4ea5a456c1104d646964199377790b49080903c",
+   "response_sha256": "2e5f9518020daea949738b70edd18d4cbde196f9a2e9282b05a812aefb1ac2b4"
+  },
+  {
+   "key": "COMPSEC:compsec-086",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "3,13-15",
+   "grade": {
+    "status": "wrong",
+    "answer": "3",
+    "detection": true,
+    "span_reported": 1,
+    "span_expected": 4,
+    "span_recall": 0.25
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 554,
+   "prompt_tokens": 381,
+   "elapsed_seconds": 45.8,
+   "request_sha256": "3fe84a42c6c1f95c2707f2d7201b3405ed24275970aac6a3e9688f92ff16e336",
+   "response_sha256": "874b5c674012732a659d2b62895c8e5fe9eb0d186f3ea2a30628674a0d5f823d"
+  },
+  {
+   "key": "COMPSEC:compsec-087",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "8,20-22",
+   "grade": {
+    "status": "wrong",
+    "answer": "21,22",
+    "detection": true,
+    "span_reported": 2,
+    "span_expected": 4,
+    "span_recall": 0.5
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 589,
+   "prompt_tokens": 502,
+   "elapsed_seconds": 49.4,
+   "request_sha256": "352b0fb4545fcaa78f6792163700ee220acc1a46a5d01dffaa2c9d8b737eb15e",
+   "response_sha256": "aab0887c19c7dfc17ee25959c1b6dfac163d06402e02cc12ddb6dd0be49f1f15"
+  },
+  {
+   "key": "COMPSEC:compsec-090",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "12-13",
+   "grade": {
+    "status": "wrong",
+    "answer": "12",
+    "detection": true,
+    "span_reported": 1,
+    "span_expected": 2,
+    "span_recall": 0.5
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 519,
+   "prompt_tokens": 370,
+   "elapsed_seconds": 42.8,
+   "request_sha256": "40c32b9b32986f8449a0206e4c94ab727c0e648c5a95e31d44aa2c6c3a340165",
+   "response_sha256": "dde7031a7d3f66943e3d5bae9bb78e8f3023bed6ba4971e89becd9ffbf6943de"
+  },
+  {
+   "key": "COMPSEC:compsec-092",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "10-14",
+   "grade": {
+    "status": "truncated",
+    "answer": null
+   },
+   "finish_reason": "length",
+   "completion_tokens": 2048,
+   "prompt_tokens": 345,
+   "elapsed_seconds": 161.9,
+   "request_sha256": "d8ffa9e476e1acd61ab6ef248f4e8c6c8e44c71337e324a59384871b044780eb",
+   "response_sha256": "9faf5c7c59e84ea694c6408a6d827fea9c936c0aeb2675045fc1c0709ba819a4"
+  },
+  {
+   "key": "NIST Juliet:juliet-cwe121-array-index-01",
+   "mode": "direct",
+   "thinking": false,
+   "variant": "original_maxtok2048",
+   "gold": "3-4",
+   "grade": {
+    "status": "wrong",
+    "answer": "3",
+    "detection": true,
+    "span_reported": 1,
+    "span_expected": 2,
+    "span_recall": 0.5
+   },
+   "finish_reason": "stop",
+   "completion_tokens": 798,
+   "prompt_tokens": 147,
+   "elapsed_seconds": 63.2,
+   "request_sha256": "256023dc3a722e4d40967a6372f45aaf149e0ca30335b57ab9b1d05c760e99ef",
+   "response_sha256": "eb82956038008c6c259130735d49da91d357830e64a2cf2b8c0e04513d6a95f9"
+  }
+ ],
+ "raw_artifact_sha256": {
+  "results.json": "f0eb5c37d35b621363b2580f6d5b62287e438fe2ef5776f1301cb5162c5b0b9c"
+ },
+ "limitations": [
+  "Single route and single cap; not paired with MTP.",
+  "Strict span grading counts partial or superset spans as wrong.",
+  "Final wheel ad999f3f was installed; the 512-cap replay used the 891385f8 wheel, which differs only by the dimension guard."
+ ]
+}

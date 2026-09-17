@@ -335,8 +335,11 @@ no GGUF or community-4-bit substitute.
 These measurements predate the target-head precision fix that removes the
 automatic 2-bit decode cache and the low-precision SwiGLU correction that
 replaces the fused dense activation with the split MLX operations. They do not
-establish throughput or numerical parity for the corrected runtime; a new
-performance qualification on the same campaign host is pending.
+establish throughput or numerical parity for the corrected runtime. A
+same-session A/B on this campaign host (recorded under the 2026-09-17
+SwiGLU consistency evidence) measured decode within 0.3% and prefill
+0.5-1.4% below the 2026-09-15 binary after both corrections; a full peer
+refresh with a recorded build commit is still pending.
 
 | Runtime | Latest checked | Decode | Prefill |
 | --- | --- | ---: | ---: |
