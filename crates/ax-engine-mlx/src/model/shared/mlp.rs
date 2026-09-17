@@ -1666,13 +1666,14 @@ fn packed_geglu_metal_impl(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArr
 
 fn packed_swiglu_metal_impl(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArray> {
     if matches!(gate_up.dtype(), MlxDtype::Bfloat16 | MlxDtype::Float16) {
-        if hidden_dim <= 0 || gate_up.shape().last().copied() != hidden_dim.checked_mul(2) {
+        let packed_width = hidden_dim.checked_mul(2)?;
+        if hidden_dim <= 0 || gate_up.shape().last().copied() != Some(packed_width) {
             return None;
         }
         // The float-only fused activation does not preserve low-precision
         // sigmoid/multiply semantics. Use the same operations as split FFNs.
         let gate = slice_last_dim(gate_up, 0, hidden_dim, None);
-        let up = slice_last_dim(gate_up, hidden_dim, hidden_dim * 2, None);
+        let up = slice_last_dim(gate_up, hidden_dim, packed_width, None);
         return Some(silu_mul(&gate, &up, None));
     }
     packed_glu_metal_impl(
@@ -11144,6 +11145,9 @@ mod tests {
         for width in [0, -1, 7, i32::MAX] {
             assert!(packed_swiglu_metal_impl(&packed, width).is_none());
         }
+        let scalar = zeros(&[], MlxDtype::Bfloat16, None);
+        assert!(packed_swiglu_metal_impl(&scalar, i32::MAX).is_none());
+        assert!(packed_swiglu_metal_impl(&scalar, 1).is_none());
     }
 
     /// Admission probe for shapeless compiled linear closures.
