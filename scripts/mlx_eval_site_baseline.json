@@ -96,6 +96,9 @@
   "crates/ax-engine-mlx/src/qwen4_exp_qsa.rs": {
     "try_eval": 3
   },
+  "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": {
+    "try_eval": 2
+  },
   "crates/ax-engine-mlx/src/runner/mod.rs": {
     "async_eval": 2,
     "eval": 28
