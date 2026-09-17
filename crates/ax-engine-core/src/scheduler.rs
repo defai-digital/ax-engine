@@ -26,7 +26,7 @@ pub struct SchedulerInput {
     pub block_size_tokens: u32,
     /// Free physical/logical blocks available for new allocation this step.
     pub available_kv_blocks: u32,
-    /// Total blocks in the pool (telemetry / ratio only).
+    /// Total blocks in the pool, also used to identify impossible prefills.
     pub total_kv_blocks: u32,
 }
 
@@ -416,6 +416,7 @@ impl Scheduler {
         let mut remaining_budget = input.global_token_budget;
         let mut selected_requests = Vec::new();
         let mut deferred_requests = Vec::new();
+        let mut memory_blocked_requests = Vec::new();
         let mut items = Vec::new();
         // Generation kind of the first selected item (for batch telemetry).
         let mut selected_generation_kind: Option<GenerationKind> = None;
@@ -527,7 +528,18 @@ impl Scheduler {
             let candidate_budget = match (mode, pressure_prefill_budget) {
                 (ExecutionMode::Prefill, Some(0)) => {
                     token_budget.record_skipped(mode, requested_tokens);
-                    deferred_requests.push(snapshot.request_id);
+                    let pool_tokens =
+                        u64::from(input.total_kv_blocks) * u64::from(input.block_size_tokens);
+                    if input.memory_pressure.as_deref() == Some(MEMORY_PRESSURE_KV_EXHAUSTED)
+                        && u64::from(snapshot.prompt_len) > pool_tokens
+                    {
+                        // No other request can release enough capacity for this
+                        // prompt. Let the existing starvation bound terminate it;
+                        // plain deferral never increments that bound.
+                        memory_blocked_requests.push(snapshot.request_id);
+                    } else {
+                        deferred_requests.push(snapshot.request_id);
+                    }
                     continue;
                 }
                 (ExecutionMode::Prefill, Some(prefill_budget))
@@ -646,7 +658,7 @@ impl Scheduler {
             step_id: input.step_id,
             selected_requests,
             deferred_requests,
-            memory_blocked_requests: Vec::new(),
+            memory_blocked_requests,
             execution_batch,
         }
     }
@@ -1496,6 +1508,40 @@ mod tests {
             decisions.get(ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS),
             Some(&0)
         );
+    }
+
+    #[test]
+    fn exhausted_pool_distinguishes_impossible_from_temporarily_blocked_prefill() {
+        let scheduler = Scheduler::new();
+        for (prompt_len, impossible) in [(8, false), (9, true)] {
+            let mut input = SchedulerInput::new(
+                StepId(16),
+                vec![make_snapshot(
+                    1,
+                    1,
+                    "qwen3",
+                    &vec![7; prompt_len],
+                    4,
+                    &[],
+                    1,
+                )],
+                Some("kv_exhausted".into()),
+                4,
+            );
+            input.block_size_tokens = 4;
+            input.total_kv_blocks = 2;
+            input.available_kv_blocks = 0;
+            let plan = scheduler.plan(&input);
+            assert!(plan.selected_requests.is_empty());
+            assert!(plan.execution_batch.is_none());
+            if impossible {
+                assert_eq!(plan.memory_blocked_requests, vec![RequestId(1)]);
+                assert!(plan.deferred_requests.is_empty());
+            } else {
+                assert_eq!(plan.deferred_requests, vec![RequestId(1)]);
+                assert!(plan.memory_blocked_requests.is_empty());
+            }
+        }
     }
 
     #[test]

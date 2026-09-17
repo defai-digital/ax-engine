@@ -25,6 +25,16 @@ def _load():
 
 
 class RunQaMatrixTests(unittest.TestCase):
+    def test_live_route_requires_completed_draft_and_verify(self):
+        m = _load()
+        decisions = {"ax_mtp_draft_tokens": 3, "ax_mtp_verify_tokens": 4}
+        good = {"status": "finished", "route": {"crossover_decisions": decisions}}
+        self.assertTrue(m.server_mtp_active(good))
+        self.assertFalse(m.server_mtp_active({**good, "status": "failed"}))
+        for partial in ({}, {"ax_mtp_draft_tokens": 3}, {"ax_mtp_verify_tokens": 4}):
+            self.assertFalse(m.server_mtp_active({"status": "finished", "route": {
+                "crossover_decisions": partial}}))
+
     def test_classify_engine_fail_detects_panic_and_null(self) -> None:
         m = _load()
         self.assertEqual(m.classify_engine_fail("thread panicked", ""), "panic")

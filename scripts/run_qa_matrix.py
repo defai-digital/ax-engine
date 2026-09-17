@@ -26,6 +26,7 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -48,6 +49,11 @@ class Cell:
     log_path: Path | None = None
     note: str = ""
     surface_line: str = ""
+    surface_passed: bool = False
+    qa_items: int = 0
+    qa_hard_passed: int = 0
+    mtp_draft_tokens: int = 0
+    mtp_verify_tokens: int = 0
 
 
 def load_matrix(path: Path) -> list[Cell]:
@@ -85,28 +91,6 @@ def wait_ready(host: str, port: int, timeout: int) -> bool:
             pass  # Retry until the server accepts connections.
         time.sleep(1)
     return False
-
-
-def kill_port(port: int) -> None:
-    try:
-        out = subprocess.check_output(["lsof", "-ti", f"tcp:{port}"], text=True)
-    except subprocess.CalledProcessError:
-        return
-    for pid in out.split():
-        try:
-            os.kill(int(pid), signal.SIGTERM)
-        except Exception:
-            pass  # Best-effort; continue.
-    time.sleep(1)
-    try:
-        out = subprocess.check_output(["lsof", "-ti", f"tcp:{port}"], text=True)
-    except subprocess.CalledProcessError:
-        return
-    for pid in out.split():
-        try:
-            os.kill(int(pid), signal.SIGKILL)
-        except Exception:
-            pass  # Best-effort; continue.
 
 
 def classify_engine_fail(log_text: str, qa_text: str) -> str | None:
@@ -235,6 +219,13 @@ def mtp_telemetry_active(crossover: dict) -> bool:
     return False
 
 
+def server_mtp_active(response: dict) -> bool:
+    decisions = (response.get("route") or {}).get("crossover_decisions") or {}
+    return (response.get("status") == "finished"
+            and int(decisions.get("ax_mtp_draft_tokens") or 0) > 0
+            and int(decisions.get("ax_mtp_verify_tokens") or 0) > 0)
+
+
 def probe_mtp_route(
     artifacts: Path,
     out_json: Path,
@@ -242,7 +233,7 @@ def probe_mtp_route(
     repo: Path,
     timeout: int,
 ) -> tuple[bool, dict, str]:
-    bench = repo / "target/debug/ax-engine-bench"
+    bench = Path(os.environ.get("QA_BENCH_BIN", str(repo / "target/debug/ax-engine-bench")))
     if not bench.is_file():
         bench = repo / "target/release/ax-engine-bench"
     if not bench.is_file():
@@ -305,6 +296,7 @@ def run_cell(
     streams: str,
     embed_tier: str = "standard",
     multimodal_tier: str = "smoke",
+    verify_live_route: bool = False,
 ) -> Cell:
     safe = cell.model_id.replace("/", "_").replace(" ", "_")
     log_path = scratch / f"qa-{cell.mode}-{safe}.log"
@@ -377,7 +369,9 @@ def run_cell(
         )
         return cell
 
-    kill_port(port)
+    # Never terminate a listener owned by another operator.
+    with socket.socket() as probe:
+        probe.bind((host, port))
     with server_log.open("w") as slog:
         proc = subprocess.Popen(
             cmd,
@@ -400,6 +394,31 @@ def run_cell(
 
         surface_blob = ""
         base = f"http://{host}:{port}"
+        if cell.mode == "mtp" or verify_live_route:
+            # A bench process is not proof of the running server's route.
+            request = urllib.request.Request(
+                base + "/v1/generate",
+                data=json.dumps({"model_id": model_id, "input_tokens": list(range(1, 17)),
+                                 "max_output_tokens": 64}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                live_route = json.load(response)
+            (scratch / f"mtp-server-route-{safe}.json").write_text(json.dumps(live_route, indent=2))
+            decisions = (live_route.get("route") or {}).get("crossover_decisions") or {}
+            cell.mtp_draft_tokens = int(decisions.get("ax_mtp_draft_tokens") or 0)
+            cell.mtp_verify_tokens = int(decisions.get("ax_mtp_verify_tokens") or 0)
+            route_ok = (server_mtp_active(live_route) if cell.mode == "mtp" else
+                        live_route.get("status") == "finished" and
+                        cell.mtp_draft_tokens == 0 and cell.mtp_verify_tokens == 0)
+            if not route_ok:
+                cell.status = "engine_fail"
+                cell.note = "server_mtp_path_not_exercised"
+                log_path.write_text(cell.note + "\n" + json.dumps(live_route, indent=2))
+                return cell
+            if cell.mode == "mtp":
+                mtp_probe_note += "; server_mtp_active"
+
 
         # ---- Embedding cells: embedding probes only (no chat bank) ----
         if cell.mode == "embed":
@@ -560,6 +579,7 @@ def run_cell(
             surface_json = scratch / f"surface-{cell.mode}-{safe}.json"
             surface_json.write_text(json.dumps(surface.as_dict(), indent=2))
             cell.surface_line = surface.summary_line
+            cell.surface_passed = surface.hard_passed
             surface_blob = json.dumps(surface.as_dict(), indent=2)
             if not surface.hard_passed:
                 cell.status = "engine_fail"
@@ -634,6 +654,8 @@ def run_cell(
             if m:
                 x, y = int(m.group(1)), int(m.group(2))
 
+        cell.qa_items = y or 0
+        cell.qa_hard_passed = x or 0
         cell.pass_line = pass_line
         log_path.write_text(
             f"mode={cell.mode} model={cell.model_id}\n"
@@ -677,7 +699,6 @@ def run_cell(
                 proc.wait(timeout=5)
         except Exception:
             pass  # Best-effort; continue.
-        kill_port(port)
         time.sleep(1)
 
 

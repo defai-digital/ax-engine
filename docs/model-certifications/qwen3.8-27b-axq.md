@@ -101,16 +101,17 @@ Not claimed:
   29.4% / 20.6% strict accuracy above is recorded as **evidence of an open
   gap**, not as a passing qualification
 - `LINE_SET` enumeration completeness: full recall is 0/24 across both packs
-- A fixed non-streaming generation hang. Response collection after worker
-  startup has a provisional 3600s backstop (explicit `0` disables). Queue and
-  startup waits and synchronous engine-step cancellation are not bounded by
-  this timer. The root cause remains unconfirmed
+- General immunity to generation stalls. The diagnosed oversized recovery
+  prefill now reaches the existing KV starvation failure bound and delivers
+  its terminal response; campaign replay is not target-SKU qualification.
+  The provisional 3600s collection backstop still excludes queue/startup
+  waits and cannot interrupt a synchronous engine step
 
 ## Qualification
 
 Operator procedure: [Testing](../TESTING.md) and
 `python3 scripts/qualify_qwen38_27b.py --dry-run`. Live 27B runs belong on a
-Mac mini M5 64 GB host with a clean checkout of the engine under test.
+Mac mini M4 Pro 64 GB host with a clean checkout of the engine under test.
 
 ## Related
 

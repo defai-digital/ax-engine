@@ -58,7 +58,8 @@ features = ["python-extension"]
 # explicitly. A reachable Rust panic under abort SIGABRTs the host Python
 # process instead of raising PanicException.
 profile = "release-pyext"
-# Rust 1.97 stripping can produce dylibs rejected by macOS 27's loader.
+# Keep Cargo's release-pyext no-strip policy: stripping can invalidate the
+# Mach-O LINKEDIT string table even when linking and wheel creation succeed.
 strip = false
 # Bundle pre-compiled Metal kernel assets so pip-installed ax-engine works out of the box.
 # Maturin collects .py files automatically; binary and data files need explicit inclusion.

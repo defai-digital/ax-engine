@@ -730,7 +730,8 @@ impl EngineSession {
             .map(|(report, _)| report)
     }
 
-    /// Advance the session once and return the report with its selected request IDs.
+    /// Advance once and return IDs that ran or reached terminal cleanup.
+    /// Terminal cleanup can occur without selection after memory starvation.
     pub fn step_report_with_request_ids(
         &mut self,
     ) -> Result<(EngineStepReport, Vec<u64>), EngineSessionError> {
@@ -850,7 +851,16 @@ impl EngineSession {
         } else {
             EngineStepReport::from_native_outcome_without_route(&outcome, metal_dispatch)
         };
-        Ok((report, selected_request_ids))
+        // Memory starvation can terminate a request without executing
+        // a batch item. Shared stream consumers still need that transition;
+        // otherwise their cached request state and admission permit stay live.
+        let mut affected_request_ids = selected_request_ids;
+        for cleanup in &outcome.cleanup_results {
+            if !affected_request_ids.contains(&cleanup.request_id.0) {
+                affected_request_ids.push(cleanup.request_id.0);
+            }
+        }
+        Ok((report, affected_request_ids))
     }
 
     /// True when this session has any stepwise (`submit_generate`/`step`)

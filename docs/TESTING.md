@@ -15,7 +15,7 @@ Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certifica
 | --- | --- | --- |
 | Always-on | Format, unit tests, Clippy, script gates, alias/revision pin, public-claim contract | Every release |
 | Small-pack CI smoke | Tiny Certified/Compatible checkpoints load and generate | Every release that runs model-smoke |
-| Primary 27B qualification | Pinned `qwen3.8-27b:axq` on Mac mini M5, 64 GB | Minor/major, and patches that touch runtime, model, kernel, cache, scheduler, or serving |
+| Primary 27B qualification | Pinned `qwen3.8-27b:axq` on Mac mini M4 Pro, 64 GB | Minor/major, and patches that touch runtime, model, kernel, cache, scheduler, or serving |
 | Secondary family regression | One representative checkpoint per other Certified family | Minor/major, and patches that touch that family |
 
 ## Always-on
@@ -51,7 +51,7 @@ Live-model QA when artifacts are mounted uses `scripts/check-qa-model.sh`
 (default `QA_MODEL_ID=qwen3_5_9b_q4`). That is a Qwen 3.5 hybrid proxy, not
 the hero pack.
 
-## Primary qualification (Mac mini M5, 64 GB)
+## Primary qualification (Mac mini M4 Pro, 64 GB)
 
 Print the contract (no weights):
 
@@ -59,12 +59,32 @@ Print the contract (no weights):
 python3 scripts/qualify_qwen38_27b.py --dry-run
 ```
 
-Live run against the pinned snapshot:
+Preflight against the pinned snapshot (does not qualify the product):
 
 ```bash
 python3 scripts/qualify_qwen38_27b.py \
   --model-dir /path/to/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1
 ```
+
+Execute the gates with an isolated installed release wheel:
+
+```bash
+python3 scripts/qualify_qwen38_27b.py --run \
+  --model-dir "$MODEL_DIR" --output "$NEW_RESULT_DIR" \
+  --build-manifest "$BUILD_MANIFEST" --wheel "$WHEEL" \
+  --server-bin "$WHEEL_SERVER" --bench-bin "$WHEEL_BENCH" --cli "$WHEEL_CLI"
+```
+
+The build manifest records `source_commit`, `dirty: false`, `server_sha256`,
+`bench_sha256`, `wheel_sha256`, `cli_sha256`, `model_revision`, and `model_files` (relative
+filename to SHA-256). Hash executables after wheel installation. The gate
+checks the exact SKU, clean checkout, build and model hashes, doctor readiness,
+and both direct/MTP surface and sampled QA. Missing, skipped, partial, or
+fallback results fail. Results, including failures, are saved in
+`qualification.json`; use a new output directory for every run. Runtime
+`AX_`/`DYLD_` overrides are rejected for this product-default qualification.
+A passing small QA sample does not establish advanced benchmark accuracy or
+MTP Tier 2 certification.
 
 The live path expects a clean worktree, `ax-engine doctor` ready, surface QA
 for direct and MTP, and a short direct + MTP check against the last published
@@ -76,7 +96,7 @@ Silent direct-fallback on the MTP path is a fail.
 Campaign-only (does not block unrelated patches): MTP Tier 2 promotion, 8h/72h
 endurance, long-context decode-at-depth, peer ranking, multi-model residency,
 multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
-Mac mini M5 64 GB SKU. Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`) is a
+Mac mini M4 Pro 64 GB SKU. Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`) is a
 second SKU on Mac Studio M5 Ultra 256 GB
 (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`).
 Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).

@@ -64,7 +64,7 @@ configurations:
 
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
-| Mac mini M5 | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
+| Mac mini M4 Pro | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
 | Mac Studio M5 Ultra | 256 GB RAM | Best experience for Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`, 125B-A6B). Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). |
 
 ## What model stack should I run on high-memory Apple Silicon?
@@ -74,7 +74,7 @@ but the better local setup is to match the model to the workflow.
 
 | Role | Recommended model | Setup | App | Why |
 | --- | --- | --- | --- | --- |
-| Default chatbot | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) | 6-bit MTP, 16K-32K, Mac mini M5 64 GB | [ax-studio](https://github.com/defai-digital/ax-studio) | Primary optimization target; general chat and agent path |
+| Default chatbot | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) | 6-bit MTP, 16K-32K, Mac mini M4 Pro 64 GB | [ax-studio](https://github.com/defai-digital/ax-studio) | Primary optimization target; general chat and agent path |
 | Secondary dense / MoE | Qwen 3.6 27B or 35B-A3B | 27B 4/6-bit; 35B A3B 4-bit, 16K-32K | AX server / SDK | Certified secondary families; 3.6 holds the published 8h soak |
 | Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
 | Embedding / RAG ingest | Qwen3-Embedding or EmbeddingGemma | 0.6B / 4B / 8B (Qwen3); 300M (EmbeddingGemma) | AX server `/v1/embeddings` | Sustained ingest-scale throughput; AX last-token pooling (Qwen3) or mean pooling + Dense head (EmbeddingGemma) |

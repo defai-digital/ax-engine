@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -43,6 +44,29 @@ def _extract_version_ge() -> str:
     if match is None:
         raise AssertionError("version_ge() not found in build-pypi-wheel.sh")
     return match.group(0)
+
+
+class ExtensionLoadPolicyTests(unittest.TestCase):
+    def test_release_extension_keeps_unwind_and_disables_both_strip_layers(self):
+        cargo = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text())
+        self.assertEqual(cargo["profile"]["release"]["build-override"]["strip"], "none")
+        profile = cargo["profile"]["release-pyext"]
+        self.assertEqual(profile["panic"], "unwind")
+        self.assertEqual(profile["strip"], "none")
+        project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        self.assertFalse(project["tool"]["maturin"]["strip"])
+        command = next(line for line in WHEEL_SCRIPT.read_text().splitlines()
+                       if line.startswith("maturin build "))
+        self.assertNotIn("--strip", command)
+        self.assertIn("--profile release-pyext", command)
+
+    def test_final_wheel_is_imported_before_publish(self):
+        script = WHEEL_SCRIPT.read_text()
+        probe = script.index('python3 "$SCRIPT_DIR/check_wheel_native_import.py" "$INSPECT_DIR"')
+        self.assertLess(probe, script.index('maturin upload "$DELOCATED"'))
+        helper = (REPO_ROOT / 'scripts/check_wheel_native_import.py').read_text()
+        self.assertIn('from ax_engine import _ax_engine', helper)
+        self.assertIn('Path(_ax_engine.__file__).resolve().is_relative_to(root)', helper)
 
 
 class ProductMachoClassifierTests(unittest.TestCase):

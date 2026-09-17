@@ -48,6 +48,21 @@ passes at 22/3,260 (0.67%). The aggregate mean KL is 0.0860 against a 0.1011
 limit, and top-1 disagreement is 2.85% against 3.22%. Do not describe this as
 an independent confirmation or exact full-model parity.
 
+## Latest campaign failures
+
+The frozen holdout collected eight 4-bit prompts on each of the official
+chunked, official recurrent and pinned MLX-VLM graphs. AX then failed before
+inference: the diagnostic test reads an existing historical manifest whose
+`runtime_status.ready` is false. No holdout acceptance score was produced.
+The original manifests, frozen dependencies and failure remain preserved.
+
+Fresh CLI delivery separately failed before transfer because its private
+installation omitted the documented `download` dependency group. The dependent
+throughput campaign consequently collected no measurements. The
+[campaign failure record](../../benchmarks/results/flash-next-campaign-failures-m2-20260917.json)
+retains these outcomes. Recovery uses separate admission fixtures and installation
+outputs; an attempted or queued recovery does not close any release gate.
+
 ## Immutable public pack metadata
 
 The 4-bit alias is pinned to `680573112360bfd3f71556082f875c907c21a6e7`;
@@ -266,7 +281,7 @@ HC projection issue, now passing in the twelve-cell HC matrix above. Wider
 QA, API, cost and target-hardware requirements remain independent.
 
 The primary default remains [Qwen 3.8 27B AXQ](qwen3.8-27b-axq.md) on
-Mac mini M5 64 GB. See [Supported Models](../SUPPORTED-MODELS.md) and
+Mac mini M4 Pro 64 GB. See [Supported Models](../SUPPORTED-MODELS.md) and
 [Testing](../TESTING.md) for the wider operator contract.
 
 The throughput campaign stopped after entering 6-bit reference / 2,048 tokens.

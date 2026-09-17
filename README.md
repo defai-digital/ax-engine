@@ -26,7 +26,7 @@ MiniCPM-V, and others) are documented under
 
 **Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 or newer).** Product SKUs:
 
-- **Mac mini M5 64 GB** — best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`)
+- **Mac mini M4 Pro 64 GB** — best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`)
 - **Mac Studio M5 Ultra 256 GB** — best experience for Qwen 3.8 Flash Next
   (`qwen3.8-flash-next:axq`, 125B-A6B). Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Mac Studio M5 Ultra 256 GB qualification pending hardware.
 
@@ -327,7 +327,7 @@ matching serving evidence—see
 One pack, one contract, latest runtimes we could invoke on 2026-09-15:
 [`qwen3.8-27b:axq`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
 @ `3e290738e96972307c6aeb9934ab170ca0eae1c1`. Apple **M5 Max**, 128 GB
-(campaign host, not the Mac mini M5 64 GB SKU). `flappy` suite, four cases,
+(campaign host, not the Mac mini M4 Pro 64 GB SKU). `flappy` suite, four cases,
 256 gen, greedy, 2 warmups, 5 measured reps, 3 s cooldown. Decode is the
 **median of 20 measured runs**. Same snapshot directory for every runtime;
 no GGUF or community-4-bit substitute.
