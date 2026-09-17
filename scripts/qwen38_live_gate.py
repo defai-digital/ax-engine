@@ -63,7 +63,7 @@ def run_live(args, contract: dict, repo: Path) -> int:
 
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    result = {'schema': 1, 'status': 'failed', 'contract': contract, 'cells': []}
+    result = {'schema': 2, 'status': 'failed', 'contract': contract, 'cells': []}
     try:
         def capture(command: list[str]) -> str:
             return subprocess.check_output(command, text=True, cwd=repo, timeout=30).strip()
@@ -147,6 +147,12 @@ def run_live(args, contract: dict, repo: Path) -> int:
             )
             result['cells'].append(asdict(cell))
             (out / 'qualification.json').write_text(json.dumps(result, default=str, indent=2) + '\n')
+        result['paired_greedy_artifacts'] = {
+            path.name: digest(path)
+            for mode in ('direct', 'mtp')
+            for path in (out / f'server-route-{mode}-qwen3.8-27b.json',
+                         out / f'server-route-request-{mode}-qwen3.8-27b.json')
+        }
         validate_cells(result['cells'])
         result['paired_greedy'] = validate_paired_greedy(
             json.loads((out / 'server-route-direct-qwen3.8-27b.json').read_text()),

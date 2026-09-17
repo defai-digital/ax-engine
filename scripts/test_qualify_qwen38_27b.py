@@ -84,6 +84,7 @@ class LiveGateTest(unittest.TestCase):
                 code = run_live(SimpleNamespace(output=out), mod.contract(), ROOT)
             self.assertEqual(code, 1)
             result = json.loads((out / "qualification.json").read_text())
+            self.assertEqual(result["schema"], 2)
             self.assertEqual(result["status"], "failed")
             self.assertEqual(result["cells"], [])
             self.assertIn("requires Mac mini", result["error"])

@@ -80,11 +80,12 @@ The build manifest records `source_commit`, `dirty: false`, `server_sha256`,
 filename to SHA-256). Hash executables after wheel installation. The gate
 checks the exact SKU, clean checkout, build and model hashes, doctor readiness,
 and both direct/MTP surface and sampled QA. It also requires the two raw
-16-input/64-output-token greedy probes to match exactly; separate QA passes
-cannot hide a route-dependent target distribution. This one probe is a
+16-input/64-output-token greedy probes to match exactly; a route-dependent
+greedy divergence on this probe fails the gate. This one probe is a
 regression gate, not general numerical or quality certification. Missing,
 skipped, partial, divergent, or fallback results fail. Results, including failures, are saved in
-`qualification.json`; use a new output directory for every run. Runtime
+`qualification.json` (schema 2, with hashes of both probe requests and responses);
+historical schema-1 passes do not satisfy this paired gate. Use a new output directory for every run. Runtime
 `AX_`/`DYLD_` overrides are rejected for this product-default qualification.
 A passing small QA sample does not establish advanced benchmark accuracy or
 MTP Tier 2 certification.

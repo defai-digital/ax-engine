@@ -401,10 +401,15 @@ def run_cell(
         base = f"http://{host}:{port}"
         if cell.mode == "mtp" or verify_live_route:
             # A bench process is not proof of the running server's route.
+            probe_request = {"model_id": model_id, "input_tokens": list(range(1, 17)),
+                             "max_output_tokens": 64,
+                             "sampling": {"temperature": 0, "seed": 0, "top_k": 0,
+                                          "top_p": 1, "repetition_penalty": 1}}
+            (scratch / f"server-route-request-{cell.mode}-{safe}.json").write_text(
+                json.dumps(probe_request, indent=2))
             request = urllib.request.Request(
                 base + "/v1/generate",
-                data=json.dumps({"model_id": model_id, "input_tokens": list(range(1, 17)),
-                                 "max_output_tokens": 64}).encode(),
+                data=json.dumps(probe_request).encode(),
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
