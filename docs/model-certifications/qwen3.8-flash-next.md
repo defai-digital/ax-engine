@@ -50,7 +50,7 @@ an independent confirmation or exact full-model parity.
 
 ## MTP state and runner coverage
 
-All cells use test binary `79f30efe` (SHA-256 prefix), built from commit
+The historical cells below use test binary `79f30efe` (SHA-256 prefix), built from commit
 `1819e4bb`. A pass applies to the recorded prompt and tolerance contract.
 
 | Pack | Primary state | Primary runner | Tie state | Tie runner |
@@ -58,6 +58,13 @@ All cells use test binary `79f30efe` (SHA-256 prefix), built from commit
 | 2-bit | Pass | Pass | Fail: bonus margin 0.9375 > 0.5 | Pass |
 | 4-bit | Pass | Pass | Fail: logit relative error 0.100864 > 0.1 | Fail: margin 1.3125 > 0.5 |
 | 6-bit | Pass | Pass | Pass | Pass |
+
+A [corrected 4-bit tie runner replay](../../benchmarks/results/flash-next-runner-margin-replay-m2-20260917.json)
+measures a direct-to-MTP token gap of 0.125 at position 2, below the unchanged
+0.5 limit. The historical 1.3125 margin above duplicated the pipeline bootstrap
+token. The output sequences still differ; this is a bounded tie pass, not text
+identity or a fix for the separate 4-bit state failure. Other historical runner
+cells have not been regenerated with the corrected diagnostic.
 
 The pre-merge native API matrix uses server binary `f61f46a0` (SHA-256 prefix), also
 from `1819e4bb`. Each mode runs completion and SSE with the same five input
@@ -153,9 +160,12 @@ disabled. Explicit `--mlx-mtp-policy required` exercises the experimental
 verified path. The test contract records identity until an observed tie and
 bounded numerical divergence; it does not promise universal text identity.
 The QA mismatches remain failures under the original all-items identity rule.
-The 4-bit tie runner also diverges outside the allowed tie margin (1.3125
-versus 0.5), and its state control exceeds the logit bound (0.100864 versus
-0.1). These are unresolved correctness failures, not accepted tie exceptions.
+The historical 4-bit tie runner margin of 1.3125 was measured after replaying
+the pipeline bootstrap token twice. It is not a valid margin for the divergent
+position. The corrected diagnostic skips tokens already represented by the
+snapshot, verifies the direct prediction, and measures the gap to the actual
+MTP token. Its state control still exceeds the logit bound (0.100864 versus
+0.1); the runner diagnostic correction does not resolve that failure.
 
 The primary default remains [Qwen 3.8 27B AXQ](qwen3.8-27b-axq.md) on
 Mac mini M5 64 GB. See [Supported Models](../SUPPORTED-MODELS.md) and

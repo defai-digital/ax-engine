@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::model::qwen4_exp::Qwen4ExpState;
-use crate::model::qwen4_exp_mtp::{mtp_parity, top_two_margin};
+use crate::model::qwen4_exp_mtp::mtp_parity;
 use crate::model::shared::ProjectionBatchPolicy;
 use ax_engine_core::{
     ExecutionBatch, ExecutionItem, PositionRange, RouteMetadata, StepId, WorkUnitKind,
@@ -108,6 +108,7 @@ fn execute_with_block_size(
 
 #[derive(Clone)]
 struct Generation {
+    prompt_len: usize,
     tokens: Vec<u32>,
     routes: Vec<Vec<(String, u32)>>,
     prefill_seconds: f64,
@@ -244,20 +245,66 @@ impl Generation {
     }
 }
 
+// The direct pipeline may already have consumed the first generated token.
+// An empty suffix has no retained logits to inspect, so fail closed.
+fn direct_margin_replay_tokens(
+    position: usize,
+    prompt_len: usize,
+    matching_prefix: &[u32],
+) -> Option<&[u32]> {
+    let consumed = position.checked_sub(prompt_len)?;
+    let suffix = matching_prefix.get(consumed..)?;
+    (!suffix.is_empty()).then_some(suffix)
+}
+
+#[test]
+fn direct_margin_replay_respects_pipeline_lookahead() {
+    let prefix = [11751, 13];
+    assert_eq!(
+        direct_margin_replay_tokens(6, 5, &prefix),
+        Some(&prefix[1..])
+    );
+    assert_eq!(
+        direct_margin_replay_tokens(5, 5, &prefix),
+        Some(&prefix[..])
+    );
+    assert_eq!(direct_margin_replay_tokens(6, 5, &prefix[..1]), None);
+    assert_eq!(direct_margin_replay_tokens(8, 5, &prefix), None);
+    assert_eq!(direct_margin_replay_tokens(4, 5, &prefix), None);
+}
+
+fn direct_candidate_gap(logits: &[f32], direct: u32, candidate: u32) -> Option<f32> {
+    let direct = *logits.get(direct as usize)?;
+    let candidate = *logits.get(candidate as usize)?;
+    let gap = direct - candidate;
+    (direct.is_finite() && candidate.is_finite() && gap.is_finite() && gap >= 0.0).then_some(gap)
+}
+
+#[test]
+fn direct_margin_uses_the_actual_candidate_not_an_unrelated_runner_up() {
+    assert_eq!(direct_candidate_gap(&[5.0, 4.9, 1.0], 0, 2), Some(4.0));
+    assert_eq!(direct_candidate_gap(&[5.0, 5.0], 0, 1), Some(0.0));
+    assert_eq!(direct_candidate_gap(&[5.0], 0, 1), None);
+    assert_eq!(direct_candidate_gap(&[5.0, f32::NAN], 0, 1), None);
+    assert_eq!(direct_candidate_gap(&[f32::INFINITY, 1.0], 0, 1), None);
+    assert_eq!(direct_candidate_gap(&[1.0, 5.0], 0, 1), None);
+}
+
 fn direct_margin_at_divergence(
     runner: &MlxRunner,
     prefill: Option<&Qwen4ExpState>,
+    prompt_len: usize,
     matching_prefix: &[u32],
+    expected_token: u32,
+    candidate_token: u32,
 ) -> Option<f32> {
     let trunk = runner.weights.qwen4_exp.as_ref()?;
     let prefill = prefill?;
-    if matching_prefix.is_empty() {
-        return None;
-    }
+    let replay = direct_margin_replay_tokens(prefill.position(), prompt_len, matching_prefix)?;
     let owner = runner.cfg.compile_cache_identity;
     let mut state = prefill.clone();
     let mut output = None;
-    for &token in matching_prefix {
+    for &token in replay {
         let next = crate::model::qwen4_exp::forward(
             trunk,
             &[token],
@@ -271,7 +318,17 @@ fn direct_margin_at_divergence(
     }
     let output = output?;
     let row = output.logits.shape().first().copied()?.saturating_sub(1);
-    top_two_margin(&output.logits, row).ok()
+    if row != 0 {
+        return None;
+    }
+    let token = mlx_sys::argmax(&output.logits, None);
+    mlx_sys::try_eval(&[&token]).ok()?;
+    if token.data_u32().first().copied() != Some(expected_token) {
+        return None;
+    }
+    let logits = mlx_sys::astype(&output.logits, mlx_sys::MlxDtype::Float32, None);
+    mlx_sys::try_eval(&[&logits]).ok()?;
+    direct_candidate_gap(logits.data_f32(), expected_token, candidate_token)
 }
 
 fn runner_greedy_identity(
@@ -295,14 +352,16 @@ fn runner_greedy_identity(
         direct_margin_at_divergence(
             runner,
             direct.prefill_state.as_ref(),
+            direct.prompt_len,
             &direct.tokens[..position],
+            direct.tokens[position],
+            mtp.tokens[position],
         )
     } else {
         None
     };
-    let margin = direct_margin
-        .or_else(|| mtp.min_correction_margin())
-        .unwrap_or(f32::INFINITY);
+    // A correction margin from another verifier position cannot certify this tie.
+    let margin = direct_margin.unwrap_or(f32::INFINITY);
     mtp_parity::greedy_identity_until_tie(&direct.tokens, &mtp.tokens, margin, tie_margin)
         .unwrap_or_else(|error| panic!("{error}"))
 }
@@ -324,6 +383,7 @@ fn generate_with_block_size(
     block_size: u32,
 ) -> Generation {
     let mut result = Generation {
+        prompt_len: prompt.len(),
         tokens: Vec::new(),
         routes: Vec::new(),
         prefill_seconds: 0.0,
