@@ -176,17 +176,26 @@ class SurfaceProbeHelperTests(unittest.TestCase):
     def test_video_capability_requires_real_success(self):
         self.assertTrue(model_advertises_video({"capabilities": {"input": {"video": True}}}))
         self.assertFalse(model_advertises_video({"capabilities": {"input": {"image": True}}}))
-        for response, expected in [((200, {"choices": [{"message": {"content": "One frame"}}]}), True),
+        for response, expected in [((200, {"choices": [{"message": {"content": "One frame"}}], "usage": {"prompt_tokens": 128}}), True),
                                    ((200, {"choices": [{"message": {"content": ""}}]}), False),
                                    ((400, {"error": "unsupported"}), False), ((500, {}), False)]:
-            with unittest.mock.patch("surface_probes._post_json", return_value=response):
+            baseline = (200, {"usage": {"prompt_tokens": 12}})
+            with unittest.mock.patch("surface_probes._post_json", side_effect=[response, baseline]):
                 self.assertEqual(probe_video_rejected("http://x", "m", require_video=True).passed, expected)
-                if response[0] == 200:
+            if response[0] == 200:
+                with unittest.mock.patch("surface_probes._post_json", return_value=response):
                     self.assertFalse(probe_video_rejected("http://x", "m").passed)
+        ignored = (200, {"choices": [{"message": {"content": "I cannot see video"}}],
+                         "usage": {"prompt_tokens": 12}})
+        with unittest.mock.patch("surface_probes._post_json", side_effect=[ignored, baseline]):
+            self.assertFalse(probe_video_rejected("http://x", "m", require_video=True).passed)
+        for status in (401, 404, 429):
+            with unittest.mock.patch("surface_probes._post_json", return_value=(status, {"error": "video unsupported"})):
+                self.assertFalse(probe_video_rejected("http://x", "m").passed)
 
     def test_media_policy_probes(self) -> None:
         with unittest.mock.patch(
-            "surface_probes._post_json", return_value=(422, {"error": "nope"})
+            "surface_probes._post_json", return_value=(422, {"error": "video unsupported; remote media disallowed"})
         ):
             self.assertTrue(probe_remote_media_rejected("http://x", "m").passed)
             self.assertTrue(probe_video_rejected("http://x", "m").passed)

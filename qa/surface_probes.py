@@ -755,10 +755,19 @@ def probe_video_rejected(
             elapsed_ms=elapsed,
         )
     if require_video:
-        content = extract_chat_content(body) if status == 200 else None
+        answer = extract_chat_content(body) if status == 200 else None
+        baseline_status, baseline = _post_json(
+            url, chat_completion_payload(model, "How many frames?", max_tokens=1, temperature=0.0),
+            timeout=timeout,
+        )
+        video_tokens = (body.get("usage") or {}).get("prompt_tokens", 0) if isinstance(body, dict) else 0
+        text_tokens = (baseline.get("usage") or {}).get("prompt_tokens", 0) if isinstance(baseline, dict) else 0
+        processed = baseline_status == 200 and text_tokens > 0 and video_tokens > text_tokens
         return SurfaceProbeResult(
-            name, bool(content and content.strip()),
-            f"advertised video: HTTP {status}, content={content!r}", elapsed_ms=elapsed,
+            name, bool(answer and answer.strip() and processed),
+            f"advertised video: HTTP {status}, prompt_tokens={video_tokens}, "
+            f"text_only_prompt_tokens={text_tokens}, content={answer!r}",
+            elapsed_ms=(time.monotonic() - start) * 1000,
         )
     if status == 200:
         return SurfaceProbeResult(
@@ -767,7 +776,9 @@ def probe_video_rejected(
             "video_url accepted on public chat route (expected reject)",
             elapsed_ms=elapsed,
         )
-    if status < 400:
+    if status not in (400, 422) or not any(
+        marker in str(body).lower() for marker in ("video", "unsupported_modality")
+    ):
         return SurfaceProbeResult(
             name,
             False,
