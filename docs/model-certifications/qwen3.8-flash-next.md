@@ -38,7 +38,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
 | MTP integration | All 12 state/runner controls completed: 9 pass, 3 fail unchanged bounds | Investigate 2-bit tie state and 4-bit tie state/runner before promotion |
 | HTTP / SSE | Six modes and 12 requests completed; 4 pass, 2 fail direct/MTP text identity | Investigate 4/6-bit required MTP identity; extend beyond four-token requests |
-| Throughput | Partial 4/6-bit matrix; early EOS and skipped cells remain explicit | Complete fixed-output comparisons and establish 6-bit residency/memory behavior |
+| Throughput | Fresh fixed-output matrix: 10/18 complete; 128 tokens in every measured sample | Finish remaining eight cells; verify memory behavior on target SKU |
 | Target hardware | No M5 Ultra 256 GB result | Run target-SKU qualification |
 | Release | Not release-ready | Final merged-tree gates and native validation |
 
@@ -89,12 +89,22 @@ Earlier operator-level, cache, QSA-boundary and numerical comparisons remain in
 `benchmarks/results/flash-next-*.json`. They describe their recorded snapshots;
 they do not supersede the current gate table or validate a later merged binary.
 
-AX prefill was substantially slower than the pinned MLX-VLM reference in the
-recorded M2 cells. Do not quote a complete-matrix throughput ratio: some AX
-runs emitted fewer than the requested 128 tokens, and the 6-bit matrix was
-interrupted. The comparison is against MLX-VLM because `mlx_lm` has no
-`qwen4_exp` graph; it is not an `mlx_lm.benchmark` result. Serving elapsed
-times and isolated model-runtime measurements are different workloads.
+The fresh comparison fixes the earlier EOS mismatch: AX uses the native
+fixed-output endpoint with `ignore_eos=true`, and both routes emit 128 tokens.
+The post-first-token decode interval covers 127 tokens. AX client-wall timing
+and reference in-process timing remain distinct; native runner timings are
+retained separately. The baseline is pinned MLX-VLM because `mlx_lm` has no
+`qwen4_exp` graph; this is not an `mlx_lm.benchmark` result.
+
+The host had background indexing/sync activity. AX RSS is an end-of-request
+snapshot, and its MLX peak covers the server lifetime; the reference resets
+MLX peak per request. No controlled performance or equivalent memory-peak
+claim follows from these fields. Although the historical configuration label
+says `auto_resident_on_192gib`, observed 6-bit Auto execution uses expert
+paging. A stack sample in the first prefill reaches
+`ExpertStackPager::ensure_layer` and `load_safetensors_mmap_filtered`.
+The first 512-token prefill takes about 448 seconds; subsequent samples take
+about 14 seconds. Read actual behavior rather than that stale residency label.
 
 ## Admission and operator contract
 

@@ -122,7 +122,12 @@ def summarize(kind: str, raw: dict) -> dict:
                 "attempted_cells": len(cells), "expected_cells": len(expected),
                 "complete_cells": sum(c["status"] == "complete" for c in matrix),
                 "matrix": matrix, "passed": complete and raw.get("completed") is True,
-                "note": "Early EOS and skipped cells are not fixed-decode throughput samples."}
+                "note": "Early EOS and skipped cells are not fixed-decode throughput samples.",
+                "memory_boundaries": (
+                    "AX peak_rss_bytes is a post-request RSS snapshot, not a sampled peak. "
+                    "AX MLX peak is server-lifetime high water; the reference resets its "
+                    "MLX peak per request. These are not equivalent peak measurements."
+                )}
     if kind == "mtp":
         rows = []
         for pack in ("2bit", "4bit", "6bit"):
