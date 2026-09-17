@@ -1,0 +1,47 @@
+{
+  "schema": "ax-engine.flash-next.installed-full-qa-failure.v1",
+  "terminal": true,
+  "passed": false,
+  "qualification": false,
+  "release_ready": false,
+  "source_commit": "c10162e61d68b8597f90f4360833502286112449",
+  "server_sha256": "1d4edf9f14fde7d657d5a9998ff63f47377990523b3ca3cfdbad37dd96c6fcec",
+  "hardware": "Apple M2 Ultra 192 GiB",
+  "route": "Default residency, direct policy; selected-expert options disabled.",
+  "completed_cases": 3,
+  "requested_cases_per_mode": 105,
+  "required_mode_started": false,
+  "failed_case": "reasoning_cause_effect",
+  "prompt_tokens": 46,
+  "max_output_tokens": 256,
+  "request_deadline_seconds": 1800,
+  "error": "TimeoutError: timed out",
+  "server_exit_code": 0,
+  "completed_requests": [
+    {
+      "id": "instruction_sort_numbers",
+      "seconds": 1401.7164974169864,
+      "hard_pass": true
+    },
+    {
+      "id": "math_average_scores",
+      "seconds": 62.33340941698407,
+      "hard_pass": true
+    },
+    {
+      "id": "instruction_repeat_token",
+      "seconds": 79.67264616701868,
+      "hard_pass": true
+    }
+  ],
+  "downstream": "New throughput and lifecycle runs did not start because their QA prerequisite failed.",
+  "limitations": [
+    "Different cache history from earlier retries; no speedup comparison.",
+    "The earlier600second failure remains separate; this1800second QA timeout is not a relaxed pass.",
+    "Selected-route comparison and target-SKU qualification remain unproven."
+  ],
+  "raw_artifact": "flash-next-installed-full-qa-6bit-c101-failure-m2-20260917-raw.json.gz",
+  "original_raw_sha256": "1c676972197dfb6f22c7687fa38a9e378be2547709251de3f5d94caa00768fdb",
+  "sanitized_raw_sha256": "c93f55e57667d8ab4d651ee4a93ff0737bbd2a85cfd1d047bd8136518251e88f",
+  "gzip_sha256": "a06226f860954d35a63b3fbc28ae83a9d9d4e4edf3e137bb4e0331a80f06c82e"
+}

@@ -33,7 +33,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
 | Pack delivery | Fresh default-transport and two-worker downloads each verify both public revisions and all 63 LFS files. The a7 installed follow-up exposed a Hub snapshot link rejection; c101 snapshot controls now complete eight requests; the original six-bit 600-second timeout remains open. | Complete full installed QA, cold-latency acceptance and target-SKU admission |
 | Numerical | Frozen 4-bit and 6-bit holdouts pass unchanged aggregate bounds across 3,316 aligned positions each | Target and installed qualification remain open; retain historical 22 high-margin disagreements and the earlier threshold revision |
-| Functional QA | Installed c101 four-bit default-residency QA: 105 direct/required pairs match text and checker results; each mode has 102 hard passes, 105 normal stops and clean shutdown | Complete six-bit installed/default-route QA and target-SKU qualification; reference/NLL were not rerun |
+| Functional QA | Installed c101 four-bit default-residency QA: 105 direct/required pairs match text and checker results; each mode has 102 hard passes, 105 normal stops and clean shutdown | Six-bit default QA failed on its fourth request at 1,800 seconds; resolve latency and complete remaining installed/target qualification; reference/NLL were not rerun |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
 | MTP integration | All 12 HC state/runner controls and 105-item native QA parity pass; four installed direct/required pairs have text and usage identity | Full installed/default-route QA and target qualification before promotion |
@@ -408,3 +408,19 @@ preserves every response, check and metric with local paths redacted. This
 closes the four-bit installed QA collection and pairing requirement only;
 six-bit QA, throughput, lifecycle, cold latency and target qualification remain
 open. MTP default and release status are unchanged.
+
+
+## c101 six-bit default full-QA timeout
+
+The [six-bit default QA failure](../../benchmarks/results/flash-next-installed-full-qa-6bit-c101-failure-m2-20260917.json)
+records three completed direct requests, followed by a 1,800-second timeout
+on `reasoning_cause_effect` (46 input tokens, 256-token output budget). The
+first three hard checks pass; the first request takes 1,401.716 seconds. The
+server exits zero after the timeout. Required-MTP QA never starts, and the
+dependent throughput and lifecycle runs collect no new measurements.
+
+The [raw failure bundle](../../benchmarks/results/flash-next-installed-full-qa-6bit-c101-failure-m2-20260917-raw.json.gz)
+retains outputs, checks, the exception and supervisor result. Earlier short
+controls and successful warmed retries do not close this full-QA failure.
+This result is from the supplementary M2 host; release and target qualification
+remain open.
