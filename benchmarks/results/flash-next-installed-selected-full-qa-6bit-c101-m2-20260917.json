@@ -1,0 +1,48 @@
+{
+  "schema": "ax-engine.flash-next.installed-full-qa.v1",
+  "completed": true,
+  "qualification": false,
+  "release_ready": false,
+  "default_route": false,
+  "scope": "Six-bit installed selected-expert direct/required full QA on M2 Ultra 192 GiB; not default-route or target qualification.",
+  "source_commit": "c10162e61d68b8597f90f4360833502286112449",
+  "server_sha256": "1d4edf9f14fde7d657d5a9998ff63f47377990523b3ca3cfdbad37dd96c6fcec",
+  "cases_per_mode": 105,
+  "text_identity": true,
+  "checker_identity": true,
+  "normal_stops": 210,
+  "manifest_unchanged": true,
+  "raw_sha256": "3a07b642556c9da63c8d09c27a7badc28ebf12673f880ef9e607714db29a9eb0",
+  "modes": {
+    "disabled": {
+      "hard_pass": 103,
+      "failed_ids": [
+        "knowledge_water_formula",
+        "format_csv_pair"
+      ],
+      "draft_tokens": 0.0,
+      "long_context_seconds": 1174.8612020839937,
+      "exit_code": 0
+    },
+    "required": {
+      "hard_pass": 103,
+      "failed_ids": [
+        "knowledge_water_formula",
+        "format_csv_pair"
+      ],
+      "draft_tokens": 518.0,
+      "long_context_seconds": 1098.8608056249795,
+      "exit_code": 0
+    }
+  },
+  "raw_artifact": "flash-next-installed-selected-full-qa-6bit-c101-m2-20260917-raw.json.gz",
+  "sanitized_raw_sha256": "c4a2e59e75fce326d564b3e347e33ba5aceb7b0c771c24bc55fef1a2d1de088f",
+  "gzip_sha256": "a4429101b7a7a4c72d874ea6f3c0bdeb687bbfb465108458b29b10cf31f64dbd",
+  "limitations": [
+    "Two retained hard-check failures in each mode.",
+    "Existing selected-expert opt-in flags; default six-bit 1800-second QA timeout remains open.",
+    "Earlier selected 600-second timeout remains separate; this run follows a different cache history.",
+    "Long-context durations are single observations, not a speedup comparison.",
+    "Full throughput, lifecycle and target M5 Ultra 256 GiB qualification remain open."
+  ]
+}

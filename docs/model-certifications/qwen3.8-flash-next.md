@@ -388,8 +388,9 @@ also retains the original six-bit selected request's 600-second timeout and
 the subsequent default recovery's port-preflight failure before model load.
 Later six-bit retries completed; the default request took 1,045.268 seconds and
 required MTP took 186.209 seconds with different cache histories. These are not
-a speedup comparison or cold-latency acceptance. Full installed QA, streaming
-lifecycle, the complete current matrix and target-SKU qualification remain open.
+a speedup comparison or cold-latency acceptance. Full QA has separate records
+below; streaming lifecycle, the complete current matrix and target-SKU
+qualification remain open.
 
 
 ## c101 installed four-bit full QA
@@ -406,8 +407,9 @@ durations are 428.043 and 439.078 seconds with different cache histories, not
 a speedup comparison. The [raw record](../../benchmarks/results/flash-next-installed-full-qa-4bit-c101-m2-20260917-raw.json.gz)
 preserves every response, check and metric with local paths redacted. This
 closes the four-bit installed QA collection and pairing requirement only;
-six-bit QA, throughput, lifecycle, cold latency and target qualification remain
-open. MTP default and release status are unchanged.
+six-bit default QA, throughput, lifecycle, cold latency and target qualification
+remain open. Selected six-bit QA is recorded separately below. MTP default and
+release status are unchanged.
 
 
 ## c101 six-bit default full-QA timeout
@@ -424,3 +426,27 @@ retains outputs, checks, the exception and supervisor result. Earlier short
 controls and successful warmed retries do not close this full-QA failure.
 This result is from the supplementary M2 host; release and target qualification
 remain open.
+
+
+## c101 installed selected six-bit full QA
+
+The [selected six-bit QA record](../../benchmarks/results/flash-next-installed-selected-full-qa-6bit-c101-m2-20260917.json)
+completes all 105 fixed inputs with direct and required-MTP policies on the
+supplementary M2 Ultra 192 GiB host. Every pair matches text and checker
+results; all 210 requests stop normally, both servers exit zero without a
+forced kill, and the manifest remains unchanged. Prompt-token accounting and
+output budgets were independently checked. Direct records zero draft tokens;
+required MTP records 518. Each mode has 103 hard passes and retains the
+water-formula representation and incorrect CSV-literal failures.
+
+The 29,774-token lookup returns `1734` in both modes, taking 1,174.861 and
+1,098.861 seconds respectively. These are single observations with different
+cache histories, not a speedup comparison. The [raw record](../../benchmarks/results/flash-next-installed-selected-full-qa-6bit-c101-m2-20260917-raw.json.gz)
+preserves all responses, checks and metrics with local paths redacted.
+
+This run uses existing selected-expert and selected-prefill opt-in flags. It
+closes collection and pairing for this route only; the default six-bit
+1,800-second full-QA timeout and earlier selected 600-second timeout remain
+open. Full throughput, installed lifecycle, cold latency and target M5 Ultra
+256 GiB qualification remain separate requirements. Product defaults, MTP
+certification and release status are unchanged.
