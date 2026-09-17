@@ -52,6 +52,15 @@ class CurateFlashNextEvidenceTest(unittest.TestCase):
         assert not summarize("throughput", raw)["passed"]
 
 
+    def test_failed_cell_and_missing_warmups_cannot_pass(self):
+        raw = throughput()
+        raw["cells"][0]["failed"] = True
+        assert not summarize("throughput", raw)["passed"]
+        del raw["cells"][0]["failed"]
+        raw["config"]["warmup_repetitions"] = 2
+        assert not summarize("throughput", raw)["passed"]
+
+
     def test_current_harness_cannot_overwrite_recorded_identity(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

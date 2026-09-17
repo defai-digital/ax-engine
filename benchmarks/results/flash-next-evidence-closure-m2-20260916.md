@@ -7,6 +7,7 @@ A summary pass does not override `release_ready=false`.
 
 | Artifact | Interpretation |
 | --- | --- |
+| `flash-next-native-build-m2-20260916.json` | Original build record for `1819e4bb`; all four recorded source hashes match Git, and both test/server hashes match their campaign artifacts. |
 | `flash-next-extended-qa-v3-m2-20260916.json` | All three routes completed 105 items plus the NLL phase. Original QA acceptance fails on two direct/MTP text mismatches. The surviving harness differs from the recorded hash. |
 | `flash-next-mtp-head-oracle-m2-20260916.json` | Real head 95/114 acceptance, permuted 0/207. Only 50 requests per head contribute; 54 short requests are excluded. The harness hash verifies. The recorded 70% threshold is retained, not replaced by a new certification rule. |
 | `flash-next-mtp-batched-verify-m2-20260916.json` | All 12 primary/tie state and runner controls for 2/4/6-bit completed: 9 pass and 3 fail. Completion does not override the failed verdict. |
@@ -27,6 +28,10 @@ The failure is retained; no tolerance or production model math was changed.
 The 4-bit primary controls also pass, but its tie state control has relative
 logit error 0.10086382 above 0.1 and its tie runner differs at position 2:
 direct 271 versus MTP 561, margin 1.3125 above the unchanged 0.5 bound.
+
+The throughput host was not isolated: system indexing and a background file
+sync were active during collection. These measurements remain development
+diagnostics and cannot support a controlled public performance claim.
 
 ## Re-curation
 

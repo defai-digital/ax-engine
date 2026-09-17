@@ -101,17 +101,26 @@ def summarize(kind: str, raw: dict) -> dict:
             cell = cells.get(name)
             samples = [] if cell is None else [s for s in cell.get("samples", [])
                                               if s.get("warmup") is False]
-            complete = len(samples) == cfg["measurement_repetitions"] and all(
+            warmups = [] if cell is None else [s for s in cell.get("samples", [])
+                                              if s.get("warmup") is True]
+            complete = bool(cell and not cell.get("failed") and not cell.get("skipped")) and (
+                len(warmups) == cfg.get("warmup_repetitions", 0)
+                and len(samples) == cfg["measurement_repetitions"]
+            ) and all(
                 (s.get("done") is True or (cell["route"] == "reference" and "done" not in s))
                 and s.get("generated_tokens") == cfg["generation_tokens"]
                 for s in samples
             )
             matrix.append({"cell_id": name, "status": "complete" if complete else
                            "missing" if cell is None else "incomplete_output_or_samples",
+                           "warmup_samples": len(warmups),
                            "measured_samples": len(samples),
                            "generated_tokens": [s.get("generated_tokens") for s in samples]})
         complete = all(c["status"] == "complete" for c in matrix)
         return {"completed": complete, "recorded_completed": raw.get("completed"),
+                "coverage_complete": raw.get("completed") is True and set(cells) == expected,
+                "attempted_cells": len(cells), "expected_cells": len(expected),
+                "complete_cells": sum(c["status"] == "complete" for c in matrix),
                 "matrix": matrix, "passed": complete and raw.get("completed") is True,
                 "note": "Early EOS and skipped cells are not fixed-decode throughput samples."}
     if kind == "mtp":

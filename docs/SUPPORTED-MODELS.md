@@ -71,7 +71,8 @@ The current Certified families are `qwen3` (dense and MoE), `qwen3_5` /
 `deepseek_v32`. Registered
 families without certification evidence are Compatible unless explicitly
 gated as Experimental. `diffusion_gemma` and `qwen4_exp` (Flash Next) are
-Experimental; implemented execution does not establish certification. A manifest whose structural signals force a feature-gated
+Experimental; implemented execution does not establish certification.
+A manifest whose structural signals force a feature-gated
 generation kind (for example a diffusion canvas) resolves to Experimental even
 when its family label is otherwise Certified — the tier reflects the path that
 actually runs. Unknown family labels resolve to Compatible only in the quality
@@ -129,8 +130,9 @@ A model moves between tiers by landing evidence, not by renaming:
   and link the evidence.
 - Certified → Compatible: evidence goes stale (no artifact refresh within the
   policy window) or a regression invalidates the certification run.
-- Any → Experimental: the only working path is a feature-gated one; promotion
-  requires the gate to ship as a default path.
+- Any → Experimental: execution depends on a feature gate or native
+  validation remains incomplete. Default admission alone does not promote
+  the family; promotion requires the corresponding qualification evidence.
 
 The tiered smoke matrix (`scripts/smoke_compatible_models.py`) keeps the
 Compatible/Certified claims honest: it resolves a local snapshot, runs

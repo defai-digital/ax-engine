@@ -31,12 +31,13 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Gate | Current result | Remaining requirement |
 | --- | --- | --- |
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
+| Pack delivery | CLI aliases exist; published pack and immutable download revision are unverified | Verify published artifacts, download, doctor, and installed-runtime admission |
 | Numerical | Eight prompts, 3,260 aligned positions; aggregate statistical rule passes | Independent holdout verification; retain 22 high-margin disagreements and the revised 1% rule |
 | Functional QA | Completed 105 items per route: direct 102, required MTP 102, reference 101 hard passes | Direct/MTP text differs on two reasoning items; encoded QA acceptance is false |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
 | MTP integration | All 12 state/runner controls completed: 9 pass, 3 fail unchanged bounds | Investigate 2-bit tie state and 4-bit tie state/runner before promotion |
-| HTTP / SSE | Six modes and 12 requests completed; 4 pass, 2 fail direct/MTP text identity | 4/6-bit required MTP differs from direct; all API lifecycle controls pass |
+| HTTP / SSE | Six modes and 12 requests completed; 4 pass, 2 fail direct/MTP text identity | Investigate 4/6-bit required MTP identity; extend beyond four-token requests |
 | Throughput | Partial 4/6-bit matrix; early EOS and skipped cells remain explicit | Complete fixed-output comparisons and establish 6-bit residency/memory behavior |
 | Target hardware | No M5 Ultra 256 GB result | Run target-SKU qualification |
 | Release | Not release-ready | Final merged-tree gates and native validation |
@@ -67,7 +68,7 @@ for 4-bit and 6-bit; 2-bit agrees for this prompt. These strict identity
 failures remain visible even though the bounded 6-bit runner controls pass.
 This short API control does not establish long-request quality or stability.
 
-## Reproducible evidence
+## Evidence and provenance
 
 These artifacts preserve development outcomes, including failures and missing
 cells. `qualification=false` and `release_ready=false` are intentional.
@@ -75,6 +76,7 @@ Recorded binary/harness hashes are never replaced with hashes of newer files.
 A mismatching or unavailable harness is an open reproducibility gate.
 
 - [Statistical acceptance](../../benchmarks/results/flash-next-statistical-acceptance-m2-20260916.json)
+- [Native build identity and checked source hashes](../../benchmarks/results/flash-next-native-build-m2-20260916.json)
 - [Completed QA, long context and NLL](../../benchmarks/results/flash-next-extended-qa-v3-m2-20260916.json)
 - [Trained-head falsification control](../../benchmarks/results/flash-next-mtp-head-oracle-m2-20260916.json)
 - [Native HTTP / SSE matrix](../../benchmarks/results/flash-next-http-m2-20260916.json)

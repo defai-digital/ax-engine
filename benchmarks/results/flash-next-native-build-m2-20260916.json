@@ -1,0 +1,28 @@
+{
+  "schema": "ax-engine.flash-next.build-evidence.v1",
+  "qualification": false,
+  "release_ready": false,
+  "raw_sha256": "2bddb602eb8bd048d8b1d1e9b04e5b2e2222dacd1df1d8881fdd4be22dc642da",
+  "source_hashes_match_recorded_commit": {
+    "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": true,
+    "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": true,
+    "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": true,
+    "crates/ax-engine-mlx/src/runner/mod.rs": true
+  },
+  "campaign_binary_bindings": {
+    "flash-next-mtp-batched-verify-m2-20260916.json": true,
+    "flash-next-http-m2-20260916.json": true
+  },
+  "evidence": {
+    "base_commit": "1819e4bbfacedb3e81c2cefbb03fb6cddb5d2d02",
+    "profile": "release-server",
+    "binary_sha256": "79f30efefe5c2e889944f2efa3b4bb53f194d01c6820ef3314f3db3b78328060",
+    "server_binary_sha256": "f61f46a04a67b13d2a132e09da613d4b93f5fb1e405ad65971a72c09e032cbc1",
+    "sources": {
+      "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": "116b62af6737cf0577369208e9a57b80b36c3f64001ee2d7700e2f591d44c66e",
+      "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "5e1a97e5d35939eac040270ff1d25c0a4c0cbfe2a4a540b9cc36c92bff71768f",
+      "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": "31db057e86288d3b2311f8e34c942a262d89cb3d4bcae0d408752d338ef8f7f4",
+      "crates/ax-engine-mlx/src/runner/mod.rs": "8fa2694375237f46690e6346fa46afdcbe5e6ed9699960e755d64c33272eecf2"
+    }
+  }
+}
