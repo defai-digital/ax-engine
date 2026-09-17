@@ -219,6 +219,14 @@ Notes:
   when the worker releases its admission permit. It does not establish or
   repair the cause of a generation stall.
 
+A prefill larger than the entire configured logical KV pool can never finish
+when that pool is exhausted. Such requests enter the existing memory-starvation
+failure bound, and shared generation delivers a terminal failed response even
+when no execution batch selected the request. Temporarily blocked prompts that
+fit the pool retain normal deferral. Increase `--total-blocks` only when the
+host has sufficient memory for the intended workload; the collection deadline
+does not make an undersized KV pool capable of completing a larger prompt.
+
 ## Observability
 
 `GET /metrics` serves a Prometheus text exposition with HTTP request counters

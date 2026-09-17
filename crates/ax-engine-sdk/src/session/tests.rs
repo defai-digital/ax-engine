@@ -1768,6 +1768,117 @@ fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
     );
 }
 
+fn shared_stream_test_session(blocks: u32) -> EngineSession {
+    let config = mlx_test_session_config();
+    EngineSession {
+        core: EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(0), 4, blocks),
+            DeterministicRunner,
+            DeterministicSampler,
+        ),
+        runtime: config.runtime_report(),
+        config,
+        #[cfg(feature = "mlx-native")]
+        whisper: None,
+        next_request_id: 1,
+        native_request_routes: BTreeMap::new(),
+        native_route_report_order: VecDeque::new(),
+        llama_requests: BTreeMap::new(),
+        llama_terminal_request_order: VecDeque::new(),
+    }
+}
+
+fn assert_shared_stream_terminal(
+    blocks: u32,
+    chunk: u32,
+    max_output_tokens: u32,
+    expected: SessionRequestState,
+) {
+    let mut session = shared_stream_test_session(blocks);
+    session.config.max_batch_tokens = chunk;
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    let mut stream = session
+        .stream_generate_state_with_request_id(42, request)
+        .expect("stream starts");
+    assert!(matches!(
+        session.next_stream_event(&mut stream),
+        Ok(Some(GenerateStreamEvent::Request(_)))
+    ));
+    for _ in 0..80 {
+        let (step, ids) = session
+            .step_report_with_request_ids()
+            .expect("engine steps");
+        assert!(ids.iter().filter(|id| **id == 42).count() <= 1);
+        if !ids.contains(&42) {
+            continue;
+        }
+        if expected == SessionRequestState::Failed
+            && session
+                .request_report(42)
+                .is_some_and(|r| r.state == expected)
+        {
+            assert_eq!(step.scheduled_requests, 0, "cleanup is not execution");
+        }
+        let event = session
+            .next_native_stream_event_after_step(&mut stream, step)
+            .expect("stream observes step");
+        if let GenerateStreamEvent::Step(step) = event
+            && step.request.state == expected
+        {
+            let Some(GenerateStreamEvent::Response(response)) = session
+                .next_stream_event(&mut stream)
+                .expect("terminal response is available")
+            else {
+                panic!("terminal step must produce a response");
+            };
+            assert_eq!(
+                response.response.status,
+                crate::generate::GenerateStatus::from_session_state(expected)
+            );
+            assert_eq!(
+                session.core().kv_manager().allocatable_block_count(),
+                blocks
+            );
+            let (_, next_ids) = session.step_report_with_request_ids().expect("idle step");
+            assert!(
+                !next_ids.contains(&42),
+                "terminal cleanup is reported only once"
+            );
+            return;
+        }
+    }
+    panic!("shared stream never observed its terminal request state");
+}
+
+#[test]
+fn shared_stream_reports_unscheduled_memory_failure() {
+    assert_shared_stream_terminal(1, 8, 1, SessionRequestState::Failed);
+}
+
+#[test]
+fn shared_stream_reports_memory_failure_after_partial_prefill() {
+    assert_shared_stream_terminal(1, 4, 1, SessionRequestState::Failed);
+}
+
+#[test]
+fn shared_stream_reports_decode_failure_after_exact_capacity_prefill() {
+    assert_shared_stream_terminal(2, 8, 2, SessionRequestState::Failed);
+}
+
+#[test]
+fn shared_stream_reports_scheduled_completion_once() {
+    assert_shared_stream_terminal(4, 8, 1, SessionRequestState::Finished);
+}
+
 #[test]
 fn shared_native_step_advances_multiple_stream_states_once() {
     let core = EngineCore::with_runtime_components(
