@@ -9,7 +9,8 @@ A summary pass does not override `release_ready=false`.
 | --- | --- |
 | `flash-next-extended-qa-v3-m2-20260916.json` | All three routes completed 105 items plus the NLL phase. Original QA acceptance fails on two direct/MTP text mismatches. The surviving harness differs from the recorded hash. |
 | `flash-next-mtp-head-oracle-m2-20260916.json` | Real head 95/114 acceptance, permuted 0/207. Only 50 requests per head contribute; 54 short requests are excluded. The harness hash verifies. The recorded 70% threshold is retained, not replaced by a new certification rule. |
-| `flash-next-mtp-batched-verify-m2-20260916.json` | Explicit matrix of primary/tie state and runner controls for 2/4/6-bit. Missing or failed controls cannot become a pass. |
+| `flash-next-mtp-batched-verify-m2-20260916.json` | All 12 primary/tie state and runner controls for 2/4/6-bit completed: 9 pass and 3 fail. Completion does not override the failed verdict. |
+| `flash-next-http-m2-20260916.json` | Six modes and 12 requests completed: four pass, two fail direct/MTP text identity (4/6-bit required). SSE, usage, repeat identity, unchanged metadata, default MTP off, and clean shutdown pass throughout. |
 | `flash-next-throughput-ab-m2-20260916.json` | Preserves partial cells and short outputs. Fixed decode requires all measured samples to emit the requested token count; warmups and early EOS cannot substitute. |
 
 The original 105-item QA reports direct/MTP hard passes 102/105 and reference
@@ -21,7 +22,7 @@ MTP uses the same prefill logits and is not an independent NLL measurement.
 The 2-bit near-tie control on binary
 `79f30efefe5c2e889944f2efa3b4bb53f194d01c6820ef3314f3db3b78328060`
 (commit `1819e4bb`) failed with sequential token 271 versus batched token 198,
-margin 0.9375 exceeding the fixed 0.5 tie margin. Both primary controls passed.
+margin 0.9375 exceeding the fixed 0.5 tie margin. Both primary controls and the tie runner passed. All four 6-bit controls passed.
 The failure is retained; no tolerance or production model math was changed.
 The 4-bit primary controls also pass, but its tie state control has relative
 logit error 0.10086382 above 0.1 and its tie runner differs at position 2:
@@ -40,7 +41,7 @@ python3 scripts/curate_flash_next_evidence.py qa \
   --output /path/to/output/qa.json
 ```
 
-The other kinds are `head`, `mtp`, and `throughput`. Native completion and SSE
+The other kinds are `head`, `mtp`, `http`, and `throughput`. Native completion and SSE
 controls, target-SKU qualification, final merged-binary verification and broad
 quality acceptance are separate gates. See the
 [qualification record](../../docs/model-certifications/qwen3.8-flash-next.md).

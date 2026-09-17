@@ -113,7 +113,9 @@ Qwen 3.8 caveat:
   Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
 - **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU
   for Mac Studio M5 Ultra 256 GB. Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
-  Download `qwen3.8-flash-next:axq` (4-bit) or `qwen3.8-flash-next:axq-6bit`.
+  CLI aliases are `qwen3.8-flash-next:axq` (4-bit) and
+  `qwen3.8-flash-next:axq-6bit`. Published-pack availability and download
+  qualification remain unverified.
   Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
   variable. 2-bit still needs `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
   `AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4 stays rejected. Do not treat it as 27B

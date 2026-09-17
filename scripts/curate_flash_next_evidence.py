@@ -129,8 +129,9 @@ def summarize(kind: str, raw: dict) -> dict:
                                  "status": "pass" if passed else "failed" if record else "missing",
                                  "failure": (record or {}).get("failure_log_tail") or
                                             (record or {}).get("validation_error")})
-        complete = raw.get("completed") is True and all(r["status"] == "pass" for r in rows)
-        return {"completed": complete, "matrix": rows, "passed": complete}
+        complete = raw.get("completed") is True and all(r["status"] != "missing" for r in rows)
+        return {"completed": complete, "matrix": rows,
+                "passed": complete and all(r["status"] == "pass" for r in rows)}
     if kind == "http":
         expected = {(p, m) for p in ("2bit", "4bit", "6bit")
                     for m in ("disabled", "required")}
@@ -140,13 +141,20 @@ def summarize(kind: str, raw: dict) -> dict:
         rows = []
         for pack, mode in sorted(expected):
             cell = cells.get((pack, mode))
-            passed = bool(cell and cell.get("passed") is True
-                          and cell.get("exit_code") == 0
-                          and cell.get("pack_metadata_unchanged") is True
-                          and len(cell.get("requests", [])) == 2)
+            checks = {} if cell is None else {
+                "recorded_pass": cell.get("passed") is True,
+                "clean_shutdown": cell.get("exit_code") == 0,
+                "metadata_unchanged": cell.get("pack_metadata_unchanged") is True,
+                "both_requests": len(cell.get("requests", [])) == 2,
+            }
+            for key in ("repeat_identity", "direct_identity"):
+                if cell is not None and key in cell:
+                    checks[key] = cell[key] is True
+            passed = bool(cell and all(checks.values()))
             rows.append({"pack": pack, "mode": mode,
                          "status": "pass" if passed else "failed" if cell else "missing",
-                         "error": (cell or {}).get("error")})
+                         "error": (cell or {}).get("error"),
+                         "failed_checks": [name for name, ok in checks.items() if not ok]})
         return {"completed": raw.get("completed") is True and set(cells) == expected,
                 "matrix": rows, "passed": raw.get("completed") is True
                 and all(row["status"] == "pass" for row in rows)}

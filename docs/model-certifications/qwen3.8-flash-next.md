@@ -5,7 +5,7 @@ Status: **Candidate; release qualification open**
 Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 Target SKU: **Mac Studio M5 Ultra, 256 GB**. Current real-pack evidence is
-from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-16**.
+from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-17**.
 
 ## Identity and implemented execution
 
@@ -35,7 +35,8 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Functional QA | Completed 105 items per route: direct 102, required MTP 102, reference 101 hard passes | Direct/MTP text differs on two reasoning items; encoded QA acceptance is false |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
-| MTP integration | Primary controls pass for 2/4-bit; tie controls fail unchanged bounds, including 4-bit greedy mismatch outside the tie margin | Complete remaining matrix/API controls; investigate correctness before promotion |
+| MTP integration | All 12 state/runner controls completed: 9 pass, 3 fail unchanged bounds | Investigate 2-bit tie state and 4-bit tie state/runner before promotion |
+| HTTP / SSE | Six modes and 12 requests completed; 4 pass, 2 fail direct/MTP text identity | 4/6-bit required MTP differs from direct; all API lifecycle controls pass |
 | Throughput | Partial 4/6-bit matrix; early EOS and skipped cells remain explicit | Complete fixed-output comparisons and establish 6-bit residency/memory behavior |
 | Target hardware | No M5 Ultra 256 GB result | Run target-SKU qualification |
 | Release | Not release-ready | Final merged-tree gates and native validation |
@@ -45,6 +46,26 @@ zero-high-margin-disagreement rule failed, while the later at-most-1% rule
 passes at 22/3,260 (0.67%). The aggregate mean KL is 0.0860 against a 0.1011
 limit, and top-1 disagreement is 2.85% against 3.22%. Do not describe this as
 an independent confirmation or exact full-model parity.
+
+## MTP state and runner coverage
+
+All cells use test binary `79f30efe` (SHA-256 prefix), built from commit
+`1819e4bb`. A pass applies to the recorded prompt and tolerance contract.
+
+| Pack | Primary state | Primary runner | Tie state | Tie runner |
+| --- | --- | --- | --- | --- |
+| 2-bit | Pass | Pass | Fail: bonus margin 0.9375 > 0.5 | Pass |
+| 4-bit | Pass | Pass | Fail: logit relative error 0.100864 > 0.1 | Fail: margin 1.3125 > 0.5 |
+| 6-bit | Pass | Pass | Pass | Pass |
+
+The native API matrix uses server binary `f61f46a0` (SHA-256 prefix), also
+from `1819e4bb`. Each mode runs completion and SSE with the same five input
+tokens and four output tokens. All six modes return usage and a terminal SSE
+marker, repeat their own text, preserve pack metadata, and exit cleanly.
+Default-on MTP remains zero. Required MTP produces different text from direct
+for 4-bit and 6-bit; 2-bit agrees for this prompt. These strict identity
+failures remain visible even though the bounded 6-bit runner controls pass.
+This short API control does not establish long-request quality or stability.
 
 ## Reproducible evidence
 
@@ -56,6 +77,7 @@ A mismatching or unavailable harness is an open reproducibility gate.
 - [Statistical acceptance](../../benchmarks/results/flash-next-statistical-acceptance-m2-20260916.json)
 - [Completed QA, long context and NLL](../../benchmarks/results/flash-next-extended-qa-v3-m2-20260916.json)
 - [Trained-head falsification control](../../benchmarks/results/flash-next-mtp-head-oracle-m2-20260916.json)
+- [Native HTTP / SSE matrix](../../benchmarks/results/flash-next-http-m2-20260916.json)
 - [Batched MTP matrix](../../benchmarks/results/flash-next-mtp-batched-verify-m2-20260916.json)
 - [Throughput matrix, including incomplete cells](../../benchmarks/results/flash-next-throughput-ab-m2-20260916.json)
 - [Earlier affine 2/4/6-bit execution controls](../../benchmarks/results/flash-next-affine-formats-m2-20260915.json)

@@ -85,6 +85,21 @@ class CurateFlashNextEvidenceTest(unittest.TestCase):
         assert not result["passed"]
 
 
+    def test_completed_mtp_matrix_keeps_failed_verdict(self):
+        control = {"identity_until_first_tie": True, "within_tolerance": True}
+        pack = {"state": control, "runner": control,
+                "tie_prompt": {"state": control, "runner": control}}
+        raw = {"qualification": False, "binary_sha256": "a" * 64,
+               "completed": True,
+               "packs": {name: copy.deepcopy(pack) for name in ("2bit", "4bit", "6bit")}}
+        raw["packs"]["4bit"]["tie_prompt"]["state"] = {
+            "failed": True, "failure_log_tail": "logit bound exceeded"}
+        result = summarize("mtp", raw)
+        assert result["completed"]
+        assert not result["passed"]
+        assert sum(row["status"] == "failed" for row in result["matrix"]) == 1
+
+
     def test_qa_coverage_must_match(self):
         section = {"completed": True, "cases": [{"id": "one", "text": "answer"}]}
         raw = {"qualification": False, "binary_sha256": "a" * 64,
@@ -137,6 +152,11 @@ class CurateFlashNextEvidenceTest(unittest.TestCase):
         result = summarize("http", raw)
         assert result["completed"]
         assert not result["passed"]
+        raw["cells"][0]["exit_code"] = 0
+        raw["cells"][0]["direct_identity"] = False
+        result = summarize("http", raw)
+        assert not result["passed"]
+        assert "direct_identity" in result["matrix"][0]["failed_checks"]
 
 
 if __name__ == "__main__":

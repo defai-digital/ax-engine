@@ -81,9 +81,11 @@ second SKU on Mac Studio M5 Ultra 256 GB
 (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`).
 Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
-variable. Flash Next throughput uses the MLX-VLM reference through
-`--skip-mlx-lm` because `mlx_lm` has no `qwen4_exp` model, and never claims an
-`mlx_lm` ratio. See the [Flash Next record](model-certifications/qwen3.8-flash-next.md).
+variable. The Flash Next development comparison uses a pinned MLX-VLM
+reference because `mlx_lm` has no `qwen4_exp` model. Passing `--skip-mlx-lm`
+to the general benchmark only skips its baseline; it does not install or run
+that separate reference. These records never claim an `mlx_lm` ratio.
+See the [Flash Next record](model-certifications/qwen3.8-flash-next.md).
 Do not treat a campaign host as either SKU.
 
 ## Flash Next residency control (development only)
@@ -176,7 +178,8 @@ and `AX_FLASH_NEXT_RESULT_PATH`. This real-pack mode requires both selected
 expert flags, forces paging, and checks primary and draft state against a
 same-schedule direct/full-head control. Its MTP-only selected payload counter
 excludes reference forwards. Audited 4-bit and 6-bit packs need no family
-opt-in; keep `AX_ENGINE_2BIT_EXPERIMENTAL=1` for 2-bit. Without the real-pack
+opt-in; 2-bit needs both `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
+`AX_ENGINE_2BIT_EXPERIMENTAL=1`. Without the real-pack
 variable, the existing synthetic MTP oracle mode is unchanged.
 
 ## Secondary families
