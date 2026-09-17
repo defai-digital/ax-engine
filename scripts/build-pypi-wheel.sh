@@ -220,8 +220,8 @@ echo "    staged: $AX_METAL_PACKAGE_BUILD_DIR/ax_phase1_dense_path.metallib ($(w
 # PyO3's catch_unwind can actually turn a Rust panic into a catchable Python
 # exception instead of aborting the whole embedding process. --release would
 # silently defeat that safety net for every wheel this script produces.
-echo "==> Building wheel (release-pyext, stripped, target $EXPECTED_PLAT_TAG)..."
-maturin build --profile release-pyext --strip --out "$WHEEL_OUT"
+echo "==> Building wheel (release-pyext, target $EXPECTED_PLAT_TAG)..."
+maturin build --profile release-pyext --out "$WHEEL_OUT"
 
 # Use a glob expansion instead of ls+sort so we get exactly what was just built.
 # After the clean above there should be exactly one match.
@@ -357,6 +357,24 @@ if [[ ${#bad_binaries[@]} -gt 0 ]]; then
     exit 1
 fi
 echo "    verified: ax-engine product Mach-O binaries have minos >= ${MACOSX_DEPLOYMENT_TARGET}"
+
+# Exercise the final wheel in a fresh interpreter, not the editable checkout.
+# Linking, stripping and delocation can all succeed while dyld rejects the
+# extension (for example, a misaligned LINKEDIT string table).
+echo "==> Importing the final wheel's native extension..."
+python3 -I - "$INSPECT_DIR" <<'PY_NATIVE_IMPORT'
+import importlib
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+module = importlib.import_module("ax_engine._ax_engine")
+loaded = Path(module.__file__).resolve()
+if not loaded.is_relative_to(root):
+    raise SystemExit(f"error: native import escaped the inspected wheel: {loaded}")
+print(f"    verified native import: {loaded.relative_to(root)}")
+PY_NATIVE_IMPORT
 
 # ── 6. Optionally publish ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--publish" ]]; then

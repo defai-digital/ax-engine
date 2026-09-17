@@ -101,6 +101,10 @@ inherits = "release"
 # `maturin build --profile release-pyext` (see scripts/build-pypi-wheel.sh),
 # not `--release`.
 panic = "unwind"
+# Stripping this cdylib can produce a misaligned Mach-O LINKEDIT string table
+# on the supported Apple linker. Keep the extension loadable; do not change
+# optimization or unwind behavior to work around a post-link layout failure.
+strip = "none"
 
 [profile.release-server]
 inherits = "release"
