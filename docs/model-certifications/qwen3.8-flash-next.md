@@ -31,13 +31,13 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Gate | Current result | Remaining requirement |
 | --- | --- | --- |
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
-| Pack delivery | Public packs and immutable CLI revisions verified; four metadata files match native test packs | Verify full payload identity, fresh download, doctor, and installed-runtime admission |
+| Pack delivery | Public packs, immutable CLI revisions and all 63 LFS payload files match native test packs | Verify fresh download, doctor, and installed-runtime admission |
 | Numerical | Eight prompts, 3,260 aligned positions; aggregate statistical rule passes | Independent holdout verification; retain 22 high-margin disagreements and the revised 1% rule |
-| Functional QA | Completed 105 items per route: direct 102, required MTP 102, reference 101 hard passes | Direct/MTP text differs on two reasoning items; encoded QA acceptance is false |
+| Functional QA | Historical 105-item run: direct 102, required MTP 102, reference 101 hard passes. HC replay fixes both recorded text mismatches with normal stop and answer checks | Full 105-item native rerun remains pending; historical acceptance is false |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
-| MTP integration | All 12 state/runner controls completed: 9 pass, 3 fail unchanged bounds | Investigate 2-bit tie state and 4-bit tie state/runner before promotion |
-| HTTP / SSE | Six modes and 12 requests completed; 4 pass, 2 fail direct/MTP text identity | Investigate 4/6-bit required MTP identity; extend beyond four-token requests |
+| MTP integration | HC verifier correction: all 12 state/runner controls pass; six state controls record zero logit/state divergence and six runner controls have identical tokens | Complete full QA, independent holdout and target qualification before promotion |
+| HTTP / SSE | HC candidate: six modes and 12 requests pass, including direct/MTP text identity | Extend beyond four-token requests; reconcile legacy manifest health status |
 | Throughput | Fresh fixed-output matrix: 11/18 complete; two failed cells and five without results; 128 tokens in every measured sample | Resolve long-context budget and reference GPU timeout; collect five missing results and target-SKU memory evidence |
 | Target hardware | No M5 Ultra 256 GB result | Run target-SKU qualification |
 | Release | Not release-ready | Close the numerical, QA, MTP, throughput, delivery and target-hardware gates above; merged validation alone is insufficient |
@@ -55,10 +55,20 @@ the 6-bit alias to `d514dcebf3086068ed7968caf395083c95ebcfca`. Both repositories
 are publicly accessible. Their config, AXQuant manifest, tensor index and expert
 stream manifest match the native test packs byte-for-byte. See the
 [metadata identity record](../../benchmarks/results/flash-next-public-pack-metadata-20260917.json).
-This does not verify every weight byte, a fresh download, or installed-runtime
-qualification.
+Metadata alone does not verify weight bytes. The full payload check below
+adds that evidence; fresh download and installed-runtime qualification remain open.
 
 ## MTP state and runner coverage
+
+The [HC verifier matrix](../../benchmarks/results/flash-next-hc-mtp-matrix-m2-20260917.json)
+passes all twelve 2/4/6-bit controls with the original bounds unchanged. Both the
+five-token tie prompt and 69-token primary prompt are covered. Six state controls
+record zero relative logit/state divergence; six runner controls produce identical
+direct/MTP tokens. The correction keeps normal projections and expert paging
+Shared while using per-row MLX projections for verifier HC. Ordinary prefill and
+direct execution keep their prior policy. [Raw native records](../../benchmarks/results/flash-next-hc-mtp-matrix-raw-m2-20260917.json.gz)
+are retained separately. This closes the recorded short state/runner failures;
+it does not establish arbitrary-context parity or Tier 2 certification.
 
 The historical cells below use test binary `79f30efe` (SHA-256 prefix), built from commit
 `1819e4bb`. A pass applies to the recorded prompt and tolerance contract.
@@ -73,8 +83,8 @@ A [corrected 4-bit tie runner replay](../../benchmarks/results/flash-next-runner
 measures a direct-to-MTP token gap of 0.125 at position 2, below the unchanged
 0.5 limit. The historical 1.3125 margin above duplicated the pipeline bootstrap
 token. The output sequences still differ; this is a bounded tie pass, not text
-identity or a fix for the separate 4-bit state failure. Other historical runner
-cells have not been regenerated with the corrected diagnostic.
+identity. The later HC matrix above separately fixes the state failure and
+regenerates all twelve controls with the corrected runner diagnostic.
 
 The pre-merge native API matrix uses server binary `f61f46a0` (SHA-256 prefix), also
 from `1819e4bb`. Each mode runs completion and SSE with the same five input
@@ -94,6 +104,43 @@ checks pass. The 4/6-bit runs remove both experimental family/2-bit opt-ins;
 Local merged validation passes 3,681 Rust tests (46 ignored), pinned Clippy,
 formatting, script gates and 50 Python CLI tests with 92 subtests.
 These bounded checks do not close the release gates above.
+
+The later HC candidate passes all six modes and twelve requests on the same
+frozen prompt and four-token budget. Completion/SSE text and direct/MTP text
+are identical for all three packs; usage, terminal events, selected-expert
+activity, unchanged metadata and clean shutdown pass. MTP default-on remains
+zero. Source and binary hashes are preserved in the
+[HC HTTP matrix](../../benchmarks/results/flash-next-hc-http-m2-20260917.json).
+The earlier failures above remain historical evidence. This short control
+still does not qualify longer generation. Health also exposes the legacy
+manifest's `qwen4_exp_native_trunk_not_implemented` blocker despite successful
+generation; reconciling manifest and active runtime status remains open.
+
+The HC candidate also replays both original QA mismatch cases with identical
+direct/required text: `reasoning_cause_effect` emits 160 tokens and
+`reasoning_syllogism_roses` emits 211 tokens in each mode. Both answer checks,
+normal stop and server shutdown pass. The
+[focused QA evidence](../../benchmarks/results/flash-next-hc-focused-qa-m2-20260917.json)
+records the exact inputs and responses. A process sample overlapped direct
+decode, so recorded durations are diagnostic only. This two-item replay does
+not replace the pending 105-item native replay or rerun reference/NLL evidence.
+
+Full local payload hashing now verifies every LFS file at both immutable public
+revisions: 28 files for 4-bit and 35 for 6-bit, including the model shards and
+MTP sidecars. File sets, byte counts and SHA-256 values match public metadata;
+[the payload identity record](../../benchmarks/results/flash-next-public-payload-identity-20260917.json)
+preserves each result. This was a complete read of existing local files, not a
+fresh network download or installed-runtime qualification.
+
+A separate uncontaminated resident 4-bit paired control completes two warmup
+pairs and twelve measured pairs, alternating direct/MTP order with 32 output
+tokens and cleared prefix stores. All 28 requests have identical tokens.
+The paired MTP/direct decode-time ratio has median **0.790404**, ranging from
+0.785718 to 0.799137. Median direct/MTP decode times are 1.541547/1.220216 seconds.
+See the [paired cost record](../../benchmarks/results/flash-next-hc-paired-cost-m2-20260917.json)
+and its linked raw artifact. This closes the bounded verifier cost decision,
+not general profitability, paged throughput, reference comparison or target-SKU
+qualification. The earlier process-sampled run is excluded from these timings.
 
 ## Evidence and provenance
 
@@ -169,13 +216,16 @@ An available MTP sidecar attaches automatically, but default-on MTP remains
 disabled. Explicit `--mlx-mtp-policy required` exercises the experimental
 verified path. The test contract records identity until an observed tie and
 bounded numerical divergence; it does not promise universal text identity.
-The QA mismatches remain failures under the original all-items identity rule.
+The historical QA mismatches remain recorded failures under the original
+all-items identity rule. The HC two-item replay above fixes both observed
+mismatches; the full all-items contract still requires a fresh complete run.
 The historical 4-bit tie runner margin of 1.3125 was measured after replaying
 the pipeline bootstrap token twice. It is not a valid margin for the divergent
 position. The corrected diagnostic skips tokens already represented by the
 snapshot, verifies the direct prediction, and measures the gap to the actual
-MTP token. Its state control still exceeds the logit bound (0.100864 versus
-0.1); the runner diagnostic correction does not resolve that failure.
+MTP token. The historical state error (0.100864 versus 0.1) was a separate
+HC projection issue, now passing in the twelve-cell HC matrix above. Wider
+QA, API, cost and target-hardware requirements remain independent.
 
 The primary default remains [Qwen 3.8 27B AXQ](qwen3.8-27b-axq.md) on
 Mac mini M5 64 GB. See [Supported Models](../SUPPORTED-MODELS.md) and

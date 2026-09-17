@@ -1,0 +1,725 @@
+{
+  "completed": true,
+  "qualification": false,
+  "release_ready": false,
+  "full_qa": false,
+  "binary_sha256": "6120b76f4a2c8e853d7f505bcca535f41f5017e348033eb35880536e77fd49d1",
+  "harness_sha256": "641476408abe7487c2add98df73307fded32491ae0989bbf82fde5e51722ba63",
+  "helper_sha256": "b6ccd85582d7870285f59e6b9b47e1e56c30f221fb19abc9e5d9e0b1a161f436",
+  "items_sha256": "5a33e367294f434914489b351952193c434381a037ddd609b7c0d4cf822f2e23",
+  "prepared": [
+    {
+      "id": "reasoning_cause_effect",
+      "messages": [
+        {
+          "role": "user",
+          "content": "A river floods after heavy rain. Which is more likely the cause: (A) the rain (B) people buying umbrellas? Answer A or B and explain."
+        }
+      ],
+      "rendered": "<|im_start|>user\nA river floods after heavy rain. Which is more likely the cause: (A) the rain (B) people buying umbrellas? Answer A or B and explain.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "input_ids": [
+        248045,
+        846,
+        198,
+        32,
+        14367,
+        58143,
+        1238,
+        8545,
+        10849,
+        13,
+        15451,
+        369,
+        777,
+        4222,
+        279,
+        5073,
+        25,
+        318,
+        32,
+        8,
+        279,
+        10849,
+        318,
+        33,
+        8,
+        1208,
+        11494,
+        35465,
+        70444,
+        30,
+        21134,
+        357,
+        466,
+        417,
+        321,
+        10033,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ],
+      "token_count": 46
+    },
+    {
+      "id": "reasoning_syllogism_roses",
+      "messages": [
+        {
+          "role": "user",
+          "content": "If all roses are flowers and some flowers fade quickly, can we conclude that some roses fade quickly? Answer yes or no first, then explain."
+        }
+      ],
+      "rendered": "<|im_start|>user\nIf all roses are flowers and some flowers fade quickly, can we conclude that some roses fade quickly? Answer yes or no first, then explain.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "input_ids": [
+        248045,
+        846,
+        198,
+        2592,
+        660,
+        58596,
+        513,
+        18698,
+        321,
+        1010,
+        18698,
+        14580,
+        5964,
+        11,
+        628,
+        567,
+        30076,
+        421,
+        1010,
+        58596,
+        14580,
+        5964,
+        30,
+        21134,
+        9542,
+        466,
+        874,
+        1118,
+        11,
+        1179,
+        10033,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ],
+      "token_count": 41
+    }
+  ],
+  "modes": {
+    "disabled": [
+      {
+        "id": "reasoning_cause_effect",
+        "response": {
+          "response": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789632746,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation**: Heavy rain is a direct physical cause of river flooding. The volume of water entering the river system increases, exceeding its capacity and causing it to overflow.\n2.  **Irrelevance of Option B**: People buying umbrellas is a *response* to the rain, not a cause of the flooding. While both events (rain and umbrella purchases) may happen at the same time (correlation), buying umbrellas does not add water to the river or change the hydrological cycle. It is a human behavioral reaction, not a meteorological or hydrological cause.\n\nTherefore, the rain is the actual cause of the flood.",
+                "finish_reason": "stop"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 160,
+              "total_tokens": 206
+            }
+          },
+          "text": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation**: Heavy rain is a direct physical cause of river flooding. The volume of water entering the river system increases, exceeding its capacity and causing it to overflow.\n2.  **Irrelevance of Option B**: People buying umbrellas is a *response* to the rain, not a cause of the flooding. While both events (rain and umbrella purchases) may happen at the same time (correlation), buying umbrellas does not add water to the river or change the hydrological cycle. It is a human behavioral reaction, not a meteorological or hydrological cause.\n\nTherefore, the rain is the actual cause of the flood.",
+          "finish_reason": "stop",
+          "prompt_tokens": 46,
+          "seconds": 282.5031627080025,
+          "metrics_before": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": null,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": null,
+            "ax_engine_mtp_draft_tokens_total": null,
+            "ax_engine_mtp_accepted_tokens_total": null,
+            "ax_engine_mtp_direct_fallback_steps_total": null,
+            "ax_engine_mlx_prefix_cache_hits_total": null,
+            "ax_engine_mlx_prefix_cache_reused_tokens_total": null,
+            "ax_engine_mlx_mtp_certified_default_on": null,
+            "flash_next_mtp_series": {}
+          },
+          "metrics_after": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 300.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 17406900.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mtp_accepted_tokens_total": 0.0,
+            "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+            "ax_engine_mlx_prefix_cache_hits_total": 0.0,
+            "ax_engine_mlx_prefix_cache_reused_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0,
+            "flash_next_mtp_series": {
+              "ax_engine_mtp_draft_tokens_total": 0.0,
+              "ax_engine_mtp_accepted_tokens_total": 0.0,
+              "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+              "ax_engine_mtp_accept_rate_ewma_x1000": 0.0
+            }
+          }
+        },
+        "closed_checker": {
+          "name": "exact_answer",
+          "passed": true,
+          "detail": "found 'a' (mode=token)",
+          "score": 1.0,
+          "hard": true
+        },
+        "report": {
+          "prompt_id": "reasoning_cause_effect",
+          "auto_pass": true,
+          "hard_pass": true,
+          "manual_review": false,
+          "summary": "hard 9/9, soft 1/1",
+          "output_preview": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation**: Heavy rain is a direct physical cause of river flooding. The volume of water entering the river system increases, exceeding its capacity and causing it to overflow.\n2.  **Irrelevance of Option B**: People buying umbrellas is a *response* to the rain, not a cause of the flooding. While both events (rain and umbrella purchases) may happen at the same time (correlation), buying umbrellas does",
+          "checks": [
+            {
+              "name": "length",
+              "passed": true,
+              "detail": "695 chars (min 30)",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "repetition",
+              "passed": true,
+              "detail": "max line repeat ratio 0.17 (threshold 0.3)",
+              "score": 0.8333333333333334,
+              "hard": true
+            },
+            {
+              "name": "keywords",
+              "passed": true,
+              "detail": "found 2/2",
+              "score": 1.0,
+              "hard": false
+            },
+            {
+              "name": "regex",
+              "passed": true,
+              "detail": "no patterns required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "coherence",
+              "passed": true,
+              "detail": "alpha=0.76, unique=0.42",
+              "score": 0.5920143884892086,
+              "hard": true
+            },
+            {
+              "name": "unicode_replacement",
+              "passed": true,
+              "detail": "none",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "garbage",
+              "passed": true,
+              "detail": "scripts: Latin",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "pytest_test_count",
+              "passed": true,
+              "detail": "not required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "invoice_total",
+              "passed": true,
+              "detail": "not required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "exact_answer",
+              "passed": true,
+              "detail": "found 'a' (mode=token)",
+              "score": 1.0,
+              "hard": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "reasoning_syllogism_roses",
+        "response": {
+          "response": {
+            "id": "cmpl-2",
+            "object": "text_completion",
+            "created": 1789632833,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "No\n\n**Explanation:**\n\nThis is a classic example of a logical fallacy known as the **fallacy of the undistributed middle**.\n\nHere is the breakdown:\n1.  **Premise 1:** All roses are flowers. (Roses $\\subseteq$ Flowers)\n2.  **Premise 2:** Some flowers fade quickly. (There is an overlap between Flowers and Things That Fade Quickly)\n\nThe fact that *some* flowers fade quickly does not specify *which* flowers. It is possible that the flowers that fade quickly are tulips, daisies, or lilies, while roses do not fade quickly. The set of \"roses\" might be entirely contained within the subset of flowers that *do not* fade quickly.\n\n**Counter-example:**\n*   All cats are mammals.\n*   Some mammals lay eggs (e.g., platypuses).\n*   Can we conclude that some cats lay eggs? **No.**\n\nTherefore, the conclusion does not logically follow from the premises.",
+                "finish_reason": "stop"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 41,
+              "completion_tokens": 211,
+              "total_tokens": 252
+            }
+          },
+          "text": "No\n\n**Explanation:**\n\nThis is a classic example of a logical fallacy known as the **fallacy of the undistributed middle**.\n\nHere is the breakdown:\n1.  **Premise 1:** All roses are flowers. (Roses $\\subseteq$ Flowers)\n2.  **Premise 2:** Some flowers fade quickly. (There is an overlap between Flowers and Things That Fade Quickly)\n\nThe fact that *some* flowers fade quickly does not specify *which* flowers. It is possible that the flowers that fade quickly are tulips, daisies, or lilies, while roses do not fade quickly. The set of \"roses\" might be entirely contained within the subset of flowers that *do not* fade quickly.\n\n**Counter-example:**\n*   All cats are mammals.\n*   Some mammals lay eggs (e.g., platypuses).\n*   Can we conclude that some cats lay eggs? **No.**\n\nTherefore, the conclusion does not logically follow from the premises.",
+          "finish_reason": "stop",
+          "prompt_tokens": 41,
+          "seconds": 86.96776816700003,
+          "metrics_before": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 300.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 17406900.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mtp_accepted_tokens_total": 0.0,
+            "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+            "ax_engine_mlx_prefix_cache_hits_total": 0.0,
+            "ax_engine_mlx_prefix_cache_reused_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0,
+            "flash_next_mtp_series": {
+              "ax_engine_mtp_draft_tokens_total": 0.0,
+              "ax_engine_mtp_accepted_tokens_total": 0.0,
+              "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+              "ax_engine_mtp_accept_rate_ewma_x1000": 0.0
+            }
+          },
+          "metrics_after": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 598.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 31152600.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mtp_accepted_tokens_total": 0.0,
+            "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+            "ax_engine_mlx_prefix_cache_hits_total": 0.0,
+            "ax_engine_mlx_prefix_cache_reused_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0,
+            "flash_next_mtp_series": {
+              "ax_engine_mtp_draft_tokens_total": 0.0,
+              "ax_engine_mtp_accepted_tokens_total": 0.0,
+              "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+              "ax_engine_mtp_accept_rate_ewma_x1000": 0.0
+            }
+          }
+        },
+        "closed_checker": {
+          "name": "exact_answer",
+          "passed": true,
+          "detail": "found 'no' (mode=token)",
+          "score": 1.0,
+          "hard": true
+        },
+        "report": {
+          "prompt_id": "reasoning_syllogism_roses",
+          "auto_pass": true,
+          "hard_pass": true,
+          "manual_review": false,
+          "summary": "hard 9/9, soft 1/1",
+          "output_preview": "No\n\n**Explanation:**\n\nThis is a classic example of a logical fallacy known as the **fallacy of the undistributed middle**.\n\nHere is the breakdown:\n1.  **Premise 1:** All roses are flowers. (Roses $\\subseteq$ Flowers)\n2.  **Premise 2:** Some flowers fade quickly. (There is an overlap between Flowers and Things That Fade Quickly)\n\nThe fact that *some* flowers fade quickly does not specify *which* flowers. It is possible that the flowers that fade quickly are tulips, daisies, or lilies, while roses",
+          "checks": [
+            {
+              "name": "length",
+              "passed": true,
+              "detail": "844 chars (min 40)",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "repetition",
+              "passed": true,
+              "detail": "max line repeat ratio 0.08 (threshold 0.3)",
+              "score": 0.9166666666666666,
+              "hard": true
+            },
+            {
+              "name": "keywords",
+              "passed": true,
+              "detail": "found 3/3",
+              "score": 1.0,
+              "hard": false
+            },
+            {
+              "name": "regex",
+              "passed": true,
+              "detail": "no patterns required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "coherence",
+              "passed": true,
+              "detail": "alpha=0.74, unique=0.51",
+              "score": 0.6240758293838863,
+              "hard": true
+            },
+            {
+              "name": "unicode_replacement",
+              "passed": true,
+              "detail": "none",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "garbage",
+              "passed": true,
+              "detail": "scripts: Latin",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "pytest_test_count",
+              "passed": true,
+              "detail": "not required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "invoice_total",
+              "passed": true,
+              "detail": "not required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "exact_answer",
+              "passed": true,
+              "detail": "found 'no' (mode=token)",
+              "score": 1.0,
+              "hard": true
+            }
+          ]
+        }
+      }
+    ],
+    "required": [
+      {
+        "id": "reasoning_cause_effect",
+        "response": {
+          "response": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789632884,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation**: Heavy rain is a direct physical cause of river flooding. The volume of water entering the river system increases, exceeding its capacity and causing it to overflow.\n2.  **Irrelevance of Option B**: People buying umbrellas is a *response* to the rain, not a cause of the flooding. While both events (rain and umbrella purchases) may happen at the same time (correlation), buying umbrellas does not add water to the river or change the hydrological cycle. It is a human behavioral reaction, not a meteorological or hydrological cause.\n\nTherefore, the rain is the actual cause of the flood.",
+                "finish_reason": "stop"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 160,
+              "total_tokens": 206
+            }
+          },
+          "text": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation**: Heavy rain is a direct physical cause of river flooding. The volume of water entering the river system increases, exceeding its capacity and causing it to overflow.\n2.  **Irrelevance of Option B**: People buying umbrellas is a *response* to the rain, not a cause of the flooding. While both events (rain and umbrella purchases) may happen at the same time (correlation), buying umbrellas does not add water to the river or change the hydrological cycle. It is a human behavioral reaction, not a meteorological or hydrological cause.\n\nTherefore, the rain is the actual cause of the flood.",
+          "finish_reason": "stop",
+          "prompt_tokens": 46,
+          "seconds": 48.088575416011736,
+          "metrics_before": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": null,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": null,
+            "ax_engine_mtp_draft_tokens_total": null,
+            "ax_engine_mtp_accepted_tokens_total": null,
+            "ax_engine_mtp_direct_fallback_steps_total": null,
+            "ax_engine_mlx_prefix_cache_hits_total": null,
+            "ax_engine_mlx_prefix_cache_reused_tokens_total": null,
+            "ax_engine_mlx_mtp_certified_default_on": null,
+            "flash_next_mtp_series": {}
+          },
+          "metrics_after": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 252.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 17890200.0,
+            "ax_engine_mtp_draft_tokens_total": 91.0,
+            "ax_engine_mtp_accepted_tokens_total": 69.0,
+            "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+            "ax_engine_mlx_prefix_cache_hits_total": 0.0,
+            "ax_engine_mlx_prefix_cache_reused_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0,
+            "flash_next_mtp_series": {
+              "ax_engine_mtp_draft_tokens_total": 91.0,
+              "ax_engine_mtp_accepted_tokens_total": 69.0,
+              "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+              "ax_engine_mtp_accept_rate_ewma_x1000": 779.0
+            }
+          }
+        },
+        "closed_checker": {
+          "name": "exact_answer",
+          "passed": true,
+          "detail": "found 'a' (mode=token)",
+          "score": 1.0,
+          "hard": true
+        },
+        "report": {
+          "prompt_id": "reasoning_cause_effect",
+          "auto_pass": true,
+          "hard_pass": true,
+          "manual_review": false,
+          "summary": "hard 9/9, soft 1/1",
+          "output_preview": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation**: Heavy rain is a direct physical cause of river flooding. The volume of water entering the river system increases, exceeding its capacity and causing it to overflow.\n2.  **Irrelevance of Option B**: People buying umbrellas is a *response* to the rain, not a cause of the flooding. While both events (rain and umbrella purchases) may happen at the same time (correlation), buying umbrellas does",
+          "checks": [
+            {
+              "name": "length",
+              "passed": true,
+              "detail": "695 chars (min 30)",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "repetition",
+              "passed": true,
+              "detail": "max line repeat ratio 0.17 (threshold 0.3)",
+              "score": 0.8333333333333334,
+              "hard": true
+            },
+            {
+              "name": "keywords",
+              "passed": true,
+              "detail": "found 2/2",
+              "score": 1.0,
+              "hard": false
+            },
+            {
+              "name": "regex",
+              "passed": true,
+              "detail": "no patterns required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "coherence",
+              "passed": true,
+              "detail": "alpha=0.76, unique=0.42",
+              "score": 0.5920143884892086,
+              "hard": true
+            },
+            {
+              "name": "unicode_replacement",
+              "passed": true,
+              "detail": "none",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "garbage",
+              "passed": true,
+              "detail": "scripts: Latin",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "pytest_test_count",
+              "passed": true,
+              "detail": "not required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "invoice_total",
+              "passed": true,
+              "detail": "not required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "exact_answer",
+              "passed": true,
+              "detail": "found 'a' (mode=token)",
+              "score": 1.0,
+              "hard": true
+            }
+          ]
+        }
+      },
+      {
+        "id": "reasoning_syllogism_roses",
+        "response": {
+          "response": {
+            "id": "cmpl-2",
+            "object": "text_completion",
+            "created": 1789632938,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "No\n\n**Explanation:**\n\nThis is a classic example of a logical fallacy known as the **fallacy of the undistributed middle**.\n\nHere is the breakdown:\n1.  **Premise 1:** All roses are flowers. (Roses $\\subseteq$ Flowers)\n2.  **Premise 2:** Some flowers fade quickly. (There is an overlap between Flowers and Things That Fade Quickly)\n\nThe fact that *some* flowers fade quickly does not specify *which* flowers. It is possible that the flowers that fade quickly are tulips, daisies, or lilies, while roses do not fade quickly. The set of \"roses\" might be entirely contained within the subset of flowers that *do not* fade quickly.\n\n**Counter-example:**\n*   All cats are mammals.\n*   Some mammals lay eggs (e.g., platypuses).\n*   Can we conclude that some cats lay eggs? **No.**\n\nTherefore, the conclusion does not logically follow from the premises.",
+                "finish_reason": "stop"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 41,
+              "completion_tokens": 211,
+              "total_tokens": 252
+            }
+          },
+          "text": "No\n\n**Explanation:**\n\nThis is a classic example of a logical fallacy known as the **fallacy of the undistributed middle**.\n\nHere is the breakdown:\n1.  **Premise 1:** All roses are flowers. (Roses $\\subseteq$ Flowers)\n2.  **Premise 2:** Some flowers fade quickly. (There is an overlap between Flowers and Things That Fade Quickly)\n\nThe fact that *some* flowers fade quickly does not specify *which* flowers. It is possible that the flowers that fade quickly are tulips, daisies, or lilies, while roses do not fade quickly. The set of \"roses\" might be entirely contained within the subset of flowers that *do not* fade quickly.\n\n**Counter-example:**\n*   All cats are mammals.\n*   Some mammals lay eggs (e.g., platypuses).\n*   Can we conclude that some cats lay eggs? **No.**\n\nTherefore, the conclusion does not logically follow from the premises.",
+          "finish_reason": "stop",
+          "prompt_tokens": 41,
+          "seconds": 54.36022020899691,
+          "metrics_before": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 252.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 17890200.0,
+            "ax_engine_mtp_draft_tokens_total": 91.0,
+            "ax_engine_mtp_accepted_tokens_total": 69.0,
+            "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+            "ax_engine_mlx_prefix_cache_hits_total": 0.0,
+            "ax_engine_mlx_prefix_cache_reused_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0,
+            "flash_next_mtp_series": {
+              "ax_engine_mtp_draft_tokens_total": 91.0,
+              "ax_engine_mtp_accepted_tokens_total": 69.0,
+              "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+              "ax_engine_mtp_accept_rate_ewma_x1000": 779.0
+            }
+          },
+          "metrics_after": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 550.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 33628500.0,
+            "ax_engine_mtp_draft_tokens_total": 205.0,
+            "ax_engine_mtp_accepted_tokens_total": 166.0,
+            "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+            "ax_engine_mlx_prefix_cache_hits_total": 0.0,
+            "ax_engine_mlx_prefix_cache_reused_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0,
+            "flash_next_mtp_series": {
+              "ax_engine_mtp_draft_tokens_total": 205.0,
+              "ax_engine_mtp_accepted_tokens_total": 166.0,
+              "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+              "ax_engine_mtp_accept_rate_ewma_x1000": 846.0
+            }
+          }
+        },
+        "closed_checker": {
+          "name": "exact_answer",
+          "passed": true,
+          "detail": "found 'no' (mode=token)",
+          "score": 1.0,
+          "hard": true
+        },
+        "report": {
+          "prompt_id": "reasoning_syllogism_roses",
+          "auto_pass": true,
+          "hard_pass": true,
+          "manual_review": false,
+          "summary": "hard 9/9, soft 1/1",
+          "output_preview": "No\n\n**Explanation:**\n\nThis is a classic example of a logical fallacy known as the **fallacy of the undistributed middle**.\n\nHere is the breakdown:\n1.  **Premise 1:** All roses are flowers. (Roses $\\subseteq$ Flowers)\n2.  **Premise 2:** Some flowers fade quickly. (There is an overlap between Flowers and Things That Fade Quickly)\n\nThe fact that *some* flowers fade quickly does not specify *which* flowers. It is possible that the flowers that fade quickly are tulips, daisies, or lilies, while roses",
+          "checks": [
+            {
+              "name": "length",
+              "passed": true,
+              "detail": "844 chars (min 40)",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "repetition",
+              "passed": true,
+              "detail": "max line repeat ratio 0.08 (threshold 0.3)",
+              "score": 0.9166666666666666,
+              "hard": true
+            },
+            {
+              "name": "keywords",
+              "passed": true,
+              "detail": "found 3/3",
+              "score": 1.0,
+              "hard": false
+            },
+            {
+              "name": "regex",
+              "passed": true,
+              "detail": "no patterns required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "coherence",
+              "passed": true,
+              "detail": "alpha=0.74, unique=0.51",
+              "score": 0.6240758293838863,
+              "hard": true
+            },
+            {
+              "name": "unicode_replacement",
+              "passed": true,
+              "detail": "none",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "garbage",
+              "passed": true,
+              "detail": "scripts: Latin",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "pytest_test_count",
+              "passed": true,
+              "detail": "not required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "invoice_total",
+              "passed": true,
+              "detail": "not required",
+              "score": 1.0,
+              "hard": true
+            },
+            {
+              "name": "exact_answer",
+              "passed": true,
+              "detail": "found 'no' (mode=token)",
+              "score": 1.0,
+              "hard": true
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "server_exit_codes": {
+    "disabled": 0,
+    "required": 0
+  },
+  "text_identity": true,
+  "hardware": "Apple M2 Ultra 192 GB",
+  "source_sha256": {
+    "crates/ax-engine-mlx/src/model/qwen4_exp.rs": "73b1948b31bd14364dacfd22e7bf70abd43a95e6c0b9e424f537fe7401ca9f16",
+    "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": "0a8b926228b443c9d9e9f0c0fee184b7a1baf252450bff9ddee857bf64695ae0"
+  },
+  "limitations": [
+    "Two original mismatch prompts only; full 105-item native replay pending.",
+    "No reference or perplexity rerun.",
+    "One process sample overlapped direct decode; durations are diagnostic, not clean performance evidence."
+  ],
+  "original_result_sha256": "133c9167678b15022d15ae336c754538becf3ef73fe57c02468adf7ce1f8cc52"
+}

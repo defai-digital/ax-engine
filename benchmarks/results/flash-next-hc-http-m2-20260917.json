@@ -1,0 +1,1331 @@
+{
+  "qualification": false,
+  "release_ready": false,
+  "completed": true,
+  "binary_sha256": "6120b76f4a2c8e853d7f505bcca535f41f5017e348033eb35880536e77fd49d1",
+  "harness_sha256": "c8800f9769d1cd02a0ac154258324b876578dd8487f09821e82fe3631f9fc4ed",
+  "cells": [
+    {
+      "pack": "4bit",
+      "mode": "disabled",
+      "passed": true,
+      "requests": [
+        {
+          "kind": "completion",
+          "response": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789631817,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": " Paris.\n\nThe",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 5,
+              "completion_tokens": 4,
+              "total_tokens": 9
+            }
+          }
+        },
+        {
+          "kind": "sse",
+          "events": [
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631818,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631818,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": ".",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631819,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "\n\n",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631819,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "The",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631819,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "",
+                  "finish_reason": "length"
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631819,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              }
+            }
+          ],
+          "done": true,
+          "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 4,
+            "total_tokens": 9
+          }
+        }
+      ],
+      "pack_metadata_sha256": {
+        "config.json": "80ca7afe6c96a5e6c214c86113cb07662114a01f01b34c2f2d8fd242cdac97a7",
+        "model-manifest.json": "25c5b6e3882111d6be90b44a17f2f22e822447dd7336f3084c11a09c39a464aa",
+        "axquant_manifest.json": "8d34c5f1b575f2db5f4994ae6040e280947e087c31a706818bbd3439bf800db7",
+        "model.safetensors.index.json": "a1f7e75ababc4413eb9cc8d6bef017960db785628596012d4dfcfb7ef8826f4d"
+      },
+      "family_optin": null,
+      "two_bit_optin": null,
+      "selected_experts": true,
+      "selected_prefill": true,
+      "health": {
+        "model_id": "flash-next-candidate",
+        "models": [
+          "flash-next-candidate"
+        ],
+        "runtime": {
+          "capabilities": {
+            "benchmark_metrics": "preview",
+            "delegated_readiness": "unsupported",
+            "deterministic_mode": true,
+            "image_input": "preview",
+            "long_context_validation": "preview",
+            "prefix_reuse": true,
+            "provider_extensions": "unsupported",
+            "text_generation": true,
+            "token_streaming": true
+          },
+          "host": {
+            "arch": "aarch64",
+            "detected_soc": "Apple M2 Ultra",
+            "os": "macos",
+            "supported_mlx_runtime": true,
+            "unsupported_host_override_active": false
+          },
+          "metal_toolchain": {
+            "fully_available": true,
+            "metal": {
+              "available": true,
+              "version": "Apple metal version 32023.921 (metalfe-32023.921.6)\nTarget: air64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.1.266.1.WQgh0u/Metal.xctoolchain/usr/metal/current/bin"
+            },
+            "metal_ar": {
+              "available": true,
+              "version": "Apple LLVM version 32023.921.6\n  Optimized build.\n  Default target: x86_64-apple-darwin27.0.0\n  Host CPU: apple-m1"
+            },
+            "metallib": {
+              "available": true,
+              "version": "AIR-LLD 32023.921 (metalfe-32023.921.6) (compatible with legacy metallib linker)"
+            }
+          },
+          "mlx_model": {
+            "artifacts_source": "explicit_config",
+            "bindings_prepared": true,
+            "buffer_bytes": 121832349688,
+            "buffer_count": 1730,
+            "buffers_bound": true,
+            "hybrid_full_attention_interval": 4,
+            "is_hybrid_attention": true,
+            "is_moe": true,
+            "layer_count": 48,
+            "model_family": "qwen4_exp",
+            "moe_active_experts": 10,
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            },
+            "source_q4_k_binding_count": 0,
+            "source_q5_k_binding_count": 0,
+            "source_q6_k_binding_count": 0,
+            "source_q8_0_binding_count": 0,
+            "source_quantized_binding_count": 756,
+            "tensor_count": 1730,
+            "tensor_format": "safetensors",
+            "tie_word_embeddings": false
+          },
+          "resolution_policy": "mlx_only",
+          "selected_backend": "mlx",
+          "support_tier": "mlx_preview"
+        },
+        "service": "ax-engine-server",
+        "status": "ok"
+      },
+      "load_seconds": 51.52650691699819,
+      "repeat_identity": true,
+      "direct_identity": true,
+      "metrics": {
+        "ax_engine_mtp_draft_tokens_total": 0.0,
+        "ax_engine_mtp_accepted_tokens_total": 0.0,
+        "ax_engine_mlx_mtp_certified_default_on": 0.0,
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0
+      },
+      "exit_code": 0,
+      "pack_metadata_unchanged": true,
+      "elapsed_seconds": 64.15990124999371,
+      "log_sha256": "8343d1bac0fa5606061a781d06a50852409cd7717e1d0940dca6a7ea17f55014"
+    },
+    {
+      "pack": "4bit",
+      "mode": "required",
+      "passed": true,
+      "requests": [
+        {
+          "kind": "completion",
+          "response": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789631864,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": " Paris.\n\nThe",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 5,
+              "completion_tokens": 4,
+              "total_tokens": 9
+            }
+          }
+        },
+        {
+          "kind": "sse",
+          "events": [
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631865,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631865,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": ".\n\n",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631866,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "The",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631866,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "",
+                  "finish_reason": "length"
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631866,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              }
+            }
+          ],
+          "done": true,
+          "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 4,
+            "total_tokens": 9
+          }
+        }
+      ],
+      "pack_metadata_sha256": {
+        "config.json": "80ca7afe6c96a5e6c214c86113cb07662114a01f01b34c2f2d8fd242cdac97a7",
+        "model-manifest.json": "25c5b6e3882111d6be90b44a17f2f22e822447dd7336f3084c11a09c39a464aa",
+        "axquant_manifest.json": "8d34c5f1b575f2db5f4994ae6040e280947e087c31a706818bbd3439bf800db7",
+        "model.safetensors.index.json": "a1f7e75ababc4413eb9cc8d6bef017960db785628596012d4dfcfb7ef8826f4d"
+      },
+      "family_optin": null,
+      "two_bit_optin": null,
+      "selected_experts": true,
+      "selected_prefill": true,
+      "health": {
+        "model_id": "flash-next-candidate",
+        "models": [
+          "flash-next-candidate"
+        ],
+        "runtime": {
+          "capabilities": {
+            "benchmark_metrics": "preview",
+            "delegated_readiness": "unsupported",
+            "deterministic_mode": true,
+            "image_input": "preview",
+            "long_context_validation": "preview",
+            "prefix_reuse": true,
+            "provider_extensions": "unsupported",
+            "text_generation": true,
+            "token_streaming": true
+          },
+          "host": {
+            "arch": "aarch64",
+            "detected_soc": "Apple M2 Ultra",
+            "os": "macos",
+            "supported_mlx_runtime": true,
+            "unsupported_host_override_active": false
+          },
+          "metal_toolchain": {
+            "fully_available": true,
+            "metal": {
+              "available": true,
+              "version": "Apple metal version 32023.921 (metalfe-32023.921.6)\nTarget: air64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.1.266.1.WQgh0u/Metal.xctoolchain/usr/metal/current/bin"
+            },
+            "metal_ar": {
+              "available": true,
+              "version": "Apple LLVM version 32023.921.6\n  Optimized build.\n  Default target: x86_64-apple-darwin27.0.0\n  Host CPU: apple-m1"
+            },
+            "metallib": {
+              "available": true,
+              "version": "AIR-LLD 32023.921 (metalfe-32023.921.6) (compatible with legacy metallib linker)"
+            }
+          },
+          "mlx_model": {
+            "artifacts_source": "explicit_config",
+            "bindings_prepared": true,
+            "buffer_bytes": 121832349688,
+            "buffer_count": 1730,
+            "buffers_bound": true,
+            "hybrid_full_attention_interval": 4,
+            "is_hybrid_attention": true,
+            "is_moe": true,
+            "layer_count": 48,
+            "model_family": "qwen4_exp",
+            "moe_active_experts": 10,
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            },
+            "source_q4_k_binding_count": 0,
+            "source_q5_k_binding_count": 0,
+            "source_q6_k_binding_count": 0,
+            "source_q8_0_binding_count": 0,
+            "source_quantized_binding_count": 756,
+            "tensor_count": 1730,
+            "tensor_format": "safetensors",
+            "tie_word_embeddings": false
+          },
+          "resolution_policy": "mlx_only",
+          "selected_backend": "mlx",
+          "support_tier": "mlx_preview"
+        },
+        "service": "ax-engine-server",
+        "status": "ok"
+      },
+      "load_seconds": 35.33216908300528,
+      "repeat_identity": true,
+      "direct_identity": true,
+      "metrics": {
+        "ax_engine_mtp_draft_tokens_total": 2.0,
+        "ax_engine_mtp_accepted_tokens_total": 2.0,
+        "ax_engine_mlx_mtp_certified_default_on": 0.0,
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0
+      },
+      "exit_code": 0,
+      "pack_metadata_unchanged": true,
+      "elapsed_seconds": 47.09659466599987,
+      "log_sha256": "63c8c4c6e6597bbe7774291c0bbc16695250f94df38e067f9186edc5ae521ec5"
+    },
+    {
+      "pack": "6bit",
+      "mode": "disabled",
+      "passed": true,
+      "requests": [
+        {
+          "kind": "completion",
+          "response": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789631963,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": " Paris. Paris is",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 5,
+              "completion_tokens": 4,
+              "total_tokens": 9
+            }
+          }
+        },
+        {
+          "kind": "sse",
+          "events": [
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631964,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631964,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": ".",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631965,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631965,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " is",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631965,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "",
+                  "finish_reason": "length"
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789631965,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              }
+            }
+          ],
+          "done": true,
+          "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 4,
+            "total_tokens": 9
+          }
+        }
+      ],
+      "pack_metadata_sha256": {
+        "config.json": "19231536f0f8ce129eb8cab985a68c0ddced2af90e12f5c65f01a35a686efe02",
+        "model-manifest.json": "9749c40ab16554026320e5283b90825ee06f2cda4f3cf74302437fd8068967ad",
+        "axquant_manifest.json": "95491b234a09ef0de50e0d10dbc1729cec48f5906ad33c7184a0855afe76b1c7",
+        "model.safetensors.index.json": "ab0e442ef09c9198718f10dba967ff90e0cf1c0a9005c928bb8b72c3d76bf5a2"
+      },
+      "family_optin": null,
+      "two_bit_optin": null,
+      "selected_experts": true,
+      "selected_prefill": true,
+      "health": {
+        "model_id": "flash-next-candidate",
+        "models": [
+          "flash-next-candidate"
+        ],
+        "runtime": {
+          "capabilities": {
+            "benchmark_metrics": "preview",
+            "delegated_readiness": "unsupported",
+            "deterministic_mode": true,
+            "image_input": "preview",
+            "long_context_validation": "preview",
+            "prefix_reuse": true,
+            "provider_extensions": "unsupported",
+            "text_generation": true,
+            "token_streaming": true
+          },
+          "host": {
+            "arch": "aarch64",
+            "detected_soc": "Apple M2 Ultra",
+            "os": "macos",
+            "supported_mlx_runtime": true,
+            "unsupported_host_override_active": false
+          },
+          "metal_toolchain": {
+            "fully_available": true,
+            "metal": {
+              "available": true,
+              "version": "Apple metal version 32023.921 (metalfe-32023.921.6)\nTarget: air64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.1.266.1.WQgh0u/Metal.xctoolchain/usr/metal/current/bin"
+            },
+            "metal_ar": {
+              "available": true,
+              "version": "Apple LLVM version 32023.921.6\n  Optimized build.\n  Default target: x86_64-apple-darwin27.0.0\n  Host CPU: apple-m1"
+            },
+            "metallib": {
+              "available": true,
+              "version": "AIR-LLD 32023.921 (metalfe-32023.921.6) (compatible with legacy metallib linker)"
+            }
+          },
+          "mlx_model": {
+            "artifacts_source": "explicit_config",
+            "bindings_prepared": true,
+            "buffer_bytes": 152765915128,
+            "buffer_count": 1730,
+            "buffers_bound": true,
+            "hybrid_full_attention_interval": 4,
+            "is_hybrid_attention": true,
+            "is_moe": true,
+            "layer_count": 48,
+            "model_family": "qwen4_exp",
+            "moe_active_experts": 10,
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            },
+            "source_q4_k_binding_count": 0,
+            "source_q5_k_binding_count": 0,
+            "source_q6_k_binding_count": 0,
+            "source_q8_0_binding_count": 0,
+            "source_quantized_binding_count": 756,
+            "tensor_count": 1730,
+            "tensor_format": "safetensors",
+            "tie_word_embeddings": false
+          },
+          "resolution_policy": "mlx_only",
+          "selected_backend": "mlx",
+          "support_tier": "mlx_preview"
+        },
+        "service": "ax-engine-server",
+        "status": "ok"
+      },
+      "load_seconds": 85.8215667080076,
+      "repeat_identity": true,
+      "direct_identity": true,
+      "metrics": {
+        "ax_engine_mtp_draft_tokens_total": 0.0,
+        "ax_engine_mtp_accepted_tokens_total": 0.0,
+        "ax_engine_mlx_mtp_certified_default_on": 0.0,
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0
+      },
+      "exit_code": 0,
+      "pack_metadata_unchanged": true,
+      "elapsed_seconds": 99.06650929100579,
+      "log_sha256": "a072fc98a0833e0e72b6d7cdd2afbb117b21aeb6d8f6944fd4007b1c79856816"
+    },
+    {
+      "pack": "6bit",
+      "mode": "required",
+      "passed": true,
+      "requests": [
+        {
+          "kind": "completion",
+          "response": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789632009,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": " Paris. Paris is",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 5,
+              "completion_tokens": 4,
+              "total_tokens": 9
+            }
+          }
+        },
+        {
+          "kind": "sse",
+          "events": [
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632011,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632011,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": ". Paris",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632012,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " is",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632012,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "",
+                  "finish_reason": "length"
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632012,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              }
+            }
+          ],
+          "done": true,
+          "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 4,
+            "total_tokens": 9
+          }
+        }
+      ],
+      "pack_metadata_sha256": {
+        "config.json": "19231536f0f8ce129eb8cab985a68c0ddced2af90e12f5c65f01a35a686efe02",
+        "model-manifest.json": "9749c40ab16554026320e5283b90825ee06f2cda4f3cf74302437fd8068967ad",
+        "axquant_manifest.json": "95491b234a09ef0de50e0d10dbc1729cec48f5906ad33c7184a0855afe76b1c7",
+        "model.safetensors.index.json": "ab0e442ef09c9198718f10dba967ff90e0cf1c0a9005c928bb8b72c3d76bf5a2"
+      },
+      "family_optin": null,
+      "two_bit_optin": null,
+      "selected_experts": true,
+      "selected_prefill": true,
+      "health": {
+        "model_id": "flash-next-candidate",
+        "models": [
+          "flash-next-candidate"
+        ],
+        "runtime": {
+          "capabilities": {
+            "benchmark_metrics": "preview",
+            "delegated_readiness": "unsupported",
+            "deterministic_mode": true,
+            "image_input": "preview",
+            "long_context_validation": "preview",
+            "prefix_reuse": true,
+            "provider_extensions": "unsupported",
+            "text_generation": true,
+            "token_streaming": true
+          },
+          "host": {
+            "arch": "aarch64",
+            "detected_soc": "Apple M2 Ultra",
+            "os": "macos",
+            "supported_mlx_runtime": true,
+            "unsupported_host_override_active": false
+          },
+          "metal_toolchain": {
+            "fully_available": true,
+            "metal": {
+              "available": true,
+              "version": "Apple metal version 32023.921 (metalfe-32023.921.6)\nTarget: air64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.1.266.1.WQgh0u/Metal.xctoolchain/usr/metal/current/bin"
+            },
+            "metal_ar": {
+              "available": true,
+              "version": "Apple LLVM version 32023.921.6\n  Optimized build.\n  Default target: x86_64-apple-darwin27.0.0\n  Host CPU: apple-m1"
+            },
+            "metallib": {
+              "available": true,
+              "version": "AIR-LLD 32023.921 (metalfe-32023.921.6) (compatible with legacy metallib linker)"
+            }
+          },
+          "mlx_model": {
+            "artifacts_source": "explicit_config",
+            "bindings_prepared": true,
+            "buffer_bytes": 152765915128,
+            "buffer_count": 1730,
+            "buffers_bound": true,
+            "hybrid_full_attention_interval": 4,
+            "is_hybrid_attention": true,
+            "is_moe": true,
+            "layer_count": 48,
+            "model_family": "qwen4_exp",
+            "moe_active_experts": 10,
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            },
+            "source_q4_k_binding_count": 0,
+            "source_q5_k_binding_count": 0,
+            "source_q6_k_binding_count": 0,
+            "source_q8_0_binding_count": 0,
+            "source_quantized_binding_count": 756,
+            "tensor_count": 1730,
+            "tensor_format": "safetensors",
+            "tie_word_embeddings": false
+          },
+          "resolution_policy": "mlx_only",
+          "selected_backend": "mlx",
+          "support_tier": "mlx_preview"
+        },
+        "service": "ax-engine-server",
+        "status": "ok"
+      },
+      "load_seconds": 42.40114195800561,
+      "repeat_identity": true,
+      "direct_identity": true,
+      "metrics": {
+        "ax_engine_mtp_draft_tokens_total": 2.0,
+        "ax_engine_mtp_accepted_tokens_total": 2.0,
+        "ax_engine_mlx_mtp_certified_default_on": 0.0,
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0
+      },
+      "exit_code": 0,
+      "pack_metadata_unchanged": true,
+      "elapsed_seconds": 46.85339775000466,
+      "log_sha256": "1ddd2185db3561924ff7f2bfe3c9af4125b9baea43f73f3e60a4298b7574b082"
+    },
+    {
+      "pack": "2bit",
+      "mode": "disabled",
+      "passed": true,
+      "requests": [
+        {
+          "kind": "completion",
+          "response": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789632061,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": " Paris.\n\n#",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 5,
+              "completion_tokens": 4,
+              "total_tokens": 9
+            }
+          }
+        },
+        {
+          "kind": "sse",
+          "events": [
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632062,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632062,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": ".",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632062,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "\n\n",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632062,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "#",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632062,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "",
+                  "finish_reason": "length"
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632062,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              }
+            }
+          ],
+          "done": true,
+          "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 4,
+            "total_tokens": 9
+          }
+        }
+      ],
+      "pack_metadata_sha256": {
+        "config.json": "8ba71c4d6da5c78ffd1cc99a116f308c1e0a552f5e493f19e8ec0303fcb51133",
+        "model-manifest.json": "77c52b2f6d53ca9f67f4ac00a7020ed9a55f5cf43bb07968a1b8d70a0e0241c1",
+        "axquant_manifest.json": "712f43dfd8bb2b80b414b35bfa9d90580c08c2b6a5bec9a73cce5382d63bb1f2",
+        "model.safetensors.index.json": "c7d915fd033cdcb5d6b77be2b0ad7fdf1372b1aa9a61890f5ed9b04ae22a4585"
+      },
+      "family_optin": "1",
+      "two_bit_optin": "1",
+      "selected_experts": true,
+      "selected_prefill": true,
+      "health": {
+        "model_id": "flash-next-candidate",
+        "models": [
+          "flash-next-candidate"
+        ],
+        "runtime": {
+          "capabilities": {
+            "benchmark_metrics": "preview",
+            "delegated_readiness": "unsupported",
+            "deterministic_mode": true,
+            "image_input": "preview",
+            "long_context_validation": "preview",
+            "prefix_reuse": true,
+            "provider_extensions": "unsupported",
+            "text_generation": true,
+            "token_streaming": true
+          },
+          "host": {
+            "arch": "aarch64",
+            "detected_soc": "Apple M2 Ultra",
+            "os": "macos",
+            "supported_mlx_runtime": true,
+            "unsupported_host_override_active": false
+          },
+          "metal_toolchain": {
+            "fully_available": true,
+            "metal": {
+              "available": true,
+              "version": "Apple metal version 32023.921 (metalfe-32023.921.6)\nTarget: air64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.1.266.1.WQgh0u/Metal.xctoolchain/usr/metal/current/bin"
+            },
+            "metal_ar": {
+              "available": true,
+              "version": "Apple LLVM version 32023.921.6\n  Optimized build.\n  Default target: x86_64-apple-darwin27.0.0\n  Host CPU: apple-m1"
+            },
+            "metallib": {
+              "available": true,
+              "version": "AIR-LLD 32023.921 (metalfe-32023.921.6) (compatible with legacy metallib linker)"
+            }
+          },
+          "mlx_model": {
+            "artifacts_source": "explicit_config",
+            "bindings_prepared": true,
+            "buffer_bytes": 91575607288,
+            "buffer_count": 1730,
+            "buffers_bound": true,
+            "hybrid_full_attention_interval": 4,
+            "is_hybrid_attention": true,
+            "is_moe": true,
+            "layer_count": 48,
+            "model_family": "qwen4_exp",
+            "moe_active_experts": 10,
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            },
+            "source_q4_k_binding_count": 0,
+            "source_q5_k_binding_count": 0,
+            "source_q6_k_binding_count": 0,
+            "source_q8_0_binding_count": 0,
+            "source_quantized_binding_count": 756,
+            "tensor_count": 1730,
+            "tensor_format": "safetensors",
+            "tie_word_embeddings": false
+          },
+          "resolution_policy": "mlx_only",
+          "selected_backend": "mlx",
+          "support_tier": "mlx_preview"
+        },
+        "service": "ax-engine-server",
+        "status": "ok"
+      },
+      "load_seconds": 38.38186366700393,
+      "repeat_identity": true,
+      "direct_identity": true,
+      "metrics": {
+        "ax_engine_mtp_draft_tokens_total": 0.0,
+        "ax_engine_mtp_accepted_tokens_total": 0.0,
+        "ax_engine_mlx_mtp_certified_default_on": 0.0,
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0
+      },
+      "exit_code": 0,
+      "pack_metadata_unchanged": true,
+      "elapsed_seconds": 50.653774334001355,
+      "log_sha256": "1549c731cabad1ea033ed32381d0c90953e440c26b6042c2d3d298cf6b8ab3a2"
+    },
+    {
+      "pack": "2bit",
+      "mode": "required",
+      "passed": true,
+      "requests": [
+        {
+          "kind": "completion",
+          "response": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789632068,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": " Paris.\n\n#",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 5,
+              "completion_tokens": 4,
+              "total_tokens": 9
+            }
+          }
+        },
+        {
+          "kind": "sse",
+          "events": [
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632069,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632069,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": ".",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632069,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "\n\n#",
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632069,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": "",
+                  "finish_reason": "length"
+                }
+              ]
+            },
+            {
+              "id": "cmpl-2",
+              "object": "text_completion.chunk",
+              "created": 1789632069,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              }
+            }
+          ],
+          "done": true,
+          "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 4,
+            "total_tokens": 9
+          }
+        }
+      ],
+      "pack_metadata_sha256": {
+        "config.json": "8ba71c4d6da5c78ffd1cc99a116f308c1e0a552f5e493f19e8ec0303fcb51133",
+        "model-manifest.json": "77c52b2f6d53ca9f67f4ac00a7020ed9a55f5cf43bb07968a1b8d70a0e0241c1",
+        "axquant_manifest.json": "712f43dfd8bb2b80b414b35bfa9d90580c08c2b6a5bec9a73cce5382d63bb1f2",
+        "model.safetensors.index.json": "c7d915fd033cdcb5d6b77be2b0ad7fdf1372b1aa9a61890f5ed9b04ae22a4585"
+      },
+      "family_optin": "1",
+      "two_bit_optin": "1",
+      "selected_experts": true,
+      "selected_prefill": true,
+      "health": {
+        "model_id": "flash-next-candidate",
+        "models": [
+          "flash-next-candidate"
+        ],
+        "runtime": {
+          "capabilities": {
+            "benchmark_metrics": "preview",
+            "delegated_readiness": "unsupported",
+            "deterministic_mode": true,
+            "image_input": "preview",
+            "long_context_validation": "preview",
+            "prefix_reuse": true,
+            "provider_extensions": "unsupported",
+            "text_generation": true,
+            "token_streaming": true
+          },
+          "host": {
+            "arch": "aarch64",
+            "detected_soc": "Apple M2 Ultra",
+            "os": "macos",
+            "supported_mlx_runtime": true,
+            "unsupported_host_override_active": false
+          },
+          "metal_toolchain": {
+            "fully_available": true,
+            "metal": {
+              "available": true,
+              "version": "Apple metal version 32023.921 (metalfe-32023.921.6)\nTarget: air64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.1.266.1.WQgh0u/Metal.xctoolchain/usr/metal/current/bin"
+            },
+            "metal_ar": {
+              "available": true,
+              "version": "Apple LLVM version 32023.921.6\n  Optimized build.\n  Default target: x86_64-apple-darwin27.0.0\n  Host CPU: apple-m1"
+            },
+            "metallib": {
+              "available": true,
+              "version": "AIR-LLD 32023.921 (metalfe-32023.921.6) (compatible with legacy metallib linker)"
+            }
+          },
+          "mlx_model": {
+            "artifacts_source": "explicit_config",
+            "bindings_prepared": true,
+            "buffer_bytes": 91575607288,
+            "buffer_count": 1730,
+            "buffers_bound": true,
+            "hybrid_full_attention_interval": 4,
+            "is_hybrid_attention": true,
+            "is_moe": true,
+            "layer_count": 48,
+            "model_family": "qwen4_exp",
+            "moe_active_experts": 10,
+            "runtime_status": {
+              "blockers": [
+                "qwen4_exp_native_trunk_not_implemented"
+              ],
+              "notes": [
+                "n-gram embedding table must not be eval'd at load_weights",
+                "best-experience SKU: Mac Studio M5 Ultra 256 GB",
+                "ngram_size=3",
+                "AX interpreted axquant_manifest.json as the audited AXQuant 1.9.0 legacy export from mlx-vlm (source Qwen/Qwen3.8-Flash-Next@de4b8e4d43b917e7706784d8bb445c9af86a3540): weights are raw norm deltas (weight_sanitize=hf_norm_only) with conv1d already in MLX axis order. This is a legacy interpretation exception for one audited exporter, not proof the layout is correct, and does not mark this manifest ready.",
+                "auto-generated by ax-engine from config.json + safetensors headers (no tensor data converted)"
+              ],
+              "ready": false
+            },
+            "source_q4_k_binding_count": 0,
+            "source_q5_k_binding_count": 0,
+            "source_q6_k_binding_count": 0,
+            "source_q8_0_binding_count": 0,
+            "source_quantized_binding_count": 756,
+            "tensor_count": 1730,
+            "tensor_format": "safetensors",
+            "tie_word_embeddings": false
+          },
+          "resolution_policy": "mlx_only",
+          "selected_backend": "mlx",
+          "support_tier": "mlx_preview"
+        },
+        "service": "ax-engine-server",
+        "status": "ok"
+      },
+      "load_seconds": 3.037834666989511,
+      "repeat_identity": true,
+      "direct_identity": true,
+      "metrics": {
+        "ax_engine_mtp_draft_tokens_total": 4.0,
+        "ax_engine_mtp_accepted_tokens_total": 2.0,
+        "ax_engine_mlx_mtp_certified_default_on": 0.0,
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 480.0
+      },
+      "exit_code": 0,
+      "pack_metadata_unchanged": true,
+      "elapsed_seconds": 7.019796041990048,
+      "log_sha256": "6f0fdcf411c068da0b2328ab79ce4c4e04ac84c3836c3a693e66c95b332c9a3f"
+    }
+  ],
+  "hardware": "Apple M2 Ultra 192 GB",
+  "base_commit": "2cbdb41f117dc297ad1d4b49bdbf7bd68ad31326",
+  "source_clean": false,
+  "source_sha256": {
+    "crates/ax-engine-mlx/src/model/qwen4_exp.rs": "73b1948b31bd14364dacfd22e7bf70abd43a95e6c0b9e424f537fe7401ca9f16",
+    "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": "0a8b926228b443c9d9e9f0c0fee184b7a1baf252450bff9ddee857bf64695ae0"
+  },
+  "passed": true
+}

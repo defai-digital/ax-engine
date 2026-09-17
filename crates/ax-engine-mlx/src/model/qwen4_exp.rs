@@ -631,6 +631,19 @@ pub(crate) fn forward(
     owner: u64,
     policy: ProjectionBatchPolicy,
 ) -> Result<Qwen4ExpOutput, String> {
+    forward_with_hc_policy(weights, tokens, state, owner, policy, policy)
+}
+
+/// Keep verifier HC reductions aligned with singleton decode independently of
+/// the shared projection and selected-expert paging policy.
+pub(crate) fn forward_with_hc_policy(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
+    state: &Qwen4ExpState,
+    owner: u64,
+    policy: ProjectionBatchPolicy,
+    hc_policy: ProjectionBatchPolicy,
+) -> Result<Qwen4ExpOutput, String> {
     if state.owner != owner || state.layers.len() != weights.layers.len() {
         return Err("qwen4_exp request state belongs to a different model".into());
     }
@@ -652,7 +665,7 @@ pub(crate) fn forward(
         .layout
         .expand(&embedded)
         .map_err(|e| e.to_string())?;
-    forward_prepared(weights, tokens, hidden, state, owner, policy)
+    forward_prepared_with_hc_policy(weights, tokens, hidden, state, owner, policy, hc_policy)
 }
 
 fn validate_prepared_input(
@@ -729,10 +742,22 @@ pub(crate) fn advance_prepared_qsa_cache(
 pub(crate) fn forward_prepared(
     weights: &Qwen4ExpWeights,
     tokens: &[u32],
+    hidden: MlxArray,
+    state: &Qwen4ExpState,
+    owner: u64,
+    policy: ProjectionBatchPolicy,
+) -> Result<Qwen4ExpOutput, String> {
+    forward_prepared_with_hc_policy(weights, tokens, hidden, state, owner, policy, policy)
+}
+
+fn forward_prepared_with_hc_policy(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
     mut hidden: MlxArray,
     state: &Qwen4ExpState,
     owner: u64,
     policy: ProjectionBatchPolicy,
+    hc_policy: ProjectionBatchPolicy,
 ) -> Result<Qwen4ExpOutput, String> {
     let (end, vocabulary) = validate_prepared_input(weights, tokens, &hidden, state, owner)?;
     #[cfg(test)]
@@ -775,7 +800,7 @@ pub(crate) fn forward_prepared(
         }
         let read = layer
             .attention_hc
-            .read(&hidden, policy)
+            .read(&hidden, hc_policy)
             .map_err(|e| e.to_string())?;
         #[cfg(test)]
         profiling::mark("attention_hc_read", &[read.branch_input()]);
@@ -811,7 +836,7 @@ pub(crate) fn forward_prepared(
         profiling::mark("attention_hc_write", &[&hidden]);
         let read = layer
             .mlp_hc
-            .read(&hidden, policy)
+            .read(&hidden, hc_policy)
             .map_err(|e| e.to_string())?;
         #[cfg(test)]
         profiling::mark("mlp_hc_read", &[read.branch_input()]);
@@ -822,7 +847,7 @@ pub(crate) fn forward_prepared(
     }
     let mixed = weights
         .mixer
-        .collapse(&hidden, policy)
+        .collapse(&hidden, hc_policy)
         .map_err(|e| e.to_string())?;
     #[cfg(test)]
     profiling::mark("final_mixer", &[&mixed]);
