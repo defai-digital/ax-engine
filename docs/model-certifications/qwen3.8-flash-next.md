@@ -94,6 +94,7 @@ A mismatching or unavailable harness is an open reproducibility gate.
 - [Pre-merge native HTTP / SSE matrix](../../benchmarks/results/flash-next-http-m2-20260916.json)
 - [Batched MTP matrix](../../benchmarks/results/flash-next-mtp-batched-verify-m2-20260916.json)
 - [Observed six-bit Auto paging](../../benchmarks/results/flash-next-sixbit-paging-m2-20260917.json)
+- [Throughput audit with explicit failure and missing counts](../../benchmarks/results/flash-next-throughput-audit-m2-20260917.json)
 - [Throughput matrix, including incomplete cells](../../benchmarks/results/flash-next-throughput-ab-m2-20260916.json)
 - [Earlier affine 2/4/6-bit execution controls](../../benchmarks/results/flash-next-affine-formats-m2-20260915.json)
 - [Earlier native selected-prefill controls](../../benchmarks/results/flash-next-selected-prefill-m2-20260915.json)
@@ -167,3 +168,19 @@ measurements. The 6-bit direct / 8,192-token server was deliberately terminated
 by the 900-second progress supervisor; the reference / 512-token Metal GPU
 timeout was a separate recorded failure. See the
 [supervisor record](../../benchmarks/results/flash-next-throughput-budget-m2-20260917.json).
+
+## Verifier diagnostic controls
+
+Test binaries support `AX_FLASH_NEXT_VERIFY_DIAGNOSTICS=1`. Each verify call
+reports `batched_row0` separately from a `singleton` decision whose source is
+`rejection_replay` or `one_slot_budget`. The existing correction margin retains
+its meaning. Missing comparisons are null; an accepted window does not trigger
+an extra singleton forward for diagnostics. These synchronized records cannot
+be used for throughput claims and are absent from production builds.
+
+The [tiny-model control](../../benchmarks/results/flash-next-verify-diagnostics-m3-20260917.json)
+checks accepted, rejected, terminal and one-slot cases on M3 Max. Enabling the
+diagnostic preserves committed tokens and state hashes. It does not resolve the
+real-pack numerical failures above. The newer throughput audit re-curates the
+same immutable M2 input: 11 complete, two failed, five missing; it is not a new
+hardware run.

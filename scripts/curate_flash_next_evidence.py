@@ -91,6 +91,20 @@ def summarize(kind: str, raw: dict) -> dict:
                 "passed": passed and raw.get("completed") is True}
     if kind == "throughput":
         cfg = raw["config"]
+        for axis in ("packs", "prompt_tokens", "routes"):
+            values = cfg.get(axis)
+            require(isinstance(values, list) and bool(values), f"empty or invalid {axis}")
+            if axis == "prompt_tokens":
+                require(all(type(v) is int and v > 0 for v in values),
+                        "invalid prompt_tokens")
+            else:
+                require(all(isinstance(v, str) and v.strip() and "/" not in v
+                            for v in values), f"invalid {axis}")
+            require(len(set(values)) == len(values), f"duplicate {axis}")
+        for name, minimum in (("measurement_repetitions", 1), ("generation_tokens", 1),
+                              ("warmup_repetitions", 0)):
+            value = cfg.get(name, 0) if name == "warmup_repetitions" else cfg.get(name)
+            require(type(value) is int and value >= minimum, f"invalid {name}")
         expected = {f"{p}/{n}/{r}" for p in cfg["packs"]
                     for n in cfg["prompt_tokens"] for r in cfg["routes"]}
         cells = {c["cell_id"]: c for c in raw["cells"]}
@@ -99,20 +113,52 @@ def summarize(kind: str, raw: dict) -> dict:
         matrix = []
         for name in sorted(expected):
             cell = cells.get(name)
-            samples = [] if cell is None else [s for s in cell.get("samples", [])
+            pack, prompt, route = name.split("/")
+            if cell is not None:
+                for key, expected_value in (("route", route), ("pack", pack),
+                                             ("prompt_tokens", int(prompt))):
+                    require(key not in cell or (type(cell[key]) is type(expected_value)
+                                                and cell[key] == expected_value),
+                            f"throughput {key} does not match cell_id: {name}")
+            all_samples = [] if cell is None else cell.get("samples", [])
+            require(isinstance(all_samples, list) and
+                    all(isinstance(s, dict) for s in all_samples), "invalid samples")
+            labeled = all(type(s.get("warmup")) is bool for s in all_samples)
+            samples = [s for s in all_samples
                                               if s.get("warmup") is False]
-            warmups = [] if cell is None else [s for s in cell.get("samples", [])
+            warmups = [s for s in all_samples
                                               if s.get("warmup") is True]
-            complete = bool(cell and not cell.get("failed") and not cell.get("skipped")) and (
+            complete = bool(cell and not cell.get("failed") and not cell.get("skipped")) and labeled and (
                 len(warmups) == cfg.get("warmup_repetitions", 0)
                 and len(samples) == cfg["measurement_repetitions"]
             ) and all(
-                (s.get("done") is True or (cell["route"] == "reference" and "done" not in s))
-                and s.get("generated_tokens") == cfg["generation_tokens"]
+                (s.get("done") is True or (route == "reference" and "done" not in s))
+                and type(s.get("generated_tokens")) is int
+                and s["generated_tokens"] == cfg["generation_tokens"]
                 for s in samples
             )
-            matrix.append({"cell_id": name, "status": "complete" if complete else
-                           "missing" if cell is None else "incomplete_output_or_samples",
+            status = ("missing" if cell is None else "failed" if cell.get("failed") else
+                      "skipped" if cell.get("skipped") else "complete" if complete else
+                      "incomplete_output_or_samples")
+            reasons = ["no_recorded_cell"] if cell is None else []
+            if cell is not None:
+                if cell.get("failed"):
+                    reasons.append("recorded_failure")
+                if cell.get("skipped"):
+                    reasons.append("recorded_skip")
+                if not labeled:
+                    reasons.append("unlabeled_sample")
+                if len(warmups) != cfg.get("warmup_repetitions", 0) or len(samples) != cfg["measurement_repetitions"]:
+                    reasons.append("sample_count_mismatch")
+                if status == "incomplete_output_or_samples" and not reasons:
+                    reasons.append("output_count_or_completion_mismatch")
+            matrix.append({"cell_id": name, "status": status,
+                           "reasons": reasons,
+                           "recorded_error": (cell or {}).get("error"),
+                           "recorded_skip_reason": (cell or {}).get("skip_reason"),
+                           "total_samples": len(all_samples),
+                           "unlabeled_samples": sum(type(s.get("warmup")) is not bool
+                                                    for s in all_samples),
                            "warmup_samples": len(warmups),
                            "measured_samples": len(samples),
                            "generated_tokens": [s.get("generated_tokens") for s in samples]})
@@ -121,6 +167,9 @@ def summarize(kind: str, raw: dict) -> dict:
                 "coverage_complete": raw.get("completed") is True and set(cells) == expected,
                 "attempted_cells": len(cells), "expected_cells": len(expected),
                 "complete_cells": sum(c["status"] == "complete" for c in matrix),
+                "status_counts": {status: sum(c["status"] == status for c in matrix)
+                                  for status in ("complete", "failed", "skipped",
+                                                 "incomplete_output_or_samples", "missing")},
                 "matrix": matrix, "passed": complete and raw.get("completed") is True,
                 "note": "Early EOS and skipped cells are not fixed-decode throughput samples.",
                 "memory_boundaries": (
@@ -188,6 +237,7 @@ def curate(kind: str, path: Path, harness: Path | None = None) -> dict:
         "performance_claim": False,
         "hardware_scope": "Apple M2 Ultra 192 GB development evidence; not M5 Ultra qualification",
         "raw_sha256": digest(path),
+        "curator_sha256": digest(Path(__file__)),
         "binary_sha256": raw["binary_sha256"],
         "binary_identity_scope": (
             "recorded aggregate identity; resumed cells are not independently bound to this binary"

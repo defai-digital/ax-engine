@@ -254,7 +254,8 @@ pub(crate) struct VerifiedStep {
     pub correction_wall_us: u32,
     pub bonus_wall_us: u32,
     pub rejection_wall_us: u32,
-    /// Top-two margin of the correction logits row (row 0).
+    /// Top-two margin of verifier row 0, including on rejection. The one-slot
+    /// budget path has no verifier and uses its singleton logits instead.
     pub correction_margin: f32,
     /// Top-two margin of the bonus logits row on acceptance; 0 otherwise.
     pub bonus_margin: f32,
@@ -268,6 +269,63 @@ impl VerifiedStep {
             self.rejection_wall_us,
         )
     }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct VerifyDiagnosticInput {
+    position: usize,
+    primary: u32,
+    draft: u32,
+    remaining: usize,
+}
+
+#[cfg(test)]
+fn verify_diagnostic(
+    input: VerifyDiagnosticInput,
+    step: &VerifiedStep,
+    batched_row0_token: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let batched = batched_row0_token
+        .map(|token| serde_json::json!({"token": token, "margin": step.correction_margin}));
+    let singleton = if step.accepted {
+        None
+    } else {
+        Some(serde_json::json!({
+            "token": step.next_primary,
+            "margin": top_two_margin(&step.after_primary.logits, 0)?,
+            "source": if batched_row0_token.is_some() { "rejection_replay" } else { "one_slot_budget" },
+        }))
+    };
+    Ok(serde_json::json!({
+        "schema": "ax-engine.flash-next.verify-diagnostic.v1",
+        "qualification": false,
+        "performance_claim": false,
+        "position": input.position,
+        "primary": input.primary,
+        "draft": input.draft,
+        "remaining": input.remaining,
+        "accepted": step.accepted,
+        "committed_len": step.committed.len(),
+        "batched_row0": batched,
+        "singleton": singleton,
+        "batched_singleton_argmax_equal": batched_row0_token
+            .filter(|_| !step.accepted).map(|token| token == step.next_primary),
+    }))
+}
+
+#[cfg(test)]
+fn emit_verify_diagnostic(
+    input: VerifyDiagnosticInput,
+    step: &VerifiedStep,
+    batched_row0_token: Option<u32>,
+) -> Result<(), String> {
+    if std::env::var("AX_FLASH_NEXT_VERIFY_DIAGNOSTICS").as_deref() != Ok("1") {
+        return Ok(());
+    }
+    let event = verify_diagnostic(input, step, batched_row0_token)?;
+    eprintln!("FLASH_NEXT_VERIFY_DIAGNOSTIC {event}");
+    Ok(())
 }
 
 /// `primary` must be the authoritative token from this checkpoint's logits.
@@ -292,13 +350,20 @@ pub(crate) fn verify_one(
     if remaining == 0 {
         return Err("Flash Next MTP requires remaining output budget".into());
     }
+    #[cfg(test)]
+    let diagnostic_input = VerifyDiagnosticInput {
+        position: state.position(),
+        primary,
+        draft,
+        remaining,
+    };
     if remaining == 1 {
         let started = Instant::now();
         let after_primary = trunk_forward(trunk, &[primary], state, owner)?;
         let correction_wall_us = elapsed_us(started);
         let correction = next_token(&after_primary)?;
         let correction_margin = top_two_margin(&after_primary.logits, 0)?;
-        return Ok(VerifiedStep {
+        let verified = VerifiedStep {
             committed: vec![primary],
             accepted: false,
             after_primary,
@@ -309,7 +374,10 @@ pub(crate) fn verify_one(
             rejection_wall_us: 0,
             correction_margin,
             bonus_margin: 0.0,
-        });
+        };
+        #[cfg(test)]
+        emit_verify_diagnostic(diagnostic_input, &verified, None)?;
+        return Ok(verified);
     }
     let started = Instant::now();
     let batched = trunk_forward(trunk, &[primary, draft], state, owner)?;
@@ -325,7 +393,7 @@ pub(crate) fn verify_one(
     if accepted {
         let bonus = token_at_row(&batched.logits, 1)?;
         let bonus_margin = top_two_margin(&batched.logits, 1)?;
-        Ok(VerifiedStep {
+        let verified = VerifiedStep {
             committed: vec![primary, draft],
             accepted: true,
             after_primary: output_row(&batched, 0)?,
@@ -336,13 +404,16 @@ pub(crate) fn verify_one(
             rejection_wall_us: 0,
             correction_margin,
             bonus_margin,
-        })
+        };
+        #[cfg(test)]
+        emit_verify_diagnostic(diagnostic_input, &verified, Some(correction))?;
+        Ok(verified)
     } else {
         let started = Instant::now();
         let after_primary = trunk_forward(trunk, &[primary], state, owner)?;
         let rejection_wall_us = elapsed_us(started);
         let next_primary = next_token(&after_primary)?;
-        Ok(VerifiedStep {
+        let verified = VerifiedStep {
             committed: vec![primary],
             accepted: false,
             after_primary,
@@ -353,7 +424,10 @@ pub(crate) fn verify_one(
             rejection_wall_us,
             correction_margin,
             bonus_margin: 0.0,
-        })
+        };
+        #[cfg(test)]
+        emit_verify_diagnostic(diagnostic_input, &verified, Some(correction))?;
+        Ok(verified)
     }
 }
 
@@ -1691,6 +1765,98 @@ mod cursor_tests {
         assert_eq!(last.bonus_margin, 0.0);
         assert!(last.correction_margin.is_finite() && last.correction_margin >= 0.0);
         assert_eq!(mtp_parity::take_trunk_forward_count(), 1);
+
+        let input = VerifyDiagnosticInput {
+            position: prefill.state.position(),
+            primary,
+            draft: correct_draft,
+            remaining: 2,
+        };
+        let accepted_before = state_bytes(
+            &accepted.after_draft.as_ref().unwrap().state,
+            trunk.layers.len(),
+        );
+        let accepted_event = verify_diagnostic(input, &accepted, Some(correct_draft)).unwrap();
+        assert_eq!(accepted_event["batched_row0"]["token"], correct_draft);
+        assert!(accepted_event["singleton"].is_null());
+        assert!(accepted_event["batched_singleton_argmax_equal"].is_null());
+        assert_eq!(
+            state_bytes(
+                &accepted.after_draft.as_ref().unwrap().state,
+                trunk.layers.len()
+            ),
+            accepted_before
+        );
+
+        let rejected_before = state_bytes(&rejected.after_primary.state, trunk.layers.len());
+        let expected_margin = top_two_margin(&rejected.after_primary.logits, 0).unwrap();
+        let mut diagnostic_step = rejected;
+        // Distinguish the recorded verifier margin from the replay margin.
+        diagnostic_step.correction_margin = expected_margin + 7.0;
+        let event = verify_diagnostic(input, &diagnostic_step, Some(wrong_draft)).unwrap();
+        assert_eq!(
+            event["batched_row0"]["margin"],
+            serde_json::json!(expected_margin + 7.0)
+        );
+        assert_eq!(
+            event["singleton"]["margin"],
+            serde_json::json!(expected_margin)
+        );
+        assert_eq!(event["singleton"]["token"], diagnostic_step.next_primary);
+        assert_eq!(event["singleton"]["source"], "rejection_replay");
+        assert_eq!(event["batched_singleton_argmax_equal"], false);
+        assert_eq!(
+            state_bytes(&diagnostic_step.after_primary.state, trunk.layers.len()),
+            rejected_before
+        );
+
+        let last_event = verify_diagnostic(
+            VerifyDiagnosticInput {
+                remaining: 1,
+                ..input
+            },
+            &last,
+            None,
+        )
+        .unwrap();
+        assert!(last_event["batched_row0"].is_null());
+        assert_eq!(last_event["singleton"]["source"], "one_slot_budget");
+        assert!(last_event["batched_singleton_argmax_equal"].is_null());
+        assert_eq!(mtp_parity::take_trunk_forward_count(), 0);
+
+        let terminal = verify_one(
+            &trunk,
+            &prefill.state,
+            owner,
+            primary,
+            correct_draft,
+            2,
+            &[correct_draft],
+        )
+        .unwrap();
+        assert!(!terminal.accepted);
+        assert_eq!(terminal.committed, vec![primary]);
+        assert_eq!(terminal.next_primary, correct_draft);
+        assert_eq!(mtp_parity::take_trunk_forward_count(), 2);
+
+        use sha2::{Digest, Sha256};
+        let controls: Vec<_> = [&accepted, &diagnostic_step, &last, &terminal]
+            .into_iter()
+            .map(|step| {
+                let state = step.after_draft.as_ref().unwrap_or(&step.after_primary);
+                serde_json::json!({
+                    "committed": step.committed,
+                    "next_primary": step.next_primary,
+                    "state_sha256": format!("{:x}", Sha256::digest(state_bytes(&state.state, trunk.layers.len()))),
+                })
+            })
+            .collect();
+        eprintln!(
+            "FLASH_NEXT_VERIFY_CONTROL {}",
+            serde_json::json!({
+                "synthetic_fixture": true, "qualification": false, "controls": controls,
+            })
+        );
     }
 }
 
