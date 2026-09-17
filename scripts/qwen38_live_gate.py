@@ -42,6 +42,22 @@ def validate_cells(cells: list[dict]) -> None:
             raise ValueError('server telemetry does not prove the requested route')
 
 
+def validate_paired_greedy(direct: dict, mtp: dict) -> dict:
+    """Reject a route split even when the separate product-health suites pass."""
+    for mode, response in (("direct", direct), ("mtp", mtp)):
+        tokens = response.get("output_tokens")
+        if (response.get("status") != "finished"
+                or response.get("prompt_tokens") != list(range(1, 17))
+                or not isinstance(tokens, list) or len(tokens) != 64
+                or any(type(token) is not int or token < 0 for token in tokens)):
+            raise ValueError(f"{mode} greedy probe is missing, failed, or incomplete")
+    for index, (left, right) in enumerate(zip(direct["output_tokens"], mtp["output_tokens"])):
+        if left != right:
+            raise ValueError(f"direct/MTP greedy probe differs at output index {index}")
+    return {"matched": True, "prompt_tokens": 16, "output_tokens": 64,
+            "scope": "One pinned raw-token probe; not broad accuracy or MTP Tier 2"}
+
+
 def run_live(args, contract: dict, repo: Path) -> int:
     import run_qa_matrix as matrix
 
@@ -132,6 +148,10 @@ def run_live(args, contract: dict, repo: Path) -> int:
             result['cells'].append(asdict(cell))
             (out / 'qualification.json').write_text(json.dumps(result, default=str, indent=2) + '\n')
         validate_cells(result['cells'])
+        result['paired_greedy'] = validate_paired_greedy(
+            json.loads((out / 'server-route-direct-qwen3.8-27b.json').read_text()),
+            json.loads((out / 'server-route-mtp-qwen3.8-27b.json').read_text()),
+        )
         result['status'] = 'passed'
     except Exception as exc:
         result['error'] = f'{type(exc).__name__}: {exc}'

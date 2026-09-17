@@ -25,7 +25,7 @@ MODULE_SPEC.loader.exec_module(mod)
 
 
 sys.path.insert(0, str(ROOT / "scripts"))
-from qwen38_live_gate import run_live, validate_cells, validate_host
+from qwen38_live_gate import run_live, validate_cells, validate_host, validate_paired_greedy
 
 
 class LiveGateTest(unittest.TestCase):
@@ -49,6 +49,30 @@ class LiveGateTest(unittest.TestCase):
                       [direct, {**mtp, "mtp_draft_tokens": 0}]):
             with self.assertRaises(ValueError):
                 validate_cells(cells)
+
+    def test_paired_greedy_rejects_divergence_after_individual_qa_passes(self):
+        direct = dict(status="finished", prompt_tokens=list(range(1, 17)),
+                      output_tokens=list(range(64)))
+        self.assertTrue(validate_paired_greedy(direct, direct)["matched"])
+        changed = list(direct["output_tokens"])
+        changed[25] = 999
+        with self.assertRaisesRegex(ValueError, "differs at output index 25"):
+            validate_paired_greedy(direct, {**direct, "output_tokens": changed})
+
+    def test_paired_greedy_rejects_empty_failed_partial_and_wrong_inputs(self):
+        good = dict(status="finished", prompt_tokens=list(range(1, 17)),
+                    output_tokens=list(range(64)))
+        bad_cases = [{}, {**good, "status": "failed"},
+                     {**good, "prompt_tokens": list(range(2, 18))},
+                     {**good, "output_tokens": []},
+                     {**good, "output_tokens": list(range(63))},
+                     {**good, "output_tokens": [False] * 64},
+                     {**good, "output_tokens": [-1] * 64}]
+        for bad in bad_cases:
+            for pair in ((bad, good), (good, bad), (bad, bad)):
+                with self.subTest(pair=pair):
+                    with self.assertRaisesRegex(ValueError, "missing, failed, or incomplete"):
+                        validate_paired_greedy(*pair)
 
     def test_wrong_host_persists_failed_result(self):
         with tempfile.TemporaryDirectory() as td:

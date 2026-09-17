@@ -36,6 +36,7 @@ def contract() -> dict[str, Any]:
             "ax-engine doctor ready on the pinned snapshot",
             "QA surface: direct + MTP for qwen3.8-27b",
             "no silent MTP direct-fallback",
+            "paired 64-token direct/MTP greedy probe is identical",
             "clean worktree + matching engine commit",
         ],
         "campaign_only": [

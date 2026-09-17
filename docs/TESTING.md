@@ -79,8 +79,11 @@ The build manifest records `source_commit`, `dirty: false`, `server_sha256`,
 `bench_sha256`, `wheel_sha256`, `cli_sha256`, `model_revision`, and `model_files` (relative
 filename to SHA-256). Hash executables after wheel installation. The gate
 checks the exact SKU, clean checkout, build and model hashes, doctor readiness,
-and both direct/MTP surface and sampled QA. Missing, skipped, partial, or
-fallback results fail. Results, including failures, are saved in
+and both direct/MTP surface and sampled QA. It also requires the two raw
+16-input/64-output-token greedy probes to match exactly; separate QA passes
+cannot hide a route-dependent target distribution. This one probe is a
+regression gate, not general numerical or quality certification. Missing,
+skipped, partial, divergent, or fallback results fail. Results, including failures, are saved in
 `qualification.json`; use a new output directory for every run. Runtime
 `AX_`/`DYLD_` overrides are rejected for this product-default qualification.
 A passing small QA sample does not establish advanced benchmark accuracy or
