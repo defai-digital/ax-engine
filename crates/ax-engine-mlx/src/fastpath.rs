@@ -3159,11 +3159,10 @@ env_flag!(
     /// (~0.20×, 2026-08-13). Same class as Gemma dual Metal 8.5× reject.
     /// Host-FFI `dual_qmm_swiglu` also stays OFF (875 vs 891).
     ///
-    /// Precision caveat (2026-09-17): this kernel still fuses SiLU and the
-    /// up multiply in float with a single output cast. It does not preserve
-    /// the BF16/FP16 activation boundaries restored by `891385f8` for the
-    /// decode matvec and packed paths. Keep OFF unless the kernel is
-    /// reworked to emit gate/up in the input dtype.
+    /// Precision (2026-09-17): the kernel now emits gate/up in the input
+    /// dtype and the wrapper applies the stock `silu_mul`, so BF16/FP16
+    /// results are bit-exact against the split path (same contract as the
+    /// decode matvec and packed paths). The flag stays OFF on throughput.
     qwen_prefill_dual_qmm_swiglu_metal_enabled,
     "AX_MLX_QWEN_PREFILL_DUAL_QMM_SWIGLU_METAL"
 );
@@ -5375,11 +5374,10 @@ env_flag!(
     /// dispatch count per MoE layer. Falls back to the standard dispatch
     /// sequence when ineligible.
     ///
-    /// Precision caveat (2026-09-17): the SwiGLU branch of that kernel
-    /// still computes SiLU and the up multiply in float with one output
-    /// cast, so BF16/FP16 results can differ from the split `silu_mul`
-    /// path restored by `891385f8`. Keep OFF for Qwen-family packs unless
-    /// the kernel is reworked to match the low-precision semantics.
+    /// Precision (2026-09-17): SwiGLU rows gather gate/up in one dispatch
+    /// and then apply the stock `silu_mul`, so BF16/FP16 results are
+    /// bit-exact against the split path; GeGLU rows keep the rounded
+    /// in-kernel chain. The flag stays OFF pending a throughput A/B.
     moe_fused_expert_block_enabled,
     "AX_MLX_MOE_FUSED_EXPERT_BLOCK"
 );

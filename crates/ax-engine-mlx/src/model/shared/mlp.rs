@@ -1130,9 +1130,9 @@ const GEMMA_DUAL_GATE_UP_GEGLU_KERNEL_SOURCE: &str = r#"
 /// `dual_qmm_swiglu` (875 vs 891). Each TG is one simdgroup owning an
 /// 8-token × 8-output tile.
 ///
-/// Opt-in only (default OFF). The activation is fused in float with a single
-/// output cast, so it does not preserve the BF16/FP16 tensor boundaries that
-/// the default decode matvec and packed SwiGLU paths keep.
+/// Opt-in only (default OFF). The kernel emits the gate and up projections in
+/// the input dtype; the caller applies the stock `silu_mul` so BF16/FP16
+/// activation boundaries match the split path exactly.
 const QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL_SOURCE: &str = r#"
     constexpr uint Tile = 8;
     uint token0 = threadgroup_position_in_grid.x * Tile;
@@ -1176,9 +1176,8 @@ const QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL_SOURCE: &str = r#"
                             + static_cast<float>(up_biases[scale_idx]),
                         up_acc);
                 }
-                float sigmoid = 1.0f / (1.0f + exp(-gate_acc));
-                out[tok * (uint)OutDim + row] =
-                    static_cast<OutT>((gate_acc * sigmoid) * up_acc);
+                gate_out[tok * (uint)OutDim + row] = static_cast<OutT>(gate_acc);
+                up_out[tok * (uint)OutDim + row] = static_cast<OutT>(up_acc);
             }
         }
         return;
@@ -1230,11 +1229,10 @@ const QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL_SOURCE: &str = r#"
     for (uint i = lane; i < Tile * Tile; i += 32) {
         uint t = i / Tile;
         uint r = i % Tile;
-        float g = gate_out_tg[i];
-        float u = up_out_tg[i];
-        float sigmoid = 1.0f / (1.0f + exp(-g));
-        out[(token0 + t) * (uint)OutDim + (row0 + r)] =
-            static_cast<OutT>((g * sigmoid) * u);
+        gate_out[(token0 + t) * (uint)OutDim + (row0 + r)] =
+            static_cast<OutT>(gate_out_tg[i]);
+        up_out[(token0 + t) * (uint)OutDim + (row0 + r)] =
+            static_cast<OutT>(up_out_tg[i]);
     }
 "#;
 
@@ -2056,7 +2054,7 @@ fn qwen_prefill_dual_qmm_swiglu_metal(
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen_prefill_dual_qmm_swiglu_sg_v1",
+            "ax_qwen_prefill_dual_qmm_sg_v2",
             &[
                 "x",
                 "gate_weight",
@@ -2066,7 +2064,7 @@ fn qwen_prefill_dual_qmm_swiglu_metal(
                 "up_scales",
                 "up_biases",
             ],
-            &["out"],
+            &["gate_out", "up_out"],
             QWEN_PREFILL_DUAL_QMM_SWIGLU_KERNEL_SOURCE,
             "",
             true,
@@ -2086,10 +2084,16 @@ fn qwen_prefill_dual_qmm_swiglu_metal(
                 up_scales,
                 up_biases,
             ],
-            &[KernelOutputSpec {
-                shape: vec![leading, out_dim],
-                dtype: x.dtype(),
-            }],
+            &[
+                KernelOutputSpec {
+                    shape: vec![leading, out_dim],
+                    dtype: x.dtype(),
+                },
+                KernelOutputSpec {
+                    shape: vec![leading, out_dim],
+                    dtype: x.dtype(),
+                },
+            ],
             &[
                 KernelTemplateArg::Dtype {
                     name: "OutT",
@@ -2133,7 +2137,10 @@ fn qwen_prefill_dual_qmm_swiglu_metal(
             None,
         )
         .ok()?;
-    let flat_out = outputs.pop()?;
+    let up_flat = outputs.pop()?;
+    let gate_flat = outputs.pop()?;
+    // Keep the stock activation's dtype boundaries: the kernel only projects.
+    let flat_out = silu_mul(&gate_flat, &up_flat, None);
     if x_shape.len() == 2 && x_shape[0] == leading {
         Some(flat_out)
     } else {
@@ -2491,6 +2498,7 @@ fn qwen_dense_ffn_down_matvec_metal_impl(
 // ---------------------------------------------------------------------------
 
 static MOE_FUSED_ACTIVATION_UNSORT_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static MOE_FUSED_GATE_UP_UNSORT_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 const MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE: &str = r#"
     uint idx = thread_position_in_grid.x;
@@ -2554,14 +2562,30 @@ const MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE: &str = r#"
             ? gate_f * static_cast<float>(up_v)
             : (gate_f < -10.0f ? 0.0f : in_range);
     } else {
-        // SwiGLU: silu(gate) * up.
-        float gate_v_f = static_cast<float>(gate_v);
-        float up_v_f = static_cast<float>(up_v);
-        float sigmoid = 1.0f / (1.0f + exp(-gate_v_f));
-        activated = (gate_v_f * sigmoid) * up_v_f;
+        // SwiGLU rows never reach this kernel: `moe_fused_activation_unsort_metal`
+        // routes them through `MOE_FUSED_GATE_UP_UNSORT_KERNEL_SOURCE` plus the
+        // stock `silu_mul` so low-precision activation boundaries are kept.
+        activated = static_cast<float>(gate_v) * static_cast<float>(up_v);
     }
 
     out[idx] = static_cast<OutT>(activated);
+"#;
+
+/// Squeeze + unsort for MoE decode SwiGLU rows without the activation.
+///
+/// Emits the gate and up halves in `OutT` at their original expert positions;
+/// the caller applies `silu_mul` so BF16/FP16 results match the split path.
+const MOE_FUSED_GATE_UP_UNSORT_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+    uint hidden_idx = idx % HiddenDim;
+    uint orig_k = idx / HiddenDim;
+    uint sorted_k = inv_order[orig_k];
+    uint gate_up_base = sorted_k * TwoExpertSize;
+    gate_out[idx] = static_cast<OutT>(gate_up[gate_up_base + hidden_idx]);
+    up_out[idx] = static_cast<OutT>(gate_up[gate_up_base + HiddenDim + hidden_idx]);
 "#;
 
 /// Identity unsort order for an already-unsorted `SwitchGatherInputs` gather.
@@ -2581,9 +2605,9 @@ fn identity_moe_unsort_order(top_k: i32) -> MlxArray {
 
 /// Fused activation + squeeze + unsort for MoE decode (seq==1).
 ///
-/// Opt-in only (default OFF). The SwiGLU branch is computed in float with a
-/// single output cast and does not preserve the BF16/FP16 activation
-/// boundaries of the default split `silu_mul` path.
+/// Opt-in only (default OFF). GeGLU rows run the bit-exact rounded chain in
+/// one dispatch; SwiGLU rows gather gate/up in one dispatch and then apply
+/// the stock `silu_mul`, so BF16/FP16 results match the split path.
 ///
 /// Takes the packed gate_up output `[1, 1, TopK_sorted, 2*ExpertSize]` and
 /// produces the hidden state `[1, 1, TopK_original, ExpertSize]` with the
@@ -2612,6 +2636,55 @@ fn moe_fused_activation_unsort_metal(
     let element_count = top_k.checked_mul(hidden_dim)?;
 
     let two_expert_size = hidden_dim.checked_mul(2)?;
+
+    if !uses_geglu {
+        let kernel = MOE_FUSED_GATE_UP_UNSORT_KERNEL.get_or_init(|| {
+            MlxMetalKernel::new(
+                "ax_moe_fused_gate_up_unsort_v1",
+                &["gate_up", "inv_order"],
+                &["gate_out", "up_out"],
+                MOE_FUSED_GATE_UP_UNSORT_KERNEL_SOURCE,
+                "",
+                true,
+            )
+        });
+        let out_spec = || KernelOutputSpec {
+            shape: vec![1, 1, top_k, hidden_dim],
+            dtype: output_dtype,
+        };
+        let mut outputs = kernel.apply_with_template(
+            &[gate_up_out, inv_order],
+            &[out_spec(), out_spec()],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "T",
+                    dtype: gate_up_out.dtype(),
+                },
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: output_dtype,
+                },
+                KernelTemplateArg::Int {
+                    name: "HiddenDim",
+                    value: hidden_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "TwoExpertSize",
+                    value: two_expert_size,
+                },
+                KernelTemplateArg::Int {
+                    name: "ElementCount",
+                    value: element_count,
+                },
+            ],
+            (element_count, 1, 1),
+            (256, 1, 1),
+            None,
+        );
+        let up = outputs.pop()?;
+        let gate = outputs.pop()?;
+        return Some(silu_mul(&gate, &up, None));
+    }
 
     let kernel = MOE_FUSED_ACTIVATION_UNSORT_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
@@ -9514,6 +9587,66 @@ mod tests {
         eval(&[&metal, &portable]);
         assert_eq!(metal.shape(), portable.shape());
         assert_close(metal.data_f32(), portable.data_f32(), 5.0e-2);
+
+        // Low-precision rows must be bit-exact against the split path. One-hot
+        // tokens and binary-exact affine scales remove reduction-order effects,
+        // so any difference would come from the activation boundaries.
+        let onehot: Vec<f32> = (0..8 * 64)
+            .map(|i| if i % 64 == (i / 64) * 7 + 2 { 1.0 } else { 0.0 })
+            .collect();
+        let exact_gate: Vec<f32> = (0..32 * 64)
+            .map(|i| (((i + i / 64) % 16) as f32 - 8.0) * 0.125)
+            .collect();
+        let exact_up: Vec<f32> = (0..32 * 64)
+            .map(|i| (7.0 - ((i + 3 * (i / 64)) % 16) as f32) * 0.125)
+            .collect();
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+            let x = astype(&array_f32(&onehot, &[1, 8, 64]), dtype, None);
+            let gq = quantize(
+                &astype(&array_f32(&exact_gate, &[32, 64]), dtype, None),
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Affine,
+                None,
+                None,
+            );
+            let uq = quantize(
+                &astype(&array_f32(&exact_up, &[32, 64]), dtype, None),
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Affine,
+                None,
+                None,
+            );
+            let metal = qwen_prefill_dual_qmm_swiglu_metal(&x, &qweight(&gq), &qweight(&uq))
+                .expect("Qwen prefill dual qmm Metal should engage for low-precision rows");
+            let p_gate = quantized_matmul(
+                &x,
+                &gq[0],
+                &gq[1],
+                Some(&gq[2]),
+                true,
+                Some(32),
+                Some(4),
+                None,
+            );
+            let p_up = quantized_matmul(
+                &x,
+                &uq[0],
+                &uq[1],
+                Some(&uq[2]),
+                true,
+                Some(32),
+                Some(4),
+                None,
+            );
+            let portable = silu_mul(&p_gate, &p_up, None);
+            assert_eq!(metal.dtype(), dtype);
+            let metal = astype(&metal, MlxDtype::Float32, None);
+            let portable = astype(&portable, MlxDtype::Float32, None);
+            eval(&[&metal, &portable]);
+            assert_eq!(metal.data_f32(), portable.data_f32());
+        }
         let decode = array_f32(&x_data[..64], &[1, 1, 64]);
         assert!(
             qwen_prefill_dual_qmm_swiglu_metal(&decode, &gate, &up).is_none(),
@@ -10964,7 +11097,52 @@ mod tests {
         eval(&[&direct, &metal]);
 
         assert_eq!(metal.shape(), vec![top_k, hidden_dim]);
-        assert_close(metal.data_f32(), direct.data_f32(), 1.0e-2);
+        assert_eq!(metal.data_f32(), direct.data_f32());
+    }
+
+    #[test]
+    fn moe_fused_activation_unsort_metal_preserves_low_precision_swiglu() {
+        let hidden_dim = 16;
+        let top_k = 4;
+        let gate_data: Vec<f32> = (0..hidden_dim * top_k)
+            .map(|i| ((i as f32) - 30.0) * 0.137)
+            .collect();
+        let up_data: Vec<f32> = (0..hidden_dim * top_k)
+            .map(|i| ((i as f32) + 3.0) * -0.059)
+            .collect();
+        let inv_order_data: Vec<u32> = vec![3, 1, 0, 2];
+        let inv_order = MlxArray::from_raw_data(
+            inv_order_data.as_ptr() as *const u8,
+            std::mem::size_of_val(inv_order_data.as_slice()),
+            &[top_k],
+            MlxDtype::Uint32,
+        );
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+            let gate = astype(&array_f32(&gate_data, &[top_k, hidden_dim]), dtype, None);
+            let up = astype(&array_f32(&up_data, &[top_k, hidden_dim]), dtype, None);
+            let packed = reshape(
+                &concatenate(&[&gate, &up], -1, None),
+                &[1, 1, top_k, hidden_dim * 2],
+                None,
+            );
+            let direct = astype(
+                &take(&silu_mul(&gate, &up, None), &inv_order, 0, None),
+                MlxDtype::Float32,
+                None,
+            );
+            let metal = moe_fused_activation_unsort_metal(
+                &packed, &inv_order, hidden_dim, top_k, dtype, false,
+            )
+            .expect("fused SwiGLU unsort must engage for low-precision rows");
+            assert_eq!(metal.dtype(), dtype);
+            let metal = astype(
+                &reshape(&metal, &[top_k, hidden_dim], None),
+                MlxDtype::Float32,
+                None,
+            );
+            eval(&[&direct, &metal]);
+            assert_eq!(metal.data_f32(), direct.data_f32());
+        }
     }
 
     #[test]
