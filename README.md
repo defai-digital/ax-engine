@@ -324,7 +324,7 @@ matching serving evidence—see
 
 ## Performance
 
-One pack, one contract, latest runtimes we could invoke on 2026-09-15:
+Historical same-pack measurements with the runtimes available on 2026-09-15:
 [`qwen3.8-27b:axq`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
 @ `3e290738e96972307c6aeb9934ab170ca0eae1c1`. Apple **M5 Max**, 128 GB
 (campaign host, not the Mac mini M4 Pro 64 GB SKU). `flappy` suite, four cases,
@@ -332,9 +332,13 @@ One pack, one contract, latest runtimes we could invoke on 2026-09-15:
 **median of 20 measured runs**. Same snapshot directory for every runtime;
 no GGUF or community-4-bit substitute.
 
+These measurements predate the target-head precision fix that removes the
+automatic 2-bit decode cache. They do not establish throughput or numerical
+parity for the corrected runtime; a new performance qualification is pending.
+
 | Runtime | Latest checked | Decode | Prefill |
 | --- | --- | ---: | ---: |
-| **AX Engine 7.4.0** (product-path MTP, depth 3) | this tree | **76.90 tok/s** | **795.3 tok/s** |
+| **AX Engine 7.4.0** (product-path MTP, depth 3) | 2026-09-15 campaign | **76.90 tok/s** | **795.3 tok/s** |
 | [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** | PyPI / mtplx.com Latest | 70.62 tok/s | 686.6 tok/s |
 | [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 27.90 tok/s | — |
 | [mlxcel](https://github.com/lablup/mlxcel) **0.7.0** | GitHub Latest (2026-09-09) | unsupported (AXQ 6-bit affine group layout) | — |

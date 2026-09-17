@@ -560,6 +560,15 @@ impl QuantizedWeight {
         self
     }
 
+    /// Keep the checkpoint's target head identical across prefill, decode, and verification.
+    pub(crate) fn prepare_lm_head_for_inference(&mut self) {
+        // A lossy cache belongs to a draft head, never the target distribution.
+        self.decode_q2_weight = None;
+        self.decode_q2_scales = None;
+        self.decode_q2_biases = None;
+        self.prepare_contiguous_decode_weight_t();
+    }
+
     /// Materialize a contiguous `[in, out]` copy of an unquantized weight.
     ///
     /// Intended for the decode `lm_head` only. After the copy is resident,
@@ -583,7 +592,8 @@ impl QuantizedWeight {
         self.decode_weight_t = Some(transposed);
     }
 
-    /// Build a 2-bit gs64 affine decode cache from an unquantized rank-2 weight.
+    /// Explicitly build a lossy 2-bit gs64 affine cache for experiments.
+    /// Target-head loading must use `prepare_lm_head_for_inference` instead.
     ///
     /// Same `mlx_sys::quantize` path as MTP `draft_lm_head`. No-ops when the
     /// tensor is already quantized, not rank-2, or last dim is not a
@@ -2032,8 +2042,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let glm_mtp = load_glm_mtp_sidecar(&root, &mut name_map, artifacts.manifest());
 
     let mut lm_head = lm_head;
-    lm_head.prepare_decode_q2_lm_head();
-    lm_head.prepare_contiguous_decode_weight_t();
+    lm_head.prepare_lm_head_for_inference();
     let mut model = ModelWeights {
         token_embedding,
         final_norm,
@@ -2192,8 +2201,7 @@ pub fn load_pipeline_stage_weights(
             tied.group_size = embedding.group_size;
             tied.bits = embedding.bits;
             tied.mode.clone_from(&embedding.mode);
-            tied.prepare_decode_q2_lm_head();
-            tied.prepare_contiguous_decode_weight_t();
+            tied.prepare_lm_head_for_inference();
             Some(tied)
         } else {
             let mut head = take_weight(
@@ -2203,8 +2211,7 @@ pub fn load_pipeline_stage_weights(
                 None,
                 "lm_head",
             )?;
-            head.prepare_decode_q2_lm_head();
-            head.prepare_contiguous_decode_weight_t();
+            head.prepare_lm_head_for_inference();
             Some(head)
         }
     } else {

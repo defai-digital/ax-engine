@@ -2381,6 +2381,7 @@ mod tests {
         };
         quantized.prepare_contiguous_decode_weight_t();
         quantized.prepare_decode_q2_lm_head();
+        quantized.prepare_lm_head_for_inference();
         assert!(
             quantized.decode_weight_t.is_none(),
             "quantized lm_head must not grow a dense W_t copy"
@@ -2389,6 +2390,43 @@ mod tests {
             quantized.decode_q2_weight.is_none(),
             "already-quantized tensors must not grow a decode q2 cache"
         );
+    }
+
+    #[test]
+    fn prepared_target_head_preserves_singleton_and_verifier_logits() {
+        let hidden = 64i32;
+        let vocab = 32i32;
+        let w_data: Vec<f32> = (0..vocab * hidden)
+            .map(|i| ((i % 13) as f32) * 0.05 - 0.3)
+            .collect();
+        let x_data: Vec<f32> = (0..hidden).map(|i| ((i % 7) as f32) * 0.1 - 0.3).collect();
+        let weight = array_f32(&w_data, &[vocab, hidden]);
+        let original_weight_t = transpose(&weight, &[1, 0], None);
+        let mut head = QuantizedWeight::new(weight, None, None);
+        // Even an explicitly prepared draft cache must not change target logits.
+        head.prepare_decode_q2_lm_head();
+        head.prepare_lm_head_for_inference();
+        for rows in [1, 4] {
+            let data: Vec<f32> = (0..rows).flat_map(|_| x_data.iter().copied()).collect();
+            let x = array_f32(&data, &[1, rows, hidden]);
+            let expected = matmul(&x, &original_weight_t, None);
+            for actual in [super::qw(&x, &head), super::qw_direct_mlx(&x, &head)] {
+                eval(&[&actual, &expected]);
+                let error = actual
+                    .data_f32()
+                    .iter()
+                    .zip(expected.data_f32())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    error < 1e-4,
+                    "target head changed at rows={rows}: max_abs={error}"
+                );
+            }
+        }
+        assert!(head.decode_q2_weight.is_none());
+        assert!(head.decode_q2_scales.is_none());
+        assert!(head.decode_q2_biases.is_none());
     }
 
     #[test]
