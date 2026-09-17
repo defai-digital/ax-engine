@@ -74,6 +74,7 @@ class GradeLineSetTests(unittest.TestCase):
         # Escaping answers carry no span denominator, so downstream ratios
         # never mix definitions.
         self.assertIsNone(result["span_expected"])
+        self.assertIsNone(result["span_recall"])
 
     def test_alias_key_is_honored(self) -> None:
         case = {"kind": "LINE_SET", "answer": "3", "aliases": ["5-6"], "key": "case-2"}
@@ -170,14 +171,46 @@ class SummarizeDetectionTests(unittest.TestCase):
         self.assertEqual(summary["detection_correct"], 2)
         self.assertEqual(
             summary["breakdown"]["source"]["COMPSEC"]["detection"],
-            {"total": 4, "graded": 3, "correct": 2},
+            {
+                "total": 4,
+                "graded": 3,
+                "correct": 2,
+                # Synthetic payloads above carry no span_recall, so the tally
+                # must report no full-recall row rather than invent a zero mean.
+                "full_recall": 0,
+                "mean_recall": None,
+            },
         )
+        self.assertIsNone(summary["detection_mean_recall"])
+        self.assertEqual(summary["detection_full_recall"], 0)
         # Strict dimension is untouched by the additive one.
         self.assertEqual(
             summary["status_counts"],
             {"correct": 2, "wrong": 2, "truncated": 1},
         )
         self.assertEqual(summary["accuracy_all_planned"], 2 / 5)
+
+    def test_recall_separates_completeness_from_detection(self) -> None:
+        # Built from real grade() output so the dimensions stay coupled.
+        case = {"kind": "LINE_SET", "answer": "17-20", "aliases": [], "key": "case-1"}
+        partial = grade(case, response("Answer: 18"))
+        complete = grade(case, response("Answer: 17-20"))
+        self.assertEqual(partial["status"], "wrong")
+        self.assertAlmostEqual(partial["span_recall"], 0.25)
+        self.assertAlmostEqual(complete["span_recall"], 1.0)
+        rows = [
+            self.row("LINE_SET", "COMPSEC", partial),
+            self.row("LINE_SET", "COMPSEC", complete),
+            self.row("LINE_SET", "COMPSEC", complete),
+        ]
+        tally = line_set_detection(rows)
+        self.assertIsNotNone(tally)
+        assert tally is not None
+        # Detection alone would call all three successes; recall shows only
+        # two named every line of the key span.
+        self.assertEqual(tally["correct"], 3)
+        self.assertEqual(tally["full_recall"], 2)
+        self.assertAlmostEqual(tally["mean_recall"], (0.25 + 1.0 + 1.0) / 3)
 
     def test_no_line_set_rows_omits_detection(self) -> None:
         rows = [self.row("INTEGER", "AIME2025", {"status": "correct"})]

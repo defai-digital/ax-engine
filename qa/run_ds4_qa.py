@@ -143,6 +143,11 @@ def grade(case: dict, response: dict) -> dict:
         # Size of the key span the answer fell inside; None when the answer
         # escapes every key so ratios never mix denominators.
         result["span_expected"] = len(container) if container is not None else None
+        # Fraction of the containing key span the answer actually named.
+        # detection alone cannot tell "found one of two" from "found both",
+        # which is how every campaign COMPSEC row scored detection=True yet
+        # status=wrong: the models named true lines but never all of them.
+        result["span_recall"] = len(actual) / len(container) if container is not None else None
     return result
 
 
@@ -244,6 +249,8 @@ def summarize(rows: list[dict], total: int) -> dict:
             "detection_total": detection["total"],
             "detection_graded": detection["graded"],
             "detection_correct": detection["correct"],
+            "detection_full_recall": detection["full_recall"],
+            "detection_mean_recall": detection["mean_recall"],
         }
 
     summary = {
@@ -261,7 +268,7 @@ def summarize(rows: list[dict], total: int) -> dict:
 
 
 def line_set_detection(rows: list[dict]) -> dict | None:
-    """Transparent three-way LINE_SET detection tally.
+    """Transparent LINE_SET detection and recall tally.
 
     total counts every LINE_SET row; graded counts rows whose grade carried
     the detection dimension (strictly graded answer); correct counts
@@ -270,20 +277,32 @@ def line_set_detection(rows: list[dict]) -> dict | None:
     never silently inflate. Returns None when the population has no
     LINE_SET rows at all. Reads rows defensively: a malformed row counts
     toward total but can never abort a run.
+
+    full_recall and mean_recall separate completeness from mere detection:
+    detection=True only means every reported line sat inside a key span, so
+    an answer naming one of four lines would otherwise be tallied as a
+    detection success. Rows without a span denominator (undetected answers)
+    are excluded from the mean rather than counted as zero.
     """
     line_rows = [row for row in rows if row.get("kind") == "LINE_SET"]
     if not line_rows:
         return None
     detections = []
+    recalls = []
     for row in line_rows:
         grade_payload = row.get("grade") or {}
         detection = grade_payload.get("detection")
         if isinstance(detection, bool):
             detections.append(detection)
+        recall = grade_payload.get("span_recall")
+        if isinstance(recall, (int, float)) and not isinstance(recall, bool):
+            recalls.append(float(recall))
     return {
         "total": len(line_rows),
         "graded": len(detections),
         "correct": sum(1 for detection in detections if detection),
+        "full_recall": sum(1 for recall in recalls if recall >= 1.0),
+        "mean_recall": sum(recalls) / len(recalls) if recalls else None,
     }
 
 
