@@ -42,12 +42,13 @@ cannot silently change what the selector loads.
 Landed, labeled:
 
 - 2026-09-17 product-surface qualification on the selected **Mac mini M4 Pro
-  64 GB** SKU, macOS 26.6.2, clean source `8c8217b2`, installed bundled wheel:
+  64 GB** SKU, macOS 26.6.2, clean source `e2b3e354`, installed bundled wheel:
   direct **32/32** and MTP **32/32** hard QA, zero soft failures, each **7/7**
   product-surface probes with no skips. Each route runs the same 16 stratified
   questions in streaming and non-streaming modes. Doctor reported ready;
   wheel dependencies loaded from the installed package. Actual server counters
-  prove direct without MTP and an active MTP route.
+  prove direct without MTP and an active MTP route; terminal API MTP
+  reports match those counters.
   [Scoped evidence and reproduction](../../benchmarks/results/qualification/2026-09-17-qwen38-27b-m4-pro-64gb/).
   These are product health gates, not representative benchmark accuracy or a
   Tier 2 promotion. The paired raw-token greedy probe diverged at output index
@@ -94,11 +95,26 @@ Landed, labeled:
     recall 0.33). The saved replies contain single-line answers; the grader
     accepts comma/range values. This rules out the proposed first-line
     truncation explanation for these replies, not every harness defect.
-    Whether the source wording ("smallest comma-separated set") suppresses
-    enumeration remains open until a controlled prompt ablation is run.
+    A later controlled diagnostic on the selected mini used 12 of these
+    questions, a fixed answer-only system message, thinking disabled and a
+    512-token cap. Original wording passed 0/12 direct and 1/12 MTP; a generic
+    complete-span instruction passed 2/12 direct and 5/12 MTP, with failures
+    and truncations remaining. This demonstrates prompt sensitivity but does
+    not replace the original 32k thinking scores or establish broad accuracy.
+    [Diagnostic settings and counts](../../benchmarks/results/qualification/2026-09-17-qwen38-27b-m4-pro-64gb/quality-diagnostics.json).
   One AXQ row was flagged as a degenerate repetition loop
   (`repetition_max_run=1644`, `loop_suspect=true`); repetition was otherwise
   absent (MXFP4 `repetition_max_run` max 2).
+
+- Target-mini diagnostics on clean `8c8217b2`: both AX routes completed the
+  saved 32851-token recovery, but returned `Answer: B` against gold C. An
+  isolated same-pack mlx-lm 0.31.3 / MLX 0.32.2 replay returned the identical
+  token sequence. This reproduces completion and the wrong answer on the
+  saved continuation; it does not qualify fresh-question accuracy. Each AX
+  greedy route was repeatable across two requests. The independent 64-token
+  mlx-lm probe matched AX MTP exactly and differed from AX direct at index 25,
+  so the route split does not establish that MTP caused an error. Numerical
+  attribution and direct/MTP equivalence remain open.
 
 Not claimed:
 
@@ -112,10 +128,12 @@ Not claimed:
 - Any release-quality accuracy bar on the 2026-09-16/17 failed-pair retest; the
   29.4% / 20.6% strict accuracy above is recorded as **evidence of an open
   gap**, not as a passing qualification
-- `LINE_SET` enumeration completeness: full recall is 0/24 across both packs
+- `LINE_SET` enumeration completeness: original campaign full recall is 0/24
+  across both packs; the different diagnostic protocol above also has failures
 - General immunity to generation stalls. The diagnosed oversized recovery
   prefill now reaches the existing KV starvation failure bound and delivers
-  its terminal response; campaign replay is not target-SKU qualification.
+  its terminal response. Target-mini recovery also completes with adequate
+  KV capacity; finite replays do not establish general stall immunity.
   The provisional 3600s collection backstop still excludes queue/startup
   waits and cannot interrupt a synchronous engine step
 

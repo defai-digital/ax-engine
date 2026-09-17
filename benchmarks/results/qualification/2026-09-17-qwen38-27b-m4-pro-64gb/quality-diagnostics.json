@@ -1,0 +1,194 @@
+{
+  "scope": "Diagnostic failed-case subset only; 512 output tokens, thinking disabled. Original 32k thinking campaign scores are unchanged.",
+  "independent_line_set_questions": 12,
+  "observations": 48,
+  "line_set": {
+    "direct": {
+      "original": {
+        "truncated": 6,
+        "wrong": 6
+      },
+      "enumerate": {
+        "wrong": 9,
+        "correct": 2,
+        "truncated": 1
+      }
+    },
+    "mtp": {
+      "original": {
+        "truncated": 9,
+        "wrong": 2,
+        "correct": 1
+      },
+      "enumerate": {
+        "wrong": 6,
+        "correct": 5,
+        "truncated": 1
+      }
+    }
+  },
+  "recovery": {
+    "direct": {
+      "elapsed_seconds": 291.76805274991784,
+      "input_tokens": 32851,
+      "output_tokens": [
+        15666,
+        25,
+        417
+      ],
+      "decoded_answer": "Answer: B",
+      "gold": "C",
+      "status": "finished"
+    },
+    "mtp": {
+      "elapsed_seconds": 291.35963320801966,
+      "input_tokens": 32851,
+      "output_tokens": [
+        15666,
+        25,
+        417
+      ],
+      "decoded_answer": "Answer: B",
+      "gold": "C",
+      "status": "finished"
+    }
+  },
+  "schema": 1,
+  "ax_source_commit": "8c8217b2fd330f25904ca73a789d88a78f44907a",
+  "model_revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+  "line_set_protocol": {
+    "seed": 0,
+    "temperature": 0,
+    "enable_thinking": false,
+    "max_output_tokens": 512,
+    "system": "Return exactly one line: Answer: <answer>. Do not include an explanation.",
+    "enumerate_variant": "Generic complete-span instruction appended to the unchanged question; no gold span supplied",
+    "original_campaign_scores_changed": false
+  },
+  "greedy_repeats": {
+    "direct_repeat_equal": true,
+    "mtp_repeat_equal": true,
+    "cross_route_equal": false,
+    "first_difference_zero_based": 25,
+    "requests_per_route": 2,
+    "process_scope": "One fresh server per route; the two requests share that process"
+  },
+  "reference": {
+    "versions": {
+      "mlx": "0.32.2",
+      "mlx-lm": "0.31.3",
+      "transformers": "5.15.0",
+      "tokenizers": "0.22.2"
+    },
+    "sampler": "generate_step default argmax",
+    "prefill_step_size": 2048,
+    "recovery": {
+      "output_tokens": [
+        15666,
+        25,
+        417
+      ],
+      "text": "Answer: B",
+      "eos_token": 248046,
+      "elapsed_seconds": 292.31462325004395
+    },
+    "greedy": {
+      "input_tokens": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "max_output_tokens": 64,
+      "output_tokens": [
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        33898,
+        2110,
+        30,
+        31,
+        73307,
+        58,
+        3312,
+        87197,
+        62,
+        63,
+        65234,
+        44576,
+        92,
+        93,
+        1,
+        198,
+        3710,
+        369,
+        279,
+        2984,
+        314,
+        279,
+        886,
+        3294,
+        30,
+        271,
+        248068,
+        198,
+        760,
+        1156,
+        369,
+        9859,
+        728,
+        310,
+        1698,
+        279,
+        2984,
+        314,
+        264,
+        3050,
+        886,
+        13,
+        6558,
+        728,
+        15060,
+        1698,
+        1754,
+        3542,
+        303,
+        279,
+        886,
+        25,
+        271,
+        55742,
+        3
+      ],
+      "matches_ax_direct": false,
+      "matches_ax_mtp": true
+    }
+  },
+  "recovery_input_sha256": "820e5b154d757b35cc215485a3621e69aa48bc1d6ba5c61278344f20062aa2f0",
+  "interpretation": "The repeated AX route split is not proof that MTP is wrong: this reference probe matches AX MTP. Identical wrong recovery answers on the saved continuation do not qualify fresh-question accuracy or prove the gold wrong.",
+  "raw_artifact_sha256": {
+    "quality-ablation-format-controlled-direct-mtp/results.json": "8e6a055e23ceccd202171a1246b874e7252246e664a6f044f6c31bffb4bc0e15",
+    "quality-ablation-format-controlled-direct-mtp/recovery-direct.json": "247fb08429bfbb4610bb17c68af7e42bb7ec682350ca04cdf66c9dc516334419",
+    "quality-ablation-format-controlled-direct-mtp/recovery-mtp.json": "853961eca71fc10a0977423aa7b6f063b8f2fe93e5693d8cb2469a9dc39fcd49",
+    "reference-diagnostics-02/recovery.json": "76705a0186851402caea0b6627385a95744e06d7070e2db9ec073f6e3a24053e",
+    "reference-diagnostics-02/greedy.json": "12b63a9226c750ff4787296fbbeb220d7229d5d3707b37b1e364901b96763aa8"
+  }
+}

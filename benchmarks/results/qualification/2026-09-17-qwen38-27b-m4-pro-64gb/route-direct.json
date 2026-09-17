@@ -102,7 +102,7 @@
       "ax_mlx_affine_tensor_count": 497,
       "ax_mlx_bonus_tokens": 0,
       "ax_mlx_decode_steps": 64,
-      "ax_mlx_decode_wall_us": 4263356,
+      "ax_mlx_decode_wall_us": 4261400,
       "ax_mlx_deepseek_v4_mtp_certification_candidate": 0,
       "ax_mlx_deepseek_v4_mtp_direct_fallback": 0,
       "ax_mlx_dense_attention_qkv_packed_layers": 15,
@@ -124,7 +124,7 @@
       "ax_mlx_diffusion_min_acceptance_rate_bp": 0,
       "ax_mlx_diffusion_min_entropy_bp": 0,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 61822,
+      "ax_mlx_direct_bootstrap_wall_us": 59737,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 92,
       "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 8,
       "ax_mlx_direct_cpp_linear_attention_inputs_hits": 84,
@@ -133,21 +133,21 @@
       "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
       "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
       "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 2,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 4134997,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 1,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 4134826,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
-      "ax_mlx_direct_pipeline_forward_wall_us": 55089,
+      "ax_mlx_direct_pipeline_forward_wall_us": 55333,
       "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
       "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
       "ax_mlx_direct_pipeline_op_count": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 11271,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 11362,
       "ax_mlx_direct_pipeline_pending_read_wall_us": 0,
       "ax_mlx_direct_pipeline_steps": 63,
-      "ax_mlx_direct_pipeline_wall_us": 4201478,
+      "ax_mlx_direct_pipeline_wall_us": 4201627,
       "ax_mlx_experimental_2bit_gate": 0,
       "ax_mlx_experimental_3bit_gate": 0,
       "ax_mlx_gemma4_assistant_mtp_accept_rate_x1000": 0,
@@ -451,6 +451,17 @@
       "prefix_reused_requests": 1,
       "prefix_reused_tokens": 16,
       "retained_cache_hits": 1
+    }
+  },
+  "performance": {
+    "mtp": {
+      "available": true,
+      "requested": false,
+      "active": false,
+      "direct_fallback_steps": 0,
+      "draft_tokens": 0,
+      "accepted_tokens": 0,
+      "decode_steps": 0
     }
   }
 }

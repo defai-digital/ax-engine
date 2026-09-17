@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "scope": "Product surface and sampled QA only; Candidate, not MTP Tier 2 or broad accuracy certification",
-  "source_commit": "8c8217b2fd330f25904ca73a789d88a78f44907a",
+  "source_commit": "e2b3e354420dc3154b0b8b843c25fdf981e64515",
   "host": {
     "system": "Darwin",
     "arch": "arm64",
@@ -13,9 +13,9 @@
   "model_repo": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
   "model_revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
   "model_manifest_sha256": "621470389598a8042634f1b65c71f0dd5f02ae47b44ed9e8080083e28725cc26",
-  "wheel_sha256": "cd8a36ff21643051afe4074c4700c65e79644e05b71dae09f5009f3b7d68be63",
-  "server_sha256": "788fa149f8ad03848ac24587656e614b9ba53bb7b13fc2c02eaf61a275d95bec",
-  "bench_sha256": "78947461eb6637c3d10ecafcfb9b768fa78e27fa287f149c13aec09d6f9b8a8c",
+  "wheel_sha256": "a17aed91f08f7e2bec147f6191a359ea731abd0e88fc0e599f02f12d4b83f2fd",
+  "server_sha256": "7f5c529b4d4b9e6ed7cd7fa4657cbd8c95b066e119858633c4922013605b0ccc",
+  "bench_sha256": "cb3897360e5f8a591b8b38b3a16ebfb32771c5b117b93ee9a8a9641a993b7926",
   "qualification_status": "passed",
   "qa_seed": 20260917,
   "independent_questions": 16,
@@ -277,7 +277,8 @@
           "hard_pass": true,
           "summary": "hard 9/9, soft 1/1"
         }
-      ]
+      ],
+      "mtp_report_matches_route": true
     },
     {
       "mode": "mtp",
@@ -532,7 +533,8 @@
           "hard_pass": true,
           "summary": "hard 9/9, soft 1/1"
         }
-      ]
+      ],
+      "mtp_report_matches_route": true
     }
   ],
   "publication": "Local operator build and qualification; no published release or hosted CI attestation",
@@ -541,5 +543,16 @@
     "equal": false,
     "first_difference_zero_based": 25,
     "scope": "Synthetic raw-token probe, not a representative quality benchmark"
+  },
+  "raw_artifact_sha256": {
+    "doctor.stdout.json": "f35780e905be9b37262ba70a49a21c8fdb0858edca1a3656b416bfa1951ce5c9",
+    "mtp-route-qwen3.8-27b.json": "1e064bc2e17cc8fbdf08ba0fe7d06fe9e4b1b6758b5f0e4b5811d805edbe7b0e",
+    "qualification.json": "68789ca9353c9a069249447ae0ad94149a55bb8fed70e27709b65afe6219bf0f",
+    "report-direct-qwen3.8-27b.json": "7b7fac82ffa565b3c50f858049ac61e75f688c63a4e557611d53f01dc040afbc",
+    "report-mtp-qwen3.8-27b.json": "57c29936760309b3f87d81af57f88521b3c9007f429f5be5e9e109c4fbcda388",
+    "server-route-direct-qwen3.8-27b.json": "0e24334f778db7d8db970e0d6823770a5f84cea8c653c4b3947845e97a1859cc",
+    "server-route-mtp-qwen3.8-27b.json": "acdfa49c27a4268d13cd5c64f4c621f4451f6904d5f2d7d49c94b08d23cb1b93",
+    "surface-direct-qwen3.8-27b.json": "19ce1a6b180fa805f189c5ae30ed832ac20f1c45f7e94dcb69c442f0b17f837c",
+    "surface-mtp-qwen3.8-27b.json": "91b32492476fd6bfc88900465039b1bee0ba0bd7d4ef8e66c9f1a02cd15440af"
   }
 }
