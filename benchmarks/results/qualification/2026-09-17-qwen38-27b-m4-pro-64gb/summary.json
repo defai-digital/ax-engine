@@ -1,0 +1,545 @@
+{
+  "schema": 1,
+  "scope": "Product surface and sampled QA only; Candidate, not MTP Tier 2 or broad accuracy certification",
+  "source_commit": "8c8217b2fd330f25904ca73a789d88a78f44907a",
+  "host": {
+    "system": "Darwin",
+    "arch": "arm64",
+    "chip": "Apple M4 Pro",
+    "model": "Mac16,11",
+    "memory_bytes": 68719476736,
+    "os": "26.6.2"
+  },
+  "model_repo": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+  "model_revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+  "model_manifest_sha256": "621470389598a8042634f1b65c71f0dd5f02ae47b44ed9e8080083e28725cc26",
+  "wheel_sha256": "cd8a36ff21643051afe4074c4700c65e79644e05b71dae09f5009f3b7d68be63",
+  "server_sha256": "788fa149f8ad03848ac24587656e614b9ba53bb7b13fc2c02eaf61a275d95bec",
+  "bench_sha256": "78947461eb6637c3d10ecafcfb9b768fa78e27fa287f149c13aec09d6f9b8a8c",
+  "qualification_status": "passed",
+  "qa_seed": 20260917,
+  "independent_questions": 16,
+  "streams": [
+    "non-streaming",
+    "streaming"
+  ],
+  "cells": [
+    {
+      "mode": "direct",
+      "status": "ok",
+      "surface_passed": true,
+      "qa_items": 32,
+      "qa_hard_passed": 32,
+      "mtp_draft_tokens": 0,
+      "mtp_verify_tokens": 0,
+      "soft_failed_checks": 0,
+      "surface": [
+        {
+          "name": "concurrent_chat",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "3 parallel chat completions ok"
+        },
+        {
+          "name": "stream_nonstream",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "non-stream chars=1; sse_bytes=677 stream_chars=1 usage=True done=True parity=ok"
+        },
+        {
+          "name": "cancel_request",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "state=cancelled cancel_requested=True"
+        },
+        {
+          "name": "tools_schema",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "content_null=True tool_calls=True"
+        },
+        {
+          "name": "remote_media_rejected",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "remote media rejected HTTP 400"
+        },
+        {
+          "name": "multimodal_video",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "advertised video: HTTP 200, prompt_tokens=22, text_only_prompt_tokens=16, content='There is **1 frame** \u2014 the single black image you provided.\\n\\nIf'"
+        },
+        {
+          "name": "multimodal_image",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "image chat returned 18 chars (require_image=True)"
+        }
+      ],
+      "qa": [
+        {
+          "prompt_id": "format_markdown_heading",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "format_markdown_heading",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "knowledge_python_list",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "knowledge_python_list",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "translation_fr_weather",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "translation_fr_weather",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "unit_test_is_even",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "unit_test_is_even",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "common_sense_ice_melt",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "common_sense_ice_melt",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "reading_who_arrived",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "reading_who_arrived",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "math_apples_store",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "math_apples_store",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "creative_alliteration",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "creative_alliteration",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "json_invoice_nested",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "json_invoice_nested",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "creative_product_tagline",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "creative_product_tagline",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "instruction_numbered_countries",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "instruction_numbered_countries",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "science_states_of_matter",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "science_states_of_matter",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "code_sql_join",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "code_sql_join",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "instruction_uppercase_yes",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "instruction_uppercase_yes",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "reasoning_false_premise",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "reasoning_false_premise",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "summarization_http_one",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "summarization_http_one",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        }
+      ]
+    },
+    {
+      "mode": "mtp",
+      "status": "ok",
+      "surface_passed": true,
+      "qa_items": 32,
+      "qa_hard_passed": 32,
+      "mtp_draft_tokens": 63,
+      "mtp_verify_tokens": 86,
+      "soft_failed_checks": 0,
+      "surface": [
+        {
+          "name": "concurrent_chat",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "3 parallel chat completions ok"
+        },
+        {
+          "name": "stream_nonstream",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "non-stream chars=1; sse_bytes=689 stream_chars=1 usage=True done=True parity=ok"
+        },
+        {
+          "name": "cancel_request",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "state=cancelled cancel_requested=True"
+        },
+        {
+          "name": "tools_schema",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "content_null=True tool_calls=True"
+        },
+        {
+          "name": "remote_media_rejected",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "remote media rejected HTTP 400"
+        },
+        {
+          "name": "multimodal_video",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "advertised video: HTTP 200, prompt_tokens=22, text_only_prompt_tokens=16, content='There is **1 frame** shown \u2014 and it is completely black.\\n\\nSince'"
+        },
+        {
+          "name": "multimodal_image",
+          "passed": true,
+          "hard": true,
+          "skipped": false,
+          "detail": "image chat returned 17 chars (require_image=True)"
+        }
+      ],
+      "qa": [
+        {
+          "prompt_id": "format_markdown_heading",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "format_markdown_heading",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "knowledge_python_list",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "knowledge_python_list",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "translation_fr_weather",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "translation_fr_weather",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "unit_test_is_even",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "unit_test_is_even",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "common_sense_ice_melt",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "common_sense_ice_melt",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "reading_who_arrived",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "reading_who_arrived",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "math_apples_store",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "math_apples_store",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "creative_alliteration",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "creative_alliteration",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "json_invoice_nested",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "json_invoice_nested",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "creative_product_tagline",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "creative_product_tagline",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "instruction_numbered_countries",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "instruction_numbered_countries",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "science_states_of_matter",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "science_states_of_matter",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "code_sql_join",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "code_sql_join",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "instruction_uppercase_yes",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "instruction_uppercase_yes",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "reasoning_false_premise",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "reasoning_false_premise",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "summarization_http_one",
+          "stream": true,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        },
+        {
+          "prompt_id": "summarization_http_one",
+          "stream": false,
+          "hard_pass": true,
+          "summary": "hard 9/9, soft 1/1"
+        }
+      ]
+    }
+  ],
+  "publication": "Local operator build and qualification; no published release or hosted CI attestation",
+  "greedy_probe": {
+    "output_tokens": 64,
+    "equal": false,
+    "first_difference_zero_based": 25,
+    "scope": "Synthetic raw-token probe, not a representative quality benchmark"
+  }
+}

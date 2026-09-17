@@ -41,6 +41,18 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-17 product-surface qualification on the selected **Mac mini M4 Pro
+  64 GB** SKU, macOS 26.6.2, clean source `8c8217b2`, installed bundled wheel:
+  direct **32/32** and MTP **32/32** hard QA, zero soft failures, each **7/7**
+  product-surface probes with no skips. Each route runs the same 16 stratified
+  questions in streaming and non-streaming modes. Doctor reported ready;
+  wheel dependencies loaded from the installed package. Actual server counters
+  prove direct without MTP and an active MTP route.
+  [Scoped evidence and reproduction](../../benchmarks/results/qualification/2026-09-17-qwen38-27b-m4-pro-64gb/).
+  These are product health gates, not representative benchmark accuracy or a
+  Tier 2 promotion. The paired raw-token greedy probe diverged at output index
+  25; exact direct/MTP token equivalence remains unqualified.
+
 - Default serve alias and revision pin in the CLI.
 - 2026-08-30 direct + MTP refresh on Apple M5 Max, 128 GB, from the v7.2.0
   binary at commit `3cea9def`. The host recorded tracked runtime changes;
