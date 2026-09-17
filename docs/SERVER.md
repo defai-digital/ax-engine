@@ -166,7 +166,7 @@ env var fallback (CLI flag wins when both are set):
 | `--rate-limit-burst <N>` | `AX_ENGINE_RATE_LIMIT_BURST` | defaults to `--rate-limit-rps` when unset |
 | `--stream-idle-timeout-secs <N>` | `AX_ENGINE_STREAM_IDLE_TIMEOUT_SECS` | no idle deadline |
 | `--stream-max-duration-secs <N>` | `AX_ENGINE_STREAM_MAX_DURATION_SECS` | no hard cap |
-| `--generate-max-duration-secs <N>` | `AX_ENGINE_GENERATE_MAX_DURATION_SECS` | no deadline |
+| `--generate-max-duration-secs <N>` | `AX_ENGINE_GENERATE_MAX_DURATION_SECS` | 3600s backstop (explicit `0` disables) |
 
 Notes:
 
@@ -202,14 +202,22 @@ Notes:
   legitimately run far longer than typical HTTP calls) diverge from the
   shared HTTP timeout; leaving it unset keeps today's shared-timeout
   behavior.
-- `--generate-max-duration-secs` bounds the whole wall time of one
+- `--generate-max-duration-secs` bounds response collection for a
   non-streaming generation (`/v1/generate` and the gRPC `Generate` RPC). It is
-  a whole-request deadline, not an idle timeout, so set it above the
+  a collection-duration deadline, not an idle timeout, so set it above the
   worst-case legitimate generation time for the served model. On expiry the
   request ends with HTTP 504 `generation_deadline_exceeded` (gRPC
   `DEADLINE_EXCEEDED`) instead of waiting on a stalled engine. It is
   independent of `--request-timeout-secs`, which also covers request
-  preparation and answers 408 with a plain-text body.
+  preparation and answers 408 with a plain-text body. With neither the flag
+  nor the env var set, a 3600s backstop applies; an explicit `0` disables it.
+  This is a provisional policy value, not a measured target-SKU latency bound.
+  The collection timer starts after the worker acknowledges stream startup,
+  excluding admission, command-queue and startup waits. Events arriving
+  without a terminal response do not reset the timer. Expiry signals consumer
+  disconnection, but cannot interrupt a synchronous engine step or guarantee
+  when the worker releases its admission permit. It does not establish or
+  repair the cause of a generation stall.
 
 ## Observability
 

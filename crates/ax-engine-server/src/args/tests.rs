@@ -1363,10 +1363,22 @@ fn resolved_limits_default_to_unset_when_no_flags_given() {
     assert_eq!(args.resolved_request_timeout(), None);
     assert_eq!(args.resolved_grpc_request_timeout(), None);
     assert_eq!(args.resolved_rate_limit(), None);
-    assert_eq!(args.resolved_generate_max_duration(), None);
     let deadlines = args.resolved_stream_deadlines();
     assert_eq!(deadlines.idle_timeout, None);
     assert_eq!(deadlines.max_duration, None);
+}
+
+#[test]
+fn generate_max_duration_defaults_to_builtin_backstop() {
+    // Assumes AX_ENGINE_GENERATE_MAX_DURATION_SECS is not set in the test
+    // environment, matching the sibling "defaults to unset" test. The
+    // non-streaming deadline is the one limit that is NOT opt-in: an
+    // unbounded wait on a wedged engine is worse than a bounded error.
+    let args = base_args();
+    assert_eq!(
+        args.resolved_generate_max_duration(),
+        Some(std::time::Duration::from_secs(3600))
+    );
 }
 
 #[test]
@@ -1393,7 +1405,7 @@ fn resolved_limits_honor_explicit_flags() {
 }
 
 #[test]
-fn generate_max_duration_flag_is_opt_in() {
+fn generate_max_duration_override_and_disable() {
     let args =
         ServerArgs::try_parse_from(["ax-engine-server", "--generate-max-duration-secs", "900"])
             .expect("the non-streaming deadline flag should parse");
@@ -1402,8 +1414,9 @@ fn generate_max_duration_flag_is_opt_in() {
         Some(std::time::Duration::from_secs(900))
     );
 
-    // A non-positive value leaves the deadline disabled, matching how the
-    // other deadline flags preserve today's unbounded behavior.
+    // An explicit non-positive value disables the deadline, including the
+    // built-in backstop. This must not collapse into the unset default, so
+    // the presence check runs before the positive-value filter.
     let disabled =
         ServerArgs::try_parse_from(["ax-engine-server", "--generate-max-duration-secs", "0"])
             .expect("a zero deadline should still parse");

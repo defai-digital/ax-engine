@@ -17,6 +17,8 @@ cd "$ROOT_DIR"
 
 echo "==> QA: py_compile harness modules"
 "$PYTHON_BIN" -m py_compile \
+  scripts/audit_qa_retest.py \
+  scripts/test_audit_qa_retest.py \
   qa/__init__.py \
   qa/prompt_def.py \
   qa/prompts.py \
@@ -43,6 +45,7 @@ echo "==> QA: validate question bank"
 
 echo "==> QA: unit tests (sampling, checkers, matrix, surface, embedding, multimodal)"
 "$PYTHON_BIN" -m unittest \
+  scripts/test_audit_qa_retest.py \
   scripts/test_qa_sampling.py \
   scripts/test_qa_checkers.py \
   scripts/test_run_qa_matrix.py \
