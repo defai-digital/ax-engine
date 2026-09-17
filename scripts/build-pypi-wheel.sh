@@ -220,8 +220,8 @@ echo "    staged: $AX_METAL_PACKAGE_BUILD_DIR/ax_phase1_dense_path.metallib ($(w
 # PyO3's catch_unwind can actually turn a Rust panic into a catchable Python
 # exception instead of aborting the whole embedding process. --release would
 # silently defeat that safety net for every wheel this script produces.
-echo "==> Building wheel (release-pyext, stripped, target $EXPECTED_PLAT_TAG)..."
-maturin build --profile release-pyext --strip --out "$WHEEL_OUT"
+echo "==> Building wheel (release-pyext, target $EXPECTED_PLAT_TAG)..."
+maturin build --profile release-pyext --out "$WHEEL_OUT"
 
 # Use a glob expansion instead of ls+sort so we get exactly what was just built.
 # After the clean above there should be exactly one match.
@@ -357,6 +357,9 @@ if [[ ${#bad_binaries[@]} -gt 0 ]]; then
     exit 1
 fi
 echo "    verified: ax-engine product Mach-O binaries have minos >= ${MACOSX_DEPLOYMENT_TARGET}"
+
+echo "==> Verifying isolated native wheel import..."
+python3 "$SCRIPT_DIR/check_wheel_native_import.py" "$INSPECT_DIR"
 
 # ── 6. Optionally publish ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--publish" ]]; then

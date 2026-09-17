@@ -83,6 +83,11 @@ codegen-units = 1     # single codegen unit lets the optimizer see the full crat
 panic = "abort"       # omit unwinding tables; saves binary size and a branch per call-site
 strip = "debuginfo"   # strip DWARF; keep symbol table for Instruments / cargo-flamegraph
 
+[profile.release.build-override]
+# Rust 1.97's debuginfo stripping can misalign Mach-O proc-macro dylibs,
+# which macOS 27 refuses to load. Build tools are not shipped artifacts.
+strip = "none"
+
 [profile.release-native]
 inherits = "release"
 # Build with: RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native
@@ -101,6 +106,7 @@ inherits = "release"
 # `maturin build --profile release-pyext` (see scripts/build-pypi-wheel.sh),
 # not `--release`.
 panic = "unwind"
+strip = "none"       # avoid Rust 1.97 Mach-O stripping corruption in the extension
 
 [profile.release-server]
 inherits = "release"
