@@ -2,7 +2,7 @@
 """Qwen 3.8 27B primary qualification contract.
 
 `--dry-run` prints the pinned pack and required commands (CI-safe, no weights).
-A live `--model-dir` run belongs on Apple M5 Max 128 GB with a clean checkout.
+A live `--model-dir` run belongs on Mac mini M4 Pro 64 GB with a clean checkout.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any, Sequence
 PRIMARY_ALIAS = "qwen3.8-27b:axq"
 PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"
 PRIMARY_REVISION = "3e290738e96972307c6aeb9934ab170ca0eae1c1"
-HOST_CLASS = "Mac mini M5, 64 GB"
+HOST_CLASS = "Mac mini M4 Pro, 64 GB"
 STATUS_SENTENCE = (
     "Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. "
     "AX certification record: Candidate (gates open)."
@@ -28,6 +28,7 @@ def contract() -> dict[str, Any]:
         "alias": PRIMARY_ALIAS,
         "repo_id": PRIMARY_REPO,
         "revision": PRIMARY_REVISION,
+        "model_manifest_sha256": "621470389598a8042634f1b65c71f0dd5f02ae47b44ed9e8080083e28725cc26",
         "host_class": HOST_CLASS,
         "status": STATUS_SENTENCE,
         "ci": "dry-run only; do not mount 27B weights on CI",
@@ -46,7 +47,7 @@ def contract() -> dict[str, Any]:
             "P0 multimodal quality",
         ],
         "commands": {
-            "doctor": f"ax-engine doctor --model {PRIMARY_ALIAS}",
+            "doctor": "ax-engine doctor --mlx-model-artifacts-dir $MODEL_DIR --json",
             "serve": f"ax-engine serve {PRIMARY_ALIAS}",
             "qa_inventory": (
                 f"OK|direct|{PRIMARY_ALIAS}|$MODEL_DIR\n"
@@ -77,7 +78,16 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="emit the contract as JSON",
     )
-    return parser.parse_args(argv)
+    parser.add_argument("--run", action="store_true", help="execute release gates; requires build provenance")
+    for name in ("output", "build-manifest", "server-bin", "bench-bin", "wheel", "cli"):
+        parser.add_argument("--" + name, type=Path)
+    parser.add_argument("--port", type=int, default=31494)
+    args = parser.parse_args(argv)
+    if args.run:
+        if args.dry_run or any(getattr(args, name) is None for name in
+                              ("model_dir", "output", "build_manifest", "server_bin", "bench_bin", "wheel", "cli")):
+            parser.error("--run requires model-dir, output, build-manifest, server-bin, bench-bin, wheel and cli; no dry-run")
+    return args
 
 
 def _print_contract(as_json: bool) -> None:
@@ -117,11 +127,14 @@ def _live_preflight(model_dir: Path) -> None:
         raise SystemExit(f"missing config.json under {model_dir}")
     print(f"live preflight ok: {model_dir}")
     print("next: ax-engine doctor, then QA surface direct+mtp on this snapshot")
-    print("this script does not start the 27B server (operator-owned live run)")
+    print("preflight only: NOT qualified; use --run with build provenance to execute gates")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.run:
+        from qwen38_live_gate import run_live
+        return run_live(args, contract(), Path(__file__).resolve().parents[1])
     if args.model_dir is not None and not args.dry_run:
         _live_preflight(args.model_dir)
         if args.json:

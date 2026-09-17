@@ -26,7 +26,7 @@ before the Qwen 3.5 linear-attention short-circuit.
 There is no download alias and no Compatible generic load path. Never remap
 onto `qwen3_5` or Super-class 2.4T.
 
-The default local pack remains Qwen 3.8 27B AXQ on Mac mini M5 64 GB:
+The default local pack remains Qwen 3.8 27B AXQ on Mac mini M4 Pro 64 GB:
 [Qwen 3.8 27B AXQ certification](qwen3.8-27b-axq.md).
 
 ## Why it is incubating
@@ -34,7 +34,7 @@ The default local pack remains Qwen 3.8 27B AXQ on Mac mini M5 64 GB:
 - No repo-owned `ax-engine-mlx` trunk for `qwen4_exp`.
 - Custom Metal for GDN, sparse attention, hyper-connections, and n-gram
   gather is planned **after** convert+trunk exist. MLX stays the QMM engine.
-- Evidence belongs on Mac Studio M5 Ultra 256 GB. Mini M5 64 GB and laptop
+- Evidence belongs on Mac Studio M5 Ultra 256 GB. Mini M4 Pro 64 GB and laptop
   campaign hosts are not this SKU.
 
 ## Operator contract

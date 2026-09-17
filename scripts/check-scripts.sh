@@ -216,6 +216,7 @@ bash scripts/check-qa.sh
   scripts/check_qwen38_primary_claims.py \
   scripts/test_check_qwen38_primary_claims.py \
   scripts/qualify_qwen38_27b.py \
+  scripts/qwen38_live_gate.py \
   scripts/test_qualify_qwen38_27b.py \
   scripts/qualify_qwen38_flash_next.py \
   scripts/test_qualify_qwen38_flash_next.py \

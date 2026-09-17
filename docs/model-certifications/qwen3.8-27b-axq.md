@@ -111,7 +111,7 @@ Not claimed:
 
 Operator procedure: [Testing](../TESTING.md) and
 `python3 scripts/qualify_qwen38_27b.py --dry-run`. Live 27B runs belong on a
-Mac mini M5 64 GB host with a clean checkout of the engine under test.
+Mac mini M4 Pro 64 GB host with a clean checkout of the engine under test.
 
 ## Related
 
