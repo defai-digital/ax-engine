@@ -180,6 +180,17 @@ pub(crate) fn map_generation_service_error(
             "service_unavailable",
             "native generation worker is unavailable".to_string(),
         ),
+        GenerationServiceError::DeadlineExceeded {
+            request_id,
+            observed_event_count,
+        } => error_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            "generation_deadline_exceeded",
+            format!(
+                "generation request {request_id} did not complete within the configured deadline \
+                 ({observed_event_count} stream event(s) observed)"
+            ),
+        ),
     }
 }
 

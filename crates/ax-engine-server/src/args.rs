@@ -22,6 +22,7 @@ const RATE_LIMIT_RPS_ENV: &str = "AX_ENGINE_RATE_LIMIT_RPS";
 const RATE_LIMIT_BURST_ENV: &str = "AX_ENGINE_RATE_LIMIT_BURST";
 const STREAM_IDLE_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_STREAM_IDLE_TIMEOUT_SECS";
 const STREAM_MAX_DURATION_SECS_ENV: &str = "AX_ENGINE_STREAM_MAX_DURATION_SECS";
+const GENERATE_MAX_DURATION_SECS_ENV: &str = "AX_ENGINE_GENERATE_MAX_DURATION_SECS";
 
 fn parse_stream_experts_mode(raw: &str) -> Result<ax_engine_sdk::MlxStreamExpertsMode, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -322,6 +323,18 @@ pub struct ServerArgs {
     #[arg(long = "stream-max-duration-secs")]
     pub stream_max_duration_secs: Option<u64>,
 
+    /// Hard cap on the total wall time of one non-streaming generation
+    /// request (`/v1/generate` and the gRPC `Generate` RPC), in seconds.
+    /// If the engine stops producing progress before it delivers a
+    /// terminal response, the request ends with a deadline error instead
+    /// of hanging until the client gives up. This is a whole-request
+    /// deadline, not an idle timeout: set it above the worst-case
+    /// legitimate generation time for the served model. Unset (or
+    /// non-positive) disables it, preserving today's behavior. Falls back
+    /// to AX_ENGINE_GENERATE_MAX_DURATION_SECS.
+    #[arg(long = "generate-max-duration-secs")]
+    pub generate_max_duration_secs: Option<u64>,
+
     /// Idle-evict non-default resident models after this many seconds without
     /// an admitted request (multi-model serving). The default model is never
     /// evicted, and eviction only runs while the server is otherwise idle.
@@ -536,6 +549,19 @@ impl ServerArgs {
                     .or_else(|| std::env::var(STREAM_MAX_DURATION_SECS_ENV).ok()),
             ),
         }
+    }
+
+    /// Whole-request deadline for a non-streaming generation; `None` disables.
+    pub(crate) fn resolved_generate_max_duration(&self) -> Option<std::time::Duration> {
+        self.generate_max_duration_secs
+            .map(|secs| secs.to_string())
+            .or_else(|| std::env::var(GENERATE_MAX_DURATION_SECS_ENV).ok())
+            .as_deref()
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .filter(|secs| *secs > 0)
+            .map(std::time::Duration::from_secs)
     }
 }
 

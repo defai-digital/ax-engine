@@ -97,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         grpc_request_timeout: args.resolved_grpc_request_timeout(),
         rate_limit: args.resolved_rate_limit(),
         stream_deadlines: args.resolved_stream_deadlines(),
+        generate_max_duration: args.resolved_generate_max_duration(),
     };
     let api_key = args.resolved_api_key();
     let discovery_instance_id = new_instance_id();
