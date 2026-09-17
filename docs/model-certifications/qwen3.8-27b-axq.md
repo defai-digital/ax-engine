@@ -41,20 +41,45 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-17 low-precision SwiGLU correction (`891385f8`, dimension guard
+  `ad999f3f`) preserves MLX BF16/FP16 tensor activation semantics in singleton
+  gate/up and packed paths. An isolated exact-projection regression failed
+  before repair (BF16 maximum absolute error 0.001953125); all 22 SwiGLU tests
+  now pass. On the selected mini, clean installed `891385f8` gives **9/9**
+  paired direct/MTP token matches on the original diagnostics and **12/12**
+  on a predeclared holdout. Both AX routes match the same-pack reference on
+  8/9 original cases; retrieval wording differs. These finite token checks
+  do not establish task accuracy or general equivalence. The separate
+  512-token LINE_SET replay still has direct/MTP content divergences, so
+  broader route consistency remains open. No fastpath default changed and
+  no post-fix speed claim is made.
+  The unchanged twelve-case LINE_SET diagnostic passes only **1/12 direct**
+  and **2/12 MTP**, with nine and six truncations respectively; only **4/12**
+  paired response texts match. Both 32851-token recovery replays complete but
+  still answer B against gold C. This is a 512-token answer-only failure
+  diagnostic, not a replacement for the original 32k thinking campaign.
+  Final clean `ad999f3f` bundled-wheel qualification passes: each route has
+  **32/32 hard QA**, zero soft failures and **7/7 surface probes**; doctor is
+  ready, packaged libraries load in the isolated environment, and the paired
+  64-token probe now matches with active MTP counters. This closes that scoped
+  gate, not the broader failures above. Status remains **Candidate; not ship-ready**.
+  [Activation correction and scoped evidence](../../benchmarks/results/qualification/2026-09-17-qwen38-27b-swiglu-consistency/).
+
 - 2026-09-17 target-head correction (`1b15fdf0`) preserves the checkpoint's
   dense BF16 output head instead of automatically substituting a singleton-only
   2-bit cache. On nine fixed inputs, direct/reference token agreement improved
   from 3/9 to 7/9; MTP stayed 8/9 and direct/MTP agreed on 8/9. These are token
-  diagnostics, not model accuracy. The remaining synthetic split is now at
-  output index 14. The live qualifier now requires paired greedy equality and
+  diagnostics, not model accuracy. That revision still split at output index
+  14 (closed by the later activation correction above). The live qualifier
+  now requires paired greedy equality and
   records schema-2 request/response hashes; the previous health-only pass does
   not satisfy that gate. Fastpath overrides did not establish general route
-  equivalence, and the original LINE_SET/recovery campaign has not been rerun
-  after this correction. Clean `875aa5da` with the final bundled wheel passed
+  equivalence. The original full 32k thinking LINE_SET campaign has not
+  been rerun; later bounded diagnostics are recorded above. Clean `875aa5da` with the final bundled wheel passed
   direct/MTP 32/32 hard QA and 7/7 surface probes per route, but the schema-2
-  qualifier exited 1 at paired token index 14. The new gate is **failed**.
+  qualifier exited 1 at paired token index 14. That revision's gate is **failed**.
   Status remains **Candidate; not ship-ready**.
-  [Current precision comparison and qualification evidence](../../benchmarks/results/qualification/2026-09-17-qwen38-27b-target-precision/).
+  [Earlier precision comparison and qualification evidence](../../benchmarks/results/qualification/2026-09-17-qwen38-27b-target-precision/).
 
 - 2026-09-17 product-surface qualification on the selected **Mac mini M4 Pro
   64 GB** SKU, macOS 26.6.2, clean source `e2b3e354`, installed bundled wheel:
@@ -128,8 +153,9 @@ Landed, labeled:
   saved continuation; it does not qualify fresh-question accuracy. Each AX
   greedy route was repeatable across two requests. The independent 64-token
   mlx-lm probe matched AX MTP exactly and differed from AX direct at index 25,
-  so the route split does not establish that MTP caused an error. Numerical
-  attribution and direct/MTP equivalence remain open.
+  so the route split does not establish that MTP caused an error. The later
+  activation correction closes the reproduced split on the scoped diagnostics;
+  universal equivalence is not claimed.
 
 Not claimed:
 

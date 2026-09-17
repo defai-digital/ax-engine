@@ -1,0 +1,65 @@
+{
+  "source_commit": "ad999f3fa9cd8382c1000bcad19cb687fa6d5638",
+  "checks": [
+    {
+      "check": "fmt",
+      "exit_code": 0
+    },
+    {
+      "check": "clippy",
+      "exit_code": 0
+    },
+    {
+      "check": "rust",
+      "exit_code": 0
+    },
+    {
+      "check": "python",
+      "exit_code": 0
+    },
+    {
+      "check": "qwen27b",
+      "exit_code": 0
+    },
+    {
+      "check": "flash_next",
+      "exit_code": 0
+    },
+    {
+      "check": "claims",
+      "exit_code": 0
+    }
+  ],
+  "installed_extension_python": {
+    "passed": 208,
+    "skipped": 26,
+    "subtests_passed": 136
+  },
+  "clippy_policy": "Existing repository CI policy: -D warnings plus force-warn for unwrap-used, expect-used, panic, dbg-macro, large-enum-variant",
+  "script_suite": {
+    "source_commit": "891385f8a0847442af5d15031c2cc6b827161204",
+    "exit_code": 0
+  },
+  "log_sha256": {
+    "validation-final/claims.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "validation-final/clippy.log": "fda9d2c7283d0423b2c58d34b12a95d2fb22af6c71fad6bfc56e75e42aee8ae5",
+    "validation-final/flash_next.log": "26e8386cb9523902cf437b820a43c7cfd9c90b3e7a8047cdc3a393cd625663be",
+    "validation-final/fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "validation-final/maturin.log": "b9f9127b8502492e5d79f0e52cff98a79fb252c6d677d9585fc86c8f38bfd356",
+    "validation-final/python-installed.log": "c62d622ab26810ff034ccf814de5d1f8d2733ecedb4c546df3b9f13825104a63",
+    "validation-final/python.log": "43007e7f0988aab1b0c61a6e44979a6e8e19d70bb8d4f0098669a73a514ee47f",
+    "validation-final/qwen27b.log": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+    "validation-final/rust.log": "98ebbaf65baf04dfab1248379289a6d7c60f3c1cb3c1af53c29cf9a770e6773a",
+    "bf16-isolated-before.log": "dc0a84812bd24959d6acfc04ae94a7fd167da85edfea294033b96a41e07caa6f",
+    "packed-before.log": "e5fe4297d0da94e7258c59decd7bbb96a282e6f87486f018381c772921d51f32",
+    "swiglu-final-tests.log": "e236bf99940009049c49aa22906807009150e05c2dc2e8c9a6cc32be4b9d2855",
+    "packed-width-tests.log": "5d603fd1f86afc8c5256f2067c3c9d0a9b1d72114f406525a43e5a0576569731"
+  },
+  "activation_regression": {
+    "isolated_bfloat16_before": "failed",
+    "isolated_bfloat16_before_max_abs": 0.001953125,
+    "packed_bfloat16_exact_before": "failed",
+    "swiglu_after_passed": 22,
+    "method": "Binary-exact quantization scales and one-hot input isolate activation from projection reduction order; BF16/FP16 outputs must be exact."
+  }
+}
