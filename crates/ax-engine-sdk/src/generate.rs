@@ -486,6 +486,9 @@ impl GenerateResponse {
         let finish_reason =
             GenerateFinishReason::from_request_state(snapshot.state, snapshot.terminal_stop_reason);
 
+        let route = GenerateRouteReport::from_route(&snapshot.route_metadata_hint);
+        let mtp = GenerateMtpReport::from_route(&route);
+
         Self {
             request_id: snapshot.request_id.0,
             model_id: snapshot.model_id.0,
@@ -500,9 +503,12 @@ impl GenerateResponse {
             finish_reason,
             step_count,
             ttft_step,
-            route: GenerateRouteReport::from_route(&snapshot.route_metadata_hint),
+            route,
             runtime,
-            performance: GeneratePerformanceReport::default(),
+            performance: GeneratePerformanceReport {
+                mtp,
+                ..GeneratePerformanceReport::default()
+            },
         }
     }
 
@@ -516,6 +522,8 @@ impl GenerateResponse {
         let finish_reason = report.finish_reason.or_else(|| {
             GenerateFinishReason::from_session_state(report.state, report.terminal_stop_reason)
         });
+
+        let mtp = GenerateMtpReport::from_route(&report.route);
 
         Self {
             request_id: report.request_id,
@@ -533,7 +541,10 @@ impl GenerateResponse {
             ttft_step,
             route: report.route,
             runtime,
-            performance: GeneratePerformanceReport::default(),
+            performance: GeneratePerformanceReport {
+                mtp,
+                ..GeneratePerformanceReport::default()
+            },
         }
     }
 }
@@ -779,6 +790,58 @@ mod tests {
     }
 
     #[test]
+    fn response_from_snapshot_reports_mtp_activity_without_inventing_timing() {
+        use ax_engine_core::{
+            BlockTable, CacheGroupId, ModelId, RequestId, RequestRecord, RequestSubmission,
+            SequenceNo,
+        };
+
+        let record = RequestRecord::new(
+            RequestSubmission {
+                request_id: RequestId(1),
+                model_id: ModelId("qwen3".to_string()),
+                input_tokens: vec![1, 2],
+                multimodal_inputs: Default::default(),
+                sampling_params: Default::default(),
+                max_output_tokens: 8,
+                arrival_sequence: SequenceNo(1),
+                metadata: None,
+            },
+            BlockTable::empty(CacheGroupId(0)),
+        );
+        for active in [false, true] {
+            let mut snapshot = record.snapshot();
+            snapshot.state = RequestState::Finished;
+            if active {
+                snapshot.route_metadata_hint.crossover_decisions = vec![
+                    ("ax_mtp_available".to_string(), 1),
+                    ("ax_mtp_requested".to_string(), 1),
+                    ("ax_mtp_decode_steps".to_string(), 2),
+                    ("ax_mtp_draft_tokens".to_string(), 6),
+                    ("ax_mtp_accepted_tokens".to_string(), 4),
+                ];
+            }
+            let response = GenerateResponse::from_snapshot(
+                snapshot,
+                3,
+                Some(2),
+                runtime_report(SelectedBackend::Mlx, CapabilityReport::mlx_preview(), None),
+            );
+            assert_eq!(response.performance.mtp.active, active);
+            assert_eq!(response.performance.mtp.requested, active);
+            assert_eq!(
+                response.performance.mtp.draft_tokens,
+                if active { 6 } else { 0 }
+            );
+            assert_eq!(
+                response.performance.mtp.accepted_tokens,
+                if active { 4 } else { 0 }
+            );
+            assert_eq!(response.performance.total_time_us, 0);
+        }
+    }
+
+    #[test]
     fn response_from_report_preserves_terminal_metadata() {
         let response = GenerateResponse::from_report(
             SessionRequestReport {
@@ -800,7 +863,13 @@ mod tests {
                     kv_mode: Some("paged_metadata".to_string()),
                     prefix_cache_path: None,
                     barrier_mode: Some("serial".to_string()),
-                    crossover_decisions: BTreeMap::new(),
+                    crossover_decisions: BTreeMap::from([
+                        ("ax_mtp_available".to_string(), 1),
+                        ("ax_mtp_requested".to_string(), 1),
+                        ("ax_mtp_decode_steps".to_string(), 2),
+                        ("ax_mtp_draft_tokens".to_string(), 6),
+                        ("ax_mtp_accepted_tokens".to_string(), 4),
+                    ]),
                 },
                 finish_reason: Some(GenerateFinishReason::MaxOutputTokens),
                 terminal_stop_reason: Some(StopReason::MaxOutputTokens),
@@ -811,6 +880,10 @@ mod tests {
             runtime_report(SelectedBackend::Mlx, CapabilityReport::mlx_preview(), None),
         );
 
+        assert!(response.performance.mtp.active);
+        assert!(response.performance.mtp.requested);
+        assert_eq!(response.performance.mtp.draft_tokens, 6);
+        assert_eq!(response.performance.mtp.accepted_tokens, 4);
         assert_eq!(response.request_id, 9);
         assert_eq!(response.status, GenerateStatus::Finished);
         assert_eq!(
