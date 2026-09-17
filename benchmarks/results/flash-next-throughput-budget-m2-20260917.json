@@ -1,0 +1,23 @@
+{
+  "qualification": false,
+  "release_ready": false,
+  "wall_sample_budget_seconds": 900,
+  "boundary": "time since the last completed sample or CELL line; includes model startup before first warmup",
+  "binary_sha256": "f61f46a04a67b13d2a132e09da613d4b93f5fb1e405ad65971a72c09e032cbc1",
+  "harness_sha256": "c06d0b43f7b48826f2e86d81af4b829825736a49b91a2d30075b8fac6ab9e732",
+  "supervisor_sha256": "5e63a96982b004716277c26fc47d83de57fb324461687957e88b290251a81a18",
+  "events": [
+    {
+      "cell_id": "6bit/8192/ax_direct",
+      "elapsed_without_completed_sample_seconds": 901.9301190376282,
+      "last_progress_line": "CELL 6bit/8192/ax_direct",
+      "reason": "AX sample exceeded 900-second wall progress budget",
+      "server_pid": 15074,
+      "signal": "SIGTERM",
+      "escalated_to": "SIGKILL"
+    }
+  ],
+  "completed": true,
+  "raw_sha256": "eead87002eb5d1b9827f6de98852d423ecbc68e8e4ba5773c090b84c9ba68868",
+  "campaign_status": "Interrupted with 11 complete cells, two recorded failures and five missing results; no release qualification."
+}

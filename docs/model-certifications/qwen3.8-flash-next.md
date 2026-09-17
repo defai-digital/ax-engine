@@ -38,9 +38,9 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
 | MTP integration | All 12 state/runner controls completed: 9 pass, 3 fail unchanged bounds | Investigate 2-bit tie state and 4-bit tie state/runner before promotion |
 | HTTP / SSE | Six modes and 12 requests completed; 4 pass, 2 fail direct/MTP text identity | Investigate 4/6-bit required MTP identity; extend beyond four-token requests |
-| Throughput | Fresh fixed-output matrix: 10/18 complete; 128 tokens in every measured sample | Finish remaining eight cells; verify memory behavior on target SKU |
+| Throughput | Fresh fixed-output matrix: 11/18 complete; two failed cells and five without results; 128 tokens in every measured sample | Resolve long-context budget and reference GPU timeout; collect five missing results and target-SKU memory evidence |
 | Target hardware | No M5 Ultra 256 GB result | Run target-SKU qualification |
-| Release | Not release-ready | Final merged-tree gates and native validation |
+| Release | Not release-ready | Close the numerical, QA, MTP, throughput, delivery and target-hardware gates above; merged validation alone is insufficient |
 
 The statistical threshold was adjusted on the collected sample: the earlier
 zero-high-margin-disagreement rule failed, while the later at-most-1% rule
@@ -59,7 +59,7 @@ All cells use test binary `79f30efe` (SHA-256 prefix), built from commit
 | 4-bit | Pass | Pass | Fail: logit relative error 0.100864 > 0.1 | Fail: margin 1.3125 > 0.5 |
 | 6-bit | Pass | Pass | Pass | Pass |
 
-The native API matrix uses server binary `f61f46a0` (SHA-256 prefix), also
+The pre-merge native API matrix uses server binary `f61f46a0` (SHA-256 prefix), also
 from `1819e4bb`. Each mode runs completion and SSE with the same five input
 tokens and four output tokens. All six modes return usage and a terminal SSE
 marker, repeat their own text, preserve pack metadata, and exit cleanly.
@@ -67,6 +67,16 @@ Default-on MTP remains zero. Required MTP produces different text from direct
 for 4-bit and 6-bit; 2-bit agrees for this prompt. These strict identity
 failures remain visible even though the bounded 6-bit runner controls pass.
 This short API control does not establish long-request quality or stability.
+
+The merged source `ea4eb15b` was rebuilt on M2 Ultra with Rust 1.97.1
+(`release-server`, binary SHA-256 prefix `6c5c0188`). Its separate six-mode,
+12-request rerun again passes four modes and fails 4/6-bit required MTP
+text identity. All transport, repeat identity, usage, metadata and clean-exit
+checks pass. The 4/6-bit runs remove both experimental family/2-bit opt-ins;
+2-bit retains both. Selected-expert/prefill opt-ins remain enabled.
+Local merged validation passes 3,681 Rust tests (46 ignored), pinned Clippy,
+formatting, script gates and 50 Python CLI tests with 92 subtests.
+These bounded checks do not close the release gates above.
 
 ## Evidence and provenance
 
@@ -79,8 +89,11 @@ A mismatching or unavailable harness is an open reproducibility gate.
 - [Native build identity and checked source hashes](../../benchmarks/results/flash-next-native-build-m2-20260916.json)
 - [Completed QA, long context and NLL](../../benchmarks/results/flash-next-extended-qa-v3-m2-20260916.json)
 - [Trained-head falsification control](../../benchmarks/results/flash-next-mtp-head-oracle-m2-20260916.json)
-- [Native HTTP / SSE matrix](../../benchmarks/results/flash-next-http-m2-20260916.json)
+- [Merged native build identity](../../benchmarks/results/flash-next-native-build-merged-m2-20260917.json)
+- [Merged native HTTP / SSE matrix](../../benchmarks/results/flash-next-http-merged-m2-20260917.json)
+- [Pre-merge native HTTP / SSE matrix](../../benchmarks/results/flash-next-http-m2-20260916.json)
 - [Batched MTP matrix](../../benchmarks/results/flash-next-mtp-batched-verify-m2-20260916.json)
+- [Observed six-bit Auto paging](../../benchmarks/results/flash-next-sixbit-paging-m2-20260917.json)
 - [Throughput matrix, including incomplete cells](../../benchmarks/results/flash-next-throughput-ab-m2-20260916.json)
 - [Earlier affine 2/4/6-bit execution controls](../../benchmarks/results/flash-next-affine-formats-m2-20260915.json)
 - [Earlier native selected-prefill controls](../../benchmarks/results/flash-next-selected-prefill-m2-20260915.json)
@@ -104,7 +117,9 @@ says `auto_resident_on_192gib`, observed 6-bit Auto execution uses expert
 paging. A stack sample in the first prefill reaches
 `ExpertStackPager::ensure_layer` and `load_safetensors_mmap_filtered`.
 The first 512-token prefill takes about 448 seconds; subsequent samples take
-about 14 seconds. Read actual behavior rather than that stale residency label.
+about 14 seconds. A one-second diagnostic sample was taken during this
+unmeasured first warmup. Read actual behavior rather than that stale
+residency label.
 
 ## Admission and operator contract
 
@@ -144,3 +159,11 @@ versus 0.5), and its state control exceeds the logit bound (0.100864 versus
 The primary default remains [Qwen 3.8 27B AXQ](qwen3.8-27b-axq.md) on
 Mac mini M5 64 GB. See [Supported Models](../SUPPORTED-MODELS.md) and
 [Testing](../TESTING.md) for the wider operator contract.
+
+The throughput campaign stopped after entering 6-bit reference / 2,048 tokens.
+The SSH command exited 255; the process was absent on inspection, and its
+termination cause is unconfirmed. The five missing rows are not successful
+measurements. The 6-bit direct / 8,192-token server was deliberately terminated
+by the 900-second progress supervisor; the reference / 512-token Metal GPU
+timeout was a separate recorded failure. See the
+[supervisor record](../../benchmarks/results/flash-next-throughput-budget-m2-20260917.json).

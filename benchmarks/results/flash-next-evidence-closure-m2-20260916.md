@@ -12,7 +12,7 @@ A summary pass does not override `release_ready=false`.
 | `flash-next-mtp-head-oracle-m2-20260916.json` | Real head 95/114 acceptance, permuted 0/207. Only 50 requests per head contribute; 54 short requests are excluded. The harness hash verifies. The recorded 70% threshold is retained, not replaced by a new certification rule. |
 | `flash-next-mtp-batched-verify-m2-20260916.json` | All 12 primary/tie state and runner controls for 2/4/6-bit completed: 9 pass and 3 fail. Completion does not override the failed verdict. |
 | `flash-next-http-m2-20260916.json` | Six modes and 12 requests completed: four pass, two fail direct/MTP text identity (4/6-bit required). SSE, usage, repeat identity, unchanged metadata, default MTP off, and clean shutdown pass throughout. |
-| `flash-next-throughput-ab-m2-20260916.json` | Fresh fixed-output collection replaces the old EOS-stopping comparison. Ten of 18 cells complete; every measured sample emits 128 tokens. Remaining cells stay explicit. |
+| `flash-next-throughput-ab-m2-20260916.json` | Fresh fixed-output collection replaces the old EOS-stopping comparison. Eleven of 18 cells complete; every measured sample emits 128 tokens. Remaining cells stay explicit. |
 
 The original 105-item QA reports direct/MTP hard passes 102/105 and reference
 101/105. Direct and MTP differ in `reasoning_cause_effect` and
@@ -57,8 +57,12 @@ quality acceptance are separate gates. See the
 
 ## Fresh throughput snapshot
 
-All nine 4-bit cells and the 6-bit/512/direct cell are complete. The other
-eight cells are pending at this snapshot. AX uses `/v1/generate/stream` with
+All nine 4-bit cells and the 6-bit direct 512/2,048-token cells are complete.
+Two cells failed: direct 8,192 exceeded the external 900-second progress
+budget; reference 512 reported a Metal GPU timeout. Five cells have no
+persisted result (reference 2,048/8,192 and all three 6-bit MTP cells).
+The process disappeared after entering reference 2,048; the SSH command
+exited 255, which does not establish the process termination cause. AX uses `/v1/generate/stream` with
 `ignore_eos=true`; decode excludes the first token from both numerator and
 interval. The historical `auto_resident_on_192gib` configuration label is not
 proof of residency: a first-prefill stack sample shows the 6-bit Auto route
@@ -66,3 +70,13 @@ inside `ExpertStackPager::ensure_layer` and safetensors payload copying.
 The first 512-token prefill is 447.624 seconds, versus about 14 seconds later.
 The frozen harness and `1819e4bb` binary hashes match. This snapshot does not
 validate the newer main merge; its native evidence is collected separately.
+
+## Merged native validation
+
+Source ea4eb15b includes main 770514cc and origin/main 4aa60537. Its separate
+M2 release-server build and six-mode HTTP matrix are recorded in
+[build identity](flash-next-native-build-merged-m2-20260917.json) and
+[API evidence](flash-next-http-merged-m2-20260917.json). Four modes pass;
+4/6-bit required MTP fail direct text identity. All 12 short requests finish
+with valid usage, repeat identity and clean process exits. Native evidence
+is not inherited from the pre-merge binary. M5 qualification remains open.

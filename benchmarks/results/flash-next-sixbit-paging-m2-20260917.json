@@ -1,0 +1,27 @@
+{
+  "schema": "ax-engine.flash-next.paging-observation.v1",
+  "qualification": false,
+  "release_ready": false,
+  "performance_claim": false,
+  "binary_sha256": "f61f46a04a67b13d2a132e09da613d4b93f5fb1e405ad65971a72c09e032cbc1",
+  "base_commit": "1819e4bbfacedb3e81c2cefbb03fb6cddb5d2d02",
+  "raw_sample_sha256": "590a9de7c32d11b64b917c47fe5700533ffa87ce37c1a5bb572741d484c81c52",
+  "sample_timestamp": "2026-09-17 01:14:05.231 -0400",
+  "sample_duration_seconds": 1,
+  "phase": "6bit/512/ax_direct first warmup prefill",
+  "requested_residency": "auto",
+  "observed_stack": [
+    "    +                       412 _RNvNtCs1bY9KONQSh9_13ax_engine_mlx8generate37chunked_prefill_with_sampling_buffers  (in ax-engine-server-mtp-batched) + 1840  [0x103136a3c]",
+    "    +                           412 _RNvNtCs1bY9KONQSh9_13ax_engine_mlx5model28qwen4_exp_forward_with_cache  (in ax-engine-server-mtp-batched) + 256  [0x10314cab0]",
+    "    +                                 412 _RNvMs2_NtCs1bY9KONQSh9_13ax_engine_mlx13expert_streamNtB5_16ExpertStackPager12ensure_layer  (in ax-engine-server-mtp-batched) + 1768  [0x10306fec4]",
+    "    +                                   412 _RNvNtCseUdQjwWLjoX_7mlx_sys2io30load_safetensors_mmap_filtered  (in ax-engine-server-mtp-batched) + 3640  [0x103488c80]",
+    "    +                                       412 mlx_array_new_data  (in ax-engine-server-mtp-batched) + 2428  [0x1036fdc34]",
+    "    +                                           412 _platform_memmove  (in libsystem_platform.dylib) + 96,88  [0x1879b7dc0,0x1879b7db8]",
+    "        _platform_memmove  (in libsystem_platform.dylib)        412"
+  ],
+  "interpretation": "Auto is executing expert paging during prefill, despite the historical auto_resident_on_192gib harness label.",
+  "limitations": [
+    "One-second diagnostic sample during the unmeasured initial warmup.",
+    "Sample is not a timing profile or target-SKU qualification."
+  ]
+}
