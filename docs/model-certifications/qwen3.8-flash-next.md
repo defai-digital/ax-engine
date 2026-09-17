@@ -31,7 +31,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Gate | Current result | Remaining requirement |
 | --- | --- | --- |
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
-| Pack delivery | Fresh two-worker downloads verify both public revisions and all 63 LFS files; the a7 installed follow-up rejects Hub snapshot blob links before inference. Earlier offline aliases and eight installed native controls pass on their recorded candidate. | Verify default transport, the snapshot-path fix in an installed wheel, and target-SKU admission |
+| Pack delivery | Fresh default-transport and two-worker downloads each verify both public revisions and all 63 LFS files. The a7 installed follow-up exposed a Hub snapshot link rejection; c101 corrects path resolution and its native acceptance is in progress. | Complete installed acceptance of the snapshot-path correction and target-SKU admission |
 | Numerical | Frozen 4-bit and 6-bit holdouts pass unchanged aggregate bounds across 3,316 aligned positions each | Target and installed qualification remain open; retain historical 22 high-margin disagreements and the earlier threshold revision |
 | Functional QA | HC native rerun: direct/required text matches on all 105 items; each mode has 102 hard passes, 105 normal stops and clean shutdown | Full installed/default-route QA and target-SKU qualification remain open; eight installed smoke completions are narrower evidence; reference/NLL were not rerun |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
@@ -358,3 +358,19 @@ No inference, throughput or full QA completed in that follow-up. The snapshot
 path correction requires rebuilt-wheel native verification before this gate can
 close. Earlier installed controls are separate evidence, not a pass for this
 fresh-snapshot attempt.
+
+
+## Default-transport fresh delivery retry
+
+The [default-transport delivery record](../../benchmarks/results/flash-next-fresh-delivery-default-m2-20260917.json)
+verifies both pinned public aliases from a new empty cache on Apple M2 Ultra
+192 GiB, with no worker-count or timeout override. Both CLI commands exit zero
+and report ready. All 28 four-bit and 35 six-bit LFS payloads match their
+expected sizes and SHA-256 hashes: 136,112,205,574 and 167,045,770,831 bytes.
+
+Each pack encountered one shard read timeout and resumed successfully. The
+[raw bundle](../../benchmarks/results/flash-next-fresh-delivery-default-m2-20260917-raw.json.gz)
+retains those messages and the earlier failed default attempt. This successful
+retry is not a measured reliability rate. It exercises the a7 downloader;
+the c101 native runtime has separate installed acceptance. No numerical,
+throughput, MTP-default or target-SKU gate is promoted by this download result.
