@@ -1,0 +1,53 @@
+{
+  "schema": "ax-engine.flash-next.wheel-packaging-evidence.v1",
+  "date": "2026-09-17",
+  "completed": true,
+  "qualification": false,
+  "release_ready": false,
+  "published": false,
+  "evidence_scope": "Local wheel packaging on Apple M3 Max 128 GiB, macOS 27.0; no Flash Next model inference or target-SKU qualification.",
+  "source_commit": "cad80818734522f444d106cb9018e20e224b08f1",
+  "wheel": {
+    "wheel": "ax_engine-7.4.0-cp312-abi3-macosx_26_0_arm64.whl",
+    "size": 81936071,
+    "sha256": "b600ddd713a25c946fd663a991179446b62ca69ee8735fdd94cb4d22a1d2fed2"
+  },
+  "build": {
+    "rust": "1.97.1",
+    "mlx": "0.32.2",
+    "profile": "release-pyext",
+    "minimum_product_macos": "26.2",
+    "isolated_unpacked_native_import": "passed"
+  },
+  "installed_validation": {
+    "passed": 79,
+    "failed": 0,
+    "skipped": 0,
+    "suites": {
+      "python/tests/test_cli.py": 51,
+      "python/tests/test_installed_preview.py": 6,
+      "python/tests/test_embedding_smoke.py": 5,
+      "scripts/test_build_pypi_wheel_minos.py": 5,
+      "scripts/test_repair_mlx_metallib_wheel.py": 12
+    },
+    "environment": "Separate private Python 3.12 environment installed from this exact wheel; no source overlay."
+  },
+  "negative_control": {
+    "wheel_sha256": "cf9228b59be624262a69c54c0cb89f19b0fac7540bd9f317dad9f7664e4a1a24",
+    "wheel_size": 81642596,
+    "observed_failure": "Installed import fails: mis-aligned LINKEDIT string pool at offset 0x007A3924",
+    "isolated_import_gate_rejected": true
+  },
+  "log_sha256": {
+    "integrated-wheel-build-final.log": "b9295a70191b5b26d51760457264b54ba9cd30c1c8bd6c04ea0c83a62d544a66",
+    "installed-wheel-final-tests.log": "fdc9489fc45b685abd8bc7b161ad62d792c0f11a20feeff72383d329d60a81c4",
+    "wheel-native-import-negative-control.log": "609663618589a8f04342c25678e95d32ae3ec7034a0655f80914052955640543"
+  },
+  "remaining": [
+    "Installed native Flash Next generation and admission",
+    "Fresh public-pack download qualification",
+    "Independent numerical holdout",
+    "Complete throughput matrix",
+    "Mac Studio M5 Ultra 256 GB qualification"
+  ]
+}

@@ -188,6 +188,13 @@ residency label.
 
 ## Admission and operator contract
 
+The [local wheel packaging check](../../benchmarks/results/flash-next-wheel-packaging-m3-20260917.json)
+passes isolated native import and 79 installed/packaging tests on M3 Max.
+Its negative control rejects an earlier wheel with a Mach-O loading error.
+This validates the wheel packaging; it does not establish installed Flash Next
+generation, a fresh pack download, or target-SKU qualification. The wheel is
+not published.
+
 Audited affine 4-bit/group64 and 6-bit/group64 manifests can be admitted
 without an environment variable. `runtime_status.ready` expresses loader
 admission, not checkpoint certification. Unknown exporter layouts, invalid

@@ -2,8 +2,8 @@
 """Qwen 3.8 Flash Next Candidate qualification contract.
 
 `--dry-run` prints the SKU and admission rule (CI-safe, no weights).
-A live `--model-dir` run checks the converted manifest, tensor geometry,
-declared expert layout, and readiness without loading weights.
+A live `--model-dir` run checks declared manifest fields, expert quantization
+metadata, and recorded readiness without loading weights.
 This metadata preflight does not validate files, tensor geometry, exporter identity,
 or release qualification; the native loader remains authoritative.
 """
