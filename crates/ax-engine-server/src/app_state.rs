@@ -553,6 +553,7 @@ pub(crate) struct ServerLimits {
     pub(crate) grpc_request_timeout: Option<Duration>,
     pub(crate) rate_limit: Option<RateLimitConfig>,
     pub(crate) stream_deadlines: StreamDeadlines,
+    pub(crate) generate_max_duration: Option<Duration>,
 }
 
 impl Default for ServerLimits {
@@ -565,6 +566,7 @@ impl Default for ServerLimits {
             grpc_request_timeout: None,
             rate_limit: None,
             stream_deadlines: StreamDeadlines::default(),
+            generate_max_duration: None,
         }
     }
 }

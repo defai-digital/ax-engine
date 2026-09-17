@@ -578,6 +578,55 @@ impl Drop for NativeEventReceiver {
     }
 }
 
+/// Collects the terminal response of a non-streaming generation.
+///
+/// `deadline` bounds the whole collection rather than the gap between events:
+/// the worker keeps the event channel open for as long as it owns the request,
+/// so a generation that stalls without delivering a response would otherwise
+/// leave this loop waiting forever. On expiry the receiver is dropped, which
+/// sets `consumer_disconnected` and lets the worker wind the request down.
+async fn collect_generate_response(
+    mut events: NativeEventReceiver,
+    request_id: u64,
+    deadline: Option<Duration>,
+) -> Result<GenerateResponse, GenerationServiceError> {
+    let started = tokio::time::Instant::now();
+    let mut observed_event_count = 0_u64;
+    loop {
+        let event = match deadline {
+            Some(deadline) => {
+                let exceeded = || GenerationServiceError::DeadlineExceeded {
+                    request_id,
+                    observed_event_count,
+                };
+                let Some(remaining) = deadline.checked_sub(started.elapsed()) else {
+                    return Err(exceeded());
+                };
+                match tokio::time::timeout(remaining, events.recv()).await {
+                    Ok(event) => event,
+                    Err(_) => return Err(exceeded()),
+                }
+            }
+            None => events.recv().await,
+        };
+        let Some(event) = event else {
+            break;
+        };
+        observed_event_count = observed_event_count.saturating_add(1);
+        if let GenerateStreamEvent::Response(response) =
+            event.map_err(GenerationServiceError::Engine)?
+        {
+            return Ok(response.response);
+        }
+    }
+    Err(GenerationServiceError::Engine(
+        EngineSessionError::StreamEndedWithoutResponse {
+            request_id,
+            observed_event_count,
+        },
+    ))
+}
+
 impl NativeGenerationService {
     pub(crate) fn spawn(
         config: EngineSessionConfig,
@@ -697,23 +746,10 @@ impl NativeGenerationService {
         request_id: u64,
         request: GenerateRequest,
         permit: AdmissionPermit,
+        deadline: Option<Duration>,
     ) -> Result<GenerateResponse, GenerationServiceError> {
-        let mut events = self.start_stream(request_id, request, permit).await?;
-        let mut observed_event_count = 0_u64;
-        while let Some(event) = events.recv().await {
-            observed_event_count = observed_event_count.saturating_add(1);
-            if let GenerateStreamEvent::Response(response) =
-                event.map_err(GenerationServiceError::Engine)?
-            {
-                return Ok(response.response);
-            }
-        }
-        Err(GenerationServiceError::Engine(
-            EngineSessionError::StreamEndedWithoutResponse {
-                request_id,
-                observed_event_count,
-            },
-        ))
+        let events = self.start_stream(request_id, request, permit).await?;
+        collect_generate_response(events, request_id, deadline).await
     }
 
     pub(crate) async fn start_stream(
@@ -945,6 +981,13 @@ pub(crate) enum GenerationServiceError {
     Engine(EngineSessionError),
     Saturated,
     Unavailable,
+    /// The non-streaming request exceeded its configured whole-request
+    /// deadline while the engine still held the event channel open. This is
+    /// the bounded alternative to waiting forever on a stalled generation.
+    DeadlineExceeded {
+        request_id: u64,
+        observed_event_count: u64,
+    },
 }
 
 impl fmt::Display for GenerationServiceError {
@@ -953,6 +996,14 @@ impl fmt::Display for GenerationServiceError {
             Self::Engine(error) => error.fmt(formatter),
             Self::Saturated => formatter.write_str("native generation command queue is saturated"),
             Self::Unavailable => formatter.write_str("native generation worker is unavailable"),
+            Self::DeadlineExceeded {
+                request_id,
+                observed_event_count,
+            } => write!(
+                formatter,
+                "generation request {request_id} exceeded its deadline after \
+                 {observed_event_count} stream event(s)"
+            ),
         }
     }
 }
@@ -2524,6 +2575,40 @@ mod tests {
         assert!(events.recv().await.is_none());
         drop(events);
         assert!(consumer_disconnected.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn non_streaming_collect_reports_deadline_when_engine_stalls() {
+        let (sender, receiver) = mpsc::channel(1);
+        let terminal_events = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
+        let consumer_disconnected = Arc::new(AtomicBool::new(false));
+        // The engine still owns the channel: the sender stays alive and no
+        // terminal response is ever produced, which is the observed hang shape.
+        let events = NativeEventReceiver {
+            receiver,
+            terminal_events,
+            consumer_disconnected: Arc::clone(&consumer_disconnected),
+        };
+
+        let error = collect_generate_response(events, 42, Some(Duration::from_millis(50)))
+            .await
+            .expect_err("a stalled generation must not wait forever");
+
+        match error {
+            GenerationServiceError::DeadlineExceeded {
+                request_id,
+                observed_event_count,
+            } => {
+                assert_eq!(request_id, 42);
+                assert_eq!(observed_event_count, 0);
+            }
+            other => panic!("expected a deadline error, got {other}"),
+        }
+        assert!(
+            consumer_disconnected.load(Ordering::Acquire),
+            "dropping the receiver on deadline must set the disconnect flag so the worker winds down"
+        );
+        drop(sender);
     }
 
     #[tokio::test]

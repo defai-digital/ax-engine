@@ -68,7 +68,12 @@ async fn run_grpc_generate_request(
     if live.runtime_report.selected_backend.is_mlx() {
         let generation_service = live.generation_service.clone();
         return generation_service
-            .generate(request_id, request, permit)
+            .generate(
+                request_id,
+                request,
+                permit,
+                state.limits.generate_max_duration,
+            )
             .await
             .map_err(generation_service_status);
     }
@@ -103,6 +108,13 @@ fn generation_service_status(error: GenerationServiceError) -> Status {
         GenerationServiceError::Unavailable => {
             Status::unavailable("native generation worker is unavailable")
         }
+        GenerationServiceError::DeadlineExceeded {
+            request_id,
+            observed_event_count,
+        } => Status::deadline_exceeded(format!(
+            "generation request {request_id} did not complete within the configured deadline \
+             ({observed_event_count} stream event(s) observed)"
+        )),
     }
 }
 

@@ -37,7 +37,12 @@ pub(crate) async fn run_stateless_generate_request(
     if live.runtime_report.selected_backend.is_mlx() {
         let generation_service = live.generation_service.clone();
         let response = generation_service
-            .generate(request_id, request, permit)
+            .generate(
+                request_id,
+                request,
+                permit,
+                state.limits.generate_max_duration,
+            )
             .await
             .map_err(map_generation_service_error)?;
         return Ok((request_id, response));

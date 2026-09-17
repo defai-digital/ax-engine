@@ -89,6 +89,7 @@ fn base_args() -> ServerArgs {
         stream_idle_timeout_secs: None,
         model_idle_timeout_secs: None,
         stream_max_duration_secs: None,
+        generate_max_duration_secs: None,
         advertise_lan: false,
         lan_cluster: None,
         lan_instance_name: None,
@@ -1362,6 +1363,7 @@ fn resolved_limits_default_to_unset_when_no_flags_given() {
     assert_eq!(args.resolved_request_timeout(), None);
     assert_eq!(args.resolved_grpc_request_timeout(), None);
     assert_eq!(args.resolved_rate_limit(), None);
+    assert_eq!(args.resolved_generate_max_duration(), None);
     let deadlines = args.resolved_stream_deadlines();
     assert_eq!(deadlines.idle_timeout, None);
     assert_eq!(deadlines.max_duration, None);
@@ -1388,6 +1390,24 @@ fn resolved_limits_honor_explicit_flags() {
         args.resolved_grpc_request_timeout(),
         Some(std::time::Duration::from_secs(30))
     );
+}
+
+#[test]
+fn generate_max_duration_flag_is_opt_in() {
+    let args =
+        ServerArgs::try_parse_from(["ax-engine-server", "--generate-max-duration-secs", "900"])
+            .expect("the non-streaming deadline flag should parse");
+    assert_eq!(
+        args.resolved_generate_max_duration(),
+        Some(std::time::Duration::from_secs(900))
+    );
+
+    // A non-positive value leaves the deadline disabled, matching how the
+    // other deadline flags preserve today's unbounded behavior.
+    let disabled =
+        ServerArgs::try_parse_from(["ax-engine-server", "--generate-max-duration-secs", "0"])
+            .expect("a zero deadline should still parse");
+    assert_eq!(disabled.resolved_generate_max_duration(), None);
 }
 
 #[test]
