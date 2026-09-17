@@ -31,14 +31,14 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Gate | Current result | Remaining requirement |
 | --- | --- | --- |
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
-| Pack delivery | Public packs, immutable CLI revisions and all 63 LFS payload files match native test packs | Verify fresh download, doctor, and installed-runtime admission |
+| Pack delivery | Public revisions and all 63 LFS payload files match native packs; both installed offline aliases and eight installed native completions pass | Verify fresh network download and target-SKU admission |
 | Numerical | Eight prompts, 3,260 aligned positions; aggregate statistical rule passes | Independent holdout verification; retain 22 high-margin disagreements and the revised 1% rule |
-| Functional QA | HC native rerun: direct/required text matches on all 105 items; each mode has 102 hard passes, 105 normal stops and clean shutdown | Final installed/default-route and target-SKU qualification remain open; reference/NLL were not rerun |
+| Functional QA | HC native rerun: direct/required text matches on all 105 items; each mode has 102 hard passes, 105 normal stops and clean shutdown | Full installed/default-route QA and target-SKU qualification remain open; eight installed smoke completions are narrower evidence; reference/NLL were not rerun |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
-| MTP integration | HC verifier correction: all 12 state/runner controls pass; six state controls record zero logit/state divergence and six runner controls have identical tokens | Complete full QA, independent holdout and target qualification before promotion |
-| HTTP / SSE | HC candidate: six modes and 12 requests pass, including direct/MTP text identity | Extend beyond four-token requests; reconcile legacy manifest health status |
-| Throughput | Fresh fixed-output matrix: 11/18 complete; two failed cells and five without results; 128 tokens in every measured sample | Resolve long-context budget and reference GPU timeout; collect five missing results and target-SKU memory evidence |
+| MTP integration | All 12 HC state/runner controls and 105-item native QA parity pass; four installed direct/required pairs have text and usage identity | Independent holdout, full installed/default-route QA and target qualification before promotion |
+| HTTP / SSE | HC candidate: six modes and 12 requests pass. Installed wheel: eight HTTP completions with 32-token budgets, correct ready health and clean shutdown pass | Extend installed streaming/lifecycle coverage and target qualification |
+| Throughput | Historical fixed-output matrix: 11/18 complete; two failed cells and five without results; 128 tokens in every measured sample | Collect a complete current-candidate matrix; retain historical budget/reference GPU failures and qualify target-SKU memory |
 | Target hardware | No M5 Ultra 256 GB result | Run target-SKU qualification |
 | Release | Not release-ready | Close the numerical, QA, MTP, throughput, delivery and target-hardware gates above; merged validation alone is insufficient |
 
@@ -196,6 +196,20 @@ unmeasured first warmup. Read actual behavior rather than that stale
 residency label.
 
 ## Admission and operator contract
+
+The [installed native controls](../../benchmarks/results/flash-next-installed-native-m2-20260917.json)
+complete all eight HTTP requests on M2 Ultra 192 GB: 4-bit and 6-bit, selected
+and default routes, each with direct and required-MTP generation. All four
+pairs have identical text and usage, ready health, unchanged manifests and
+normal server exits. No experimental admission override is enabled. The
+32-token output budgets cover one 46-token input, not the full QA bank.
+The [raw records](../../benchmarks/results/flash-next-installed-native-raw-m2-20260917.json.gz)
+retain metrics and outputs with local path prefixes redacted.
+
+The 6-bit default direct request takes about 1,020 seconds and required MTP
+about 186 seconds. Auto selects layer paging on this 192 GB host. These are
+single diagnostic observations with different cache histories; no speedup or
+target-SKU performance claim follows. The 256 GB target remains untested.
 
 The [installed offline alias check](../../benchmarks/results/flash-next-offline-alias-m2-20260917.json)
 passes for both pinned 4-bit and 6-bit aliases after correcting the download

@@ -1,0 +1,279 @@
+{
+  "schema": "ax-engine.flash-next.installed-native-evidence.v1",
+  "date": "2026-09-17",
+  "completed": true,
+  "release_ready": false,
+  "published": false,
+  "scope": "Eight installed-wheel HTTP completions on Apple M2 Ultra 192 GiB, macOS 27.0. Single 46-token prompt with 32-token output budget; no target-SKU, full-QA or throughput qualification.",
+  "native_source_commit": "cad80818734522f444d106cb9018e20e224b08f1",
+  "wheel_sha256": "b600ddd713a25c946fd663a991179446b62ca69ee8735fdd94cb4d22a1d2fed2",
+  "server_sha256": "a7a617858c1a839b45f3df80c4408d54845c74527a49859b7f4f87cc520ee944",
+  "download_fix_wheel_sha256": "ab5bde7adbf1b5f24a81d766dce85f66b14ec25f5552cd639a0ae9a48846547d",
+  "download_fix_native_members_byte_identical": true,
+  "harness_sha256": "44b227bb404f5141520a63035cf7fc1d94da04663a65edff1ce413fa45b9a259",
+  "cases": [
+    {
+      "bits": "4",
+      "profile": "selected",
+      "input_tokens": 46,
+      "text_identity": true,
+      "usage_identity": true,
+      "manifest_unchanged": true,
+      "runtime_ready": true,
+      "modes": {
+        "disabled": {
+          "load_seconds": 36.177596292007365,
+          "completion_seconds": 281.7497500419995,
+          "draft_after": 0.0,
+          "exit_code": 0,
+          "completion": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789637687,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 32,
+              "total_tokens": 78
+            }
+          }
+        },
+        "required": {
+          "load_seconds": 90.47484075000102,
+          "completion_seconds": 15.698869332991308,
+          "draft_after": 16.0,
+          "exit_code": 0,
+          "completion": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789637794,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 32,
+              "total_tokens": 78
+            }
+          }
+        }
+      }
+    },
+    {
+      "bits": "4",
+      "profile": "default",
+      "input_tokens": 46,
+      "text_identity": true,
+      "usage_identity": true,
+      "manifest_unchanged": true,
+      "runtime_ready": true,
+      "modes": {
+        "default": {
+          "load_seconds": 84.42726966700866,
+          "completion_seconds": 2.392990833002841,
+          "draft_after": 0.0,
+          "exit_code": 0,
+          "completion": {
+            "id": "cmpl-4",
+            "object": "text_completion",
+            "created": 1789637882,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 32,
+              "total_tokens": 78
+            }
+          }
+        },
+        "required": {
+          "load_seconds": 46.22015162500611,
+          "completion_seconds": 2.132476958009647,
+          "draft_after": 18.0,
+          "exit_code": 0,
+          "completion": {
+            "id": "cmpl-4",
+            "object": "text_completion",
+            "created": 1789637931,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe correct answer is **(A) the rain**.\n\n1.  **Causality vs. Correlation",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 32,
+              "total_tokens": 78
+            }
+          }
+        }
+      }
+    },
+    {
+      "bits": "6",
+      "profile": "selected",
+      "input_tokens": 46,
+      "text_identity": true,
+      "usage_identity": true,
+      "manifest_unchanged": true,
+      "runtime_ready": true,
+      "modes": {
+        "disabled": {
+          "load_seconds": 132.68953508298728,
+          "completion_seconds": 447.3186805410078,
+          "draft_after": 0.0,
+          "exit_code": 0,
+          "completion": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789638512,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe cause of a river flooding is directly related to the volume of water entering the river system. Heavy rain increases",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 32,
+              "total_tokens": 78
+            }
+          }
+        },
+        "required": {
+          "load_seconds": 28.14787429200078,
+          "completion_seconds": 23.299290666996967,
+          "draft_after": 16.0,
+          "exit_code": 0,
+          "completion": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789638564,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe cause of a river flooding is directly related to the volume of water entering the river system. Heavy rain increases",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 32,
+              "total_tokens": 78
+            }
+          }
+        }
+      }
+    },
+    {
+      "bits": "6",
+      "profile": "default",
+      "input_tokens": 46,
+      "text_identity": true,
+      "usage_identity": true,
+      "manifest_unchanged": true,
+      "runtime_ready": true,
+      "modes": {
+        "default": {
+          "load_seconds": 4.03703870800382,
+          "completion_seconds": 1020.3839852090023,
+          "draft_after": 0.0,
+          "exit_code": 0,
+          "completion": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789639589,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe cause of a river flooding is directly related to the volume of water entering the river system. Heavy rain increases",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 32,
+              "total_tokens": 78
+            }
+          }
+        },
+        "required": {
+          "load_seconds": 42.2229014159966,
+          "completion_seconds": 186.31758029198681,
+          "draft_after": 16.0,
+          "exit_code": 0,
+          "completion": {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 1789639818,
+            "model": "flash-next-candidate",
+            "system_fingerprint": null,
+            "choices": [
+              {
+                "index": 0,
+                "text": "**Answer: A**\n\n**Explanation:**\nThe cause of a river flooding is directly related to the volume of water entering the river system. Heavy rain increases",
+                "finish_reason": "length"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 46,
+              "completion_tokens": 32,
+              "total_tokens": 78
+            }
+          }
+        }
+      }
+    }
+  ],
+  "original_record_sha256": {
+    "installed-wheel-selected-4bit-result.json": "f56349f4927892ed8f84ba0ba0d78e2a1226674e004fc8c8bc2095f859589287",
+    "installed-wheel-default-4bit-result.json": "8fa2eb7e4fc109a30521c220b746b4b967bc91ed24c6ff32254321fa551985f7",
+    "installed-wheel-selected-6bit-result.json": "79f09702720e12383849cc77536a741443b53c471d5520c859251d57f3294c8a",
+    "installed-wheel-default-6bit-result.json": "3dc75b0a2111ca4b7d59a1da183707487700b7bdbcc12e9058f333f6674fe7c8"
+  },
+  "raw_artifact": {
+    "file": "flash-next-installed-native-raw-m2-20260917.json.gz",
+    "compressed_sha256": "6a359822bd0dd6f631697e6ff139925bba8eef49094e69e8959051ce0b59d279",
+    "uncompressed_sha256": "0ea1e6aa7fcc5541d1cff61f79da26dae47b8c2d76bcb0c2f0eec58415ec5e8b",
+    "redactions": "Absolute home and campaign-volume prefixes replaced with placeholders; metrics, commands, health, outputs and diagnostics otherwise retained."
+  },
+  "limitations": [
+    "All results are supplementary M2 evidence, not Mac Studio M5 Ultra 256 GB qualification.",
+    "The 6-bit default direct request took 1020.384 seconds; required mode took 186.318 seconds. Auto uses layer paging on this 192 GiB host. No controlled throughput or speedup claim follows from these single observations.",
+    "One-second diagnostic process samples overlapped selected 4-bit and default 6-bit direct requests.",
+    "Independent numerical holdout, fresh public download, full throughput matrix and target-SKU evidence remain pending.",
+    "MTP certified default remains disabled; explicit required controls do not qualify Tier 2."
+  ]
+}
