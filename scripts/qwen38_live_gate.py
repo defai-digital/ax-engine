@@ -74,6 +74,10 @@ def run_live(args, contract: dict, repo: Path) -> int:
         for key, path in [('server', args.server_bin), ('bench', args.bench_bin), ('wheel', args.wheel), ('cli', args.cli)]:
             if digest(path) != manifest.get(key + '_sha256'):
                 raise ValueError(f'{key} does not match build manifest')
+        overrides = sorted(k for k in os.environ if k.startswith(('AX_', 'DYLD_', 'MLX_', 'MTL_', 'METAL_', 'PYTHONPATH')))
+        result['runtime_overrides'] = overrides
+        if overrides:
+            raise ValueError('release qualification requires product defaults; unset AX_/DYLD_ overrides')
         import ax_engine
         import ax_engine._ax_engine
         package = Path(ax_engine.__file__).resolve().parent
@@ -90,6 +94,7 @@ def run_live(args, contract: dict, repo: Path) -> int:
                     if digest(installed) != expected:
                         raise ValueError(f'installed wheel member differs: {name}')
         result['installed_package'] = str(package)
+        result['bundled_runtime_environment'] = {k: v for k, v in os.environ.items() if k == 'AX_ENGINE_METAL_BUILD_DIR'}
         if manifest.get('model_revision') != contract['revision']:
             raise ValueError('model revision mismatch')
         files = manifest.get('model_files', {})
@@ -105,10 +110,6 @@ def run_live(args, contract: dict, repo: Path) -> int:
             path = args.model_dir / name
             if not path.resolve().is_relative_to(args.model_dir.resolve()) or digest(path) != expected:
                 raise ValueError(f'model file hash mismatch: {name}')
-        overrides = sorted(k for k in os.environ if k.startswith(('AX_', 'DYLD_', 'MLX_', 'MTL_', 'METAL_', 'PYTHONPATH')))
-        result['runtime_overrides'] = overrides
-        if overrides:
-            raise ValueError('release qualification requires product defaults; unset AX_/DYLD_ overrides')
         with (out / 'doctor.stdout.json').open('w') as stdout, (out / 'doctor.stderr.log').open('w') as stderr:
             doctor = subprocess.run(
                 [str(args.cli), 'doctor', '--mlx-model-artifacts-dir', str(args.model_dir), '--json'],
