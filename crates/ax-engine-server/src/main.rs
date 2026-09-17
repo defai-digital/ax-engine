@@ -1,9 +1,17 @@
 #![allow(clippy::collapsible_if)]
 
-#[cfg(not(any(feature = "mlx-native-server", feature = "delegated-server")))]
+#[cfg(not(target_os = "macos"))]
 compile_error!(
-    "ax-engine-server requires a runtime profile: use the default mlx-native-server feature on \
-     Mac, or --no-default-features --features delegated-server for a portable control plane"
+    "AX Engine is Mac-only (macOS 26+ Apple Silicon). NVIDIA/CUDA fleet serving lives in AX Serving."
+);
+
+#[cfg(all(
+    target_os = "macos",
+    not(any(feature = "mlx-native-server", feature = "delegated-server"))
+))]
+compile_error!(
+    "ax-engine-server requires a runtime profile: use the default mlx-native-server feature, \
+     or --no-default-features --features delegated-server for llama.cpp / mlx_lm adapters"
 );
 
 use ax_engine_sdk::{EngineSessionConfig, SelectedBackend};

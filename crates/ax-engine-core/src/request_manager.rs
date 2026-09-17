@@ -135,6 +135,11 @@ impl RequestManager {
         }
     }
 
+    /// Number of live records, excluding retained terminal snapshots.
+    pub fn records_len(&self) -> usize {
+        self.records.len()
+    }
+
     /// Borrowing iterator over live request records, in no particular order.
     /// Use instead of `snapshots()` when only cheap scalar fields are needed:
     /// `snapshots()` deep-clones every request's full token history, which is
@@ -772,6 +777,21 @@ mod tests {
             arrival_sequence: SequenceNo(arrival_sequence),
             metadata: None,
         }
+    }
+
+    #[test]
+    fn record_count_matches_snapshots_and_excludes_retained_terminals() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        assert_eq!(manager.records_len(), 0);
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.submit(make_submission(2, 2, "qwen3")).unwrap();
+        assert_eq!(manager.records_len(), manager.snapshots().len());
+        assert_eq!(manager.records_len(), 2);
+        manager.cancel(RequestId(1)).unwrap();
+        manager.mark_terminal_cleaned(RequestId(1)).unwrap();
+        assert!(manager.snapshot(RequestId(1)).is_some());
+        assert_eq!(manager.records_len(), 1);
+        assert_eq!(manager.records_len(), manager.snapshots().len());
     }
 
     #[test]

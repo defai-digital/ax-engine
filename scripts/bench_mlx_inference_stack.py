@@ -2016,7 +2016,7 @@ def write_prompt_tokens(
         "sha256": token_hash,
         "token_ids": tokens,
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, separators=(",", ":")) + "\n")
     print(
         f"  [prompt] prompt_tokens={prompt_tokens} sha256={token_hash[:12]} path={path}",
         file=sys.stderr,

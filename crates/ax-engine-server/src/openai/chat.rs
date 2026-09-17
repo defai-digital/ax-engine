@@ -32,7 +32,7 @@ pub(crate) async fn openai_chat_completions(
     if llama_cpp::supports_server_chat(&live) {
         return run_openai_llama_cpp_chat_generation(state, live, request).await;
     }
-    let request = build_openai_chat_request_offloading_media(&live, request).await?;
+    let request = build_openai_chat_request_offloading_media(&live, &state.media, request).await?;
 
     run_openai_text_generation(state, live, request, OpenAiStreamKind::ChatCompletion).await
 }

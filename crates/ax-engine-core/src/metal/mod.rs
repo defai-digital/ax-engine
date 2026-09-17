@@ -2,9 +2,9 @@
 // contracts. Keeping these signatures explicit is safer than hiding them behind
 // broad parameter bags while the native runtime is still stabilizing.
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
-// Delegated-only Linux builds retain the public Metal report/error types used
-// by the SDK contract, but cannot construct the macOS runtime paths that
-// consume their private helpers.
+// Non-macOS type-checking retains the public Metal report/error types used by
+// the SDK contract, but cannot construct the macOS runtime paths that consume
+// their private helpers. AX Engine does not ship a Linux runtime.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};

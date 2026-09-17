@@ -1,0 +1,17 @@
+Command: bash scripts/cargo-pinned.sh test --workspace --no-fail-fast
+Selected raw test lines from the complete workspace run:
+
+test request_manager::tests::record_count_matches_snapshots_and_excludes_retained_terminals ... ok
+test generation::service::tests::recycling_preserves_live_stepwise_requests_and_releases_capacity ... ok
+test multimodal::process::tests::cancellation_stops_a_decoder_before_its_deadline ... ok
+test multimodal::process::tests::drains_both_pipes_and_preserves_exit_status ... ok
+test multimodal::process::tests::enforces_each_output_limit_without_waiting_for_exit ... ok
+test multimodal::process::tests::inherited_output_descriptors_cannot_extend_the_deadline ... ok
+test multimodal::process::tests::timeout_kills_and_reaps_the_decoder ... ok
+test tasks::tests::cancelled_http_future_keeps_capacity_until_worker_exits ... ok
+test tasks::tests::timeout_signals_cancellation_without_releasing_a_running_worker ... ok
+test tasks::tests::worker_panic_returns_capacity ... ok
+test tests::openai_chat::openai_chat_media_build_offloads_to_blocking_pool_and_matches_inline_build ... ok
+test accepts_identified_wheel_and_source_pins ... ok
+test rejects_empty_malformed_or_unidentified_pins ... ok
+test requires_pin_file_instead_of_disabling_version_enforcement ... ok

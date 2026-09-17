@@ -40,8 +40,6 @@ directly to the destination via the unified-memory page cache.
    `sudo purge` drops the entire disk cache. It takes ~1–3 seconds and
    does not affect anything other than I/O latency for the next read.
 
-   Linux (if porting): `sync && echo 3 | sudo tee /proc/sys/vm/drop_caches`.
-
 3. **Run the bench with the C loader.**
 
    ```bash

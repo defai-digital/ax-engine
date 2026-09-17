@@ -228,14 +228,20 @@ python -m pip install --upgrade pip maturin
 python -m pip install "mlx==$(cat mlx.version)"
 # Server needs release-server (panic=unwind) so worker panic containment works.
 # See docs/SERVER.md and Cargo.toml [profile.release-server].
-cargo build --profile release-server -p ax-engine-server
-cargo build --release -p ax-engine-bench
+bash scripts/cargo-pinned.sh build --profile release-server -p ax-engine-server
+bash scripts/cargo-pinned.sh build --release -p ax-engine-bench
 # Python extension: use release-pyext (unwind), not --release (abort).
 maturin develop --profile release-pyext
 export PATH="$PWD/target/release-server:$PWD/target/release:$PATH"
 ax-engine doctor
 bash scripts/check-mlx-version.sh
 ```
+
+The Cargo wrapper reads `rust-toolchain.toml` and selects the matching Cargo,
+compiler, rustdoc, and Cargo subcommands. This prevents an unrelated Rust
+installation earlier on `PATH` from changing child-tool selection. Use the
+wrapper for `test`, `fmt`, and `clippy` as well. Wheel builds select the same
+toolchain automatically.
 
 The repo pins the admitted MLX version in `mlx.version` at the repo root, and
 `crates/mlx-sys/build.rs` enforces it at link time: builds fail loudly if the

@@ -67,6 +67,10 @@ strip = true
 # already exists. scripts/build-pypi-wheel.sh moves them next to delocate's
 # libmlx.dylib and regenerates RECORD before accepting the release wheel.
 include = [
+    { path = "mlx.version", format = ["sdist"] },
+    { path = "rust-toolchain.toml", format = ["sdist"] },
+    { path = "vendor/block-0.1.6/**/*", format = ["sdist"] },
+    { path = "LICENSE", format = ["sdist"] },
     { path = "python/ax_engine/_metal/build/ax_phase1_dense_path.metallib", format = ["wheel"] },
     { path = "python/ax_engine/_metal/build/ax_phase1_dense_path.air", format = ["wheel"] },
     { path = "python/ax_engine/_metal/metal/phase1-kernels.json", format = ["wheel"] },

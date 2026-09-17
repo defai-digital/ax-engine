@@ -591,7 +591,7 @@ impl EngineCore {
         let mut preempted: BTreeSet<RequestId> = BTreeSet::new();
         let mut preemption_metrics = PreemptionMetrics::default();
         let batch_items = std::mem::take(&mut execution_batch.items);
-        let preempt_attempt_ceiling = self.request_manager.snapshots().len() as u32 + 1;
+        let preempt_attempt_ceiling = self.request_manager.records_len() as u32 + 1;
 
         for item in batch_items {
             let rid = item.request_id;

@@ -1,0 +1,68 @@
+{
+  "baseline_commit": "4aa60537de525d4ca2a4f4ab6e5bcf8808090591",
+  "scope": "CPU request bookkeeping, deterministic worker lifecycle, media subprocess lifecycle, and packaging; no model weights or M5 SKU inference qualification",
+  "chip": "Apple M3 Max",
+  "memory_bytes": 137438953472,
+  "macos": "26.6.2",
+  "toolchain": "1.97.1",
+  "mlx": "0.32.2",
+  "ffmpeg": "9.0.1",
+  "request_count": {
+    "profile": "release",
+    "warmup_iterations": 100,
+    "iterations_per_trial": 2000,
+    "trials": 6,
+    "order": "alternating baseline snapshot count and direct record count",
+    "summary": "median of six trials (mean of middle two)",
+    "generated_tokens": 0,
+    "model_executed": false,
+    "power_and_thermal_state": "not controlled; isolated operation evidence only"
+  },
+  "sdist": {
+    "archive": "ax_engine-7.4.0.tar.gz",
+    "archive_bytes": 2468598,
+    "unpacked_build_exit_code": 0,
+    "missing_pin_with_override_exit_code": 101,
+    "pins_at_workspace_root": true,
+    "profile": "dev (unwind)",
+    "offline": true,
+    "lock_packages_pruned": 221,
+    "new_dependency_versions": 0,
+    "rust": "1.97.1",
+    "mlx": "0.32.2"
+  },
+  "source_sha256": {
+    "crates/ax-engine-core/src/engine.rs": "0419f48dbc9736d3f6c2eaf6573ced998cefb3fc6773718250e503c11fb2e29e",
+    "crates/ax-engine-core/src/request_manager.rs": "466f518340a10c881d0e8353565f3d21e758a2099618abab705d3fa776831e55",
+    "crates/ax-engine-core/examples/request_count_cost.rs": "a6dbb17aeec18c1454a04d146dd6bdeaf6e07b1dea3e42b7d8223f7ebafef504",
+    "crates/ax-engine-server/src/generation/service.rs": "40ad2032b79c3bb72463027970286e18a66b8b809e3db3ce764490c273ce1aa4",
+    "crates/ax-engine-server/src/tasks.rs": "beadc6a35d10e8f0251dd2be1187b3e1c3a71b2ca2008f713cdb6101577f3076",
+    "crates/ax-engine-server/src/multimodal.rs": "58f10780812ce629dc78ec20d709f59bab2cd1e898c41ee77ae0f73942ac8b27",
+    "crates/ax-engine-server/src/multimodal/process.rs": "4dba277f563ff5e672a8ffc12c35e9bf2e70f6097874e7530f8b683bb31a51d1",
+    "pyproject.toml": "798d23490ce8c684626aa03ad8d54f517d9397be2d0a4e1dc27bf1aca9b251d2",
+    "scripts/bench_mlx_inference_stack.py": "9830e85aa9784e1e40f9dc613de9c6d8b311d538a63fdc75b7c3dadfb846dc4f"
+  },
+  "validation": {
+    "workspace": {
+      "passed": 3531,
+      "failed": 0,
+      "ignored": 10
+    },
+    "ffmpeg_smoke": {
+      "passed": 1,
+      "failed": 0
+    },
+    "script_test_groups": [
+      74,
+      935,
+      420,
+      5,
+      20
+    ],
+    "script_test_skips": 5,
+    "check_scripts_exit_code": 0,
+    "fmt_exit_code": 0,
+    "clippy_ci_policy_exit_code": 0,
+    "clippy_policy": "-D warnings with --force-warn for unwrap-used, expect-used, panic, dbg-macro, and large-enum-variant, matching repository CI"
+  }
+}

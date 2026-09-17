@@ -2436,6 +2436,7 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
     model_id: &str,
     model_dir: &Path,
     messages: &[OpenAiChatMessage],
+    control: &crate::tasks::BlockingTaskControl,
 ) -> Result<Option<Gemma4UnifiedChatPrompt>, HttpErrorResponse> {
     if !messages_contain_inline_media(messages) {
         return Ok(None);
@@ -2494,17 +2495,28 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
     let images: Vec<PreprocessedImage> = collected
         .images
         .iter()
-        .map(|bytes| multimodal::preprocess_image(bytes, &config.vision, &normalization))
+        .map(|bytes| {
+            control
+                .check()
+                .map_err(|message| MediaError::Interrupted(message.to_string()))?;
+            multimodal::preprocess_image(bytes, &config.vision, &normalization)
+        })
         .collect::<Result<_, _>>()
         .map_err(media_error_response)?;
     let audios: Vec<PreprocessedAudio> = collected
         .audios
         .iter()
-        .map(|bytes| match config.audio.as_ref() {
-            Some(processor) => multimodal::preprocess_audio(bytes, processor),
-            None => Err(MediaError::Unsupported(
-                "model has no audio feature extractor; audio input is not supported".to_string(),
-            )),
+        .map(|bytes| {
+            control
+                .check()
+                .map_err(|message| MediaError::Interrupted(message.to_string()))?;
+            match config.audio.as_ref() {
+                Some(processor) => multimodal::preprocess_audio(bytes, processor),
+                None => Err(MediaError::Unsupported(
+                    "model has no audio feature extractor; audio input is not supported"
+                        .to_string(),
+                )),
+            }
         })
         .collect::<Result<_, _>>()
         .map_err(media_error_response)?;
@@ -2513,7 +2525,7 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
     let mut videos: Vec<PreprocessedVideo> = Vec::with_capacity(collected.videos.len());
     let mut video_timestamp_tokens: Vec<Vec<Vec<u32>>> = Vec::with_capacity(collected.videos.len());
     for bytes in &collected.videos {
-        let frames = multimodal::decode_video_frames(bytes, video_max_frames)
+        let frames = multimodal::decode_video_frames_with_control(bytes, video_max_frames, control)
             .map_err(media_error_response)?;
         let timestamps = build_video_timestamp_tokens(&tokenizer, &frames)?;
         let preprocessed =
@@ -2584,6 +2596,7 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
     options: ChatPromptRenderOptions,
+    control: &crate::tasks::BlockingTaskControl,
 ) -> Result<Option<Qwen3VlChatPrompt>, HttpErrorResponse> {
     if !messages_contain_inline_media(messages) {
         return Ok(None);
@@ -2758,6 +2771,9 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
     let mut expanded = Vec::with_capacity(base_tokens.len().saturating_mul(2));
     let mut cursor = 0usize;
     for (start, placeholder_len, pad_id, kind) in placeholder_spans {
+        control.check().map_err(|message| {
+            media_error_response(MediaError::Interrupted(message.to_string()))
+        })?;
         if start < cursor {
             return Err(error_response(
                 StatusCode::BAD_REQUEST,
@@ -2773,9 +2789,10 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
                 (patches, geom, 1, false)
             }
             QwenMediaKind::Video(index) => {
-                let frames = multimodal::decode_video_frames(
+                let frames = multimodal::decode_video_frames_with_control(
                     &collected.videos[index],
                     QWEN3_VL_MAX_VIDEO_FRAMES,
+                    control,
                 )
                 .map_err(media_error_response)?;
                 let (patches, geom, grid_t) = patchify_qwen3_vl_video(&frames, &processor)?;
@@ -4612,6 +4629,9 @@ fn placeholder_count_error(media: &str, expected: usize, actual: usize) -> HttpE
 }
 
 fn media_error_response(error: MediaError) -> HttpErrorResponse {
+    if let MediaError::Interrupted(message) = error {
+        return error_response(StatusCode::REQUEST_TIMEOUT, "media_timeout", message);
+    }
     error_response(
         StatusCode::BAD_REQUEST,
         "invalid_request",

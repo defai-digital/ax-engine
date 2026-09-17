@@ -36,7 +36,7 @@ pub(crate) use crate::openai::chat_requests::{
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
-use crate::tasks::run_blocking_http_task;
+use crate::tasks::{BlockingTaskControl, MediaPreprocessor};
 
 pub(crate) struct OpenAiBuiltRequest {
     pub(crate) generate_request: GenerateRequest,
@@ -426,6 +426,7 @@ pub(crate) fn build_openai_completion_request(
 /// threads. Text-only requests build inline; that path is template rendering.
 pub(crate) async fn build_openai_chat_request_offloading_media(
     live: &LiveState,
+    media: &MediaPreprocessor,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_video_chat_content(
@@ -436,12 +437,22 @@ pub(crate) async fn build_openai_chat_request_offloading_media(
         return build_openai_chat_request(live, request);
     }
     let live = live.clone();
-    run_blocking_http_task(move || build_openai_chat_request(&live, request)).await
+    media
+        .run(move |control| build_openai_chat_request_with_control(&live, request, Some(&control)))
+        .await
 }
 
 pub(crate) fn build_openai_chat_request(
     live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
+) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
+    build_openai_chat_request_with_control(live, request, None)
+}
+
+fn build_openai_chat_request_with_control(
+    live: &LiveState,
+    request: OpenAiChatCompletionHttpRequest,
+    control: Option<&BlockingTaskControl>,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_video_chat_content(
         &request.messages,
@@ -521,6 +532,15 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                     "native MLX multimodal chat requires mlx_model_artifacts_dir with tokenizer.json and config".to_string(),
                 )
             })?;
+            // Text-only rendering never allocates cancellation state.
+            let local_control;
+            let control = match control {
+                Some(control) => control,
+                None => {
+                    local_control = BlockingTaskControl::default();
+                    &local_control
+                }
+            };
             let model_id = live.model_id.as_ref();
             let artifact_family = crate::metadata::model_family_from_artifacts(live);
             if is_minicpm_v46_model_id(model_id)
@@ -560,6 +580,7 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                     request.tools.as_ref(),
                     request.tool_choice.as_ref(),
                     prompt_options,
+                    control,
                 )? {
                     input_tokens = prompt.input_tokens;
                     multimodal_inputs.qwen3_vl = Some(prompt.runtime_inputs);
@@ -567,9 +588,12 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 } else {
                     false
                 }
-            } else if let Some(prompt) =
-                render_gemma4_unified_chat_with_media(model_id, model_dir, &request.messages)?
-            {
+            } else if let Some(prompt) = render_gemma4_unified_chat_with_media(
+                model_id,
+                model_dir,
+                &request.messages,
+                control,
+            )? {
                 input_tokens = prompt.input_tokens;
                 multimodal_inputs.gemma4_unified = Some(prompt.runtime_inputs);
                 true

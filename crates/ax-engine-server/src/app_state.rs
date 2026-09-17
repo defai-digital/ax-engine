@@ -92,6 +92,7 @@ pub(crate) struct AppState {
     /// Set to true while a model load is in progress; prevents concurrent loads.
     pub(crate) loading: Arc<AtomicBool>,
     pub(crate) limits: Arc<ServerLimits>,
+    pub(crate) media: crate::tasks::MediaPreprocessor,
     pub(crate) admission: Arc<AdmissionController>,
     pub(crate) discovery: Arc<DiscoveryMeta>,
     execution_arbiter: Arc<ModelExecutionArbiter>,
@@ -121,6 +122,7 @@ impl AppState {
             metrics,
             loading: Arc::new(AtomicBool::new(false)),
             limits: Arc::new(ServerLimits::default()),
+            media: crate::tasks::MediaPreprocessor::default(),
             admission: Arc::new(AdmissionController::new(None)),
             discovery: Arc::new(DiscoveryMeta::default()),
             execution_arbiter,

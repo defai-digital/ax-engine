@@ -19,7 +19,8 @@ The current preview server is intentionally narrow:
 - built entirely on the Rust SDK contract
 - native MLX builds fail closed outside supported Apple Silicon (M2 or newer
   on macOS 26+); 16 GB is fine for compact single models, 32 GB+ for
-  multi-model / larger packs; Linux uses the explicit delegated-only build
+  multi-model / larger packs. AX Engine is Mac-only; NVIDIA/CUDA fleet
+  serving uses [AX Serving](AX-SERVING.md)
 - explicit backend and support-tier reporting
 - multi-model registry: optional concurrent loaded models with per-request
   `model` routing (`POST /v1/model/load` `load_mode=add` / unload) — scoped
@@ -88,7 +89,7 @@ Current preview endpoints:
 Build production serving binaries with the dedicated profile:
 
 ```text
-cargo build -p ax-engine-server --profile release-server
+bash scripts/cargo-pinned.sh build -p ax-engine-server --profile release-server
 ```
 
 `release-server` inherits the release optimizations but keeps
@@ -101,9 +102,9 @@ the model as unavailable, sibling models keep serving, and
 and remains right for `ax-engine-bench` and other CLI tools — but under it
 a single MLX eval failure aborts the whole server process.
 
-### Portable delegated-only build
+### Delegated-only Mac build
 
-Portable compatibility builds can exclude MLX linkage:
+Compatibility builds on macOS can exclude MLX linkage:
 
 ```text
 cargo build -p ax-engine-server \
@@ -112,11 +113,11 @@ cargo build -p ax-engine-server \
   --features delegated-server
 ```
 
-This is the same HTTP/SSE control plane, compiled with only delegated backend
-capabilities. It supports the explicit `mlx_lm.server` and llama.cpp
+This is the same Mac HTTP/SSE control plane, compiled with only delegated
+backend capabilities. It supports the explicit `mlx_lm.server` and llama.cpp
 compatibility routes; it must reject native MLX selection and omit unavailable
-MLX-only process metrics. NVIDIA/CUDA fleet serving uses
-[AX Serving](AX-SERVING.md).
+MLX-only process metrics. There is no Linux AX Engine server. NVIDIA/CUDA
+fleet serving uses [AX Serving](AX-SERVING.md).
 
 ## Authentication
 
@@ -176,6 +177,15 @@ Notes:
   after a transport timeout or disconnect. Saturated HTTP calls return 429;
   saturated gRPC calls return `RESOURCE_EXHAUSTED`. Health, metrics, and
   metadata reads do not consume engine capacity.
+- Inline chat media preprocessing has a separate server-wide limit of two
+  active tasks and a 60-second deadline, shared across models and the OpenAI,
+  Ollama, and Anthropic adapters. Saturation returns HTTP 429
+  (`media_capacity_exceeded`); timeout returns HTTP 408 (`media_timeout`).
+  Text-only chat bypasses this pool. Cancellation signals background work;
+  capacity is returned only when the decoder actually stops. In-process
+  image/audio decoders may finish their current operation before stopping.
+  Video subprocesses are terminated and reaped on cancellation or timeout,
+  with enforced stdout (512 MiB) and stderr (1 MiB) limits.
 - The HTTP rate limit sheds transport load before handler work and returns a
   distinct 429 message, so operators can distinguish it from engine
   saturation.

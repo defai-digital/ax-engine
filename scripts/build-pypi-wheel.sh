@@ -41,6 +41,9 @@ DELOCATED_OUT="${WHEEL_OUT}/delocated"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+source "$SCRIPT_DIR/lib/rust-toolchain.sh"
+ax_use_pinned_rust "$REPO_ROOT"
+
 cd "$REPO_ROOT"
 
 # ── 0. Ensure a correctly-built MLX (pip wheel) is available ──────────────
