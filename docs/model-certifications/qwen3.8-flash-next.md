@@ -32,7 +32,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | --- | --- | --- |
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
 | Pack delivery | Public revisions and all 63 LFS payload files match native packs; both installed offline aliases and eight installed native completions pass | Verify fresh network download and target-SKU admission |
-| Numerical | Eight prompts, 3,260 aligned positions; aggregate statistical rule passes | Independent holdout verification; retain 22 high-margin disagreements and the revised 1% rule |
+| Numerical | Frozen 4-bit holdout passes unchanged aggregate bounds across 3,316 aligned positions | Complete 6-bit holdout and post-campaign integrity checks; retain historical 22 high-margin disagreements and the earlier threshold revision |
 | Functional QA | HC native rerun: direct/required text matches on all 105 items; each mode has 102 hard passes, 105 normal stops and clean shutdown | Full installed/default-route QA and target-SKU qualification remain open; eight installed smoke completions are narrower evidence; reference/NLL were not rerun |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
@@ -50,7 +50,7 @@ an independent confirmation or exact full-model parity.
 
 ## Latest campaign failures
 
-The frozen holdout collected eight 4-bit prompts on each of the official
+The original frozen-holdout attempt collected eight 4-bit prompts on each of the official
 chunked, official recurrent and pinned MLX-VLM graphs. AX then failed before
 inference: the diagnostic test reads an existing historical manifest whose
 `runtime_status.ready` is false. No holdout acceptance score was produced.
@@ -62,6 +62,26 @@ throughput campaign consequently collected no measurements. The
 [campaign failure record](../../benchmarks/results/flash-next-campaign-failures-m2-20260917.json)
 retains these outcomes. Recovery uses separate admission fixtures and installation
 outputs; an attempted or queued recovery does not close any release gate.
+
+## Frozen 4-bit holdout result
+
+The [frozen 4-bit holdout](../../benchmarks/results/flash-next-holdout-4bit-m2-20260917.json)
+passes its predeclared aggregate rule across eight prompts and all 3,316 aligned
+positions, including 1,024-token and 2,052-token inputs. Mean KL is 0.02823 against
+0.03757; top-1 disagreement is 8.655% against 10.442%. Four AX-only high-margin
+disagreements remain (0.121%, below the frozen 1% cap). High margin means strictly
+`reference_margin > 1.0`; a fifth disagreement exactly at 1.0 remains in the raw
+record but is outside that category. This is statistical acceptance, not exact
+token or logit parity. The threshold was frozen before these holdout outputs;
+the historical threshold revision above remains disclosed.
+
+The original numerical binary and inputs are unchanged. The recovery uses an
+independent derived manifest differing only in runtime status, and reuses the
+three frozen reference collections with artifact hashes. Earlier pre-inference
+failures remain recorded. [Raw comparison statistics](../../benchmarks/results/flash-next-holdout-4bit-raw-m2-20260917.json.gz)
+retain all rows with only the internal host alias/IP removed. Six-bit collection
+and the final post-campaign payload check are still pending. This M2 result does
+not qualify installed/default QA, delivery, throughput, or the target Studio SKU.
 
 ## Immutable public pack metadata
 
