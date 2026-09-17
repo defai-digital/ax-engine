@@ -1345,11 +1345,29 @@ impl NativeModelArtifacts {
 
     pub fn summary(&self) -> NativeModelArtifactsSummary {
         let is_hybrid_attention = self.manifest.linear_attention.is_enabled();
+        let mut runtime_status = self.manifest.runtime_status.clone();
+        // Artifacts have already passed runtime admission. Old Flash Next
+        // manifests retain the retired trunk blocker on disk for provenance.
+        if self.manifest.model_family == "qwen4_exp"
+            && !runtime_status.blockers.is_empty()
+            && runtime_status
+                .blockers
+                .iter()
+                .all(|blocker| blocker == "qwen4_exp_native_trunk_not_implemented")
+        {
+            runtime_status.ready = true;
+            runtime_status.blockers.clear();
+            runtime_status.notes.push(
+                "Audited Flash Next runtime admission supersedes legacy manifest readiness; \
+model certification remains separate."
+                    .to_string(),
+            );
+        }
         NativeModelArtifactsSummary {
             model_family: self.manifest.model_family.clone(),
             tensor_format: self.manifest.tensor_format,
             source_quantization: self.manifest.source_quantization.clone(),
-            runtime_status: self.manifest.runtime_status.clone(),
+            runtime_status,
             layer_count: self.manifest.layer_count,
             tensor_count: self.manifest.tensors.len() as u32,
             tie_word_embeddings: self.manifest.tie_word_embeddings,
@@ -5412,6 +5430,58 @@ mod tests {
             }
             .is_enabled()
         );
+    }
+
+    #[test]
+    fn admitted_flash_next_summary_reconciles_legacy_readiness_without_mutating_manifest() {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "qwen4_exp".to_string();
+        manifest.runtime_status = NativeRuntimeStatus {
+            ready: false,
+            blockers: vec!["qwen4_exp_native_trunk_not_implemented".to_string()],
+            notes: vec!["preserved exporter provenance".to_string()],
+        };
+        let original = manifest.clone();
+        // Exercise the loaded-artifact summary boundary; admission itself has
+        // separate audited-format and unknown-blocker rejection controls.
+        let artifacts = NativeModelArtifacts {
+            root_dir: PathBuf::new(),
+            manifest,
+        };
+        let summary = artifacts.summary();
+        assert!(summary.runtime_status.ready);
+        assert!(summary.runtime_status.blockers.is_empty());
+        assert_eq!(
+            summary.runtime_status.notes[0],
+            original.runtime_status.notes[0]
+        );
+        assert_eq!(summary.runtime_status.notes.len(), 2);
+        assert!(summary.runtime_status.notes[1].contains("certification remains separate"));
+        assert_eq!(artifacts.manifest(), &original);
+        assert_eq!(artifacts.summary().runtime_status, summary.runtime_status);
+    }
+
+    #[test]
+    fn artifact_summary_preserves_unknown_and_other_family_blockers() {
+        for (family, blockers) in [
+            ("qwen4_exp", vec![]),
+            ("qwen3", vec!["qwen4_exp_native_trunk_not_implemented"]),
+            (
+                "qwen4_exp",
+                vec!["qwen4_exp_native_trunk_not_implemented", "unknown_layout"],
+            ),
+        ] {
+            let mut manifest = packed_layer_manifest();
+            manifest.model_family = family.to_string();
+            manifest.runtime_status.ready = false;
+            manifest.runtime_status.blockers = blockers.into_iter().map(str::to_string).collect();
+            let expected = manifest.runtime_status.clone();
+            let artifacts = NativeModelArtifacts {
+                root_dir: PathBuf::new(),
+                manifest,
+            };
+            assert_eq!(artifacts.summary().runtime_status, expected);
+        }
     }
 
     fn packed_layer_manifest() -> NativeModelManifest {
