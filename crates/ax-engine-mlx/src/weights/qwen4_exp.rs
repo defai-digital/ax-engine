@@ -527,26 +527,13 @@ pub(super) fn resolve_in_root(
     canonical_root: &Path,
     relative: &Path,
 ) -> Result<PathBuf, WeightLoadError> {
-    let joined = if relative.is_absolute() {
-        relative.to_path_buf()
-    } else {
-        root.join(relative)
-    };
-    let canonical = joined.canonicalize().map_err(|e| {
+    crate::artifact_path::resolve_file(root, canonical_root, relative).map_err(|error| {
         WeightLoadError::FileMissing(format!(
-            "cannot resolve {} inside {}: {e}",
+            "cannot resolve {} inside {}: {error}",
             relative.display(),
             root.display()
         ))
-    })?;
-    if !canonical.starts_with(canonical_root) {
-        return Err(WeightLoadError::FileMissing(format!(
-            "qwen4_exp: tensor file {} escapes root {}",
-            canonical.display(),
-            canonical_root.display()
-        )));
-    }
-    Ok(canonical)
+    })
 }
 
 /// `model.safetensors.index.json` `weight_map`, resolved to in-root absolute

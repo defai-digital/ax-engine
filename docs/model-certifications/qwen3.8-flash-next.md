@@ -31,12 +31,12 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Gate | Current result | Remaining requirement |
 | --- | --- | --- |
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
-| Pack delivery | Public revisions and all 63 LFS payload files match native packs; both installed offline aliases and eight installed native completions pass | Verify fresh network download and target-SKU admission |
+| Pack delivery | Fresh two-worker downloads verify both public revisions and all 63 LFS files; the a7 installed follow-up rejects Hub snapshot blob links before inference. Earlier offline aliases and eight installed native controls pass on their recorded candidate. | Verify default transport, the snapshot-path fix in an installed wheel, and target-SKU admission |
 | Numerical | Frozen 4-bit and 6-bit holdouts pass unchanged aggregate bounds across 3,316 aligned positions each | Target and installed qualification remain open; retain historical 22 high-margin disagreements and the earlier threshold revision |
 | Functional QA | HC native rerun: direct/required text matches on all 105 items; each mode has 102 hard passes, 105 normal stops and clean shutdown | Full installed/default-route QA and target-SKU qualification remain open; eight installed smoke completions are narrower evidence; reference/NLL were not rerun |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
-| MTP integration | All 12 HC state/runner controls and 105-item native QA parity pass; four installed direct/required pairs have text and usage identity | Independent holdout, full installed/default-route QA and target qualification before promotion |
+| MTP integration | All 12 HC state/runner controls and 105-item native QA parity pass; four installed direct/required pairs have text and usage identity | Full installed/default-route QA and target qualification before promotion |
 | HTTP / SSE | HC candidate: six modes and 12 requests pass. Installed wheel: eight HTTP completions with 32-token budgets, correct ready health and clean shutdown pass | Extend installed streaming/lifecycle coverage and target qualification |
 | Throughput | Historical fixed-output matrix: 11/18 complete; two failed cells and five without results; 128 tokens in every measured sample | Collect a complete current-candidate matrix; retain historical budget/reference GPU failures and qualify target-SKU memory |
 | Target hardware | No M5 Ultra 256 GB result | Run target-SKU qualification |
@@ -344,3 +344,17 @@ diagnostic preserves committed tokens and state hashes. It does not resolve the
 real-pack numerical failures above. The newer throughput audit re-curates the
 same immutable M2 input: 11 complete, two failed, five missing; it is not a new
 hardware run.
+
+
+The [fresh two-worker delivery record](../../benchmarks/results/flash-next-fresh-delivery-workers2-m2-20260917.json)
+verifies both pinned public aliases from an empty cache: 28 four-bit LFS files
+(136,112,205,574 bytes) and 35 six-bit files (167,045,770,831 bytes). The six-bit
+transfer recovered from one shard read timeout. This uses the explicit existing
+`AX_ENGINE_HF_MAX_WORKERS=2` override; it does not qualify default transport.
+The [raw record](../../benchmarks/results/flash-next-fresh-delivery-workers2-m2-20260917-raw.json.gz)
+retains the retry and the subsequent a7 wheel's four-bit load failure: its path
+resolver rejected a legitimate Hub snapshot link into its own blob store.
+No inference, throughput or full QA completed in that follow-up. The snapshot
+path correction requires rebuilt-wheel native verification before this gate can
+close. Earlier installed controls are separate evidence, not a pass for this
+fresh-snapshot attempt.

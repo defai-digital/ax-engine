@@ -231,26 +231,13 @@ fn join_inside_root(
     canonical_root: &Path,
     relative: &Path,
 ) -> Result<PathBuf, NgramTableError> {
-    let joined = if relative.is_absolute() {
-        relative.to_path_buf()
-    } else {
-        root.join(relative)
-    };
-    let canonical = joined.canonicalize().map_err(|e| {
+    crate::artifact_path::resolve_file(root, canonical_root, relative).map_err(|error| {
         NgramTableError::Path(format!(
-            "cannot resolve {} inside {}: {e}",
+            "cannot resolve {} inside {}: {error}",
             relative.display(),
             root.display()
         ))
-    })?;
-    if !canonical.starts_with(canonical_root) {
-        return Err(NgramTableError::Path(format!(
-            "path {} escapes root {}",
-            canonical.display(),
-            canonical_root.display()
-        )));
-    }
-    Ok(canonical)
+    })
 }
 
 fn read_weight_map(root: &Path) -> Result<Option<HashMap<String, String>>, NgramTableError> {
