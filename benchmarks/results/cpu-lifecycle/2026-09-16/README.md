@@ -3,7 +3,7 @@
 These artifacts cover request bookkeeping, deterministic worker lifecycle,
 media subprocess handling, and source packaging. No model weights were loaded.
 They are not inference throughput, long-context model qualification, a serving
-soak, or evidence for the Mac mini M5 / Mac Studio M5 Ultra product SKUs.
+soak, or evidence for the Mac mini M4 Pro / Mac Studio M5 Ultra product SKUs.
 
 ## Request count
 

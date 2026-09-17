@@ -78,7 +78,7 @@ long-context behavior, server/SDK contracts, memory behavior, and public
 benchmark reproducibility.
 
 The primary optimization target is Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) on
-**Mac mini M5 64 GB**. Runtime or kernel changes that claim a speedup must
+**Mac mini M4 Pro 64 GB**. Runtime or kernel changes that claim a speedup must
 include that pack on that SKU, plus one secondary-family control when the
 change can leak. Qwen 3.8 Flash Next on **Mac Studio M5 Ultra 256 GB** is a
 separate SKU and is not a substitute 27B result. See [Testing](docs/TESTING.md).

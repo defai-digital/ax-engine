@@ -7,7 +7,7 @@ from the active Hugging Face hub cache at runtime by `scripts/run_qa_matrix.py`
 ## Primary cell (not CI)
 
 Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) is the product primary pack. Qualify it on
-Mac mini M5 64 GB with:
+Mac mini M4 Pro 64 GB with:
 
 ```text
 OK|direct|qwen3.8-27b:axq|/path/to/pinned/6bit/snapshot

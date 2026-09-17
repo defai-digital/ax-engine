@@ -1,6 +1,6 @@
 # Qwen 3.8 27B AXQ 6-bit: latest-runtime peer campaign
 
-Apple M5 Max, 128 GB (campaign host, not the Mac mini M5 64 GB SKU). Pack:
+Apple M5 Max, 128 GB (campaign host, not the Mac mini M4 Pro 64 GB SKU). Pack:
 `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` @ `3e290738e96972307c6aeb9934ab170ca0eae1c1`.
 
 Contract: repository `flappy` suite, four cases, 256 generated tokens, greedy,

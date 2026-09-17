@@ -59,7 +59,7 @@ resolved session*, not how well a family is supported.
 | --- | --- |
 | **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
-| **64 GB (Mac mini M5)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
+| **64 GB (Mac mini M4 Pro)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
 | **256 GB (Mac Studio M5 Ultra)** | Best experience for Qwen 3.8 Flash Next (125B-A6B). Not a certified AX default yet. Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
