@@ -67,11 +67,13 @@
     ]
   },
   "limitations": [
-    "Six-bit holdout remains in progress.",
-    "Final post-campaign payload immutability verification remains pending.",
     "Three frozen four-bit reference collections are reused with artifact hashes; AX is freshly collected.",
     "Admission recovery changes only derived manifest runtime_status; prior pre-inference failures remain retained.",
     "No threshold, numerical source, token IDs or teacher streams changed after collection began.",
     "Statistical acceptance is not exact logit or token parity, installed/default QA, throughput, delivery, or target-SKU qualification."
-  ]
+  ],
+  "post_campaign_integrity": {
+    "passed": true,
+    "record": "flash-next-holdout-integrity-m2-20260917.json"
+  }
 }
