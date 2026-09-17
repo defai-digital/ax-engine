@@ -409,7 +409,7 @@ def run_cell(
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 live_route = json.load(response)
-            (scratch / f"mtp-server-route-{safe}.json").write_text(json.dumps(live_route, indent=2))
+            (scratch / f"server-route-{cell.mode}-{safe}.json").write_text(json.dumps(live_route, indent=2))
             decisions = (live_route.get("route") or {}).get("crossover_decisions") or {}
             cell.mtp_draft_tokens = int(decisions.get("ax_mtp_draft_tokens") or 0)
             cell.mtp_verify_tokens = int(decisions.get("ax_mtp_verify_tokens") or 0)
@@ -418,7 +418,7 @@ def run_cell(
                         cell.mtp_draft_tokens == 0 and cell.mtp_verify_tokens == 0)
             if not route_ok:
                 cell.status = "engine_fail"
-                cell.note = "server_mtp_path_not_exercised"
+                cell.note = f"server_{cell.mode}_path_not_exercised"
                 log_path.write_text(cell.note + "\n" + json.dumps(live_route, indent=2))
                 return cell
             if cell.mode == "mtp":
