@@ -760,6 +760,8 @@ impl ExpertStackPager {
                     cache.order.remove(pos);
                 }
                 cache.order.push_back(layer);
+                #[cfg(test)]
+                crate::model::qwen4_exp::profiling::layer_cache_hit(layer);
                 return Ok(stack);
             }
         }
@@ -791,6 +793,8 @@ impl ExpertStackPager {
     /// Read only this layer's streamed tensors from their shards and assemble
     /// the resident-path `QuantizedWeight` values.
     fn load_layer(&self, layer: u32) -> Result<LayerExpertStack, ExpertStreamError> {
+        #[cfg(test)]
+        let started = std::time::Instant::now();
         let tensors: Vec<&ExpertStreamTensor> = self.manifest.tensors_for_layer(layer).collect();
         if tensors.is_empty() {
             return Err(ExpertStreamError::Paging(format!(
@@ -828,6 +832,8 @@ impl ExpertStackPager {
                 }
             }
         }
+        #[cfg(test)]
+        let materialized_payload_bytes = loaded.values().map(mlx_sys::MlxArray::nbytes).sum();
         // Wire the freshly created arrays into MLX's working set, mirroring the
         // initial-load eval for both loader paths. Use try_eval so a paging
         // failure stays on the ExpertStreamError path instead of panicking.
@@ -890,6 +896,12 @@ impl ExpertStackPager {
             stack.gate_exps = gate;
             stack.up_exps = up;
         }
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::layer_loaded(
+            layer,
+            materialized_payload_bytes,
+            started.elapsed().as_secs_f64(),
+        );
         Ok(stack)
     }
 }

@@ -198,6 +198,12 @@ impl SelectedExpertRows {
     /// A capacity miss is the only condition that permits a whole-layer fallback.
     pub(super) fn gather_if_fits(&self, ids: &[u64]) -> Result<Option<LayerExpertStack>, String> {
         let bytes = self.requested_payload_bytes(ids)?;
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::selected_prefill_decision(
+            ids.len(),
+            bytes,
+            self.max_gather_bytes,
+        );
         if bytes > self.max_gather_bytes {
             return Ok(None);
         }

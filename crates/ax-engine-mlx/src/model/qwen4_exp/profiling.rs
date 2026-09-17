@@ -40,10 +40,72 @@ struct Sample {
     chunk_len: usize,
 }
 
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PagingEvent {
+    SelectedPrefillDecision {
+        unique_experts: usize,
+        requested_payload_bytes: usize,
+        capacity_bytes: usize,
+        capacity_miss: bool,
+    },
+    LayerCacheHit {
+        layer: u32,
+    },
+    LayerLoaded {
+        layer: u32,
+        materialized_payload_bytes: usize,
+        seconds: f64,
+    },
+}
+
+#[derive(serde::Serialize)]
+struct PagingSample {
+    layer: Option<usize>,
+    chunk_offset: usize,
+    chunk_len: usize,
+    event: PagingEvent,
+}
+
+fn record_paging(event: PagingEvent) {
+    CAPTURE.with_borrow_mut(|capture| {
+        if let Some(capture) = capture {
+            capture.paging.push(PagingSample {
+                layer: capture.layer,
+                chunk_offset: DUMP_OFFSET.get(),
+                chunk_len: DUMP_CHUNK_LEN.get(),
+                event,
+            });
+        }
+    });
+}
+
+pub(crate) fn selected_prefill_decision(unique_experts: usize, bytes: usize, capacity: usize) {
+    record_paging(PagingEvent::SelectedPrefillDecision {
+        unique_experts,
+        requested_payload_bytes: bytes,
+        capacity_bytes: capacity,
+        capacity_miss: bytes > capacity,
+    });
+}
+
+pub(crate) fn layer_cache_hit(layer: u32) {
+    record_paging(PagingEvent::LayerCacheHit { layer });
+}
+
+pub(crate) fn layer_loaded(layer: u32, materialized_payload_bytes: usize, seconds: f64) {
+    record_paging(PagingEvent::LayerLoaded {
+        layer,
+        materialized_payload_bytes,
+        seconds,
+    });
+}
+
 struct Capture {
     layer: Option<usize>,
     previous: Instant,
     samples: Vec<Sample>,
+    paging: Vec<PagingSample>,
 }
 
 thread_local! {
@@ -777,6 +839,7 @@ fn flash_next_synchronized_operator_profile() {
                 layer: None,
                 previous: Instant::now(),
                 samples: Vec::new(),
+                paging: Vec::new(),
             });
         });
         let guard = CaptureGuard;
@@ -799,6 +862,7 @@ fn flash_next_synchronized_operator_profile() {
         records.push(serde_json::json!({
             "name": name, "tokens": input.len(), "control_seconds": control_seconds,
             "stage_seconds": totals, "samples": capture.samples,
+            "expert_paging": capture.paging,
             "logits_exact": true, "state_bytes_exact": true,
         }));
     }
@@ -936,6 +1000,7 @@ fn flash_next_real_gdn_metal_control() {
 struct ChunkedPrefillTiming {
     seconds: f64,
     samples: Vec<Sample>,
+    paging: Vec<PagingSample>,
     chunks: Vec<(usize, usize, f64)>,
     mlx_evals: u64,
     peak_bytes: usize,
@@ -958,6 +1023,7 @@ fn run_chunked_prefill(
                 layer: None,
                 previous: Instant::now(),
                 samples: Vec::new(),
+                paging: Vec::new(),
             });
         });
         Some(CaptureGuard)
@@ -981,15 +1047,17 @@ fn run_chunked_prefill(
         chunk_times.push((offset, end - offset, chunk_start.elapsed().as_secs_f64()));
     }
     let seconds = wall.elapsed().as_secs_f64();
-    let samples = if capture {
-        CAPTURE.with_borrow_mut(Option::take).unwrap().samples
+    let (samples, paging) = if capture {
+        let captured = CAPTURE.with_borrow_mut(Option::take).unwrap();
+        (captured.samples, captured.paging)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     drop(guard);
     ChunkedPrefillTiming {
         seconds,
         samples,
+        paging,
         chunks: chunk_times,
         mlx_evals: evals(),
         peak_bytes: mlx_sys::get_peak_memory(),
@@ -1059,6 +1127,7 @@ fn flash_next_prefill_stage_profile() {
             "mlx_evals": sync.mlx_evals,
             "stage_seconds": stage_totals(&sync.samples),
             "layer_stage_seconds": layer_stage_records(&sync.samples),
+            "expert_paging": sync.paging,
             "chunks": synchronized_chunks,
         },
         "sync_unsync_ratio": ratio,
@@ -1068,4 +1137,45 @@ fn flash_next_prefill_stage_profile() {
         std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
     }
     eprintln!("{evidence}");
+}
+
+#[test]
+fn paging_capture_preserves_context_without_evaluation() {
+    assert!(CAPTURE.with_borrow(Option::is_none));
+    let evaluations = evals();
+    selected_prefill_decision(3, 300, 256);
+    assert!(CAPTURE.with_borrow(Option::is_none));
+    CAPTURE.with_borrow_mut(|slot| {
+        *slot = Some(Capture {
+            layer: None,
+            previous: Instant::now(),
+            samples: Vec::new(),
+            paging: Vec::new(),
+        });
+    });
+    let guard = CaptureGuard;
+    begin_chunk(12, 6);
+    layer(4);
+    selected_prefill_decision(2, 256, 256);
+    selected_prefill_decision(3, 384, 256);
+    layer_loaded(4, 4096, 0.25);
+    layer_cache_hit(4);
+    let captured = CAPTURE.with_borrow_mut(Option::take).unwrap();
+    drop(guard);
+    assert!(captured.samples.is_empty());
+    assert_eq!(evals(), evaluations);
+    let events = serde_json::to_value(captured.paging).unwrap();
+    assert_eq!(events.as_array().unwrap().len(), 4);
+    for event in events.as_array().unwrap() {
+        assert_eq!(event["layer"], 4);
+        assert_eq!(event["chunk_offset"], 12);
+        assert_eq!(event["chunk_len"], 6);
+    }
+    assert_eq!(events[0]["event"]["capacity_miss"], false);
+    assert_eq!(events[1]["event"]["capacity_miss"], true);
+    assert_eq!(events[1]["event"]["unique_experts"], 3);
+    assert_eq!(events[2]["event"]["kind"], "layer_loaded");
+    assert_eq!(events[2]["event"]["materialized_payload_bytes"], 4096);
+    assert_eq!(events[3]["event"]["kind"], "layer_cache_hit");
+    assert!(CAPTURE.with_borrow(Option::is_none));
 }
