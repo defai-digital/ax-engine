@@ -1,0 +1,160 @@
+{
+  "engine": "mlx_lm",
+  "mlx_lm_version": "0.31.3",
+  "mlx_version": "0.32.2",
+  "host_label": "mac-mini-m4-pro-64gb",
+  "host": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "hw_model": "Mac16,11",
+    "chip": "Apple M4 Pro"
+  },
+  "pack": "/Users/devop/ax-engine-qualification-20260917/model",
+  "sampling": {
+    "temperature": 0.0,
+    "enable_thinking": false
+  },
+  "results": [
+    {
+      "prompt_id": "flappy_pipes",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "prompt_tokens": 273,
+      "decode_tok_s_values": [
+        12.676566894628753,
+        12.510463234031308,
+        12.546323737406917,
+        12.58212233409618,
+        12.70441455246122
+      ],
+      "decode_tok_s_median": 12.58212233409618,
+      "prompt_tok_s_values": [
+        107.16226314150794,
+        100.50928999754909,
+        101.23575294653766,
+        102.5420040713,
+        103.6630391663688
+      ],
+      "prompt_tok_s_median": 102.5420040713,
+      "completion_tokens": [
+        256,
+        256,
+        256,
+        256,
+        256
+      ],
+      "output_text_sha256": [
+        "062b0dbc3368867eddf0c8e8039a74f7fc8dcf3dc033c839aa89954161b85e95"
+      ]
+    },
+    {
+      "prompt_id": "flappy_score_gates",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "prompt_tokens": 374,
+      "decode_tok_s_values": [
+        12.7949993406655,
+        12.8077874549221,
+        12.804659242240295,
+        12.786543840810412,
+        12.7712130204805
+      ],
+      "decode_tok_s_median": 12.7949993406655,
+      "prompt_tok_s_values": [
+        116.10107747463991,
+        117.10878452146835,
+        116.55418762305614,
+        115.02722101741621,
+        114.19486873159862
+      ],
+      "prompt_tok_s_median": 116.10107747463991,
+      "completion_tokens": [
+        256,
+        256,
+        256,
+        256,
+        256
+      ],
+      "output_text_sha256": [
+        "91d999668dcd39ac37cfbf0b8eaf612c740b07d68c1bd13e00cb445e8419b392"
+      ]
+    },
+    {
+      "prompt_id": "flappy_collision_checks",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "prompt_tokens": 432,
+      "decode_tok_s_values": [
+        12.747661819065105,
+        12.761097157261885,
+        12.7659225932482,
+        12.780620186431637,
+        12.783162471527936
+      ],
+      "decode_tok_s_median": 12.7659225932482,
+      "prompt_tok_s_values": [
+        112.56410634074659,
+        113.34084616072897,
+        114.1832790748222,
+        114.96891248585774,
+        115.50307362750833
+      ],
+      "prompt_tok_s_median": 114.1832790748222,
+      "completion_tokens": [
+        256,
+        256,
+        256,
+        256,
+        256
+      ],
+      "output_text_sha256": [
+        "dbadf6ce6de912492e9f03306ed7f7c659f237de41ff5472e5bacb8dc3c3bebf"
+      ]
+    },
+    {
+      "prompt_id": "flappy_sound_channels",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "prompt_tokens": 264,
+      "decode_tok_s_values": [
+        12.7822608844081,
+        12.792351905658077,
+        12.772567850211587,
+        12.787871556127806,
+        12.788375792926054
+      ],
+      "decode_tok_s_median": 12.787871556127806,
+      "prompt_tok_s_values": [
+        106.00367079779365,
+        105.73888976629951,
+        105.3426041124962,
+        105.19632316386136,
+        105.4455065194064
+      ],
+      "prompt_tok_s_median": 105.4455065194064,
+      "completion_tokens": [
+        256,
+        256,
+        256,
+        256,
+        256
+      ],
+      "output_text_sha256": [
+        "cf0cff04efc674d09df1a1b6f0ed5e8b3632cc39aef9b75dd6738f92821adcc4"
+      ]
+    }
+  ],
+  "decode_tok_s_median_20": 12.776594018321612,
+  "decode_tok_s_count": 20
+}

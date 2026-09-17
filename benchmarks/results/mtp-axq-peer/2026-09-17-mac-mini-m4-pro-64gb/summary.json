@@ -1,0 +1,67 @@
+{
+  "campaign": "qwen38-27b-axq-6bit-latest-runtimes-mac-mini-m4-pro-2026-09-17",
+  "host": "Mac mini M4 Pro, 64 GB (Mac16,11), macOS 26.6.2",
+  "sku_note": "selected qualification SKU",
+  "pack": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+  "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+  "contract": {
+    "suite": "flappy",
+    "cases": 4,
+    "generation_tokens": 256,
+    "sampling": "greedy",
+    "chat_template": "enable_thinking=false",
+    "warmup": 2,
+    "repetitions": 5,
+    "cooldown_s": 3,
+    "decode": "median of 20 measured runs"
+  },
+  "ax_engine_build": {
+    "source_commit": "ad999f3fa9cd8382c1000bcad19cb687fa6d5638",
+    "wheel_sha256": "2bc3f5e1a1bc94d346a5e1bc1aa732840466825b347dead1b05f137be9784409",
+    "route": "mtp_head_only_no_ngram_stacking",
+    "exact_qwen_linear_mtp_verifier": true
+  },
+  "measured": {
+    "ax_engine": {
+      "version": "7.4.0",
+      "decode_tok_s_median_20": 31.05,
+      "prefill_tok_s_median_20": 120.3,
+      "first_run_decode_tok_s_median_20": 30.95,
+      "first_run_prefill_tok_s_median_20": 119.8,
+      "load_average_1m": {
+        "recorded_run": 1.984,
+        "first_run": 5.916
+      }
+    },
+    "mtplx": {
+      "version": "2.11.3",
+      "decode_tok_s_median_20": 28.16,
+      "prefill_tok_s_median_20": 114.0,
+      "accept_rate": 1.0,
+      "profile": "sustained",
+      "depth": 3
+    },
+    "mlx_lm": {
+      "version": "0.31.3",
+      "mode": "direct_ar",
+      "decode_tok_s_median_20": 12.78
+    },
+    "omlx": {
+      "version": "0.6.4",
+      "mode": "imported_sidecar_lightning_depth_1",
+      "decode_tok_s_median_20": 15.02
+    }
+  },
+  "conditions": [
+    "System daemons audiomxd and configd held about 1.2 cores of CPU on this host for the whole campaign; every lane ran under that condition.",
+    "The first AX run overlapped package installation (1-minute load 5.9); the recorded AX run repeated the lane afterwards at load 2.0 and agrees within 0.4%."
+  ],
+  "omlx_import": {
+    "method": "omlx.oq.import_mtplx_sidecar on a writable symlink snapshot",
+    "runtime_contract": "campaign mtplx_runtime.json and axquant_omlx_compat.json carried over from the 2026-09-15 M5 import; the Hub revision ships a minimal mtplx_runtime.json without arch_id, which the OMLX contract check rejects",
+    "result": {
+      "merge_mode": "remap",
+      "mtp_tensors": 15
+    }
+  }
+}

@@ -41,6 +41,16 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-17 peer throughput campaign on the selected **Mac mini M4 Pro
+  64 GB** SKU with the clean `ad999f3f` bundled wheel: `flappy` contract,
+  20-run medians. AX Engine **31.05 tok/s** decode / **120.3 tok/s** prefill;
+  MTPLX 2.11.3 28.16 / 114.0; OMLX 0.6.4 (imported sidecar, Lightning depth 1)
+  15.02 decode; mlx-lm 0.31.3 direct AR 12.78 decode. Harness stability and
+  MTP-correctness publication gates passed; two host daemons held about 1.2
+  CPU cores throughout and the AX lane was repeated with agreement within
+  0.4%. Throughput only; status remains **Candidate; not ship-ready**.
+  [Evidence](../../benchmarks/results/mtp-axq-peer/2026-09-17-mac-mini-m4-pro-64gb/).
+
 - 2026-09-17 low-precision SwiGLU correction (`891385f8`, dimension guard
   `ad999f3f`) preserves MLX BF16/FP16 tensor activation semantics in singleton
   gate/up and packed paths. On this 6-bit checkpoint the default runtime

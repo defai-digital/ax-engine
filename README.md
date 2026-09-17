@@ -324,6 +324,29 @@ matching serving evidence—see
 
 ## Performance
 
+### Qualification SKU: Mac mini M4 Pro 64 GB (2026-09-17)
+
+Same-pack measurements on the selected SKU (Mac16,11, macOS 26.6.2) with the
+installed bundled wheel built from clean `ad999f3f`, which includes the
+target-head and low-precision SwiGLU corrections. Same `flappy` contract as
+below (four cases, 256 gen, greedy, thinking disabled, 2 warmups, 5 measured
+reps, 3 s cooldown); decode and prefill are **20-run medians**. Evidence:
+[`benchmarks/results/mtp-axq-peer/2026-09-17-mac-mini-m4-pro-64gb/`](benchmarks/results/mtp-axq-peer/2026-09-17-mac-mini-m4-pro-64gb/).
+
+| Runtime | Latest checked 2026-09-17 | Decode | Prefill |
+| --- | --- | ---: | ---: |
+| **AX Engine 7.4.0** (product-path MTP, depth 3, clean `ad999f3f`) | installed wheel | **31.05 tok/s** | **120.3 tok/s** |
+| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.3** | PyPI Latest | 28.16 tok/s | 114.0 tok/s |
+| [OMLX](https://github.com/jundot/omlx) **0.6.4** (imported sidecar, Lightning depth 1) | GitHub Latest release | 15.02 tok/s | — |
+| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 12.78 tok/s | — |
+
+Two host daemons held about 1.2 CPU cores throughout; every lane ran under
+that condition and the AX lane was repeated with agreement within 0.4%. These
+are throughput numbers on the qualification SKU, not a quality or
+certification claim; the record stays **Candidate**.
+
+### Campaign host: Apple M5 Max 128 GB (2026-09-15)
+
 Historical same-pack measurements with the runtimes available on 2026-09-15:
 [`qwen3.8-27b:axq`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
 @ `3e290738e96972307c6aeb9934ab170ca0eae1c1`. Apple **M5 Max**, 128 GB
@@ -338,8 +361,9 @@ replaces the fused dense activation with the split MLX operations. They do not
 establish throughput or numerical parity for the corrected runtime. A
 same-session A/B on this campaign host (recorded under the 2026-09-17
 SwiGLU consistency evidence) measured decode within 0.3% and prefill
-0.5-1.4% below the 2026-09-15 binary after both corrections; a full peer
-refresh with a recorded build commit is still pending.
+0.5-1.4% below the 2026-09-15 binary after both corrections. The corrected
+runtime's peer numbers with a recorded build commit are the qualification-SKU
+table above; a refresh of this M5 Max table is still pending.
 
 | Runtime | Latest checked | Decode | Prefill |
 | --- | --- | ---: | ---: |
