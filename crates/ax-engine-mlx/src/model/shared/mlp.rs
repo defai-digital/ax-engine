@@ -903,7 +903,7 @@ const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
     out[idx] = static_cast<T>(activated * up_v);
 "#;
 
-/// Decode matvec: affine-4bit gate/up + SwiGLU for one token.
+/// Decode matvec: affine gate/up projections for one token.
 ///
 /// v1d: 256 threads per output row (8 simdgroups). Cross-simdgroup reduction
 /// uses only 8 floats of TG memory (not a full x cache — full x TG caching
@@ -1006,8 +1006,8 @@ const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
             g += gate_partials[i];
             u += up_partials[i];
         }
-        float activated = g / (1.0f + exp(-g));
-        out[row] = static_cast<OutT>(activated * u);
+        gate_out[row] = static_cast<OutT>(g);
+        up_out[row] = static_cast<OutT>(u);
     }
 "#;
 
@@ -1665,6 +1665,16 @@ fn packed_geglu_metal_impl(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArr
 }
 
 fn packed_swiglu_metal_impl(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArray> {
+    if matches!(gate_up.dtype(), MlxDtype::Bfloat16 | MlxDtype::Float16) {
+        if hidden_dim <= 0 || gate_up.shape().last().copied() != hidden_dim.checked_mul(2) {
+            return None;
+        }
+        // The float-only fused activation does not preserve low-precision
+        // sigmoid/multiply semantics. Use the same operations as split FFNs.
+        let gate = slice_last_dim(gate_up, 0, hidden_dim, None);
+        let up = slice_last_dim(gate_up, hidden_dim, hidden_dim * 2, None);
+        return Some(silu_mul(&gate, &up, None));
+    }
     packed_glu_metal_impl(
         gate_up,
         hidden_dim,
@@ -1878,7 +1888,7 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen_dense_ffn_gate_up_swiglu_simd_v2",
+            "ax_qwen_dense_ffn_gate_up_simd_v3",
             &[
                 "x",
                 "gate_weight",
@@ -1888,7 +1898,7 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
                 "up_scales",
                 "up_biases",
             ],
-            &["out"],
+            &["gate_out", "up_out"],
             QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE,
             "",
             true,
@@ -1905,10 +1915,16 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
                 up_scales,
                 up_biases,
             ],
-            &[KernelOutputSpec {
-                shape: out_shape,
-                dtype: x.dtype(),
-            }],
+            &[
+                KernelOutputSpec {
+                    shape: out_shape.clone(),
+                    dtype: x.dtype(),
+                },
+                KernelOutputSpec {
+                    shape: out_shape,
+                    dtype: x.dtype(),
+                },
+            ],
             &[
                 KernelTemplateArg::Dtype {
                     name: "OutT",
@@ -1953,7 +1969,11 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
             None,
         )
         .ok()?;
-    outputs.pop()
+    let up = outputs.pop()?;
+    let gate = outputs.pop()?;
+    // Keep the stock activation's dtype boundaries and sigmoid implementation.
+    // A float-only fused SiLU changes BF16 results even for exact projections.
+    Some(silu_mul(&gate, &up, None))
 }
 
 /// Multi-token Qwen 4-bit dual gate/up + SwiGLU via simdgroup_matrix MMA.
@@ -10183,14 +10203,34 @@ mod tests {
         assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
     }
 
-    #[test]
-    fn qwen_dense_ffn_gate_up_swiglu_metal_matches_split_quantized_matmuls() {
-        let x_data: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.03125).collect();
-        let gate_weight_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 180.0) * 0.0025).collect();
-        let up_weight_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 96.0) * -0.001875).collect();
-        let x = array_f32(&x_data, &[1, 1, 32]);
-        let gate_weight = array_f32(&gate_weight_data, &[16, 32]);
-        let up_weight = array_f32(&up_weight_data, &[16, 32]);
+    fn check_qwen_gate_up_swiglu_precision(dtype: MlxDtype) {
+        let x_data: Vec<f32> = if dtype == MlxDtype::Float32 {
+            (0..32).map(|i| ((i as f32) - 16.0) * 0.03125).collect()
+        } else {
+            // Isolate dtype boundaries from reduction-order differences.
+            (0..32).map(|i| if i == 7 { 1.0 } else { 0.0 }).collect()
+        };
+        let gate_weight_data: Vec<f32> = (0..512)
+            .map(|i| {
+                if dtype == MlxDtype::Float32 {
+                    ((i as f32) - 180.0) * 0.0025
+                } else {
+                    (((i + i / 32) % 16) as f32 - 8.0) * 0.125
+                }
+            })
+            .collect();
+        let up_weight_data: Vec<f32> = (0..512)
+            .map(|i| {
+                if dtype == MlxDtype::Float32 {
+                    ((i as f32) - 96.0) * -0.001875
+                } else {
+                    (7.0 - ((i + 3 * (i / 32)) % 16) as f32) * 0.125
+                }
+            })
+            .collect();
+        let x = astype(&array_f32(&x_data, &[1, 1, 32]), dtype, None);
+        let gate_weight = astype(&array_f32(&gate_weight_data, &[16, 32]), dtype, None);
+        let up_weight = astype(&array_f32(&up_weight_data, &[16, 32]), dtype, None);
         let gate_q = quantize(
             &gate_weight,
             Some(32),
@@ -10264,7 +10304,40 @@ mod tests {
             .expect("Qwen dense FFN SwiGLU matvec Metal kernel must compile and evaluate");
 
         assert_eq!(metal.shape(), vec![1, 1, 16]);
-        assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
+        let metal = astype(&metal, MlxDtype::Float32, None);
+        let reference = astype(&reference, MlxDtype::Float32, None);
+        eval(&[&metal, &reference]);
+        if dtype == MlxDtype::Float32 {
+            assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
+        } else {
+            assert_eq!(
+                metal
+                    .data_f32()
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                reference
+                    .data_f32()
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn qwen_dense_ffn_gate_up_swiglu_metal_matches_split_quantized_matmuls() {
+        check_qwen_gate_up_swiglu_precision(MlxDtype::Float32);
+    }
+
+    #[test]
+    fn qwen_dense_ffn_gate_up_swiglu_preserves_bfloat16_intermediates() {
+        check_qwen_gate_up_swiglu_precision(MlxDtype::Bfloat16);
+    }
+
+    #[test]
+    fn qwen_dense_ffn_gate_up_swiglu_preserves_float16_intermediates() {
+        check_qwen_gate_up_swiglu_precision(MlxDtype::Float16);
     }
 
     #[test]
@@ -11029,25 +11102,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn packed_swiglu_metal_matches_slice_and_silu_mul_on_moe_shaped_input() {
-        // Simulates the MoE expert gate_up gather_qmm output: [batch=1, seq=1, top_k=4, 2*expert_size=16]
+    fn check_packed_swiglu_precision(dtype: MlxDtype, shape: &[i32]) {
         let gate_data: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.053).collect();
         let up_data: Vec<f32> = (0..32).map(|i| ((i as f32) + 2.0) * 0.031).collect();
-        let gate = astype(
-            &array_f32(&gate_data, &[1, 1, 4, 8]),
-            MlxDtype::Bfloat16,
-            None,
-        );
-        let up = astype(
-            &array_f32(&up_data, &[1, 1, 4, 8]),
-            MlxDtype::Bfloat16,
-            None,
-        );
+        let gate = astype(&array_f32(&gate_data, shape), dtype, None);
+        let up = astype(&array_f32(&up_data, shape), dtype, None);
         let packed = concatenate(&[&gate, &up], -1, None);
 
         // Unfused reference: slice + silu_mul (matches the MoE fallback path)
-        let half = 8_i32;
+        let half = *shape.last().unwrap();
         let gate_slice = mlx_slice_last_dim(&packed, 0, half);
         let up_slice = mlx_slice_last_dim(&packed, half, half * 2);
         let direct = astype(
@@ -11056,14 +11119,31 @@ mod tests {
             None,
         );
 
-        // Fused packed SwiGLU kernel (same kernel as dense path, applied to MoE shape)
-        let metal = packed_swiglu_metal_impl(&packed, 8)
+        // The packed path must retain the split activation tensor semantics.
+        let metal = packed_swiglu_metal_impl(&packed, half)
             .expect("packed SwiGLU Metal kernel should support MoE-shaped gate_up");
         let metal = astype(&metal, MlxDtype::Float32, None);
         eval(&[&direct, &metal]);
 
-        assert_eq!(metal.shape(), vec![1, 1, 4, 8]);
-        assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
+        assert_eq!(metal.shape(), shape);
+        assert_eq!(metal.data_f32(), direct.data_f32());
+    }
+
+    #[test]
+    fn packed_swiglu_preserves_low_precision_dense_and_moe_rows() {
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+            for shape in [&[1, 1, 4, 8][..], &[1, 2, 16][..], &[1, 4, 8][..]] {
+                check_packed_swiglu_precision(dtype, shape);
+            }
+        }
+    }
+
+    #[test]
+    fn packed_swiglu_rejects_invalid_low_precision_width() {
+        let packed = zeros(&[1, 2, 16], MlxDtype::Bfloat16, None);
+        for width in [0, -1, 7, i32::MAX] {
+            assert!(packed_swiglu_metal_impl(&packed, width).is_none());
+        }
     }
 
     /// Admission probe for shapeless compiled linear closures.
