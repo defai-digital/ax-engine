@@ -33,7 +33,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
 | Pack delivery | Fresh default-transport and two-worker downloads each verify both public revisions and all 63 LFS files. The a7 installed follow-up exposed a Hub snapshot link rejection; c101 snapshot controls now complete eight requests; the original six-bit 600-second timeout remains open. | Complete full installed QA, cold-latency acceptance and target-SKU admission |
 | Numerical | Frozen 4-bit and 6-bit holdouts pass unchanged aggregate bounds across 3,316 aligned positions each | Target and installed qualification remain open; retain historical 22 high-margin disagreements and the earlier threshold revision |
-| Functional QA | HC native rerun: direct/required text matches on all 105 items; each mode has 102 hard passes, 105 normal stops and clean shutdown | Full installed/default-route QA and target-SKU qualification remain open; eight installed smoke completions are narrower evidence; reference/NLL were not rerun |
+| Functional QA | Installed c101 four-bit default-residency QA: 105 direct/required pairs match text and checker results; each mode has 102 hard passes, 105 normal stops and clean shutdown | Complete six-bit installed/default-route QA and target-SKU qualification; reference/NLL were not rerun |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
 | Trained head | Recorded real acceptance 95/114 (83.3%), permuted 0/207 | Only 50 of 104 requests contribute to acceptance; 54 short cases are excluded. This is a bounded falsification control, not Tier 2 |
 | MTP integration | All 12 HC state/runner controls and 105-item native QA parity pass; four installed direct/required pairs have text and usage identity | Full installed/default-route QA and target qualification before promotion |
@@ -390,3 +390,21 @@ Later six-bit retries completed; the default request took 1,045.268 seconds and
 required MTP took 186.209 seconds with different cache histories. These are not
 a speedup comparison or cold-latency acceptance. Full installed QA, streaming
 lifecycle, the complete current matrix and target-SKU qualification remain open.
+
+
+## c101 installed four-bit full QA
+
+The [installed four-bit QA record](../../benchmarks/results/flash-next-installed-full-qa-4bit-c101-m2-20260917.json)
+completes all 105 fixed inputs through the default residency route with direct
+and required-MTP policies. Every pair matches text and checker results; all
+210 requests stop normally, both servers exit zero, and the manifest remains
+unchanged. Direct records zero drafted tokens; required MTP records 487.
+
+Each mode has 102 hard passes and retains the gravity, water-formula and CSV
+failures. The 29,774-token lookup returns `1734` in both modes. Its request
+durations are 428.043 and 439.078 seconds with different cache histories, not
+a speedup comparison. The [raw record](../../benchmarks/results/flash-next-installed-full-qa-4bit-c101-m2-20260917-raw.json.gz)
+preserves every response, check and metric with local paths redacted. This
+closes the four-bit installed QA collection and pairing requirement only;
+six-bit QA, throughput, lifecycle, cold latency and target qualification remain
+open. MTP default and release status are unchanged.

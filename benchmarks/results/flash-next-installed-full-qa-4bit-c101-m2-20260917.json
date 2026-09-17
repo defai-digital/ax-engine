@@ -1,0 +1,44 @@
+{
+  "qualification": false,
+  "release_ready": false,
+  "completed": true,
+  "scope": "Four-bit installed default-residency direct/required full QA on M2 Ultra 192 GiB; not target qualification.",
+  "cases_per_mode": 105,
+  "text_identity": true,
+  "checker_identity": true,
+  "normal_stops": 210,
+  "modes": {
+    "disabled": {
+      "hard_pass": 102,
+      "failed_ids": [
+        "science_gravity_earth",
+        "knowledge_water_formula",
+        "format_csv_pair"
+      ],
+      "draft_tokens": 0.0,
+      "long_context_seconds": 428.04275725001935
+    },
+    "required": {
+      "hard_pass": 102,
+      "failed_ids": [
+        "science_gravity_earth",
+        "knowledge_water_formula",
+        "format_csv_pair"
+      ],
+      "draft_tokens": 487.0,
+      "long_context_seconds": 439.0784592909913
+    }
+  },
+  "raw_sha256": "26b3d9abeba0b9758f42c37480e3be71deb25013177f5bb1171d31d747bd400d",
+  "schema": "ax-engine.flash-next.installed-full-qa.v1",
+  "source_commit": "c10162e61d68b8597f90f4360833502286112449",
+  "server_sha256": "1d4edf9f14fde7d657d5a9998ff63f47377990523b3ca3cfdbad37dd96c6fcec",
+  "raw_artifact": "flash-next-installed-full-qa-4bit-c101-m2-20260917-raw.json.gz",
+  "sanitized_raw_sha256": "95cc2e0a637fe6314cc60ddcea8d6ab471a1d87393a9e046da81da0f43f14aab",
+  "gzip_sha256": "f61c08be911ca445eac1c2fa0cd15e929421547693bbff3ee236523317f540af",
+  "limitations": [
+    "Three retained hard-check failures in each mode.",
+    "Six-bit QA, full throughput, lifecycle and target qualification remain separate.",
+    "Cache histories differ; long-context request durations are not a speedup claim."
+  ]
+}
