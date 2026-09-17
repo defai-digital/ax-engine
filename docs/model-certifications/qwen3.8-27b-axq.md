@@ -41,6 +41,21 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-17 target-head correction (`1b15fdf0`) preserves the checkpoint's
+  dense BF16 output head instead of automatically substituting a singleton-only
+  2-bit cache. On nine fixed inputs, direct/reference token agreement improved
+  from 3/9 to 7/9; MTP stayed 8/9 and direct/MTP agreed on 8/9. These are token
+  diagnostics, not model accuracy. The remaining synthetic split is now at
+  output index 14. The live qualifier now requires paired greedy equality and
+  records schema-2 request/response hashes; the previous health-only pass does
+  not satisfy that gate. Fastpath overrides did not establish general route
+  equivalence, and the original LINE_SET/recovery campaign has not been rerun
+  after this correction. Clean `875aa5da` with the final bundled wheel passed
+  direct/MTP 32/32 hard QA and 7/7 surface probes per route, but the schema-2
+  qualifier exited 1 at paired token index 14. The new gate is **failed**.
+  Status remains **Candidate; not ship-ready**.
+  [Current precision comparison and qualification evidence](../../benchmarks/results/qualification/2026-09-17-qwen38-27b-target-precision/).
+
 - 2026-09-17 product-surface qualification on the selected **Mac mini M4 Pro
   64 GB** SKU, macOS 26.6.2, clean source `e2b3e354`, installed bundled wheel:
   direct **32/32** and MTP **32/32** hard QA, zero soft failures, each **7/7**

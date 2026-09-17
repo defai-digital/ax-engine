@@ -1,6 +1,8 @@
 # Qwen 3.8 27B product gate on Mac mini M4 Pro 64 GB
 
-Local operator qualification of the installed, fully bundled release wheel.
+Historical health-only qualification of the installed, fully bundled release wheel.
+It does not satisfy the later paired-greedy gate; see the
+[target-precision follow-up](../2026-09-17-qwen38-27b-target-precision/).
 This is **Candidate** evidence, not MTP Tier 2, `release_ready`, or a published
 release attestation.
 
