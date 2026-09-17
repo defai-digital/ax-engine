@@ -6,7 +6,7 @@ Primary optimization target: **AXQ 6-bit MTP** (`qwen3.8-27b:axq`)
 
 Compact sibling: **AXQ 4-bit MTP** (`qwen3.8-27b:axq-4bit`)
 
-Last reviewed: **2026-09-15**
+Last reviewed: **2026-09-17**
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -57,6 +57,36 @@ Landed, labeled:
   `flappy` greedy 256-token prompts; no MTP head). Other latest runtimes failed
   to load this snapshot.
   [campaign](../../benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).
+- 2026-09-16/17 failed-pair retest (Apple M5 Max, 128 GB; both packs, 34
+  questions selected from the prior failed-pair union, greedy, 32k output
+  budget, answer-recovery pass enabled; one stalled case excluded). Result:
+  AXQ 6-bit **10/34 (29.4%)**, MXFP4 **7/34 (20.6%)** correct. Raw per-question
+  records (authoritative) live on the campaign host under
+  `artifacts/qwen38-retest-failed-pair-20260916/` and are not committed here.
+  The saved provenance has a binary hash but no source commit; these records
+  do not qualify the current source tree or the target mini SKU. Recompute
+  final grades and evidence hashes with
+  `python scripts/audit_qa_retest.py /path/to/retest` (requires the saved
+  artifact directory; primary grades are preserved records, not redecoded).
+  The selected
+  failure subset is not an estimate of overall model accuracy.
+  Two failure modes dominate:
+  - **Output-budget exhaustion.** 11/34 (AXQ) and 12/34 (MXFP4) rows reached the
+    full 32000-token cap (`finish_reason=max_output_tokens`). The continuation
+    recovery pass recovered only 4/11 and 5/12 of those rows, so most
+    budget-exhausted questions still fail after extension.
+  - **LINE_SET under-reporting.** All 24 `LINE_SET` rows across both packs were
+    graded (none truncated), reported exactly **one** line each, and every
+    reported line fell inside the gold span (detection 24/24, precision 24/24).
+    Gold spans were 2-6 lines (median 3); full recall was **0/24** (median
+    recall 0.33). The saved replies contain single-line answers; the grader
+    accepts comma/range values. This rules out the proposed first-line
+    truncation explanation for these replies, not every harness defect.
+    Whether the source wording ("smallest comma-separated set") suppresses
+    enumeration remains open until a controlled prompt ablation is run.
+  One AXQ row was flagged as a degenerate repetition loop
+  (`repetition_max_run=1644`, `loop_suspect=true`); repetition was otherwise
+  absent (MXFP4 `repetition_max_run` max 2).
 
 Not claimed:
 
@@ -67,6 +97,14 @@ Not claimed:
 - P0 multimodal quality for this pack
 - Long-context decode-at-depth
 - Clean-worktree replacement of the 2026-08-30 refresh
+- Any release-quality accuracy bar on the 2026-09-16/17 failed-pair retest; the
+  29.4% / 20.6% strict accuracy above is recorded as **evidence of an open
+  gap**, not as a passing qualification
+- `LINE_SET` enumeration completeness: full recall is 0/24 across both packs
+- A fixed non-streaming generation hang. Response collection after worker
+  startup has a provisional 3600s backstop (explicit `0` disables). Queue and
+  startup waits and synchronous engine-step cancellation are not bounded by
+  this timer. The root cause remains unconfirmed
 
 ## Qualification
 

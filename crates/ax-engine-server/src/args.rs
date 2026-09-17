@@ -24,6 +24,15 @@ const STREAM_IDLE_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_STREAM_IDLE_TIMEOUT_SECS";
 const STREAM_MAX_DURATION_SECS_ENV: &str = "AX_ENGINE_STREAM_MAX_DURATION_SECS";
 const GENERATE_MAX_DURATION_SECS_ENV: &str = "AX_ENGINE_GENERATE_MAX_DURATION_SECS";
 
+/// Built-in hang backstop for a non-streaming generation, in seconds. It
+/// applies only when neither `--generate-max-duration-secs` nor
+/// `AX_ENGINE_GENERATE_MAX_DURATION_SECS` is supplied. An explicit `0` (either
+/// channel) still disables the deadline and preserves the previous unbounded
+/// behavior. This provisional policy value is not a measured target-SKU bound.
+/// Collection starts after worker startup; queue/startup waits are excluded,
+/// and expiry cannot interrupt a synchronous engine step.
+const DEFAULT_GENERATE_MAX_DURATION_SECS: u64 = 3600;
+
 fn parse_stream_experts_mode(raw: &str) -> Result<ax_engine_sdk::MlxStreamExpertsMode, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "off" | "0" | "false" | "no" => Ok(ax_engine_sdk::MlxStreamExpertsMode::Off),
@@ -323,15 +332,17 @@ pub struct ServerArgs {
     #[arg(long = "stream-max-duration-secs")]
     pub stream_max_duration_secs: Option<u64>,
 
-    /// Hard cap on the total wall time of one non-streaming generation
+    /// Cap on response-collection time for one non-streaming generation
     /// request (`/v1/generate` and the gRPC `Generate` RPC), in seconds.
     /// If the engine stops producing progress before it delivers a
     /// terminal response, the request ends with a deadline error instead
-    /// of hanging until the client gives up. This is a whole-request
+    /// of waiting indefinitely for events. This is a collection-duration
     /// deadline, not an idle timeout: set it above the worst-case
-    /// legitimate generation time for the served model. Unset (or
-    /// non-positive) disables it, preserving today's behavior. Falls back
-    /// to AX_ENGINE_GENERATE_MAX_DURATION_SECS.
+    /// legitimate generation time for the served model. When neither this
+    /// flag nor AX_ENGINE_GENERATE_MAX_DURATION_SECS is set, a built-in
+    /// 3600s backstop applies; an explicit 0 disables the deadline. The
+    /// window starts after worker startup, excluding queue/startup waits.
+    /// Expiry does not interrupt a synchronous engine step.
     #[arg(long = "generate-max-duration-secs")]
     pub generate_max_duration_secs: Option<u64>,
 
@@ -551,15 +562,26 @@ impl ServerArgs {
         }
     }
 
-    /// Whole-request deadline for a non-streaming generation; `None` disables.
+    /// Response-collection deadline for a non-streaming generation.
+    ///
+    /// Unset applies [`DEFAULT_GENERATE_MAX_DURATION_SECS`]; an explicit
+    /// zero (flag or env) disables the deadline. "Unset" and
+    /// "explicit 0" must stay distinguishable, so the presence check runs
+    /// before the positive-value filter rather than collapsing both into
+    /// `None` on the way to a default.
     pub(crate) fn resolved_generate_max_duration(&self) -> Option<std::time::Duration> {
-        self.generate_max_duration_secs
+        let configured = self
+            .generate_max_duration_secs
             .map(|secs| secs.to_string())
-            .or_else(|| std::env::var(GENERATE_MAX_DURATION_SECS_ENV).ok())
-            .as_deref()
-            .map(str::trim)
-            .filter(|raw| !raw.is_empty())
-            .and_then(|raw| raw.parse::<u64>().ok())
+            .or_else(|| std::env::var(GENERATE_MAX_DURATION_SECS_ENV).ok());
+        let Some(raw) = configured else {
+            return Some(std::time::Duration::from_secs(
+                DEFAULT_GENERATE_MAX_DURATION_SECS,
+            ));
+        };
+        raw.trim()
+            .parse::<u64>()
+            .ok()
             .filter(|secs| *secs > 0)
             .map(std::time::Duration::from_secs)
     }

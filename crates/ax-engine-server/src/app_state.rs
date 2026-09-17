@@ -541,10 +541,12 @@ fn record_terminal_request_owner(
 }
 
 /// Resource limits resolved from CLI flags / env vars at startup (see
-/// `ServerArgs::resolved_*` in `args.rs`). All fields default to "disabled"
-/// except `max_request_body_bytes`, which always enforces the built-in
-/// safe default — this preserves today's behavior exactly when no operator
-/// configuration is supplied.
+/// `ServerArgs::resolved_*` in `args.rs`). Most fields default to "disabled"
+/// when no operator configuration is supplied. Two do not: the built-in
+/// `max_request_body_bytes` cap, and `generate_max_duration`, which applies a
+/// built-in hang backstop unless the operator disables it explicitly. The
+/// `Default` impl below stays "disabled" because it is the test/construction
+/// fallback, not the startup path — production builds these from `ServerArgs`.
 pub(crate) struct ServerLimits {
     pub(crate) max_concurrent_requests: Option<usize>,
     pub(crate) max_concurrent_requests_per_model: Option<usize>,
