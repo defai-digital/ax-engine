@@ -239,12 +239,12 @@ class AxEngineCliTests(unittest.TestCase):
             ),
             "qwen3.8-flash-next:axq": (
                 "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
-                None,
+                "680573112360bfd3f71556082f875c907c21a6e7",
                 "candidate",
             ),
             "qwen3.8-flash-next:axq-6bit": (
                 "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
-                None,
+                "d514dcebf3086068ed7968caf395083c95ebcfca",
                 "candidate",
             ),
             "ax-qwen3-vl-30b": (
@@ -763,6 +763,26 @@ class AxEngineCliTests(unittest.TestCase):
                 self.assertEqual(records[0]["status"], "download_failed")
                 self.assertIn(expected, records[0]["errors"][0])
                 self.assertIn(expected, stderr.getvalue())
+
+    def test_flash_next_download_aliases_forward_immutable_revisions(self) -> None:
+        class Result:
+            returncode = 0
+            stdout = json.dumps({"schema_version": "ax.download_model.v1", "status": "ready"})
+            stderr = ""
+
+        cases = (
+            ("qwen3.8-flash-next:axq", "680573112360bfd3f71556082f875c907c21a6e7"),
+            ("qwen3.8-flash-next:axq-6bit", "d514dcebf3086068ed7968caf395083c95ebcfca"),
+        )
+        for alias, revision in cases:
+            with self.subTest(alias=alias), unittest.mock.patch.object(
+                _cli, "_run_capture", return_value=Result()
+            ) as capture:
+                code, summary, _ = _cli._download_summary(alias)
+            self.assertEqual(code, 0)
+            self.assertIn(f"--revision={revision}", capture.call_args.args[0])
+            self.assertIsNotNone(summary)
+            self.assertEqual(summary["revision"], revision)
 
     def test_download_url_forwards_revision_to_helper(self) -> None:
         commands: list[list[str]] = []

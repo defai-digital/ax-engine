@@ -31,7 +31,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | Gate | Current result | Remaining requirement |
 | --- | --- | --- |
 | Support tier | Experimental graph; checkpoint Candidate | Complete reproducible checkpoint qualification |
-| Pack delivery | CLI aliases exist; published pack and immutable download revision are unverified | Verify published artifacts, download, doctor, and installed-runtime admission |
+| Pack delivery | Public packs and immutable CLI revisions verified; four metadata files match native test packs | Verify full payload identity, fresh download, doctor, and installed-runtime admission |
 | Numerical | Eight prompts, 3,260 aligned positions; aggregate statistical rule passes | Independent holdout verification; retain 22 high-margin disagreements and the revised 1% rule |
 | Functional QA | Completed 105 items per route: direct 102, required MTP 102, reference 101 hard passes | Direct/MTP text differs on two reasoning items; encoded QA acceptance is false |
 | Long context / NLL | Long-context lookup completed across all three routes; 3,999 scored tokens, AX mean NLL 1.96226 versus reference 1.96609 | Broader contexts; recover matching historical harness or rerun with frozen provenance |
@@ -47,6 +47,16 @@ zero-high-margin-disagreement rule failed, while the later at-most-1% rule
 passes at 22/3,260 (0.67%). The aggregate mean KL is 0.0860 against a 0.1011
 limit, and top-1 disagreement is 2.85% against 3.22%. Do not describe this as
 an independent confirmation or exact full-model parity.
+
+## Immutable public pack metadata
+
+The 4-bit alias is pinned to `680573112360bfd3f71556082f875c907c21a6e7`;
+the 6-bit alias to `d514dcebf3086068ed7968caf395083c95ebcfca`. Both repositories
+are publicly accessible. Their config, AXQuant manifest, tensor index and expert
+stream manifest match the native test packs byte-for-byte. See the
+[metadata identity record](../../benchmarks/results/flash-next-public-pack-metadata-20260917.json).
+This does not verify every weight byte, a fresh download, or installed-runtime
+qualification.
 
 ## MTP state and runner coverage
 

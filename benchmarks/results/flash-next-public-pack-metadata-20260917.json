@@ -1,0 +1,48 @@
+{
+  "schema": "ax-engine.flash-next.public-pack-metadata.v1",
+  "checked_at": "2026-09-17T07:36:27.570007+00:00",
+  "qualification": false,
+  "release_ready": false,
+  "full_payload_verified": false,
+  "clean_download_verified": false,
+  "hardware_for_local_metadata": "Apple M2 Ultra 192 GB",
+  "records": [
+    {
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+      "revision": "680573112360bfd3f71556082f875c907c21a6e7",
+      "anonymous_http_status": 200,
+      "private": false,
+      "gated": false,
+      "api_url": "https://huggingface.co/api/models/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+      "immutable_tree_url": "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP/tree/680573112360bfd3f71556082f875c907c21a6e7",
+      "metadata_sha256": {
+        "config.json": "80ca7afe6c96a5e6c214c86113cb07662114a01f01b34c2f2d8fd242cdac97a7",
+        "axquant_manifest.json": "8d34c5f1b575f2db5f4994ae6040e280947e087c31a706818bbd3439bf800db7",
+        "ax_expert_stream.json": "991dda7208150a0c3d6a5c6a0556b03c9a4fa8cb4235555ef37dfe10c831e5c1",
+        "model.safetensors.index.json": "a1f7e75ababc4413eb9cc8d6bef017960db785628596012d4dfcfb7ef8826f4d"
+      },
+      "metadata_matches_native_test_pack": true
+    },
+    {
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+      "revision": "d514dcebf3086068ed7968caf395083c95ebcfca",
+      "anonymous_http_status": 200,
+      "private": false,
+      "gated": false,
+      "api_url": "https://huggingface.co/api/models/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+      "immutable_tree_url": "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP/tree/d514dcebf3086068ed7968caf395083c95ebcfca",
+      "metadata_sha256": {
+        "config.json": "19231536f0f8ce129eb8cab985a68c0ddced2af90e12f5c65f01a35a686efe02",
+        "axquant_manifest.json": "95491b234a09ef0de50e0d10dbc1729cec48f5906ad33c7184a0855afe76b1c7",
+        "ax_expert_stream.json": "9aa34b7edef44e8a9a6302816950dd0b37305e52f98355cde20d3388326dc2ae",
+        "model.safetensors.index.json": "ab0e442ef09c9198718f10dba967ff90e0cf1c0a9005c928bb8b72c3d76bf5a2"
+      },
+      "metadata_matches_native_test_pack": true
+    }
+  ],
+  "limitations": [
+    "Metadata identity is not full tensor-payload identity.",
+    "Fresh download, doctor and installed-runtime admission are not proved by this record.",
+    "Candidate certification and all numerical, QA, throughput and target-hardware gates remain separate."
+  ]
+}
