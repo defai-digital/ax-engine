@@ -197,6 +197,14 @@ residency label.
 
 ## Admission and operator contract
 
+The [installed offline alias check](../../benchmarks/results/flash-next-offline-alias-m2-20260917.json)
+passes for both pinned 4-bit and 6-bit aliases after correcting the download
+helper's HC role requirements and I64 metadata binding. Both manifests are
+regenerated and validated by the native tool. The fixture reuses previously
+verified payloads, so fresh network download qualification remains open.
+The rebuilt wheel passes 79 installed/packaging tests and has byte-identical
+native binaries, MLX runtime and Metal assets to the earlier packaging wheel.
+
 The [local wheel packaging check](../../benchmarks/results/flash-next-wheel-packaging-m3-20260917.json)
 passes isolated native import and 79 installed/packaging tests on M3 Max.
 Its negative control rejects an earlier wheel with a Mach-O loading error.

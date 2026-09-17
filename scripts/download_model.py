@@ -285,6 +285,7 @@ _SAFETENSORS_DTYPE_BYTES = {
     "BF16": 2,
     "F32": 4,
     "I8": 1,
+    "I64": 8,
     "U8": 1,
     "U32": 4,
 }
@@ -566,8 +567,16 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
 
     if "token_embedding" not in global_roles:
         return "missing required tensor role token_embedding"
-    if "final_norm" not in global_roles:
-        return "missing required tensor role final_norm"
+    is_flash_next = model_family == "qwen4_exp"
+    # Flash Next collapses its residual streams through an HC mixer. The
+    # native qwen4_exp validator owns full geometry and family validation.
+    output_roles = (
+        ("qwen4_exp_hc_mixer_norm", "qwen4_exp_hc_mixer_mix_down", "qwen4_exp_hc_mixer_mix_up")
+        if is_flash_next else ("final_norm",)
+    )
+    for role in output_roles:
+        if role not in global_roles:
+            return f"missing required tensor role {role}"
 
     if model_family == "embeddinggemma":
         if "embedding_dense0" not in global_roles:
@@ -597,11 +606,17 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
         roles = layer_roles.get(layer_index)
         if not roles:
             return f"missing tensors for layer {layer_index}"
-        if "attention_norm" not in roles:
+        if is_flash_next:
+            for component in ("attn", "mlp"):
+                for part in ("norm", "mix_down", "mix_up", "inject"):
+                    role = f"qwen4_exp_{component}_hc_{part}"
+                    if role not in roles:
+                        return f"layer {layer_index} is missing required tensor role {role}"
+        elif "attention_norm" not in roles:
             return f"layer {layer_index} is missing required tensor role attention_norm"
         if is_nemotron_h:
             continue
-        if "ffn_norm" not in roles and "attention_post_norm" not in roles:
+        if not is_flash_next and "ffn_norm" not in roles and "attention_post_norm" not in roles:
             return (
                 f"layer {layer_index} is missing required tensor role "
                 "ffn_norm or attention_post_norm"
