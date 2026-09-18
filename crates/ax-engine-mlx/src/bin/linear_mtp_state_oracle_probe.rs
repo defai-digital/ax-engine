@@ -2,7 +2,10 @@
 //! production-decode graphs on the same real checkpoint and cache state.
 //!
 //! Usage:
-//!   linear_mtp_state_oracle_probe <model_dir> <comma-separated-prompt-tokens>
+//!   linear_mtp_state_oracle_probe <model_dir> <prompt-tokens> [decode-prefix-tokens]
+//!
+//! The optional generated prefix is replayed token-by-token, never appended to
+//! the prefill prompt. A mismatch with singleton predictions aborts the probe.
 
 use std::env;
 use std::path::Path;
@@ -57,6 +60,33 @@ fn max_abs_diff(left: &MlxArray, right: &MlxArray) -> f32 {
         .fold(0.0_f32, |maximum, (left, right)| {
             maximum.max((left - right).abs())
         })
+}
+
+fn print_logit_comparison(label: &str, singleton: &MlxArray, batched: &MlxArray) {
+    let singleton = astype(singleton, MlxDtype::Float32, None);
+    let batched = astype(batched, MlxDtype::Float32, None);
+    eval(&[&singleton, &batched]);
+    for (route, logits) in [("singleton", &singleton), ("batched", &batched)] {
+        let values = logits.data_f32();
+        let mut indices: Vec<usize> = (0..values.len()).collect();
+        indices.sort_by(|&left, &right| values[right].total_cmp(&values[left]));
+        let top: Vec<(usize, f32)> = indices.iter().take(2).map(|&i| (i, values[i])).collect();
+        println!("row={label} route={route} top2={top:?}");
+    }
+    println!(
+        "row={label} logits_max_abs={:.9e}",
+        max_abs_diff(&singleton, &batched)
+    );
+}
+
+fn validate_prefix_token(index: usize, expected: u32, actual: u32) -> Result<(), String> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(format!(
+            "singleton replay disagrees at generated index {index}: expected {expected}, got {actual}; no comparable boundary"
+        ))
+    }
 }
 
 fn model_embeddings(cfg: &ModelConfig, weights: &ModelWeights, tokens: &[u32]) -> MlxArray {
@@ -183,13 +213,14 @@ fn print_first_layer_hidden_diff(
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let model_dir = args.next().ok_or_else(|| {
-        "usage: linear_mtp_state_oracle_probe <model_dir> <prompt-tokens>".to_string()
+        "usage: linear_mtp_state_oracle_probe <model_dir> <prompt-tokens> [decode-prefix-tokens]".to_string()
     })?;
     let prompt = parse_tokens(
         &args
             .next()
             .ok_or_else(|| "missing comma-separated prompt tokens".to_string())?,
     )?;
+    let replay_prefix = args.next().map(|raw| parse_tokens(&raw)).transpose()?;
     if let Some(unexpected) = args.next() {
         return Err(format!("unexpected argument: {unexpected}"));
     }
@@ -205,7 +236,7 @@ fn run() -> Result<(), String> {
 
     let mut base_cache = MlxKVCache::new(cfg.layer_count);
     let mut rng = Xorshift64::new(0);
-    let (primary, _) = chunked_prefill_with_final_hidden(
+    let (mut primary, _) = chunked_prefill_with_final_hidden(
         &cfg,
         &weights,
         &prompt,
@@ -214,6 +245,22 @@ fn run() -> Result<(), String> {
         MlxSamplingRequest::new(MlxSamplingParams::greedy(), &prompt),
         &mut rng,
     );
+
+    if let Some(prefix) = replay_prefix {
+        validate_prefix_token(0, prefix[0], primary)?;
+        for (index, pair) in prefix.windows(2).enumerate() {
+            let offset = base_cache.seq_len();
+            let logits = forward_argmax(&cfg, &weights, &[pair[0]], &mut base_cache, offset);
+            base_cache.advance(1);
+            primary = materialized_argmax(&logits, &base_cache);
+            validate_prefix_token(index + 1, pair[1], primary)?;
+        }
+        println!(
+            "replayed_generated_tokens={} next_prediction_index={}",
+            prefix.len() - 1,
+            prefix.len()
+        );
+    }
 
     let token_offset = base_cache.seq_len();
     let mut first_cache = base_cache.clone();
@@ -280,6 +327,11 @@ fn run() -> Result<(), String> {
     println!(
         "primary={primary} draft={draft} singleton=[{singleton_first_token},{singleton_second_token}] batched={batched_tokens:?}"
     );
+    let vocab = cfg.vocab_size as i32;
+    let first_row = slice(&batched_logits, &[0, 0], &[1, vocab], &[1, 1], None);
+    let second_row = slice(&batched_logits, &[1, 0], &[2, vocab], &[1, 1], None);
+    print_logit_comparison("first", &singleton_first, &first_row);
+    print_logit_comparison("second", &singleton_second, &second_row);
     for layer in 0..cfg.layer_count {
         let (singleton_conv, singleton_recurrent) = singleton_cache.linear_state(layer);
         let (batched_conv, batched_recurrent) = batched_cache.linear_state(layer);
@@ -332,5 +384,25 @@ fn main() -> ExitCode {
             eprintln!("error: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_boundary_rejects_a_different_generated_prefix() {
+        assert!(validate_prefix_token(0, 42, 42).is_ok());
+        let error = validate_prefix_token(17, 42, 43).unwrap_err();
+        assert!(error.contains("generated index 17"));
+        assert!(error.contains("no comparable boundary"));
+    }
+
+    #[test]
+    fn replay_tokens_require_a_nonempty_valid_sequence() {
+        assert_eq!(parse_tokens("42, 43\n44").unwrap(), vec![42, 43, 44]);
+        assert!(parse_tokens("").is_err());
+        assert!(parse_tokens("42,invalid").is_err());
     }
 }
