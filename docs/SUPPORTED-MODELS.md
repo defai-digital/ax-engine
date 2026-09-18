@@ -60,7 +60,7 @@ resolved session*, not how well a family is supported.
 | **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
 | **64 GB (Mac mini M5)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| **256 GB (Mac Studio M5 Ultra)** | Best experience for Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`, 125B-A6B). Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Super-class Qwen 3.8 (2.4T) stays experimental. |
+| **128 GB (MacBook Pro M5 Max)** | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
 Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
@@ -113,7 +113,7 @@ Qwen 3.8 caveat:
   the unique general-purpose default and primary optimization target.
   Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
 - **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU
-  for Mac Studio M5 Ultra 256 GB. Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+  for MacBook Pro M5 Max 128 GB. Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
   CLI aliases are `qwen3.8-flash-next:axq` (4-bit) and
   `qwen3.8-flash-next:axq-6bit`. Public pack availability and immutable alias revisions are verified; full
   payload, fresh-download and installed-runtime qualification remain open.

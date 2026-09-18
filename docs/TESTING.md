@@ -96,10 +96,10 @@ Silent direct-fallback on the MTP path is a fail.
 Campaign-only (does not block unrelated patches): MTP Tier 2 promotion, 8h/72h
 endurance, long-context decode-at-depth, peer ranking, multi-model residency,
 multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
-Mac mini M4 Pro 64 GB SKU. Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`) is a
-second SKU on Mac Studio M5 Ultra 256 GB
+Mac mini M4 Pro 64 GB SKU. Qwen 3.8 Flash Next MXFP4 MTP is a
+second SKU on MacBook Pro M5 Max 128 GB
 (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`).
-Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
 Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
 variable. The Flash Next development comparison uses a pinned MLX-VLM
 reference because `mlx_lm` has no `qwen4_exp` model. Passing `--skip-mlx-lm`

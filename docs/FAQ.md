@@ -65,7 +65,7 @@ configurations:
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
 | Mac mini M4 Pro | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| Mac Studio M5 Ultra | 256 GB RAM | Best experience for Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`, 125B-A6B). Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). |
+| MacBook Pro M5 Max | 128 GB RAM | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. |
 
 ## What model stack should I run on high-memory Apple Silicon?
 
@@ -259,8 +259,8 @@ AX Engine v7.0.0 adds the production-size Qwen 3.8 27B catalog and serve path.
 Start with the pinned `qwen3.8-27b:axq` 6-bit MTP pack. Its checkpoint path is
 Tier 1; MTP Tier 2 performance certification remains pending.
 
-Qwen 3.8 Flash Next (`qwen3.8-flash-next:axq`) is a second SKU for Mac Studio
-M5 Ultra 256 GB. Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+Qwen 3.8 Flash Next MXFP4 MTP is a second SKU for MacBook Pro
+M5 Max 128 GB. Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
 See [Supported Models](SUPPORTED-MODELS.md).
 
 ## Which runtime path should I choose first?

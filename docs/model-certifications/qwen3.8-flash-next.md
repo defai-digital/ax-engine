@@ -2,12 +2,36 @@
 
 Status: **Candidate; release qualification open**
 
-Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
-Target SKU: **Mac Studio M5 Ultra, 256 GB**. Current real-pack evidence is
-from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-17**.
+Target SKU: **MacBook Pro M5 Max, 128 GB**. Target pack: **MXFP4 MTP**.
+Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-17**.
 
-## Identity and implemented execution
+## Current target and open gates
+
+The target is
+[`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/tree/0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35)
+at revision `0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35`. Published file
+metadata totals 132,261,853,669 bytes. Default MXFP4/group32 coexists with
+per-tensor affine8/group32 overrides; the protected MTP sidecar is BF16.
+The current campaign uses a NAS-backed Hugging Face cache over SMB; storage
+conditions are part of qualification. MXFP4 paging remains rejected by the
+current native loader; model publication does not establish AX execution.
+
+Six-bit is excluded from this target campaign. The former Studio target and
+all affine results below are historical; they do not qualify MXFP4 on M5 Max.
+Existing download aliases retain their original pack identity.
+
+| Gate | Current target state |
+| --- | --- |
+| MXFP4 execution | Open: validated mode/scale/bias contracts through full-layer and selected-expert paging |
+| Immutable delivery | Published revision and metadata identified; target SSD payload verification pending |
+| Numerical and MTP | New pack-specific holdout, direct/MTP state, rollback and trained-head evidence required |
+| Installed QA and lifecycle | Target QA, SSE/disconnect/recovery, stop/budget and long-context evidence pending |
+| Throughput and memory | Nine new cells: 512/2048/8192 prompt tokens x AX direct/reference/AX MTP; target peak memory and cold latency pending |
+| Release | Candidate; no release-ready or default-MTP promotion |
+
+## Existing affine implementation and historical evidence
 
 HF family `qwen4_exp` identifies the 125B-A6B hybrid Gated-DeltaNet / sparse
 attention MoE with its 51B n-gram table. It is distinct from Qwen 3.8 27B
@@ -26,7 +50,7 @@ not proof of published-pack availability or successful download qualification.
 Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 `de4b8e4d43b917e7706784d8bb445c9af86a3540`.
 
-## Current gates
+## Historical affine gates
 
 | Gate | Current result | Remaining requirement |
 | --- | --- | --- |
@@ -39,7 +63,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | MTP integration | All 12 HC state/runner controls and 105-item native QA parity pass; four installed direct/required pairs have text and usage identity | Full installed/default-route QA and target qualification before promotion |
 | HTTP / SSE | HC candidate: six modes and 12 requests pass. Installed wheel: eight HTTP completions with 32-token budgets, correct ready health and clean shutdown pass | Extend installed streaming/lifecycle coverage and target qualification |
 | Throughput | Historical fixed-output matrix: 11/18 complete; two failed cells and five without results; 128 tokens in every measured sample | Collect a complete current-candidate matrix; retain historical budget/reference GPU failures and qualify target-SKU memory |
-| Target hardware | No M5 Ultra 256 GB result | Run target-SKU qualification |
+| Former target hardware | No Studio M5 Ultra 256 GB result | Superseded by the MXFP4 M5 Max target above |
 | Release | Not release-ready | Close the numerical, QA, MTP, throughput, delivery and target-hardware gates above; merged validation alone is insufficient |
 
 The statistical threshold was adjusted on the collected sample: the earlier
@@ -269,7 +293,7 @@ retain metrics and outputs with local path prefixes redacted.
 The 6-bit default direct request takes about 1,020 seconds and required MTP
 about 186 seconds. Auto selects layer paging on this 192 GB host. These are
 single diagnostic observations with different cache histories; no speedup or
-target-SKU performance claim follows. The 256 GB target remains untested.
+target-SKU performance claim follows. The former 256 GB target remained untested.
 
 The [installed offline alias check](../../benchmarks/results/flash-next-offline-alias-m2-20260917.json)
 passes for both pinned 4-bit and 6-bit aliases after correcting the download
@@ -455,6 +479,6 @@ preserves all responses, checks and metrics with local paths redacted.
 This run uses existing selected-expert and selected-prefill opt-in flags. It
 closes collection and pairing for this route only; the default six-bit
 1,800-second full-QA timeout and earlier selected 600-second timeout remain
-open. Full throughput, installed lifecycle, cold latency and target M5 Ultra
-256 GiB qualification remain separate requirements. Product defaults, MTP
+open. Full throughput, installed lifecycle, cold latency and the former M5 Ultra
+256 GiB qualification were separate open requirements in this historical campaign. Product defaults, MTP
 certification and release status are unchanged.

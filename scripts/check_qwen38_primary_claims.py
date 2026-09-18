@@ -26,7 +26,7 @@ STATUS_FILES = (
 )
 FLASH_NEXT_ALIAS = "qwen3.8-flash-next:axq"
 FLASH_NEXT_STATUS_SENTENCE = (
-    "Second SKU. M2 evidence only; checkpoint qualification pending. MTP Tier 2 pending. "
+    "Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. "
     "AX certification record: Candidate (gates open)."
 )
 FLASH_NEXT_STATUS_FILES = (

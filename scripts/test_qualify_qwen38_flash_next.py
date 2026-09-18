@@ -40,24 +40,27 @@ def _product_manifest() -> dict[str, object]:
 
 
 class QualifyFlashNextTest(unittest.TestCase):
-    def test_contract_is_candidate_on_studio_sku(self) -> None:
+    def test_contract_distinguishes_blocked_mxfp4_target_from_affine_compatibility(self) -> None:
         payload = mod.contract()
         self.assertEqual(payload["family"], "qwen4_exp")
-        self.assertEqual(payload["alias"], "qwen3.8-flash-next:axq")
+        self.assertIsNone(payload["alias"])
+        self.assertEqual(payload["existing_affine_alias"], "qwen3.8-flash-next:axq")
+        self.assertFalse(payload["sixbit_in_target_scope"])
+        self.assertEqual(payload["pack_revision"], "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35")
         self.assertEqual(
             payload["repo_id"],
-            "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+            "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
         )
-        self.assertEqual(payload["host_class"], "Mac Studio M5 Ultra, 256 GB")
-        self.assertFalse(payload["fail_closed"])
-        self.assertTrue(payload["ready"])
-        self.assertIsNone(payload["load_blocker"])
+        self.assertEqual(payload["host_class"], "MacBook Pro M5 Max, 128 GB")
+        self.assertTrue(payload["fail_closed"])
+        self.assertFalse(payload["ready"])
+        self.assertIn("MXFP4", payload["load_blocker"])
         self.assertEqual(
             payload["experimental_opt_in"], "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1"
         )
         self.assertEqual(payload["experimental_2bit_opt_in"], "AX_ENGINE_2BIT_EXPERIMENTAL=1")
         self.assertEqual(
-            payload["product_expert_layouts"],
+            payload["existing_affine_expert_layouts"],
             [
                 {"bits": 4, "group_size": 64},
                 {"bits": 6, "group_size": 64},
@@ -69,7 +72,7 @@ class QualifyFlashNextTest(unittest.TestCase):
         )
         self.assertIn("qwen3.8-27b:axq", payload["not"])
         self.assertIn("Candidate", payload["status"])
-        self.assertIn("M2 evidence", payload["status"])
+        self.assertIn("MXFP4 MTP target", payload["status"])
 
     def test_dry_run_cli_json(self) -> None:
         proc = subprocess.run(
@@ -80,8 +83,8 @@ class QualifyFlashNextTest(unittest.TestCase):
             cwd=ROOT,
         )
         payload = json.loads(proc.stdout)
-        self.assertFalse(payload["fail_closed"])
-        self.assertTrue(payload["ready"])
+        self.assertTrue(payload["fail_closed"])
+        self.assertFalse(payload["ready"])
 
     def test_live_preflight_rejects_incomplete_dir(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -91,7 +94,7 @@ class QualifyFlashNextTest(unittest.TestCase):
                 mod._live_preflight(model_dir)
             self.assertIn("model-manifest.json", str(raised.exception))
 
-    def test_live_preflight_accepts_ready_product_manifest(self) -> None:
+    def test_live_preflight_accepts_existing_affine_metadata_without_qualification(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             model_dir = Path(td)
             (model_dir / "config.json").write_text("{}", encoding="utf-8")
