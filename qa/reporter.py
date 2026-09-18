@@ -79,6 +79,7 @@ def build_results_payload(results: list[dict], metadata: dict) -> dict[str, Any]
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "schema_version": 1,
+        "checker_contract": metadata.get("checker_contract"),
         "generated_at": now,
         "title": metadata.get("title", "AX Engine QA Report"),
         "version": metadata.get("version", "unknown"),
@@ -115,6 +116,7 @@ def generate_html_report(results: list[dict], metadata: dict) -> str:
     title = metadata.get("title", "AX Engine QA Report")
     version = metadata.get("version", "unknown")
     commit = metadata.get("commit", "unknown")
+    checker_contract = metadata.get("checker_contract") or "unrecorded"
     seed = metadata.get("seed", "n/a")
     bank_size = metadata.get("bank_size", "n/a")
     sample_size = metadata.get("sample_size", len(results))
@@ -186,7 +188,7 @@ details summary {{ cursor: pointer; color: #2563eb; }}
 </head>
 <body>
 <h1>{_esc(title)}</h1>
-<div class="meta">Generated: {now} | Version: {_esc(version)} | Commit: {_esc(commit)} | Seed: {_esc(seed)} | Sample: {_esc(sample_size)} / bank {_esc(bank_size)} | Mode label: {_esc(mode_label)} | IDs: {_esc(', '.join(sampled_ids) if sampled_ids else 'n/a')}</div>
+<div class="meta">Generated: {now} | Version: {_esc(version)} | Commit: {_esc(commit)} | Checker: {_esc(checker_contract)} | Seed: {_esc(seed)} | Sample: {_esc(sample_size)} / bank {_esc(bank_size)} | Mode label: {_esc(mode_label)} | IDs: {_esc(', '.join(sampled_ids) if sampled_ids else 'n/a')}</div>
 <div class="note">{_esc(mode_note)}</div>
 <div class="summary">
 <div class="card"><h3>Total Tests</h3><div class="value">{total}</div></div>

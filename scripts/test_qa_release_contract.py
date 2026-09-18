@@ -11,9 +11,17 @@ from checkers import check_exact_answer, run_all_checks
 from client import QaResponse
 from prompts import get_prompt_by_id
 import run_qa
+from reporter import build_results_payload, generate_html_report
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def test_reports_preserve_checker_contract_without_relabeling_legacy_runs(self):
+        contract = run_qa.CHECKER_CONTRACT_VERSION
+        metadata = {'checker_contract': contract}
+        assert build_results_payload([], metadata)['checker_contract'] == contract
+        assert contract in generate_html_report([], metadata)
+        assert build_results_payload([], {})['checker_contract'] is None
+
     def test_ordered_comma_lists_match_whole_answers_and_preserve_multiplicity(self):
         letters = get_prompt_by_id('instruction_alphabet_first')
         numbers = get_prompt_by_id('instruction_sort_numbers')

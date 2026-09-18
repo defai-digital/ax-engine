@@ -233,6 +233,9 @@ their prompts and gold answers are unchanged. Short answers that fully match
 all declared answer patterns are exempt from prose-only coherence heuristics.
 
 Reports from `qa/run_qa.py` record `checker_contract=ax.qa.complete_answers.v2`.
+The initial v2 runner passed this field to the reporter, which omitted it;
+those historical reports require source binding and per-answer completion
+checks to identify the contract. Do not add a version to an unbound old report.
 An answer must finish with `stop`; a correct substring in a budget-truncated,
 cancelled or otherwise incomplete response cannot pass. Historical reports
 retain their original scores. Regrading saved answers under this contract is
