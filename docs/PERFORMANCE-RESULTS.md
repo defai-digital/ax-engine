@@ -252,6 +252,13 @@ assistant-MTP depth 2.
 
 <img src="assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="AXQ MTP peer comparison on Apple M5 Max showing AX Engine, MTPLX, and OMLX decode throughput">
 
+Decode on the Qwen 3.8 27B 6-bit pack is memory-bandwidth bound on both the
+Mac mini M4 Pro SKU and the M5 Max campaign host (direct AR streams 95-98% of
+each host's published bandwidth); see
+[decode bandwidth utilization](performance/decode-bandwidth-utilization.md).
+
+<img src="assets/perf-decode-bandwidth-utilization.svg" alt="Decode throughput expressed as weight-stream bandwidth against Apple's published memory bandwidth for Mac mini M4 Pro and MacBook Pro M5 Max">
+
 | AXQ model | AX Engine decode | MTPLX decode | OMLX decode | Readout |
 | --- | ---: | ---: | ---: | --- |
 | Qwen3.8 27B 6-bit | **45.05 tok/s** | 46.68 tok/s | 37.04 tok/s | MTPLX accept rate 100%; OMLX text-only AXQ staging |

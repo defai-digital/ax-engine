@@ -3466,6 +3466,151 @@ def render_embedding_delta_chart(
     return "".join(lines) + "\n"
 
 
+DECODE_BANDWIDTH_ARTIFACT = Path(
+    "benchmarks/results/mtp-axq-peer/decode-bandwidth-utilization-2026-09-17.json"
+)
+DECODE_BANDWIDTH_CHART_OUTPUT = "perf-decode-bandwidth-utilization.svg"
+DECODE_BANDWIDTH_WIDTH = 1080
+DECODE_BANDWIDTH_LEFT = 300.0
+DECODE_BANDWIDTH_RIGHT = 900.0
+DECODE_BANDWIDTH_TOP = 118.0
+DECODE_BANDWIDTH_ROW_GAP = 30.0
+DECODE_BANDWIDTH_HOST_GAP = 34.0
+DECODE_BANDWIDTH_COLORS = {
+    "spec": ("#9ca3af", "#374151"),
+    "direct": ("#2eaf5f", "#176c37"),
+    "mtp": ("#3b82f6", "#1d4ed8"),
+    "ax": ("#c084fc", "#7e22ce"),
+}
+
+
+def load_decode_bandwidth_artifact(path: Path) -> dict[str, Any]:
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    if artifact.get("schema") != "ax.decode_bandwidth_utilization.v1":
+        raise ChartError(f"unexpected decode bandwidth artifact schema in {path}")
+    hosts = artifact.get("hosts")
+    if not isinstance(hosts, list) or not hosts:
+        raise ChartError(f"decode bandwidth artifact {path} has no hosts")
+    bytes_per_token = artifact.get("pack", {}).get("dense_weight_bytes")
+    if not isinstance(bytes_per_token, int | float) or bytes_per_token <= 0:
+        raise ChartError(f"decode bandwidth artifact {path} lacks dense_weight_bytes")
+    for host in hosts:
+        spec = host.get("memory_bandwidth_gb_s")
+        if not isinstance(spec, int | float) or spec <= 0:
+            raise ChartError(f"host {host.get('key')} lacks memory_bandwidth_gb_s")
+        for runtime in host.get("runtimes", []):
+            tok_s = runtime.get("decode_tok_s")
+            if not isinstance(tok_s, int | float) or tok_s <= 0:
+                raise ChartError(
+                    f"runtime {runtime.get('key')} on {host.get('key')} lacks decode_tok_s"
+                )
+            expected = tok_s * float(bytes_per_token) / 1e9
+            recorded = runtime.get("equivalent_bandwidth_gb_s")
+            if isinstance(recorded, int | float) and abs(recorded - expected) > 0.15:
+                raise ChartError(
+                    f"runtime {runtime.get('key')} on {host.get('key')} records "
+                    f"{recorded} GB/s but decode_tok_s implies {expected:.1f} GB/s"
+                )
+    return artifact
+
+
+def render_decode_bandwidth_chart(artifact: dict[str, Any], source_label: str) -> str:
+    bytes_per_token = float(artifact["pack"]["dense_weight_bytes"])
+    hosts = artifact["hosts"]
+    row_count = sum(1 + len(host.get("runtimes", [])) for host in hosts)
+    chart_height = int(
+        DECODE_BANDWIDTH_TOP
+        + row_count * DECODE_BANDWIDTH_ROW_GAP
+        + (len(hosts) - 1) * DECODE_BANDWIDTH_HOST_GAP
+        + 84
+    )
+    plot_width = DECODE_BANDWIDTH_RIGHT - DECODE_BANDWIDTH_LEFT
+    max_percent = max(
+        float(runtime["decode_tok_s"]) * bytes_per_token / 1e9 / float(host["memory_bandwidth_gb_s"]) * 100.0
+        for host in hosts
+        for runtime in host.get("runtimes", [])
+    )
+    axis_max = nice_axis_ceiling(max(max_percent, 100.0) * 1.12)
+
+    def fx(percent: float) -> float:
+        return DECODE_BANDWIDTH_LEFT + (min(max(percent, 0.0), axis_max) / axis_max) * plot_width
+
+    title = "Decode throughput as weight-stream bandwidth vs Apple spec"
+    subtitle = (
+        f"{artifact['pack']['repo_id']} | {bytes_per_token / 1e9:.1f} GB of dense weights "
+        "streamed per token pass"
+    )
+    caption = (
+        "Bar = decode tok/s x weight bytes, as % of published memory bandwidth. "
+        "Direct AR is utilization; MTP rows show tokens delivered per weight pass."
+    )
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{DECODE_BANDWIDTH_WIDTH}"'
+        f' height="{chart_height}" viewBox="0 0 {DECODE_BANDWIDTH_WIDTH} {chart_height}"'
+        f' role="img" aria-labelledby="title desc">',
+        f"<title>{escape(title)}</title>",
+        f"<desc>{escape(subtitle)}. Bars are decode tok/s multiplied by the dense weight bytes, as a percentage of each host's published memory bandwidth; 100% is the single-token streaming ceiling.</desc>",
+        f'<rect width="{DECODE_BANDWIDTH_WIDTH}" height="{chart_height}" fill="#f8fafc"/>',
+        f'<text x="44" y="30" font-family="{FONT}" font-size="18" font-weight="700" fill="#111827">{escape(title)}</text>',
+        f'<text x="44" y="52" font-family="{FONT}" font-size="12" fill="#4b5563">{escape(subtitle)}</text>',
+        f'<text x="44" y="72" font-family="{FONT}" font-size="11" fill="#4b5563">{escape(caption)}</text>',
+    ]
+    tick_step = 50.0 if axis_max <= 400 else 100.0
+    tick = 0.0
+    while tick <= axis_max + 1e-9:
+        x = fx(tick)
+        stroke = "#94a3b8" if tick == 100.0 else "#e5e7eb"
+        width = "1.6" if tick == 100.0 else "1"
+        lines.append(
+            f'<line x1="{x:.1f}" y1="{DECODE_BANDWIDTH_TOP - 14:.0f}" x2="{x:.1f}" y2="{chart_height - 50}" stroke="{stroke}" stroke-width="{width}"/>'
+        )
+        lines.append(
+            f'<text x="{x:.1f}" y="{chart_height - 30}" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">{tick:.0f}%</text>'
+        )
+        tick += tick_step
+    lines.append(
+        f'<text x="{fx(100.0):.1f}" y="{DECODE_BANDWIDTH_TOP - 18:.0f}" text-anchor="middle" font-family="{FONT}" font-size="10" font-weight="700" fill="#475569">100% = single-token streaming ceiling</text>'
+    )
+
+    y = DECODE_BANDWIDTH_TOP
+    for host in hosts:
+        spec = float(host["memory_bandwidth_gb_s"])
+        host_label = (
+            f"{host['label']} | {host['chip']}, {host['gpu_cores']}-core GPU, "
+            f"{spec:.0f} GB/s ({host.get('role', 'host')})"
+        )
+        lines.append(
+            f'<text x="44" y="{y + 4:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="#111827">{escape(host_label)}</text>'
+        )
+        y += DECODE_BANDWIDTH_ROW_GAP
+        rows = [("Apple published bandwidth", "spec", spec, None)]
+        for runtime in host.get("runtimes", []):
+            tok_s = float(runtime["decode_tok_s"])
+            kind = "ax" if runtime.get("key") == "ax_engine" else str(runtime.get("kind", "mtp"))
+            rows.append((str(runtime["label"]), kind, tok_s * bytes_per_token / 1e9, tok_s))
+        for label, kind, gb_s, tok_s in rows:
+            percent = gb_s / spec * 100.0
+            fill, text_color = DECODE_BANDWIDTH_COLORS[kind]
+            end_x = fx(percent)
+            value_text = f"{percent:.0f}% ({gb_s:.0f} GB/s)"
+            if tok_s is not None:
+                value_text += f" at {tok_s:.2f} tok/s"
+            lines.extend(
+                [
+                    f'<text x="{DECODE_BANDWIDTH_LEFT - 12:.1f}" y="{y + 4:.1f}" text-anchor="end" font-family="{FONT}" font-size="11" fill="#374151">{escape(label)}</text>',
+                    f'<rect x="{DECODE_BANDWIDTH_LEFT:.1f}" y="{y - 8:.1f}" width="{max(end_x - DECODE_BANDWIDTH_LEFT, 1.0):.1f}" height="14" rx="3" fill="{fill}"/>',
+                    f'<text x="{end_x + 6:.1f}" y="{y + 3.7:.1f}" font-family="{FONT}" font-size="10" font-weight="700" fill="{text_color}">{escape(value_text)}</text>',
+                ]
+            )
+            y += DECODE_BANDWIDTH_ROW_GAP
+        y += DECODE_BANDWIDTH_HOST_GAP
+    lines.append(
+        f'<text x="44" y="{chart_height - 14}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
+    )
+    lines.append("</svg>")
+    return "".join(lines) + "\n"
+
+
 def write_chart(path: Path, content: str, check: bool) -> bool:
     if check:
         return path.exists() and path.read_text() == content
@@ -3591,6 +3736,19 @@ def main() -> int:
             )
             if not write_chart(mtp_peer_output_path, mtp_peer_content, args.check):
                 mismatches.append(mtp_peer_output_path)
+
+    decode_bandwidth_artifact_path = repo_root / DECODE_BANDWIDTH_ARTIFACT
+    if decode_bandwidth_artifact_path.is_file():
+        decode_bandwidth_output_path = args.output_dir / DECODE_BANDWIDTH_CHART_OUTPUT
+        decode_bandwidth_content = render_decode_bandwidth_chart(
+            load_decode_bandwidth_artifact(decode_bandwidth_artifact_path),
+            f"Source: {display_source_path(decode_bandwidth_artifact_path)} | "
+            "bandwidth figures from Apple technical specifications",
+        )
+        if not write_chart(
+            decode_bandwidth_output_path, decode_bandwidth_content, args.check
+        ):
+            mismatches.append(decode_bandwidth_output_path)
 
     embedding_scale_output_path = args.output_dir / EMBEDDING_SCALE_CHART_OUTPUT
     embedding_scale_content = render_embedding_box_chart(

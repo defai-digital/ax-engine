@@ -43,6 +43,51 @@ sys.modules[MTP_MODULE_SPEC.name] = mtp_refresh
 MTP_MODULE_SPEC.loader.exec_module(mtp_refresh)
 
 
+
+class DecodeBandwidthChartTests(unittest.TestCase):
+    def _artifact(self) -> dict:
+        return {
+            "schema": "ax.decode_bandwidth_utilization.v1",
+            "pack": {"repo_id": "AutomatosX/AX-Test", "dense_weight_bytes": 20_000_000_000},
+            "hosts": [
+                {
+                    "key": "h1",
+                    "label": "Host One",
+                    "chip": "Apple Test",
+                    "gpu_cores": 20,
+                    "memory_bandwidth_gb_s": 200,
+                    "role": "sku",
+                    "runtimes": [
+                        {"key": "ax_engine", "label": "AX MTP", "kind": "mtp", "decode_tok_s": 25.0},
+                        {"key": "mlx_lm", "label": "direct", "kind": "direct", "decode_tok_s": 9.5},
+                    ],
+                }
+            ],
+        }
+
+    def test_renders_percent_of_spec_for_each_row(self) -> None:
+        svg = charts.render_decode_bandwidth_chart(self._artifact(), "Source: test")
+        self.assertIn("250% (500 GB/s) at 25.00 tok/s", svg)
+        self.assertIn("95% (190 GB/s) at 9.50 tok/s", svg)
+        self.assertIn("100% = single-token streaming ceiling", svg)
+        self.assertIn("Host One | Apple Test, 20-core GPU, 200 GB/s (sku)", svg)
+        self.assertTrue(svg.startswith("<svg "))
+        self.assertTrue(svg.endswith("</svg>\n"))
+
+    def test_load_rejects_inconsistent_recorded_bandwidth(self) -> None:
+        artifact = self._artifact()
+        artifact["hosts"][0]["runtimes"][0]["equivalent_bandwidth_gb_s"] = 123.4
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "artifact.json"
+            path.write_text(json.dumps(artifact))
+            with self.assertRaises(charts.ChartError):
+                charts.load_decode_bandwidth_artifact(path)
+
+    def test_load_accepts_repository_artifact(self) -> None:
+        path = CHART_SCRIPT_PATH.parents[1] / charts.DECODE_BANDWIDTH_ARTIFACT
+        artifact = charts.load_decode_bandwidth_artifact(path)
+        self.assertEqual(len(artifact["hosts"]), 2)
+
 class ReadmePerformanceChartTests(unittest.TestCase):
     @staticmethod
     def exact_mtp_chart_summary() -> dict[str, object]:

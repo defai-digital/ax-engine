@@ -345,6 +345,24 @@ that condition and the AX lane was repeated with agreement within 0.4%. These
 are throughput numbers on the qualification SKU, not a quality or
 certification claim; the record stays **Candidate**.
 
+#### Why the M4 Pro and M5 Max numbers differ: memory bandwidth
+
+Decode on this 6-bit 27B pack streams 20.84 GB of dense weights per token.
+Direct autoregressive decode (mlx-lm) already uses **97.5%** of the Mac mini
+M4 Pro's published 273 GB/s and **94.7%** of the M5 Max's 614 GB/s, so the
+2.2x decode gap is the 2.25x bandwidth gap. MTP moves past that ceiling by
+emitting about 3.9 tokens per weight pass. Prefill is compute-bound and the
+M5 Max has twice the GPU cores plus per-core neural accelerators, which is why
+its prefill lead is 6x for both AX and MTPLX. Full analysis:
+[docs/performance/decode-bandwidth-utilization.md](docs/performance/decode-bandwidth-utilization.md).
+
+| Host | Published bandwidth | mlx-lm direct AR | Weight stream | Utilization | AX Engine MTP | Equivalent stream |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Mac mini M4 Pro 64 GB | 273 GB/s | 12.78 tok/s | 266 GB/s | 97.5% | 31.05 tok/s | 647 GB/s (237%) |
+| MacBook Pro M5 Max 128 GB | 614 GB/s | 27.90 tok/s | 581 GB/s | 94.7% | 76.90 tok/s | 1602 GB/s (261%) |
+
+<img src="docs/assets/perf-decode-bandwidth-utilization.svg" alt="Decode throughput expressed as weight-stream bandwidth against Apple's published memory bandwidth for Mac mini M4 Pro and MacBook Pro M5 Max">
+
 ### Campaign host: Apple M5 Max 128 GB (2026-09-15)
 
 Historical same-pack measurements with the runtimes available on 2026-09-15:

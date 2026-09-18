@@ -1,0 +1,100 @@
+{
+  "schema": "ax.decode_bandwidth_utilization.v1",
+  "scope": "Same-pack decode throughput expressed as weight bytes streamed per second against each host's published memory bandwidth. Direct autoregressive decode reads the dense weights once per token, so its implied bandwidth is a utilization measurement; MTP rows read the weights once per verify step and emit several tokens, so their equivalent bandwidth shows how far speculation moves past the single-token ceiling.",
+  "pack": {
+    "repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+    "dense_weight_bytes": 20836337734,
+    "dense_weight_bytes_source": "bandwidth_accounting.bytes_used_for_estimate in both ax_engine.json artifacts (dense_safetensor_total)"
+  },
+  "hosts": [
+    {
+      "key": "mac-mini-m4-pro-64gb",
+      "label": "Mac mini M4 Pro 64 GB",
+      "chip": "Apple M4 Pro",
+      "gpu_cores": 20,
+      "memory_bandwidth_gb_s": 273,
+      "bandwidth_source": "https://support.apple.com/en-us/121555",
+      "role": "qualification SKU",
+      "evidence": "benchmarks/results/mtp-axq-peer/2026-09-17-mac-mini-m4-pro-64gb/",
+      "runtimes": [
+        {
+          "key": "ax_engine",
+          "label": "AX Engine 7.4.0 MTP depth 3",
+          "kind": "mtp",
+          "decode_tok_s": 31.05,
+          "equivalent_bandwidth_gb_s": 647.0,
+          "percent_of_spec_bandwidth": 237.0
+        },
+        {
+          "key": "mtplx",
+          "label": "MTPLX 2.11.3 depth 3",
+          "kind": "mtp",
+          "decode_tok_s": 28.16,
+          "equivalent_bandwidth_gb_s": 586.8,
+          "percent_of_spec_bandwidth": 214.9
+        },
+        {
+          "key": "omlx",
+          "label": "OMLX 0.6.4 Lightning depth 1",
+          "kind": "mtp",
+          "decode_tok_s": 15.02,
+          "equivalent_bandwidth_gb_s": 313.0,
+          "percent_of_spec_bandwidth": 114.6
+        },
+        {
+          "key": "mlx_lm",
+          "label": "mlx-lm 0.31.3 direct AR",
+          "kind": "direct",
+          "decode_tok_s": 12.78,
+          "equivalent_bandwidth_gb_s": 266.3,
+          "percent_of_spec_bandwidth": 97.5
+        }
+      ]
+    },
+    {
+      "key": "apple-m5-max-128gb",
+      "label": "MacBook Pro M5 Max 128 GB",
+      "chip": "Apple M5 Max",
+      "gpu_cores": 40,
+      "memory_bandwidth_gb_s": 614,
+      "bandwidth_source": "https://www.apple.com/macbook-pro/specs/",
+      "role": "campaign host",
+      "evidence": "benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/",
+      "runtimes": [
+        {
+          "key": "ax_engine",
+          "label": "AX Engine 7.4.0 MTP depth 3",
+          "kind": "mtp",
+          "decode_tok_s": 76.9,
+          "equivalent_bandwidth_gb_s": 1602.3,
+          "percent_of_spec_bandwidth": 261.0
+        },
+        {
+          "key": "mtplx",
+          "label": "MTPLX 2.11.2 depth 3",
+          "kind": "mtp",
+          "decode_tok_s": 70.62,
+          "equivalent_bandwidth_gb_s": 1471.5,
+          "percent_of_spec_bandwidth": 239.7
+        },
+        {
+          "key": "omlx",
+          "label": "OMLX 0.6.4 Lightning depth 1",
+          "kind": "mtp",
+          "decode_tok_s": 38.47,
+          "equivalent_bandwidth_gb_s": 801.6,
+          "percent_of_spec_bandwidth": 130.5
+        },
+        {
+          "key": "mlx_lm",
+          "label": "mlx-lm 0.31.3 direct AR",
+          "kind": "direct",
+          "decode_tok_s": 27.9,
+          "equivalent_bandwidth_gb_s": 581.3,
+          "percent_of_spec_bandwidth": 94.7
+        }
+      ]
+    }
+  ]
+}
