@@ -225,7 +225,18 @@ Surface on chat cells: `python3 scripts/run_qa_matrix.py --surface` (or `QA_SURF
 | **Hard** | length, repetition, garbage, unicode, exact_answer, regex (all), invoice_total | Drive `auto_pass` and exit code |
 | **Soft** | keywords | Reported only |
 
-`exact_match` modes: `auto` | `token` | `full` | `last_line` | `case` | `substring`.
+`exact_match` modes: `auto` | `token` | `full` | `last_line` | `case` | `substring` | `comma_list`.
+`comma_list` compares the entire ordered comma-separated list, trimming fields
+and ignoring case. It preserves duplicate counts and rejects extra items or
+prose. The alphabet and numeric sorting items use this declared contract;
+their prompts and gold answers are unchanged. Short answers that fully match
+all declared answer patterns are exempt from prose-only coherence heuristics.
+
+Reports from `qa/run_qa.py` record `checker_contract=ax.qa.complete_answers.v2`.
+An answer must finish with `stop`; a correct substring in a budget-truncated,
+cancelled or otherwise incomplete response cannot pass. Historical reports
+retain their original scores. Regrading saved answers under this contract is
+a scorer revision, not a model improvement, and must report all score changes.
 
 ## Question bank + sampling
 

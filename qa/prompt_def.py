@@ -30,4 +30,5 @@ class QaPrompt:
     #   last_line — case-insensitive match on the last non-empty line
     #   full      — entire stripped output equals candidate
     #   case      — like last_line but case-sensitive (instruction constraints)
+    #   comma_list — entire ordered list; case-insensitive, trim each field
     exact_match: str = "auto"

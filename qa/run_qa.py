@@ -21,7 +21,7 @@ from prompts import (  # noqa: E402
     validate_bank,
 )
 from client import send_request  # noqa: E402
-from checkers import QualityReport, run_all_checks  # noqa: E402
+from checkers import CHECKER_CONTRACT_VERSION, QualityReport, run_response_checks  # noqa: E402
 from reporter import generate_html_report, generate_json_report  # noqa: E402
 
 MODE_NOTE = (
@@ -146,7 +146,7 @@ def run_qa_suite(
                     output_preview=f"ERROR: {resp.error}",
                 )
             else:
-                report = run_all_checks(resp.text, prompt)
+                report = run_response_checks(resp.text, prompt, resp.finish_reason)
                 status = "PASS" if report.auto_pass else "FAIL"
                 print(f"{status} ({report.summary}, {resp.elapsed_ms:.0f}ms)")
 
@@ -402,6 +402,7 @@ def main() -> int:
     print(replay)
 
     metadata = {
+        "checker_contract": CHECKER_CONTRACT_VERSION,
         "title": f"AX Engine QA Report — {tag}",
         "version": tag,
         "commit": commit,
