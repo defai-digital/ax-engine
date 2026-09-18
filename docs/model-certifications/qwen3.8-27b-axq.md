@@ -6,7 +6,7 @@ Primary optimization target: **AXQ 6-bit MTP** (`qwen3.8-27b:axq`)
 
 Compact sibling: **AXQ 4-bit MTP** (`qwen3.8-27b:axq-4bit`)
 
-Last reviewed: **2026-09-17**
+Last reviewed: **2026-09-18**
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -41,6 +41,23 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-18 linear-attention output correction (`21687d71`, completed by
+  `892c2fc9`) restores float32 gated normalization and shares the ordinary
+  target's layer-specific Metal gate policy. The dtype regression failed
+  before repair (BF16 S=2 maximum absolute error 0.015625); a second regression
+  showed why a portable-only repair was insufficient. Final BF16/FP16 exact
+  and relaxed gate-policy tests pass. On the selected mini, the fixed-token
+  compsec-092 split at output index 5 is closed; both predeclared raw controls
+  match direct/MTP under the 128-token cap. Clean final bundled-wheel
+  qualification passes 32/32 hard QA and 7/7 surfaces per route, doctor,
+  installed-package checks, active MTP telemetry and the paired 64-token probe.
+  However, the unchanged 512-token LINE_SET diagnostic still passes only
+  **1/12 per route** (direct nine truncations; MTP eight), and just **3/12**
+  response texts match. All twelve chat templates/token arrays match the
+  pinned tokenizer, ruling out a template mismatch for those inputs.
+  Broader sequence consistency and quality remain open; **not ship-ready**.
+  [Precision controls and final validation](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-la-precision/).
+
 - 2026-09-17 peer throughput campaign on the selected **Mac mini M4 Pro
   64 GB** SKU with the clean `ad999f3f` bundled wheel: `flappy` contract,
   20-run medians. AX Engine **31.05 tok/s** decode / **120.3 tok/s** prefill;
@@ -55,9 +72,9 @@ Landed, labeled:
   `ad999f3f`) preserves MLX BF16/FP16 tensor activation semantics in singleton
   gate/up and packed paths. On this 6-bit checkpoint the default runtime
   reaches only the packed dense path; the singleton matvec kernel admits
-  4-bit weights unless an opt-in flag is set. Two opt-in kernels (prefill
-  dual-QMM MMA, fused MoE expert block) keep the float-only activation and
-  remain off. A same-session A/B on the campaign laptop (M5 Max, peer-table
+  4-bit weights unless an opt-in flag is set. At that revision, two opt-in
+  kernels (prefill dual-QMM MMA, fused MoE expert block) still used float-only
+  activation; `483bc92a` subsequently corrected them with both flags still off. A same-session A/B on the campaign laptop (M5 Max, peer-table
   contract) shows decode within 0.3% of the 2026-09-15 binary and prefill
   0.5-1.4% lower; the README peer table is not refreshed by that check. An isolated exact-projection regression failed
   before repair (BF16 maximum absolute error 0.001953125); all 22 SwiGLU tests

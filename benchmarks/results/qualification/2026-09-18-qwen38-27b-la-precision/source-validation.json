@@ -1,0 +1,85 @@
+{
+  "source_commit": "892c2fc9649abbea82a7549ae7adcdfed430ff4e",
+  "checks": [
+    {
+      "check": "la-regression",
+      "exit_code": 0
+    },
+    {
+      "check": "fmt",
+      "exit_code": 0
+    },
+    {
+      "check": "clippy",
+      "exit_code": 0
+    },
+    {
+      "check": "rust",
+      "exit_code": 0
+    },
+    {
+      "check": "python",
+      "exit_code": 0
+    },
+    {
+      "check": "qwen27b",
+      "exit_code": 0
+    },
+    {
+      "check": "flash_next",
+      "exit_code": 0
+    },
+    {
+      "check": "claims",
+      "exit_code": 0
+    }
+  ],
+  "precision_before": {
+    "bfloat16_s2_max_abs": 0.015625,
+    "portable_only_relaxed_full_gate": "failed"
+  },
+  "precision_after": {
+    "dtypes": [
+      "bfloat16",
+      "float16"
+    ],
+    "sequence_lengths": [
+      2,
+      4,
+      8
+    ],
+    "exact_scope": "passed",
+    "relaxed_full_and_narrow_gate": "passed"
+  },
+  "python": {
+    "passed": 209,
+    "skipped": 26,
+    "subtests_passed": 140
+  },
+  "clippy_policy": "Existing CI policy uses five force-warn restrictions under -D warnings",
+  "script_suite": {
+    "source_commit": "21687d71e26684b75555d964138c58be219f32d2",
+    "exit_code": 0
+  },
+  "log_sha256": {
+    "validation/claims.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "validation/clippy.log": "8d0948bdc8f1e8078218bcf4c954e66406374f6b5211c9aa4453fd3e31bc8c86",
+    "validation/flash_next.log": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+    "validation/fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "validation/la-regression.log": "f418859b87e601831f8f29e5e138ee4a957b05e1aa8a967b5642f8cef5208996",
+    "validation/maturin.log": "1f6eb25cd27aaf6eddf428f3697f9b81effe0c10eebaf35bf0e1334d15ebffc7",
+    "validation/python-installed.log": "a7c6a71d2ffe0a87d07a105dff22fac33af254119a7ad5bfb2877bfd874ac04f",
+    "validation/python.log": "bf35f7d2203b3b506c6dcc0b94a3d9d4280cfbec5e9c8da54ef597a1e884e468",
+    "validation/qwen27b.log": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+    "validation/rust.log": "d09f3673d76c69bef44da23b7ee307458e502b55c83ca1bb59e63e0281e82f41",
+    "gate-before-native.log": "14fe1d411b7b1b17b17239dc06238eefecdbfd96b3c1c497071107b42e9d2216",
+    "policy-before.log": "5553b70ceab1595869bb738f330af6ccf0bc69a0aec8d01ac2eb98d21cdcf7fa",
+    "policy-after.log": "b532aba68dc3b0c143fddc10740e4e5e31ad14ba9e93c6ab8d73e1e72d17f79d",
+    "scripts.log": "7a329124ea7d07c8f07303b2d9ef3f7404b1e4fe135701efa78d3cace5ce8e8d"
+  },
+  "installed_extension_python": {
+    "passed": 209,
+    "skipped": 26,
+    "subtests_passed": 140
+  }
+}

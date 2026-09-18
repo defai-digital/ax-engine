@@ -1,0 +1,158 @@
+[
+  {
+    "key": "COMPSEC:compsec-076",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 434,
+    "reference_tokens": 434,
+    "chat_usage": {
+      "prompt_tokens": 434,
+      "completion_tokens": 273,
+      "total_tokens": 707
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-077",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 378,
+    "reference_tokens": 378,
+    "chat_usage": {
+      "prompt_tokens": 378,
+      "completion_tokens": 512,
+      "total_tokens": 890
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-079",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 409,
+    "reference_tokens": 409,
+    "chat_usage": {
+      "prompt_tokens": 409,
+      "completion_tokens": 512,
+      "total_tokens": 921
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-080",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 308,
+    "reference_tokens": 308,
+    "chat_usage": {
+      "prompt_tokens": 308,
+      "completion_tokens": 267,
+      "total_tokens": 575
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-081",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 354,
+    "reference_tokens": 354,
+    "chat_usage": {
+      "prompt_tokens": 354,
+      "completion_tokens": 251,
+      "total_tokens": 605
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-083",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 329,
+    "reference_tokens": 329,
+    "chat_usage": {
+      "prompt_tokens": 329,
+      "completion_tokens": 512,
+      "total_tokens": 841
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-084",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 339,
+    "reference_tokens": 339,
+    "chat_usage": {
+      "prompt_tokens": 339,
+      "completion_tokens": 512,
+      "total_tokens": 851
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-086",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 381,
+    "reference_tokens": 381,
+    "chat_usage": {
+      "prompt_tokens": 381,
+      "completion_tokens": 512,
+      "total_tokens": 893
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-087",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 502,
+    "reference_tokens": 502,
+    "chat_usage": {
+      "prompt_tokens": 502,
+      "completion_tokens": 512,
+      "total_tokens": 1014
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-090",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 370,
+    "reference_tokens": 370,
+    "chat_usage": {
+      "prompt_tokens": 370,
+      "completion_tokens": 512,
+      "total_tokens": 882
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "COMPSEC:compsec-092",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 345,
+    "reference_tokens": 345,
+    "chat_usage": {
+      "prompt_tokens": 345,
+      "completion_tokens": 512,
+      "total_tokens": 857
+    },
+    "first_token_difference": null
+  },
+  {
+    "key": "NIST Juliet:juliet-cwe121-array-index-01",
+    "prompt_equal": true,
+    "tokens_equal": true,
+    "actual_tokens": 147,
+    "reference_tokens": 147,
+    "chat_usage": {
+      "prompt_tokens": 147,
+      "completion_tokens": 512,
+      "total_tokens": 659
+    },
+    "first_token_difference": null
+  }
+]
