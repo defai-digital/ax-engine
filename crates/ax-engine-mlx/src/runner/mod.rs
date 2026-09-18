@@ -1644,8 +1644,8 @@ impl MlxRunner {
 
     /// Whether this pack is certified for *default-on* model MTP
     /// (`MlxMtpPolicy::Auto`). Dense QwenCalibrated still requires publisher
-    /// certification. Qwen linear sidecar packs default on via throughput MTP
-    /// when `enabled_by_default` is set. Explicit `MlxMtpPolicy::Required` and
+    /// certification. Linear Qwen candidates require an explicit opt-in until
+    /// AX default promotion; publisher speed metadata is insufficient. `MlxMtpPolicy::Required` and
     /// `AX_MLX_MTP_FORCE_REQUESTED` bypass this gate; route safety and
     /// speculation kill switches do not.
     pub fn mtp_certified_default_on(&self) -> bool {

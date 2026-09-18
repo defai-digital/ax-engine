@@ -27,10 +27,42 @@ MODULE_SPEC.loader.exec_module(mod)
 
 
 sys.path.insert(0, str(ROOT / "scripts"))
-from qwen38_live_gate import run_live, validate_cells, validate_host, validate_paired_greedy
+from qwen38_live_gate import (
+    run_live, validate_cells, validate_default_route, validate_explicit_mtp_route,
+    validate_host, validate_paired_greedy,
+)
 
 
 class LiveGateTest(unittest.TestCase):
+    def test_explicit_mtp_rejects_partial_fallback_and_missing_telemetry(self):
+        mtp = dict(requested=True, active=True, direct_fallback_steps=0)
+        response = dict(status='finished', prompt_tokens=list(range(1, 17)),
+                        output_tokens=list(range(64)), performance={'mtp': mtp})
+        validate_explicit_mtp_route(response)
+        for changed in ({}, {**mtp, 'requested': False}, {**mtp, 'active': False},
+                        {**mtp, 'direct_fallback_steps': 1}):
+            with self.subTest(mtp=changed), self.assertRaises(ValueError):
+                validate_explicit_mtp_route({**response, 'performance': {'mtp': changed}})
+
+    def test_default_route_rejects_implicit_mtp_and_missing_evidence(self):
+        cell = dict(mode='ngram', status='ok', surface_passed=True, qa_items=32,
+                    qa_hard_passed=32, mtp_draft_tokens=0, mtp_verify_tokens=0)
+        mtp = dict(requested=False, active=False, direct_fallback_steps=0,
+                   draft_tokens=0, accepted_tokens=0, decode_steps=0)
+        response = dict(status='finished', prompt_tokens=list(range(1, 17)),
+                        output_tokens=list(range(64)), performance={'mtp': mtp})
+        validate_default_route(cell, response)
+        for changed in ({}, {**mtp, 'requested': True}, {**mtp, 'active': True},
+                        {**mtp, 'draft_tokens': 1}, {**mtp, 'direct_fallback_steps': 1}):
+            with self.subTest(mtp=changed), self.assertRaises(ValueError):
+                validate_default_route(cell, {**response, 'performance': {'mtp': changed}})
+        for changed in ({**cell, 'mode': 'direct'}, {**cell, 'qa_hard_passed': 31},
+                        {**cell, 'mtp_verify_tokens': 1}, {**cell, 'status': 'skip'}):
+            with self.subTest(cell=changed), self.assertRaises(ValueError):
+                validate_default_route(changed, response)
+        with self.assertRaises(ValueError):
+            validate_default_route(cell, {**response, 'output_tokens': []})
+
     def test_only_designated_hardware_is_admitted(self):
         host = dict(system="Darwin", arch="arm64", chip="Apple M4 Pro",
                     memory_bytes=64 * 1024**3, model="Mac16,11")
@@ -101,7 +133,7 @@ class LiveGateTest(unittest.TestCase):
                 code = run_live(SimpleNamespace(output=out), mod.contract(), ROOT)
             self.assertEqual(code, 1)
             result = json.loads((out / "qualification.json").read_text())
-            self.assertEqual(result["schema"], 3)
+            self.assertEqual(result["schema"], 4)
             self.assertEqual(result["status"], "failed")
             self.assertEqual(result["cells"], [])
             self.assertIn("requires Mac mini", result["error"])
@@ -110,7 +142,7 @@ class LiveGateTest(unittest.TestCase):
         # Fixture orchestration only: no hardware, installed wheel or model qualification.
         import run_qa_matrix as matrix
 
-        for failure in (None, "partial", "fallback", "quality"):
+        for failure in (None, "partial", "fallback", "partial_fallback", "quality", "default_mtp"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as td:
                 root = Path(td)
                 package = root / "ax_engine"
@@ -152,7 +184,18 @@ class LiveGateTest(unittest.TestCase):
                 def run_cell(cell, **kwargs):
                     response = dict(status="finished", prompt_tokens=list(range(1, 17)),
                                     output_tokens=list(range(64)))
+                    response['performance'] = {'mtp': dict(
+                        requested=False, active=False, direct_fallback_steps=0,
+                        draft_tokens=0, accepted_tokens=0, decode_steps=0,
+                    )}
+                    if cell.mode == 'ngram' and failure == 'default_mtp':
+                        response['performance']['mtp']['requested'] = True
                     if cell.mode == "mtp":
+                        response['performance']['mtp'].update(
+                            requested=True, active=True, draft_tokens=3,
+                            accepted_tokens=2, decode_steps=1,
+                            direct_fallback_steps=1 if failure == 'partial_fallback' else 0,
+                        )
                         response["output_tokens"][25] = 999
                         if failure == "partial":
                             response["output_tokens"].pop()
@@ -181,9 +224,17 @@ class LiveGateTest(unittest.TestCase):
                      patch.object(matrix, "run_cell", side_effect=run_cell):
                     code = run_live(args, contract, ROOT)
                 result = json.loads((args.output / "qualification.json").read_text())
-                self.assertEqual(result["schema"], 3)
+                self.assertEqual(result["schema"], 4)
                 self.assertEqual(result["mtp_certification"],
                                  {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")})
+                self.assertEqual(result['default_route']['mode'], 'ngram')
+                self.assertEqual(len(result['default_route_artifacts']), 2)
+                if failure == 'default_mtp':
+                    self.assertEqual(code, 1)
+                    self.assertEqual(result['status'], 'failed')
+                    self.assertIn('default launch must not', result['error'])
+                    self.assertEqual(result['cells'], [])
+                    continue
                 self.assertEqual(len(result["paired_greedy_artifacts"]), 4)
                 for name, expected in result["paired_greedy_artifacts"].items():
                     self.assertEqual(digest(args.output / name), expected)
@@ -191,6 +242,7 @@ class LiveGateTest(unittest.TestCase):
                 self.assertEqual(result["status"], "failed" if failure else "passed")
                 if failure:
                     self.assertIn({"partial": "incomplete", "fallback": "requested route",
+                                   "partial_fallback": "zero direct fallback",
                                    "quality": "QA failed"}[failure], result["error"])
                 else:
                     self.assertFalse(result["paired_greedy"]["matched"])

@@ -79,12 +79,16 @@ The build manifest records `source_commit`, `dirty: false`, `server_sha256`,
 `bench_sha256`, `wheel_sha256`, `cli_sha256`, `model_revision`, and `model_files` (relative
 filename to SHA-256). Hash executables after wheel installation. The gate
 checks the exact SKU, clean checkout, build and model hashes, doctor readiness,
-and both direct/MTP surface and sampled QA. The two raw 16-input/64-output-token
+and default/direct/explicit-MTP surface and sampled QA. The default launch uses
+no acceleration overrides and must neither request nor activate MTP. The MTP
+cell explicitly selects `--mlx-mtp-policy required`; publisher speed metadata
+does not authorize linear-Qwen default promotion. The two raw 16-input/64-output-token
 greedy probes must be complete. Their cross-route token identity is diagnostic
 only: differences are disclosed without failing product-health qualification.
 Missing, skipped, partial, failed-QA or fallback results still fail. Results,
-including failures, are saved in `qualification.json` (schema 3, with hashes of
-both probe requests and responses). `paired_greedy` records `matched`,
+including failures, are saved in `qualification.json` (schema 4, with hashes of
+the default and both paired probe requests and responses). Schema 3 did not
+exercise the actual default launch. `paired_greedy` records `matched`,
 `first_divergence`, `divergence_count` and every differing position with both
 token IDs. It explicitly sets `release_blocking: false`; unavailable logit
 margins are `null`, not an inferred zero. Historical schema-1/2 evidence keeps
@@ -97,7 +101,7 @@ default-promotion readiness. Separate MTP-S evidence is still required for
 shipping MTP. See the [three-gate requirements](model-certifications/qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means).
 
 The live path expects a clean worktree, `ax-engine doctor` ready, surface QA
-for direct and MTP, and a short direct + MTP check against the last published
+for default, direct and explicit MTP, and a short direct + MTP check against the last published
 refresh. Full stack claims still use
 `scripts/bench_mlx_inference_stack.py` with `mlx_lm.benchmark` as the primary
 baseline. MTP suites are `flappy`, `long_code`, and `python_modules_long`.

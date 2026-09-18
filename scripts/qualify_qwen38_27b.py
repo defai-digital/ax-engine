@@ -34,6 +34,7 @@ def contract() -> dict[str, Any]:
         "ci": "dry-run only; do not mount 27B weights on CI",
         "release_blocking": [
             "ax-engine doctor ready on the pinned snapshot",
+            "default launch: full QA and no unpromoted MTP request or activation",
             "QA surface: direct + MTP for qwen3.8-27b",
             "no silent MTP direct-fallback",
             "complete paired 64-token direct/MTP greedy probe artifacts",
@@ -70,6 +71,7 @@ def contract() -> dict[str, Any]:
             "doctor": "ax-engine doctor --mlx-model-artifacts-dir $MODEL_DIR --json",
             "serve": f"ax-engine serve {PRIMARY_ALIAS}",
             "qa_inventory": (
+                f"OK|ngram|{PRIMARY_ALIAS}|$MODEL_DIR\n"
                 f"OK|direct|{PRIMARY_ALIAS}|$MODEL_DIR\n"
                 f"OK|mtp|{PRIMARY_ALIAS}|$MODEL_DIR"
             ),

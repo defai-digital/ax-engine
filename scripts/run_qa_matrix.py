@@ -198,6 +198,8 @@ def build_server_cmd(
         # Default server path: n-gram acceleration eligible.
         pass
     elif cell.mode == "mtp":
+        # Exercise the requested drafter independently of default promotion.
+        cmd.extend(["--mlx-mtp-policy", "required"])
         cmd.append("--mlx-mtp-disable-ngram-stacking")
     else:
         raise ValueError(f"unknown mode {cell.mode}")
@@ -265,7 +267,9 @@ def probe_mtp_route(
             capture_output=True,
             text=True,
             timeout=max(timeout * 4, 300),
-            env={**os.environ, "AX_NO_SPEC": "0"},
+            # Bench generate has no session-policy flag. This preflight is
+            # explicitly MTP; the independently launched server uses Required.
+            env={**os.environ, "AX_NO_SPEC": "0", "AX_MLX_MTP_FORCE_REQUESTED": "1"},
         )
     except Exception as exc:
         return False, {}, f"bench generate failed: {exc}"

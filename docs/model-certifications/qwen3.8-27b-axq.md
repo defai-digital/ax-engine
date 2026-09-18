@@ -33,12 +33,16 @@ Two consequences for reading this record:
   gate. Its results are published below as MTP-P disclosure. It does not block
   Candidate status or opt-in availability.
   The live qualification harness applies this policy to its 64-token probe:
-  schema 3 records token differences while still rejecting incomplete evidence,
+  schema 4 records token differences while still rejecting incomplete evidence,
   failed QA or unproven routes. Its product-health pass does not assess MTP-S,
-  MTP-P or MTP-D; each requires separate evidence.
+  MTP-P or MTP-D; each requires separate evidence. Schema 4 additionally checks
+  the actual default launch without acceleration overrides; earlier versions
+  tested explicit direct/MTP arms only.
 - MTP routing stays fail-closed. Until MTP-D is opened and accepted, the product
   default is direct decode, so enabling MTP is an explicit opt-in and existing
-  greedy tokens do not change silently.
+  greedy tokens do not change silently. Use `--mlx-mtp-policy required` for
+  explicit MTP. Publisher speed certification and `enabled_by_default`
+  metadata do not constitute AX default promotion for linear Qwen.
 
 Current MTP-P disclosure for this pack: **2 of 4** paired 192-token default-path
 outputs are token-identical, with splits at output index **116** and **155**, and

@@ -167,9 +167,9 @@ fn build_mlx_core(
 ///
 /// `Disabled` and `Required` are explicit and unconditional (`Required`
 /// availability is checked separately before this call). `Auto` — the SDK
-/// and server default — follows the pack's publisher certification so an
-/// uncertified pack decodes direct by default instead of paying an
-/// unmeasured MTP verify tax. `set_mtp_requested` itself still enforces
+/// and server default — follows the runner's family-specific promotion gate.
+/// Linear Qwen candidates remain direct regardless of publisher speed metadata
+/// until AX default promotion. `set_mtp_requested` itself still enforces
 /// route safety and the `AX_NO_SPEC` kill switch.
 #[cfg(any(feature = "mlx-native", test))]
 fn mtp_requested_for_policy(policy: MlxMtpPolicy, certified_default_on: bool) -> bool {
@@ -217,14 +217,14 @@ mod tests {
     }
 
     #[test]
-    fn mtp_policy_tri_state_respects_pack_certification() {
+    fn mtp_policy_tri_state_respects_default_promotion() {
         for certified in [false, true] {
             assert!(!mtp_requested_for_policy(MlxMtpPolicy::Disabled, certified));
             assert!(mtp_requested_for_policy(MlxMtpPolicy::Required, certified));
             assert_eq!(
                 mtp_requested_for_policy(MlxMtpPolicy::Auto, certified),
                 certified,
-                "Auto must follow the pack certification verdict"
+                "Auto must follow the AX default-promotion verdict"
             );
         }
     }
