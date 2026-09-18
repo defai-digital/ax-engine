@@ -1,0 +1,262 @@
+{
+  "acceptance": {
+    "ax_mean_kl": 0.018450284676548776,
+    "ax_position_count": 3316,
+    "ax_top1_disagreement_rate": 0.08172496984318456,
+    "coverage_mismatches": [],
+    "coverage_parity": true,
+    "coverage_parity_ok": true,
+    "evaluated": true,
+    "floor_graph": "official-recurrent",
+    "floor_mean_kl": 0.02025978694757816,
+    "floor_position_count": 3316,
+    "floor_top1_disagreement_rate": 0.0856453558504222,
+    "high_margin_ax_only_count": 3,
+    "high_margin_max_rate": 0.01,
+    "high_margin_mlx_vlm_agrees_with_reference": 1,
+    "high_margin_mlx_vlm_disagrees_with_reference": 2,
+    "high_margin_ok": true,
+    "high_margin_rate": 0.0009047044632086852,
+    "high_margin_threshold": 1.0,
+    "mean_kl_limit": 0.0253247336844727,
+    "mean_kl_ok": true,
+    "multiplier": 1.25,
+    "passed": true,
+    "top1_limit": 0.10705669481302775,
+    "top1_ok": true
+  },
+  "ax_collection_hardware": "Apple M5 Max 128 GiB; NAS via SMB",
+  "ax_native_binary_sha256": "9c1d319a764f86a612608f95cb02a48aa19dd8a24fed08a1e9e1239070b0b2fc",
+  "ax_only_definition": "AX differs from official-chunked while official-recurrent agrees; MLX-VLM may agree or disagree",
+  "ax_only_top1_disagreement_count": 101,
+  "ax_route": {
+    "AX_FLASH_NEXT_PREFILL_CHUNK_SIZE": "128",
+    "AX_MLX_FLASH_NEXT_SELECTED_EXPERTS": "1",
+    "AX_MLX_FLASH_NEXT_SELECTED_PREFILL": "1",
+    "AX_STREAM_EXPERTS": "on",
+    "AX_STREAM_EXPERT_LAYERS": "1"
+  },
+  "ax_source_commit": "2642a6286211ae540c2dd4cdb308f8149987685a",
+  "comparison_hardware": "Apple M2 Ultra; CPU-only scoring of retained arrays",
+  "curation": {
+    "gzip_mtime": 0,
+    "policy": "All numeric JSON fields, token IDs, row coverage and verdicts retained. Private location and user strings replaced with stable hash labels. No model weights or logit arrays exported.",
+    "script_sha256": "506ea85431cfface82862b7c831b3104a9909a60713de12aeddbe6d5b6a4f2d9"
+  },
+  "floor_graph": "official-recurrent",
+  "graphs": [
+    "official-chunked",
+    "official-recurrent",
+    "mlx-vlm",
+    "ax"
+  ],
+  "high_margin_ax_only_records": [
+    {
+      "ax_margin": 0.75,
+      "ax_rank_of_reference": 2,
+      "ax_top1": 4821,
+      "high_margin": true,
+      "mlx_vlm_agrees_with_reference": false,
+      "mlx_vlm_top1": 4821,
+      "official_recurrent_top1": 29128,
+      "position": 32,
+      "prompt_id": "holdout-medium",
+      "reference_margin": 1.125,
+      "reference_top1": 29128
+    },
+    {
+      "ax_margin": 0.75,
+      "ax_rank_of_reference": 2,
+      "ax_top1": 17,
+      "high_margin": true,
+      "mlx_vlm_agrees_with_reference": true,
+      "mlx_vlm_top1": 18,
+      "official_recurrent_top1": 18,
+      "position": 837,
+      "prompt_id": "holdout-medium",
+      "reference_margin": 9.375,
+      "reference_top1": 18
+    },
+    {
+      "ax_margin": 0.0,
+      "ax_rank_of_reference": 1,
+      "ax_top1": 21,
+      "high_margin": true,
+      "mlx_vlm_agrees_with_reference": false,
+      "mlx_vlm_top1": 21,
+      "official_recurrent_top1": 22,
+      "position": 1186,
+      "prompt_id": "holdout-qsa-boundary",
+      "reference_margin": 3.125,
+      "reference_top1": 22
+    }
+  ],
+  "inputs": 8,
+  "installed_runtime_freeze_sha256": "abb47995684715584a82ab78619e7f4aea4da5dfb1843727fe5fd8ef6da597dd",
+  "installed_runtime_source_commit": "85a2bab0dd72c9e2076f455237dca052ff8d12b7",
+  "integrity": {
+    "all_saved_pre_post_identities_equal": true,
+    "analysis_freeze_sha256": "3e8bd1c4c2310eb8a1ac1cc78cdc3d565a93bce4ba788f6f27a589467e5e8e71",
+    "array_and_sidecar_files": 64,
+    "comparator_sha256": "643ecc1ee0b1b91a5563bf7be9c5d6e4f993a34b4de986bf1e4f3fb705279ed9",
+    "pack_files": 47,
+    "transferred_bytes": 3294517142,
+    "transferred_files": 17
+  },
+  "model_repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "model_revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "numerical_acceptance": true,
+  "open_gates": [
+    "Current candidate target collection and numerical comparison",
+    "Default installed route qualification",
+    "MTP correctness and full QA",
+    "Fixed-workload throughput, lifecycle and delivery qualification",
+    "Required primary mlx_lm.benchmark model admission remains unsupported"
+  ],
+  "overall": {
+    "ax": {
+      "kl": {
+        "count": 3316,
+        "max": 8.129734061362026,
+        "mean": 0.018450284676548776,
+        "p95": 0.02855910019390239
+      },
+      "max_abs": {
+        "count": 3316,
+        "max": 12.25,
+        "mean": 2.1193112878373794,
+        "p95": 5.333984375
+      },
+      "position_count": 3316,
+      "prompt_count": 8,
+      "top1_agreement": {
+        "count": 3316,
+        "max": 1.0,
+        "mean": 0.9182750301568154,
+        "p95": 1.0
+      },
+      "top1_disagreement_rate": 0.08172496984318456,
+      "top5_jaccard": {
+        "count": 3316,
+        "max": 1.0,
+        "mean": 0.7618221896720087,
+        "p95": 1.0
+      }
+    },
+    "mlx-vlm": {
+      "kl": {
+        "count": 3316,
+        "max": 8.062409913495669,
+        "mean": 0.021283141312404788,
+        "p95": 0.02628484832425
+      },
+      "max_abs": {
+        "count": 3316,
+        "max": 13.25,
+        "mean": 2.238580279816189,
+        "p95": 5.595703125
+      },
+      "position_count": 3316,
+      "prompt_count": 8,
+      "top1_agreement": {
+        "count": 3316,
+        "max": 1.0,
+        "mean": 0.9191797346200241,
+        "p95": 1.0
+      },
+      "top1_disagreement_rate": 0.08082026537997587,
+      "top5_jaccard": {
+        "count": 3316,
+        "max": 1.0,
+        "mean": 0.7429382790510655,
+        "p95": 1.0
+      }
+    },
+    "official-recurrent": {
+      "kl": {
+        "count": 3316,
+        "max": 8.244365763504728,
+        "mean": 0.02025978694757816,
+        "p95": 0.02827512478138445
+      },
+      "max_abs": {
+        "count": 3316,
+        "max": 12.0625,
+        "mean": 2.0949920451828024,
+        "p95": 5.546875
+      },
+      "position_count": 3316,
+      "prompt_count": 8,
+      "top1_agreement": {
+        "count": 3316,
+        "max": 1.0,
+        "mean": 0.9143546441495778,
+        "p95": 1.0
+      },
+      "top1_disagreement_rate": 0.0856453558504222,
+      "top5_jaccard": {
+        "count": 3316,
+        "max": 1.0,
+        "mean": 0.7570389836674517,
+        "p95": 1.0
+      }
+    }
+  },
+  "performance_claim": false,
+  "positions_per_graph": 3316,
+  "public_artifacts": [
+    {
+      "bytes": 290952,
+      "file": "statistics.json.gz",
+      "sha256": "9d21c97e7cd96b6f1895da932d0fdc3784f6e6eada87e11819aeba28653e25ab",
+      "uncompressed_bytes": 4186025,
+      "uncompressed_sha256": "8f446183a988fbff4fd80331dc030785c41a07678069690882628bcfceeba6d7"
+    },
+    {
+      "bytes": 36045,
+      "file": "integrity.json.gz",
+      "sha256": "5b168339a6e06ba5c4c23d9771152fac49d25f7573e14cc3c509a97844ea03ed",
+      "uncompressed_bytes": 221152,
+      "uncompressed_sha256": "ed470b9e5f9c1d78f99ccaab03b15c9c849390557c4f6c2b2c7068219b93f678"
+    }
+  ],
+  "qualification": false,
+  "reference": "official-chunked",
+  "reference_collection_hardware": "Apple M2 Ultra 192 GiB; local external SSD",
+  "release_ready": false,
+  "retained_comparison_rows": 9948,
+  "schema": "ax.flash_next.mxfp4.historical_four_graph_evidence.v1",
+  "scope": "Historical selected-route AX numerical acceptance only; no current candidate, default-route or MTP qualification",
+  "source_sha256": {
+    "four-graph-comparison/ax-collect-terminal.json": "7c7afaa00f3b9132242e66c4eb1cf5fd0bf21f32b360da696a3f118e9dddae0e",
+    "four-graph-comparison/ax-terminal.json": "4037db3d12797147642293a5d75b8447c5412d6b03fd8e0daab52d73d6712796",
+    "four-graph-comparison/collection-validation.json": "6e1ae7e78d2ab99ad20c7f7807f31d26ef535269498d26276112260e8cb36375",
+    "four-graph-comparison/compare.log": "e60591019475232851c6c58063db3b77771698e525d098f73130407b321847aa",
+    "four-graph-comparison/curate-four-graph.py": "506ea85431cfface82862b7c831b3104a9909a60713de12aeddbe6d5b6a4f2d9",
+    "four-graph-comparison/freeze.json": "3e8bd1c4c2310eb8a1ac1cc78cdc3d565a93bce4ba788f6f27a589467e5e8e71",
+    "four-graph-comparison/launch.json": "1e3388cc291050ac02cec0bbf5b2bb5ba606411e58facd9183907a17365eee1a",
+    "four-graph-comparison/manifest.json": "129d3cdfbf22843d91fd26f283325aac1d857b69ece6a31274ebda65ff50d03a",
+    "four-graph-comparison/mlx-vlm-collect-terminal.json": "257b4e2d2f56dc11eb696c1d0d77834db0bf075e3cd75a3e5604910ae731c678",
+    "four-graph-comparison/numerical-freeze.json": "687e3a64ae86a4da9a610d4397ccb86c5ecb87a3f27fe81383311b73af093293",
+    "four-graph-comparison/official-chunked-collect-terminal.json": "cd7f24080edaf907a388ce59b440271dc9231a3df90b046f9e76a80fd2cc16ba",
+    "four-graph-comparison/official-recurrent-collect-terminal.json": "9ae8f6b3690f50d64a3046b70e45d64686b62fccd4913675b251b4b2d3ec4522",
+    "four-graph-comparison/qsa-boundary-v1/manifest.json": "96776c169f11aa14d0056f785575ad0d67ed5560837c361765c0633aa3270c1a",
+    "four-graph-comparison/reference-terminal.json": "09f08866896bec1bfc6b75c1557040d15a0e0ad662037becb1b827f46cabbc13",
+    "four-graph-comparison/result.json": "81c49b215525f3064b81ba6b8728f263f2f82ec83adeac471fbd0316ebc99e52",
+    "four-graph-comparison/run.py": "ebf51de8d787200b595d2c6363748e225ee749cfdbff80cf688432345d2196e3",
+    "four-graph-comparison/statistical-acceptance-prompts.jsonl": "04c3aa4355760d6dc29af41f3541ffc8ecddb6cab73e3ac05e1f8542cf21bcf9",
+    "four-graph-comparison/statistical-acceptance.json": "f4cde10f48078df4d7e7fbdd2ba572ab99b1344095d58799fba86dee4b223677",
+    "four-graph-comparison/statistical-acceptance.md": "ccff4c0e2a9bcd68b340fb737926353dc1cbe7c251da09e4794934d490395e9a",
+    "four-graph-comparison/statistical-acceptance.py": "643ecc1ee0b1b91a5563bf7be9c5d6e4f993a34b4de986bf1e4f3fb705279ed9",
+    "four-graph-comparison/supervisor.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "four-graph-comparison/test_handoff.py": "d5017c7e4bf683e57d2d17b2877540ae1303819fa835dbe5bb32be2e19c9ccbf",
+    "installed-freeze-r2.json": "abb47995684715584a82ab78619e7f4aea4da5dfb1843727fe5fd8ef6da597dd",
+    "scripts/curate_flash_next_evidence.py": "10ab824e5ed1e8b1f0632286b3c7e1e1cddb09bd2d9130f231e9ff6bf8be51e3"
+  },
+  "thresholds": {
+    "ax_only_high_margin_max_rate": 0.01,
+    "high_margin": 1.0,
+    "mean_kl_floor_multiplier": 1.25,
+    "top1_disagreement_floor_multiplier": 1.25
+  }
+}
