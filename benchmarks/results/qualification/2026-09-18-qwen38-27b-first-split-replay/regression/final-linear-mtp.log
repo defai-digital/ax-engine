@@ -1,0 +1,21 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <LOCAL_WORKSPACE>/.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (<LOCAL_WORKSPACE>/.internal/reports/qwen38-first-split-20260918/exact-replay-target/debug/deps/ax_engine_mlx-5bd779f1cf94124a)
+
+running 13 tests
+test fastpath::tests::qwen_linear_mtp_exact_env_override_uses_truthy_contract ... ok
+test fastpath::tests::qwen_linear_mtp_exact_resolution_is_capability_bounded ... ok
+test fastpath::tests::qwen_linear_mtp_exact_scope_is_nested_and_restored ... ok
+test kv_cache::tests::linear_mtp_projection_stash_is_transient ... ok
+test kv_cache::tests::linear_mtp_tape_stash_is_transient ... ok
+test runner::mtp_tuning::tests::exact_qwen_linear_mtp_stacks_ngram_when_env_unset ... ok
+test runner::tests::greedy_linear_mtp_rejection_prefers_recomputed_production_argmax ... ok
+test runner::tests::linear_mtp_checkpoint_uses_exact_profile_within_verified_depth ... ok
+test runner::tests::qwen_linear_mtp_async_draft_requires_linear_verifier_opt_in ... ok
+test runner::tests::qwen_linear_mtp_exact_capability_accepts_axq_mixed_affine_contract ... ok
+test runner::tests::qwen_linear_mtp_exact_capability_is_family_and_depth_bounded ... ok
+test runner::tests::qwen_linear_mtp_exact_capability_rejects_uncertified_quantization ... ok
+test runner::tests::sampled_linear_mtp_rejection_preserves_exact_residual_correction ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 1579 filtered out; finished in 0.05s
+

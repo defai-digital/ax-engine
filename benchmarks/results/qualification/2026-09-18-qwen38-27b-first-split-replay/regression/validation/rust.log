@@ -1,0 +1,368 @@
+
+running 199 tests
+....................................................................................... 87/199
+....................................................................................... 174/199
+.........................
+test result: ok. 199 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s
+
+
+running 213 tests
+....................................................................................... 87/213
+....................................................................................... 174/213
+.......................................
+test result: ok. 213 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.48s
+
+
+running 798 tests
+....................................................................................... 87/798
+.....................................................................i.....i........... 174/798
+....................................................................................... 261/798
+....................................................................................... 348/798
+................................................ii..................................... 435/798
+....................................................................................... 522/798
+....................................................................................... 609/798
+....................................................................................... 696/798
+....................................................................................... 783/798
+...............
+test result: ok. 794 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 18.82s
+
+
+running 3 tests
+...
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+..
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1592 tests
+....................................................................................... 87/1592
+....................................................................................... 174/1592
+....................................................................................... 261/1592
+....................................................................................... 348/1592
+....................................................................................... 435/1592
+....................................................................................... 522/1592
+...............................................iii.....iiii...iiiiii.iiiiiiiiiiiii..... 609/1592
+................................................................................i...... 696/1592
+....................................................................................... 783/1592
+...........................ii.......................................................... 870/1592
+....................................................................................... 957/1592
+....................................................................................... 1044/1592
+.........................................iiiiiii....................................... 1131/1592
+....................................................................................... 1218/1592
+....................................................................................... 1305/1592
+....................................................................................... 1392/1592
+......................................................................i................ 1479/1592
+....................................................................................... 1566/1592
+..........................
+test result: ok. 1555 passed; 0 failed; 37 ignored; 0 measured; 0 filtered out; finished in 28.29s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+..
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 21 tests
+.....................
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 23 tests
+.......................
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.78s
+
+
+running 119 tests
+....................................................................................... 87/119
+................................
+test result: ok. 119 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+
+running 637 tests
+....................................................................................... 87/637
+....................................................................................... 174/637
+......................................................i................................ 261/637
+....................................................................................... 348/637
+....................................................................................... 435/637
+....................................................................................... 522/637
+....................................................................................... 609/637
+............................
+test result: ok. 636 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 10.42s
+
+
+running 141 tests
+..mlx error: mlx_array_data_float32: dtype mismatch
+.mlx error: mlx_array_data_int64: array not evaluated; call eval()/async_eval() before reading
+mlx error: mlx_array_data_int64: array is not row-contiguous; materialize a contiguous copy before reading raw data
+.mlx error: mlx_array_data_float32: array not evaluated; call eval()/async_eval() before reading
+.mlx error: mlx_array_data_float32: dtype mismatch
+..mlx error: invalid mlx_device_type
+...mlx error: mlx_array_new_data: dim must be non-negative
+.mlx error: mlx_array_new_data: data pointer is null for a non-empty array
+.mlx error: shape pointer is null for a non-empty shape
+.mlx error: shape pointer is null for a non-empty shape
+......mlx error: expected a non-empty mlx_array
+.mlx error: [reshape] Cannot reshape array of size 3 into shape (999).
+mlx error: closure callback failed
+.....mlx error: [metal::Device] Unable to build metal library from source
+mlx/backend/metal/kernels/utils.h:472:1: error: invalid use of 'this' outside of a non-static member function
+this is not valid metal source;
+^
+
+
+...........................mlx error: [metal::Device] Unable to build metal library from source
+mlx/backend/metal/kernels/utils.h:472:1: error: invalid use of 'this' outside of a non-static member function
+this is not valid metal source;
+^
+
+
+................................... 87/141
+......................................................
+test result: ok. 141 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.26s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 3 tests
+...
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 4 tests
+....
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+.mlx error: mlx_array_data_float32: array is not row-contiguous; materialize a contiguous copy before reading raw data
+.
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.54s
+
+
+running 3 tests
+iii
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 1.29s; merged doctests compilation took 1.18s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+i
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 1.03s; merged doctests compilation took 0.93s

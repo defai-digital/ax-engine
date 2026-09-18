@@ -1,0 +1,98 @@
+[
+  {
+    "name": "clean-direct",
+    "mode": "direct",
+    "command": [
+      "<SKU_WORKSPACE>/qmm-contract-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server",
+      "--mlx",
+      "--mlx-model-artifacts-dir",
+      "<SKU_WORKSPACE>/model",
+      "--model-id",
+      "qwen3.8-27b",
+      "--port",
+      "31496",
+      "--disable-ngram-acceleration"
+    ],
+    "request_canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+    "binary_sha256": "9d2cbc61584d89ce2e6e55a64c9b910d6dee5327e4345202be688a2a49b26f31",
+    "request_body_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+    "server_pid": 93933,
+    "http_status": 200,
+    "request_seconds": 18.191070750006475,
+    "response_body_sha256": "6289b074f11daa0e741e7d804fa9cafbae218c128297bf824aa986f851fcbd80",
+    "cleanup": {
+      "pid": 93933,
+      "action": "terminate",
+      "returncode": 0
+    },
+    "elapsed_seconds": 39.5592499159975,
+    "watchdog_expired": false,
+    "log_sha256": "011c7d88116ffa5bf71e7b78558e098669b64b33f05160188df50ba3d222c99b",
+    "request_file": "request.json",
+    "response_file": "clean-direct-response.json"
+  },
+  {
+    "name": "clean-mtp",
+    "mode": "mtp",
+    "command": [
+      "<SKU_WORKSPACE>/qmm-contract-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server",
+      "--mlx",
+      "--mlx-model-artifacts-dir",
+      "<SKU_WORKSPACE>/model",
+      "--model-id",
+      "qwen3.8-27b",
+      "--port",
+      "31496",
+      "--mlx-mtp-disable-ngram-stacking"
+    ],
+    "request_canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+    "binary_sha256": "9d2cbc61584d89ce2e6e55a64c9b910d6dee5327e4345202be688a2a49b26f31",
+    "request_body_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+    "server_pid": 94193,
+    "http_status": 200,
+    "request_seconds": 12.047001792001538,
+    "response_body_sha256": "4e3d2c24ec51ceaaf24a6192d0d3a8284e226829ac3ba8bbec3cf98fb7c53745",
+    "cleanup": {
+      "pid": 94193,
+      "action": "terminate",
+      "returncode": 0
+    },
+    "elapsed_seconds": 30.416586500010453,
+    "watchdog_expired": false,
+    "log_sha256": "011c7d88116ffa5bf71e7b78558e098669b64b33f05160188df50ba3d222c99b",
+    "request_file": "request.json",
+    "response_file": "clean-mtp-response.json"
+  },
+  {
+    "name": "observer-mtp",
+    "mode": "mtp",
+    "command": [
+      "<SKU_WORKSPACE>/first-split-observer-server",
+      "--mlx",
+      "--mlx-model-artifacts-dir",
+      "<SKU_WORKSPACE>/model",
+      "--model-id",
+      "qwen3.8-27b",
+      "--port",
+      "31496",
+      "--mlx-mtp-disable-ngram-stacking"
+    ],
+    "request_canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+    "binary_sha256": "533dcbb9af25cf14a1fdbc99414d96d652b6db4f6720dd3d7cfb3eca3139a90b",
+    "request_body_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+    "server_pid": 94405,
+    "http_status": 200,
+    "request_seconds": 15.332693084026687,
+    "response_body_sha256": "ea9b2b44e3df36da76d15c70c5bbdb5ba35258d3be96b7ea3dd28bff36d0748b",
+    "cleanup": {
+      "pid": 94405,
+      "action": "terminate",
+      "returncode": 0
+    },
+    "elapsed_seconds": 34.118804250028916,
+    "watchdog_expired": false,
+    "log_sha256": "f3e80f123fe5d4ead79ee01c31e75761da2d74bd9376c4a49dc04680b4b7d3ea",
+    "request_file": "request.json",
+    "response_file": "observer-mtp-response.json"
+  }
+]

@@ -1,0 +1,27 @@
+{
+  "command": [
+    "rustup",
+    "run",
+    "1.97.1",
+    "cargo",
+    "test",
+    "-p",
+    "ax-engine-mlx",
+    "--lib",
+    "forced_greedy_replay",
+    "--",
+    "--nocapture"
+  ],
+  "cwd": "<LOCAL_WORKSPACE>/.internal/reports/qwen38-first-split-20260918/exact-replay-source",
+  "environment_overrides": {
+    "PATH": "<PINNED_RUST_1_97_1_AND_LOCAL_VENV_PATH>",
+    "VIRTUAL_ENV": "<LOCAL_WORKSPACE>/.venv",
+    "CARGO_TARGET_DIR": "<LOCAL_WORKSPACE>/.internal/reports/qwen38-first-split-20260918/exact-replay-target"
+  },
+  "source_sha256": {
+    "crates/ax-engine-mlx/src/runner/mod.rs": "246cdc421aae3c2c81739097d375a1c40cd7843f0255b7ae36a978b10bb66c66",
+    "crates/ax-engine-mlx/src/ngram_accel.rs": "6160cacc2e9fa2f303ddd85cb0e6f54f9135c6f3816f4b084fda915b64d106e7"
+  },
+  "exit_code": 101,
+  "log_sha256": "be2863f03ddb1843ab1b2d4767de624e428fcf78af05edc1a3baaf8a3d47d2e6"
+}

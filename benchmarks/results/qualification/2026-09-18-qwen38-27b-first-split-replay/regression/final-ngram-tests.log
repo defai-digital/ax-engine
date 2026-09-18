@@ -1,0 +1,58 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <LOCAL_WORKSPACE>/.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (<LOCAL_WORKSPACE>/.internal/reports/qwen38-first-split-20260918/exact-replay-target/debug/deps/ax_engine_mlx-5bd779f1cf94124a)
+
+running 50 tests
+test ngram_accel::tests::accepted_draft_feedback_keeps_context_above_threshold ... ok
+test ngram_accel::tests::adaptive_match_len_caps_sparse_drafts_per_step ... ok
+test ngram_accel::tests::adaptive_match_len_sparse_mid_chain_step_truncates_early ... ok
+test ngram_accel::tests::classify_prompt_class_boundary_at_half_ratio_is_repeating ... ok
+test ngram_accel::tests::classify_prompt_class_linear_sequence_is_non_repeating ... ok
+test ngram_accel::tests::classify_prompt_class_short_cycle_is_repeating ... ok
+test ngram_accel::tests::classify_prompt_class_short_prompt_is_non_repeating ... ok
+test ngram_accel::tests::classify_prompt_class_single_repeat_block_is_non_repeating ... ok
+test ngram_accel::tests::context_evicts_oldest_continuations_when_cap_is_exceeded ... ok
+test ngram_accel::tests::context_pruning_evicts_oldest_entries_in_batches ... ok
+test ngram_accel::tests::context_pruning_removes_full_overflow_when_larger_than_batch ... ok
+test ngram_accel::tests::draft_feedback_only_marks_verified_prefix_and_first_reject ... ok
+test ngram_accel::tests::draft_feedback_updates_fallback_context_that_created_draft ... ok
+test ngram_accel::tests::draft_outcome_labels_no_candidate_and_confidence_filtering ... ok
+test ngram_accel::tests::greedy_draft_target_accept_count_accepts_matching_prefix ... ok
+test ngram_accel::tests::greedy_draft_target_accept_count_rejects_multi_token_false_accept ... ok
+test ngram_accel::tests::llama_map_latest_policy_is_available_behind_flag_shape ... ok
+test ngram_accel::tests::min_context_len_forbids_bigram_only_match ... ok
+test ngram_accel::tests::mtp_stacked_policy_drafts_ignore_eos_special_token_loop ... ok
+test ngram_accel::tests::parse_confidence_threshold_accepts_valid_values ... ok
+test ngram_accel::tests::parse_confidence_threshold_default_when_unset ... ok
+test ngram_accel::tests::parse_confidence_threshold_falls_back_on_above_one ... ok
+test ngram_accel::tests::parse_confidence_threshold_falls_back_on_nan ... ok
+test ngram_accel::tests::parse_confidence_threshold_falls_back_on_negative ... ok
+test ngram_accel::tests::parse_confidence_threshold_falls_back_on_nonsense ... ok
+test ngram_accel::tests::predict_chains_trigrams_over_bigrams ... ok
+test ngram_accel::tests::predict_deterministic_across_calls ... ok
+test ngram_accel::tests::predict_prefers_fourgram_over_trigram_and_bigram ... ok
+test ngram_accel::tests::predict_returns_empty_for_empty_table ... ok
+test ngram_accel::tests::predict_returns_empty_when_no_matching_ngram_at_tail ... ok
+test ngram_accel::tests::predict_stops_at_max_len ... ok
+test ngram_accel::tests::predict_with_confidence_high_conf_chain_matches_predict ... ok
+test ngram_accel::tests::predict_with_confidence_stops_at_contested_bigram ... ok
+test ngram_accel::tests::predict_with_confidence_total_accumulates_across_champion_changes ... ok
+test ngram_accel::tests::predict_with_confidence_zero_threshold_matches_wrappers ... ok
+test ngram_accel::tests::predict_with_min_support_filters_one_off_prompt_matches ... ok
+test ngram_accel::tests::prediction_breaks_equal_support_ties_by_recency ... ok
+test ngram_accel::tests::prediction_keeps_majority_continuation_after_late_outlier ... ok
+test ngram_accel::tests::prompt_sourced_bigrams_bypass_linear_min_support_threshold ... ok
+test ngram_accel::tests::rejected_draft_feedback_suppresses_low_quality_context ... ok
+test ngram_accel::tests::soft_close_probe_edge_cases ... ok
+test ngram_accel::tests::soft_close_probe_membership_by_rank ... ok
+test ngram_accel::tests::speculative_accept_threshold_default ... ok
+test ngram_accel::tests::speculative_accept_threshold_parse_invalid_string_falls_back ... ok
+test ngram_accel::tests::speculative_accept_threshold_parse_out_of_range_falls_back ... ok
+test ngram_accel::tests::speculative_accept_threshold_parse_valid ... ok
+test ngram_accel::tests::stats_report_context_and_continuation_pressure ... ok
+test ngram_accel::tests::stats_report_verifier_feedback_without_tokens ... ok
+test ngram_accel::tests::table_evicts_oldest_contexts_when_cap_is_exceeded ... ok
+test ngram_accel::tests::updating_existing_context_does_not_trigger_prune ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 1542 filtered out; finished in 0.03s
+

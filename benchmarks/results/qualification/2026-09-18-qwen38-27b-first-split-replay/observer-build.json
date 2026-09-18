@@ -1,0 +1,26 @@
+{
+  "scope": "Observation only, no production change",
+  "source_base": "0f7f2d2d0ae6e66a80c7d6f746fbb058efd2a951",
+  "command": [
+    "rustup",
+    "run",
+    "1.97.1",
+    "cargo",
+    "build",
+    "--locked",
+    "--profile",
+    "release-server",
+    "-p",
+    "ax-engine-server"
+  ],
+  "exit_code": 0,
+  "dirty": true,
+  "patch_sha256": "005cabe011f24d867978c6be41b46b962c6539cd29abc98bcbf5c747d56d67f2",
+  "runner_source_sha256": "265f3661e61e95a1bef65acd83b5b1403c76c18b118b26b2fc605cce66fdafe0",
+  "native_build_files": {
+    "libmlx.dylib": "d24c7a9b9d55a76bfd3bbcd1d042251a185cbadcb6340c3244a6ffa3dcb7c7e8",
+    "libjaccl.dylib": "9cfd72679ff35c593a1d46fd30d995cc4a131eed15733617efb1118001e74084",
+    "mlx.metallib": "dc59d1cceb1a5c7e578232e6e41e28e2c73c9463ac6dbc3886c3ee17ffc270ed"
+  },
+  "binary_sha256": "533dcbb9af25cf14a1fdbc99414d96d652b6db4f6720dd3d7cfb3eca3139a90b"
+}

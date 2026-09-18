@@ -1,0 +1,8 @@
+Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+family: qwen4_exp
+alias:  not registered for the MXFP4 target
+repo:   AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP
+host:   MacBook Pro M5 Max, 128 GB
+target admission: MXFP4/group32 blocked pending native paging implementation
+existing affine admission: 4-bit/group64 and 6-bit/group64; not target qualification
+fail-closed: convert must not remap onto qwen3_5

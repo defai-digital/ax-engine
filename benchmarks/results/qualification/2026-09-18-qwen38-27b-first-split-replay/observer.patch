@@ -1,0 +1,441 @@
+diff --git a/crates/ax-engine-mlx/src/runner/mod.rs b/crates/ax-engine-mlx/src/runner/mod.rs
+index 15825c82..dae93a56 100644
+--- a/crates/ax-engine-mlx/src/runner/mod.rs
++++ b/crates/ax-engine-mlx/src/runner/mod.rs
+@@ -350,6 +350,132 @@ struct Gemma4AssistantMtpRuntime {
+     target_shared_layers: crate::model::Gemma4AssistantSharedKvLayers,
+ }
+ 
++// Ignored observation build only; final-source 079 first split, output index 116.
++const FIRST_SPLIT_POSITION: usize = 524;
++const FIRST_SPLIT_PREFIX: &[u32] = &[
++    760, 709, 1510, 7935, 68844, 16, 18, 13786, 63, 11036, 40278, 220, 16, 13, 18, 7189, 13, 198,
++    16, 13, 220, 2972, 9388, 82, 92217, 1368, 449, 4953, 369, 3816, 11, 279, 3511, 369, 7629, 13,
++    1061, 369, 5902, 13, 198, 17, 13, 220, 2972, 2239, 898, 1982, 92217, 1049, 11988, 279, 1528,
++    5484, 364, 1510, 32099, 7561, 1510, 32099, 31547, 7561, 321, 1510, 24100, 27653, 198, 262, 348,
++    256, 1510, 32099, 63, 1411, 1510, 22916, 35709, 31547, 63, 198, 262, 348, 256, 1510, 32099,
++    31547, 63, 1411, 1510, 22916, 24100, 63, 198, 262, 348, 256, 1510, 24100, 63, 1411, 1510,
++    65914, 290, 63, 198, 262, 348, 256, 1061, 11870, 12083, 644, 47164, 279, 1906, 314,
++];
++
++fn first_split_log(value: serde_json::Value) {
++    eprintln!("first_split_probe {value}");
++}
++
++fn first_split_hash(bytes: &[u8]) -> String {
++    use sha2::{Digest, Sha256};
++    format!("{:x}", Sha256::digest(bytes))
++}
++
++fn first_split_request_matches(state: &RequestState) -> bool {
++    if state.prompt_prefix_tokens.len() != 409
++        || state.generated_tokens.len() > FIRST_SPLIT_PREFIX.len()
++        || state.generated_tokens != FIRST_SPLIT_PREFIX[..state.generated_tokens.len()]
++    {
++        return false;
++    }
++    let bytes: Vec<u8> = state
++        .prompt_prefix_tokens
++        .iter()
++        .flat_map(|v| v.to_le_bytes())
++        .collect();
++    first_split_hash(&bytes) == "df38781d2e4a8da2028ddc13e6721755870682c442a60330f0036f14584d71ea"
++}
++
++fn first_split_array(value: &MlxArray) -> Result<(serde_json::Value, Vec<f32>), String> {
++    let floats = astype(value, MlxDtype::Float32, None);
++    eval(&[&floats]);
++    let values = floats.data_f32().to_vec();
++    if !values.iter().all(|value| value.is_finite()) {
++        return Err("non-finite diagnostic array".to_string());
++    }
++    let bytes: Vec<u8> = values
++        .iter()
++        .flat_map(|v| v.to_bits().to_le_bytes())
++        .collect();
++    Ok((
++        serde_json::json!({
++            "shape": value.shape(), "dtype": format!("{:?}", value.dtype()),
++            "elements": values.len(), "finite": true,
++            "f32_bits_le_sha256": first_split_hash(&bytes),
++        }),
++        values,
++    ))
++}
++
++fn first_split_diff(label: &str, left: &[f32], right: &[f32]) -> Result<usize, String> {
++    if left.len() != right.len() {
++        return Err(format!("{label}: comparison length mismatch"));
++    }
++    let unequal = left
++        .iter()
++        .zip(right)
++        .filter(|(a, b)| a.to_bits() != b.to_bits())
++        .count();
++    let max_abs = left
++        .iter()
++        .zip(right)
++        .map(|(a, b)| (a - b).abs())
++        .fold(0.0_f32, f32::max);
++    first_split_log(
++        serde_json::json!({"event": "logit_comparison", "label": label,
++        "elements": left.len(), "unequal": unequal, "max_abs": max_abs}),
++    );
++    Ok(unequal)
++}
++
++fn first_split_row(label: &str, scores: &[f32]) {
++    let mut indices: Vec<usize> = (0..scores.len()).collect();
++    indices.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]).then(a.cmp(&b)));
++    let top: Vec<(usize, f32)> = indices
++        .into_iter()
++        .take(8)
++        .map(|id| (id, scores[id]))
++        .collect();
++    first_split_log(serde_json::json!({"event": "row", "label": label,
++        "finite": scores.iter().all(|v| v.is_finite()), "elements": scores.len(),
++        "top8": top, "direct_token": {"token": 279, "logit": scores[279]},
++        "mtp_token": {"token": 6397, "logit": scores[6397]}}));
++}
++
++fn first_split_cache(cache: &MlxKVCache, layer_count: usize) -> Result<serde_json::Value, String> {
++    let usage = cache.usage_snapshot();
++    if usage.rotated_ring_layers != 0
++        || usage.quantized_layers != 0
++        || cache.fa_block_pool_enabled()
++    {
++        return Err("diagnostic requires observed contiguous non-ring cache layout".to_string());
++    }
++    let mut arrays = Vec::new();
++    for layer in 0..layer_count {
++        if let Some((k, v)) = cache.logical_layer_kv(layer) {
++            for (kind, array) in [("key", k), ("value", v)] {
++                let (metadata, _) = first_split_array(&array)?;
++                arrays.push(serde_json::json!({"layer": layer, "kind": kind, "array": metadata}));
++            }
++        }
++        let (conv, recurrent) = cache.linear_state(layer);
++        for (kind, value) in [("conv", conv), ("recurrent", recurrent)] {
++            if let Some(array) = value {
++                let (metadata, _) = first_split_array(array)?;
++                arrays.push(serde_json::json!({"layer": layer, "kind": kind, "array": metadata}));
++            }
++        }
++    }
++    if usage.full_attention_layers != 16 || usage.linear_state_layers != 48 || arrays.len() != 128 {
++        return Err("unexpected cache layer or state-array count".to_string());
++    }
++    Ok(
++        serde_json::json!({"seq_len": cache.seq_len(), "rope_offset": cache.rope_offset,
++        "mrope_position_delta": cache.mrope_position_delta(),
++        "capacity_tokens": usage.capacity_tokens, "logical_arrays": arrays}),
++    )
++}
++
+ /// Per-request mutable state persisted across prefill → decode steps.
+ struct RequestState {
+     cache: MlxKVCache,
+@@ -9823,6 +9949,10 @@ impl MlxRunner {
+                         replay_kill_switch || self.qwen_linear_mtp_force_replay,
+                     );
+                 let clone_started = Instant::now();
++                let diagnostic_snapshot = (token_offset <= FIRST_SPLIT_POSITION
++                    && FIRST_SPLIT_POSITION < token_offset + verify_len
++                    && first_split_request_matches(state))
++                .then(|| (state.cache.clone(), deferred_lazy_draft.is_some()));
+                 let mut verify_cache = state.cache.clone();
+                 if !exact_linear_replay && !pending.is_empty() {
+                     verify_cache.begin_linear_prefix_capture(1);
+@@ -10038,6 +10168,273 @@ impl MlxRunner {
+                 let exact_residual_correction_applied = exact_rejection_correction.is_some();
+                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
+ 
++                if let Some((snapshot, was_lazy)) = diagnostic_snapshot {
++                    let observed = (|| -> Result<(), String> {
++                        let row = FIRST_SPLIT_POSITION - token_offset;
++                        // The old verify_input tail may still contain lazy placeholders.
++                        let inputs: Vec<u32> = std::iter::once(verify_input[0])
++                            .chain(pending.iter().copied())
++                            .collect();
++                        first_split_log(
++                            serde_json::json!({"event": "window", "position": FIRST_SPLIT_POSITION,
++                            "offset": token_offset, "row": row, "inputs": inputs, "pending": pending,
++                            "predicted": predicted, "accept_count": ac, "all_accepted": all_accepted,
++                            "exact_rejection_correction": exact_rejection_correction,
++                            "generated_tokens": state.generated_tokens, "primary_from_skip": primary_tok_from_skip,
++                            "lazy_inputs_materialized": was_lazy, "native_greedy_logits": native_greedy_logits,
++                            "projected_replay": projected_replay, "exact_linear_replay": exact_linear_replay,
++                            "live_whole_compiled": mtp_timings.whole_verify_compile_hits == 1,
++                            "exact": crate::fastpath::qwen_linear_mtp_exact_enabled(),
++                            "target": crate::fastpath::qwen_linear_mtp_target_verify_enabled(),
++                            "relaxed": crate::fastpath::qwen_linear_mtp_relaxed_session_enabled(),
++                            "whole_trace": crate::fastpath::qwen_linear_mtp_whole_verify_trace_enabled(),
++                            "qmm_guard_armed_by_live_scope": relaxed_target_verify}),
++                        );
++                        if row > ac {
++                            first_split_log(
++                                serde_json::json!({"event": "skipped_uncommitted_row", "row": row, "accept_count": ac}),
++                            );
++                            return Ok(());
++                        }
++                        let prompt_bytes: Vec<u8> = state
++                            .prompt_prefix_tokens
++                            .iter()
++                            .flat_map(|v| v.to_le_bytes())
++                            .collect();
++                        if state.prompt_prefix_tokens.len() != 409
++                            || first_split_hash(&prompt_bytes)
++                                != "df38781d2e4a8da2028ddc13e6721755870682c442a60330f0036f14584d71ea"
++                            || inputs.len() != verify_len
++                            || snapshot.seq_len() != token_offset
++                            || state.generated_tokens.len() > FIRST_SPLIT_PREFIX.len()
++                            || state.generated_tokens
++                                != FIRST_SPLIT_PREFIX[..state.generated_tokens.len()]
++                        {
++                            return Err("frozen prompt, generated prefix, length or snapshot boundary mismatch".to_string());
++                        }
++                        for (index, token) in inputs.iter().take(row + 1).enumerate() {
++                            let generated_index = (token_offset + index)
++                                .checked_sub(409)
++                                .ok_or_else(|| "selected row is inside prompt".to_string())?;
++                            if FIRST_SPLIT_PREFIX.get(generated_index) != Some(token) {
++                                return Err(format!(
++                                    "actual materialized input differs at generated index {generated_index}"
++                                ));
++                            }
++                        }
++                        first_split_log(
++                            serde_json::json!({"event": "prefix_validated", "through_position": FIRST_SPLIT_POSITION,
++                            "common_generated_prefix_length": FIRST_SPLIT_PREFIX.len(), "every_selected_input_checked": true}),
++                        );
++                        if logits_all.shape() != [verify_len as i32, self.cfg.vocab_size as i32] {
++                            return Err("unexpected live full-logit shape".to_string());
++                        }
++                        let (live_meta, live_values) = first_split_array(&logits_all)?;
++                        first_split_log(
++                            serde_json::json!({"event": "array", "label": "live_target", "metadata": live_meta}),
++                        );
++                        let span = row * self.cfg.vocab_size..(row + 1) * self.cfg.vocab_size;
++                        let live_row = &live_values[span.clone()];
++                        first_split_row("live_target", live_row);
++                        let snapshot_before = first_split_cache(&snapshot, self.cfg.layer_count)?;
++                        let source_before = first_split_cache(&state.cache, self.cfg.layer_count)?;
++                        let verify_before = first_split_cache(&verify_cache, self.cfg.layer_count)?;
++                        first_split_log(
++                            serde_json::json!({"event": "cache_before", "snapshot": snapshot_before,
++                            "source": source_before, "live_verify": verify_before}),
++                        );
++
++                        // Replay the exact live dispatch before changing any arithmetic scope.
++                        let mut replay_cache = snapshot.clone();
++                        if !exact_linear_replay && !pending.is_empty() {
++                            replay_cache.begin_linear_prefix_capture(1);
++                        }
++                        let ids = MlxArray::from_raw_data(
++                            inputs.as_ptr() as *const u8,
++                            std::mem::size_of_val(inputs.as_slice()),
++                            &[verify_len as i32],
++                            MlxDtype::Uint32,
++                        );
++                        let compiled = try_whole_compiled_qwen_verify(
++                            &self.cfg,
++                            &self.weights,
++                            &ids,
++                            verify_len,
++                            &mut replay_cache,
++                            token_offset,
++                        );
++                        let replay_compiled = compiled.is_some();
++                        let (replay_logits, replay_hidden) = compiled.unwrap_or_else(|| {
++                            if was_lazy {
++                                forward_all_positions_with_post_norm_ids(
++                                    &self.cfg,
++                                    &self.weights,
++                                    &ids,
++                                    verify_len,
++                                    &mut replay_cache,
++                                    token_offset,
++                                    native_greedy_logits,
++                                )
++                            } else if native_greedy_logits {
++                                forward_all_positions_with_post_norm_greedy(
++                                    &self.cfg,
++                                    &self.weights,
++                                    &inputs,
++                                    &mut replay_cache,
++                                    token_offset,
++                                )
++                            } else {
++                                forward_all_positions_with_post_norm(
++                                    &self.cfg,
++                                    &self.weights,
++                                    &inputs,
++                                    &mut replay_cache,
++                                    token_offset,
++                                )
++                            }
++                        });
++                        replay_cache.advance(verify_len);
++                        if split_verify_hidden_eval {
++                            eval(&[&replay_hidden]);
++                        }
++                        let replay_argmax = argmax(&replay_logits, None);
++                        let mut replay_accept_refs = vec![&replay_argmax];
++                        if !split_verify_hidden_eval {
++                            replay_accept_refs.push(&replay_hidden);
++                        }
++                        eval(&replay_accept_refs);
++                        let (replay_meta, replay_values) = first_split_array(&replay_logits)?;
++                        first_split_log(
++                            serde_json::json!({"event": "array", "label": "same_scope_target_replay",
++                            "metadata": replay_meta, "whole_compiled": replay_compiled}),
++                        );
++                        if replay_logits.shape() != logits_all.shape()
++                            || replay_logits.dtype() != logits_all.dtype()
++                            || replay_compiled != (mtp_timings.whole_verify_compile_hits == 1)
++                            || first_split_diff(
++                                "live_vs_same_scope_full_logits",
++                                &live_values,
++                                &replay_values,
++                            )? != 0
++                        {
++                            return Err("same-scope full-logit replay control failed; ordinary controls suppressed".to_string());
++                        }
++                        first_split_row("same_scope_target_replay", &replay_values[span.clone()]);
++                        first_split_log(
++                            serde_json::json!({"event": "same_scope_replay_valid", "full_logits_exact": true}),
++                        );
++                        drop(replay_accept_refs);
++                        drop(replay_cache);
++
++                        {
++                            let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
++                            let _target =
++                                crate::fastpath::scoped_qwen_linear_mtp_target_verify(false);
++                            let _session =
++                                crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
++                            let _trace =
++                                crate::fastpath::scoped_qwen_linear_mtp_whole_verify_trace(false);
++                            let _qmm =
++                                crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(false);
++                            let mut batch_cache = snapshot.clone();
++                            batch_cache.begin_linear_prefix_capture(1);
++                            let batch_logits = crate::model::forward_all_positions(
++                                &self.cfg,
++                                &self.weights,
++                                &inputs,
++                                &mut batch_cache,
++                                token_offset,
++                            );
++                            batch_cache.advance(verify_len);
++                            let mut batch_refs = batch_cache.collect_eval_refs();
++                            batch_refs.push(&batch_logits);
++                            eval(&batch_refs);
++                            let (batch_meta, batch_values) = first_split_array(&batch_logits)?;
++                            if batch_logits.shape() != logits_all.shape() {
++                                return Err("ordinary batch shape mismatch".to_string());
++                            }
++                            first_split_log(
++                                serde_json::json!({"event": "array", "label": "ordinary_batch",
++                                "metadata": batch_meta, "exact": false, "target": false, "relaxed": false,
++                                "whole_trace": false, "qmm_guard": false,
++                                "entry": "forward_all_positions: stock full-batch LM head, not live verifier head helper"}),
++                            );
++                            let batch_row = &batch_values[span.clone()];
++                            first_split_row("ordinary_batch", batch_row);
++                            first_split_diff(
++                                "live_vs_ordinary_batch_full_logits",
++                                &live_values,
++                                &batch_values,
++                            )?;
++                            let mut singleton_cache = snapshot.clone();
++                            for (index, token) in inputs.iter().take(row + 1).enumerate() {
++                                let logits = crate::model::forward_argmax(
++                                    &self.cfg,
++                                    &self.weights,
++                                    &[*token],
++                                    &mut singleton_cache,
++                                    token_offset + index,
++                                );
++                                singleton_cache.advance(1);
++                                let mut refs = singleton_cache.collect_eval_refs();
++                                refs.push(&logits);
++                                eval(&refs);
++                                if index == row {
++                                    let (single_meta, single_values) = first_split_array(&logits)?;
++                                    if single_values.len() != self.cfg.vocab_size {
++                                        return Err(
++                                            "singleton vocabulary length mismatch".to_string()
++                                        );
++                                    }
++                                    first_split_log(
++                                        serde_json::json!({"event": "array", "label": "ordinary_singleton",
++                                        "metadata": single_meta, "input_count": row + 1,
++                                        "ending_cache_seq_len": singleton_cache.seq_len()}),
++                                    );
++                                    first_split_row("ordinary_singleton", &single_values);
++                                    first_split_diff(
++                                        "live_vs_singleton_selected_row",
++                                        live_row,
++                                        &single_values,
++                                    )?;
++                                    first_split_diff(
++                                        "ordinary_batch_vs_singleton_selected_row",
++                                        batch_row,
++                                        &single_values,
++                                    )?;
++                                }
++                            }
++                        }
++                        let snapshot_after = first_split_cache(&snapshot, self.cfg.layer_count)?;
++                        let source_after = first_split_cache(&state.cache, self.cfg.layer_count)?;
++                        let verify_after = first_split_cache(&verify_cache, self.cfg.layer_count)?;
++                        let unchanged = snapshot_before == snapshot_after
++                            && source_before == source_after
++                            && verify_before == verify_after;
++                        first_split_log(
++                            serde_json::json!({"event": "cache_after", "snapshot": snapshot_after,
++                            "source": source_after, "live_verify": verify_after, "unchanged": unchanged}),
++                        );
++                        if !unchanged {
++                            return Err(
++                                "diagnostic controls changed a source or live verification cache"
++                                    .to_string(),
++                            );
++                        }
++                        first_split_log(
++                            serde_json::json!({"event": "valid_window", "position": FIRST_SPLIT_POSITION,
++                            "output_index": 116, "row": row, "accept_count": ac, "production_return_replaced": false}),
++                        );
++                        Ok(())
++                    })();
++                    if let Err(error) = observed {
++                        first_split_log(
++                            serde_json::json!({"event": "invalid_window", "error": error,
++                            "production_return_replaced": false}),
++                        );
++                    }
++                }
++
+                 let rollback_started = Instant::now();
+                 // Without the exact profile, the batched verifier can differ
+                 // from singleton production decode at BF16 tail ULPs, so full
+@@ -11056,6 +11453,18 @@ impl MlxRunner {
+         };
+         mtp_timings.tail_sample_wall_us = elapsed_us(tail_sample_started);
+         result.push(tail_tok);
++        if token_offset <= FIRST_SPLIT_POSITION
++            && FIRST_SPLIT_POSITION < token_offset + verify_len
++            && first_split_request_matches(state)
++        {
++            first_split_log(
++                serde_json::json!({"event": "emission", "offset": token_offset,
++                "generated_count_before": state.generated_tokens.len(), "result": result,
++                "accept_count": accept_count, "correction_argmax_token": correction_argmax_tok,
++                "tail_token": tail_tok, "primary_from_skip": primary_tok_from_skip,
++                "cache_seq_len_after_commit": state.cache.seq_len()}),
++            );
++        }
+         // Emission-accounting identity: every emitted token must be the skip
+         // primary, an accepted draft, or the tail — the skip-state token-0
+         // corruption entered the stream exactly through this seam, and the

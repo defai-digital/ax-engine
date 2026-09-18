@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::{
-    generate::{DEFAULT_PREFILL_CHUNK, chunked_prefill_with_final_hidden},
+    generate::{DEFAULT_PREFILL_CHUNK, chunked_prefill},
     kv_cache::MlxKVCache,
     model::{
         ModelConfig, embed_tokens, forward_all_positions, forward_argmax, layer_forward,
@@ -236,7 +236,9 @@ fn run() -> Result<(), String> {
 
     let mut base_cache = MlxKVCache::new(cfg.layer_count);
     let mut rng = Xorshift64::new(0);
-    let (mut primary, _) = chunked_prefill_with_final_hidden(
+    // Seed the direct-history oracle through the same prefill entry as a
+    // direct runner. MTP history capture uses a different final-layer path.
+    let mut primary = chunked_prefill(
         &cfg,
         &weights,
         &prompt,

@@ -1,0 +1,8 @@
+{
+  "name": "qwen",
+  "exit_code": -15,
+  "timed_out": true,
+  "elapsed_seconds": 180.0441945840139,
+  "prompt_sha256": "429135604da3bddb997cc4b740363bfef9c70d9076dc8a1a43ac5a88b5b94fc2",
+  "log_sha256": "a741867917cf33265a1ae77526cf62d3d59b5a42aee81b9bb64e518da259160d"
+}

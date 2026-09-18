@@ -41,12 +41,38 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-18 actual first-split observation binds compsec-079 output index 116
+  (input position 524) to the live MTP window. All 192 output IDs are preserved;
+  a faithful replay matches all 993,280 logits, and three cache witnesses of
+  128 logical arrays remain unchanged. From that same MTP state, live and
+  ordinary-batch paths rank token 6397 at 21.875, while ordinary singleton
+  scores 279, 2849 and 6397 equally at 21.75. Selecting 279 uses the recorded
+  first-index tie rule; that control did not independently materialize MLX
+  argmax. This establishes a decision-relevant execution-path difference,
+  without identifying one kernel defect or proving actual direct-cache identity.
+  The standalone oracle now uses the direct prefill entry: the old/new/old
+  control changes a prefix rejection at 109 to validation through 116 and back.
+  Its subsequent prediction still differs from live direct, so it remains a
+  bounded diagnostic.
+  A separate forced-replay control-flow defect is repaired: explicitly forced,
+  unprocessed greedy replay revalidates drafts before consumption, updates the
+  committed count consistently, and discards stale experimental skip-state.
+  The injected false-accept and stale-state regressions fail before correction
+  and pass afterward with real input-dependent KV. Reference contract comparison
+  precedes this AX-owned change. Default relaxed acceptance and sampled behavior
+  remain unchanged; optimistic acceptance and whole-request direct equivalence
+  remain outside the guarantee. Final-wheel qualification is recorded separately
+  when completed. Quality, numerical consistency and Tier 2 gates remain open;
+  **not ship-ready**.
+  [First-split observation and forced-replay regression evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-first-split-replay/).
+
 - 2026-09-18 reference comparison and actual-input FFN attribution locate the
   first captured layer-zero difference at gate/up QMM, with BF16 activation
   and metadata and no dense bias. The observation-only build preserves all
   192 tokens, full live logits and 288 compiled/eager leaves. Nested SwiGLU
   compilation is exact in this control. Disabling custom QMM does not restore
-  direct/reference identity; the later first-token split remains unattributed.
+  direct/reference identity; this earlier FFN probe does not itself locate the
+  later first-token split examined in the observation above.
   Separate reproduced integration defects are repaired in `d121f107`: dense
   Linear bias is applied once by each caller, and mixed affine metadata retains
   stock dtype promotion. These repairs do not explain the captured bias-free,
