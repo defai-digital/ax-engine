@@ -65,6 +65,21 @@ fn qwen4_beta(input: &MlxArray) -> MlxArray {
     astype(&astype(&beta, input.dtype(), None), MlxDtype::Float32, None)
 }
 
+fn qwen4_verifier_projection(
+    input: &MlxArray,
+    weight: &QuantizedWeight,
+    policy: ProjectionBatchPolicy,
+    verifier_policy: ProjectionBatchPolicy,
+) -> MlxArray {
+    // MXFP4 batch rounding can alter both conv state and the output residual.
+    let qkv_policy = if weight.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
+        verifier_policy
+    } else {
+        policy
+    };
+    qw_with_policy(input, weight, qkv_policy)
+}
+
 fn qwen4_conv1d(
     cfg: &LinearAttentionConfig,
     qkv: &MlxArray,
@@ -184,6 +199,7 @@ impl Qwen4ExpGdn {
         input: &MlxArray,
         state: Option<&Qwen4ExpGdnState>,
         policy: ProjectionBatchPolicy,
+        verifier_policy: ProjectionBatchPolicy,
     ) -> Result<(MlxArray, Qwen4ExpGdnState), String> {
         let shape = input.shape();
         if shape.len() != 3 || shape[0] <= 0 || shape[1] <= 0 || shape[2] != self.hidden {
@@ -201,7 +217,7 @@ impl Qwen4ExpGdn {
         if let Some(state) = state {
             self.validate_state(state, batch as usize, input.dtype())?;
         }
-        let qkv = qw_with_policy(input, &self.weights.qkv, policy);
+        let qkv = qwen4_verifier_projection(input, &self.weights.qkv, policy, verifier_policy);
         let (convolved, conv) = qwen4_conv1d(cfg, &qkv, &self.weights.conv, state.map(|s| &s.conv));
         let split = split_linear_attention_qkv(cfg, &convolved);
         #[cfg(test)]
@@ -355,7 +371,7 @@ impl Qwen4ExpGdn {
             crate::model::qwen4_exp::profiling::dump("gdn_gated_output", &[&gated]);
         }
         Ok((
-            qw_with_policy(&gated, &self.weights.output, policy),
+            qwen4_verifier_projection(&gated, &self.weights.output, policy, verifier_policy),
             Qwen4ExpGdnState { conv, recurrent },
         ))
     }
@@ -449,6 +465,181 @@ mod tests {
         }
     }
 
+    fn exact_values(a: &MlxArray, b: &MlxArray) {
+        let a = contiguous(&astype(a, MlxDtype::Float32, None), None);
+        let b = contiguous(&astype(b, MlxDtype::Float32, None), None);
+        eval(&[&a, &b]);
+        assert_eq!(a.shape(), b.shape());
+        for (index, (actual, expected)) in a.data_f32().iter().zip(b.data_f32()).enumerate() {
+            assert_eq!(actual, expected, "projection value {index}");
+        }
+    }
+
+    fn mxfp4_projection_rows(hidden: i32, output: i32) -> (MlxArray, Vec<MlxArray>) {
+        let raw: Vec<f32> = (0..hidden * output)
+            .map(|i| ((i * 37 + 17) % 1009 - 504) as f32 / 1024.0)
+            .collect();
+        let dense = MlxArray::from_raw_data(
+            raw.as_ptr().cast(),
+            std::mem::size_of_val(raw.as_slice()),
+            &[output, hidden],
+            MlxDtype::Float32,
+        );
+        let quantized = mlx_sys::quantize(
+            &dense,
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        let mut weight =
+            QuantizedWeight::new(quantized[0].clone(), Some(quantized[1].clone()), None);
+        weight.mode = "mxfp4".into();
+        weight.bits = 4;
+        weight.group_size = 32;
+        let input_data: Vec<f32> = (0..2 * hidden)
+            .map(|i| ((i * 19 + 7) % 997 - 498) as f32 / 256.0)
+            .collect();
+        let input = astype(
+            &MlxArray::from_raw_data(
+                input_data.as_ptr().cast(),
+                std::mem::size_of_val(input_data.as_slice()),
+                &[1, 2, hidden],
+                MlxDtype::Float32,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let shared = ProjectionBatchPolicy::Shared;
+        let verifier =
+            qwen4_verifier_projection(&input, &weight, shared, ProjectionBatchPolicy::RowExact);
+        let direct: Vec<_> = (0..2)
+            .map(|i| {
+                let row = astype(
+                    &MlxArray::from_raw_data(
+                        input_data[(i * hidden) as usize..((i + 1) * hidden) as usize]
+                            .as_ptr()
+                            .cast(),
+                        hidden as usize * std::mem::size_of::<f32>(),
+                        &[1, 1, hidden],
+                        MlxDtype::Float32,
+                    ),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                qw_with_policy(&row, &weight, shared)
+            })
+            .collect();
+        let expected = concatenate(&[&direct[0], &direct[1]], 1, None);
+        exact_values(&verifier, &expected);
+        let batch = astype(
+            &qw_with_policy(&input, &weight, shared),
+            MlxDtype::Float32,
+            None,
+        );
+        let single = astype(&expected, MlxDtype::Float32, None);
+        eval(&[&batch, &single]);
+        let changed = batch
+            .data_f32()
+            .iter()
+            .zip(single.data_f32())
+            .filter(|(a, b)| a != b)
+            .count();
+        eprintln!("MXFP4 BF16 {output}x{hidden} Shared batch/singleton changed values: {changed}");
+        exact_values(
+            &qwen4_verifier_projection(&input, &weight, shared, shared),
+            &qw_with_policy(&input, &weight, shared),
+        );
+        (verifier, direct)
+    }
+
+    #[test]
+    fn mxfp4_verifier_output_matches_singletons() {
+        mxfp4_projection_rows(6144, 2560);
+    }
+
+    #[test]
+    fn mxfp4_verifier_qkv_conv_matches_singletons() {
+        let output = 10240;
+        let (verifier, direct) = mxfp4_projection_rows(2560, output);
+        let config = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_key_heads: 16,
+            num_value_heads: 48,
+            key_head_dim: 128,
+            value_head_dim: 128,
+            conv_kernel_dim: 4,
+            q_scale: 1.0,
+            k_scale: 1.0,
+        };
+        let conv_data: Vec<f32> = (0..output * 4).map(|i| (i % 7 - 3) as f32 / 8.0).collect();
+        let conv = astype(
+            &MlxArray::from_raw_data(
+                conv_data.as_ptr().cast(),
+                std::mem::size_of_val(conv_data.as_slice()),
+                &[output, 4, 1],
+                MlxDtype::Float32,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let (batch_output, batch_state) = qwen4_conv1d(&config, &verifier, &conv, None);
+        let (first, state) = qwen4_conv1d(&config, &direct[0], &conv, None);
+        let (second, state) = qwen4_conv1d(&config, &direct[1], &conv, Some(&state));
+        exact_values(&batch_state, &state);
+        exact_values(&batch_output, &concatenate(&[&first, &second], 1, None));
+    }
+
+    #[test]
+    fn verifier_projection_preserves_dense_and_affine_policy() {
+        let (_, module) = oracle();
+        let dense = QuantizedWeight::new(
+            concatenate(
+                &[&module.weights.qkv.weight, &module.weights.qkv.weight],
+                1,
+                None,
+            ),
+            None,
+            None,
+        );
+        let raw: Vec<f32> = (0..64).map(|i| (i - 16) as f32 / 32.0).collect();
+        let input = MlxArray::from_raw_data(
+            raw.as_ptr().cast(),
+            std::mem::size_of_val(raw.as_slice()),
+            &[1, 2, 32],
+            MlxDtype::Float32,
+        );
+        let packed = mlx_sys::quantize(
+            &dense.weight,
+            Some(32),
+            Some(8),
+            mlx_sys::MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let mut affine = QuantizedWeight::new(
+            packed[0].clone(),
+            Some(packed[1].clone()),
+            Some(packed[2].clone()),
+        );
+        affine.bits = 8;
+        affine.group_size = 32;
+        let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        for weight in [&dense, &affine] {
+            let actual = qwen4_verifier_projection(
+                &input,
+                weight,
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::RowExact,
+            );
+            let expected = qw_with_policy(&input, weight, ProjectionBatchPolicy::Shared);
+            eval(&[&actual, &expected]);
+            assert_eq!(actual.data_f32(), expected.data_f32());
+        }
+    }
+
     #[test]
     fn gdn_bf16_activations_match_official_rounding() {
         let fixture: Value = serde_json::from_str(include_str!(
@@ -531,7 +722,12 @@ mod tests {
         let (f, module) = oracle();
         let input = array(&f["input"], &[1, 7, 16]);
         let (output, state) = module
-            .forward(&input, None, ProjectionBatchPolicy::Shared)
+            .forward(
+                &input,
+                None,
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::Shared,
+            )
             .unwrap();
         close(&output, &array(&f["output"], &[1, 7, 16]), "output");
         close(
@@ -561,13 +757,23 @@ mod tests {
         let (f, module) = oracle();
         let input = array(&f["input"], &[1, 7, 16]);
         let (whole, final_state) = module
-            .forward(&input, None, ProjectionBatchPolicy::Shared)
+            .forward(
+                &input,
+                None,
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::Shared,
+            )
             .unwrap();
         for split in 1..7 {
             let prefix = slice(&input, &[0, 0, 0], &[1, split, 16], &[1, 1, 1], None);
             let suffix = slice(&input, &[0, split, 0], &[1, 7, 16], &[1, 1, 1], None);
             let (head, state) = module
-                .forward(&prefix, None, ProjectionBatchPolicy::Shared)
+                .forward(
+                    &prefix,
+                    None,
+                    ProjectionBatchPolicy::Shared,
+                    ProjectionBatchPolicy::Shared,
+                )
                 .unwrap();
             let fork = state.clone();
             assert!(
@@ -575,18 +781,29 @@ mod tests {
                     .forward(
                         &zeros(&[1, 2, 15], MlxDtype::Float32, None),
                         Some(&state),
-                        ProjectionBatchPolicy::Shared
+                        ProjectionBatchPolicy::Shared,
+                        ProjectionBatchPolicy::Shared,
                     )
                     .is_err()
             );
             let (tail, next) = module
-                .forward(&suffix, Some(&state), ProjectionBatchPolicy::Shared)
+                .forward(
+                    &suffix,
+                    Some(&state),
+                    ProjectionBatchPolicy::Shared,
+                    ProjectionBatchPolicy::Shared,
+                )
                 .unwrap();
             close(&concatenate(&[&head, &tail], 1, None), &whole, "chunked");
             close(&next.recurrent, &final_state.recurrent, "chunk state");
             close(&next.conv, &final_state.conv, "chunk conv");
             let (repeated, repeated_state) = module
-                .forward(&suffix, Some(&fork), ProjectionBatchPolicy::Shared)
+                .forward(
+                    &suffix,
+                    Some(&fork),
+                    ProjectionBatchPolicy::Shared,
+                    ProjectionBatchPolicy::Shared,
+                )
                 .unwrap();
             close(&repeated, &tail, "fork");
             close(&repeated_state.recurrent, &next.recurrent, "fork state");

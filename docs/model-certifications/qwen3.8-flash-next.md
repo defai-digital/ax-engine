@@ -50,6 +50,14 @@ heads. Bounded state/runner controls and post-run integrity verification
 passed. The recorded coverage overstatement after a first mismatch is
 preserved and explained in the evidence; it does not waive the failure.
 
+[Supplementary MXFP4 GDN attribution](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-gdn/README.md)
+reproduces batch/singleton rounding differences with actual BF16 inputs and
+original QKV/output weights. Verifier-only per-row projections move the first
+changed stored state from layer 0 to layer 43 in the original three-token
+roses control. Eleven state arrays still differ; this is a component correction,
+not whole-model or M5 identity qualification. Direct and affine routing retain
+their existing policies, and default admission remains closed.
+
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.

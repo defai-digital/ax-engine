@@ -631,18 +631,18 @@ pub(crate) fn forward(
     owner: u64,
     policy: ProjectionBatchPolicy,
 ) -> Result<Qwen4ExpOutput, String> {
-    forward_with_hc_policy(weights, tokens, state, owner, policy, policy)
+    forward_with_verifier_policy(weights, tokens, state, owner, policy, policy)
 }
 
-/// Keep verifier HC reductions aligned with singleton decode independently of
-/// the shared projection and selected-expert paging policy.
-pub(crate) fn forward_with_hc_policy(
+/// Keep verifier HC and MXFP4 GDN QKV/output projections aligned with singleton
+/// decode independently of shared projections and selected-expert paging.
+pub(crate) fn forward_with_verifier_policy(
     weights: &Qwen4ExpWeights,
     tokens: &[u32],
     state: &Qwen4ExpState,
     owner: u64,
     policy: ProjectionBatchPolicy,
-    hc_policy: ProjectionBatchPolicy,
+    verifier_policy: ProjectionBatchPolicy,
 ) -> Result<Qwen4ExpOutput, String> {
     if state.owner != owner || state.layers.len() != weights.layers.len() {
         return Err("qwen4_exp request state belongs to a different model".into());
@@ -665,7 +665,15 @@ pub(crate) fn forward_with_hc_policy(
         .layout
         .expand(&embedded)
         .map_err(|e| e.to_string())?;
-    forward_prepared_with_hc_policy(weights, tokens, hidden, state, owner, policy, hc_policy)
+    forward_prepared_with_verifier_policy(
+        weights,
+        tokens,
+        hidden,
+        state,
+        owner,
+        policy,
+        verifier_policy,
+    )
 }
 
 fn validate_prepared_input(
@@ -747,17 +755,17 @@ pub(crate) fn forward_prepared(
     owner: u64,
     policy: ProjectionBatchPolicy,
 ) -> Result<Qwen4ExpOutput, String> {
-    forward_prepared_with_hc_policy(weights, tokens, hidden, state, owner, policy, policy)
+    forward_prepared_with_verifier_policy(weights, tokens, hidden, state, owner, policy, policy)
 }
 
-fn forward_prepared_with_hc_policy(
+fn forward_prepared_with_verifier_policy(
     weights: &Qwen4ExpWeights,
     tokens: &[u32],
     mut hidden: MlxArray,
     state: &Qwen4ExpState,
     owner: u64,
     policy: ProjectionBatchPolicy,
-    hc_policy: ProjectionBatchPolicy,
+    verifier_policy: ProjectionBatchPolicy,
 ) -> Result<Qwen4ExpOutput, String> {
     let (end, vocabulary) = validate_prepared_input(weights, tokens, &hidden, state, owner)?;
     #[cfg(test)]
@@ -800,14 +808,14 @@ fn forward_prepared_with_hc_policy(
         }
         let read = layer
             .attention_hc
-            .read(&hidden, hc_policy)
+            .read(&hidden, verifier_policy)
             .map_err(|e| e.to_string())?;
         #[cfg(test)]
         profiling::mark("attention_hc_read", &[read.branch_input()]);
         let delta = match (&layer.attention, &mut staged.attention) {
             (Qwen4ExpAttentionBranch::Gdn(branch), AttentionState::Gdn(cache)) => {
                 let (delta, new_state) =
-                    branch.forward(read.branch_input(), cache.as_ref(), policy)?;
+                    branch.forward(read.branch_input(), cache.as_ref(), policy, verifier_policy)?;
                 #[cfg(test)]
                 profiling::mark("gdn", &[&delta, &new_state.conv, &new_state.recurrent]);
                 *cache = Some(new_state);
@@ -836,7 +844,7 @@ fn forward_prepared_with_hc_policy(
         profiling::mark("attention_hc_write", &[&hidden]);
         let read = layer
             .mlp_hc
-            .read(&hidden, hc_policy)
+            .read(&hidden, verifier_policy)
             .map_err(|e| e.to_string())?;
         #[cfg(test)]
         profiling::mark("mlp_hc_read", &[read.branch_input()]);
@@ -847,7 +855,7 @@ fn forward_prepared_with_hc_policy(
     }
     let mixed = weights
         .mixer
-        .collapse(&hidden, hc_policy)
+        .collapse(&hidden, verifier_policy)
         .map_err(|e| e.to_string())?;
     #[cfg(test)]
     profiling::mark("final_mixer", &[&mixed]);

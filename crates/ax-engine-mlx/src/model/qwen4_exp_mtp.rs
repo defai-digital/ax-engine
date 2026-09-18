@@ -140,7 +140,7 @@ fn trunk_forward(
 ) -> Result<Qwen4ExpOutput, String> {
     #[cfg(test)]
     TRUNK_FORWARD_COUNT.with(|count| count.set(count.get().saturating_add(1)));
-    qwen4_exp::forward_with_hc_policy(
+    qwen4_exp::forward_with_verifier_policy(
         trunk,
         tokens,
         state,
