@@ -41,6 +41,18 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-18 direct-history diagnosis separates synchronous replay from the
+  production pipeline API sequence. Both standalone modes still reject the
+  actual direct-server prefix at output 117. On the actual direct cache at
+  input offset 524, lazy and synchronous replays match all 248,320 live logits,
+  materialized argmax and post-step cache. Three cold server arms preserve all
+  192 direct tokens. At boundary 522, the observed direct cache differs in all
+  128 logical array hashes from the earlier MTP snapshot despite matching
+  preceding token IDs and metadata. These separately versioned observations
+  do not identify the first cause of drift. Default numerical parity, quality
+  and Tier 2 remain open; **not ship-ready**.
+  [Direct-history diagnostics and evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-direct-history/).
+
 - 2026-09-18 actual first-split observation binds compsec-079 output index 116
   (input position 524) to the live MTP window. All 192 output IDs are preserved;
   a faithful replay matches all 993,280 logits, and three cache witnesses of

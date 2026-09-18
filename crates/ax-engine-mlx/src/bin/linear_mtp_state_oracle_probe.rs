@@ -1,11 +1,15 @@
 //! Compare a two-token Qwen linear-attention verify graph with two singleton
-//! production-decode graphs on the same real checkpoint and cache state.
+//! synchronous singleton graphs on the same real checkpoint and cache state.
 //!
 //! Usage:
 //!   linear_mtp_state_oracle_probe <model_dir> <prompt-tokens> [decode-prefix-tokens]
+//!       [--validate-history=synchronous|direct-pipeline]
 //!
 //! The optional generated prefix is replayed token-by-token, never appended to
-//! the prefill prompt. A mismatch with singleton predictions aborts the probe.
+//! the prefill prompt. A mismatch aborts the probe. History validation exits
+//! before the two-token comparison. Direct-pipeline validation uses the
+//! production lazy bootstrap/advance sequence; matching IDs alone does not
+//! establish identity with a live server's cache or logits.
 
 use std::env;
 use std::path::Path;
@@ -13,7 +17,9 @@ use std::process::ExitCode;
 
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::{
-    generate::{DEFAULT_PREFILL_CHUNK, chunked_prefill},
+    generate::{
+        DEFAULT_PREFILL_CHUNK, advance_direct_pipeline, chunked_prefill, start_direct_pipeline,
+    },
     kv_cache::MlxKVCache,
     model::{
         ModelConfig, embed_tokens, forward_all_positions, forward_argmax, layer_forward,
@@ -24,6 +30,35 @@ use ax_engine_mlx::{
     weights::load_weights,
 };
 use mlx_sys::{MlxArray, MlxDtype, argmax, astype, eval, multiply, slice};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryMode {
+    SynchronousComparison,
+    SynchronousValidation,
+    DirectPipelineValidation,
+}
+
+impl HistoryMode {
+    fn parse(option: Option<&str>, has_prefix: bool) -> Result<Self, String> {
+        let mode = match option {
+            None => Self::SynchronousComparison,
+            Some("--validate-history=synchronous") => Self::SynchronousValidation,
+            Some("--validate-history=direct-pipeline") => Self::DirectPipelineValidation,
+            Some(option) => return Err(format!("unexpected argument: {option}")),
+        };
+        if mode != Self::SynchronousComparison && !has_prefix {
+            return Err("history validation requires a generated token prefix".to_string());
+        }
+        Ok(mode)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::SynchronousComparison | Self::SynchronousValidation => "synchronous",
+            Self::DirectPipelineValidation => "direct-pipeline",
+        }
+    }
+}
 
 fn parse_tokens(raw: &str) -> Result<Vec<u32>, String> {
     let tokens = raw
@@ -84,7 +119,7 @@ fn validate_prefix_token(index: usize, expected: u32, actual: u32) -> Result<(),
         Ok(())
     } else {
         Err(format!(
-            "singleton replay disagrees at generated index {index}: expected {expected}, got {actual}; no comparable boundary"
+            "history replay disagrees at generated index {index}: expected {expected}, got {actual}; no comparable boundary"
         ))
     }
 }
@@ -213,7 +248,7 @@ fn print_first_layer_hidden_diff(
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let model_dir = args.next().ok_or_else(|| {
-        "usage: linear_mtp_state_oracle_probe <model_dir> <prompt-tokens> [decode-prefix-tokens]".to_string()
+        "usage: linear_mtp_state_oracle_probe <model_dir> <prompt-tokens> [decode-prefix-tokens] [--validate-history=synchronous|direct-pipeline]".to_string()
     })?;
     let prompt = parse_tokens(
         &args
@@ -221,6 +256,8 @@ fn run() -> Result<(), String> {
             .ok_or_else(|| "missing comma-separated prompt tokens".to_string())?,
     )?;
     let replay_prefix = args.next().map(|raw| parse_tokens(&raw)).transpose()?;
+    let history_option = args.next();
+    let history_mode = HistoryMode::parse(history_option.as_deref(), replay_prefix.is_some())?;
     if let Some(unexpected) = args.next() {
         return Err(format!("unexpected argument: {unexpected}"));
     }
@@ -248,20 +285,63 @@ fn run() -> Result<(), String> {
         &mut rng,
     );
 
+    println!("history_mode={}", history_mode.label());
     if let Some(prefix) = replay_prefix {
         validate_prefix_token(0, prefix[0], primary)?;
-        for (index, pair) in prefix.windows(2).enumerate() {
-            let offset = base_cache.seq_len();
-            let logits = forward_argmax(&cfg, &weights, &[pair[0]], &mut base_cache, offset);
-            base_cache.advance(1);
-            primary = materialized_argmax(&logits, &base_cache);
-            validate_prefix_token(index + 1, pair[1], primary)?;
+        let mut actual_tokens = vec![primary];
+        if history_mode == HistoryMode::DirectPipelineValidation {
+            if prefix.len() > 1 {
+                // Prime before yielding token zero, as the direct runner does.
+                let mut pending = start_direct_pipeline(&cfg, &weights, primary, &mut base_cache);
+                for (index, &expected) in prefix.iter().enumerate().skip(1) {
+                    if index + 1 == prefix.len() {
+                        // The final token is already predicted. Advancing here
+                        // would consume an extra token and mislabel the cache.
+                        eval(&[&pending]);
+                        primary = pending.first_u32_unchecked();
+                    } else {
+                        let (token, next_pending) =
+                            advance_direct_pipeline(&cfg, &weights, &pending, &mut base_cache);
+                        primary = token;
+                        pending = next_pending;
+                    }
+                    validate_prefix_token(index, expected, primary)?;
+                    actual_tokens.push(primary);
+                }
+            }
+        } else {
+            for (index, pair) in prefix.windows(2).enumerate() {
+                let offset = base_cache.seq_len();
+                let logits = forward_argmax(&cfg, &weights, &[pair[0]], &mut base_cache, offset);
+                base_cache.advance(1);
+                primary = materialized_argmax(&logits, &base_cache);
+                validate_prefix_token(index + 1, pair[1], primary)?;
+                actual_tokens.push(primary);
+            }
         }
         println!(
             "replayed_generated_tokens={} next_prediction_index={}",
             prefix.len() - 1,
             prefix.len()
         );
+        if history_mode != HistoryMode::SynchronousComparison {
+            let expected_cache_len = prompt.len() + prefix.len() - 1;
+            if base_cache.seq_len() != expected_cache_len {
+                return Err(format!(
+                    "history cache boundary mismatch: expected {expected_cache_len}, got {}",
+                    base_cache.seq_len()
+                ));
+            }
+            println!(
+                "history_validation {}",
+                serde_json::json!({
+                    "mode": history_mode.label(), "validated_tokens": actual_tokens,
+                    "cache_seq_len": base_cache.seq_len(), "prompt_tokens": prompt.len(),
+                    "server_cache_identity_established": false,
+                })
+            );
+            return Ok(());
+        }
     }
 
     let token_offset = base_cache.seq_len();
@@ -406,5 +486,23 @@ mod tests {
         assert_eq!(parse_tokens("42, 43\n44").unwrap(), vec![42, 43, 44]);
         assert!(parse_tokens("").is_err());
         assert!(parse_tokens("42,invalid").is_err());
+    }
+
+    #[test]
+    fn history_validation_requires_an_explicit_known_route_and_prefix() {
+        assert_eq!(
+            HistoryMode::parse(None, false).unwrap(),
+            HistoryMode::SynchronousComparison
+        );
+        assert_eq!(
+            HistoryMode::parse(Some("--validate-history=direct-pipeline"), true).unwrap(),
+            HistoryMode::DirectPipelineValidation
+        );
+        assert_eq!(
+            HistoryMode::parse(Some("--validate-history=synchronous"), true).unwrap(),
+            HistoryMode::SynchronousValidation
+        );
+        assert!(HistoryMode::parse(Some("--validate-history=direct-pipeline"), false).is_err());
+        assert!(HistoryMode::parse(Some("--validate-history=direct"), true).is_err());
     }
 }

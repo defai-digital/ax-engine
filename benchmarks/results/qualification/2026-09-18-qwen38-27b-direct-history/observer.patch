@@ -1,0 +1,268 @@
+diff --git a/crates/ax-engine-mlx/src/generate.rs b/crates/ax-engine-mlx/src/generate.rs
+index c191bc62..7977bf28 100644
+--- a/crates/ax-engine-mlx/src/generate.rs
++++ b/crates/ax-engine-mlx/src/generate.rs
+@@ -144,6 +144,13 @@ pub(crate) fn record_layer_ops(is_linear_attention: bool, op_delta: u64) {
+     });
+ }
+ 
++thread_local! {
++    static DIRECT_OBSERVER_LOGITS: std::cell::RefCell<Option<MlxArray>> = const { std::cell::RefCell::new(None) };
++}
++pub fn take_direct_observer_logits() -> Option<MlxArray> {
++    DIRECT_OBSERVER_LOGITS.with(|cell| cell.borrow_mut().take())
++}
++
+ pub struct DirectPipelineAdvance {
+     pub token: u32,
+     pub next_pending: MlxArray,
+@@ -1497,6 +1504,9 @@ pub fn prepare_direct_pipeline_advance(
+     }
+     let forward_started = Instant::now();
+     let logits = forward_lazy_single_argmax(cfg, weights, pending, cache, token_offset);
++    if token_offset == 524 && cfg.vocab_size == 248320 {
++        DIRECT_OBSERVER_LOGITS.with(|cell| *cell.borrow_mut() = Some(logits.clone()));
++    }
+     let forward_wall_us = elapsed_us(forward_started);
+     let forward_stage = if stage_profile {
+         take_forward_stage_timings()
+diff --git a/crates/ax-engine-mlx/src/runner/mod.rs b/crates/ax-engine-mlx/src/runner/mod.rs
+index ebe63e07..733cc925 100644
+--- a/crates/ax-engine-mlx/src/runner/mod.rs
++++ b/crates/ax-engine-mlx/src/runner/mod.rs
+@@ -350,6 +350,136 @@ struct Gemma4AssistantMtpRuntime {
+     target_shared_layers: crate::model::Gemma4AssistantSharedKvLayers,
+ }
+ 
++// Ignored observation build only; final-source 079 first split, output index 116.
++const FIRST_SPLIT_POSITION: usize = 524;
++const FIRST_SPLIT_PREFIX: &[u32] = &[
++    760, 709, 1510, 7935, 68844, 16, 18, 13786, 63, 11036, 40278, 220, 16, 13, 18, 7189, 13, 198,
++    16, 13, 220, 2972, 9388, 82, 92217, 1368, 449, 4953, 369, 3816, 11, 279, 3511, 369, 7629, 13,
++    1061, 369, 5902, 13, 198, 17, 13, 220, 2972, 2239, 898, 1982, 92217, 1049, 11988, 279, 1528,
++    5484, 364, 1510, 32099, 7561, 1510, 32099, 31547, 7561, 321, 1510, 24100, 27653, 198, 262, 348,
++    256, 1510, 32099, 63, 1411, 1510, 22916, 35709, 31547, 63, 198, 262, 348, 256, 1510, 32099,
++    31547, 63, 1411, 1510, 22916, 24100, 63, 198, 262, 348, 256, 1510, 24100, 63, 1411, 1510,
++    65914, 290, 63, 198, 262, 348, 256, 1061, 11870, 12083, 644, 47164, 279, 1906, 314,
++];
++
++fn first_split_log(value: serde_json::Value) {
++    eprintln!("first_split_probe {value}");
++}
++
++fn first_split_hash(bytes: &[u8]) -> String {
++    use sha2::{Digest, Sha256};
++    format!("{:x}", Sha256::digest(bytes))
++}
++
++fn first_split_request_matches(state: &RequestState) -> bool {
++    if state.prompt_prefix_tokens.len() != 409
++        || state.generated_tokens.len() > FIRST_SPLIT_PREFIX.len()
++        || state.generated_tokens != FIRST_SPLIT_PREFIX[..state.generated_tokens.len()]
++    {
++        return false;
++    }
++    let bytes: Vec<u8> = state
++        .prompt_prefix_tokens
++        .iter()
++        .flat_map(|v| v.to_le_bytes())
++        .collect();
++    first_split_hash(&bytes) == "df38781d2e4a8da2028ddc13e6721755870682c442a60330f0036f14584d71ea"
++}
++
++fn first_split_array(value: &MlxArray) -> Result<(serde_json::Value, Vec<f32>), String> {
++    let floats = astype(value, MlxDtype::Float32, None);
++    eval(&[&floats]);
++    let values = floats.data_f32().to_vec();
++    if !values.iter().all(|value| value.is_finite()) {
++        return Err("non-finite diagnostic array".to_string());
++    }
++    let bytes: Vec<u8> = values
++        .iter()
++        .flat_map(|v| v.to_bits().to_le_bytes())
++        .collect();
++    Ok((
++        serde_json::json!({
++            "shape": value.shape(), "dtype": format!("{:?}", value.dtype()),
++            "elements": values.len(), "finite": true,
++            "f32_bits_le_sha256": first_split_hash(&bytes),
++        }),
++        values,
++    ))
++}
++
++fn first_split_diff(label: &str, left: &[f32], right: &[f32]) -> Result<usize, String> {
++    if left.len() != right.len() {
++        return Err(format!("{label}: comparison length mismatch"));
++    }
++    let unequal = left
++        .iter()
++        .zip(right)
++        .filter(|(a, b)| a.to_bits() != b.to_bits())
++        .count();
++    let max_abs = left
++        .iter()
++        .zip(right)
++        .map(|(a, b)| (a - b).abs())
++        .fold(0.0_f32, f32::max);
++    first_split_log(
++        serde_json::json!({"event": "logit_comparison", "label": label,
++        "elements": left.len(), "unequal": unequal, "max_abs": max_abs}),
++    );
++    Ok(unequal)
++}
++
++fn first_split_row(label: &str, scores: &[f32]) {
++    let mut indices: Vec<usize> = (0..scores.len()).collect();
++    indices.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]).then(a.cmp(&b)));
++    let top: Vec<(usize, f32)> = indices
++        .into_iter()
++        .take(8)
++        .map(|id| (id, scores[id]))
++        .collect();
++    first_split_log(serde_json::json!({"event": "row", "label": label,
++        "finite": scores.iter().all(|v| v.is_finite()), "elements": scores.len(),
++        "top8": top, "direct_token": {"token": 279, "logit": scores[279]},
++        "mtp_token": {"token": 6397, "logit": scores[6397]}}));
++}
++
++fn first_split_cache(cache: &MlxKVCache, layer_count: usize) -> Result<serde_json::Value, String> {
++    let usage = cache.usage_snapshot();
++    if usage.rotated_ring_layers != 0
++        || usage.quantized_layers != 0
++        || cache.fa_block_pool_enabled()
++    {
++        return Err("diagnostic requires observed contiguous non-ring cache layout".to_string());
++    }
++    let mut arrays = Vec::new();
++    for layer in 0..layer_count {
++        if let Some((k, v)) = cache.logical_layer_kv(layer) {
++            for (kind, array) in [("key", k), ("value", v)] {
++                let (metadata, _) = first_split_array(&array)?;
++                arrays.push(serde_json::json!({"layer": layer, "kind": kind, "array": metadata}));
++            }
++        }
++        let (conv, recurrent) = cache.linear_state(layer);
++        for (kind, value) in [("conv", conv), ("recurrent", recurrent)] {
++            if let Some(array) = value {
++                let (metadata, _) = first_split_array(array)?;
++                arrays.push(serde_json::json!({"layer": layer, "kind": kind, "array": metadata}));
++            }
++        }
++    }
++    if usage.full_attention_layers != 16 || usage.linear_state_layers != 48 || arrays.len() != 128 {
++        return Err("unexpected cache layer or state-array count".to_string());
++    }
++    Ok(
++        serde_json::json!({"seq_len": cache.seq_len(), "rope_offset": cache.rope_offset,
++        "mrope_position_delta": cache.mrope_position_delta(),
++        "capacity_tokens": usage.capacity_tokens, "logical_arrays": arrays}),
++    )
++}
++
++thread_local! {
++    static DIRECT_HISTORY_CACHE_522: std::cell::RefCell<Option<MlxKVCache>> = const { std::cell::RefCell::new(None) };
++}
++
+ /// Per-request mutable state persisted across prefill → decode steps.
+ struct RequestState {
+     cache: MlxKVCache,
+@@ -8799,6 +8929,12 @@ impl MlxRunner {
+     }
+ 
+     fn run_direct_pipeline_once(&self, state: &mut RequestState, bootstrap_token: MlxArray) -> u32 {
++        if state.cache.seq_len() == 522 && first_split_request_matches(state) {
++            DIRECT_HISTORY_CACHE_522.with(|cell| *cell.borrow_mut() = Some(state.cache.clone()));
++        }
++        let observer_snapshot = (state.cache.seq_len() == FIRST_SPLIT_POSITION
++            && first_split_request_matches(state))
++        .then(|| state.cache.clone());
+         let branch_started = Instant::now();
+         let stage_profile = crate::generate::direct_pipeline_stage_profile_enabled();
+         let op_count_before = stage_profile.then(mlx_sys::op_count_snapshot);
+@@ -8821,6 +8957,85 @@ impl MlxRunner {
+             .decode_telemetry
+             .record_direct_pipeline_timings(advanced.timings);
+         state.decode_telemetry.record_production_decode_eval();
++        if let Some(snapshot) = observer_snapshot {
++            let result = (|| -> Result<(), String> {
++                if advanced.token != 314 || state.generated_tokens.len() != 115 {
++                    return Err("unexpected live direct input or generated prefix".into());
++                }
++                let logits = crate::generate::take_direct_observer_logits()
++                    .ok_or("missing actual direct logits")?;
++                let live_before = first_split_cache(&state.cache, self.cfg.layer_count)?;
++                let snapshot_before = first_split_cache(&snapshot, self.cfg.layer_count)?;
++                let earlier = DIRECT_HISTORY_CACHE_522
++                    .with(|cell| cell.borrow_mut().take())
++                    .ok_or("missing direct cache at MTP window boundary")?;
++                first_split_log(
++                    serde_json::json!({"event":"direct_window", "generated_tokens":state.generated_tokens,
++                    "input":advanced.token, "offset":524, "exact":crate::fastpath::qwen_linear_mtp_exact_enabled(),
++                    "target":crate::fastpath::qwen_linear_mtp_target_verify_enabled(),
++                    "relaxed":crate::fastpath::qwen_linear_mtp_relaxed_session_enabled(),
++                    "whole_trace":crate::fastpath::qwen_linear_mtp_whole_verify_trace_enabled(),
++                    "cache_522":first_split_cache(&earlier,self.cfg.layer_count)?,
++                    "cache_524":snapshot_before, "cache_525":live_before}),
++                );
++                eval(&[&advanced.next_pending]);
++                let live_token = advanced.next_pending.first_u32_unchecked();
++                let (meta, live) = first_split_array(&logits)?;
++                first_split_log(
++                    serde_json::json!({"event":"array","label":"live_direct","metadata":meta,"argmax":live_token}),
++                );
++                first_split_row("live_direct", &live);
++                for lazy in [true, false] {
++                    let label = if lazy {
++                        "same_lazy_replay"
++                    } else {
++                        "host_singleton"
++                    };
++                    let mut cache = snapshot.clone();
++                    let replay = if lazy {
++                        crate::model::forward_lazy_single_argmax(
++                            &self.cfg,
++                            &self.weights,
++                            &bootstrap_token,
++                            &mut cache,
++                            524,
++                        )
++                    } else {
++                        crate::model::forward_argmax(
++                            &self.cfg,
++                            &self.weights,
++                            &[advanced.token],
++                            &mut cache,
++                            524,
++                        )
++                    };
++                    cache.advance(1);
++                    let token = mlx_sys::argmax(&replay, None);
++                    eval(&[&token]);
++                    let (meta, values) = first_split_array(&replay)?;
++                    first_split_log(
++                        serde_json::json!({"event":"array","label":label,"metadata":meta,"argmax":token.first_u32_unchecked()}),
++                    );
++                    first_split_diff(label, &live, &values)?;
++                    first_split_row(label, &values);
++                    first_split_log(
++                        serde_json::json!({"event":"control_cache","label":label,"cache":first_split_cache(&cache,self.cfg.layer_count)?}),
++                    );
++                }
++                let live_after = first_split_cache(&state.cache, self.cfg.layer_count)?;
++                let snapshot_after = first_split_cache(&snapshot, self.cfg.layer_count)?;
++                if live_before != live_after || snapshot_before != snapshot_after {
++                    return Err("direct cache changed during cloned controls".into());
++                }
++                first_split_log(
++                    serde_json::json!({"event":"direct_valid","cache_unchanged":true,"next_pending_token":live_token,"production_return_replaced":false}),
++                );
++                Ok(())
++            })();
++            if let Err(error) = result {
++                first_split_log(serde_json::json!({"event":"direct_invalid","error":error}));
++            }
++        }
+         state.pending_direct = Some(advanced.next_pending);
+         self.maybe_clear_direct_pipeline_cache(state);
+         advanced.token

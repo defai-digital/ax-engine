@@ -1,0 +1,47 @@
+[
+  {
+    "model": "deepseek-v4-pro",
+    "exit_code": -15,
+    "timed_out": true,
+    "elapsed_seconds": 300.0324350410083,
+    "prompt_sha256": "556fa3ec91b0aa87389c26d3661b224858139014ef6e1921168814dd3360a3ce",
+    "log_sha256": "aff6783e5966fe235672292d19be5f34100ca56e8cfe407f29c49c99bdf0c0dd",
+    "attempt": "deepseek"
+  },
+  {
+    "model": "MiniMax-M3",
+    "exit_code": -15,
+    "timed_out": true,
+    "elapsed_seconds": 300.025480042008,
+    "prompt_sha256": "556fa3ec91b0aa87389c26d3661b224858139014ef6e1921168814dd3360a3ce",
+    "log_sha256": "365ff4de65060607b8dfb53474702007712ba4d2f32b0565621d7a2ec20874fc",
+    "attempt": "minimax"
+  },
+  {
+    "model": "deepseek-v4-pro",
+    "exit_code": 0,
+    "timed_out": false,
+    "elapsed_seconds": 63.47174745798111,
+    "prompt_sha256": "85158ef2a0df2b3a647f18002ce1fdfe6115eb5cdfb4c21884102db27981af91",
+    "log_sha256": "f958a9831d55c9c7b0b465568e89588db1cb946b198a6f7d54b38f7a408186ee",
+    "attempt": "deepseek-short"
+  },
+  {
+    "model": "MiniMax-M3",
+    "exit_code": -15,
+    "timed_out": true,
+    "elapsed_seconds": 180.03921200000332,
+    "prompt_sha256": "85158ef2a0df2b3a647f18002ce1fdfe6115eb5cdfb4c21884102db27981af91",
+    "log_sha256": "e2ffa40d7ca64aebf220486822f7fb228fa4b4d6c65dd194baaca28738cb0bb3",
+    "attempt": "minimax-short"
+  },
+  {
+    "model": "MiniMax-M2.7",
+    "exit_code": 0,
+    "timed_out": false,
+    "elapsed_seconds": 30.21317720800289,
+    "prompt_sha256": "7fae7944505751abe99dcf6437465ca417a7deb876c0d9c75ce9e76a708e6c53",
+    "log_sha256": "3a7ad27241d5e5b3a5db707db50e3b063745474d66c0aac135f5db6107e6a1e1",
+    "attempt": "minimax-m27"
+  }
+]

@@ -1,0 +1,17 @@
+[
+  {
+    "fixture": "argmax",
+    "exit_code": 1,
+    "error": "ValueError: Full logits and materialized argmax equality"
+  },
+  {
+    "fixture": "cache",
+    "exit_code": 1,
+    "error": "ValueError: Post-step state equality"
+  },
+  {
+    "fixture": "output",
+    "exit_code": 1,
+    "error": "ValueError: Full192 output fidelity"
+  }
+]
