@@ -1,0 +1,106 @@
+replayed_generated_tokens=45 next_prediction_index=46
+layer=0 stage=attention hidden_first_max_abs=1.953125000e-3 hidden_second_max_abs=1.953125000e-3
+layer=0 stage=full hidden_first_max_abs=1.953125000e-3 hidden_second_max_abs=2.197265625e-3
+primary=2239 draft=898 singleton=[898,1982] batched=[898, 1982]
+row=first route=singleton top2=[(898, 23.125), (28692, 23.125)]
+row=first route=batched top2=[(898, 23.125), (28692, 23.125)]
+row=first logits_max_abs=1.250000000e-1
+row=second route=singleton top2=[(1982, 26.875), (1703, 18.25)]
+row=second route=batched top2=[(1982, 26.75), (1703, 18.25)]
+row=second logits_max_abs=1.562500000e-1
+layer=0 conv_max_abs=2.500000000e-1 recurrent_max_abs=5.375909805e-2
+layer=1 conv_max_abs=3.125000000e-2 recurrent_max_abs=1.960538328e-3
+layer=2 conv_max_abs=3.125000000e-2 recurrent_max_abs=3.696590662e-3
+layer=4 conv_max_abs=4.687500000e-2 recurrent_max_abs=1.875400543e-3
+layer=5 conv_max_abs=6.250000000e-2 recurrent_max_abs=1.991465688e-3
+layer=6 conv_max_abs=4.687500000e-2 recurrent_max_abs=5.074739456e-3
+layer=8 conv_max_abs=7.812500000e-2 recurrent_max_abs=6.122916937e-3
+layer=9 conv_max_abs=4.687500000e-2 recurrent_max_abs=1.105986536e-3
+layer=10 conv_max_abs=3.125000000e-2 recurrent_max_abs=2.577841282e-3
+layer=12 conv_max_abs=6.250000000e-2 recurrent_max_abs=2.697274089e-3
+layer=13 conv_max_abs=6.250000000e-2 recurrent_max_abs=4.633337259e-3
+layer=14 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.199949861e-3
+layer=16 conv_max_abs=6.250000000e-2 recurrent_max_abs=1.280538738e-3
+layer=17 conv_max_abs=6.250000000e-2 recurrent_max_abs=2.692222595e-3
+layer=18 conv_max_abs=6.250000000e-2 recurrent_max_abs=4.244387150e-3
+layer=20 conv_max_abs=7.031250000e-2 recurrent_max_abs=3.899216652e-3
+layer=21 conv_max_abs=6.250000000e-2 recurrent_max_abs=4.791751504e-3
+layer=22 conv_max_abs=1.250000000e-1 recurrent_max_abs=9.428501129e-3
+layer=24 conv_max_abs=9.375000000e-2 recurrent_max_abs=6.770431995e-3
+layer=25 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.331288695e-3
+layer=26 conv_max_abs=9.375000000e-2 recurrent_max_abs=4.038810730e-3
+layer=28 conv_max_abs=6.250000000e-2 recurrent_max_abs=1.396019012e-3
+layer=29 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.563016653e-3
+layer=30 conv_max_abs=6.250000000e-2 recurrent_max_abs=8.534252644e-3
+layer=32 conv_max_abs=6.250000000e-2 recurrent_max_abs=1.518830657e-3
+layer=33 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.867447376e-3
+layer=34 conv_max_abs=6.250000000e-2 recurrent_max_abs=4.314720631e-3
+layer=36 conv_max_abs=6.250000000e-2 recurrent_max_abs=2.989739180e-3
+layer=37 conv_max_abs=1.250000000e-1 recurrent_max_abs=4.178762436e-3
+layer=38 conv_max_abs=6.250000000e-2 recurrent_max_abs=4.858255386e-3
+layer=40 conv_max_abs=6.250000000e-2 recurrent_max_abs=4.013538361e-3
+layer=41 conv_max_abs=6.250000000e-2 recurrent_max_abs=1.667901874e-3
+layer=42 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.310754895e-3
+layer=44 conv_max_abs=9.375000000e-2 recurrent_max_abs=3.774732351e-3
+layer=45 conv_max_abs=7.812500000e-2 recurrent_max_abs=3.141283989e-3
+layer=46 conv_max_abs=7.226562500e-2 recurrent_max_abs=3.294199705e-3
+layer=48 conv_max_abs=7.812500000e-2 recurrent_max_abs=1.815978438e-3
+layer=49 conv_max_abs=9.375000000e-2 recurrent_max_abs=4.914969206e-3
+layer=50 conv_max_abs=7.812500000e-2 recurrent_max_abs=3.071933985e-3
+layer=52 conv_max_abs=9.375000000e-2 recurrent_max_abs=8.990883827e-3
+layer=53 conv_max_abs=1.250000000e-1 recurrent_max_abs=6.975859404e-3
+layer=54 conv_max_abs=1.250000000e-1 recurrent_max_abs=3.705814481e-3
+layer=56 conv_max_abs=7.812500000e-2 recurrent_max_abs=4.806965590e-3
+layer=57 conv_max_abs=1.250000000e-1 recurrent_max_abs=1.857215166e-2
+layer=58 conv_max_abs=1.289062500e-1 recurrent_max_abs=1.281630993e-2
+layer=60 conv_max_abs=2.500000000e-1 recurrent_max_abs=9.812742472e-3
+layer=61 conv_max_abs=1.093750000e-1 recurrent_max_abs=4.853956401e-3
+layer=62 conv_max_abs=1.250000000e-1 recurrent_max_abs=1.074016094e-2
+checkpoint_layer=0 conv_max_abs=1.250000000e-1 recurrent_max_abs=5.997657776e-2
+checkpoint_layer=1 conv_max_abs=3.125000000e-2 recurrent_max_abs=1.610331237e-3
+checkpoint_layer=2 conv_max_abs=3.125000000e-2 recurrent_max_abs=3.538176417e-3
+checkpoint_layer=4 conv_max_abs=3.125000000e-2 recurrent_max_abs=1.658514142e-3
+checkpoint_layer=5 conv_max_abs=3.125000000e-2 recurrent_max_abs=8.491463959e-4
+checkpoint_layer=6 conv_max_abs=3.125000000e-2 recurrent_max_abs=2.977490425e-3
+checkpoint_layer=8 conv_max_abs=3.125000000e-2 recurrent_max_abs=2.221137285e-3
+checkpoint_layer=9 conv_max_abs=3.125000000e-2 recurrent_max_abs=1.424584538e-3
+checkpoint_layer=10 conv_max_abs=3.125000000e-2 recurrent_max_abs=1.914948225e-3
+checkpoint_layer=12 conv_max_abs=3.125000000e-2 recurrent_max_abs=2.646818757e-3
+checkpoint_layer=13 conv_max_abs=3.906250000e-2 recurrent_max_abs=2.887226641e-3
+checkpoint_layer=14 conv_max_abs=3.125000000e-2 recurrent_max_abs=3.452137113e-3
+checkpoint_layer=16 conv_max_abs=6.250000000e-2 recurrent_max_abs=6.968080997e-4
+checkpoint_layer=17 conv_max_abs=6.250000000e-2 recurrent_max_abs=1.766137779e-3
+checkpoint_layer=18 conv_max_abs=3.125000000e-2 recurrent_max_abs=2.377659082e-3
+checkpoint_layer=20 conv_max_abs=6.250000000e-2 recurrent_max_abs=2.581536770e-3
+checkpoint_layer=21 conv_max_abs=6.250000000e-2 recurrent_max_abs=5.160987377e-3
+checkpoint_layer=22 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.764659166e-3
+checkpoint_layer=24 conv_max_abs=5.468750000e-2 recurrent_max_abs=3.324210644e-3
+checkpoint_layer=25 conv_max_abs=3.125000000e-2 recurrent_max_abs=1.934297383e-3
+checkpoint_layer=26 conv_max_abs=3.125000000e-2 recurrent_max_abs=4.718601704e-3
+checkpoint_layer=28 conv_max_abs=6.250000000e-2 recurrent_max_abs=1.507304609e-3
+checkpoint_layer=29 conv_max_abs=6.250000000e-2 recurrent_max_abs=2.251937985e-3
+checkpoint_layer=30 conv_max_abs=6.250000000e-2 recurrent_max_abs=8.153825998e-3
+checkpoint_layer=32 conv_max_abs=6.250000000e-2 recurrent_max_abs=6.937664002e-4
+checkpoint_layer=33 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.967598081e-3
+checkpoint_layer=34 conv_max_abs=3.906250000e-2 recurrent_max_abs=1.557689160e-3
+checkpoint_layer=36 conv_max_abs=6.250000000e-2 recurrent_max_abs=1.770943403e-3
+checkpoint_layer=37 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.064811230e-3
+checkpoint_layer=38 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.060102463e-3
+checkpoint_layer=40 conv_max_abs=6.250000000e-2 recurrent_max_abs=8.092224598e-3
+checkpoint_layer=41 conv_max_abs=3.125000000e-2 recurrent_max_abs=1.412767917e-3
+checkpoint_layer=42 conv_max_abs=3.125000000e-2 recurrent_max_abs=1.992788166e-3
+checkpoint_layer=44 conv_max_abs=6.250000000e-2 recurrent_max_abs=3.715455532e-3
+checkpoint_layer=45 conv_max_abs=6.250000000e-2 recurrent_max_abs=1.351222396e-3
+checkpoint_layer=46 conv_max_abs=6.250000000e-2 recurrent_max_abs=4.038393497e-3
+checkpoint_layer=48 conv_max_abs=6.250000000e-2 recurrent_max_abs=2.192985266e-3
+checkpoint_layer=49 conv_max_abs=6.250000000e-2 recurrent_max_abs=2.897590399e-3
+checkpoint_layer=50 conv_max_abs=6.250000000e-2 recurrent_max_abs=2.817064524e-3
+checkpoint_layer=52 conv_max_abs=9.375000000e-2 recurrent_max_abs=1.094639301e-2
+checkpoint_layer=53 conv_max_abs=7.812500000e-2 recurrent_max_abs=4.294574261e-3
+checkpoint_layer=54 conv_max_abs=6.250000000e-2 recurrent_max_abs=4.430532455e-3
+checkpoint_layer=56 conv_max_abs=6.250000000e-2 recurrent_max_abs=4.668772221e-3
+checkpoint_layer=57 conv_max_abs=1.250000000e-1 recurrent_max_abs=2.006453276e-2
+checkpoint_layer=58 conv_max_abs=9.375000000e-2 recurrent_max_abs=9.897589684e-3
+checkpoint_layer=60 conv_max_abs=1.250000000e-1 recurrent_max_abs=5.742251873e-3
+checkpoint_layer=61 conv_max_abs=1.093750000e-1 recurrent_max_abs=5.022257566e-3
+checkpoint_layer=62 conv_max_abs=1.250000000e-1 recurrent_max_abs=3.683745861e-3

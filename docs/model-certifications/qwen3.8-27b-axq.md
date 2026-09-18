@@ -41,6 +41,26 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-18 residual-state investigation reproduces all four remaining route
+  differences in fresh processes on the unchanged `4cbda8b5` wheel. LA fusion
+  off, full checkpoint capture, and FA storage rebind off do not remove the
+  earliest split. The validated singleton oracle ties two target scores at
+  23.125; the live MTP verifier instead scores them 23.0 and 23.125 and follows
+  its actual argmax. An observation-only build preserves all 192 production
+  tokens. This establishes differing target scores, not an acceptance-rule
+  defect or a complete attribution of numerical drift. From the same live
+  MTP cache and identical four-row input, ordinary batched forwarding and
+  singleton replay both recover the tie, localizing this split to the
+  MTP-specific target path. Both controls preserve all 192 production tokens.
+  `c9a7ff97` adds a passing exact BF16 affine FFN regression; its small fixture
+  does not prove whole-layer or production-shape equivalence. The unchanged pinned
+  reference also differs from AX direct on these long prompts, and fails two
+  original strict span cases. An explicit full-span wording diagnostic still
+  fails both cases. `276bd1d4` improves the replay oracle without changing
+  production arithmetic. Quality and numerical-route gates remain open;
+  **not ship-ready**.
+  [Controls, state evidence and reference](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-residual-state/).
+
 - 2026-09-18 scheduler-prefix repair (`4cbda8b5`) closes a separate context
   omission: cold-grid trimming could discard prefix tokens already removed
   from the scheduler input without requesting their recomputation. The
