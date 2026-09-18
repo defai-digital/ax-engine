@@ -7,6 +7,12 @@ Second SKU. MXFP4 MTP target; native support and checkpoint qualification pendin
 Target SKU: **MacBook Pro M5 Max, 128 GB**. Target pack: **MXFP4 MTP**.
 Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-17**.
 
+"MTP Tier 2 pending" here uses the same three-gate vocabulary as the
+[Qwen 3.8 27B record](qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means):
+MTP-S (in-path safety), MTP-P (performance claim license) and MTP-D (default
+promotion) are evidenced separately. For this SKU all three are open, and native
+trunk execution stays fail-closed, so no gate can be evidenced yet.
+
 ## Current target and open gates
 
 The target is

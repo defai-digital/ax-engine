@@ -15,6 +15,34 @@ the general-purpose default serve target. It is **not** MTP Tier 2 certified
 and it is **not** a 72-hour endurance pass. Super-class Qwen 3.8 (2.4T) is a
 different, experimental path and is out of this record.
 
+## What "MTP Tier 2 pending" means
+
+MTP certification is three independent gates, not one (internal decision
+ADR-033, which amends ADR-020). They are evidenced separately and pass or fail
+separately:
+
+| Gate | What it decides | This pack |
+| --- | --- | --- |
+| **MTP-S** — safety | In-path exactness: under one verifier state, every accepted draft equals the token that verifier's own greedy decision would select. Divergence from an *independent* direct graph at near-ties is disclosed, not treated as a defect | Satisfied for the verify/replay correctness mode |
+| **MTP-P** — performance claim | Licenses a scoped, reproducible public acceleration multiplier (weighted >= 1.20x, prompt-median >= 1.10x, two named authorizing workloads, short-answer negative control, full evidence binding). Changes no default | **Not evidenced on the default product path.** No public multiplier may be published for this pack until it is |
+| **MTP-D** — default promotion | Whether MTP becomes the product default. Requires 100% greedy parity on the default path with both arms sharing one deterministic tie-break rule, plus an aligned quality protocol, endurance and long-context decode-at-depth. Always a separate decision and a release tag, never automatic | **Not opened** |
+
+Two consequences for reading this record:
+
+- The paired direct/MTP greedy identity probe is a **debug probe**, not a ship
+  gate. Its results are published below as MTP-P disclosure. It does not block
+  Candidate status or opt-in availability.
+- MTP routing stays fail-closed. Until MTP-D is opened and accepted, the product
+  default is direct decode, so enabling MTP is an explicit opt-in and existing
+  greedy tokens do not change silently.
+
+Current MTP-P disclosure for this pack: **2 of 4** paired 192-token default-path
+outputs are token-identical, with splits at output index **116** and **155**, and
+an observed near-tie logit margin of **<= 0.125** at the split state. A near-tie
+margin at that scale is floating-point reduction-order noise across differently
+shaped batch paths; it is not an accepted draft the verifier would reject, and no
+first cause has been identified.
+
 ## Pinned Checkpoints
 
 | Selector | Repository | Revision |
@@ -34,7 +62,7 @@ cannot silently change what the selector loads.
 | Product focus | Primary optimization target (unique general-purpose default) |
 | Hub checkpoint | Tier 1 for 6-bit / 8-bit / MXFP4; 4-bit remains a compact candidate |
 | AX certification record | Candidate — gates open |
-| MTP | Sidecar present; Tier 2 performance certification pending |
+| MTP | Sidecar present; MTP-S satisfied, MTP-P not evidenced on the default path, MTP-D not opened |
 | Support tier | Family follows the Qwen 3.x Certified graph path; this *checkpoint* is not `release_ready` |
 
 ## Current Evidence
@@ -340,7 +368,9 @@ Landed, labeled:
 
 Not claimed:
 
-- MTP Tier 2 / `release_ready`
+- MTP Tier 2 / `release_ready`. Under the three-gate vocabulary: MTP-P is not
+  evidenced on the default product path, so no public acceleration multiplier is
+  claimed for this pack, and MTP-D (default promotion) has not been opened
 - 8-hour or 72-hour endurance (the published 8.87h soak is
   [Qwen 3.6 27B AXQ](qwen3.6-27b-axq-6bit-8h-endurance-2026-08-08.md))
 - Multi-model `load_mode=add`
