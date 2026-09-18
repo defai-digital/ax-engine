@@ -41,6 +41,25 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-18 scheduler-prefix repair (`4cbda8b5`) closes a separate context
+  omission: cold-grid trimming could discard prefix tokens already removed
+  from the scheduler input without requesting their recomputation. The
+  identical selected-SKU cold/warm request changes from **4 versus 128 tokens**
+  to **4 versus 4 identical tokens**, while retaining the scheduler cache hit
+  and explicitly replaying the missing 96-token prefix. Cache/MTP defaults
+  remain unchanged. The clean bundled wheel again passes executable
+  qualification: 32/32 hard QA and all surfaces per route, doctor, package
+  identity and the paired 64-token probe, with active MTP verification.
+  Earlier warm-request quality failures cannot be attributed solely to model
+  capability because this context defect was present. The unchanged twelve-case
+  diagnostic now has **8/12** paired response matches, with direct four and MTP
+  two truncations, but strict complete-span grading remains **0/12 per route**.
+  This is a selected failure subset, not overall model accuracy. Four response
+  differences remain; original long-thinking/recovery and endurance were not
+  rerun on this build. Quality, broad route consistency and MTP Tier 2 remain
+  open; **not ship-ready**.
+  [Prefix replay evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-prefix-replay/).
+
 - 2026-09-18 linear-attention output correction (`21687d71`, completed by
   `892c2fc9`) restores float32 gated normalization and shares the ordinary
   target's layer-specific Metal gate policy. The dtype regression failed

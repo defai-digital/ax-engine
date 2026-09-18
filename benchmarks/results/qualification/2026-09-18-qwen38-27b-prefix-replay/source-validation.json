@@ -1,0 +1,138 @@
+{
+  "source_commit": "4cbda8b54c77a75a3f65ee5ef920945e38bc5d81",
+  "checks": [
+    {
+      "check": "prefix-regression",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "prefill_",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "la-regression",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "qwen_la_projection_preserves_float32_gate_before_output_cast",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "fmt",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+        "--force-warn",
+        "clippy::unwrap-used",
+        "--force-warn",
+        "clippy::expect-used",
+        "--force-warn",
+        "clippy::panic",
+        "--force-warn",
+        "clippy::dbg-macro",
+        "--force-warn",
+        "clippy::large-enum-variant"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "rust",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "python",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "python/tests",
+        "-q"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "qwen27b",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "flash_next",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "claims",
+      "command": [
+        "python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "installed_python": "209 passed, 26 skipped, 140 subtests passed",
+  "maturin_develop": "passed",
+  "scripts": "passed",
+  "regression_before": "failed: prefix=4, suffix=8 selects Some(0), expected full replay",
+  "regression_after": "passed",
+  "logs_sha256": {
+    "claims.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "clippy.log": "39227b17f35eed4016865cc604b357ff8c063474715d47bc68db3bd1e55d520a",
+    "flash_next.log": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "la-regression.log": "505b8aa17e921ed4a070eb752b089e3cc273d6b4a348ea373568452971a093c0",
+    "maturin.log": "cb73c407822a11386aa91bac5a64d6c84ecfbab3181fa4de8bdedf1654b285c0",
+    "prefix-regression.log": "4f0c546e62285e119f057878d58fd6caab39ff51429f5b75a04498dc18987678",
+    "python-installed.log": "6efa5be12ada0792480d0ee16c55385e8400e742b2e2bbcd4ce471cd9a5a6a45",
+    "python.log": "49164a7142d424f09bb7201a44a0a4df282a4ff2f399aa8ff9cc6fe2d36e52db",
+    "qwen27b.log": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+    "rust.log": "f1a9528eaedac41c1116df7fbd04064dde92b4a9d154b232a3a2cb0e83a4193c",
+    "cache-before-native.log": "32a4e6654450e3d44e78ab4b897bb168403ed2501e51d7e7fc338da8d96067aa",
+    "cache-after.log": "d533fca0f561659bea5474248ea7598a09a3d58fd9b1f41da86ce2077dcdaf6e",
+    "scripts.log": "8badd2a51216ec997d70aa718f6edb1043e5719e758567b128fbda9245d4410e",
+    "wheel.log": "26fd30c9e684859b8ec944605d3d00c6e64b0e904303c875d3acb8373ebdac0f"
+  }
+}
