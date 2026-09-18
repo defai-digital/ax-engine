@@ -87,6 +87,18 @@ passes at 22/3,260 (0.67%). The aggregate mean KL is 0.0860 against a 0.1011
 limit, and top-1 disagreement is 2.85% against 3.22%. Do not describe this as
 an independent confirmation or exact full-model parity.
 
+Historical MTP artifacts contain `primary_state_exact_each_step` and
+`draft_state_exact_each_step` flags derived from greedy token identity, while
+the state arrays were checked with numerical tolerances. Those flags do not
+prove byte-exact state equality. New diagnostics report tolerance checks and
+whether state comparison stopped after a near-tie separately. The initial
+primary/draft prefill state comparison remains byte-exact.
+
+Draft agreement uses its actual comparison-sample count as the denominator.
+Session proposal/acceptance counters remain a separate metric; historical
+aggregate agreement rates divided by proposals and can differ when those
+counts diverge. New reports include agreement matches and samples explicitly.
+
 ## Latest campaign failures
 
 The original frozen-holdout attempt collected eight 4-bit prompts on each of the official

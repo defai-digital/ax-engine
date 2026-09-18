@@ -803,7 +803,7 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
         identity.identity_until_first_tie
     };
     let evidence = serde_json::json!({
-        "qualification":false,"block_size_tokens":4,"direct_ids":direct.tokens,
+        "qualification":false,"prompt_ids":prompt,"block_size_tokens":4,"direct_ids":direct.tokens,
         "mtp_ids":candidate.tokens,"direct_routes":direct.routes,"mtp_routes":candidate.routes,
         "greedy_identity": greedy_identity,
         "identity_until_first_tie": identity.identity_until_first_tie,
@@ -826,6 +826,7 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
         "max_state_relative_divergence": prefill_divergence.relative,
         "tolerance": tolerance.limit,
         "tolerance_source": tolerance.source,
+        "tie_margin": mtp_parity::mtp_tie_margin(),
         "state_tolerance": tolerance.limit,
         "within_tolerance": within_tolerance,
         "state_arrays": mtp_parity::mtp_state_arrays_json(&prefill_records),

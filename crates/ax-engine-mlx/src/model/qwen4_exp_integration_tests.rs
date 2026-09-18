@@ -1461,6 +1461,8 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     );
     let mut generated = Vec::new();
     let mut mtp_selected_decode_bytes = 0;
+    let mut compared_state_steps = 0usize;
+    let mut compared_generated_tokens = 0usize;
     let mut identity = mtp_parity::GreedyIdentityReport::exact();
     let mut comparing = true;
     while generated.len() < budget {
@@ -1540,6 +1542,8 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
                 mtp_parity::mtp_state_divergence(&session.draft_state, &draft_reference),
             );
             mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
+            compared_state_steps += 1;
+            compared_generated_tokens = generated.len();
         }
     }
     assert_eq!(generated.len(), budget);
@@ -1573,17 +1577,20 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             assert_eq!(cached_layers, 0);
         }
         let result = serde_json::json!({
-            "qualification": false, "generated_ids": generated,
+            "qualification": false, "prompt_ids": tokens, "generated_ids": generated,
+            "compared_state_steps": compared_state_steps,
+            "compared_generated_tokens": compared_generated_tokens,
             "selected_payload_after_prefill": bytes,
             "selected_payload_after_run": pager.selected_payload_bytes_read().unwrap(),
             "proposed": session.proposed, "accepted": session.accepted,
             "mtp_only_selected_decode_payload_bytes": mtp_selected_decode_bytes,
             "prefill_primary_and_draft_state_exact": true,
-            "draft_state_exact_each_step": identity.greedy_identity,
+            "draft_state_within_tolerance_each_compared_step": max_state_divergence.relative <= tolerance.limit,
             "selected_prefill_capacity_fallback_layers": fallback_layers,
             "cached_layer_count": cached_layers,
             "cached_whole_layers_after_run": cached_layers,
-            "primary_state_exact_each_step": identity.greedy_identity,
+            "primary_state_within_tolerance_each_compared_step": max_state_divergence.relative <= tolerance.limit,
+            "state_comparison_stopped_after_first_tie": !identity.greedy_identity,
             "forced_acceptance_rejection_budget_and_eos": true,
             "zero_budget_preserves_primary_and_draft_state": true,
             "logit_scale": max_logit_divergence.scale,
@@ -2504,7 +2511,7 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
     let mut requests = Vec::new();
     let mut proposed = 0usize;
     let mut accepted = 0usize;
-    let mut agreed = 0usize;
+    let mut agreement_observations = Vec::new();
     let mut too_short_requests = 0usize;
     let mut greedy_identity = true;
     let mut identity_until_first_tie = true;
@@ -2543,7 +2550,7 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
         } else {
             proposed += run.proposed;
             accepted += run.accepted;
-            agreed += run.agreement.iter().filter(|step| **step).count();
+            agreement_observations.extend_from_slice(&run.agreement);
         }
         requests.push(serde_json::json!({
             "id": prompt.id.clone().unwrap_or_else(|| format!("request-{index}")),
@@ -2573,11 +2580,9 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
     } else {
         accepted as f64 / proposed as f64
     };
-    let agreement_rate = if proposed == 0 {
-        0.0
-    } else {
-        agreed as f64 / proposed as f64
-    };
+    let agreement_rate = trained_head::agreement_rate(&agreement_observations);
+    let agreement_samples = agreement_observations.len();
+    let agreed = agreement_observations.iter().filter(|step| **step).count();
     let result = serde_json::json!({
         "qualification": false,
         "route": "flash_next_mtp_trained_head_oracle",
@@ -2589,6 +2594,8 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
         "accepted": accepted,
         "acceptance_rate": acceptance_rate,
         "draft_vs_primary_top1_agreement_rate": agreement_rate,
+        "draft_vs_primary_top1_agreement_samples": agreement_samples,
+        "draft_vs_primary_top1_agreement_matches": agreed,
         "too_short_requests": too_short_requests,
         "terminal_ids": terminal_ids,
         "greedy_identity": greedy_identity,
