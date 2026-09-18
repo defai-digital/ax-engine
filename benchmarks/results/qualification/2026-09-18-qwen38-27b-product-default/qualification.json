@@ -1,0 +1,173 @@
+{
+  "schema": 4,
+  "status": "passed",
+  "contract": {
+    "alias": "qwen3.8-27b:axq",
+    "repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+    "model_manifest_sha256": "621470389598a8042634f1b65c71f0dd5f02ae47b44ed9e8080083e28725cc26",
+    "host_class": "Mac mini M4 Pro, 64 GB",
+    "status": "Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).",
+    "ci": "dry-run only; do not mount 27B weights on CI",
+    "release_blocking": [
+      "ax-engine doctor ready on the pinned snapshot",
+      "default launch: full QA and no unpromoted MTP request or activation",
+      "QA surface: direct + MTP for qwen3.8-27b",
+      "no silent MTP direct-fallback",
+      "complete paired 64-token direct/MTP greedy probe artifacts",
+      "clean worktree + matching engine commit"
+    ],
+    "diagnostic_only": [
+      "paired direct/MTP token identity and divergence positions (not a ship gate)"
+    ],
+    "mtp_gates": {
+      "MTP-S": "Separate shipping safety gate: zero drafts accepted against the same-state verifier decision; not assessed by cross-route parity",
+      "MTP-P": "Scoped acceleration claims: weighted >= 1.20x and prompt-median >= 1.10x on two authorizing workloads, negative control, divergence disclosures and full evidence; not assessed here",
+      "MTP-D": "Separate default-promotion decision and release tag after MTP-S/P, default-path parity with shared tie-break, quality, endurance and long-context validation; not assessed here"
+    },
+    "campaign_only": [
+      "MTP-P performance certification and MTP-D default promotion",
+      "8h/72h endurance",
+      "long-context decode-at-depth",
+      "peer ranking",
+      "multi-model add-mode",
+      "P0 multimodal quality"
+    ],
+    "commands": {
+      "doctor": "ax-engine doctor --mlx-model-artifacts-dir $MODEL_DIR --json",
+      "serve": "ax-engine serve qwen3.8-27b:axq",
+      "qa_inventory": "OK|ngram|qwen3.8-27b:axq|$MODEL_DIR\nOK|direct|qwen3.8-27b:axq|$MODEL_DIR\nOK|mtp|qwen3.8-27b:axq|$MODEL_DIR",
+      "stack": "python3 scripts/bench_mlx_inference_stack.py --model-repo-id AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP --model-dir $MODEL_DIR"
+    }
+  },
+  "cells": [
+    {
+      "mode": "direct",
+      "model_id": "qwen3.8-27b",
+      "artifacts": "../model",
+      "status": "ok",
+      "pass_line": "Results: 32/32 passed (100.0%) [hard checks]",
+      "log_path": "<SKU_WORKSPACE>/qualification-product-final-installed/qa-direct-qwen3.8-27b.log",
+      "note": "all_pass; surface hard 7/7 passed (0 skipped)",
+      "surface_line": "surface hard 7/7 passed (0 skipped)",
+      "surface_passed": true,
+      "qa_items": 32,
+      "qa_hard_passed": 32,
+      "mtp_draft_tokens": 0,
+      "mtp_verify_tokens": 0
+    },
+    {
+      "mode": "mtp",
+      "model_id": "qwen3.8-27b",
+      "artifacts": "../model",
+      "status": "ok",
+      "pass_line": "Results: 32/32 passed (100.0%) [hard checks]",
+      "log_path": "<SKU_WORKSPACE>/qualification-product-final-installed/qa-mtp-qwen3.8-27b.log",
+      "note": "all_pass; mtp_active proposer_us=7680 verify_tokens=47; server_mtp_active; surface hard 7/7 passed (0 skipped)",
+      "surface_line": "surface hard 7/7 passed (0 skipped)",
+      "surface_passed": true,
+      "qa_items": 32,
+      "qa_hard_passed": 32,
+      "mtp_draft_tokens": 60,
+      "mtp_verify_tokens": 82
+    }
+  ],
+  "scope": "Primary SKU product-health qualification; not MTP certification",
+  "mtp_certification": {
+    "MTP-S": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-D": "not_assessed"
+  },
+  "host": {
+    "system": "Darwin",
+    "arch": "arm64",
+    "chip": "Apple M4 Pro",
+    "model": "Mac16,11",
+    "memory_bytes": 68719476736,
+    "os": "26.6.2"
+  },
+  "source_commit": "a142a5ed0652d98510700c71a1cc769bebb9bc42",
+  "build_manifest": {
+    "source_commit": "a142a5ed0652d98510700c71a1cc769bebb9bc42",
+    "dirty": false,
+    "wheel_sha256": "2afba9b7530cb16f268d63a34c3bf4753fbebd17efadbfe46f4fba3e5652d7d0",
+    "model_revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+    "model_files": {
+      ".gitattributes": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+      "README.md": "7677e390e100379412fc00f53a0f8e07b60904eed226aee2b246cd9a146bd4fe",
+      "axquant_manifest.json": "c0c3588c6376bc55b3c22a80f5ca11a8befb05860d23d848d0985af0e148eebb",
+      "axquant_mtp_sidecar_manifest.json": "2f3e71df1c5b08c6f5af9b6b0b2e79c51e80ecb2d1ee36d0355ed9b6cfd10be4",
+      "axquant_plan.json": "9a636a6c9bcbf29ec3c652a65b7ff6832ff9d654e9d29fdeedd0932c909d5d62",
+      "axquant_quantizer_execution.json": "5385db149a32005a6b56fb8823fc9fd047f15f1e6ca2d611b1f3f9757712fa69",
+      "axquant_runtime.json": "3a2656bcf22f31feb788a00ddb8d9e853e741a121b273c6cf94fdc228274abab",
+      "axquant_vision_sidecar_manifest.json": "d4196a4d77b0e7a5ec743f22334625c3397f2a9d13986c76f3b976eeea967f7d",
+      "chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+      "config.json": "850c0bf06e1baa0b250544b9b0ba4b3f8ea1716fb64937f7791ad421450f8054",
+      "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+      "model-00001-of-00004.safetensors": "d45beafeb00e3d6b172a4e6aabc2359691f0b98a06559d68a3d0e48043305b01",
+      "model-00002-of-00004.safetensors": "6fcb8ad0ca0b812b45bada6565a531da9c2a27810d57fe1d1f551b475491b514",
+      "model-00003-of-00004.safetensors": "cff8ff8f81cee61fcca46e0e091c3f62ad4b14c614b5900c731b2de90c8ed9dc",
+      "model-00004-of-00004.safetensors": "7363f3f12faf0bcecb79d308ff3c6ff5787daa70a9a0431a72ceb098c3c97678",
+      "model-manifest.json": "e3699d9af5e0585d3e65b1acbed3cf1697141c5da48d0be976a668381b00329a",
+      "model.safetensors.index.json": "c9c5b1336f1c552f149e95c818a7431f65971292d12d4f2ab5ff37689654328d",
+      "mtp.safetensors": "914bef4ec6fcfde83925f9c138559253db030d9138b0a375623d6fdc06ebe898",
+      "mtplx_runtime.json": "119b930ed4b470a08008aa2a51b4a83162907a85b8455f559cffa03e33236ed6",
+      "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "tokenizer_config.json": "95c557768e6b88a7128befc7bfd3c7de50e5d51af9b8b33a9f4dee0e04f99679",
+      "vision.safetensors": "d0d927c489250588557d5761dcd47ca267ef64c95f7e7d58dd6a0cccf54ac68f"
+    },
+    "attestation": "local clean-source build; not a hosted release attestation",
+    "server_sha256": "cdad50d384ae4fd29a91c5a3fcff0693b8e60285d3559d837608d0de9b214f02",
+    "bench_sha256": "b72a1e39a3db53978893ed95d682bd19b986f0d3c5994b2ee2161be227b1e3cd",
+    "native_cli_sha256": "cfb61909c281671690d32336d651f8c27a9af9bde27395c7411578a3d2b69e08",
+    "cli_sha256": "cc957b80cc62f4de6698ed0fd42bc1ceadc886afab31d35d768bb29644a1b35b",
+    "cli_attestation": "Installed pip console-script launcher verified against the wheel entry point; native CLI hash recorded separately"
+  },
+  "build_manifest_sha256": "a0ec16f0041656add55d872cb721f8e5e92b35c152adae3d77cd559709ae3208",
+  "runtime_overrides": [],
+  "installed_package": "<SKU_WORKSPACE>/product-final-venv/lib/python3.12/site-packages/ax_engine",
+  "bundled_runtime_environment": {
+    "AX_ENGINE_METAL_BUILD_DIR": "<LOCAL_HOME>/.cache/ax-engine/metal-build"
+  },
+  "enforced_environment": {
+    "AX_ALLOW_UNSUPPORTED_HOST": "0",
+    "QA_BENCH_BIN": "<SKU_WORKSPACE>/product-final-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-bench"
+  },
+  "default_route": {
+    "mode": "ngram",
+    "model_id": "qwen3.8-27b",
+    "artifacts": "../model",
+    "status": "ok",
+    "pass_line": "Results: 32/32 passed (100.0%) [hard checks]",
+    "log_path": "<SKU_WORKSPACE>/qualification-product-final-installed/qa-ngram-qwen3.8-27b.log",
+    "note": "all_pass; surface hard 7/7 passed (0 skipped)",
+    "surface_line": "surface hard 7/7 passed (0 skipped)",
+    "surface_passed": true,
+    "qa_items": 32,
+    "qa_hard_passed": 32,
+    "mtp_draft_tokens": 0,
+    "mtp_verify_tokens": 0
+  },
+  "default_route_artifacts": {
+    "server-route-ngram-qwen3.8-27b.json": "4e41fd1480a10adbcb7a96b188cf5c8955867625105d353cb45f812c5018866d",
+    "server-route-request-ngram-qwen3.8-27b.json": "940d0e21083638d153ba3c95020a2a9909950b660760004aeb321af4154ac0bc"
+  },
+  "paired_greedy_artifacts": {
+    "server-route-direct-qwen3.8-27b.json": "3ad719b85f76dd74390341fdb98843fd147280ed3bbd41fd934403cc5d130b9e",
+    "server-route-request-direct-qwen3.8-27b.json": "940d0e21083638d153ba3c95020a2a9909950b660760004aeb321af4154ac0bc",
+    "server-route-mtp-qwen3.8-27b.json": "b38885997eef2bdd5fe59694d336470dbb9e01148f14d74deec29cd5c3ebf99c",
+    "server-route-request-mtp-qwen3.8-27b.json": "6ac0c597efbe06d6f48152154daeceb59afe09e75c4307f159bdee38d27f7c0a"
+  },
+  "paired_greedy": {
+    "matched": true,
+    "prompt_tokens": 16,
+    "output_tokens": 64,
+    "classification": "diagnostic_only",
+    "release_blocking": false,
+    "first_divergence": null,
+    "divergence_count": 0,
+    "differences": [],
+    "logit_margins": null,
+    "scope": "One paired raw-token diagnostic; not MTP-S, MTP-P or MTP-D certification"
+  }
+}

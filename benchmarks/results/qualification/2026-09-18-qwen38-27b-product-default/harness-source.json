@@ -1,0 +1,55 @@
+{
+  "runtime_and_executed_harness_commit": "a142a5ed0652d98510700c71a1cc769bebb9bc42",
+  "current_source_commit": "d5d6ba59455c3c9fd2a5e4846222cf5021382da5",
+  "files": [
+    {
+      "path": "qa/checkers.py",
+      "candidate_sha256": "6ca2195cbfddbe083d14d4d74a6686c6d5b6b0f6b8ff88b00386febc24c2b6ae",
+      "current_sha256": "6ca2195cbfddbe083d14d4d74a6686c6d5b6b0f6b8ff88b00386febc24c2b6ae",
+      "identical": true
+    },
+    {
+      "path": "qa/question_bank.py",
+      "candidate_sha256": "afd45c4f3320cd4fedbe41f502e4827ece0086d65064347484b41438f5b8da0f",
+      "current_sha256": "afd45c4f3320cd4fedbe41f502e4827ece0086d65064347484b41438f5b8da0f",
+      "identical": true
+    },
+    {
+      "path": "qa/run_qa.py",
+      "candidate_sha256": "7fdd9dd914979025d3dbef97a8c4c44756a7951fb51ae109df399142474d6cb9",
+      "current_sha256": "7fdd9dd914979025d3dbef97a8c4c44756a7951fb51ae109df399142474d6cb9",
+      "identical": true
+    },
+    {
+      "path": "qa/reporter.py",
+      "candidate_sha256": "638a65325b54bcd202398b40d178d91fa749817461648e2978e073eb00fd1ae8",
+      "current_sha256": "407e3c81904d217cedc42f18fca7c84ce916eace3a5ca787f79dbf47d149b93e",
+      "identical": false
+    },
+    {
+      "path": "scripts/run_native_generation_fault_soak.py",
+      "candidate_sha256": "cc1f85c04c3cdcfb866f8db747e259a05f4496152779bc23e352dcb87ed78096",
+      "current_sha256": "6a5d73a45bcca753f26ee4c101e2ad9d59069e8bc66046d603d0a66aa2b03a4e",
+      "identical": false
+    },
+    {
+      "path": "scripts/qualify_qwen38_27b.py",
+      "candidate_sha256": "ddcf686293ef98eebec49273f2288f331af9ca8fb98f88bf19977cdf67b9ae78",
+      "current_sha256": "ddcf686293ef98eebec49273f2288f331af9ca8fb98f88bf19977cdf67b9ae78",
+      "identical": true
+    },
+    {
+      "path": "scripts/qwen38_live_gate.py",
+      "candidate_sha256": "74d7128e67ca6b0c160706edf6db4dfb39201dbf7a20298553ca463170cdbe7c",
+      "current_sha256": "74d7128e67ca6b0c160706edf6db4dfb39201dbf7a20298553ca463170cdbe7c",
+      "identical": true
+    },
+    {
+      "path": "scripts/run_qa_matrix.py",
+      "candidate_sha256": "a266f31d904d701965ef923833dfbc8c381e5b68bc763bdf6bcb588a4d345a13",
+      "current_sha256": "a266f31d904d701965ef923833dfbc8c381e5b68bc763bdf6bcb588a4d345a13",
+      "identical": true
+    }
+  ],
+  "followups": "Reporter metadata and connected socket-buffer diagnostics only; no grading or verdict change"
+}

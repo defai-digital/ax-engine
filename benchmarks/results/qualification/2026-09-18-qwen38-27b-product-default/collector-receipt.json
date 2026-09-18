@@ -1,0 +1,9 @@
+{
+  "source_commit": "a142a5ed0652d98510700c71a1cc769bebb9bc42",
+  "collector_sha256": "3553d50dc8bf1eecdd82bc8c2b5e11be4c17d6dffaa6620018462be2cbc10af0",
+  "protocol_sha256": "965f969e88db8f121a027bc9ee8af83560350f3cf1c6d30903bc5b278146c9c6",
+  "prompt_sha256": "6aece566aab4cf2f790e5c899b0936e4e4be3b97724803e4687f2653d5d8bb22",
+  "executed": true,
+  "published_recipe_sha256": "b922c853d5803c7bba522abc85b579f1770abe2680159172096a67d1da17e4fa",
+  "published_recipe_change": "Only the workspace root expression is parameterized as argv[1]; the raw executed collector hash is separate"
+}

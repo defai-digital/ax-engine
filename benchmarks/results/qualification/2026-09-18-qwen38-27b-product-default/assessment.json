@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "source_commit": "a142a5ed0652d98510700c71a1cc769bebb9bc42",
+  "wheel_sha256": "2afba9b7530cb16f268d63a34c3bf4753fbebd17efadbfe46f4fba3e5652d7d0",
+  "assessment": "product_health_candidate_passed",
+  "scope": "Pinned AXQ 6-bit pack, installed CLI and local HTTP text serving on Mac mini M4 Pro 64 GB; default and explicit MTP under recorded greedy workloads",
+  "qualification": {
+    "schema": 4,
+    "routes": [
+      "default",
+      "direct",
+      "explicit_mtp"
+    ],
+    "qa_per_route": "32/32",
+    "required_surfaces_per_route": "7/7"
+  },
+  "full_bank": {
+    "unique_questions": 79,
+    "streaming_forms": 2,
+    "default_hard_passed": 158,
+    "mtp_hard_passed": 158,
+    "incomplete": 0,
+    "soft_keyword_failures_per_route": 6,
+    "max_output_tokens": 1024,
+    "checker_contract": "ax.qa.complete_answers.v2"
+  },
+  "lifecycle": {
+    "rounds_per_route": 3,
+    "concurrency": 4,
+    "expected_outcomes_per_route": 15,
+    "buffered_event_peak": {
+      "default": 222,
+      "mtp": 242
+    },
+    "backlog_overflow_delta": {
+      "default": 0,
+      "mtp": 1
+    },
+    "post_cleanup_gauges_zero": true,
+    "cold_warm_recovery_ids_equal_per_route": true,
+    "direct_fallback_steps": 0,
+    "owned_servers_reaped": true
+  },
+  "not_established": [
+    "general model accuracy",
+    "MTP-P acceleration claim",
+    "MTP-D default promotion",
+    "8h/72h endurance",
+    "long-context decode-at-depth",
+    "multimodal or multi-model qualification"
+  ],
+  "publication": {
+    "pushed": false,
+    "published": false,
+    "remaining": [
+      "exact-source hosted CI",
+      "canonical candidate/release artifact verification",
+      "Apple signing and notarization",
+      "GitHub/PyPI/Homebrew publication"
+    ]
+  },
+  "limitations": [
+    "Strict all-target Clippy still fails on existing test restriction lints; CI-policy and strict production Clippy pass",
+    "Original 256-token QA failures and pressure workloads without observed backpressure remain failed records",
+    "Hardware artifacts remain a142a5ed; follow-up commits only record QA contract and connected receive-buffer metadata"
+  ]
+}

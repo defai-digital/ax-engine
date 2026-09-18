@@ -1,0 +1,300 @@
+{
+  "checker_contract": "ax.qa.complete_answers.v2",
+  "question_count": 79,
+  "prompts_golds_aliases_patterns_unchanged": true,
+  "original_bank_sha256": "890781ecd63d900a2e3a078ad5370a91618149a58d3793ba055e22b04bd17e43",
+  "revised_bank_sha256": "afd45c4f3320cd4fedbe41f502e4827ece0086d65064347484b41438f5b8da0f",
+  "grader_source_commit": "a142a5ed0652d98510700c71a1cc769bebb9bc42",
+  "arms": [
+    {
+      "mode": "default",
+      "raw_report_sha256": "ca95e0f2a4780c34b027c5c2c2427b5c9197cb09d819e617ab23525399717aaa",
+      "old_totals": {
+        "items": 158,
+        "hard_passed": 154,
+        "hard_failed": 4,
+        "soft_failed_checks": 6,
+        "pass_rate": 97.46835443037975
+      },
+      "regraded_passed": 152,
+      "items": 158,
+      "changes": [
+        {
+          "prompt_id": "reasoning_set_membership",
+          "stream": true,
+          "old_pass": false,
+          "new_pass": true,
+          "new_failures": []
+        },
+        {
+          "prompt_id": "reasoning_set_membership",
+          "stream": false,
+          "old_pass": false,
+          "new_pass": true,
+          "new_failures": []
+        },
+        {
+          "prompt_id": "code_python_email",
+          "stream": true,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        },
+        {
+          "prompt_id": "code_python_email",
+          "stream": false,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        },
+        {
+          "prompt_id": "instruction_alphabet_first",
+          "stream": true,
+          "old_pass": false,
+          "new_pass": true,
+          "new_failures": []
+        },
+        {
+          "prompt_id": "instruction_alphabet_first",
+          "stream": false,
+          "old_pass": false,
+          "new_pass": true,
+          "new_failures": []
+        },
+        {
+          "prompt_id": "unit_test_clamp",
+          "stream": true,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        },
+        {
+          "prompt_id": "unit_test_clamp",
+          "stream": false,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        },
+        {
+          "prompt_id": "reasoning_syllogism_roses",
+          "stream": true,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        },
+        {
+          "prompt_id": "reasoning_syllogism_roses",
+          "stream": false,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        }
+      ],
+      "incomplete": [
+        {
+          "prompt_id": "code_python_email",
+          "stream": true,
+          "finish_reason": "length"
+        },
+        {
+          "prompt_id": "code_python_email",
+          "stream": false,
+          "finish_reason": "length"
+        },
+        {
+          "prompt_id": "unit_test_clamp",
+          "stream": true,
+          "finish_reason": "length"
+        },
+        {
+          "prompt_id": "unit_test_clamp",
+          "stream": false,
+          "finish_reason": "length"
+        },
+        {
+          "prompt_id": "reasoning_syllogism_roses",
+          "stream": true,
+          "finish_reason": "length"
+        },
+        {
+          "prompt_id": "reasoning_syllogism_roses",
+          "stream": false,
+          "finish_reason": "length"
+        }
+      ]
+    },
+    {
+      "mode": "mtp",
+      "raw_report_sha256": "566b407583485feb5bd92ec09c2928d9ace2bc2780fb2d88a453f56af0d0fdd7",
+      "old_totals": {
+        "items": 158,
+        "hard_passed": 154,
+        "hard_failed": 4,
+        "soft_failed_checks": 6,
+        "pass_rate": 97.46835443037975
+      },
+      "regraded_passed": 154,
+      "items": 158,
+      "changes": [
+        {
+          "prompt_id": "reasoning_set_membership",
+          "stream": true,
+          "old_pass": false,
+          "new_pass": true,
+          "new_failures": []
+        },
+        {
+          "prompt_id": "reasoning_set_membership",
+          "stream": false,
+          "old_pass": false,
+          "new_pass": true,
+          "new_failures": []
+        },
+        {
+          "prompt_id": "code_python_email",
+          "stream": true,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        },
+        {
+          "prompt_id": "code_python_email",
+          "stream": false,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        },
+        {
+          "prompt_id": "instruction_alphabet_first",
+          "stream": true,
+          "old_pass": false,
+          "new_pass": true,
+          "new_failures": []
+        },
+        {
+          "prompt_id": "instruction_alphabet_first",
+          "stream": false,
+          "old_pass": false,
+          "new_pass": true,
+          "new_failures": []
+        },
+        {
+          "prompt_id": "unit_test_clamp",
+          "stream": true,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        },
+        {
+          "prompt_id": "unit_test_clamp",
+          "stream": false,
+          "old_pass": true,
+          "new_pass": false,
+          "new_failures": [
+            {
+              "name": "completion",
+              "passed": false,
+              "detail": "finish_reason='length'",
+              "score": 0.0,
+              "hard": true
+            }
+          ]
+        }
+      ],
+      "incomplete": [
+        {
+          "prompt_id": "code_python_email",
+          "stream": true,
+          "finish_reason": "length"
+        },
+        {
+          "prompt_id": "code_python_email",
+          "stream": false,
+          "finish_reason": "length"
+        },
+        {
+          "prompt_id": "unit_test_clamp",
+          "stream": true,
+          "finish_reason": "length"
+        },
+        {
+          "prompt_id": "unit_test_clamp",
+          "stream": false,
+          "finish_reason": "length"
+        }
+      ]
+    }
+  ]
+}

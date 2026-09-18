@@ -100,6 +100,16 @@ cross-route identity proves neither same-state verifier safety nor speed nor
 default-promotion readiness. Separate MTP-S evidence is still required for
 shipping MTP. See the [three-gate requirements](model-certifications/qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means).
 
+The [2026-09-18 product qualification](../benchmarks/results/qualification/2026-09-18-qwen38-27b-product-default/)
+extends that sample with all 79 QA items in both streaming forms on the actual
+default and explicit MTP routes, a uniform 1024-token cap, and completion-aware
+grading. Natural `stop` is required; an answer containing the expected text
+but truncated by its output budget fails. Its installed-CLI lifecycle collector
+also requires measured backpressure, quiescence and unchanged recovery output.
+The original 256-token failures and pressure workload without observed
+backpressure remain failed records. Reproduction commands and an offline
+evidence/grade verifier are included with the artifacts.
+
 The live path expects a clean worktree, `ax-engine doctor` ready, surface QA
 for default, direct and explicit MTP, and a short direct + MTP check against the last published
 refresh. Full stack claims still use

@@ -1,0 +1,10 @@
+{
+  "source_commit": "d5d6ba59455c3c9fd2a5e4846222cf5021382da5",
+  "command": [
+    "bash",
+    "scripts/check-scripts.sh"
+  ],
+  "exit_code": 0,
+  "log_sha256": "4a8036150a55bd428f541b92a251c51b9d5042c5d0d0537d1602c2bd977b2228",
+  "runtime_changes_since_candidate": ""
+}

@@ -1,0 +1,3434 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-18T21:24:28Z",
+  "title": "AX Engine QA Report \u2014 unknown",
+  "version": "unknown",
+  "commit": "a142a5ed",
+  "model": "qwen3.8-27b",
+  "base_url": "http://127.0.0.1:31494",
+  "seed": 20260917,
+  "bank_size": 79,
+  "sample_size": 16,
+  "sampled_ids": [
+    "format_markdown_heading",
+    "knowledge_python_list",
+    "translation_fr_weather",
+    "unit_test_is_even",
+    "common_sense_ice_melt",
+    "reading_who_arrived",
+    "math_apples_store",
+    "creative_alliteration",
+    "json_invoice_nested",
+    "creative_product_tagline",
+    "instruction_numbered_countries",
+    "science_states_of_matter",
+    "code_sql_join",
+    "instruction_uppercase_yes",
+    "reasoning_false_premise",
+    "summarization_http_one"
+  ],
+  "mode_label": "direct",
+  "mode_note": "mode_label is a report tag only; decode path (direct / n-gram / MTP) is controlled by how ax-engine-server was started, not by --mode.",
+  "totals": {
+    "items": 32,
+    "hard_passed": 32,
+    "hard_failed": 0,
+    "soft_failed_checks": 0,
+    "pass_rate": 100.0
+  },
+  "ok": true,
+  "results": [
+    {
+      "prompt_id": "format_markdown_heading",
+      "category": "format",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "# Release Notes",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 3,
+        "total_tokens": 3,
+        "ttft_ms": 640.0864999741316,
+        "elapsed_ms": 640.1113329920918,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "format_markdown_heading",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "# Release Notes",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "15 chars (min 5)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 1/1 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "short closed-ended answer (15 chars)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "format_markdown_heading",
+      "category": "format",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "# Release Notes",
+        "finish_reason": "stop",
+        "prompt_tokens": 32,
+        "completion_tokens": 3,
+        "total_tokens": 35,
+        "ttft_ms": 326.7771670361981,
+        "elapsed_ms": 326.7771670361981,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "format_markdown_heading",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "# Release Notes",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "15 chars (min 5)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 1/1 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "short closed-ended answer (15 chars)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "knowledge_python_list",
+      "category": "knowledge",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "list",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 1,
+        "total_tokens": 1,
+        "ttft_ms": 825.2374159637839,
+        "elapsed_ms": 825.2486659912392,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "knowledge_python_list",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "list",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "4 chars (min 4)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "short closed-ended answer (4 chars)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "found 'list' (mode=auto)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "knowledge_python_list",
+      "category": "knowledge",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "list",
+        "finish_reason": "stop",
+        "prompt_tokens": 44,
+        "completion_tokens": 1,
+        "total_tokens": 45,
+        "ttft_ms": 785.781875019893,
+        "elapsed_ms": 785.781875019893,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "knowledge_python_list",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "list",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "4 chars (min 4)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "short closed-ended answer (4 chars)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "found 'list' (mode=auto)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "translation_fr_weather",
+      "category": "translation",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "Il fait beau aujourd\u2019hui et j\u2019aimerais aller me promener dans le parc.",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 12,
+        "total_tokens": 12,
+        "ttft_ms": 1936.3622090313584,
+        "elapsed_ms": 1936.4326669601724,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "translation_fr_weather",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "Il fait beau aujourd\u2019hui et j\u2019aimerais aller me promener dans le parc.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "70 chars (min 20)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 3/6 (missing: temps, promenade, marche)",
+            "score": 0.5,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.80, unique=0.31",
+            "score": 0.5571428571428572,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "translation_fr_weather",
+      "category": "translation",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "Il fait beau aujourd\u2019hui et j\u2019aimerais aller me promener dans le parc.",
+        "finish_reason": "stop",
+        "prompt_tokens": 35,
+        "completion_tokens": 18,
+        "total_tokens": 53,
+        "ttft_ms": 1910.1365839596838,
+        "elapsed_ms": 1910.1365839596838,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "translation_fr_weather",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "Il fait beau aujourd\u2019hui et j\u2019aimerais aller me promener dans le parc.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "70 chars (min 20)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 3/6 (missing: temps, promenade, marche)",
+            "score": 0.5,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.80, unique=0.31",
+            "score": 0.5571428571428572,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "unit_test_is_even",
+      "category": "testing",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "```python\nimport pytest\n\ndef is_even(n):\n    return n % 2 == 0\n\ndef test_is_even_positive_even():\n    assert is_even(4) is True\n\ndef test_is_even_negative_even():\n    assert is_even(-2) is True\n\ndef test_is_even_odd():\n    assert is_even(3) is False\n```",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 30,
+        "total_tokens": 30,
+        "ttft_ms": 2267.392000067048,
+        "elapsed_ms": 6592.37283305265,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "unit_test_is_even",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "```python\nimport pytest\n\ndef is_even(n):\n    return n % 2 == 0\n\ndef test_is_even_positive_even():\n    assert is_even(4) is True\n\ndef test_is_even_negative_even():\n    assert is_even(-2) is True\n\ndef test_is_even_odd():\n    assert is_even(3) is False\n```",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "253 chars (min 100)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.09 (threshold 0.3)",
+            "score": 0.9090909090909091,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/2",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 1/1 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.62, unique=0.34",
+            "score": 0.47830039525691703,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "found 3 test function(s) (min 3)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "unit_test_is_even",
+      "category": "testing",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "```python\nimport pytest\n\ndef is_even(n):\n    return n % 2 == 0\n\ndef test_is_even_positive_even():\n    assert is_even(4) is True\n\ndef test_is_even_negative_even():\n    assert is_even(-2) is True\n\ndef test_is_even_odd():\n    assert is_even(3) is False\n```",
+        "finish_reason": "stop",
+        "prompt_tokens": 31,
+        "completion_tokens": 76,
+        "total_tokens": 107,
+        "ttft_ms": 6550.527332932688,
+        "elapsed_ms": 6550.527332932688,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "unit_test_is_even",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "```python\nimport pytest\n\ndef is_even(n):\n    return n % 2 == 0\n\ndef test_is_even_positive_even():\n    assert is_even(4) is True\n\ndef test_is_even_negative_even():\n    assert is_even(-2) is True\n\ndef test_is_even_odd():\n    assert is_even(3) is False\n```",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "253 chars (min 100)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.09 (threshold 0.3)",
+            "score": 0.9090909090909091,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/2",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 1/1 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.62, unique=0.34",
+            "score": 0.47830039525691703,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "found 3 test function(s) (min 3)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "common_sense_ice_melt",
+      "category": "common_sense",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "They melt into a puddle of water.",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 7,
+        "total_tokens": 7,
+        "ttft_ms": 1233.423582976684,
+        "elapsed_ms": 1233.4554580738768,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "common_sense_ice_melt",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "They melt into a puddle of water.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "33 chars (min 15)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/3 (missing: liquid)",
+            "score": 0.6666666666666666,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.79, unique=0.58",
+            "score": 0.6818181818181819,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "common_sense_ice_melt",
+      "category": "common_sense",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "They melt into a puddle of water.",
+        "finish_reason": "stop",
+        "prompt_tokens": 33,
+        "completion_tokens": 9,
+        "total_tokens": 42,
+        "ttft_ms": 869.430249906145,
+        "elapsed_ms": 869.430249906145,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "common_sense_ice_melt",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "They melt into a puddle of water.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "33 chars (min 15)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/3 (missing: liquid)",
+            "score": 0.6666666666666666,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.79, unique=0.58",
+            "score": 0.6818181818181819,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "reading_who_arrived",
+      "category": "reading",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "Sam",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 1,
+        "total_tokens": 1,
+        "ttft_ms": 654.7219170024619,
+        "elapsed_ms": 654.7321669058874,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "reading_who_arrived",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "Sam",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "3 chars (min 3)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "short closed-ended answer (3 chars)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "found 'Sam' (mode=auto)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "reading_who_arrived",
+      "category": "reading",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "Sam",
+        "finish_reason": "stop",
+        "prompt_tokens": 36,
+        "completion_tokens": 1,
+        "total_tokens": 37,
+        "ttft_ms": 614.8434999631718,
+        "elapsed_ms": 614.8434999631718,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "reading_who_arrived",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "Sam",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "3 chars (min 3)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "short closed-ended answer (3 chars)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "found 'Sam' (mode=auto)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "math_apples_store",
+      "category": "math",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "To determine the final number of apples, we will track the changes step-by-step:\n\n1.  **Start with the initial amount:**\n    $$47 \\text{ apples}$$\n\n2.  **Subtract the apples sold in the morning:**\n    $$47 - 18 = 29 \\text{ apples}$$\n\n3.  **Subtract the apples sold in the afternoon:**\n    $$29 - 12 = 17 \\text{ apples}$$\n\n4.  **Add the apples from the delivery:**\n    $$17 + 30 = 47 \\text{ apples}$$\n\nAlternatively, you can calculate the total sold and subtract it from the initial amount, then add the delivery:\n*   Total sold: $18 + 12 = 30$\n*   Remaining after sales: $47 - 30 = 17$\n*   Final amount after delivery: $17 + 30 = 47$\n\n47",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 112,
+        "total_tokens": 112,
+        "ttft_ms": 2398.6556250602007,
+        "elapsed_ms": 17691.374792018905,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "math_apples_store",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "To determine the final number of apples, we will track the changes step-by-step:\n\n1.  **Start with the initial amount:**\n    $$47 \\text{ apples}$$\n\n2.  **Subtract the apples sold in the morning:**\n    $$47 - 18 = 29 \\text{ apples}$$\n\n3.  **Subtract the apples sold in the afternoon:**\n    $$29 - 12 = 17 \\text{ apples}$$\n\n4.  **Add the apples from the delivery:**\n    $$17 + 30 = 47 \\text{ apples}$$\n\nAlternatively, you can calculate the total sold and subtract it from the initial amount, then add t",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "637 chars (min 20)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.07 (threshold 0.3)",
+            "score": 0.9285714285714286,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 4/4",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.58, unique=0.49",
+            "score": 0.5330690737833594,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "found '47' (mode=auto)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "math_apples_store",
+      "category": "math",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "To determine the final number of apples, we will track the changes step-by-step:\n\n1.  **Start with the initial amount:**\n    $$47 \\text{ apples}$$\n\n2.  **Subtract the apples sold in the morning:**\n    $$47 - 18 = 29 \\text{ apples}$$\n\n3.  **Subtract the apples sold in the afternoon:**\n    $$29 - 12 = 17 \\text{ apples}$$\n\n4.  **Add the apples from the delivery:**\n    $$17 + 30 = 47 \\text{ apples}$$\n\nAlternatively, you can calculate the total sold and subtract it from the initial amount, then add the delivery:\n*   Total sold: $18 + 12 = 30$\n*   Remaining after sales: $47 - 30 = 17$\n*   Final amount after delivery: $17 + 30 = 47$\n\n47",
+        "finish_reason": "stop",
+        "prompt_tokens": 69,
+        "completion_tokens": 218,
+        "total_tokens": 287,
+        "ttft_ms": 17636.945875012316,
+        "elapsed_ms": 17636.945875012316,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "math_apples_store",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "To determine the final number of apples, we will track the changes step-by-step:\n\n1.  **Start with the initial amount:**\n    $$47 \\text{ apples}$$\n\n2.  **Subtract the apples sold in the morning:**\n    $$47 - 18 = 29 \\text{ apples}$$\n\n3.  **Subtract the apples sold in the afternoon:**\n    $$29 - 12 = 17 \\text{ apples}$$\n\n4.  **Add the apples from the delivery:**\n    $$17 + 30 = 47 \\text{ apples}$$\n\nAlternatively, you can calculate the total sold and subtract it from the initial amount, then add t",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "637 chars (min 20)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.07 (threshold 0.3)",
+            "score": 0.9285714285714286,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 4/4",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.58, unique=0.49",
+            "score": 0.5330690737833594,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "found '47' (mode=auto)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "creative_alliteration",
+      "category": "creative",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "Seven silver seals sit silently on the snowy surface.",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 9,
+        "total_tokens": 9,
+        "ttft_ms": 1416.3936249678954,
+        "elapsed_ms": 1416.4265409344807,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "creative_alliteration",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "Seven silver seals sit silently on the snowy surface.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "53 chars (min 15)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/2",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.83, unique=0.36",
+            "score": 0.5943396226415094,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "creative_alliteration",
+      "category": "creative",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "Seven silver seals sit silently on the snowy surface.",
+        "finish_reason": "stop",
+        "prompt_tokens": 23,
+        "completion_tokens": 10,
+        "total_tokens": 33,
+        "ttft_ms": 1376.3974999310449,
+        "elapsed_ms": 1376.3974999310449,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "creative_alliteration",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "Seven silver seals sit silently on the snowy surface.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "53 chars (min 15)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/2",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.83, unique=0.36",
+            "score": 0.5943396226415094,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "json_invoice_nested",
+      "category": "json",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "{\n  \"invoice_id\": \"AX-1042\",\n  \"customer\": \"Mina\",\n  \"currency\": \"USD\",\n  \"items\": [\n    {\n      \"name\": \"cable\",\n      \"quantity\": 2,\n      \"unit_price\": 4.25\n    },\n    {\n      \"name\": \"dock\",\n      \"quantity\": 1,\n      \"unit_price\": 31.00\n    }\n  ],\n  \"total\": 39.50\n}",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 29,
+        "total_tokens": 29,
+        "ttft_ms": 2773.4036250039935,
+        "elapsed_ms": 10648.870749981143,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "json_invoice_nested",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "{\n  \"invoice_id\": \"AX-1042\",\n  \"customer\": \"Mina\",\n  \"currency\": \"USD\",\n  \"items\": [\n    {\n      \"name\": \"cable\",\n      \"quantity\": 2,\n      \"unit_price\": 4.25\n    },\n    {\n      \"name\": \"dock\",\n      \"quantity\": 1,\n      \"unit_price\": 31.00\n    }\n  ],\n  \"total\": 39.50\n}",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "271 chars (min 60)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.17 (threshold 0.3)",
+            "score": 0.8333333333333334,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/2",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 2/2 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.35, unique=0.44",
+            "score": 0.3952767527675277,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "total=39.5 matches expected 39.5",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "json_invoice_nested",
+      "category": "json",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "{\n  \"invoice_id\": \"AX-1042\",\n  \"customer\": \"Mina\",\n  \"currency\": \"USD\",\n  \"items\": [\n    {\n      \"name\": \"cable\",\n      \"quantity\": 2,\n      \"unit_price\": 4.25\n    },\n    {\n      \"name\": \"dock\",\n      \"quantity\": 1,\n      \"unit_price\": 31.00\n    }\n  ],\n  \"total\": 39.50\n}",
+        "finish_reason": "stop",
+        "prompt_tokens": 92,
+        "completion_tokens": 122,
+        "total_tokens": 214,
+        "ttft_ms": 10613.727708929218,
+        "elapsed_ms": 10613.727708929218,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "json_invoice_nested",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "{\n  \"invoice_id\": \"AX-1042\",\n  \"customer\": \"Mina\",\n  \"currency\": \"USD\",\n  \"items\": [\n    {\n      \"name\": \"cable\",\n      \"quantity\": 2,\n      \"unit_price\": 4.25\n    },\n    {\n      \"name\": \"dock\",\n      \"quantity\": 1,\n      \"unit_price\": 31.00\n    }\n  ],\n  \"total\": 39.50\n}",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "271 chars (min 60)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.17 (threshold 0.3)",
+            "score": 0.8333333333333334,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/2",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 2/2 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.35, unique=0.44",
+            "score": 0.3952767527675277,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "total=39.5 matches expected 39.5",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "creative_product_tagline",
+      "category": "creative",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "Hydrate today, protect tomorrow, forever.",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 5,
+        "total_tokens": 5,
+        "ttft_ms": 1457.868165918626,
+        "elapsed_ms": 1457.9031249741092,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "creative_product_tagline",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "Hydrate today, protect tomorrow, forever.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "41 chars (min 10)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.83, unique=0.41",
+            "score": 0.6219512195121951,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "creative_product_tagline",
+      "category": "creative",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "Hydrate today, protect tomorrow, forever.",
+        "finish_reason": "stop",
+        "prompt_tokens": 26,
+        "completion_tokens": 10,
+        "total_tokens": 36,
+        "ttft_ms": 1419.1944170743227,
+        "elapsed_ms": 1419.1944170743227,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "creative_product_tagline",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "Hydrate today, protect tomorrow, forever.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "41 chars (min 10)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.83, unique=0.41",
+            "score": 0.6219512195121951,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "instruction_numbered_countries",
+      "category": "instruction",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "1. Brazil\n2. Argentina\n3. Chile\n4. Peru\n5. Colombia",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 10,
+        "total_tokens": 10,
+        "ttft_ms": 2108.9847499970347,
+        "elapsed_ms": 2109.033541986719,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "instruction_numbered_countries",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "1. Brazil\n2. Argentina\n3. Chile\n4. Peru\n5. Colombia",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "51 chars (min 30)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.20 (threshold 0.3)",
+            "score": 0.8,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 5/5",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 2/2 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.63, unique=0.51",
+            "score": 0.5686274509803921,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "instruction_numbered_countries",
+      "category": "instruction",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "1. Brazil\n2. Argentina\n3. Chile\n4. Peru\n5. Colombia",
+        "finish_reason": "stop",
+        "prompt_tokens": 39,
+        "completion_tokens": 19,
+        "total_tokens": 58,
+        "ttft_ms": 2082.662041997537,
+        "elapsed_ms": 2082.662041997537,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "instruction_numbered_countries",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "1. Brazil\n2. Argentina\n3. Chile\n4. Peru\n5. Colombia",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "51 chars (min 30)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.20 (threshold 0.3)",
+            "score": 0.8,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 5/5",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 2/2 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.63, unique=0.51",
+            "score": 0.5686274509803921,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "science_states_of_matter",
+      "category": "science",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "solid, liquid, gas",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 3,
+        "total_tokens": 3,
+        "ttft_ms": 1112.2348749777302,
+        "elapsed_ms": 1112.2566249687225,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "science_states_of_matter",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "solid, liquid, gas",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "18 chars (min 15)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 3/3",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.78, unique=0.61",
+            "score": 0.6944444444444444,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "science_states_of_matter",
+      "category": "science",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "solid, liquid, gas",
+        "finish_reason": "stop",
+        "prompt_tokens": 29,
+        "completion_tokens": 5,
+        "total_tokens": 34,
+        "ttft_ms": 1071.3807500433177,
+        "elapsed_ms": 1071.3807500433177,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "science_states_of_matter",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "solid, liquid, gas",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "18 chars (min 15)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 3/3",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.78, unique=0.61",
+            "score": 0.6944444444444444,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "code_sql_join",
+      "category": "code",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "```sql\nSELECT e.name AS employee_name, d.name AS department_name\nFROM employees e\nINNER JOIN departments d ON e.department_id = d.id;\n```",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 20,
+        "total_tokens": 20,
+        "ttft_ms": 2387.3480840120465,
+        "elapsed_ms": 3473.6998340813443,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "code_sql_join",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "```sql\nSELECT e.name AS employee_name, d.name AS department_name\nFROM employees e\nINNER JOIN departments d ON e.department_id = d.id;\n```",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "137 chars (min 40)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.20 (threshold 0.3)",
+            "score": 0.8,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/2",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 2/2 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.74, unique=0.35",
+            "score": 0.5472627737226277,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "code_sql_join",
+      "category": "code",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "```sql\nSELECT e.name AS employee_name, d.name AS department_name\nFROM employees e\nINNER JOIN departments d ON e.department_id = d.id;\n```",
+        "finish_reason": "stop",
+        "prompt_tokens": 54,
+        "completion_tokens": 34,
+        "total_tokens": 88,
+        "ttft_ms": 3445.475041982718,
+        "elapsed_ms": 3445.475041982718,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "code_sql_join",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "```sql\nSELECT e.name AS employee_name, d.name AS department_name\nFROM employees e\nINNER JOIN departments d ON e.department_id = d.id;\n```",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "137 chars (min 40)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "max line repeat ratio 0.20 (threshold 0.3)",
+            "score": 0.8,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 2/2",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "matched 2/2 patterns",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.74, unique=0.35",
+            "score": 0.5472627737226277,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "instruction_uppercase_yes",
+      "category": "instruction",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "YES",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 1,
+        "total_tokens": 1,
+        "ttft_ms": 804.0472919819877,
+        "elapsed_ms": 804.0587499272078,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "instruction_uppercase_yes",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "YES",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "3 chars (min 2)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "short closed-ended answer (3 chars)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "found 'YES' (mode=case)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "instruction_uppercase_yes",
+      "category": "instruction",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "YES",
+        "finish_reason": "stop",
+        "prompt_tokens": 30,
+        "completion_tokens": 1,
+        "total_tokens": 31,
+        "ttft_ms": 763.5477499570698,
+        "elapsed_ms": 763.5477499570698,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "instruction_uppercase_yes",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "YES",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "3 chars (min 2)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "no keywords required",
+            "score": 1.0,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "short closed-ended answer (3 chars)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "found 'YES' (mode=case)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "reasoning_false_premise",
+      "category": "reasoning",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "The reasoning is logically valid because the conclusion follows necessarily from the given premises. However, the conclusion is false in reality because penguins are flightless birds.",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 26,
+        "total_tokens": 26,
+        "ttft_ms": 2278.4272499848157,
+        "elapsed_ms": 3209.3593339668587,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "reasoning_false_premise",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "The reasoning is logically valid because the conclusion follows necessarily from the given premises. However, the conclusion is false in reality because penguins are flightless birds.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "183 chars (min 40)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 3/5 (missing: true, fly)",
+            "score": 0.6,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.85, unique=0.26",
+            "score": 0.5534972677595629,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "reasoning_false_premise",
+      "category": "reasoning",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "The reasoning is logically valid because the conclusion follows necessarily from the given premises. However, the conclusion is false in reality because penguins are flightless birds.",
+        "finish_reason": "stop",
+        "prompt_tokens": 53,
+        "completion_tokens": 31,
+        "total_tokens": 84,
+        "ttft_ms": 3177.838624920696,
+        "elapsed_ms": 3177.838624920696,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "reasoning_false_premise",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "The reasoning is logically valid because the conclusion follows necessarily from the given premises. However, the conclusion is false in reality because penguins are flightless birds.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "183 chars (min 40)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 3/5 (missing: true, fly)",
+            "score": 0.6,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.85, unique=0.26",
+            "score": 0.5534972677595629,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "summarization_http_one",
+      "category": "summarization",
+      "mode_label": "direct",
+      "stream": true,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "HTTP is the fundamental protocol used to transfer data, such as web pages and resources, between web browsers and servers.",
+        "finish_reason": "stop",
+        "prompt_tokens": 0,
+        "completion_tokens": 20,
+        "total_tokens": 20,
+        "ttft_ms": 2207.886124961078,
+        "elapsed_ms": 2445.99787495099,
+        "stream": true,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "summarization_http_one",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "HTTP is the fundamental protocol used to transfer data, such as web pages and resources, between web browsers and servers.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "122 chars (min 25)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 5/6 (missing: request)",
+            "score": 0.8333333333333334,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.82, unique=0.26",
+            "score": 0.5398360655737705,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    },
+    {
+      "prompt_id": "summarization_http_one",
+      "category": "summarization",
+      "mode_label": "direct",
+      "stream": false,
+      "hard_pass": true,
+      "summary": "hard 10/10, soft 1/1",
+      "response": {
+        "text": "HTTP is the fundamental protocol used to transfer data, such as web pages and resources, between web browsers and servers.",
+        "finish_reason": "stop",
+        "prompt_tokens": 26,
+        "completion_tokens": 23,
+        "total_tokens": 49,
+        "ttft_ms": 2406.6883340710774,
+        "elapsed_ms": 2406.6883340710774,
+        "stream": false,
+        "error": null
+      },
+      "report": {
+        "prompt_id": "summarization_http_one",
+        "auto_pass": true,
+        "hard_pass": true,
+        "manual_review": false,
+        "summary": "hard 10/10, soft 1/1",
+        "output_preview": "HTTP is the fundamental protocol used to transfer data, such as web pages and resources, between web browsers and servers.",
+        "checks": [
+          {
+            "name": "length",
+            "passed": true,
+            "detail": "122 chars (min 25)",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "repetition",
+            "passed": true,
+            "detail": "1 non-empty lines",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "keywords",
+            "passed": true,
+            "detail": "found 5/6 (missing: request)",
+            "score": 0.8333333333333334,
+            "hard": false
+          },
+          {
+            "name": "regex",
+            "passed": true,
+            "detail": "no patterns required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "coherence",
+            "passed": true,
+            "detail": "alpha=0.82, unique=0.26",
+            "score": 0.5398360655737705,
+            "hard": true
+          },
+          {
+            "name": "unicode_replacement",
+            "passed": true,
+            "detail": "none",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "garbage",
+            "passed": true,
+            "detail": "scripts: Latin",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "pytest_test_count",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "invoice_total",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "exact_answer",
+            "passed": true,
+            "detail": "not required",
+            "score": 1.0,
+            "hard": true
+          },
+          {
+            "name": "completion",
+            "passed": true,
+            "detail": "finish_reason='stop'",
+            "score": 1.0,
+            "hard": true
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -15,6 +15,24 @@ the general-purpose default serve target. It is **not** MTP Tier 2 certified
 and it is **not** a 72-hour endurance pass. Super-class Qwen 3.8 (2.4T) is a
 different, experimental path and is out of this record.
 
+Latest product-health assessment: **the pinned 6-bit pack's installed CLI and
+local HTTP text-serving candidate passed qualification on Mac mini M4 Pro
+64 GB** at clean source `a142a5ed`. The bundled release-profile wheel passes
+isolated installation/import and doctor; actual default, explicit direct and
+explicit MTP each pass 32/32 sampled QA and 7/7 required API probes. The full 79-item
+bank in both streaming forms passes 158/158 hard checks per default/MTP route,
+with zero incomplete responses. Three fault rounds per route exercise actual
+backpressure, cancellation, resource return and repeatable recovery; MTP also
+exercises one bounded-backlog overflow. No silent MTP fallback is observed.
+
+This closes the recorded product-health scope and permits the candidate to
+enter the formal release workflow. Exact-source hosted CI, signed/notarized
+release-artifact verification and publication have **not** been completed for
+this candidate. Broad model accuracy, MTP-P and MTP-D are separate; Candidate
+status is unchanged. Original failed QA/pressure runs, the stricter completion
+checker, changed output budget and reporting-only follow-ups are retained in
+the [product qualification evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-product-default/).
+
 ## What "MTP Tier 2 pending" means
 
 MTP certification is three independent gates, not one (internal decision
@@ -75,7 +93,8 @@ cannot silently change what the selector loads.
 
 ## Current Evidence
 
-Landed, labeled:
+Landed, labeled. Earlier dated assessments below retain their historical
+scope; the latest product-health assessment is above:
 
 - 2026-09-18 prefix-prefill diagnosis resolves the standalone oracle's output 117
   disagreement: it omitted the runner's block-aligned cache-only head. For the
