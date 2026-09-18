@@ -29,3 +29,11 @@ output-head-repro.txt is the expected failing regression before the
 role-specific affine8/group64 fix; output-head-fixed.txt passes afterward.
 The final workspace log includes the corrected regression. Source file
 hashes and exact commands are recorded in validation.json.
+
+The installed candidate wheel passes 81 packaging/API tests on the M3 Max.
+On M5 Max, bundled runtime doctor, metadata generation, default MXFP4 rejection
+and explicit-opt-in metadata validation pass. installed-preflight.json records
+the wheel, native binaries, model inputs and exact positive/negative commands.
+The pinned stock mlx-lm 0.31.3 class lookup rejects qwen4_exp; its primary
+reference gap remains open. Installed whole-model controls are still running;
+no inference or performance pass is claimed by this preflight artifact.
