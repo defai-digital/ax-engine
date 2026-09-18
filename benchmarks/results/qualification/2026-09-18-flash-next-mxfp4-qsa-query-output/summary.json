@@ -1,0 +1,229 @@
+{
+  "artifacts": [
+    {
+      "file": "component-analysis.json.gz",
+      "numeric_preservation": {
+        "booleans": 134,
+        "floats": 481,
+        "integers": 1319
+      },
+      "sha256": "359901170b55fe49b2f29dc97cd5defe7945987db6b3249d98e334aba109e09e",
+      "uncompressed_sha256": "8a45205696ec7d7cec0834bec6076eda95838a1f7bf9d3a0e3a767c5c878bdc2"
+    },
+    {
+      "file": "o-prefix41-replay.json.gz",
+      "numeric_preservation": {
+        "booleans": 17,
+        "floats": 13,
+        "integers": 115
+      },
+      "sha256": "750fae27ebdaca9de0f7e61dccc9ebaeb4497cf73b07f9dfa0d411608643336c",
+      "uncompressed_sha256": "17afb09eebbc79b9a1bfed689e30d5cdf0f9458348251eb55663ed46dad9ae41"
+    },
+    {
+      "file": "q-prefix43-replay.json.gz",
+      "numeric_preservation": {
+        "booleans": 17,
+        "floats": 13,
+        "integers": 115
+      },
+      "sha256": "e821476a6b235c1b2cbdc878196194c70f9f5f7f8a11fe872473b81a61611603",
+      "uncompressed_sha256": "500695098c36f6f66b1520c37ab05a7d4979f23be823105802399995b1fa8048"
+    },
+    {
+      "file": "integrity.json.gz",
+      "numeric_preservation": {
+        "booleans": 801,
+        "floats": 665,
+        "integers": 12791
+      },
+      "sha256": "41e15afed581d7605ee2b2bf7a2b2dd78816ccdacf86facfaf4c3f28af6cfe0c",
+      "uncompressed_sha256": "daa22fdf8646479814440acf0af26427fc8157066325f3d721478271e722b143"
+    },
+    {
+      "file": "candidate-control.json.gz",
+      "numeric_preservation": {
+        "booleans": 782,
+        "floats": 668,
+        "integers": 10817
+      },
+      "sha256": "8c59f889ce10b597d99457ebd5c3a194ada2f34f83bd2a38aea5998f09913314",
+      "uncompressed_sha256": "98bea996b9613b7419cbc764ac4bdacea238c9109e55de21fc08f34cdc227cd8"
+    }
+  ],
+  "binary_sha256": "d7ba3a774f0ea63099a410399c321bfc28ac59cbe178ee5320f10ae7d3cfc201",
+  "candidate_control": {
+    "accepted_pairs": [
+      [
+        2665,
+        271
+      ],
+      [
+        332,
+        67407
+      ]
+    ],
+    "binary_sha256": "4e8994267173d68686116775714091232241f4619a7c2ebbd34c9b2cd3bea52a",
+    "collection_valid": true,
+    "compared_state_prefixes": [
+      2,
+      4
+    ],
+    "equal_tokens": 5,
+    "first_changed": {
+      "dtype": "Bfloat16",
+      "index": 77,
+      "kind": "gdn.conv",
+      "layer": 34,
+      "max_abs": 0.03125,
+      "relative": 0.00206611561588943,
+      "scale": 15.125,
+      "shape": [
+        1,
+        3,
+        10240
+      ]
+    },
+    "first_state_prefix": 4,
+    "freeze_sha256": "bb014e19143df58931246e7ca0f5d73d967a75035ce444817a1d7ab829751dbb",
+    "greedy_identity": true,
+    "limits": "Five emitted tokens; only four consumed. No full diagnostic or target-SKU qualification.",
+    "nonzero_arrays": 32,
+    "original_first_state_layer": 8,
+    "original_nonzero_arrays": 90,
+    "original_prefill_exact": true,
+    "pre_post_model_files": 47,
+    "qualification": false,
+    "release_ready": false,
+    "source_base_commit": "7d0d2727d680e1e131e6c3d27c228c7757234358",
+    "source_patch_sha256": "ef4346756bc2bfd5d9bfced97fcd8a86b6066446c2fe80bb0246b3c839dbd474",
+    "state_identity": false
+  },
+  "capture_arrays": 470,
+  "capture_collection_valid": true,
+  "curation_sha256": "e69957f824f0a4b56e695efc4ab4a4d791f63d9006cc2dee3b0c739b1486ca76",
+  "equal_control_tokens": 5,
+  "first_admission_attempt": {
+    "operator_ran": false,
+    "passed": false,
+    "phase": "canonical HF link admission"
+  },
+  "inherited_prefixes": [
+    41,
+    43
+  ],
+  "limits": [
+    "Prefix-41 residual writes remain exact despite the O difference.",
+    "Prefix-43 O inputs differ; its six output differences are not independently attributed to O.",
+    "The full diagnostic failure remains; this is not M5/NAS, installed, quality or throughput qualification."
+  ],
+  "local_probe_controls": 28,
+  "new_native_candidate_validation": "short control complete; state parity failed",
+  "original_first_state_difference": {
+    "differing_arrays": 90,
+    "generated_prefix": 4,
+    "kind": "gdn.conv",
+    "layer": 8
+  },
+  "pre_post_model_files": 47,
+  "qualification": false,
+  "release_ready": false,
+  "replays": {
+    "o-prefix41": {
+      "difference": {
+        "changed": 1,
+        "exact": false,
+        "first_changes": [
+          {
+            "direct": -0.0201416015625,
+            "index": 299,
+            "verifier": -0.020263671875
+          }
+        ],
+        "max_abs": 0.0001220703125,
+        "shape": [
+          1,
+          2,
+          2560
+        ]
+      },
+      "input_exact": true,
+      "input_stage": "qsa_gated",
+      "native_projection_comparison": {
+        "batch": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            2560
+          ]
+        },
+        "singletons": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            2560
+          ]
+        }
+      },
+      "repeats_and_rowwise_exact": true
+    },
+    "q-prefix43": {
+      "difference": {
+        "changed": 1,
+        "exact": false,
+        "first_changes": [
+          {
+            "direct": -0.025634765625,
+            "index": 1575,
+            "verifier": -0.0257568359375
+          }
+        ],
+        "max_abs": 0.0001220703125,
+        "shape": [
+          1,
+          2,
+          12288
+        ]
+      },
+      "input_exact": true,
+      "input_stage": "attention_hc_read",
+      "native_projection_comparison": {
+        "batch": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            12288
+          ]
+        },
+        "singletons": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            12288
+          ]
+        }
+      },
+      "repeats_and_rowwise_exact": true
+    }
+  },
+  "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "scope": "Supplementary M2 Ultra 192 GiB pre-correction QSA Q/O attribution and separately bound short candidate control",
+  "source_commit": "358bac91d5340e2b45b55a14e6cfb13b5fb5c63f",
+  "target_probe_controls": 28
+}

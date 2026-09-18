@@ -75,6 +75,16 @@ Roses first differs in stored state after prefix 4 and in output at position
 13. Both prefill comparisons are exact and all 47 pack pre/post hashes match.
 The passing three-token control therefore does not close whole-model identity.
 
+[Supplementary QSA query/output attribution](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-qsa-query-output/README.md)
+reproduces two further projection differences with identical captured inputs
+and original weights. Applying the existing verifier policy to MXFP4 Q/gate
+and output projections preserves all five generated tokens, both accepted
+pairs and the repeated prefill in a separate M2 control. At consumed prefix 4,
+the first stored-state difference moves from layer 8 to layer 34; 32 arrays
+still differ. This candidate has not completed the full diagnostic or M5/NAS
+qualification. The earlier failures remain retained, and default admission
+remains closed.
+
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.

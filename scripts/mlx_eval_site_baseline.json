@@ -75,7 +75,7 @@
     "try_eval": 1
   },
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_attention_verifier_tests.rs": {
-    "eval": 1
+    "eval": 2
   },
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": {
     "try_eval": 4

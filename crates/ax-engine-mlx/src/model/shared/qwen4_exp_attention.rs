@@ -417,7 +417,7 @@ impl Qwen4ExpAttention {
         self.forward_with_verifier_policy(hidden, cache, position_offset, policy, policy)
     }
 
-    /// Align MXFP4 key histories with singleton decode without changing other projections.
+    /// Align MXFP4 query, key, index and output projections with singleton decode.
     pub(crate) fn forward_with_verifier_policy(
         &self,
         hidden: &MlxArray,
@@ -459,7 +459,13 @@ impl Qwen4ExpAttention {
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("qsa_indexer", &[selection.gather_indices()]);
 
-        let q_packed = qw_with_policy(hidden, &self.q_proj, policy);
+        let query_policy =
+            if self.q_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
+                verifier_policy
+            } else {
+                policy
+            };
+        let q_packed = qw_with_policy(hidden, &self.q_proj, query_policy);
         let key_policy =
             if self.k_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
                 verifier_policy
@@ -534,7 +540,13 @@ impl Qwen4ExpAttention {
         );
         let gate = reshape(&gate, &[batch, seq, cfg.query_width], None);
         let gated = gated_attention_output(&attn, &gate, dtype);
-        let delta = qw_with_policy(&gated, &self.o_proj, policy);
+        let output_policy =
+            if self.o_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
+                verifier_policy
+            } else {
+                policy
+            };
+        let delta = qw_with_policy(&gated, &self.o_proj, output_policy);
         #[cfg(test)]
         {
             for (stage, array) in [
