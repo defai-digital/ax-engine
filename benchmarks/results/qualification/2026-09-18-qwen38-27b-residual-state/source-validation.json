@@ -1,0 +1,228 @@
+{
+  "source_commit": "276bd1d47a55983524e970b8b278adfd6fcf6e88",
+  "scope": "State-oracle diagnostic enhancement only; no production arithmetic or qualification promotion",
+  "checks": [
+    {
+      "check": "probe-regression",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--bin",
+        "linear_mtp_state_oracle_probe"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "fmt",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+        "--force-warn",
+        "clippy::unwrap-used",
+        "--force-warn",
+        "clippy::expect-used",
+        "--force-warn",
+        "clippy::panic",
+        "--force-warn",
+        "clippy::dbg-macro",
+        "--force-warn",
+        "clippy::large-enum-variant"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "rust",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "python",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "python/tests",
+        "-q"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "qwen27b",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "flash_next",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "claims",
+      "command": [
+        "python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "scripts": "passed",
+  "logs_sha256": {
+    "claims.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "clippy.log": "8ea5d72090fa96e2f13e443d78aed3f9cb56f09e3648274c95a6f1ca46a1fc38",
+    "flash_next.log": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "probe-regression.log": "9bedf8bf19918bacf425bdf1d0c03ce878acd4a5f104b27d468772f1496a2add",
+    "python.log": "e71226d924821b0ed4195661230de852a62829b415bf7df2a7dcfb42748b1da0",
+    "qwen27b.log": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+    "rust.log": "d9f2d1599f232bdac15b148c1714bbe776c434225de73470b7c4df18e4d9e704",
+    "scripts.log": "96ef309d014a2bb67b644e7f4d262a0611988373531f7efb40fd99cd68ccfbbb"
+  },
+  "bf16_affine_regression": {
+    "source_commit": "c9a7ff9775873148139c9e1b6514ed09f2c51196",
+    "scope": "Exact element equality between compiled and imperative affine4 BF16 FFN for a deterministic small S4 fixture; not a production-shape or whole-layer proof",
+    "checks": [
+      {
+        "check": "bf16-regression",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "ax-engine-mlx",
+          "--lib",
+          "qwen_compiled_split_verify_ffn_bf16_affine_matches_imperative"
+        ],
+        "exit_code": 0
+      },
+      {
+        "check": "fmt",
+        "command": [
+          "rustup",
+          "run",
+          "1.97.1",
+          "cargo",
+          "fmt",
+          "--check"
+        ],
+        "exit_code": 0
+      },
+      {
+        "check": "clippy",
+        "command": [
+          "cargo",
+          "clippy",
+          "--all-targets",
+          "--all-features",
+          "--",
+          "-D",
+          "warnings",
+          "--force-warn",
+          "clippy::unwrap-used",
+          "--force-warn",
+          "clippy::expect-used",
+          "--force-warn",
+          "clippy::panic",
+          "--force-warn",
+          "clippy::dbg-macro",
+          "--force-warn",
+          "clippy::large-enum-variant"
+        ],
+        "exit_code": 0
+      },
+      {
+        "check": "rust",
+        "command": [
+          "rustup",
+          "run",
+          "1.97.1",
+          "cargo",
+          "test",
+          "--quiet",
+          "--no-fail-fast"
+        ],
+        "exit_code": 0
+      },
+      {
+        "check": "python",
+        "command": [
+          "python",
+          "-m",
+          "pytest",
+          "python/tests",
+          "-q"
+        ],
+        "exit_code": 0
+      },
+      {
+        "check": "qwen27b",
+        "command": [
+          "python",
+          "scripts/qualify_qwen38_27b.py",
+          "--dry-run"
+        ],
+        "exit_code": 0
+      },
+      {
+        "check": "flash_next",
+        "command": [
+          "python",
+          "scripts/qualify_qwen38_flash_next.py",
+          "--dry-run"
+        ],
+        "exit_code": 0
+      },
+      {
+        "check": "claims",
+        "command": [
+          "python",
+          "scripts/check_qwen38_primary_claims.py"
+        ],
+        "exit_code": 0
+      }
+    ],
+    "logs_sha256": {
+      "bf16-regression.log": "2388f4b12030e9803eee57f11f3d2a247897d100ec541a2bde62fbfd6ae54955",
+      "claims.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "clippy.log": "634c13d2dad6167c1806d425be3e56795582fa8a3e4abf88f1d3dbfad1bf0b91",
+      "flash_next.log": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+      "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "python.log": "2f3d41ec95d4f58152cb307181a9124d2b476d1c58b737771ddb78a30b3f9cca",
+      "qwen27b.log": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+      "rust.log": "195495b7f2599c19e9b83c54410e2c3eef26debdf19a40a7dd5ef51991162fab"
+    }
+  }
+}

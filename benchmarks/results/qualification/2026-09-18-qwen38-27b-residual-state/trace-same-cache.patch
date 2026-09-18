@@ -1,0 +1,52 @@
+diff --git a/crates/ax-engine-mlx/src/runner/mod.rs b/crates/ax-engine-mlx/src/runner/mod.rs
+index 15825c82..b10c04d1 100644
+--- a/crates/ax-engine-mlx/src/runner/mod.rs
++++ b/crates/ax-engine-mlx/src/runner/mod.rs
+@@ -9823,6 +9823,7 @@ impl MlxRunner {
+                         replay_kill_switch || self.qwen_linear_mtp_force_replay,
+                     );
+                 let clone_started = Instant::now();
++                let diagnostic_snapshot = (token_offset <= 454 && 454 < token_offset + verify_len).then(|| state.cache.clone());
+                 let mut verify_cache = state.cache.clone();
+                 if !exact_linear_replay && !pending.is_empty() {
+                     verify_cache.begin_linear_prefix_capture(1);
+@@ -9997,6 +9998,39 @@ impl MlxRunner {
+                     .as_ref()
+                     .map(|arr| arr.data_u32().to_vec())
+                     .unwrap_or_default();
++                if token_offset <= 454 && 454 < token_offset + verify_len {
++                    let values = astype(&logits_all, mlx_sys::MlxDtype::Float32, None);
++                    eval(&[&values]);
++                    let row = 454 - token_offset;
++                    let data = values.data_f32();
++                    let start = row * self.cfg.vocab_size;
++                    let scores = &data[start..start + self.cfg.vocab_size];
++                    let mut indices: Vec<usize> = (0..scores.len()).collect();
++                    indices.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
++                    eprintln!("residual_target_trace offset={token_offset} row={row} pending={pending:?} predicted={predicted:?} top2={:?}", indices.iter().take(2).map(|&i| (i, scores[i])).collect::<Vec<_>>());
++                    if let Some(mut snapshot) = diagnostic_snapshot {
++                        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
++                        let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(false);
++                        let _session = crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
++                        let _qmm = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(false);
++                        let inputs: Vec<u32> = std::iter::once(verify_input[0]).chain(pending.iter().copied()).collect();
++                        for (i, token) in inputs.iter().take(row + 1).enumerate() {
++                            let logits = crate::model::forward_argmax(&self.cfg, &self.weights, &[*token], &mut snapshot, token_offset + i);
++                            snapshot.advance(1);
++                            let floats = astype(&logits, mlx_sys::MlxDtype::Float32, None);
++                            let mut refs = snapshot.collect_eval_refs();
++                            refs.push(&floats);
++                            eval(&refs);
++                            if i == row {
++                                let scores = floats.data_f32();
++                                let mut indices: Vec<usize> = (0..scores.len()).collect();
++                                indices.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
++                                eprintln!("residual_same_cache_singleton offset={token_offset} row={row} top2={:?}", indices.iter().take(2).map(|&i| (i, scores[i])).collect::<Vec<_>>());
++                            }
++                        }
++                    }
++
++                }
+                 let target_softmax_extract_started = Instant::now();
+                 let target_probs_cpu = lazy_target_probs
+                     .as_ref()

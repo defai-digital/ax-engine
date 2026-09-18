@@ -1,0 +1,81 @@
+{
+  "scope": "Two altered-prompt direct diagnostics; no replacement of original grades or release acceptance",
+  "build": {
+    "source_commit": "4cbda8b54c77a75a3f65ee5ef920945e38bc5d81",
+    "wheel_sha256": "a1892e130e7ddce763fe06469ebffdd3dbc9b5e1a060b735e3d53de0b717121e",
+    "server_sha256": "5557e8cb425b7a6d1c5a9fa827f69400dd0a61b0a5f142571ba99724829a144f",
+    "model_revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+  },
+  "cases": [
+    {
+      "key": "COMPSEC:compsec-079",
+      "request": {
+        "model": "qwen3.8-27b",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Return exactly one line: Answer: <answer>. Do not include an explanation."
+          },
+          {
+            "role": "user",
+            "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReport every line in the smallest complete contiguous source span needed to demonstrate the vulnerability, including the relevant branch or guard and unsafe operation. Include all intervening lines; do not report only a representative sink line.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe server is configured to require TLS 1.3 client authentication. Inspect the reduced record handler.\n\nCode:\n```c\n 1: enum State { NeedClientCert, NeedCertVerify, NeedFinished, Established };\n 2: \n 3: static void handle_tls13_record(struct Conn *c, const Record& r)\n 4: {\n 5:     if (r.type == Alert)\n 6:         return close_conn(c);\n 7: \n 8:     if (r.type == Handshake) {\n 9:         if (r.msg == Certificate && c->state == NeedClientCert)\n10:             c->state = NeedCertVerify;\n11:         else if (r.msg == CertificateVerify && c->state == NeedCertVerify)\n12:             c->state = NeedFinished;\n13:         else if (r.msg == Finished && c->state == NeedFinished)\n14:             c->state = Established;\n15:         return;\n16:     }\n17: \n18:     if (r.type == ApplicationData) {\n19:         decrypt_and_dispatch_application_data(c, r);\n20:         return;\n21:     }\n22: }\n```\n\nFinal answer format: Answer: <exact line numbers separated by commas; use 0 for safe code>"
+          }
+        ],
+        "temperature": 0,
+        "top_p": 1,
+        "seed": 0,
+        "max_tokens": 512,
+        "stream": false,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "gold": "18-19",
+      "grade": {
+        "status": "wrong",
+        "answer": "0",
+        "detection": false,
+        "span_reported": 1,
+        "span_expected": null,
+        "span_recall": null
+      },
+      "response": "Answer: 0",
+      "finish_reason": "stop"
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "request": {
+        "model": "qwen3.8-27b",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Return exactly one line: Answer: <answer>. Do not include an explanation."
+          },
+          {
+            "role": "user",
+            "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReport every line in the smallest complete contiguous source span needed to demonstrate the vulnerability, including the relevant branch or guard and unsafe operation. Include all intervening lines; do not report only a representative sink line.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nFinal answer format: Answer: <exact line numbers separated by commas; use 0 for safe code>"
+          }
+        ],
+        "temperature": 0,
+        "top_p": 1,
+        "seed": 0,
+        "max_tokens": 512,
+        "stream": false,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "gold": "3,13-15",
+      "grade": {
+        "status": "wrong",
+        "answer": "3",
+        "detection": true,
+        "span_reported": 1,
+        "span_expected": 4,
+        "span_recall": 0.25
+      },
+      "response": "Answer: 3",
+      "finish_reason": "stop"
+    }
+  ]
+}
