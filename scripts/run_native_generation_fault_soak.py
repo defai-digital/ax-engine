@@ -186,15 +186,19 @@ def run_stalled_request(
     outcome = "client_error"
     output_tokens = 0
     receive_buffer_bytes = 0
+    connected_receive_buffer_bytes = 0
     connection = http.client.HTTPConnection(address.hostname, address.port, timeout=timeout)
     try:
-        # Set the receive window before connect; urllib's normal socket buffers
-        # can absorb a whole short generation without applying backpressure.
+        # Request a small receive window. Some platforms enlarge it at connect,
+        # so record both values instead of treating the request as an upper bound.
         connection.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         connection.sock.settimeout(timeout)
         connection.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
         receive_buffer_bytes = connection.sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
         connection.sock.connect((address.hostname, address.port or 80))
+        connected_receive_buffer_bytes = connection.sock.getsockopt(
+            socket.SOL_SOCKET, socket.SO_RCVBUF
+        )
         connection.request("POST", "/v1/generate/stream",
                            body=json.dumps(build_payload(spec, model_id)).encode(),
                            headers={"Content-Type": "application/json"})
@@ -228,6 +232,7 @@ def run_stalled_request(
         "output_events": 1 if output_tokens else 0,
         "output_tokens": output_tokens,
         "receive_buffer_bytes": receive_buffer_bytes,
+        "connected_receive_buffer_bytes": connected_receive_buffer_bytes,
         "error": error_payload,
         "elapsed_ms": (time.perf_counter() - started) * 1000.0,
     }

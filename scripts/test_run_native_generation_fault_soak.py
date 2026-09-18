@@ -9,6 +9,7 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 SCRIPT_DIR = Path(__file__).parent
@@ -26,6 +27,26 @@ MODULE_SPEC.loader.exec_module(runner)
 
 
 class NativeGenerationFaultSoakTests(unittest.TestCase):
+    def test_receive_buffer_records_platform_resize_at_connect(self):
+        transport = Mock()
+        size = {'value': 1024}
+        transport.connect.side_effect = lambda *_args: size.update(value=65536)
+        transport.getsockopt.side_effect = lambda *_args: size['value']
+        response = Mock(status=200)
+        response.readline.side_effect = [
+            b'event: step\n', b'data: {"delta_tokens": [7]}\n',
+        ]
+        with patch.object(runner.socket, 'socket', return_value=transport), \
+             patch.object(runner.http.client, 'HTTPConnection') as connection:
+            connection.return_value.getresponse.return_value.__enter__.return_value = response
+            result = runner.run_stalled_request(
+                runner.RequestSpec('stall', 'stalled', [1], 8192),
+                base_url='http://127.0.0.1:1234', model_id='fixture', timeout=1, hold_s=0,
+            )
+        self.assertEqual(result['outcome'], 'expected_stall_disconnect')
+        self.assertEqual(result['receive_buffer_bytes'], 1024)
+        self.assertEqual(result['connected_receive_buffer_bytes'], 65536)
+
     def test_stall_requires_actual_output_instead_of_only_response_headers(self):
         for has_output in (False, True):
             with self.subTest(has_output=has_output):
