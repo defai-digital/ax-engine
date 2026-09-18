@@ -35,8 +35,8 @@ On M5 Max, bundled runtime doctor, metadata generation, default MXFP4 rejection
 and explicit-opt-in metadata validation pass. installed-preflight.json records
 the wheel, native binaries, model inputs and exact positive/negative commands.
 The pinned stock mlx-lm 0.31.3 class lookup rejects qwen4_exp; its primary
-reference gap remains open. Installed whole-model controls are still running;
-no inference or performance pass is claimed by this preflight artifact.
+reference gap remains open. The preflight artifact establishes admission;
+native-selected-r2.json separately records the completed selected-route control.
 
 The first M5 selected-paging direct request completed 32 output tokens with
 zero MTP draft tokens and normal server exit. The paired required-MTP request
@@ -51,3 +51,10 @@ note. Current source changes that generated note to the M5 Max MXFP4 MTP
 qualification target, explicitly pending. The running retry keeps the frozen
 85a2bab0 binary and manifest unchanged; it does not claim the note fix is
 already installed on that target.
+
+The selected-route retry completed and passed both requests plus full post-run
+file hashes. Direct and required MTP produced identical text and usage (46 input,
+32 output tokens). Direct drafted zero tokens; required MTP drafted 16 and
+accepted 14. Both servers exited normally. This is one fixed-input diagnostic,
+not trained-head certification, full QA, or a throughput comparison. The default
+Auto route is still running and has no terminal acceptance result here.
