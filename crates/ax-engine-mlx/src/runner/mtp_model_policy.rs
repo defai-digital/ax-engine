@@ -89,6 +89,11 @@ pub(super) enum MtpModelPolicyKind {
     /// Product default until Tier 2 evidence: MTP attached but not requested.
     DeepseekV4UncertifiedDirectFallback,
     ConflictingDrafters,
+    /// Flash Next (`qwen4_exp`) sidecar attached when `mtp.safetensors` is
+    /// present (route code 10). Depth one, never default-on, greedy identity
+    /// until documented ties, and served by its own request-local draft
+    /// cursor rather than the generic MTP decode machinery.
+    FlashNextCertificationCandidate,
 }
 
 impl MtpModelPolicyKind {
@@ -106,6 +111,7 @@ impl MtpModelPolicyKind {
             // certification-candidate path only (fail-closed by default).
             Self::DeepseekV4CertificationCandidate => 8,
             Self::DeepseekV4UncertifiedDirectFallback => 9,
+            Self::FlashNextCertificationCandidate => 10,
         }
     }
 }
@@ -137,7 +143,15 @@ pub(super) struct MtpModelPolicyInputs {
     pub(super) runtime_certification: MtpRuntimeCertification,
     /// Product default-on for Qwen linear sidecar packs (throughput MTP).
     pub(super) qwen_linear_throughput_default: bool,
+    /// The Flash Next sidecar is attached (`mtp.safetensors` loaded).
+    pub(super) flash_next_candidate_attached: bool,
+    /// The Flash Next sidecar was requested but failed to attach. Reported
+    /// through route telemetry; the model then advertises no drafter.
+    pub(super) flash_next_candidate_attach_failed: bool,
 }
+
+/// Flash Next drafts exactly one token per verified step.
+const FLASH_NEXT_CANDIDATE_DEPTH: usize = 1;
 
 /// Immutable policy snapshot owned by one [`super::MlxRunner`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +161,7 @@ pub(super) struct MtpModelPolicy {
     qwen_linear_certification_env_opt_in: bool,
     runtime_certification: MtpRuntimeCertification,
     qwen_linear_throughput_default: bool,
+    flash_next_candidate_attach_failed: bool,
 }
 
 impl MtpModelPolicy {
@@ -158,6 +173,8 @@ impl MtpModelPolicy {
             qwen_linear_certification_env_opt_in: inputs.qwen_linear_certification_env_opt_in,
             runtime_certification: inputs.runtime_certification,
             qwen_linear_throughput_default: inputs.qwen_linear_throughput_default,
+            flash_next_candidate_attach_failed: inputs.flash_next_candidate_attach_failed
+                && !inputs.flash_next_candidate_attached,
         }
     }
 
@@ -167,6 +184,7 @@ impl MtpModelPolicy {
             inputs.glm_depth.is_some(),
             inputs.gemma4_assistant_depth.is_some(),
             inputs.deepseek_v4_depth.is_some(),
+            inputs.flash_next_candidate_attached,
         ]
         .into_iter()
         .filter(|attached| *attached)
@@ -181,8 +199,20 @@ impl MtpModelPolicy {
                     .chain(inputs.glm_depth)
                     .chain(inputs.gemma4_assistant_depth)
                     .chain(inputs.deepseek_v4_depth)
+                    .chain(
+                        inputs
+                            .flash_next_candidate_attached
+                            .then_some(FLASH_NEXT_CANDIDATE_DEPTH),
+                    )
                     .max()
                     .unwrap_or(0),
+            );
+        }
+
+        if inputs.flash_next_candidate_attached {
+            return (
+                MtpModelPolicyKind::FlashNextCertificationCandidate,
+                FLASH_NEXT_CANDIDATE_DEPTH,
             );
         }
 
@@ -244,6 +274,21 @@ impl MtpModelPolicy {
         !matches!(self.kind, MtpModelPolicyKind::None)
     }
 
+    /// Attached drafter served by the generic MTP decode/prefill machinery.
+    /// The Flash Next candidate is excluded: it owns a dedicated cursor route,
+    /// and every generic path must treat it exactly like a model without a
+    /// drafter (including when the session has not requested MTP).
+    pub(super) const fn has_generic_drafter(self) -> bool {
+        self.has_attached_drafter() && !self.is_flash_next_candidate()
+    }
+
+    pub(super) const fn is_flash_next_candidate(self) -> bool {
+        matches!(
+            self.kind,
+            MtpModelPolicyKind::FlashNextCertificationCandidate
+        )
+    }
+
     pub(super) const fn max_depth(self) -> usize {
         self.max_depth
     }
@@ -285,6 +330,10 @@ impl MtpModelPolicy {
                     || (self.qwen_linear_throughput_default
                         && self.runtime_certification.enabled_by_default)
             }
+            // Sidecar may attach automatically; only an explicit session
+            // request (or the operator force override) may activate it.
+            // MTP Tier 2 remains pending (greedy identity until documented ties).
+            MtpModelPolicyKind::FlashNextCertificationCandidate => false,
             _ => true,
         }
     }
@@ -361,7 +410,8 @@ impl MtpModelPolicy {
             | MtpModelPolicyKind::Gemma4AssistantCalibrated
             | MtpModelPolicyKind::DeepseekV4CertificationCandidate
             | MtpModelPolicyKind::DeepseekV4UncertifiedDirectFallback
-            | MtpModelPolicyKind::ConflictingDrafters => None,
+            | MtpModelPolicyKind::ConflictingDrafters
+            | MtpModelPolicyKind::FlashNextCertificationCandidate => None,
         }
     }
 
@@ -429,6 +479,14 @@ impl MtpModelPolicy {
         decisions.upsert_route_decision(
             "ax_mlx_qwen_linear_throughput_mtp",
             u32::from(self.qwen_linear_throughput_default),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_flash_next_mtp_certification_candidate",
+            u32::from(self.is_flash_next_candidate()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_flash_next_mtp_attach_failed",
+            u32::from(self.flash_next_candidate_attach_failed),
         );
     }
 }
@@ -850,6 +908,89 @@ mod tests {
             candidate.get("ax_mlx_deepseek_v4_mtp_certification_candidate"),
             Some(&1)
         );
+    }
+
+    fn flash_next(attached: bool, attach_failed: bool) -> MtpModelPolicy {
+        MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            flash_next_candidate_attached: attached,
+            flash_next_candidate_attach_failed: attach_failed,
+            // A publisher certification block must not promote the candidate.
+            runtime_certification: certification(true),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn flash_next_candidate_is_distinct_depth_one_and_never_default_on() {
+        let candidate = flash_next(true, false);
+        assert_eq!(
+            candidate.kind,
+            MtpModelPolicyKind::FlashNextCertificationCandidate
+        );
+        assert_eq!(candidate.kind.route_code(), 10);
+        assert_eq!(candidate.max_depth(), 1);
+        assert!(candidate.route_safe());
+        assert!(candidate.has_attached_drafter());
+        assert!(candidate.is_flash_next_candidate());
+        assert!(!candidate.has_generic_drafter());
+        assert!(!candidate.certified_default_on());
+        assert!(!candidate.is_qwen_calibrated());
+        assert!(!candidate.is_qwen_linear_certification_candidate());
+        assert_eq!(candidate.qwen_gate_default(), None);
+        assert_eq!(candidate.glm_gate_default(), None);
+    }
+
+    #[test]
+    fn flash_next_attach_failure_advertises_no_drafter() {
+        let failed = flash_next(false, true);
+        assert_eq!(failed.kind, MtpModelPolicyKind::None);
+        // `Required` sessions check `has_mtp()`; a failed attach must not
+        // pass that check and then decode direct.
+        assert!(!failed.has_attached_drafter());
+        assert!(!failed.has_generic_drafter());
+
+        let mut decisions = Vec::new();
+        failed.append_route_decisions(true, &mut decisions);
+        let map = decisions.into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(map.get("ax_mlx_mtp_model_policy"), Some(&0));
+        assert_eq!(map.get("ax_mlx_flash_next_mtp_attach_failed"), Some(&1));
+        assert_eq!(
+            map.get("ax_mlx_flash_next_mtp_certification_candidate"),
+            Some(&0)
+        );
+
+        // A successful attach never reports a failure.
+        assert!(!flash_next(true, true).flash_next_candidate_attach_failed);
+    }
+
+    #[test]
+    fn flash_next_route_telemetry_is_active_only_when_requested() {
+        for (requested, active) in [(false, 0), (true, 1)] {
+            let mut decisions = Vec::new();
+            flash_next(true, false).append_route_decisions(requested, &mut decisions);
+            let map = decisions.into_iter().collect::<BTreeMap<_, _>>();
+            assert_eq!(map.get("ax_mlx_mtp_model_policy"), Some(&10));
+            assert_eq!(map.get("ax_mlx_mtp_model_policy_depth"), Some(&1));
+            assert_eq!(map.get("ax_mlx_mtp_model_policy_active"), Some(&active));
+            assert_eq!(map.get("ax_mlx_mtp_certified_default_on"), Some(&0));
+            assert_eq!(
+                map.get("ax_mlx_flash_next_mtp_certification_candidate"),
+                Some(&1)
+            );
+        }
+    }
+
+    #[test]
+    fn flash_next_candidate_with_another_drafter_fails_closed() {
+        let conflict = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+            qwen_depth: Some(2),
+            flash_next_candidate_attached: true,
+            ..Default::default()
+        });
+        assert_eq!(conflict.kind, MtpModelPolicyKind::ConflictingDrafters);
+        assert!(!conflict.route_safe());
+        assert!(!conflict.is_flash_next_candidate());
+        assert_eq!(conflict.max_depth(), 2);
     }
 
     #[test]

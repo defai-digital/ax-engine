@@ -1,0 +1,597 @@
+{
+  "completed": true,
+  "qualification": false,
+  "clean_download_verified": false,
+  "records": [
+    {
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+      "revision": "680573112360bfd3f71556082f875c907c21a6e7",
+      "files": [
+        {
+          "file": "model-00001-of-00026.safetensors",
+          "expected_sha256": "cae135f9e59927c42735fa0ec7772ba04f116fc02cbad8525e24f2672a850660",
+          "expected_size": 4994294464,
+          "passed": true,
+          "sha256": "cae135f9e59927c42735fa0ec7772ba04f116fc02cbad8525e24f2672a850660",
+          "size": 4994294464,
+          "seconds": 2.6033193329931237
+        },
+        {
+          "file": "model-00002-of-00026.safetensors",
+          "expected_sha256": "47cfde4a54c811c2ebac407855f8857ed47a191a6bcd5d7e5e00c48c205fee8a",
+          "expected_size": 5350031081,
+          "passed": true,
+          "sha256": "47cfde4a54c811c2ebac407855f8857ed47a191a6bcd5d7e5e00c48c205fee8a",
+          "size": 5350031081,
+          "seconds": 4.018404874994303
+        },
+        {
+          "file": "model-00003-of-00026.safetensors",
+          "expected_sha256": "b31d439bec028d470f23fa8c13bea41c0d666533db4bc1d591966b39a64180f3",
+          "expected_size": 5000029591,
+          "passed": true,
+          "sha256": "b31d439bec028d470f23fa8c13bea41c0d666533db4bc1d591966b39a64180f3",
+          "size": 5000029591,
+          "seconds": 3.7429664590017637
+        },
+        {
+          "file": "model-00004-of-00026.safetensors",
+          "expected_sha256": "dc32e190f489bb0e8b275834637ea902485210a35250ef1401ddb9737b36d611",
+          "expected_size": 5350031098,
+          "passed": true,
+          "sha256": "dc32e190f489bb0e8b275834637ea902485210a35250ef1401ddb9737b36d611",
+          "size": 5350031098,
+          "seconds": 4.04140833299607
+        },
+        {
+          "file": "model-00005-of-00026.safetensors",
+          "expected_sha256": "61539b0f49e768e56a99bbd326ba09e793d241c237f2fa77afad89d8ff1668e6",
+          "expected_size": 5000029579,
+          "passed": true,
+          "sha256": "61539b0f49e768e56a99bbd326ba09e793d241c237f2fa77afad89d8ff1668e6",
+          "size": 5000029579,
+          "seconds": 3.7391314590058755
+        },
+        {
+          "file": "model-00006-of-00026.safetensors",
+          "expected_sha256": "25f15309d255cdb49280a103a81074e651c2b964c967c274b0289712c0c41f06",
+          "expected_size": 5350031102,
+          "passed": true,
+          "sha256": "25f15309d255cdb49280a103a81074e651c2b964c967c274b0289712c0c41f06",
+          "size": 5350031102,
+          "seconds": 3.9071081670117564
+        },
+        {
+          "file": "model-00007-of-00026.safetensors",
+          "expected_sha256": "fb99a5d42bb224fb66905f6a208d98c7bb0dc5af4366f26118f7098220844387",
+          "expected_size": 5000029583,
+          "passed": true,
+          "sha256": "fb99a5d42bb224fb66905f6a208d98c7bb0dc5af4366f26118f7098220844387",
+          "size": 5000029583,
+          "seconds": 3.653552542004036
+        },
+        {
+          "file": "model-00008-of-00026.safetensors",
+          "expected_sha256": "4d5b651150f88ec657e44169f59b8218fb07d60ce6ecedc0848c8403068e1836",
+          "expected_size": 5350031102,
+          "passed": true,
+          "sha256": "4d5b651150f88ec657e44169f59b8218fb07d60ce6ecedc0848c8403068e1836",
+          "size": 5350031102,
+          "seconds": 3.9223319580050884
+        },
+        {
+          "file": "model-00009-of-00026.safetensors",
+          "expected_sha256": "afcfb0382d7b11090a8449cae51923a5a2bf0fd719caa169029ae2d689316822",
+          "expected_size": 5000029581,
+          "passed": true,
+          "sha256": "afcfb0382d7b11090a8449cae51923a5a2bf0fd719caa169029ae2d689316822",
+          "size": 5000029581,
+          "seconds": 3.7027289170073345
+        },
+        {
+          "file": "model-00010-of-00026.safetensors",
+          "expected_sha256": "9aa7a62d2b7afb6e49fd0f9a334600e0236708a394c6eda3971906d4108548bb",
+          "expected_size": 5350031121,
+          "passed": true,
+          "sha256": "9aa7a62d2b7afb6e49fd0f9a334600e0236708a394c6eda3971906d4108548bb",
+          "size": 5350031121,
+          "seconds": 5.9719478329934645
+        },
+        {
+          "file": "model-00011-of-00026.safetensors",
+          "expected_sha256": "b499a0a8afdef0f3986d55cfb65f05b4e0601933885d1902b69edd9658aa4927",
+          "expected_size": 5000029622,
+          "passed": true,
+          "sha256": "b499a0a8afdef0f3986d55cfb65f05b4e0601933885d1902b69edd9658aa4927",
+          "size": 5000029622,
+          "seconds": 11.575324249992264
+        },
+        {
+          "file": "model-00012-of-00026.safetensors",
+          "expected_sha256": "93ae184ceb4b9c0f54bf374c5841258707cf6826b9aee9b5e7af7016e916f9f5",
+          "expected_size": 5350031140,
+          "passed": true,
+          "sha256": "93ae184ceb4b9c0f54bf374c5841258707cf6826b9aee9b5e7af7016e916f9f5",
+          "size": 5350031140,
+          "seconds": 11.865624791986193
+        },
+        {
+          "file": "model-00013-of-00026.safetensors",
+          "expected_sha256": "02773385db4050be3b33c4d96de25fdc712f78270ce3587b18c7151b94d813fc",
+          "expected_size": 5052099207,
+          "passed": true,
+          "sha256": "02773385db4050be3b33c4d96de25fdc712f78270ce3587b18c7151b94d813fc",
+          "size": 5052099207,
+          "seconds": 3.0183396250067744
+        },
+        {
+          "file": "model-00014-of-00026.safetensors",
+          "expected_sha256": "1ec510af5e7831e94c6a283d29720c67ac136c4a6a1b46e82b339f9626c08d14",
+          "expected_size": 5350258248,
+          "passed": true,
+          "sha256": "1ec510af5e7831e94c6a283d29720c67ac136c4a6a1b46e82b339f9626c08d14",
+          "size": 5350258248,
+          "seconds": 2.346880166005576
+        },
+        {
+          "file": "model-00015-of-00026.safetensors",
+          "expected_sha256": "a5c9a0b3be9005d89cadccd029964996b313184256322609355ef8157ee68743",
+          "expected_size": 4994073819,
+          "passed": true,
+          "sha256": "a5c9a0b3be9005d89cadccd029964996b313184256322609355ef8157ee68743",
+          "size": 4994073819,
+          "seconds": 2.2058647500089137
+        },
+        {
+          "file": "model-00016-of-00026.safetensors",
+          "expected_sha256": "aee1c20874ceeca4e1ed75fe262555e6cd437520538efdf0e75c9e572df1ede1",
+          "expected_size": 5350258400,
+          "passed": true,
+          "sha256": "aee1c20874ceeca4e1ed75fe262555e6cd437520538efdf0e75c9e572df1ede1",
+          "size": 5350258400,
+          "seconds": 3.7028055830014637
+        },
+        {
+          "file": "model-00017-of-00026.safetensors",
+          "expected_sha256": "3d549329ef4f49f2f8f01804966f24d32cd27cd583cb92febcc78af4497ab9d2",
+          "expected_size": 4994073957,
+          "passed": true,
+          "sha256": "3d549329ef4f49f2f8f01804966f24d32cd27cd583cb92febcc78af4497ab9d2",
+          "size": 4994073957,
+          "seconds": 3.9180229169869563
+        },
+        {
+          "file": "model-00018-of-00026.safetensors",
+          "expected_sha256": "950e405b8603f22e4bc4d4278683f4cebeaac4c93799045a4f566417c0037c3a",
+          "expected_size": 5353979550,
+          "passed": true,
+          "sha256": "950e405b8603f22e4bc4d4278683f4cebeaac4c93799045a4f566417c0037c3a",
+          "size": 5353979550,
+          "seconds": 2.92354499999783
+        },
+        {
+          "file": "model-00019-of-00026.safetensors",
+          "expected_sha256": "dc02e557d01613cd910cfd2e3a3e03118538ace342a004994bbc04549f841a68",
+          "expected_size": 4994073925,
+          "passed": true,
+          "sha256": "dc02e557d01613cd910cfd2e3a3e03118538ace342a004994bbc04549f841a68",
+          "size": 4994073925,
+          "seconds": 8.127718584000831
+        },
+        {
+          "file": "model-00020-of-00026.safetensors",
+          "expected_sha256": "a769760733be0c42f7b010b2e2fd304d85ffaef0ec6010a927334272b860fdd7",
+          "expected_size": 5350258460,
+          "passed": true,
+          "sha256": "a769760733be0c42f7b010b2e2fd304d85ffaef0ec6010a927334272b860fdd7",
+          "size": 5350258460,
+          "seconds": 8.822707999992417
+        },
+        {
+          "file": "model-00021-of-00026.safetensors",
+          "expected_sha256": "640b1c1afa23249f63644175d4965ba76309cded7ba012a56c1ee68ab168e1bf",
+          "expected_size": 4994073843,
+          "passed": true,
+          "sha256": "640b1c1afa23249f63644175d4965ba76309cded7ba012a56c1ee68ab168e1bf",
+          "size": 4994073843,
+          "seconds": 3.319964499998605
+        },
+        {
+          "file": "model-00022-of-00026.safetensors",
+          "expected_sha256": "e3cf076e425d8f718c879b812999b866d8fdab59ee2d53c1f56901a36c9b9350",
+          "expected_size": 5350258408,
+          "passed": true,
+          "sha256": "e3cf076e425d8f718c879b812999b866d8fdab59ee2d53c1f56901a36c9b9350",
+          "size": 5350258408,
+          "seconds": 3.5084290410013637
+        },
+        {
+          "file": "model-00023-of-00026.safetensors",
+          "expected_sha256": "b091a422663adc94dac7f4b8d4108dd76f3299a5f55ff4414970b2cb6b934cb5",
+          "expected_size": 4994073945,
+          "passed": true,
+          "sha256": "b091a422663adc94dac7f4b8d4108dd76f3299a5f55ff4414970b2cb6b934cb5",
+          "size": 4994073945,
+          "seconds": 3.2485933329880936
+        },
+        {
+          "file": "model-00024-of-00026.safetensors",
+          "expected_sha256": "d405ac26848feb5839fb51e6d266f59d0bd9177bb070a90c94ced4d8f54fd057",
+          "expected_size": 5350258378,
+          "passed": true,
+          "sha256": "d405ac26848feb5839fb51e6d266f59d0bd9177bb070a90c94ced4d8f54fd057",
+          "size": 5350258378,
+          "seconds": 3.5773292500089156
+        },
+        {
+          "file": "model-00025-of-00026.safetensors",
+          "expected_sha256": "4743f6a716387907713d9f6a2742baa8e31dd695b672971495e52f1c6bfa2b9c",
+          "expected_size": 4994073873,
+          "passed": true,
+          "sha256": "4743f6a716387907713d9f6a2742baa8e31dd695b672971495e52f1c6bfa2b9c",
+          "size": 4994073873,
+          "seconds": 3.2850630000029923
+        },
+        {
+          "file": "model-00026-of-00026.safetensors",
+          "expected_sha256": "c38cf7f58938a307004e963c9cb1d99aa501c234f8df29765e48c464cafe0f68",
+          "expected_size": 1661467628,
+          "passed": true,
+          "sha256": "c38cf7f58938a307004e963c9cb1d99aa501c234f8df29765e48c464cafe0f68",
+          "size": 1661467628,
+          "seconds": 1.1458747500000754
+        },
+        {
+          "file": "mtp.safetensors",
+          "expected_sha256": "2f7df97f7a969b3d08b5832e4754af5668e92ada6f473d37da87868c79edcfe0",
+          "expected_size": 5214305544,
+          "passed": true,
+          "sha256": "2f7df97f7a969b3d08b5832e4754af5668e92ada6f473d37da87868c79edcfe0",
+          "size": 5214305544,
+          "seconds": 3.5976245000056224
+        },
+        {
+          "file": "tokenizer.json",
+          "expected_sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+          "expected_size": 19989325,
+          "passed": true,
+          "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+          "size": 19989325,
+          "seconds": 0.016570916995988227
+        }
+      ],
+      "passed": true
+    },
+    {
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+      "revision": "d514dcebf3086068ed7968caf395083c95ebcfca",
+      "files": [
+        {
+          "file": "model-00001-of-00033.safetensors",
+          "expected_sha256": "ab45d9adcf32d0ba5f20e060f4ca5ac7421c92a93d6ed322a95df3bb514f01df",
+          "expected_size": 5148425879,
+          "passed": true,
+          "sha256": "ab45d9adcf32d0ba5f20e060f4ca5ac7421c92a93d6ed322a95df3bb514f01df",
+          "size": 5148425879,
+          "seconds": 3.5646321669919416
+        },
+        {
+          "file": "model-00002-of-00033.safetensors",
+          "expected_sha256": "afcad92b457a1e28a0e495b2532eb2fcb4d383bd9e296e1415e38cdc832112e6",
+          "expected_size": 5185599851,
+          "passed": true,
+          "sha256": "afcad92b457a1e28a0e495b2532eb2fcb4d383bd9e296e1415e38cdc832112e6",
+          "size": 5185599851,
+          "seconds": 3.6352297909907065
+        },
+        {
+          "file": "model-00003-of-00033.safetensors",
+          "expected_sha256": "8faa8d0f850b0f461342ac21e16705b8013f0ffb09ede02fb0a71dc88834aac8",
+          "expected_size": 5350031104,
+          "passed": true,
+          "sha256": "8faa8d0f850b0f461342ac21e16705b8013f0ffb09ede02fb0a71dc88834aac8",
+          "size": 5350031104,
+          "seconds": 3.7913291250006296
+        },
+        {
+          "file": "model-00004-of-00033.safetensors",
+          "expected_sha256": "3eaabac45bfbdacee468232e70a2cb104a63af05a0f7104c2409e247e9350e3a",
+          "expected_size": 5000029583,
+          "passed": true,
+          "sha256": "3eaabac45bfbdacee468232e70a2cb104a63af05a0f7104c2409e247e9350e3a",
+          "size": 5000029583,
+          "seconds": 3.5455486249993555
+        },
+        {
+          "file": "model-00005-of-00033.safetensors",
+          "expected_sha256": "3af3ecfadd4be310a68e12cd33547265bcaf1f6679e5d36d4f56456eabef3f15",
+          "expected_size": 5350031110,
+          "passed": true,
+          "sha256": "3af3ecfadd4be310a68e12cd33547265bcaf1f6679e5d36d4f56456eabef3f15",
+          "size": 5350031110,
+          "seconds": 3.7808058749942575
+        },
+        {
+          "file": "model-00006-of-00033.safetensors",
+          "expected_sha256": "fd754dc91d3789971b604bdfc74428d04cfbb42f794bd575f24af54fdf83d8da",
+          "expected_size": 5000029587,
+          "passed": true,
+          "sha256": "fd754dc91d3789971b604bdfc74428d04cfbb42f794bd575f24af54fdf83d8da",
+          "size": 5000029587,
+          "seconds": 3.5679331249993993
+        },
+        {
+          "file": "model-00007-of-00033.safetensors",
+          "expected_sha256": "3e21fd1cc5dd2e2698ca3adc303e415cb343669f81b142c5746e8f19c9dca5b6",
+          "expected_size": 5350031110,
+          "passed": true,
+          "sha256": "3e21fd1cc5dd2e2698ca3adc303e415cb343669f81b142c5746e8f19c9dca5b6",
+          "size": 5350031110,
+          "seconds": 3.850587415989139
+        },
+        {
+          "file": "model-00008-of-00033.safetensors",
+          "expected_sha256": "74b7ddc3a981b4a8c2e060b0c6b85e977a1682ea029be5f022413347441cb2ed",
+          "expected_size": 5000029581,
+          "passed": true,
+          "sha256": "74b7ddc3a981b4a8c2e060b0c6b85e977a1682ea029be5f022413347441cb2ed",
+          "size": 5000029581,
+          "seconds": 3.5973615420080023
+        },
+        {
+          "file": "model-00009-of-00033.safetensors",
+          "expected_sha256": "b158115f9162a78a03ae57ac42a97de221ecf1cdb632b2a0cf903c67c720d1f7",
+          "expected_size": 5350031100,
+          "passed": true,
+          "sha256": "b158115f9162a78a03ae57ac42a97de221ecf1cdb632b2a0cf903c67c720d1f7",
+          "size": 5350031100,
+          "seconds": 3.7994286670000292
+        },
+        {
+          "file": "model-00010-of-00033.safetensors",
+          "expected_sha256": "e3a050b5cd279e72384ba00f4f913e89c0ec8bde69113c0ab9865bbb1aaa4908",
+          "expected_size": 5000029587,
+          "passed": true,
+          "sha256": "e3a050b5cd279e72384ba00f4f913e89c0ec8bde69113c0ab9865bbb1aaa4908",
+          "size": 5000029587,
+          "seconds": 3.541073417000007
+        },
+        {
+          "file": "model-00011-of-00033.safetensors",
+          "expected_sha256": "069fd6e6f42c613d8f0afd88ccff3e687184af62141efe04f478d5cd640b03ae",
+          "expected_size": 5350031142,
+          "passed": true,
+          "sha256": "069fd6e6f42c613d8f0afd88ccff3e687184af62141efe04f478d5cd640b03ae",
+          "size": 5350031142,
+          "seconds": 3.7219272079964867
+        },
+        {
+          "file": "model-00012-of-00033.safetensors",
+          "expected_sha256": "838d02e2be54d7e6d831a013cfaa15bc441e8c5e7f28a7447e7b605b5f2e2915",
+          "expected_size": 5000029618,
+          "passed": true,
+          "sha256": "838d02e2be54d7e6d831a013cfaa15bc441e8c5e7f28a7447e7b605b5f2e2915",
+          "size": 5000029618,
+          "seconds": 3.295605917010107
+        },
+        {
+          "file": "model-00013-of-00033.safetensors",
+          "expected_sha256": "a8e81ae92159ce7ea3dada8d01caa2058cda2f770ec6bf5ddacf72dce6f167aa",
+          "expected_size": 4943462042,
+          "passed": true,
+          "sha256": "a8e81ae92159ce7ea3dada8d01caa2058cda2f770ec6bf5ddacf72dce6f167aa",
+          "size": 4943462042,
+          "seconds": 3.118433832991286
+        },
+        {
+          "file": "model-00014-of-00033.safetensors",
+          "expected_sha256": "d554b41e142e9bcbc74025bce2b9dfa7cf3be30bd5188b625c5d4f6205b45376",
+          "expected_size": 5007886287,
+          "passed": true,
+          "sha256": "d554b41e142e9bcbc74025bce2b9dfa7cf3be30bd5188b625c5d4f6205b45376",
+          "size": 5007886287,
+          "seconds": 3.3103488339984324
+        },
+        {
+          "file": "model-00015-of-00033.safetensors",
+          "expected_sha256": "e81d8c0bcfad4f52efd0aad3fa6dc45d8b2bde6ade72eee556d56f6658c26792",
+          "expected_size": 4923592999,
+          "passed": true,
+          "sha256": "e81d8c0bcfad4f52efd0aad3fa6dc45d8b2bde6ade72eee556d56f6658c26792",
+          "size": 4923592999,
+          "seconds": 3.0938355840044096
+        },
+        {
+          "file": "model-00016-of-00033.safetensors",
+          "expected_sha256": "5c8707ab8e6922fd86f84e34173f2671a1a0ed4a3523217f658d54d68369babc",
+          "expected_size": 4928932159,
+          "passed": true,
+          "sha256": "5c8707ab8e6922fd86f84e34173f2671a1a0ed4a3523217f658d54d68369babc",
+          "size": 4928932159,
+          "seconds": 3.1188221250049537
+        },
+        {
+          "file": "model-00017-of-00033.safetensors",
+          "expected_sha256": "aaa41cd276922d787f037933ab7770c807f4d91fcb1f85b4b24ff39b31f6984e",
+          "expected_size": 5002547354,
+          "passed": true,
+          "sha256": "aaa41cd276922d787f037933ab7770c807f4d91fcb1f85b4b24ff39b31f6984e",
+          "size": 5002547354,
+          "seconds": 3.17404208399239
+        },
+        {
+          "file": "model-00018-of-00033.safetensors",
+          "expected_sha256": "ed43eb8ef0d1b246364a97a1b49df47901ddb5a5576a2c377fa91eeeed6ff4c9",
+          "expected_size": 4923593194,
+          "passed": true,
+          "sha256": "ed43eb8ef0d1b246364a97a1b49df47901ddb5a5576a2c377fa91eeeed6ff4c9",
+          "size": 4923593194,
+          "seconds": 3.135540708011831
+        },
+        {
+          "file": "model-00019-of-00033.safetensors",
+          "expected_sha256": "f15f7f99612c6dcf935c14c706e8434c1b5463e8782867eec2d7c18dbad7e526",
+          "expected_size": 4928932286,
+          "passed": true,
+          "sha256": "f15f7f99612c6dcf935c14c706e8434c1b5463e8782867eec2d7c18dbad7e526",
+          "size": 4928932286,
+          "seconds": 4.246553125005448
+        },
+        {
+          "file": "model-00020-of-00033.safetensors",
+          "expected_sha256": "f5fc9b36737bcb074766a2f9f295de83422fe59aafc0824eabe2a81cdeca01e2",
+          "expected_size": 5002547368,
+          "passed": true,
+          "sha256": "f5fc9b36737bcb074766a2f9f295de83422fe59aafc0824eabe2a81cdeca01e2",
+          "size": 5002547368,
+          "seconds": 8.937034750008024
+        },
+        {
+          "file": "model-00021-of-00033.safetensors",
+          "expected_sha256": "f5233698e7cbe0ef4147e9eddb4ecd6c1e4d4301c50792c29b41545b413d5ca0",
+          "expected_size": 4928932182,
+          "passed": true,
+          "sha256": "f5233698e7cbe0ef4147e9eddb4ecd6c1e4d4301c50792c29b41545b413d5ca0",
+          "size": 4928932182,
+          "seconds": 8.088472374991397
+        },
+        {
+          "file": "model-00022-of-00033.safetensors",
+          "expected_sha256": "235048141f3111133c14559705e01e7a0aaac21284336c594a1d6615ff712928",
+          "expected_size": 4923593222,
+          "passed": true,
+          "sha256": "235048141f3111133c14559705e01e7a0aaac21284336c594a1d6615ff712928",
+          "size": 4923593222,
+          "seconds": 9.090927416997147
+        },
+        {
+          "file": "model-00023-of-00033.safetensors",
+          "expected_sha256": "a9e4f0a06653caf6962cd8a34b6923fa1a7b93e4f66c7adf6330b6fc1079759c",
+          "expected_size": 5002547376,
+          "passed": true,
+          "sha256": "a9e4f0a06653caf6962cd8a34b6923fa1a7b93e4f66c7adf6330b6fc1079759c",
+          "size": 5002547376,
+          "seconds": 8.784385624996503
+        },
+        {
+          "file": "model-00024-of-00033.safetensors",
+          "expected_sha256": "5fee7dbe1dc1dfa6911541ed619ad617bfaeca57b6f98c1099b5e6100b91d342",
+          "expected_size": 4928932292,
+          "passed": true,
+          "sha256": "5fee7dbe1dc1dfa6911541ed619ad617bfaeca57b6f98c1099b5e6100b91d342",
+          "size": 4928932292,
+          "seconds": 8.115769540992915
+        },
+        {
+          "file": "model-00025-of-00033.safetensors",
+          "expected_sha256": "882e24ea41507491ee39b7ace7e547018bc50b4b67dd7f5652cc3e5fd0adb21f",
+          "expected_size": 4923593146,
+          "passed": true,
+          "sha256": "882e24ea41507491ee39b7ace7e547018bc50b4b67dd7f5652cc3e5fd0adb21f",
+          "size": 4923593146,
+          "seconds": 9.572168374987086
+        },
+        {
+          "file": "model-00026-of-00033.safetensors",
+          "expected_sha256": "ca209387a30cc1f3ad169386eaf49572bbbc6a76e4f9baaa01da057ec0ae3a24",
+          "expected_size": 5007886422,
+          "passed": true,
+          "sha256": "ca209387a30cc1f3ad169386eaf49572bbbc6a76e4f9baaa01da057ec0ae3a24",
+          "size": 5007886422,
+          "seconds": 6.548032834005426
+        },
+        {
+          "file": "model-00027-of-00033.safetensors",
+          "expected_sha256": "4fa1c13130cb19f49c35c976fb559aa4891cf2f855d213d5a7f2f979dd004d8d",
+          "expected_size": 4923593042,
+          "passed": true,
+          "sha256": "4fa1c13130cb19f49c35c976fb559aa4891cf2f855d213d5a7f2f979dd004d8d",
+          "size": 4923593042,
+          "seconds": 3.1787389160017483
+        },
+        {
+          "file": "model-00028-of-00033.safetensors",
+          "expected_sha256": "ebe4aef58d8df05e0bc7c8e359cec8dc383fc987893c015b26738b4ac1f47d8b",
+          "expected_size": 4928932254,
+          "passed": true,
+          "sha256": "ebe4aef58d8df05e0bc7c8e359cec8dc383fc987893c015b26738b4ac1f47d8b",
+          "size": 4928932254,
+          "seconds": 3.2445651669986546
+        },
+        {
+          "file": "model-00029-of-00033.safetensors",
+          "expected_sha256": "64e6264574f40ee4092ab8f03927af33d1f55b130d1f174a48d572ec5873e18e",
+          "expected_size": 5002547364,
+          "passed": true,
+          "sha256": "64e6264574f40ee4092ab8f03927af33d1f55b130d1f174a48d572ec5873e18e",
+          "size": 5002547364,
+          "seconds": 3.1742217919963878
+        },
+        {
+          "file": "model-00030-of-00033.safetensors",
+          "expected_sha256": "755a08fee57f70f653994729956fb2d0354da7cb092310d1a60bc6d00688daeb",
+          "expected_size": 4923593068,
+          "passed": true,
+          "sha256": "755a08fee57f70f653994729956fb2d0354da7cb092310d1a60bc6d00688daeb",
+          "size": 4923593068,
+          "seconds": 3.1475109590101056
+        },
+        {
+          "file": "model-00031-of-00033.safetensors",
+          "expected_sha256": "28be48d7ea13be7365bcd355cdc55b15979929400dcfd72a6a38d6e587572c6b",
+          "expected_size": 4928932212,
+          "passed": true,
+          "sha256": "28be48d7ea13be7365bcd355cdc55b15979929400dcfd72a6a38d6e587572c6b",
+          "size": 4928932212,
+          "seconds": 3.2211183750041528
+        },
+        {
+          "file": "model-00032-of-00033.safetensors",
+          "expected_sha256": "a8aed7e55f1777e73131cdd5159089118678167b19021e2cc630cd661a817fc9",
+          "expected_size": 4967139694,
+          "passed": true,
+          "sha256": "a8aed7e55f1777e73131cdd5159089118678167b19021e2cc630cd661a817fc9",
+          "size": 4967139694,
+          "seconds": 3.232129291005549
+        },
+        {
+          "file": "model-00033-of-00033.safetensors",
+          "expected_sha256": "a8acfa2e7a9c086c99ead2710431fb639647c6564f131c038d0184d7fda8dc4f",
+          "expected_size": 675430747,
+          "passed": true,
+          "sha256": "a8acfa2e7a9c086c99ead2710431fb639647c6564f131c038d0184d7fda8dc4f",
+          "size": 675430747,
+          "seconds": 0.4664895419991808
+        },
+        {
+          "file": "mtp.safetensors",
+          "expected_sha256": "2f7df97f7a969b3d08b5832e4754af5668e92ada6f473d37da87868c79edcfe0",
+          "expected_size": 5214305544,
+          "passed": true,
+          "sha256": "2f7df97f7a969b3d08b5832e4754af5668e92ada6f473d37da87868c79edcfe0",
+          "size": 5214305544,
+          "seconds": 3.5991256249981234
+        },
+        {
+          "file": "tokenizer.json",
+          "expected_sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+          "expected_size": 19989325,
+          "passed": true,
+          "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+          "size": 19989325,
+          "seconds": 0.017142291995696723
+        }
+      ],
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "schema": "ax-engine.flash-next.public-payload-identity.v1",
+  "hardware": "Apple M2 Ultra 192 GB",
+  "release_ready": false,
+  "original_result_sha256": "e7be9036ce0617ff9a9ad596bd4d50e167b957a4739bdbbf49e2c5f095f5c59c",
+  "limitations": [
+    "Existing local payloads were read completely and compared to immutable public LFS hashes; no fresh network download was performed.",
+    "This proves payload identity, not runtime certification or installed CLI behavior."
+  ]
+}

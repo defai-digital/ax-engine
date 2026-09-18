@@ -1,0 +1,50 @@
+{
+  "schema": "ax-engine.flash-next.fresh-delivery.v1",
+  "date": "2026-09-17",
+  "completed": true,
+  "fresh_download_verified": true,
+  "qualification": false,
+  "release_ready": false,
+  "published": false,
+  "default_transport": true,
+  "transport_override": {},
+  "cases": [
+    {
+      "bits": "4",
+      "alias": "qwen3.8-flash-next:axq",
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+      "revision": "680573112360bfd3f71556082f875c907c21a6e7",
+      "passed": true,
+      "lfs_files": 28,
+      "verified_bytes": 136112205574
+    },
+    {
+      "bits": "6",
+      "alias": "qwen3.8-flash-next:axq-6bit",
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+      "revision": "d514dcebf3086068ed7968caf395083c95ebcfca",
+      "passed": true,
+      "lfs_files": 35,
+      "verified_bytes": 167045770831
+    }
+  ],
+  "scope": "Fresh empty-cache public downloads on Apple M2 Ultra 192 GiB; full LFS size/SHA validation. No native inference or target-SKU qualification.",
+  "runtime_source_commit": "a7dba2eef93086b8a55d2b5d392740f6c85533b0",
+  "wheel_sha256": "7de6711471007670ca9e0b2684cbb8c298debca4b3dea1109da58386f607beea",
+  "resume_messages": {
+    "4": 1,
+    "6": 1
+  },
+  "previous_default_attempt": "Failed on shard read timeouts; raw evidence retained in this bundle. A successful retry is not a reliability rate.",
+  "limitations": [
+    "This campaign uses the a7 downloader, not the c101 native runtime.",
+    "Installed full QA, throughput and lifecycle acceptance are separate gates.",
+    "Mac Studio M5 Ultra 256 GiB qualification remains open."
+  ],
+  "raw_artifact": "flash-next-fresh-delivery-default-m2-20260917-raw.json.gz",
+  "original_delivery_sha256": "14169d6e807999328e9f4b01297e3d70fb04bf7c4bbbd3d5ab1976ce66cc4528",
+  "sanitized_raw_sha256": "d482f85d152b03c84ba7e0ccca06d14eac41f0bf09de1df5c864c88f4afe7bd7",
+  "gzip_sha256": "ab931cccc1e226796468a83b33fb5808b4ad53979748d7f44c198e6aae47e243",
+  "curator_sha256": "e71e0a820fb65876d39d4e9b6a455244b9a2526cad33687f75d4f8ee873ad5f6",
+  "download_harness_sha256": "8ef71ab0f8536195d36e597f33508dd59ce4663b933760fe15968523b125c203"
+}

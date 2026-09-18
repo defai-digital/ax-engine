@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "qualification": false,
+  "release_ready": false,
+  "hardware": {
+    "chip": "Apple M2 Ultra",
+    "memory_gib": 192,
+    "target_sku": false
+  },
+  "candidate_source": "a8927b14bb7efb6f3637df0b621bfa5fe6bac4ac",
+  "holdout": {
+    "reference_graphs_collected": [
+      "official-chunked",
+      "official-recurrent",
+      "mlx-vlm"
+    ],
+    "bits": 4,
+    "prompts_per_graph": 8,
+    "native_collected": false,
+    "acceptance_evaluated": false,
+    "native_exit_code": 101,
+    "failure": "Historical derived manifest runtime_status.ready is false; native test failed before inference.",
+    "raw_native_log": "\nrunning 1 test\ntest model::qwen4_exp_integration_tests::qwen4_exp_real_pack_residency_fingerprint ... \nthread 'model::qwen4_exp_integration_tests::qwen4_exp_real_pack_residency_fingerprint' (3407240) panicked at crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs:413:5:\naudited Flash Next packs must convert ready\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nFAILED\n\nfailures:\n\nfailures:\n    model::qwen4_exp_integration_tests::qwen4_exp_real_pack_residency_fingerprint\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1569 filtered out; finished in 0.01s\n\n"
+  },
+  "fresh_delivery": {
+    "wheel_sha256": "ab5bde7adbf1b5f24a81d766dce85f66b14ec25f5552cd639a0ae9a48846547d",
+    "exit_code": 1,
+    "network_transfer_started": false,
+    "failure": "Private environment omitted documented huggingface-hub download dependency."
+  },
+  "throughput": {
+    "started": false,
+    "failure": "Fresh delivery prerequisite failed."
+  },
+  "recovery_contract": {
+    "original_failures_preserved": true,
+    "new_output_directories": true,
+    "numerical_binary_unchanged": true,
+    "prompt_and_teacher_inputs_unchanged": true,
+    "thresholds_unchanged": true,
+    "only_manifest_field_changed": "runtime_status",
+    "passed": false
+  },
+  "raw_input_sha256": {
+    "holdout-retry1-terminal.json": "260da8ab2a4b7440db81f5be205d4c3801745a8cf859e6f4f0cdc1e8d2297154",
+    "fresh-cli-delivery-terminal.json": "ed6774b3c62ebe341dae43dcbc04a583f6907e0716726f262dd73a40b35bee72",
+    "throughput-main-terminal.json": "72ca07b21a5b8e507e9b024b2950b285f0da261eb2bd585813558f1aba5dff56",
+    "holdout-native-admission-failure.log": "f249d76dd9d7488206b6fba125fe410f6360a9d8b68ff26e1134c77d8809eb7c",
+    "fresh-cli-delivery-failure.json": "98b687cca9ca3e7254b8fb9561626ea4c0b4e23a76e5e345ffa1ed55e0ac1f29"
+  }
+}

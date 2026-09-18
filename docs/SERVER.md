@@ -477,6 +477,16 @@ cargo run -p ax-engine-server -- \
   --port 31418
 ```
 
+Native MLX serving accepts `--mlx-mtp-policy auto|disabled|required`.
+`--disable-ngram-acceleration` also disables automatic model MTP for a direct
+baseline. Explicit `--mlx-mtp-policy required` still requires an admitted model
+drafter while n-gram acceleration stays disabled.
+The default `auto` follows the loaded model's certification policy. `disabled`
+disables model-based drafting; `required` rejects session creation when an
+admitted drafter is unavailable. Required attachment does not certify a model
+or guarantee drafting for every request: unsupported sampling or request state
+can still use direct decoding. N-gram acceleration is controlled separately.
+
 `--speculation-profile {auto,coding,agentic,chatbot}` (short `-s`, alias
 `--spec`; env `AX_MLX_SPECULATION_PROFILE`) bundles the MTP and n-gram
 speculative-decode configuration into one posture (ADR-022). `auto` is the

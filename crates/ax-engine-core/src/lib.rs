@@ -90,15 +90,15 @@ pub use minicpm_v::{
 };
 pub use model::{
     AX_ENGINE_2BIT_EXPERIMENTAL_ENV, AX_ENGINE_3BIT_EXPERIMENTAL_ENV,
-    AX_NATIVE_MODEL_MANIFEST_FILE, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
-    DroppedTensorsProvenance, EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS,
-    EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS, NativeDeepseekV4AttentionConfig,
-    NativeDeepseekV4Config, NativeDiffusionConfig, NativeLinearAttentionConfig,
-    NativeMlaAttentionConfig, NativeModelArtifacts, NativeModelArtifactsSummary, NativeModelError,
-    NativeModelManifest, NativeMoeConfig, NativeQwen4ExpConfig, NativeRuntimeStatus,
-    NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
-    NativeTensorSpec, SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, WeightSanitize,
-    tensor_names_skipped_at_load,
+    AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV, AX_NATIVE_MODEL_MANIFEST_FILE,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, DroppedTensorsProvenance,
+    EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS, EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS,
+    NativeDeepseekV4AttentionConfig, NativeDeepseekV4Config, NativeDiffusionConfig,
+    NativeLinearAttentionConfig, NativeMlaAttentionConfig, NativeModelArtifacts,
+    NativeModelArtifactsSummary, NativeModelError, NativeModelManifest, NativeMoeConfig,
+    NativeQwen4ExpConfig, NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat,
+    NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
+    SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, WeightSanitize, tensor_names_skipped_at_load,
 };
 pub use multimodal_adapter::{MultimodalPrefillAdapter, PrefillModality};
 pub use nemotron_omni::{

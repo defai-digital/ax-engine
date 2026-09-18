@@ -1055,6 +1055,7 @@ fn native_dense_kernel_coverage_bucket(
         NativeTensorDataType::F32 => NativeDenseKernelCoverageBucket::F32,
         NativeTensorDataType::F16 => NativeDenseKernelCoverageBucket::F16,
         NativeTensorDataType::Bf16 => NativeDenseKernelCoverageBucket::BF16,
+        NativeTensorDataType::I64 => NativeDenseKernelCoverageBucket::Ignore,
         NativeTensorDataType::Q4Km
         | NativeTensorDataType::Q5Km
         | NativeTensorDataType::Q6Km

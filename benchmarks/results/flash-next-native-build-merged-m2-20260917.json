@@ -1,0 +1,8 @@
+{
+  "qualification": false,
+  "release_ready": false,
+  "base_commit": "ea4eb15b5a3adfbd7a1cbca457925f42459fb2d0",
+  "profile": "release-server",
+  "source_clean": true,
+  "binary_sha256": "6c5c0188e60d367e19984ed54089bd7bfdbf0c5b537788d711423f610d2dc542"
+}

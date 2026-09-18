@@ -78,6 +78,27 @@ pub(super) fn native_step_needs_route_capture(
         || any_stored_route_lacks_decode_work
 }
 
+/// Step-local read deltas cannot be recovered from the terminal route.
+/// Preserve just these counters when full decode-route conversion is skipped.
+pub(super) fn native_step_read_deltas(
+    outcome: &ax_engine_core::EngineStepOutcome,
+) -> Option<GenerateRouteReport> {
+    let batch = outcome.schedule_plan.execution_batch.as_ref()?;
+    let mut route = GenerateRouteReport::default();
+    for (key, value) in &batch.route_metadata.crossover_decisions {
+        if *value != 0
+            && matches!(
+                key.as_str(),
+                "ax_mlx_flash_next_selected_expert_gathers"
+                    | "ax_mlx_flash_next_selected_expert_payload_kib"
+            )
+        {
+            route.crossover_decisions.insert(key.clone(), *value);
+        }
+    }
+    (!route.crossover_decisions.is_empty()).then_some(route)
+}
+
 // Apply per-step route metadata onto the route accumulated so far for the same
 // request. String fields are last-wins, except `prefix_cache_path` keeps a more
 // informative stored value rather than being clobbered by the decode-step default

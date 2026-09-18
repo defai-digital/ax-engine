@@ -42,7 +42,7 @@ use native::build_native_core;
 use native::{build_native_core_with_mlx_shares, load_native_whisper_model};
 use routes::{
     apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into,
-    native_step_needs_route_capture, route_has_decode_path_work,
+    native_step_needs_route_capture, native_step_read_deltas, route_has_decode_path_work,
 };
 pub use stream::{GenerateStream, GenerateStreamState};
 use stream::{
@@ -849,7 +849,10 @@ impl EngineSession {
             }
             report
         } else {
-            EngineStepReport::from_native_outcome_without_route(&outcome, metal_dispatch)
+            let mut report =
+                EngineStepReport::from_native_outcome_without_route(&outcome, metal_dispatch);
+            report.route = native_step_read_deltas(&outcome);
+            report
         };
         // Memory starvation can terminate a request without executing
         // a batch item. Shared stream consumers still need that transition;

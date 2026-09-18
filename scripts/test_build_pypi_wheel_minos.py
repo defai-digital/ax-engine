@@ -62,10 +62,11 @@ class ExtensionLoadPolicyTests(unittest.TestCase):
 
     def test_final_wheel_is_imported_before_publish(self):
         script = WHEEL_SCRIPT.read_text()
-        probe = script.index('python3 -I - "$INSPECT_DIR"')
+        probe = script.index('python3 "$SCRIPT_DIR/check_wheel_native_import.py" "$INSPECT_DIR"')
         self.assertLess(probe, script.index('maturin upload "$DELOCATED"'))
-        self.assertIn('importlib.import_module("ax_engine._ax_engine")', script)
-        self.assertIn('loaded.is_relative_to(root)', script)
+        helper = (REPO_ROOT / 'scripts/check_wheel_native_import.py').read_text()
+        self.assertIn('from ax_engine import _ax_engine', helper)
+        self.assertIn('Path(_ax_engine.__file__).resolve().is_relative_to(root)', helper)
 
 
 class ProductMachoClassifierTests(unittest.TestCase):

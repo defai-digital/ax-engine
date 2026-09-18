@@ -1,0 +1,2375 @@
+{
+  "schema_version": 1,
+  "status": "official_moe_activations_aligned_full_model_gate_open",
+  "qualification": false,
+  "performance_claim": false,
+  "numerical_acceptance": false,
+  "hardware": "Apple M2 Ultra, 192 GiB",
+  "mlx_version": "0.32.2",
+  "change": "Flash Next expert/shared SiLU and shared-router sigmoid compute in FP32, then round to projection dtype before separate low-precision multiplication. Routing and weighted reduction remain unchanged.",
+  "source_provenance": {
+    "capture": {
+      "base_commit": "b2ad5d0ea348bd4f247a194e0569aefbc476c92a",
+      "binary_sha256": "1e700b232db356ca174e7b36f8f80c8ed02e13ef7e21c4a491979d29d50beb6f",
+      "sources": {
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "54c5f65cd74a83a080fc64577c038f39076bca98666cae8ce50328579530ca27",
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_gdn.rs": "01c63d2512815c9b1f007c50d5a5e101653bc4c1422a23a1dea54d925795d883",
+        "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "067aff2b343126701b929863ab89065bae78e93f63f7ddb83bf550ca71d8d648"
+      }
+    },
+    "debug": {
+      "base_commit": "b2ad5d0ea348bd4f247a194e0569aefbc476c92a",
+      "binary_sha256": "502d19f5034a78c37bdff1070dd91c801488c5767b7614abf931c90a6eb5ba4a",
+      "sources": {
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "243c877823818006a8d0bec95e75f54c9823b9d9590ee50b7c3cde7d20d2310d",
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_gdn.rs": "01c63d2512815c9b1f007c50d5a5e101653bc4c1422a23a1dea54d925795d883",
+        "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "067aff2b343126701b929863ab89065bae78e93f63f7ddb83bf550ca71d8d648"
+      }
+    },
+    "optimized": {
+      "base_commit": "b2ad5d0ea348bd4f247a194e0569aefbc476c92a",
+      "binary_sha256": "383b1745abaf237d5feb08801f9e7e0195ef8f3a2a6e2da6b46cdb6b8af0c84b",
+      "sources": {
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "243c877823818006a8d0bec95e75f54c9823b9d9590ee50b7c3cde7d20d2310d",
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_gdn.rs": "01c63d2512815c9b1f007c50d5a5e101653bc4c1422a23a1dea54d925795d883",
+        "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "067aff2b343126701b929863ab89065bae78e93f63f7ddb83bf550ca71d8d648"
+      }
+    },
+    "server": {
+      "base_commit": "b2ad5d0ea348bd4f247a194e0569aefbc476c92a",
+      "binary_sha256": "71506c1b93cb060dc3b02072360ef580cc5acf0843d58ada65c6f269d2d618f2",
+      "sources": {
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "243c877823818006a8d0bec95e75f54c9823b9d9590ee50b7c3cde7d20d2310d",
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_gdn.rs": "01c63d2512815c9b1f007c50d5a5e101653bc4c1422a23a1dea54d925795d883"
+      }
+    }
+  },
+  "fixture_sha256": "ce498ce859f750ea62e62d6c5339e42ee6f50ff15585b6d0734fd4d54d5db907",
+  "official_reference": {
+    "url": "https://github.com/huggingface/transformers.git",
+    "vcs_info": {
+      "vcs": "git",
+      "commit_id": "bd15bc95a89e728bbc1224084eb3b5829428c353",
+      "requested_revision": "bd15bc95a89e728bbc1224084eb3b5829428c353"
+    }
+  },
+  "compiled_reference": {
+    "url": "https://github.com/Blaizzy/mlx-vlm.git",
+    "vcs_info": {
+      "vcs": "git",
+      "commit_id": "6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb"
+    }
+  },
+  "compiled_activation_sha256": "2ce04422f5670d8c3507f723d33253632e14121f45f2aa8070b08544ea92dfc9",
+  "before_capture_matches_committed_logits_and_state": true,
+  "after_plain_observed_logits_and_state_exact": true,
+  "corrected_boundaries": {
+    "completed": true,
+    "qualification": false,
+    "scope": "Same actual real first-layer inputs; exact official corrected activation boundaries.",
+    "records": [
+      {
+        "forward": 1,
+        "stage": "moe_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "moe_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "moe_shared_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          640
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "moe_shared_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          640
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "moe_shared_router_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          1
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "mlp_hc_read_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          2560
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "moe_activation",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "moe_product",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "moe_shared_activation",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          640
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "moe_shared_product",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          640
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "shared_score",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          1
+        ]
+      },
+      {
+        "forward": 1,
+        "stage": "shared_weighted_output",
+        "exact": true,
+        "shape": [
+          1,
+          4,
+          2560
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "moe_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "moe_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "moe_shared_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "moe_shared_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "moe_shared_router_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "mlp_hc_read_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          2560
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "moe_activation",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "moe_product",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "moe_shared_activation",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "moe_shared_product",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "shared_score",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "forward": 2,
+        "stage": "shared_weighted_output",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          2560
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "moe_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "moe_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "moe_shared_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "moe_shared_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "moe_shared_router_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "mlp_hc_read_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          2560
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "moe_activation",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "moe_product",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "moe_shared_activation",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "moe_shared_product",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "shared_score",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "forward": 3,
+        "stage": "shared_weighted_output",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          2560
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "moe_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "moe_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "moe_shared_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "moe_shared_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "moe_shared_router_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "mlp_hc_read_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          2560
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "moe_activation",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "moe_product",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "moe_shared_activation",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "moe_shared_product",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "shared_score",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "forward": 4,
+        "stage": "shared_weighted_output",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          2560
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "moe_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "moe_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "moe_shared_gate_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "moe_shared_up_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "moe_shared_router_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "mlp_hc_read_input_unchanged",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          2560
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "moe_activation",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "moe_product",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "moe_shared_activation",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "moe_shared_product",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          640
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "shared_score",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "forward": 5,
+        "stage": "shared_weighted_output",
+        "exact": true,
+        "shape": [
+          1,
+          1,
+          2560
+        ]
+      }
+    ]
+  },
+  "before_boundary_diagnostics": {
+    "completed": true,
+    "qualification": false,
+    "transformers": {
+      "url": "https://github.com/huggingface/transformers.git",
+      "vcs_info": {
+        "vcs": "git",
+        "commit_id": "bd15bc95a89e728bbc1224084eb3b5829428c353",
+        "requested_revision": "bd15bc95a89e728bbc1224084eb3b5829428c353"
+      }
+    },
+    "mlx_vlm": {
+      "url": "https://github.com/Blaizzy/mlx-vlm.git",
+      "vcs_info": {
+        "vcs": "git",
+        "commit_id": "6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb"
+      }
+    },
+    "mlx_activations_sha256": "2ce04422f5670d8c3507f723d33253632e14121f45f2aa8070b08544ea92dfc9",
+    "scope": "Same actual first-layer pre-fix AX inputs; official activation and identity-projection router calls, independent compiled-reference activation.",
+    "records": [
+      {
+        "forward": 1,
+        "stage": "moe_AX_silu_vs_official",
+        "shape": [
+          1,
+          4,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0078125,
+        "mean_abs_error": 0.00027445374871604145,
+        "different_values": 11217,
+        "exact": false
+      },
+      {
+        "forward": 1,
+        "stage": "moe_AX_product_vs_official",
+        "shape": [
+          1,
+          4,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 6.924154149601236e-05,
+        "different_values": 10106,
+        "exact": false
+      },
+      {
+        "forward": 1,
+        "stage": "moe_promoted_product_vs_official",
+        "shape": [
+          1,
+          4,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 1,
+        "stage": "moe_compiled_reference_vs_official",
+        "shape": [
+          1,
+          4,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 6.924154149601236e-05,
+        "different_values": 10106,
+        "exact": false
+      },
+      {
+        "forward": 1,
+        "stage": "moe_shared_AX_silu_vs_official",
+        "shape": [
+          1,
+          4,
+          640
+        ],
+        "max_abs_error": 0.00390625,
+        "mean_abs_error": 0.00026426315889693797,
+        "different_values": 1128,
+        "exact": false
+      },
+      {
+        "forward": 1,
+        "stage": "moe_shared_AX_product_vs_official",
+        "shape": [
+          1,
+          4,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.0001823166385293007,
+        "different_values": 1031,
+        "exact": false
+      },
+      {
+        "forward": 1,
+        "stage": "moe_shared_promoted_product_vs_official",
+        "shape": [
+          1,
+          4,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 1,
+        "stage": "moe_shared_compiled_reference_vs_official",
+        "shape": [
+          1,
+          4,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.0001823166385293007,
+        "different_values": 1031,
+        "exact": false
+      },
+      {
+        "forward": 1,
+        "stage": "shared_AX_score_vs_official",
+        "shape": [
+          1,
+          4,
+          1
+        ],
+        "max_abs_error": 0.001953125,
+        "mean_abs_error": 0.00048828125,
+        "different_values": 1,
+        "exact": false
+      },
+      {
+        "forward": 1,
+        "stage": "shared_promoted_score_vs_official",
+        "shape": [
+          1,
+          4,
+          1
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 1,
+        "stage": "router_tied_selection",
+        "exact": false,
+        "ax_indices": [
+          [
+            226,
+            46,
+            342,
+            160,
+            130,
+            309,
+            286,
+            215,
+            32,
+            71
+          ],
+          [
+            119,
+            289,
+            492,
+            386,
+            68,
+            441,
+            471,
+            293,
+            369,
+            338
+          ],
+          [
+            369,
+            314,
+            338,
+            21,
+            265,
+            293,
+            101,
+            76,
+            301,
+            361
+          ],
+          [
+            507,
+            366,
+            226,
+            414,
+            367,
+            503,
+            211,
+            386,
+            446,
+            434
+          ]
+        ],
+        "official_indices": [
+          [
+            71,
+            32,
+            215,
+            286,
+            309,
+            130,
+            160,
+            342,
+            46,
+            226
+          ],
+          [
+            338,
+            369,
+            293,
+            471,
+            441,
+            68,
+            386,
+            492,
+            289,
+            119
+          ],
+          [
+            361,
+            301,
+            76,
+            101,
+            293,
+            265,
+            21,
+            338,
+            314,
+            64
+          ],
+          [
+            434,
+            446,
+            386,
+            211,
+            503,
+            367,
+            414,
+            226,
+            366,
+            507
+          ]
+        ],
+        "both_selections_satisfy_topk_threshold": true
+      },
+      {
+        "forward": 1,
+        "stage": "AX_router_scores_vs_official",
+        "shape": [
+          1,
+          4,
+          10
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 2,
+        "stage": "moe_AX_silu_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.00390625,
+        "mean_abs_error": 0.00027979613514617085,
+        "different_values": 2703,
+        "exact": false
+      },
+      {
+        "forward": 2,
+        "stage": "moe_AX_product_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.00390625,
+        "mean_abs_error": 7.332961104111746e-05,
+        "different_values": 2461,
+        "exact": false
+      },
+      {
+        "forward": 2,
+        "stage": "moe_promoted_product_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 2,
+        "stage": "moe_compiled_reference_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.00390625,
+        "mean_abs_error": 7.332961104111746e-05,
+        "different_values": 2461,
+        "exact": false
+      },
+      {
+        "forward": 2,
+        "stage": "moe_shared_AX_silu_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.001953125,
+        "mean_abs_error": 0.0002451658365316689,
+        "different_values": 271,
+        "exact": false
+      },
+      {
+        "forward": 2,
+        "stage": "moe_shared_AX_product_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.0002589456853456795,
+        "different_values": 250,
+        "exact": false
+      },
+      {
+        "forward": 2,
+        "stage": "moe_shared_promoted_product_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 2,
+        "stage": "moe_shared_compiled_reference_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.0002589456853456795,
+        "different_values": 250,
+        "exact": false
+      },
+      {
+        "forward": 2,
+        "stage": "shared_AX_score_vs_official",
+        "shape": [
+          1,
+          1,
+          1
+        ],
+        "max_abs_error": 0.001953125,
+        "mean_abs_error": 0.001953125,
+        "different_values": 1,
+        "exact": false
+      },
+      {
+        "forward": 2,
+        "stage": "shared_promoted_score_vs_official",
+        "shape": [
+          1,
+          1,
+          1
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 2,
+        "stage": "router_tied_selection",
+        "exact": false,
+        "ax_indices": [
+          [
+            158,
+            88,
+            96,
+            462,
+            21,
+            406,
+            265,
+            337,
+            378,
+            463
+          ]
+        ],
+        "official_indices": [
+          [
+            463,
+            378,
+            337,
+            265,
+            406,
+            21,
+            462,
+            96,
+            88,
+            148
+          ]
+        ],
+        "both_selections_satisfy_topk_threshold": true
+      },
+      {
+        "forward": 2,
+        "stage": "AX_router_scores_vs_official",
+        "shape": [
+          1,
+          1,
+          10
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 3,
+        "stage": "moe_AX_silu_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.00390625,
+        "mean_abs_error": 0.0002673673734534532,
+        "different_values": 2792,
+        "exact": false
+      },
+      {
+        "forward": 3,
+        "stage": "moe_AX_product_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.00390625,
+        "mean_abs_error": 5.371856605052017e-05,
+        "different_values": 2506,
+        "exact": false
+      },
+      {
+        "forward": 3,
+        "stage": "moe_promoted_product_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 3,
+        "stage": "moe_compiled_reference_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.00390625,
+        "mean_abs_error": 5.371856605052017e-05,
+        "different_values": 2506,
+        "exact": false
+      },
+      {
+        "forward": 3,
+        "stage": "moe_shared_AX_silu_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.001953125,
+        "mean_abs_error": 0.00029375552549026906,
+        "different_values": 303,
+        "exact": false
+      },
+      {
+        "forward": 3,
+        "stage": "moe_shared_AX_product_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.00023362832143902779,
+        "different_values": 274,
+        "exact": false
+      },
+      {
+        "forward": 3,
+        "stage": "moe_shared_promoted_product_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 3,
+        "stage": "moe_shared_compiled_reference_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.00023362832143902779,
+        "different_values": 274,
+        "exact": false
+      },
+      {
+        "forward": 3,
+        "stage": "shared_AX_score_vs_official",
+        "shape": [
+          1,
+          1,
+          1
+        ],
+        "max_abs_error": 0.001953125,
+        "mean_abs_error": 0.001953125,
+        "different_values": 1,
+        "exact": false
+      },
+      {
+        "forward": 3,
+        "stage": "shared_promoted_score_vs_official",
+        "shape": [
+          1,
+          1,
+          1
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 3,
+        "stage": "AX_router_scores_vs_official",
+        "shape": [
+          1,
+          1,
+          10
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 4,
+        "stage": "moe_AX_silu_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0078125,
+        "mean_abs_error": 0.0003351187624502927,
+        "different_values": 2810,
+        "exact": false
+      },
+      {
+        "forward": 4,
+        "stage": "moe_AX_product_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0078125,
+        "mean_abs_error": 0.00011072902998421341,
+        "different_values": 2543,
+        "exact": false
+      },
+      {
+        "forward": 4,
+        "stage": "moe_promoted_product_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 4,
+        "stage": "moe_compiled_reference_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0078125,
+        "mean_abs_error": 0.00011072902998421341,
+        "different_values": 2543,
+        "exact": false
+      },
+      {
+        "forward": 4,
+        "stage": "moe_shared_AX_silu_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.001953125,
+        "mean_abs_error": 0.0002475738583598286,
+        "different_values": 286,
+        "exact": false
+      },
+      {
+        "forward": 4,
+        "stage": "moe_shared_AX_product_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.00022138524218462408,
+        "different_values": 263,
+        "exact": false
+      },
+      {
+        "forward": 4,
+        "stage": "moe_shared_promoted_product_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 4,
+        "stage": "moe_shared_compiled_reference_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.00022138524218462408,
+        "different_values": 263,
+        "exact": false
+      },
+      {
+        "forward": 4,
+        "stage": "shared_AX_score_vs_official",
+        "shape": [
+          1,
+          1,
+          1
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 4,
+        "stage": "shared_promoted_score_vs_official",
+        "shape": [
+          1,
+          1,
+          1
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 4,
+        "stage": "AX_router_scores_vs_official",
+        "shape": [
+          1,
+          1,
+          10
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 5,
+        "stage": "moe_AX_silu_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0078125,
+        "mean_abs_error": 0.00031703710556030273,
+        "different_values": 2713,
+        "exact": false
+      },
+      {
+        "forward": 5,
+        "stage": "moe_AX_product_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0078125,
+        "mean_abs_error": 0.00010345684131607413,
+        "different_values": 2445,
+        "exact": false
+      },
+      {
+        "forward": 5,
+        "stage": "moe_promoted_product_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 5,
+        "stage": "moe_compiled_reference_vs_official",
+        "shape": [
+          1,
+          1,
+          10,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0078125,
+        "mean_abs_error": 0.00010345684131607413,
+        "different_values": 2445,
+        "exact": false
+      },
+      {
+        "forward": 5,
+        "stage": "moe_shared_AX_silu_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.001953125,
+        "mean_abs_error": 0.00025196076603606343,
+        "different_values": 279,
+        "exact": false
+      },
+      {
+        "forward": 5,
+        "stage": "moe_shared_AX_product_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.00017696284339763224,
+        "different_values": 255,
+        "exact": false
+      },
+      {
+        "forward": 5,
+        "stage": "moe_shared_promoted_product_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 5,
+        "stage": "moe_shared_compiled_reference_vs_official",
+        "shape": [
+          1,
+          1,
+          640
+        ],
+        "max_abs_error": 0.015625,
+        "mean_abs_error": 0.00017696284339763224,
+        "different_values": 255,
+        "exact": false
+      },
+      {
+        "forward": 5,
+        "stage": "shared_AX_score_vs_official",
+        "shape": [
+          1,
+          1,
+          1
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 5,
+        "stage": "shared_promoted_score_vs_official",
+        "shape": [
+          1,
+          1,
+          1
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      },
+      {
+        "forward": 5,
+        "stage": "AX_router_scores_vs_official",
+        "shape": [
+          1,
+          1,
+          10
+        ],
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "different_values": 0,
+        "exact": true
+      }
+    ]
+  },
+  "router_ties": [
+    {
+      "forward": 1,
+      "token_position": 2,
+      "ax_only": [
+        369
+      ],
+      "official_only": [
+        64
+      ],
+      "equal_boundary_logit": -4.9375,
+      "both_unique_topk_selections_valid": true
+    },
+    {
+      "forward": 2,
+      "token_position": 0,
+      "ax_only": [
+        158
+      ],
+      "official_only": [
+        148
+      ],
+      "equal_boundary_logit": -5.0,
+      "both_unique_topk_selections_valid": true
+    }
+  ],
+  "official_reduction": {
+    "completed": true,
+    "qualification": false,
+    "records": [
+      {
+        "forward": 1,
+        "max_abs_error": 0.001953125,
+        "mean_abs_error": 6.573132850462571e-05,
+        "different_values": 5954,
+        "exact": false,
+        "expert_visit_order": [
+          21,
+          32,
+          46,
+          68,
+          71,
+          76,
+          101,
+          119,
+          130,
+          160,
+          211,
+          215,
+          226,
+          265,
+          286,
+          289,
+          293,
+          301,
+          309,
+          314,
+          338,
+          342,
+          361,
+          366,
+          367,
+          369,
+          386,
+          414,
+          434,
+          441,
+          446,
+          471,
+          492,
+          503,
+          507
+        ],
+        "activation_inputs_exact": true,
+        "scope": "Official expert forward with recorded projection outputs and actual AX routing; validates weighted accumulation, not QMM."
+      },
+      {
+        "forward": 2,
+        "max_abs_error": 0.0009765625,
+        "mean_abs_error": 5.209036316955462e-05,
+        "different_values": 1445,
+        "exact": false,
+        "expert_visit_order": [
+          21,
+          88,
+          96,
+          158,
+          265,
+          337,
+          378,
+          406,
+          462,
+          463
+        ],
+        "activation_inputs_exact": true,
+        "scope": "Official expert forward with recorded projection outputs and actual AX routing; validates weighted accumulation, not QMM."
+      },
+      {
+        "forward": 3,
+        "max_abs_error": 0.00048828125,
+        "mean_abs_error": 5.511799827218056e-05,
+        "different_values": 1584,
+        "exact": false,
+        "expert_visit_order": [
+          91,
+          106,
+          308,
+          366,
+          367,
+          386,
+          434,
+          466,
+          503,
+          505
+        ],
+        "activation_inputs_exact": true,
+        "scope": "Official expert forward with recorded projection outputs and actual AX routing; validates weighted accumulation, not QMM."
+      },
+      {
+        "forward": 4,
+        "max_abs_error": 0.0009765625,
+        "mean_abs_error": 6.065629349905066e-05,
+        "different_values": 1531,
+        "exact": false,
+        "expert_visit_order": [
+          109,
+          168,
+          205,
+          251,
+          265,
+          294,
+          319,
+          371,
+          431,
+          475
+        ],
+        "activation_inputs_exact": true,
+        "scope": "Official expert forward with recorded projection outputs and actual AX routing; validates weighted accumulation, not QMM."
+      },
+      {
+        "forward": 5,
+        "max_abs_error": 0.00048828125,
+        "mean_abs_error": 4.7725625336170197e-05,
+        "different_values": 1377,
+        "exact": false,
+        "expert_visit_order": [
+          90,
+          109,
+          227,
+          249,
+          315,
+          331,
+          333,
+          351,
+          395,
+          435
+        ],
+        "activation_inputs_exact": true,
+        "scope": "Official expert forward with recorded projection outputs and actual AX routing; validates weighted accumulation, not QMM."
+      }
+    ]
+  },
+  "teacher_force_ids": [
+    11751,
+    13,
+    271
+  ],
+  "prompt_ids": [
+    760,
+    6511,
+    314,
+    9338,
+    369
+  ],
+  "full_logits": [
+    {
+      "name": "prefix",
+      "input_ids": [
+        760,
+        6511,
+        314,
+        9338
+      ],
+      "ax_argmax": [
+        220,
+        314,
+        279,
+        369
+      ],
+      "ax_logits_sha256": "a91194a5c6305cb0060b6ec548ec4a5c9aba9050054f791f8aecb4acb3395178",
+      "unmodified_reference": {
+        "max_abs_error": 1.20703125,
+        "mean_abs_error": 0.07253249734640121,
+        "argmax": [
+          220,
+          314,
+          279,
+          369
+        ],
+        "logits_sha256": "213975d0519bbacd787e946ec5fabd77335f40dbe81c72a5fac274aac90ac323"
+      },
+      "official_gdn_hybrid": {
+        "max_abs_error": 1.5234375,
+        "mean_abs_error": 0.08928739279508591,
+        "argmax": [
+          220,
+          314,
+          279,
+          369
+        ],
+        "logits_sha256": "1e2b102334ef5da126b786326f04651178864e23c8ad89a5410c50f6c2dfbb32"
+      }
+    },
+    {
+      "name": "decode-0",
+      "input_ids": [
+        369
+      ],
+      "ax_argmax": [
+        11751
+      ],
+      "ax_logits_sha256": "fecc9123322391fbae559c246f009cd453a5d1b660a7ba03889781733c9d5d70",
+      "unmodified_reference": {
+        "max_abs_error": 2.453125,
+        "mean_abs_error": 0.32336512207984924,
+        "argmax": [
+          11751
+        ],
+        "logits_sha256": "2f41d526be9e87a6bc71e3231c6f4640567120dcc3f9279855e82e0bdc58e2ef"
+      },
+      "official_gdn_hybrid": {
+        "max_abs_error": 1.96875,
+        "mean_abs_error": 0.3005659282207489,
+        "argmax": [
+          11751
+        ],
+        "logits_sha256": "2078a365658d78d69856ba372fa299bec31e13d2a8f3340b65bcaf436fee1492"
+      }
+    },
+    {
+      "name": "decode-1",
+      "input_ids": [
+        11751
+      ],
+      "ax_argmax": [
+        13
+      ],
+      "ax_logits_sha256": "6092a94279cc206b87fd73abc8a5aee6ae22f5848c39a97e0e52c3dada015c06",
+      "unmodified_reference": {
+        "max_abs_error": 1.375,
+        "mean_abs_error": 0.22017155587673187,
+        "argmax": [
+          13
+        ],
+        "logits_sha256": "2b5620d070341774a6d013ae0ef0d573eb72a072bc9427fb706433624d2c0f94"
+      },
+      "official_gdn_hybrid": {
+        "max_abs_error": 1.3046875,
+        "mean_abs_error": 0.21507272124290466,
+        "argmax": [
+          13
+        ],
+        "logits_sha256": "36af9c8e5dc99bde83d70bcf5480b194c467acd454a398be78e5c753d9b6a54b"
+      }
+    },
+    {
+      "name": "decode-2",
+      "input_ids": [
+        13
+      ],
+      "ax_argmax": [
+        561
+      ],
+      "ax_logits_sha256": "d7cc34f694e7cb6c0fc0e1dbb10eaf272ce4beba122fdc8053afc9d2a93afd85",
+      "unmodified_reference": {
+        "max_abs_error": 1.53125,
+        "mean_abs_error": 0.2618086636066437,
+        "argmax": [
+          271
+        ],
+        "logits_sha256": "54b9fbeda914fbd47ab197a26d3407d576bf2eea33ef6a339044699ae4ea867b"
+      },
+      "official_gdn_hybrid": {
+        "max_abs_error": 1.4921875,
+        "mean_abs_error": 0.22834831476211548,
+        "argmax": [
+          271
+        ],
+        "logits_sha256": "b2a88d7553ae312d015e37a454c0cbce8bfe68f43144eb4d107b940a9de35ad4"
+      }
+    },
+    {
+      "name": "decode-3",
+      "input_ids": [
+        271
+      ],
+      "ax_argmax": [
+        760
+      ],
+      "ax_logits_sha256": "ce895178e5c1c0f75d2dc50cafead3f89cee8e635781474037ee83daf5e27f56",
+      "unmodified_reference": {
+        "max_abs_error": 1.6328125,
+        "mean_abs_error": 0.23135526478290558,
+        "argmax": [
+          760
+        ],
+        "logits_sha256": "ff00347284492d4d914117ce09e2c89d0124a7d87bc07dcf3eed4f9a5479bcd4"
+      },
+      "official_gdn_hybrid": {
+        "max_abs_error": 1.3125,
+        "mean_abs_error": 0.19774584472179413,
+        "argmax": [
+          760
+        ],
+        "logits_sha256": "04f17298514b1384c2afd97975222eaf52fadf4b1725c0fd6d0b774e3d495355"
+      }
+    }
+  ],
+  "packs": {
+    "2bit": {
+      "state": {
+        "accepted": 2,
+        "cached_whole_layers_after_run": 0,
+        "draft_state_exact_each_step": true,
+        "forced_acceptance_rejection_budget_and_eos": true,
+        "generated_ids": [
+          264,
+          3177,
+          421,
+          369
+        ],
+        "mtp_only_selected_decode_payload_bytes": 3538944000,
+        "prefill_primary_and_draft_state_exact": true,
+        "primary_state_exact_each_step": true,
+        "proposed": 2,
+        "zero_budget_preserves_primary_and_draft_state": true
+      },
+      "runner": {
+        "direct_ids": [
+          11751,
+          13,
+          561
+        ],
+        "mtp_ids": [
+          11751,
+          13,
+          561
+        ],
+        "block_size_tokens": 4
+      },
+      "http": {
+        "disabled": {
+          "passed": true,
+          "requests": 2,
+          "server_exit_code": 0,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 4995000.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 9990000.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          }
+        },
+        "required": {
+          "passed": true,
+          "requests": 2,
+          "server_exit_code": 0,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 240.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 5859000.0,
+            "ax_engine_mtp_draft_tokens_total": 1.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 480.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 11718000.0,
+            "ax_engine_mtp_draft_tokens_total": 2.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          }
+        }
+      }
+    },
+    "4bit": {
+      "state": {
+        "accepted": 2,
+        "cached_whole_layers_after_run": 0,
+        "draft_state_exact_each_step": true,
+        "forced_acceptance_rejection_budget_and_eos": true,
+        "generated_ids": [
+          11751,
+          13,
+          561,
+          6511
+        ],
+        "mtp_only_selected_decode_payload_bytes": 5308416000,
+        "prefill_primary_and_draft_state_exact": true,
+        "primary_state_exact_each_step": true,
+        "proposed": 2,
+        "zero_budget_preserves_primary_and_draft_state": true
+      },
+      "runner": {
+        "direct_ids": [
+          11751,
+          13,
+          271
+        ],
+        "mtp_ids": [
+          11751,
+          13,
+          271
+        ],
+        "block_size_tokens": 4
+      },
+      "http": {
+        "disabled": {
+          "passed": true,
+          "requests": 2,
+          "server_exit_code": 0,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 7506000.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 15012000.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          }
+        },
+        "required": {
+          "passed": true,
+          "requests": 2,
+          "server_exit_code": 0,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 240.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 8802000.0,
+            "ax_engine_mtp_draft_tokens_total": 1.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 480.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 17604000.0,
+            "ax_engine_mtp_draft_tokens_total": 2.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          }
+        }
+      }
+    },
+    "6bit": {
+      "state": {
+        "accepted": 2,
+        "cached_whole_layers_after_run": 0,
+        "draft_state_exact_each_step": true,
+        "forced_acceptance_rejection_budget_and_eos": true,
+        "generated_ids": [
+          11751,
+          13,
+          11751,
+          369
+        ],
+        "mtp_only_selected_decode_payload_bytes": 7667712000,
+        "prefill_primary_and_draft_state_exact": true,
+        "primary_state_exact_each_step": true,
+        "proposed": 2,
+        "zero_budget_preserves_primary_and_draft_state": true
+      },
+      "runner": {
+        "direct_ids": [
+          11751,
+          13,
+          561
+        ],
+        "mtp_ids": [
+          11751,
+          13,
+          561
+        ],
+        "block_size_tokens": 4
+      },
+      "http": {
+        "disabled": {
+          "passed": true,
+          "requests": 2,
+          "server_exit_code": 0,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 192.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 10873200.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 384.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 21746400.0,
+            "ax_engine_mtp_draft_tokens_total": 0.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          }
+        },
+        "required": {
+          "passed": true,
+          "requests": 2,
+          "server_exit_code": 0,
+          "metrics_before_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 240.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 12745200.0,
+            "ax_engine_mtp_draft_tokens_total": 1.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          },
+          "metrics_after_repeat": {
+            "ax_engine_mlx_flash_next_selected_expert_gathers_total": 480.0,
+            "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 25490400.0,
+            "ax_engine_mtp_draft_tokens_total": 2.0,
+            "ax_engine_mlx_mtp_certified_default_on": 0.0
+          }
+        }
+      }
+    }
+  },
+  "chat_smoke": [
+    {
+      "mode": "disabled",
+      "name": "capital",
+      "request": {
+        "model": "flash-next-candidate",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is the capital of France? Answer with only the city name."
+          }
+        ],
+        "temperature": 0,
+        "max_tokens": 32,
+        "stream": false,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "text": "Paris",
+      "usage": {
+        "prompt_tokens": 26,
+        "completion_tokens": 1,
+        "total_tokens": 27
+      },
+      "semantic_smoke_passed": true,
+      "matches_current_direct": true
+    },
+    {
+      "mode": "disabled",
+      "name": "arithmetic",
+      "request": {
+        "model": "flash-next-candidate",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is 17 + 25? Reply with only the number."
+          }
+        ],
+        "temperature": 0,
+        "max_tokens": 32,
+        "stream": false,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "text": "42",
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 2,
+        "total_tokens": 30
+      },
+      "semantic_smoke_passed": true,
+      "matches_current_direct": true
+    },
+    {
+      "mode": "disabled",
+      "name": "primes",
+      "request": {
+        "model": "flash-next-candidate",
+        "messages": [
+          {
+            "role": "user",
+            "content": "List the first three prime numbers, separated by commas. Output only the numbers."
+          }
+        ],
+        "temperature": 0,
+        "max_tokens": 32,
+        "stream": false,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "text": "2, 3, 5",
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 7,
+        "total_tokens": 35
+      },
+      "semantic_smoke_passed": true,
+      "matches_current_direct": true
+    },
+    {
+      "mode": "required",
+      "name": "capital",
+      "request": {
+        "model": "flash-next-candidate",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is the capital of France? Answer with only the city name."
+          }
+        ],
+        "temperature": 0,
+        "max_tokens": 32,
+        "stream": false,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "text": "Paris",
+      "usage": {
+        "prompt_tokens": 26,
+        "completion_tokens": 1,
+        "total_tokens": 27
+      },
+      "semantic_smoke_passed": true,
+      "matches_current_direct": true
+    },
+    {
+      "mode": "required",
+      "name": "arithmetic",
+      "request": {
+        "model": "flash-next-candidate",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is 17 + 25? Reply with only the number."
+          }
+        ],
+        "temperature": 0,
+        "max_tokens": 32,
+        "stream": false,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "text": "42",
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 2,
+        "total_tokens": 30
+      },
+      "semantic_smoke_passed": true,
+      "matches_current_direct": true
+    },
+    {
+      "mode": "required",
+      "name": "primes",
+      "request": {
+        "model": "flash-next-candidate",
+        "messages": [
+          {
+            "role": "user",
+            "content": "List the first three prime numbers, separated by commas. Output only the numbers."
+          }
+        ],
+        "temperature": 0,
+        "max_tokens": 32,
+        "stream": false,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "text": "2, 3, 5",
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 7,
+        "total_tokens": 35
+      },
+      "semantic_smoke_passed": true,
+      "matches_current_direct": true
+    }
+  ],
+  "gates": {
+    "workspace-tests": 0,
+    "mlx-test-clippy": 0,
+    "script-gates": 0,
+    "format": 0
+  },
+  "workspace_tests": {
+    "passed": 3640,
+    "failed": 0,
+    "ignored": 39
+  },
+  "synthetic_controls": {
+    "oracle-trunk": 0,
+    "oracle-candidate": 0,
+    "oracle-runner": 0,
+    "oracle-bf16-trunk": 0,
+    "oracle-bf16-candidate": 0,
+    "oracle-bf16-runner": 0
+  },
+  "selected_fixture_controls": {
+    "f32-2bit": 0,
+    "f32-4bit": 0,
+    "f32-6bit": 0,
+    "bf16-2bit": 0,
+    "bf16-4bit": 0,
+    "bf16-6bit": 0
+  },
+  "broader_clippy": {
+    "server-clippy": 0,
+    "workspace-clippy": 101
+  },
+  "reviews": {
+    "claude": {
+      "completed": true,
+      "exit_code": 0
+    },
+    "muse": {
+      "completed": true,
+      "exit_code": 0
+    }
+  },
+  "grok_review": {
+    "completed": false,
+    "exit_code": 1
+  },
+  "limitations": [
+    "Full decode disagreement with unchanged MLX-VLM increases to max2.453125; no full-model numerical improvement or acceptance claim.",
+    "The unchanged compiled-reference SwiGLU also differs from the official BF16 activation on these recorded inputs.",
+    "Tied top-k selections and ordered low-precision expert accumulation differ independently; neither policy was changed to fit the reference.",
+    "The official expert replay conditions on AX routing and recorded projection outputs; it does not validate QMM or a full independent model graph.",
+    "Prior first-layer GDN residual and broader full-checkpoint/trained-MTP qualification gates remain open.",
+    "Six short chat checks are semantic smoke, not a quality benchmark or MTP profitability result.",
+    "Full workspace Clippy retains existing core test errors; relevant MLX and server Clippy pass.",
+    "A current bounded Grok retry returned HTTP402 usage balance exhausted; current plan/code reviews completed with Claude and Muse.",
+    "M2 development evidence does not certify the unavailable M5 Ultra SKU."
+  ]
+}

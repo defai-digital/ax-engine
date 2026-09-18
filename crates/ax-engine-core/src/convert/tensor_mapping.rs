@@ -86,6 +86,22 @@ pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleHeadOffsets),
     ),
     (
+        "ple.ple_embedding.ngram_heads_offsets",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleHeadOffsets),
+    ),
+    (
+        "ple.ple_embedding.ngram_heads_vocab_sizes",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleHeadVocabSizes),
+    ),
+    (
+        "ple.ple_embedding.layer_multipliers",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleMultipliers),
+    ),
+    (
+        "ple.layer_multipliers",
+        TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleMultipliers),
+    ),
+    (
         "ple.ngram_heads_vocab_sizes",
         TensorMapping::PerLayer(NativeTensorRole::Qwen4ExpPleHeadVocabSizes),
     ),
@@ -168,6 +184,30 @@ pub(crate) const QWEN4_EXP_HC_TENSOR_MAP: &[(&str, TensorMapping)] = &[
 ];
 
 pub(crate) const QWEN4_EXP_HC_GLOBAL_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "model.hyper_connection_mixer.hc_norm.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerNorm),
+    ),
+    (
+        "model.hyper_connection_mixer.input_mix_weight_down.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerMixDown),
+    ),
+    (
+        "model.hyper_connection_mixer.input_mix_weight_up.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerMixUp),
+    ),
+    (
+        "language_model.model.hyper_connection_mixer.hc_norm.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerNorm),
+    ),
+    (
+        "language_model.model.hyper_connection_mixer.input_mix_weight_down.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerMixDown),
+    ),
+    (
+        "language_model.model.hyper_connection_mixer.input_mix_weight_up.weight",
+        TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerMixUp),
+    ),
     (
         "language_model.hyper_connection_mixer.hc_norm.weight",
         TensorMapping::Global(NativeTensorRole::Qwen4ExpHcMixerNorm),

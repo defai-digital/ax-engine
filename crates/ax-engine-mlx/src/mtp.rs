@@ -2719,7 +2719,7 @@ pub fn deepseek_v4_mtp_hidden_to_logits(
     let norm_w = nextn
         .shared_head_norm
         .as_ref()
-        .unwrap_or(&weights.final_norm);
+        .unwrap_or_else(|| weights.final_norm());
     let normed = rms_norm(&hidden, Some(norm_w), cfg.rms_norm_eps, None);
     let head = nextn.shared_head_head.as_ref().unwrap_or(&weights.lm_head);
     let logits = qw(&normed, head);
@@ -3752,7 +3752,9 @@ mod deepseek_v4_mtp_tests {
     fn test_model_weights(nextn: Option<DeepseekV4NextnWeights>) -> ModelWeights {
         ModelWeights {
             token_embedding: dense_weight(VOCAB, E, 0.83),
-            final_norm: array_f32(&fill(E, 0.89), &[E as i32]),
+            final_norm: Some(array_f32(&fill(E, 0.89), &[E as i32])),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dense_weight(VOCAB, E, 0.97),
             layers: Vec::new(),
             per_layer_embed: None,

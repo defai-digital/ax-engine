@@ -555,6 +555,230 @@ struct RequestState {
     ngram_self_tune: NgramSelfTuneState,
     /// Remaining steps to keep n-gram gated after a utility hurt decision.
     mtp_ngram_utility_hysteresis_remaining: u32,
+    /// Request-local Flash Next MTP candidate state. Never shared with the
+    /// generic MTP head cache or serialized into prefix snapshots.
+    flash_next_mtp: FlashNextMtpRequestState,
+}
+
+/// Draft history for the Flash Next candidate plus its route counters.
+///
+/// The cursor is created only by a cold prefill (empty cache) and advanced
+/// together with the authoritative trunk. Any trunk advance that bypasses the
+/// cursor (restored prefix, direct fallback step, sampled prefill) drops it,
+/// and the request decodes direct for the rest of its generation.
+#[derive(Default)]
+struct FlashNextMtpRequestState {
+    cursor: Option<crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor>,
+    /// Emitted tokens since the last MLX buffer-cache clear.
+    emitted_since_clear: u32,
+    telemetry: FlashNextMtpTelemetry,
+}
+
+impl FlashNextMtpRequestState {
+    /// Drop the draft history. Counts only a live cursor so repeated fallback
+    /// steps after the first drop do not inflate the counter.
+    fn drop_cursor(&mut self) {
+        if self.cursor.take().is_some() {
+            self.telemetry.cursor_dropped = self.telemetry.cursor_dropped.saturating_add(1);
+        }
+    }
+}
+
+/// Cumulative per-request Flash Next MTP route counters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FlashNextMtpTelemetry {
+    /// Cold prefills that created a draft cursor.
+    cursor_initialized: u32,
+    /// Prefill quanta that resumed a cached prefix without a cursor.
+    resumed_without_cursor: u32,
+    /// Prefill quanta whose cursor was discarded by a draft absorb failure.
+    prefill_absorb_failures: u32,
+    /// Live cursors discarded by fallback, misalignment, or step errors.
+    cursor_dropped: u32,
+    /// Verified cursor steps.
+    verified_steps: u32,
+    /// Verified steps whose draft token was accepted.
+    accepted_steps: u32,
+    /// Decode steps served direct while the candidate was requested.
+    direct_fallback_steps: u32,
+    /// Cursor steps that returned an error before publishing any state.
+    step_errors: u32,
+    /// Batched length-2 correction forward time across verified steps.
+    correction_wall_us: u32,
+    /// Bonus-token forward time. Zero on the batched acceptance path.
+    bonus_wall_us: u32,
+    /// Rejection singleton forward time. Zero on acceptance.
+    rejection_wall_us: u32,
+    /// Tokens returned by verified cursor steps, including the next primary.
+    emitted_tokens: u32,
+    /// Minimum correction-row top-two margin over verified steps, milli-logits.
+    /// `u32::MAX` until the first verified step.
+    min_correction_margin_milli: u32,
+}
+
+impl Default for FlashNextMtpTelemetry {
+    fn default() -> Self {
+        Self {
+            cursor_initialized: 0,
+            resumed_without_cursor: 0,
+            prefill_absorb_failures: 0,
+            cursor_dropped: 0,
+            verified_steps: 0,
+            accepted_steps: 0,
+            direct_fallback_steps: 0,
+            step_errors: 0,
+            correction_wall_us: 0,
+            bonus_wall_us: 0,
+            rejection_wall_us: 0,
+            emitted_tokens: 0,
+            min_correction_margin_milli: u32::MAX,
+        }
+    }
+}
+
+impl FlashNextMtpTelemetry {
+    fn merge_from(&mut self, other: Self) {
+        self.cursor_initialized = self
+            .cursor_initialized
+            .saturating_add(other.cursor_initialized);
+        self.resumed_without_cursor = self
+            .resumed_without_cursor
+            .saturating_add(other.resumed_without_cursor);
+        self.prefill_absorb_failures = self
+            .prefill_absorb_failures
+            .saturating_add(other.prefill_absorb_failures);
+        self.cursor_dropped = self.cursor_dropped.saturating_add(other.cursor_dropped);
+        self.verified_steps = self.verified_steps.saturating_add(other.verified_steps);
+        self.accepted_steps = self.accepted_steps.saturating_add(other.accepted_steps);
+        self.direct_fallback_steps = self
+            .direct_fallback_steps
+            .saturating_add(other.direct_fallback_steps);
+        self.step_errors = self.step_errors.saturating_add(other.step_errors);
+        self.correction_wall_us = self
+            .correction_wall_us
+            .saturating_add(other.correction_wall_us);
+        self.bonus_wall_us = self.bonus_wall_us.saturating_add(other.bonus_wall_us);
+        self.rejection_wall_us = self
+            .rejection_wall_us
+            .saturating_add(other.rejection_wall_us);
+        self.emitted_tokens = self.emitted_tokens.saturating_add(other.emitted_tokens);
+        self.min_correction_margin_milli = self
+            .min_correction_margin_milli
+            .min(other.min_correction_margin_milli);
+    }
+
+    fn append_route_decisions(self, decisions: &mut impl RouteDecisionSink) {
+        for (key, value) in [
+            (
+                "ax_mlx_flash_next_mtp_cursor_initialized",
+                self.cursor_initialized,
+            ),
+            (
+                "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                self.resumed_without_cursor,
+            ),
+            (
+                "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                self.prefill_absorb_failures,
+            ),
+            ("ax_mlx_flash_next_mtp_cursor_dropped", self.cursor_dropped),
+            ("ax_mlx_flash_next_mtp_verified_steps", self.verified_steps),
+            ("ax_mlx_flash_next_mtp_accepted_steps", self.accepted_steps),
+            (
+                "ax_mlx_flash_next_mtp_direct_fallback_steps",
+                self.direct_fallback_steps,
+            ),
+            ("ax_mlx_flash_next_mtp_step_errors", self.step_errors),
+            (
+                "ax_mlx_flash_next_mtp_correction_wall_us",
+                self.correction_wall_us,
+            ),
+            ("ax_mlx_flash_next_mtp_bonus_wall_us", self.bonus_wall_us),
+            (
+                "ax_mlx_flash_next_mtp_rejection_wall_us",
+                self.rejection_wall_us,
+            ),
+            ("ax_mlx_flash_next_mtp_emitted_tokens", self.emitted_tokens),
+            (
+                "ax_mlx_flash_next_mtp_min_correction_margin_milli",
+                self.min_correction_margin_milli,
+            ),
+        ] {
+            decisions.upsert_route_decision(key, value);
+        }
+    }
+}
+
+/// Why a Flash Next decode step cannot use the draft cursor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FlashNextMtpDecodeBlock {
+    /// Sampling, repetition processors, or a missing request context.
+    NotStrictGreedy,
+    /// Think soft-close probing or a due budget close needs single-token
+    /// emission so a forced close cannot strand a committed draft token.
+    ThinkControl,
+    /// A lazy direct-pipeline token already occupies the next position.
+    PendingDirect,
+    /// No output budget remains for this step.
+    NoBudget,
+    /// No cursor, or its history does not end at the trunk boundary.
+    CursorUnavailable,
+}
+
+/// Decode-time admission for the Flash Next cursor. Pure so the gate order is
+/// testable without model weights.
+#[allow(clippy::too_many_arguments)]
+fn flash_next_mtp_decode_block(
+    strict_greedy: bool,
+    think_soft_close_armed: bool,
+    think_budget_close_due: bool,
+    pending_direct: bool,
+    remaining_output: usize,
+    cursor_aligned: bool,
+) -> Option<FlashNextMtpDecodeBlock> {
+    if !strict_greedy {
+        Some(FlashNextMtpDecodeBlock::NotStrictGreedy)
+    } else if think_soft_close_armed || think_budget_close_due {
+        Some(FlashNextMtpDecodeBlock::ThinkControl)
+    } else if pending_direct {
+        Some(FlashNextMtpDecodeBlock::PendingDirect)
+    } else if remaining_output == 0 {
+        Some(FlashNextMtpDecodeBlock::NoBudget)
+    } else if !cursor_aligned {
+        Some(FlashNextMtpDecodeBlock::CursorUnavailable)
+    } else {
+        None
+    }
+}
+
+/// What a prefill quantum must do with the request's draft cursor before the
+/// trunk advances.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FlashNextPrefillCursorAction {
+    /// Cold prefill: start a fresh cursor (replacing any stale one).
+    Initialize,
+    /// Continuation whose cursor ends exactly at the trunk boundary.
+    Keep,
+    /// Continuation whose cursor is stale for this cache.
+    Drop,
+    /// Continuation of a restored prefix: no recapture, decode falls back.
+    ResumeWithoutCursor,
+}
+
+const fn flash_next_prefill_cursor_action(
+    cache_seq_len: usize,
+    has_cursor: bool,
+    cursor_aligned: bool,
+) -> FlashNextPrefillCursorAction {
+    if cache_seq_len == 0 {
+        FlashNextPrefillCursorAction::Initialize
+    } else if !has_cursor {
+        FlashNextPrefillCursorAction::ResumeWithoutCursor
+    } else if cursor_aligned {
+        FlashNextPrefillCursorAction::Keep
+    } else {
+        FlashNextPrefillCursorAction::Drop
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -659,6 +883,7 @@ impl RequestState {
             think_soft_close_armed: false,
             ngram_self_tune: NgramSelfTuneState::default(),
             mtp_ngram_utility_hysteresis_remaining: 0,
+            flash_next_mtp: FlashNextMtpRequestState::default(),
         }
     }
 
@@ -748,6 +973,7 @@ fn restore_private_cache_after_batched_writeback(state: &mut RequestState, cache
 /// the target-only cohort. The caller seeds the full target cache into the
 /// batched session immediately after this transition.
 fn suspend_mtp_for_batched_decode(state: &mut RequestState) {
+    state.flash_next_mtp.drop_cursor();
     clear_pending_mtp_proposal(state);
     state.mtp_cache = None;
     state.mtp_decode_count = 0;
@@ -1315,6 +1541,94 @@ impl MlxRunner {
         self.mtp_model_policy.has_attached_drafter()
     }
 
+    /// Drafter served by the generic MTP decode/prefill paths. The Flash Next
+    /// candidate owns a dedicated cursor route and is invisible here, so an
+    /// unrequested candidate routes exactly like a model without a drafter.
+    fn has_generic_mtp(&self) -> bool {
+        self.mtp_model_policy.has_generic_drafter()
+    }
+
+    /// The session requested the attached Flash Next candidate.
+    fn flash_next_mtp_session(&self) -> bool {
+        self.mtp_requested
+            && self.mtp_model_policy.is_flash_next_candidate()
+            && self.weights.qwen4_exp.is_some()
+            && self.weights.qwen4_exp_mtp.is_some()
+    }
+
+    /// Prefill may carry draft history only for requests the cursor can
+    /// decode: argmax sampling without logits processors.
+    fn flash_next_mtp_prefill_eligible(
+        &self,
+        is_greedy: bool,
+        sampling: MlxSamplingParams,
+    ) -> bool {
+        self.flash_next_mtp_session() && is_greedy && !sampling.uses_logits_processors()
+    }
+
+    /// Reconcile the request cursor with the cache immediately before a
+    /// Flash Next prefill helper advances the trunk.
+    fn prepare_flash_next_prefill_cursor(&self, state: &mut RequestState) {
+        let Some(head) = self.weights.qwen4_exp_mtp.as_deref() else {
+            state.flash_next_mtp.drop_cursor();
+            return;
+        };
+        let cursor_aligned = match (&state.flash_next_mtp.cursor, &state.cache.qwen4_exp) {
+            (Some(cursor), Some(trunk)) => cursor.aligned(trunk),
+            _ => false,
+        };
+        match flash_next_prefill_cursor_action(
+            state.cache.seq_len(),
+            state.flash_next_mtp.cursor.is_some(),
+            cursor_aligned,
+        ) {
+            FlashNextPrefillCursorAction::Initialize => {
+                state.flash_next_mtp.cursor =
+                    Some(crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor::new(
+                        head,
+                        self.cfg.compile_cache_identity,
+                    ));
+                state.flash_next_mtp.emitted_since_clear = 0;
+                let telemetry = &mut state.flash_next_mtp.telemetry;
+                telemetry.cursor_initialized = telemetry.cursor_initialized.saturating_add(1);
+            }
+            FlashNextPrefillCursorAction::Keep => {}
+            FlashNextPrefillCursorAction::Drop => state.flash_next_mtp.drop_cursor(),
+            FlashNextPrefillCursorAction::ResumeWithoutCursor => {
+                let telemetry = &mut state.flash_next_mtp.telemetry;
+                telemetry.resumed_without_cursor =
+                    telemetry.resumed_without_cursor.saturating_add(1);
+            }
+        }
+    }
+
+    /// Run one Flash Next prefill quantum through the draft-aware helper. The
+    /// trunk result is authoritative whether or not the cursor survives.
+    fn run_flash_next_mtp_prefill(
+        &self,
+        state: &mut RequestState,
+        tokens: &[u32],
+        chunk_size: usize,
+        completes_prompt: bool,
+    ) -> Option<u32> {
+        self.prepare_flash_next_prefill_cursor(state);
+        let had_cursor = state.flash_next_mtp.cursor.is_some();
+        let token = crate::generate::chunked_prefill_flash_next_mtp(
+            &self.cfg,
+            &self.weights,
+            tokens,
+            &mut state.cache,
+            chunk_size,
+            completes_prompt,
+            &mut state.flash_next_mtp.cursor,
+        );
+        if had_cursor && state.flash_next_mtp.cursor.is_none() {
+            let telemetry = &mut state.flash_next_mtp.telemetry;
+            telemetry.prefill_absorb_failures = telemetry.prefill_absorb_failures.saturating_add(1);
+        }
+        token
+    }
+
     /// Request or suppress model-based MTP independently from the n-gram
     /// speculation switch. The process-wide `AX_NO_SPEC` kill switch remains
     /// authoritative and cannot be re-enabled through this setter.
@@ -1676,6 +1990,14 @@ impl MlxRunner {
             qwen_linear_mtp_certification_candidate_from_env();
         let qwen_linear_projected_replay_enabled =
             crate::fastpath::mtp_linear_projected_replay_enabled();
+        // The sidecar is only usable next to its dedicated trunk. Shared
+        // weights may have been loaded by an earlier build, so derive the
+        // failure from the live opt-in plus the attached handles.
+        let flash_next_mtp_candidate_attached =
+            weights.qwen4_exp.is_some() && weights.qwen4_exp_mtp.is_some();
+        let flash_next_mtp_candidate_attach_failed = cfg.model_family == "qwen4_exp"
+            && crate::weights::flash_next_mtp_sidecar_present(artifacts.root_dir())
+            && !flash_next_mtp_candidate_attached;
         let mtp_model_policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
             qwen_depth: weights.mtp.as_ref().map(|head| head.max_depth),
             glm_depth: weights.glm_mtp.as_ref().map(|head| head.max_depth),
@@ -1714,7 +2036,17 @@ impl MlxRunner {
             // axquant_runtime.json "mtp" block; fail-closed when absent.
             runtime_certification: mtp_runtime_certification(artifacts.root_dir()),
             qwen_linear_throughput_default,
+            flash_next_candidate_attached: flash_next_mtp_candidate_attached,
+            flash_next_candidate_attach_failed: flash_next_mtp_candidate_attach_failed,
         });
+        if flash_next_mtp_candidate_attach_failed {
+            tracing::error!(
+                target: "ax_engine_mlx::runner",
+                model_family = %cfg.model_family,
+                "Flash Next MTP sidecar is present but not attached; \
+                 no MTP drafter is advertised and MlxMtpPolicy::Required sessions will fail",
+            );
+        }
 
         let expert_streaming_active = weights.expert_stream.is_some();
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
@@ -1946,10 +2278,14 @@ impl MlxRunner {
             batched_decode_certification,
         );
         let allow_uncertified_batched_decode = batched_decode_allow_uncertified();
-        let batched_decode_model_eligible =
-            batched_decode_capabilities.eligible(allow_uncertified_batched_decode);
-        let batched_decode_model_rejections =
+        let mut batched_decode_model_rejections =
             batched_decode_capabilities.rejection_reasons(allow_uncertified_batched_decode);
+        if weights.qwen4_exp.is_some() {
+            batched_decode_model_rejections.push("flash_next_request_state");
+        }
+        let batched_decode_model_eligible = batched_decode_capabilities
+            .eligible(allow_uncertified_batched_decode)
+            && weights.qwen4_exp.is_none();
         // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
         // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
         let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
@@ -2513,6 +2849,7 @@ impl MlxRunner {
                 },
                 ngram_acceleration: row.state.ngram_acceleration,
                 mtp_telemetry: row.state.mtp_telemetry,
+                flash_next_mtp_telemetry: row.state.flash_next_mtp.telemetry,
                 gemma4_assistant_mtp_telemetry: row.state.gemma4_assistant_mtp_telemetry,
                 gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
                 decode_telemetry: row.state.decode_telemetry,
@@ -3031,6 +3368,7 @@ impl MlxRunner {
                 },
                 ngram_acceleration: row.state.ngram_acceleration,
                 mtp_telemetry: row.state.mtp_telemetry,
+                flash_next_mtp_telemetry: row.state.flash_next_mtp.telemetry,
                 gemma4_assistant_mtp_telemetry: row.state.gemma4_assistant_mtp_telemetry,
                 gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
                 decode_telemetry: row.state.decode_telemetry,
@@ -3393,6 +3731,9 @@ impl ExecutionRunner for MlxRunner {
             crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(relaxed_mtp_session);
         let _qwen_linear_mtp_exact_scope =
             crate::fastpath::scoped_qwen_linear_mtp_exact(exact_arithmetic_enabled);
+        // Selected reads execute synchronously on this worker. Drain warmup
+        // work before attributing successful gathers to the current step.
+        let _ = crate::expert_stream::take_selected_expert_read_stats();
         let step_id = input.execution_batch.step_id;
         let mut request_updates = Vec::new();
         let logits_handles = Vec::new();
@@ -3401,6 +3742,7 @@ impl ExecutionRunner for MlxRunner {
         let mut route_metadata = input.execution_batch.route_metadata.clone();
         let mut ngram_acceleration = NgramAccelerationTelemetry::default();
         let mut mtp_telemetry = MtpTelemetry::default();
+        let mut flash_next_mtp_telemetry = FlashNextMtpTelemetry::default();
         let mut gemma4_assistant_mtp_telemetry = Gemma4AssistantMtpTelemetry::default();
         let mut gemma4_unified_multimodal_telemetry = Gemma4UnifiedMultimodalTelemetry::default();
         let mut decode_telemetry = DecodeTelemetry::default();
@@ -3542,6 +3884,7 @@ impl ExecutionRunner for MlxRunner {
                     batched_idx.insert(item_index);
                     ngram_acceleration.merge_from(result.ngram_acceleration);
                     mtp_telemetry.merge_from(result.mtp_telemetry);
+                    flash_next_mtp_telemetry.merge_from(result.flash_next_mtp_telemetry);
                     gemma4_assistant_mtp_telemetry
                         .merge_from(result.gemma4_assistant_mtp_telemetry);
                     decode_telemetry.merge_from(result.decode_telemetry);
@@ -3825,6 +4168,7 @@ impl ExecutionRunner for MlxRunner {
                     batched_idx.insert(item_index);
                     ngram_acceleration.merge_from(result.ngram_acceleration);
                     mtp_telemetry.merge_from(result.mtp_telemetry);
+                    flash_next_mtp_telemetry.merge_from(result.flash_next_mtp_telemetry);
                     gemma4_assistant_mtp_telemetry
                         .merge_from(result.gemma4_assistant_mtp_telemetry);
                     decode_telemetry.merge_from(result.decode_telemetry);
@@ -3928,6 +4272,7 @@ impl ExecutionRunner for MlxRunner {
             );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
+            flash_next_mtp_telemetry.merge_from(result.flash_next_mtp_telemetry);
             gemma4_assistant_mtp_telemetry.merge_from(result.gemma4_assistant_mtp_telemetry);
             gemma4_unified_multimodal_telemetry
                 .merge_from(result.gemma4_unified_multimodal_telemetry);
@@ -4028,9 +4373,19 @@ impl ExecutionRunner for MlxRunner {
             let mut route_decisions =
                 IndexedRouteDecisions::new(&mut route_metadata.crossover_decisions);
             decode_telemetry.append_route_decisions(&mut route_decisions);
+            let selected_reads = crate::expert_stream::take_selected_expert_read_stats();
+            route_decisions.upsert_route_decision(
+                "ax_mlx_flash_next_selected_expert_gathers",
+                u32::try_from(selected_reads.gathers).unwrap_or(u32::MAX),
+            );
+            route_decisions.upsert_route_decision(
+                "ax_mlx_flash_next_selected_expert_payload_kib",
+                u32::try_from(selected_reads.payload_bytes / 1024).unwrap_or(u32::MAX),
+            );
             if !skip_route_telemetry {
                 ngram_acceleration.append_route_decisions(&mut route_decisions);
                 mtp_telemetry.append_route_decisions(&mut route_decisions);
+                flash_next_mtp_telemetry.append_route_decisions(&mut route_decisions);
                 gemma4_moe_profile.append_route_decisions(&mut route_decisions);
                 moe_profile.append_route_decisions(&mut route_decisions);
                 linear_attention_profile.append_route_decisions(&mut route_decisions);
@@ -5138,6 +5493,7 @@ impl MlxRunner {
                 },
                 ngram_acceleration: NgramAccelerationTelemetry::default(),
                 mtp_telemetry: MtpTelemetry::default(),
+                flash_next_mtp_telemetry: FlashNextMtpTelemetry::default(),
                 gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
                 gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
                 decode_telemetry: DecodeTelemetry::default(),
@@ -5316,6 +5672,13 @@ impl MlxRunner {
         let sampled_tokens = match item.mode {
             ExecutionMode::Prefill => {
                 let prefill_started = Instant::now();
+                // Only the text prefill below carries Flash Next draft history.
+                // Any other prefill advances the trunk without the cursor.
+                let flash_next_mtp_prefill = !has_native_multimodal_prefill
+                    && self.flash_next_mtp_prefill_eligible(is_greedy, sampling);
+                if !flash_next_mtp_prefill {
+                    state.flash_next_mtp.drop_cursor();
+                }
                 let sampled_token = if let Some(inputs) = gemma4_unified_inputs {
                     if !prefill_completes_prompt {
                         return errored_item_run(
@@ -5830,15 +6193,26 @@ impl MlxRunner {
                             prefill_tokens.len(),
                         ) {
                         let head_tokens = &prefill_tokens[..head];
-                        chunked_prefill_cache_only(
-                            &self.cfg,
-                            &self.weights,
-                            head_tokens,
-                            &mut state.cache,
-                            prefill_chunk_for_request,
-                            CacheOnlyPrefillLayout::PreserveFinalTokenStep,
-                            crate::generate::CacheOnlyBarrier::Blocking,
-                        );
+                        if flash_next_mtp_prefill {
+                            // Same n-1 plus singleton schedule as the
+                            // cache-only head, with draft history absorbed.
+                            let _ = self.run_flash_next_mtp_prefill(
+                                &mut state,
+                                head_tokens,
+                                prefill_chunk_for_request,
+                                false,
+                            );
+                        } else {
+                            chunked_prefill_cache_only(
+                                &self.cfg,
+                                &self.weights,
+                                head_tokens,
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                CacheOnlyPrefillLayout::PreserveFinalTokenStep,
+                                crate::generate::CacheOnlyBarrier::Blocking,
+                            );
+                        }
                         state.prefill_boundary_snapshot =
                             Some((state.cache.seq_len(), state.cache.clone()));
                         &prefill_tokens[head..]
@@ -5882,7 +6256,22 @@ impl MlxRunner {
                                 ),
                             );
                             let recompute_history = state.repetition_history(token_ids, sampling);
-                            let tok = if should_capture_qwen_mtp_prefill_history(
+                            let tok = if flash_next_mtp_prefill {
+                                // The cache was reset above, so this cold
+                                // recompute starts a fresh cursor.
+                                let Some(tok) = self.run_flash_next_mtp_prefill(
+                                    &mut state,
+                                    token_ids,
+                                    recompute_chunk,
+                                    true,
+                                ) else {
+                                    return errored_item_run(
+                                        item.request_id,
+                                        "Flash Next MTP recompute prefill produced no token",
+                                    );
+                                };
+                                tok
+                            } else if should_capture_qwen_mtp_prefill_history(
                                 self.mtp_requested,
                                 self.weights.mtp.is_some(),
                             ) {
@@ -5935,6 +6324,32 @@ impl MlxRunner {
                             };
                             Some(tok)
                         }
+                    } else if !prefill_completes_prompt && flash_next_mtp_prefill {
+                        // Intermediate scheduler quantum: the cursor persists
+                        // in request state until the final quantum.
+                        let _ = self.run_flash_next_mtp_prefill(
+                            &mut state,
+                            prefill_tokens,
+                            prefill_chunk_for_request,
+                            false,
+                        );
+                        state
+                            .decode_telemetry
+                            .record_prefill_cache_only_continuation();
+                        None
+                    } else if flash_next_mtp_prefill {
+                        let Some(tok) = self.run_flash_next_mtp_prefill(
+                            &mut state,
+                            prefill_tokens,
+                            prefill_chunk_for_request,
+                            true,
+                        ) else {
+                            return errored_item_run(
+                                item.request_id,
+                                "Flash Next MTP prefill produced no token",
+                            );
+                        };
+                        Some(tok)
                     } else if !prefill_completes_prompt {
                         chunked_prefill_cache_only(
                             &self.cfg,
@@ -6237,6 +6652,7 @@ impl MlxRunner {
         // Re-insert state only if the request continues — lock held briefly.
         let ngram_acceleration = state.ngram_acceleration;
         let mtp_telemetry = state.mtp_telemetry;
+        let flash_next_mtp_telemetry = state.flash_next_mtp.telemetry;
         let gemma4_assistant_mtp_telemetry = state.gemma4_assistant_mtp_telemetry;
         let decode_telemetry = state.decode_telemetry;
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
@@ -6316,6 +6732,7 @@ impl MlxRunner {
             },
             ngram_acceleration,
             mtp_telemetry,
+            flash_next_mtp_telemetry,
             gemma4_assistant_mtp_telemetry,
             gemma4_unified_multimodal_telemetry,
             decode_telemetry,
@@ -6685,11 +7102,24 @@ impl MlxRunner {
     /// linear conv/recurrent state).
     fn verify_restored_prefix_snapshot(
         &self,
-        cache: &MlxKVCache,
+        cache: &mut MlxKVCache,
         expected_tokens: usize,
     ) -> Result<(), MlxKVCacheSerializeError> {
         let required = self.restored_linear_layer_requirements();
-        cache.verify_restored_snapshot(self.cfg.layer_count, expected_tokens, required.as_deref())
+        cache.verify_restored_snapshot(
+            self.cfg.layer_count,
+            expected_tokens,
+            required.as_deref(),
+        )?;
+        match (&self.weights.qwen4_exp, &mut cache.qwen4_exp) {
+            (Some(weights), Some(state)) => state
+                .rebind_for_model(weights, self.cfg.compile_cache_identity)
+                .map_err(MlxKVCacheSerializeError::FlashNextState),
+            (None, None) => Ok(()),
+            _ => Err(MlxKVCacheSerializeError::FlashNextState(
+                "snapshot family does not match the model".into(),
+            )),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6953,9 +7383,9 @@ impl MlxRunner {
                     // prevents newly written entries from reaching here;
                     // this guard also contains in-process legacy entries.
                 }
-                Ok(restored_cache) => {
-                    if let Err(e) =
-                        self.verify_restored_prefix_snapshot(&restored_cache, reused_tokens.len())
+                Ok(mut restored_cache) => {
+                    if let Err(e) = self
+                        .verify_restored_prefix_snapshot(&mut restored_cache, reused_tokens.len())
                     {
                         telemetry.record_blocked_snapshot_incomplete();
                         tracing::warn!(
@@ -7038,7 +7468,7 @@ impl MlxRunner {
             && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, reused_tokens)
         {
             match disk.get_restored_timed(&key_bytes) {
-                Ok(Some((restored, read_timings))) => {
+                Ok(Some((mut restored, read_timings))) => {
                     // Streaming restore materializes tensors while reading;
                     // stage timings already include payload IO + checksum.
                     let deserialize_us = 0u64;
@@ -7066,8 +7496,8 @@ impl MlxRunner {
                             "disk prefix-cache payload contains slot-ordered rotating KV; \
                              treating as miss and recomputing ordered prefix state",
                         );
-                    } else if let Err(e) =
-                        self.verify_restored_prefix_snapshot(&restored.cache, reused_tokens.len())
+                    } else if let Err(e) = self
+                        .verify_restored_prefix_snapshot(&mut restored.cache, reused_tokens.len())
                     {
                         telemetry.record_blocked_snapshot_incomplete();
                         telemetry.record_disk_fallback_recompute();
@@ -7977,6 +8407,16 @@ impl MlxRunner {
         // false, so MTP is not requested. Without this, greedy Flash decode
         // skipped the mlx-lm-style async_eval double-buffer and sat ~1.8×
         // behind mlx-lm (15 vs 28 tok/s on Flash-0731 AXQ 2-bit).
+        // Requested Flash Next candidate: must run before the session-direct
+        // double buffer so a direct session cannot bypass it. Ineligible
+        // steps fall through to the generic routes, which see no drafter.
+        if self.flash_next_mtp_session()
+            && let Some(tokens) =
+                self.try_flash_next_mtp_decode(state, input_tokens, sampling, is_greedy, &options)
+        {
+            return tokens;
+        }
+
         let pure_direct_pipeline = v4_uncertified_uses_pure_direct_pipeline(
             self.mtp_model_policy.is_deepseek_v4_direct_fallback(),
             self.disable_ngram_acceleration,
@@ -7990,7 +8430,7 @@ impl MlxRunner {
                 && should_use_session_direct_pipeline(
                     self.disable_ngram_acceleration,
                     is_greedy || sampling.temperature <= 0.0,
-                    self.has_mtp(),
+                    self.has_generic_mtp(),
                     self.mtp_requested,
                 ));
         if direct_pipeline {
@@ -8030,7 +8470,7 @@ impl MlxRunner {
             && ngram_request_disabled_direct_fast_path(
                 is_greedy,
                 sampling.uses_logits_processors(),
-                self.has_mtp(),
+                self.has_generic_mtp(),
                 state.ngram_acceleration_disabled_for_request,
                 state.ngram_request_disable_reason,
             )
@@ -8056,6 +8496,167 @@ impl MlxRunner {
             options.request_context,
         );
         apply_decode_result(state, &result, options.terminal_token_ids)
+    }
+
+    /// One verified Flash Next cursor step, or `None` when this step must
+    /// decode direct. Every `None` path leaves the trunk untouched; because
+    /// the direct step then advances the trunk without the cursor, the cursor
+    /// is dropped and the request stays direct for the rest of generation.
+    fn try_flash_next_mtp_decode(
+        &self,
+        state: &mut RequestState,
+        input_tokens: &[u32],
+        sampling: MlxSamplingParams,
+        is_greedy: bool,
+        options: &DecodeOneOptions<'_>,
+    ) -> Option<Vec<u32>> {
+        let ctx = options.request_context;
+        let remaining_budget = ctx.map_or(0, |ctx| {
+            ctx.max_output_tokens.saturating_sub(ctx.generated_len)
+        });
+        let think_budget_close_due = ctx.is_some_and(|ctx| {
+            think_budget_close_decision(
+                state.ngram_in_think,
+                self.cfg.think_end_token_id,
+                remaining_budget,
+                state.think_emitted_tokens,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+                false,
+            )
+        });
+        let primary = state
+            .next_model_last_token
+            .or_else(|| input_tokens.last().copied());
+        let cursor_aligned = primary.is_some()
+            && !state.mtp_bypassed
+            && !state.mtp_suspended_for_batched_decode
+            && state.cache.mrope_position_delta() == 0
+            && state.cache.rope_offset == 0
+            && match (&state.flash_next_mtp.cursor, &state.cache.qwen4_exp) {
+                (Some(cursor), Some(trunk)) => {
+                    trunk.position() == state.cache.seq_len() && cursor.aligned(trunk)
+                }
+                _ => false,
+            };
+        let block = flash_next_mtp_decode_block(
+            ctx.is_some() && is_greedy && !sampling.uses_logits_processors(),
+            state.think_soft_close_armed,
+            think_budget_close_due,
+            state.pending_direct.is_some(),
+            remaining_budget as usize,
+            cursor_aligned,
+        );
+        let (None, Some(primary), Some(trunk_weights), Some(head), Some(cursor), Some(trunk_state)) = (
+            block,
+            primary,
+            self.weights.qwen4_exp.as_deref(),
+            self.weights.qwen4_exp_mtp.as_deref(),
+            state.flash_next_mtp.cursor.as_mut(),
+            state.cache.qwen4_exp.as_ref(),
+        ) else {
+            self.record_flash_next_mtp_direct_fallback(state);
+            return None;
+        };
+
+        let remaining_output = remaining_budget as usize;
+        let step = match cursor.step(
+            trunk_weights,
+            head,
+            trunk_state,
+            self.cfg.compile_cache_identity,
+            primary,
+            remaining_output,
+            options.terminal_token_ids,
+        ) {
+            Ok(step) => step,
+            Err(error) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    %error,
+                    "Flash Next MTP step failed before publishing state; decoding direct"
+                );
+                let telemetry = &mut state.flash_next_mtp.telemetry;
+                telemetry.step_errors = telemetry.step_errors.saturating_add(1);
+                self.record_flash_next_mtp_direct_fallback(state);
+                return None;
+            }
+        };
+
+        // Publish the verified trunk, then move the shared cache boundary.
+        state.cache.qwen4_exp = Some(step.trunk_state);
+        state.cache.advance(step.committed_len);
+
+        // A one-token budget cannot accept a draft; do not count it as a miss.
+        let drafted = usize::from(remaining_output > 1);
+        let accepted = usize::from(step.accepted);
+        state.mtp_telemetry.record_correctness_mode(
+            MtpCorrectnessMode::GreedyExact,
+            MtpProposalLaw::DeterministicDelta,
+        );
+        state
+            .mtp_telemetry
+            .record_step(drafted, accepted, &[MtpDraftSource::Mtp], None, accepted);
+        state.mtp_telemetry.record_timings(MtpStepTimings {
+            verify_forward_wall_us: step.verify_wall_us,
+            draft_wall_us: step.draft_wall_us,
+            mtp_draft_wall_us: step.draft_wall_us,
+            verify_tokens: saturating_u32(step.committed_len),
+            emitted_tokens: saturating_u32(step.emitted.len()),
+            ..MtpStepTimings::default()
+        });
+        state.decode_telemetry.record_production_decode_eval();
+        let flash_next = &mut state.flash_next_mtp;
+        flash_next.telemetry.verified_steps = flash_next.telemetry.verified_steps.saturating_add(1);
+        flash_next.telemetry.accepted_steps = flash_next
+            .telemetry
+            .accepted_steps
+            .saturating_add(u32::from(step.accepted));
+        flash_next.telemetry.correction_wall_us = flash_next
+            .telemetry
+            .correction_wall_us
+            .saturating_add(step.correction_wall_us);
+        flash_next.telemetry.bonus_wall_us = flash_next
+            .telemetry
+            .bonus_wall_us
+            .saturating_add(step.bonus_wall_us);
+        flash_next.telemetry.rejection_wall_us = flash_next
+            .telemetry
+            .rejection_wall_us
+            .saturating_add(step.rejection_wall_us);
+        flash_next.telemetry.emitted_tokens = flash_next
+            .telemetry
+            .emitted_tokens
+            .saturating_add(saturating_u32(step.emitted.len()));
+        let correction_milli =
+            crate::model::qwen4_exp_mtp::correction_margin_milli(step.correction_margin);
+        flash_next.telemetry.min_correction_margin_milli = flash_next
+            .telemetry
+            .min_correction_margin_milli
+            .min(correction_milli);
+        // Mirror the direct pipeline's buffer-cache cadence without relying
+        // on an exact modulo hit, since accepted steps emit two tokens.
+        flash_next.emitted_since_clear = flash_next
+            .emitted_since_clear
+            .saturating_add(saturating_u32(step.emitted.len()));
+        if self.direct_clear_cache_cadence > 0
+            && flash_next.emitted_since_clear >= self.direct_clear_cache_cadence
+        {
+            flash_next.emitted_since_clear = 0;
+            clear_cache();
+        }
+        Some(apply_decode_result(
+            state,
+            &step.emitted,
+            options.terminal_token_ids,
+        ))
+    }
+
+    fn record_flash_next_mtp_direct_fallback(&self, state: &mut RequestState) {
+        state.mtp_telemetry.record_direct_fallback();
+        state.flash_next_mtp.drop_cursor();
+        let telemetry = &mut state.flash_next_mtp.telemetry;
+        telemetry.direct_fallback_steps = telemetry.direct_fallback_steps.saturating_add(1);
     }
 
     /// Decode one deterministic token on the direct double-buffer pipeline.
@@ -11396,7 +11997,7 @@ impl MlxRunner {
         // so real-code bigrams are seeded before the first decode step. Without
         // MTP, keep the conservative 64-token guard to avoid random-token false
         // positives that would disable n-gram for the first 16 decode steps.
-        let has_mtp = self.has_mtp();
+        let has_mtp = self.has_generic_mtp();
         seed_generation_ngram_from_prompt(state, has_mtp);
         seed_generation_ngram_from_prefill_output(state, prefill_output_token);
 
@@ -11713,7 +12314,7 @@ impl MlxRunner {
         let exact_supported = mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
         let mtp_uses_direct_pipeline = mtp_fallback_primes_direct_pipeline(
             mtp_request_route(
-                self.has_mtp(),
+                self.has_generic_mtp(),
                 self.mtp_requested,
                 exact_supported,
                 approximate_profile,
@@ -11758,14 +12359,23 @@ impl MlxRunner {
             && is_greedy
             && state.cache.seq_len() >= 512
             && gemma4_moe_long_mt_enabled();
+        // A live Flash Next cursor must see the first decode step: a primed
+        // lazy direct token would occupy that position and strand the cursor.
+        // Direct greedy prefill therefore snapshots at prompt_len+1;
+        // MTP-with-cursor stays at prompt_len.
+        let flash_next_cursor_owns_decode = self.flash_next_mtp_session()
+            && state.flash_next_mtp.cursor.is_some()
+            && is_greedy
+            && !sampling.uses_logits_processors();
         if (should_bootstrap_direct_pipeline(
             self.disable_ngram_acceleration,
             state.ngram_acceleration_disabled_for_request,
-            self.has_mtp(),
+            self.has_generic_mtp(),
             mtp_uses_direct_pipeline,
             self.mtp_requested,
         ) || gemma_exact_direct_bootstrap)
             && !gemma_moe_long_mt_singleton
+            && !flash_next_cursor_owns_decode
             && (is_greedy || (self.disable_ngram_acceleration && sampling.temperature <= 0.0))
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token
@@ -11838,7 +12448,7 @@ impl MlxRunner {
             && mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
         let mtp_direct_only = state.mtp_bypassed || state.mtp_suspended_for_batched_decode;
         match mtp_request_route(
-            self.has_mtp(),
+            self.has_generic_mtp(),
             self.mtp_requested,
             exact_supported,
             approximate_profile,
@@ -13858,6 +14468,7 @@ struct MlxItemRun {
     update: RequestExecutionUpdate,
     ngram_acceleration: NgramAccelerationTelemetry,
     mtp_telemetry: MtpTelemetry,
+    flash_next_mtp_telemetry: FlashNextMtpTelemetry,
     gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry,
     gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry,
     decode_telemetry: DecodeTelemetry,
@@ -13884,6 +14495,7 @@ fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemR
         },
         ngram_acceleration: NgramAccelerationTelemetry::default(),
         mtp_telemetry: MtpTelemetry::default(),
+        flash_next_mtp_telemetry: FlashNextMtpTelemetry::default(),
         gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
         gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
         decode_telemetry: DecodeTelemetry::default(),
@@ -16636,6 +17248,24 @@ mod tests {
         // Degenerate inputs.
         assert_eq!(head(0, 0, 61), None);
         assert_eq!(head(16, 0, 0), None);
+        // Four-token blocks around the 69-token real-pack prompt: capture
+        // never invents a token. The extra direct-prefill position at 70 is
+        // the pipeline bootstrap, not this boundary.
+        for prompt_len in 65..=72 {
+            let captured = head(4, 0, prompt_len);
+            if prompt_len.is_multiple_of(4) {
+                assert_eq!(captured, None, "aligned prompt_len={prompt_len}");
+            } else {
+                assert_eq!(
+                    captured,
+                    Some(prompt_len - prompt_len % 4),
+                    "unaligned prompt_len={prompt_len}"
+                );
+            }
+        }
+        assert_eq!(head(4, 0, 69), Some(68));
+        assert_eq!(head(4, 0, 68), None);
+        assert_eq!(head(4, 0, 72), None);
     }
 
     #[test]
@@ -17461,7 +18091,9 @@ mod tests {
     fn runner_test_weights(layers: Vec<LayerWeights>) -> ModelWeights {
         ModelWeights {
             token_embedding: unit_weight(),
-            final_norm: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            final_norm: Some(mlx_sys::zeros(&[1], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: unit_weight(),
             layers,
             per_layer_embed: None,
@@ -21607,3 +22239,6 @@ mod tests {
         assert_eq!(mtp_warmup_absolute_rope_start(50, 100, 0), 0); // clamp
     }
 }
+
+#[cfg(test)]
+mod flash_next_tests;

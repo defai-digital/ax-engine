@@ -100,10 +100,111 @@ Silent direct-fallback on the MTP path is a fail.
 Campaign-only (does not block unrelated patches): MTP Tier 2 promotion, 8h/72h
 endurance, long-context decode-at-depth, peer ranking, multi-model residency,
 multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
-Mac mini M4 Pro 64 GB SKU. Qwen 3.8 Flash Next is incubating on Mac Studio M5 Ultra
-256 GB (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`). Convert may
-map `qwen4_exp` metadata; load/serve stay fail-closed. Do not treat a laptop
-campaign host as either SKU.
+Mac mini M4 Pro 64 GB SKU. Qwen 3.8 Flash Next MXFP4 MTP is a
+second SKU on MacBook Pro M5 Max 128 GB
+(`python3 scripts/qualify_qwen38_flash_next.py --dry-run`).
+Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
+Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
+variable. The Flash Next development comparison uses a pinned MLX-VLM
+reference because `mlx_lm` has no `qwen4_exp` model. Passing `--skip-mlx-lm`
+to the general benchmark only skips its baseline; it does not install or run
+that separate reference. These records never claim an `mlx_lm` ratio.
+See the [Flash Next record](model-certifications/qwen3.8-flash-next.md).
+Do not treat a campaign host as either SKU.
+
+## Flash Next residency control (development only)
+
+The ignored real-pack test writes four tokens, full F32 logit fingerprints,
+serialized cache fingerprints, and memory/table-read counters. Use a private
+copy of an audited pack; ordinary auto-conversion may create its manifest.
+Run on an adequately sized Apple Silicon development host with MLX 0.32.2:
+
+```bash
+AX_STREAM_EXPERTS=on AX_STREAM_EXPERT_LAYERS=1 \
+AX_FLASH_NEXT_EXPECT_STREAMING=1 \
+AX_FLASH_NEXT_CANDIDATE_PACK_DIR=/path/to/private-flash-next-6bit \
+AX_FLASH_NEXT_PROMPT_IDS='[760,6511,314,9338,369]' \
+AX_FLASH_NEXT_SMOKE_OUTPUT=/tmp/flash-next-6bit-on.json \
+cargo test -p ax-engine-mlx --profile release-server \
+  model::qwen4_exp_integration_tests::qwen4_exp_real_pack_residency_fingerprint \
+  -- --ignored --exact --nocapture
+```
+
+For a resident control set `AX_STREAM_EXPERTS=off` and
+`AX_FLASH_NEXT_EXPECT_STREAMING=0`, using a different output filename. Auto uses
+the existing full-resident estimate plus 48 GiB admission rule; set the expected
+streaming value for the pack and host being tested. Audited 4-bit/group64 and
+6-bit/group64 packs need no family opt-in. The 2-bit export still needs
+`AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and `AX_ENGINE_2BIT_EXPERIMENTAL=1` in
+every process.
+
+For selected-expert controls, keep `AX_STREAM_EXPERTS=on` and add
+`AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1`, writing a separate result file. The
+`selected_expert_payload_bytes` field must be positive; without the flag it
+must be zero. This field counts successful row reads, including successful
+earlier projections if a later projection fails.
+
+The fingerprint harness accepts 2-512 prompt tokens; broader context validation
+uses the dedicated qualification and serving campaigns.
+
+For bounded multi-token Shared prefill, additionally set
+`AX_MLX_FLASH_NEXT_SELECTED_PREFILL=1`. Both selected flags are required. The
+`selected_expert_payload_bytes_after_prefill` field is positive when a layer's
+expert union fits the selected payload cap. With a multi-token test prefix, it
+remains zero for the singleton-only control. Compare `prefix_record` as well as generated records to cover logits
+and serialized state immediately after the same multi-token prefill. Capacity
+misses alone retain whole-layer reads; malformed metadata and I/O errors fail.
+
+Compare `generated_ids` and every `records` entry across modes of the same pack,
+with the same prompt and prefill schedule. This test alone does not establish
+checkpoint quality, long-context correctness, throughput, or SKU qualification.
+
+When a greedy continuation differs, the ignored fingerprint test accepts
+`AX_FLASH_NEXT_TEACHER_FORCE_IDS='[11751,13,271]'` to fix the three subsequent
+singleton inputs. It validates the token count and vocabulary bounds and
+records the forced inputs separately from the predicted IDs. Compare logits
+only when the complete input history and prefill schedule match.
+
+For independent numerical comparisons, set `AX_FLASH_NEXT_LOGITS_DIR` to a
+fresh output directory. The fingerprint test writes `prefix.f32le` and
+`decode-0.f32le` through `decode-3.f32le`: contiguous little-endian float32
+pre-softmax logits, with shapes recorded in the corresponding JSON fingerprint.
+These are diagnostic files and must not be added as model artifacts.
+
+The test binary also accepts `AX_FLASH_NEXT_FIRST_LAYER_DUMP` for synchronized
+embedding and first-layer stage dumps. Each `.f32le` file has a JSON shape and
+original dtype record. This adds evaluation barriers; verify that final logits
+and state still match the uninstrumented control. It is not a timing baseline.
+
+With that explicit dump root set, `AX_FLASH_NEXT_DUMP_LAYER` selects a zero-based
+layer instead of the default 0. Use a separate directory for each layer. The
+checkpoint's PLE layer IDs are one-based: ID 2 corresponds to dump layer 1.
+HC stages include occurrence 1 (attention) or 2 (MLP) to distinguish their
+activation, injection and stream-mean boundaries. PLE stages include gate,
+score, key/query/value and convolution window/weights/pre-activation/output.
+These controls exist only in the test binary.
+
+The first-layer dump also records GDN raw Q/K/V, log decay, beta, incoming and
+outgoing recurrent state, FP32 recurrence output, norm gain, gate and gated
+output. State uses AX's `[batch, value_heads, value_dim, key_dim]` layout; an
+official Transformers comparison must transpose its final two axes. Preserve
+the original dtype metadata when restoring captured BF16 values.
+
+MoE stage dumps include router logits, original expert IDs and weights, expert
+and shared gate/up activations, down projections, weighted outputs and the
+complete delta. Compare activation on identical captured projections; separately
+record tied top-k selections and expert accumulation order. Conditioning an
+oracle on captured routing/projections does not establish full-model agreement.
+
+The ignored `qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact` test
+also accepts `AX_FLASH_NEXT_REAL_PACK`, `AX_FLASH_NEXT_PROMPT_IDS` (3-16 tokens),
+and `AX_FLASH_NEXT_RESULT_PATH`. This real-pack mode requires both selected
+expert flags, forces paging, and checks primary and draft state against a
+same-schedule direct/full-head control. Its MTP-only selected payload counter
+excludes reference forwards. Audited 4-bit and 6-bit packs need no family
+opt-in; 2-bit needs both `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
+`AX_ENGINE_2BIT_EXPERIMENTAL=1`. Without the real-pack
+variable, the existing synthetic MTP oracle mode is unchanged.
 
 ## Secondary families
 

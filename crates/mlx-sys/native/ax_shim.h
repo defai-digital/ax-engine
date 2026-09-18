@@ -137,6 +137,7 @@ int ax_shim_array_is_evaled(const mlx_array arr);
 const float* mlx_array_data_float32(const mlx_array arr);
 const uint8_t* mlx_array_data_uint8(const mlx_array arr);
 const uint32_t* mlx_array_data_uint32(const mlx_array arr);
+const int64_t* mlx_array_data_int64(const mlx_array arr);
 
 /* ================================================================
  * Stream

@@ -398,8 +398,8 @@ pub(crate) fn default_moe_norm_topk_prob(model_type: &str) -> bool {
 pub(crate) fn runtime_status_for_model_type(model_type: &str) -> NativeRuntimeStatus {
     if is_qwen4_exp_family(model_type) {
         return NativeRuntimeStatus {
-            ready: false,
-            blockers: vec!["qwen4_exp_native_trunk_not_implemented".to_string()],
+            ready: true,
+            blockers: Vec::new(),
             notes: vec![
                 "n-gram embedding table must not be eval'd at load_weights".to_string(),
                 "best-experience SKU: Mac Studio M5 Ultra 256 GB".to_string(),
@@ -528,24 +528,80 @@ pub(crate) fn is_deepseek_v4(model_type: &str) -> bool {
 pub(crate) fn qwen4_exp_config(
     config: &serde_json::Value,
     model_type: &str,
-) -> NativeQwen4ExpConfig {
+) -> Result<NativeQwen4ExpConfig, ConvertError> {
     if !is_qwen4_exp_family(model_type) {
-        return NativeQwen4ExpConfig::default();
+        return Ok(NativeQwen4ExpConfig::default());
     }
-    NativeQwen4ExpConfig {
-        ngram_size: arch_u64(config, model_type, "ngram_size").and_then(u64_to_u32),
-        ngram_vocab_size_base: arch_u64(config, model_type, "ngram_vocab_size_base")
-            .and_then(u64_to_u32),
-        split_ngram_parts: arch_u64(config, model_type, "split_ngram_parts").and_then(u64_to_u32),
-        heads_per_ngram: arch_u64(config, model_type, "heads_per_ngram").and_then(u64_to_u32),
-        hc_count: arch_u64(config, model_type, "hc_count").and_then(u64_to_u32),
-        hc_lowrank: arch_u64(config, model_type, "hc_lowrank").and_then(u64_to_u32),
-        indexer_budget: arch_u64(config, model_type, "indexer_budget").and_then(u64_to_u32),
-        indexer_head_dim: arch_u64(config, model_type, "indexer_head_dim").and_then(u64_to_u32),
-        indexer_n_heads: arch_u64(config, model_type, "indexer_n_heads").and_then(u64_to_u32),
-        indexer_kv_heads: arch_u64(config, model_type, "indexer_kv_heads").and_then(u64_to_u32),
+    let error = |field: &str| ConvertError::InvalidModelContract {
+        model_type: model_type.to_string(),
+        message: format!("invalid qwen4_exp field {field}"),
+    };
+    let field = |name: &str| {
+        config
+            .get(name)
+            .or_else(|| config.get("text_config").and_then(|text| text.get(name)))
+    };
+    let integer = |name: &str| -> Result<Option<u32>, ConvertError> {
+        field(name)
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(u64_to_u32)
+                    .ok_or_else(|| error(name))
+            })
+            .transpose()
+    };
+    let ple_layer_ids = field("ple_layer_ids")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_array()
+                .ok_or_else(|| error("ple_layer_ids"))?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .and_then(u64_to_u32)
+                        .filter(|id| *id > 0)
+                        .ok_or_else(|| error("ple_layer_ids"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let ngram_seed = field("seed")
+        .filter(|value| !value.is_null())
+        .map(|value| value.as_u64().ok_or_else(|| error("seed")))
+        .transpose()?
+        .unwrap_or(1234);
+    Ok(NativeQwen4ExpConfig {
+        output_gate_type: Some(
+            field("output_gate_type")
+                .filter(|value| !value.is_null())
+                .map(|value| value.as_str().ok_or_else(|| error("output_gate_type")))
+                .transpose()?
+                .unwrap_or("sigmoid")
+                .to_string(),
+        ),
+        ple_layer_ids,
+        ple_embed_dim: integer("ple_embed_dim")?.or(integer("hidden_size")?),
+        ple_conv_kernel_size: integer("ple_conv_kernel_size")?.or(Some(4)),
+        ngram_vocab_divisor: integer("make_ngram_vocab_size_divisible_by")?.or(Some(128)),
+        ngram_seed: Some(ngram_seed),
+        ngram_size: integer("ngram_size")?.or(Some(3)),
+        ngram_vocab_size_base: integer("ngram_vocab_size_base")?.or(Some(20_000_000)),
+        split_ngram_parts: integer("split_ngram_parts")?.or(Some(512)),
+        heads_per_ngram: integer("heads_per_ngram")?.or(Some(8)),
+        hc_count: integer("hc_count")?,
+        hc_lowrank: integer("hc_lowrank")?,
+        indexer_budget: integer("indexer_budget")?,
+        indexer_head_dim: integer("indexer_head_dim")?,
+        indexer_n_heads: integer("indexer_n_heads")?,
+        indexer_kv_heads: integer("indexer_kv_heads")?,
+        indexer_compress_ratio: integer("indexer_compress_ratio")?,
         never_eval_ngram_at_load: true,
-    }
+    })
 }
 
 /// Parse DeepSeek V4 (Flash) architecture parameters from config.json.

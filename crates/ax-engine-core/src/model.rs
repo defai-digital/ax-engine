@@ -5,6 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod qwen4_exp;
+
 pub const AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION: &str = "ax.native_model.v1";
 pub const AX_NATIVE_MODEL_MANIFEST_FILE: &str = "model-manifest.json";
 pub const QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL: u32 = 4;
@@ -20,6 +22,10 @@ pub const EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[3];
 /// natively; production validation still rejects it by default.
 pub const AX_ENGINE_2BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_2BIT_EXPERIMENTAL";
 pub const EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[2];
+/// Opt-in for Flash Next formats that are not product (currently 2-bit/group32).
+/// Audited affine 4-bit/group64 and 6-bit/group64 packs load without this gate.
+/// 2-bit still also requires [`AX_ENGINE_2BIT_EXPERIMENTAL_ENV`]. MXFP4 stays rejected.
+pub const AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +42,8 @@ pub enum NativeTensorDataType {
     Bf16,
     F32,
     I8,
+    /// Signed checkpoint metadata, including Flash Next n-gram hash buffers.
+    I64,
     U8,
     /// Packed uint32 — used by MLX affine quantization for the weight tensor.
     /// Bit width and group size are carried by per-tensor quantization metadata.
@@ -287,6 +295,7 @@ pub enum NativeTensorRole {
     Qwen4ExpPleNormConv,
     Qwen4ExpPleHeadOffsets,
     Qwen4ExpPleHeadVocabSizes,
+    Qwen4ExpPleMultipliers,
     Qwen4ExpIndexerQNorm,
     Qwen4ExpIndexerKNorm,
     /// Qwen 3.8 Flash Next fused QSA indexer Q/K projection (`index_qk_proj`).
@@ -407,9 +416,11 @@ impl NativeTensorRole {
                 | Self::Qwen4ExpPleNormConv
                 | Self::Qwen4ExpPleHeadOffsets
                 | Self::Qwen4ExpPleHeadVocabSizes
+                | Self::Qwen4ExpPleMultipliers
                 | Self::Qwen4ExpIndexerQNorm
                 | Self::Qwen4ExpIndexerKNorm
                 | Self::Qwen4ExpIndexerQkProj
+                | Self::NgramEmbedding
         )
     }
 
@@ -619,6 +630,19 @@ impl NativeDeepseekV4Config {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NativeQwen4ExpConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_gate_type: Option<String>,
+    /// One-based PLE injection layer IDs from the checkpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ple_layer_ids: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ple_embed_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ple_conv_kernel_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ngram_vocab_divisor: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ngram_seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ngram_size: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ngram_vocab_size_base: Option<u32>,
@@ -638,6 +662,8 @@ pub struct NativeQwen4ExpConfig {
     pub indexer_n_heads: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indexer_kv_heads: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_compress_ratio: Option<u32>,
     /// Contract: n-gram shards stay off the `load_weights` eval path.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub never_eval_ngram_at_load: bool,
@@ -654,6 +680,12 @@ fn is_true(value: &bool) -> bool {
 impl Default for NativeQwen4ExpConfig {
     fn default() -> Self {
         Self {
+            output_gate_type: None,
+            ple_layer_ids: Vec::new(),
+            ple_embed_dim: None,
+            ple_conv_kernel_size: None,
+            ngram_vocab_divisor: None,
+            ngram_seed: None,
             ngram_size: None,
             ngram_vocab_size_base: None,
             split_ngram_parts: None,
@@ -664,6 +696,7 @@ impl Default for NativeQwen4ExpConfig {
             indexer_head_dim: None,
             indexer_n_heads: None,
             indexer_kv_heads: None,
+            indexer_compress_ratio: None,
             never_eval_ngram_at_load: true,
         }
     }
@@ -671,7 +704,14 @@ impl Default for NativeQwen4ExpConfig {
 
 impl NativeQwen4ExpConfig {
     pub fn is_enabled(&self) -> bool {
-        self.ngram_size.is_some()
+        self.output_gate_type.is_some()
+            || !self.ple_layer_ids.is_empty()
+            || self.ple_embed_dim.is_some()
+            || self.ple_conv_kernel_size.is_some()
+            || self.ngram_vocab_divisor.is_some()
+            || self.ngram_seed.is_some()
+            || self.indexer_compress_ratio.is_some()
+            || self.ngram_size.is_some()
             || self.ngram_vocab_size_base.is_some()
             || self.split_ngram_parts.is_some()
             || self.heads_per_ngram.is_some()
@@ -1305,11 +1345,29 @@ impl NativeModelArtifacts {
 
     pub fn summary(&self) -> NativeModelArtifactsSummary {
         let is_hybrid_attention = self.manifest.linear_attention.is_enabled();
+        let mut runtime_status = self.manifest.runtime_status.clone();
+        // Artifacts have already passed runtime admission. Old Flash Next
+        // manifests retain the retired trunk blocker on disk for provenance.
+        if self.manifest.model_family == "qwen4_exp"
+            && !runtime_status.blockers.is_empty()
+            && runtime_status
+                .blockers
+                .iter()
+                .all(|blocker| blocker == "qwen4_exp_native_trunk_not_implemented")
+        {
+            runtime_status.ready = true;
+            runtime_status.blockers.clear();
+            runtime_status.notes.push(
+                "Audited Flash Next runtime admission supersedes legacy manifest readiness; \
+model certification remains separate."
+                    .to_string(),
+            );
+        }
         NativeModelArtifactsSummary {
             model_family: self.manifest.model_family.clone(),
             tensor_format: self.manifest.tensor_format,
             source_quantization: self.manifest.source_quantization.clone(),
-            runtime_status: self.manifest.runtime_status.clone(),
+            runtime_status,
             layer_count: self.manifest.layer_count,
             tensor_count: self.manifest.tensors.len() as u32,
             tie_word_embeddings: self.manifest.tie_word_embeddings,
@@ -1448,7 +1506,22 @@ pub(crate) fn validate_native_model_manifest(
             message: "model_family must not be empty".to_string(),
         });
     }
-    if !manifest.runtime_status.ready || !manifest.runtime_status.blockers.is_empty() {
+    let flash_next_experimental =
+        std::env::var_os(AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV).is_some_and(|value| value == "1");
+    if let Err(message) = crate::convert::validate_qwen4_exp_runtime_formats(
+        root_dir,
+        manifest,
+        flash_next_experimental,
+    ) {
+        return Err(NativeModelError::InvalidManifest { message });
+    }
+    if (!manifest.runtime_status.ready || !manifest.runtime_status.blockers.is_empty())
+        && !crate::convert::admit_experimental_flash_next(
+            root_dir,
+            manifest,
+            flash_next_experimental,
+        )
+    {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
                 "native model manifest is not runtime ready: ready={} blockers={:?}",
@@ -1483,7 +1556,9 @@ pub(crate) fn validate_native_model_manifest(
         &manifest.attention_v_norm_no_scale_layers,
         "attention_v_norm_no_scale_layers",
     )?;
-    validate_interleaved_attention_metadata(manifest)?;
+    if manifest.model_family != "qwen4_exp" {
+        validate_interleaved_attention_metadata(manifest)?;
+    }
     if let Some(rope_theta) = manifest.rope_theta {
         if rope_theta == 0 {
             return Err(NativeModelError::InvalidManifest {
@@ -1787,6 +1862,10 @@ pub(crate) fn validate_native_model_manifest(
     if manifest.model_family == "whisper" {
         validate_whisper_manifest(root_dir, manifest)?;
         return Ok(());
+    }
+
+    if manifest.model_family == "qwen4_exp" {
+        return qwen4_exp::validate(manifest);
     }
 
     require_global_role(
@@ -5351,6 +5430,58 @@ mod tests {
             }
             .is_enabled()
         );
+    }
+
+    #[test]
+    fn admitted_flash_next_summary_reconciles_legacy_readiness_without_mutating_manifest() {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "qwen4_exp".to_string();
+        manifest.runtime_status = NativeRuntimeStatus {
+            ready: false,
+            blockers: vec!["qwen4_exp_native_trunk_not_implemented".to_string()],
+            notes: vec!["preserved exporter provenance".to_string()],
+        };
+        let original = manifest.clone();
+        // Exercise the loaded-artifact summary boundary; admission itself has
+        // separate audited-format and unknown-blocker rejection controls.
+        let artifacts = NativeModelArtifacts {
+            root_dir: PathBuf::new(),
+            manifest,
+        };
+        let summary = artifacts.summary();
+        assert!(summary.runtime_status.ready);
+        assert!(summary.runtime_status.blockers.is_empty());
+        assert_eq!(
+            summary.runtime_status.notes[0],
+            original.runtime_status.notes[0]
+        );
+        assert_eq!(summary.runtime_status.notes.len(), 2);
+        assert!(summary.runtime_status.notes[1].contains("certification remains separate"));
+        assert_eq!(artifacts.manifest(), &original);
+        assert_eq!(artifacts.summary().runtime_status, summary.runtime_status);
+    }
+
+    #[test]
+    fn artifact_summary_preserves_unknown_and_other_family_blockers() {
+        for (family, blockers) in [
+            ("qwen4_exp", vec![]),
+            ("qwen3", vec!["qwen4_exp_native_trunk_not_implemented"]),
+            (
+                "qwen4_exp",
+                vec!["qwen4_exp_native_trunk_not_implemented", "unknown_layout"],
+            ),
+        ] {
+            let mut manifest = packed_layer_manifest();
+            manifest.model_family = family.to_string();
+            manifest.runtime_status.ready = false;
+            manifest.runtime_status.blockers = blockers.into_iter().map(str::to_string).collect();
+            let expected = manifest.runtime_status.clone();
+            let artifacts = NativeModelArtifacts {
+                root_dir: PathBuf::new(),
+                manifest,
+            };
+            assert_eq!(artifacts.summary().runtime_status, expected);
+        }
     }
 
     fn packed_layer_manifest() -> NativeModelManifest {

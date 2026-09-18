@@ -358,23 +358,8 @@ if [[ ${#bad_binaries[@]} -gt 0 ]]; then
 fi
 echo "    verified: ax-engine product Mach-O binaries have minos >= ${MACOSX_DEPLOYMENT_TARGET}"
 
-# Exercise the final wheel in a fresh interpreter, not the editable checkout.
-# Linking, stripping and delocation can all succeed while dyld rejects the
-# extension (for example, a misaligned LINKEDIT string table).
-echo "==> Importing the final wheel's native extension..."
-python3 -I - "$INSPECT_DIR" <<'PY_NATIVE_IMPORT'
-import importlib
-from pathlib import Path
-import sys
-
-root = Path(sys.argv[1]).resolve()
-sys.path.insert(0, str(root))
-module = importlib.import_module("ax_engine._ax_engine")
-loaded = Path(module.__file__).resolve()
-if not loaded.is_relative_to(root):
-    raise SystemExit(f"error: native import escaped the inspected wheel: {loaded}")
-print(f"    verified native import: {loaded.relative_to(root)}")
-PY_NATIVE_IMPORT
+echo "==> Verifying isolated native wheel import..."
+python3 "$SCRIPT_DIR/check_wheel_native_import.py" "$INSPECT_DIR"
 
 # ── 6. Optionally publish ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--publish" ]]; then

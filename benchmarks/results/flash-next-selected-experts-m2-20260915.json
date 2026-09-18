@@ -1,0 +1,1826 @@
+{
+  "qualification": false,
+  "kind": "flash_next_selected_expert_development_controls",
+  "hardware": {
+    "chip": "Apple M2 Ultra",
+    "memory_bytes": 206158430208
+  },
+  "runtime": {
+    "mlx": "0.32.2",
+    "rust": "1.97.1"
+  },
+  "model": {
+    "id": "Qwen/Qwen3.8-Flash-Next",
+    "revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+    "exporter": "AXQuant 1.9.0"
+  },
+  "opt_in": "AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1",
+  "per_layer_selected_payload_limit_bytes": 268435456,
+  "source_provenance": {
+    "fingerprint": {
+      "base_commit": "4bbffc08986ab8b768e69a13f48a0848bfd061f1",
+      "binary_sha256": "a2e965ee46ce6c870ff20bf91d255967d899c44e1883aa06e051fc6c9db86c1d",
+      "profile": {
+        "opt_level": "3",
+        "debuginfo": 0,
+        "debug_assertions": false,
+        "overflow_checks": false,
+        "test": true
+      },
+      "sources": {
+        "crates/ax-engine-mlx/src/expert_stream.rs": "d8b91ad80edce752efea46a823b5985d6382a279f290b5ff3279585e608998c8",
+        "crates/ax-engine-mlx/src/expert_stream/selected.rs": "eee99d158c99cd1e92f8d05a2f799a80197c4d02324ca7b44e89c54c94d5fd98",
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "5b0ebc209ca9d9658b1107307f5a36ae59737ebf50ef4aa5b3e953018a31d89e",
+        "crates/mlx-sys/src/io_rows.rs": "40657cf47515d5648864287b20fcd78e2182cc7ff3435c1d4110f02ba3f6fde2",
+        "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "c081343d348717caabe6adb436b88889d6034e1a50a8c800b8c669987ba5da95"
+      }
+    },
+    "server": {
+      "base_commit": "4bbffc08986ab8b768e69a13f48a0848bfd061f1",
+      "profile": "release-server",
+      "binary_sha256": "30af422e3aad48f6ab6e9445c602f061b66ba03fdf35597e4db72e73f5154800",
+      "sources": {
+        "crates/ax-engine-mlx/src/expert_stream.rs": "c0abc5349be457277332d701ec3bbd0d088a870acbdc529253ad5abc34a0e24c",
+        "crates/ax-engine-mlx/src/expert_stream/selected.rs": "0c4a0c872de168f71a9f0c4b5f79065e8f99baacc1405c5c0c73376b87536113",
+        "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "5b0ebc209ca9d9658b1107307f5a36ae59737ebf50ef4aa5b3e953018a31d89e",
+        "crates/ax-engine-mlx/src/runner/mod.rs": "b4b95258e58bed7eae22ccda7a96fff88fc7717e9b185e98192739ba5c5a5f55",
+        "crates/mlx-sys/src/io_rows.rs": "40657cf47515d5648864287b20fcd78e2182cc7ff3435c1d4110f02ba3f6fde2",
+        "crates/ax-engine-server/src/app_state.rs": "160adf2068c3093eb057219611d384534baf945648cb550d091f5eb46813dc0b",
+        "crates/ax-engine-server/src/metrics.rs": "ac8762ecdd4de5538f35f3a2f15ac7dc15cc4ace5882f7368de5627552e23a09"
+      }
+    }
+  },
+  "current_source_sha256": {
+    "crates/ax-engine-mlx/src/expert_stream.rs": "c0abc5349be457277332d701ec3bbd0d088a870acbdc529253ad5abc34a0e24c",
+    "crates/ax-engine-mlx/src/expert_stream/selected.rs": "0c4a0c872de168f71a9f0c4b5f79065e8f99baacc1405c5c0c73376b87536113",
+    "crates/ax-engine-mlx/src/model/shared/qwen4_exp_moe.rs": "5b0ebc209ca9d9658b1107307f5a36ae59737ebf50ef4aa5b3e953018a31d89e",
+    "crates/ax-engine-mlx/src/runner/mod.rs": "b4b95258e58bed7eae22ccda7a96fff88fc7717e9b185e98192739ba5c5a5f55",
+    "crates/mlx-sys/src/io_rows.rs": "40657cf47515d5648864287b20fcd78e2182cc7ff3435c1d4110f02ba3f6fde2",
+    "crates/ax-engine-server/src/app_state.rs": "286cb4d954db5e9d1e4d804cb0b3ef838c127e52260fb212614d8d159e368305",
+    "crates/ax-engine-server/src/metrics.rs": "ac8762ecdd4de5538f35f3a2f15ac7dc15cc4ace5882f7368de5627552e23a09"
+  },
+  "raw_input_sha256": {
+    "selected-expert-matrix.json": "113ebf980c4775421e9f24de00ebfc23b6e68a9786714ccb1724a658ade82041",
+    "selected-expert-repeat.json": "c8b0cdfeb4f7a5ce96148b594035b369f493138e445f2f21c61049d403124f24",
+    "selected-expert-http.json": "c0d9af445ac6aba433908c54872ba275bc40f61b5d046b86584ebe94e278a062"
+  },
+  "whole_selected_controls": {
+    "qualification": false,
+    "completed": true,
+    "binary_sha256": "a2e965ee46ce6c870ff20bf91d255967d899c44e1883aa06e051fc6c9db86c1d",
+    "packs": {
+      "2bit": {
+        "whole": {
+          "active_after_load": 4606954240,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.878683791,
+          "peak_mlx_bytes": 6852743248,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "bc81cd9856811073e3de736d2f86f0ce92e538a9edeadfed9c683cae432e29b1",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "a3bc3412327a5be4ef5a4f579762470073b640cf679a9a619b2fb10356d28dcd",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "4b2c93fe97a8c007f4b4dd085c4d0b04f7c8f38d17362cf306d261c55779cf48",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "7346b77053020adbf7bfc8ef475b8ac80831025f7fcc02d9b9ad8ccf9a3c36a7",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "2c9c63d181c3b2769395d1962004e5d333315d003b663c1fb65c245cd09d1c02",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "bdaa460f1e7003037bb7aec175f22cf78f5c31ee0326f6406d1b59097cf186b6",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "d6aa69093f14783eb0df67b968213b95772dbd352d32673764fabda73d7cd148",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "4d35c568fe8fd6230ec7e23213aec64889f09ee2a19cbb0fc8cef3a9c7adb453",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 24.231961042001785
+        },
+        "selected": {
+          "active_after_load": 4606954240,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.840663625,
+          "peak_mlx_bytes": 6614133592,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "bc81cd9856811073e3de736d2f86f0ce92e538a9edeadfed9c683cae432e29b1",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "a3bc3412327a5be4ef5a4f579762470073b640cf679a9a619b2fb10356d28dcd",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "4b2c93fe97a8c007f4b4dd085c4d0b04f7c8f38d17362cf306d261c55779cf48",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "7346b77053020adbf7bfc8ef475b8ac80831025f7fcc02d9b9ad8ccf9a3c36a7",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "2c9c63d181c3b2769395d1962004e5d333315d003b663c1fb65c245cd09d1c02",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "bdaa460f1e7003037bb7aec175f22cf78f5c31ee0326f6406d1b59097cf186b6",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "d6aa69093f14783eb0df67b968213b95772dbd352d32673764fabda73d7cd148",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "4d35c568fe8fd6230ec7e23213aec64889f09ee2a19cbb0fc8cef3a9c7adb453",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 3538944000,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 7.653949249994184
+        }
+      },
+      "4bit": {
+        "whole": {
+          "active_after_load": 4440456448,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "load_seconds": 15.3258755,
+          "peak_mlx_bytes": 7629963600,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "5d422951f70a861f2ab8d99d81ebf0f5b4e1ebeecfc9d19e2bf77ff39cb81880",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "3a37ee9b4ee2b719be63ca8adc72f323380d0e62480b9991a23383fb79e91f45",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "60a59b5415c6f04a1c8b044b9bb65ddfe7693cab634ae22e109b9d5a711b42b7",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "61ab9324ea86e8052b28eed0a01a9e076e06438f60dbe642280843040036df62",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "7a3fb7e65872a4e580826f99d54411ab150e307ca719ff1f04a29f901d708418",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "7723cd96102583a1ebb45127c6df8e0b9277ffea721c973b5713a797966ec2a7",
+              "step": 2,
+              "token": 271
+            },
+            {
+              "logits_f32_le_sha256": "93a7a2b3b2ee947e6ca59e10affd9c779fa4b51f47b2734f741c7e9d0e03c0c6",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "7bba986e27e73e0ff424b37a2e7d5a221361b748a431b597d4c2545e124b8781",
+              "step": 3,
+              "token": 760
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 357.6290333329962
+        },
+        "selected": {
+          "active_after_load": 4440456448,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            271,
+            760
+          ],
+          "load_seconds": 0.840988292,
+          "peak_mlx_bytes": 7391370840,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "5d422951f70a861f2ab8d99d81ebf0f5b4e1ebeecfc9d19e2bf77ff39cb81880",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "3a37ee9b4ee2b719be63ca8adc72f323380d0e62480b9991a23383fb79e91f45",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "60a59b5415c6f04a1c8b044b9bb65ddfe7693cab634ae22e109b9d5a711b42b7",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "61ab9324ea86e8052b28eed0a01a9e076e06438f60dbe642280843040036df62",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "7a3fb7e65872a4e580826f99d54411ab150e307ca719ff1f04a29f901d708418",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "7723cd96102583a1ebb45127c6df8e0b9277ffea721c973b5713a797966ec2a7",
+              "step": 2,
+              "token": 271
+            },
+            {
+              "logits_f32_le_sha256": "93a7a2b3b2ee947e6ca59e10affd9c779fa4b51f47b2734f741c7e9d0e03c0c6",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "7bba986e27e73e0ff424b37a2e7d5a221361b748a431b597d4c2545e124b8781",
+              "step": 3,
+              "token": 760
+            }
+          ],
+          "selected_expert_payload_bytes": 5308416000,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 10.159440250004991
+        }
+      },
+      "6bit": {
+        "whole": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 13.185106,
+          "peak_mlx_bytes": 9622979408,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 327.3225328749977
+        },
+        "selected": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 1.022059333,
+          "peak_mlx_bytes": 9384369752,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 7667712000,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0,
+          "process_seconds": 14.178117667004699
+        }
+      }
+    },
+    "swap": "vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
+  },
+  "alternating_process_controls": {
+    "qualification": false,
+    "completed": true,
+    "binary_sha256": "a2e965ee46ce6c870ff20bf91d255967d899c44e1883aa06e051fc6c9db86c1d",
+    "pack": "6bit",
+    "output_tokens": 4,
+    "timing_boundary": "fresh test process including load, matched n-1/singleton prefill, full logits and serialized-state fingerprints",
+    "runs": [
+      {
+        "round": 0,
+        "warmup": true,
+        "mode": "whole",
+        "process_seconds": 49.33421558299597,
+        "fingerprint": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.947552041,
+          "peak_mlx_bytes": 9622978896,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0
+        }
+      },
+      {
+        "round": 0,
+        "warmup": true,
+        "mode": "selected",
+        "process_seconds": 13.867079124996962,
+        "fingerprint": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.909860583,
+          "peak_mlx_bytes": 9384369496,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 7667712000,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0
+        }
+      },
+      {
+        "round": 1,
+        "warmup": false,
+        "mode": "selected",
+        "process_seconds": 13.415818583001965,
+        "fingerprint": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.893761625,
+          "peak_mlx_bytes": 9384369752,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 7667712000,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0
+        }
+      },
+      {
+        "round": 1,
+        "warmup": false,
+        "mode": "whole",
+        "process_seconds": 49.08423141700041,
+        "fingerprint": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.915913166,
+          "peak_mlx_bytes": 9622979152,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0
+        }
+      },
+      {
+        "round": 2,
+        "warmup": false,
+        "mode": "whole",
+        "process_seconds": 49.760212625005806,
+        "fingerprint": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.897312167,
+          "peak_mlx_bytes": 9622979664,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0
+        }
+      },
+      {
+        "round": 2,
+        "warmup": false,
+        "mode": "selected",
+        "process_seconds": 13.699420208002266,
+        "fingerprint": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.923343416,
+          "peak_mlx_bytes": 9384369752,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 7667712000,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0
+        }
+      },
+      {
+        "round": 3,
+        "warmup": false,
+        "mode": "selected",
+        "process_seconds": 13.76379070799885,
+        "fingerprint": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.920167291,
+          "peak_mlx_bytes": 9384369752,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 7667712000,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0
+        }
+      },
+      {
+        "round": 3,
+        "warmup": false,
+        "mode": "whole",
+        "process_seconds": 903.7366266250028,
+        "fingerprint": {
+          "active_after_load": 5175180544,
+          "cached_expert_layers": 1,
+          "cached_expert_layers_at_load": 0,
+          "expert_layer_budget": 1,
+          "expert_streaming": true,
+          "family": "qwen4_exp",
+          "generated_ids": [
+            11751,
+            13,
+            561,
+            6511
+          ],
+          "load_seconds": 0.923861542,
+          "peak_mlx_bytes": 9622978896,
+          "prefill_schedule": "n-1 then singleton",
+          "prompt_ids": [
+            760,
+            6511,
+            314,
+            9338,
+            369
+          ],
+          "qualification": false,
+          "records": [
+            {
+              "logits_f32_le_sha256": "4f195759927601c5ec93b290c917ca617710ba892bc7ff825f32980545b2cc86",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 5,
+              "state_bytes": 115785073,
+              "state_sha256": "8b98cd38298ff3a32a0d1a723cadad4de8c2932a1e8538bdfbf42a34a7070247",
+              "step": 0,
+              "token": 11751
+            },
+            {
+              "logits_f32_le_sha256": "0f6d0a11437b85725717378c0f2dff1f3e87da92a018da879f1c95bc0315e13f",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 6,
+              "state_bytes": 115812721,
+              "state_sha256": "507645954ff06cae9ad5822b6812a7c50122e050efd10b8d10c5df3d58e1c53a",
+              "step": 1,
+              "token": 13
+            },
+            {
+              "logits_f32_le_sha256": "371dc27214a4bf5d1f566ed46492b6e352633ef64c1867944b52b6e5413668b4",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 7,
+              "state_bytes": 115840369,
+              "state_sha256": "daa554017656b7a509519e7af5f70c36d1c97f3d74bc7c4e086cdf564fd39623",
+              "step": 2,
+              "token": 561
+            },
+            {
+              "logits_f32_le_sha256": "768b27ce22f332219d37674c9bad70d7139d2a0354d3691cd0c47d8974f30200",
+              "logits_shape": [
+                1,
+                248320
+              ],
+              "position": 8,
+              "state_bytes": 115868017,
+              "state_sha256": "b01aece10a427e2580f8f667aefc40f27bafe87f9563083431e38692565bda02",
+              "step": 3,
+              "token": 6511
+            }
+          ],
+          "selected_expert_payload_bytes": 0,
+          "table_payload_bytes_after_run": 23040,
+          "table_payload_bytes_at_load": 0
+        }
+      }
+    ],
+    "swap": "vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
+  },
+  "post_warmup_process_summary": {
+    "whole": {
+      "process_seconds": [
+        49.08423141700041,
+        49.760212625005806,
+        903.7366266250028
+      ],
+      "median_process_seconds": 49.760212625005806,
+      "min_process_seconds": 49.08423141700041,
+      "max_process_seconds": 903.7366266250028
+    },
+    "selected": {
+      "process_seconds": [
+        13.415818583001965,
+        13.699420208002266,
+        13.76379070799885
+      ],
+      "median_process_seconds": 13.699420208002266,
+      "min_process_seconds": 13.415818583001965,
+      "max_process_seconds": 13.76379070799885
+    }
+  },
+  "native_api_controls": {
+    "qualification": false,
+    "completed": true,
+    "binary_sha256": "30af422e3aad48f6ab6e9445c602f061b66ba03fdf35597e4db72e73f5154800",
+    "packs": {
+      "2bit": {
+        "expected_ids": [
+          11751,
+          13,
+          561,
+          6511
+        ],
+        "expected_text": " Paris. The capital",
+        "cases": [
+          {
+            "name": "completion",
+            "request": {
+              "model": "flash-next-candidate",
+              "prompt": [
+                760,
+                6511,
+                314,
+                9338,
+                369
+              ],
+              "temperature": 0,
+              "max_tokens": 4,
+              "stream": false
+            },
+            "response": {
+              "id": "cmpl-1",
+              "object": "text_completion",
+              "created": 1789484617,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris. The capital",
+                  "finish_reason": "length"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              }
+            },
+            "seconds": 207.8144306670074
+          },
+          {
+            "name": "sse_repeat",
+            "events": [
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789484621,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789484622,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": ".",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789484622,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " The",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789484622,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " capital",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789484622,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "",
+                    "finish_reason": "length"
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789484622,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              }
+            ],
+            "text": " Paris. The capital",
+            "done": true,
+            "usage": {
+              "prompt_tokens": 5,
+              "completion_tokens": 4,
+              "total_tokens": 9
+            },
+            "seconds": 5.031574500011629
+          }
+        ],
+        "ok": true,
+        "metrics_before_repeat": {
+          "ax_engine_mlx_flash_next_selected_expert_gathers_total": 144.0,
+          "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 2592000.0
+        },
+        "metrics_after_repeat": {
+          "ax_engine_mlx_flash_next_selected_expert_gathers_total": 288.0,
+          "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 5184000.0
+        },
+        "rss_kib": 5749920,
+        "stopped": true,
+        "exit_code": 0
+      },
+      "4bit": {
+        "expected_ids": [
+          11751,
+          13,
+          271,
+          760
+        ],
+        "expected_text": " Paris.\n\nThe",
+        "cases": [
+          {
+            "name": "completion",
+            "request": {
+              "model": "flash-next-candidate",
+              "prompt": [
+                760,
+                6511,
+                314,
+                9338,
+                369
+              ],
+              "temperature": 0,
+              "max_tokens": 4,
+              "stream": false
+            },
+            "response": {
+              "id": "cmpl-1",
+              "object": "text_completion",
+              "created": 1789485097,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris.\n\nThe",
+                  "finish_reason": "length"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              }
+            },
+            "seconds": 457.8446398329979
+          },
+          {
+            "name": "sse_repeat",
+            "events": [
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485354,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485354,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": ".",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485355,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "\n\n",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485355,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "The",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485355,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "",
+                    "finish_reason": "length"
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485355,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              }
+            ],
+            "text": " Paris.\n\nThe",
+            "done": true,
+            "usage": {
+              "prompt_tokens": 5,
+              "completion_tokens": 4,
+              "total_tokens": 9
+            },
+            "seconds": 257.55717545800144
+          }
+        ],
+        "ok": true,
+        "metrics_before_repeat": {
+          "ax_engine_mlx_flash_next_selected_expert_gathers_total": 144.0,
+          "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 3888000.0
+        },
+        "metrics_after_repeat": {
+          "ax_engine_mlx_flash_next_selected_expert_gathers_total": 288.0,
+          "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 7776000.0
+        },
+        "rss_kib": 6031344,
+        "stopped": true,
+        "exit_code": 0
+      },
+      "6bit": {
+        "expected_ids": [
+          11751,
+          13,
+          561,
+          6511
+        ],
+        "expected_text": " Paris. The capital",
+        "cases": [
+          {
+            "name": "completion",
+            "request": {
+              "model": "flash-next-candidate",
+              "prompt": [
+                760,
+                6511,
+                314,
+                9338,
+                369
+              ],
+              "temperature": 0,
+              "max_tokens": 4,
+              "stream": false
+            },
+            "response": {
+              "id": "cmpl-1",
+              "object": "text_completion",
+              "created": 1789485813,
+              "model": "flash-next-candidate",
+              "system_fingerprint": null,
+              "choices": [
+                {
+                  "index": 0,
+                  "text": " Paris. The capital",
+                  "finish_reason": "length"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 4,
+                "total_tokens": 9
+              }
+            },
+            "seconds": 434.6366138750018
+          },
+          {
+            "name": "sse_repeat",
+            "events": [
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485922,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " Paris",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485922,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": ".",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485922,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " The",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485922,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": " capital",
+                    "finish_reason": null
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485922,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [
+                  {
+                    "index": 0,
+                    "text": "",
+                    "finish_reason": "length"
+                  }
+                ]
+              },
+              {
+                "id": "cmpl-2",
+                "object": "text_completion.chunk",
+                "created": 1789485922,
+                "model": "flash-next-candidate",
+                "system_fingerprint": null,
+                "choices": [],
+                "usage": {
+                  "prompt_tokens": 5,
+                  "completion_tokens": 4,
+                  "total_tokens": 9
+                }
+              }
+            ],
+            "text": " Paris. The capital",
+            "done": true,
+            "usage": {
+              "prompt_tokens": 5,
+              "completion_tokens": 4,
+              "total_tokens": 9
+            },
+            "seconds": 109.49604683299549
+          }
+        ],
+        "ok": true,
+        "metrics_before_repeat": {
+          "ax_engine_mlx_flash_next_selected_expert_gathers_total": 144.0,
+          "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 5616000.0
+        },
+        "metrics_after_repeat": {
+          "ax_engine_mlx_flash_next_selected_expert_gathers_total": 288.0,
+          "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 11232000.0
+        },
+        "rss_kib": 7388672,
+        "stopped": true,
+        "exit_code": 0
+      }
+    },
+    "swap": "vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
+  },
+  "validation": {
+    "workspace_passed": 3636,
+    "workspace_failed": 0,
+    "workspace_ignored": 38,
+    "mlx_lib_tests_clippy_passed": true,
+    "mlx_sys_all_targets_clippy_passed": true,
+    "server_production_clippy_passed": true,
+    "script_gate_passed": true,
+    "full_workspace_clippy_passed": false,
+    "existing_core_lib_test_clippy_errors": 1779,
+    "existing_other_core_clippy_errors": 15,
+    "existing_server_test_clippy_errors": 1197
+  },
+  "limitations": [
+    "One short prompt and four generated tokens per control do not qualify checkpoint quality, long context, MTP combinations, or M5 Ultra.",
+    "Full logits and state equality is within a pack under the same prefill schedule, not between quantization formats.",
+    "Process timing includes loading, matched prefill, logits/state hashing and serialization. It is not model throughput or an mlx_lm comparison.",
+    "Filesystem cache was not controlled. The final repeated whole-layer run encountered concurrent host rsync and indexing activity; causality and volume contention were not established. Retain all observations without treating medians as a clean speedup benchmark.",
+    "Payload counters measure successful logical row reads, not physical device I/O, read-ahead, peak memory, or a guarantee on failed partial reads.",
+    "The fingerprint binary predates worker-local and server telemetry plus additional tests; model and gather arithmetic are unchanged. The server includes telemetry and predates only a test assertion style fix.",
+    "Public readiness and default residency policy are unchanged; selected reads remain an explicit development opt-in."
+  ],
+  "review_status": {
+    "plan": {
+      "claude": {
+        "completed": true,
+        "exit_code": 0
+      },
+      "grok": {
+        "completed": false,
+        "exit_code": 2
+      },
+      "muse": {
+        "completed": true,
+        "exit_code": 0
+      }
+    },
+    "grok_plan_corrected_invocation": {
+      "completed": true,
+      "exit_code": 0
+    },
+    "claude_final_code": {
+      "completed": false,
+      "timeout_seconds": 150
+    },
+    "grok_final_reader": {
+      "completed": false,
+      "timeout_seconds": 150
+    },
+    "muse_final_selected_source_moe": {
+      "completed": true,
+      "exit_code": 0
+    },
+    "adjudication": "Completed plan findings were source-checked with row, slot-order, affine, state, and real-pack controls. Muse completed the final focused source review without a source-supported blocker. Later Claude and Grok code reviews timed out and are not counted as completed."
+  },
+  "raw_harness_sha256": {
+    "run-selected-expert-matrix.py": "dee68359792361d709c1253771fa57691ae02dc96abfbcc5ef13628058044e23",
+    "run-selected-expert-repeat.py": "2ce872c47445e8711607a99dd72507834cbe67b418f8836fa2f02374533137c6",
+    "run-selected-expert-http.py": "c95088bdd8e625b50c0e42cae9edf23fb52f484df5cea8d861de83324e31a28a"
+  },
+  "clippy_added_line_audit": {
+    "selected-final-workspace-clippy.txt": {
+      "findings_on_added_lines": [],
+      "compile_error_summaries": [
+        "could not compile `ax-engine-core` (test \"engine_step_err_after_shared_prefix_eviction\") due to 3 previous errors",
+        "could not compile `ax-engine-core` (test \"kv_rollback_after_eviction_repro\") due to 7 previous errors",
+        "could not compile `ax-engine-core` (bin \"generate-manifest\" test) due to 5 previous errors",
+        "could not compile `ax-engine-core` (lib test) due to 1779 previous errors"
+      ]
+    },
+    "selected-final-server-clippy-v2.txt": {
+      "findings_on_added_lines": [],
+      "compile_error_summaries": [
+        "could not compile `ax-engine-server` (bin \"ax-engine-server\" test) due to 1197 previous errors"
+      ]
+    }
+  },
+  "native_prefill_sample": {
+    "duration_seconds": 3,
+    "worker_samples": 219,
+    "whole_layer_materialization_samples": 213,
+    "call_path": [
+      "chunked_prefill_with_sampling_buffers",
+      "qwen4_exp::forward_prepared",
+      "ExpertStackPager::ensure_layer",
+      "load_safetensors_mmap_filtered",
+      "MlxArray::from_raw_data",
+      "mlx_array_new_data",
+      "memmove"
+    ],
+    "raw_sha256": "840080112147a6c5466d1f7ecb4b546921facd24f9c1939b4cbe0cb18067cd7f",
+    "limitation": "A short observation of the slow 4-bit first request, not an additive profile or physical I/O attribution. Sampling adds observation overhead."
+  }
+}

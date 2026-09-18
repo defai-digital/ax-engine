@@ -941,7 +941,7 @@ pub(super) fn build_layer_configs(
     default_rope_theta: f32,
     default_rope_dims: usize,
 ) -> Vec<LayerConfig> {
-    if m.layer_types.is_empty() {
+    if m.layer_types.is_empty() || m.model_family == "qwen4_exp" {
         return Vec::new();
     }
     let swa_theta = m.rope_theta_swa.map(|t| t as f32).unwrap_or(10000.0);

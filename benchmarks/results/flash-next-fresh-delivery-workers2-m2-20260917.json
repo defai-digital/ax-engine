@@ -1,0 +1,54 @@
+{
+  "schema": "ax-engine.flash-next.fresh-delivery.v1",
+  "date": "2026-09-17",
+  "completed": true,
+  "fresh_download_verified": true,
+  "qualification": false,
+  "release_ready": false,
+  "published": false,
+  "default_transport": false,
+  "transport_override": {
+    "AX_ENGINE_HF_MAX_WORKERS": "2"
+  },
+  "scope": "Fresh empty-cache public downloads on Apple M2 Ultra 192 GiB; full LFS size/SHA validation. No native inference or target-SKU qualification.",
+  "runtime_source_commit": "a7dba2eef93086b8a55d2b5d392740f6c85533b0",
+  "wheel_sha256": "7de6711471007670ca9e0b2684cbb8c298debca4b3dea1109da58386f607beea",
+  "cases": [
+    {
+      "bits": "4",
+      "alias": "qwen3.8-flash-next:axq",
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+      "revision": "680573112360bfd3f71556082f875c907c21a6e7",
+      "passed": true,
+      "lfs_files": 28,
+      "verified_bytes": 136112205574
+    },
+    {
+      "bits": "6",
+      "alias": "qwen3.8-flash-next:axq-6bit",
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+      "revision": "d514dcebf3086068ed7968caf395083c95ebcfca",
+      "passed": true,
+      "lfs_files": 35,
+      "verified_bytes": 167045770831
+    }
+  ],
+  "six_bit_retry": "One shard read timeout was resumed successfully; this is not a retry-free run.",
+  "installed_followup": {
+    "passed": false,
+    "bits": "4",
+    "phase": "load",
+    "reason": "The a7 loader rejects the verified Hub snapshot file link to its own blobs directory as escaping the pack root. No inference completed."
+  },
+  "limitations": [
+    "Default-transport delivery remains unqualified.",
+    "Installed full QA, throughput and lifecycle follow-ups did not run.",
+    "Mac Studio M5 Ultra 256 GiB qualification remains open."
+  ],
+  "raw_artifact": "flash-next-fresh-delivery-workers2-m2-20260917-raw.json.gz",
+  "original_delivery_sha256": "75ea0a3376e61e4ad38a9897edc700b61e953c503ffa0743ffa3cd7126e6089a",
+  "sanitized_raw_sha256": "d7491cf4b4b2f3d74fbe9cc80c7beb2c4889f1368514a1a13d894856aad7d3ae",
+  "gzip_sha256": "b73adbfa352062ab3c75da4259ca4711b0126762e4caccafe6daff96d2f0ea5e",
+  "curator_sha256": "7620e99577a6345629dd3957707353f3baa9807dd655381d3e52c8739bafffea",
+  "download_harness_sha256": "17651b6f88ce21d867992a18f33d01d3e2bace7fcb2b1c5ca914c51b213bfcfb"
+}

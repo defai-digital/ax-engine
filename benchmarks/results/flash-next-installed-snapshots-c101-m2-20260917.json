@@ -1,0 +1,80 @@
+{
+  "schema": "ax-engine.flash-next.installed-snapshot-controls.v1",
+  "source_commit": "c10162e61d68b8597f90f4360833502286112449",
+  "hardware": "Apple M2 Ultra 192 GiB",
+  "qualification": false,
+  "release_ready": false,
+  "successful_requests": 8,
+  "cases": [
+    {
+      "record": "c101-installed-selected-4bit",
+      "mode": "disabled",
+      "seconds": 269.5229492080107,
+      "passed": true
+    },
+    {
+      "record": "c101-installed-selected-4bit",
+      "mode": "required",
+      "seconds": 15.594645125005627,
+      "passed": true
+    },
+    {
+      "record": "c101-installed-default-4bit",
+      "mode": "default",
+      "seconds": 2.414918291993672,
+      "passed": true
+    },
+    {
+      "record": "c101-installed-default-4bit",
+      "mode": "required",
+      "seconds": 2.1367576670018025,
+      "passed": true
+    },
+    {
+      "record": "c101-installed-selected-6bit-recovery1",
+      "mode": "disabled",
+      "seconds": 23.698762458981946,
+      "passed": true
+    },
+    {
+      "record": "c101-installed-selected-6bit-recovery1",
+      "mode": "required",
+      "seconds": 23.494882375001907,
+      "passed": true
+    },
+    {
+      "record": "c101-installed-default-6bit-recovery2",
+      "mode": "default",
+      "seconds": 1045.2680738749914,
+      "passed": true
+    },
+    {
+      "record": "c101-installed-default-6bit-recovery2",
+      "mode": "required",
+      "seconds": 186.2094240830047,
+      "passed": true
+    }
+  ],
+  "original_failure": "Selected six-bit request exceeded 600 seconds after ready health.",
+  "harness_failure": "First default six-bit recovery failed at port preflight before model load.",
+  "recovery_scope": "Later warmed retries; different cache histories, not a speedup or cold-latency pass.",
+  "delivery_scope": "Verified two-worker public snapshots, without rewriting links or manifests.",
+  "remaining": [
+    "Cold latency",
+    "Full installed QA",
+    "18-cell throughput",
+    "Installed lifecycle",
+    "M5 Ultra 256 GiB qualification"
+  ],
+  "raw_artifact": "flash-next-installed-snapshots-c101-m2-20260917-raw.json.gz",
+  "raw_sha256": "6770c9935ab00cd69538996aa2ede30984547caedc16a325905d322f28a558e7",
+  "gzip_sha256": "1b5357aa3e08e3519b98391cde25f50ed25964e491b9017c3c868509d3fd2aff",
+  "input_sha256": {
+    "c101-installed-selected-4bit": "38ed9e270a09c9acdcf81518fd00f6cc3f4e14bcf2bc264f55e221ab7695a935",
+    "c101-installed-default-4bit": "164e704dc5070051d69374e83562934eadccea1ea62ab48d4b7876538b7abced",
+    "c101-installed-selected-6bit-recovery1": "c3f3ff12e6c23e84a6d767e104cddabe8643309fb6fb9633a9f069ab0a1e212d",
+    "c101-installed-default-6bit-recovery2": "400eb8ec6db8ca3ec47779126489e6ec779daada1444f5bcfffcca982ba8eda8",
+    "c101-installed-selected-6bit-timeout": "30d27f4501b160be5fec03e2a93d112c91cce0e8d08ed6da280ad36c6735c965",
+    "c101-installed-default-6bit-port-preflight-failure": "86210f2fc1232b134be8f400f50357c8be6d38cbe50d3f2f40a431449b7fcbd0"
+  }
+}

@@ -624,6 +624,24 @@ AUTOMATOSX_MODEL_PROFILES = (
         preset="qwen3.8-27b",
     ),
     _automatosx_profile(
+        "ax-qwen3.8-flash-next-axq-4bit",
+        "AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+        (
+            "qwen3.8-flash-next:axq",
+            "qwen3.8-flash-next:axq-4bit",
+            "ax-qwen3.8-flash-next",
+            "ax-qwen3.8-flash-next-4bit",
+        ),
+    ),
+    _automatosx_profile(
+        "ax-qwen3.8-flash-next-axq-6bit",
+        "AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+        (
+            "qwen3.8-flash-next:axq-6bit",
+            "ax-qwen3.8-flash-next-6bit",
+        ),
+    ),
+    _automatosx_profile(
         "ax-qwen3.6-35b-4bit",
         "AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
         ("ax-qwen36-35b-4bit",),
@@ -995,6 +1013,12 @@ MODEL_PROFILES = (*MODEL_PROFILES, *AUTOMATOSX_MODEL_PROFILES)
 # Bare family aliases must not silently promote these rows until
 # checkpoint-level quality, runtime, and memory gates are published and pass.
 _PINNED_PROFILE_REVISIONS = {
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP": (
+        "680573112360bfd3f71556082f875c907c21a6e7"
+    ),
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP": (
+        "d514dcebf3086068ed7968caf395083c95ebcfca"
+    ),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP": (
         "6182ccbc41c7397ff90670f740c6d9eacfa4b09f"
     ),
@@ -1175,6 +1199,8 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
 }
 
 

@@ -122,6 +122,10 @@ pub use config::{
     LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
 };
 
+pub(crate) mod qwen4_exp;
+#[cfg(test)]
+mod qwen4_exp_integration_tests;
+pub(crate) mod qwen4_exp_mtp;
 pub(crate) mod shared;
 use shared::*;
 pub(crate) use shared::{replay_linear_attention_mtp_prefix, scale_hidden_pub};
@@ -194,7 +198,7 @@ use profile::record_linear_attention_profile_layer;
 pub(crate) fn reject_unimplemented_qwen4_exp(cfg: &ModelConfig) {
     if cfg.model_family == "qwen4_exp" {
         panic!(
-            "qwen4_exp layers must run through the dedicated Flash Next trunk (not implemented; n-gram table must not eval at load_weights)"
+            "qwen4_exp layers must run through the dedicated Flash Next trunk (n-gram table must not eval at load_weights)"
         );
     }
 }
@@ -286,7 +290,7 @@ pub fn layer_forward(
         }
         Some(LayerForwardRoute::Qwen4Exp) => {
             panic!(
-                "qwen4_exp layers must run through the dedicated Flash Next trunk (not implemented; n-gram table must not eval at load_weights)"
+                "qwen4_exp layers must run through the dedicated Flash Next trunk (n-gram table must not eval at load_weights)"
             )
         }
         Some(LayerForwardRoute::Mistral3) => families::mistral3::layer_forward(
@@ -569,6 +573,7 @@ pub fn decode_batched_forward(
     cache: &mut crate::batched_kv_cache::BatchedKvCache,
     mut lin_state: Option<&mut crate::batched_linear_state::BatchedLinearState>,
 ) -> MlxArray {
+    reject_unimplemented_qwen4_exp(cfg);
     assert_eq!(
         tokens.len(),
         cache.batch(),
@@ -615,7 +620,7 @@ pub fn decode_batched_forward(
     }
     cache.advance_all(1);
 
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     // The lm_head (`[B, hidden] × [hidden, vocab]`, vocab up to ~262 MB at
     // 4-bit) is the largest single projection and, like the layer projections,
     // was per-row `RowExact` — re-reading the whole lm_head weight B times per
@@ -640,6 +645,7 @@ pub fn decode_batched_forward(
 /// MTP history on a different path).
 pub fn supports_batched_prefill(cfg: &ModelConfig, weights: &ModelWeights) -> bool {
     if cfg.is_block_diffusion()
+        || cfg.model_family == "qwen4_exp"
         || cfg.linear_attention.is_some()
         || weights.mtp.is_some()
         || weights.glm_mtp.is_some()
@@ -683,6 +689,9 @@ pub fn prefill_batched_forward(
     weights: &ModelWeights,
     prompts: &[&[u32]],
 ) -> Result<BatchedPrefillRows, String> {
+    if cfg.model_family == "qwen4_exp" {
+        return Err("Flash Next requires independent request state for each prefill row".into());
+    }
     let batch = prompts.len();
     if batch < 2 {
         return Err("batched prefill requires at least two rows".to_string());
@@ -756,7 +765,7 @@ pub fn prefill_batched_forward(
     );
     let normed = rms_norm(
         &last_hidden,
-        Some(&weights.final_norm),
+        Some(weights.final_norm()),
         cfg.rms_norm_eps,
         None,
     );
@@ -1039,6 +1048,125 @@ pub enum PipelineStageForwardError {
     InvalidHiddenShape(Vec<i32>),
 }
 
+/// Flash Next publishes its request state only after all operator evaluation
+/// succeeds. The caller advances the shared cache boundary as on other routes.
+fn qwen4_exp_forward_with_cache(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    policy: ProjectionBatchPolicy,
+) -> qwen4_exp::Qwen4ExpOutput {
+    let weights = weights
+        .qwen4_exp
+        .as_ref()
+        .expect("Flash Next requires dedicated weights");
+    assert_eq!(
+        token_offset,
+        cache.seq_len(),
+        "Flash Next token offset must match request cache"
+    );
+    assert_eq!(
+        cache.rope_offset, 0,
+        "Flash Next requires its complete recurrent prefix"
+    );
+    assert_eq!(
+        cache.mrope_position_delta(),
+        0,
+        "Flash Next media positions are not supported by the text trunk"
+    );
+    let initial;
+    let state = match &cache.qwen4_exp {
+        Some(state) => state,
+        None => {
+            assert_eq!(
+                token_offset, 0,
+                "Flash Next requires restored recurrent state for a cached prefix"
+            );
+            initial = qwen4_exp::Qwen4ExpState::new(weights, cfg.compile_cache_identity);
+            &initial
+        }
+    };
+    assert_eq!(
+        state.position(),
+        token_offset,
+        "Flash Next recurrent state must match the cache boundary"
+    );
+    // Verification uses singleton arithmetic, matching direct decode. Publish
+    // only after every row succeeds so IO failure cannot commit a partial window.
+    let output = if policy == ProjectionBatchPolicy::RowExact && token_ids.len() > 1 {
+        let mut staged = state.clone();
+        let mut streams = Vec::with_capacity(token_ids.len());
+        let mut hidden = Vec::with_capacity(token_ids.len());
+        let mut logits = Vec::with_capacity(token_ids.len());
+        for token in token_ids {
+            let row = qwen4_exp::forward(
+                weights,
+                &[*token],
+                &staged,
+                cfg.compile_cache_identity,
+                ProjectionBatchPolicy::Shared,
+            )
+            .unwrap_or_else(|error| panic!("Flash Next verification failed: {error}"));
+            streams.push(row.stream_hidden);
+            hidden.push(row.hidden);
+            logits.push(row.logits);
+            staged = row.state;
+        }
+        qwen4_exp::Qwen4ExpOutput {
+            stream_hidden: concatenate(&streams.iter().collect::<Vec<_>>(), 1, None),
+            hidden: concatenate(&hidden.iter().collect::<Vec<_>>(), 1, None),
+            logits: concatenate(&logits.iter().collect::<Vec<_>>(), 0, None),
+            state: staged,
+        }
+    } else {
+        qwen4_exp::forward(
+            weights,
+            token_ids,
+            state,
+            cfg.compile_cache_identity,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap_or_else(|error| panic!("Flash Next forward failed: {error}"))
+    };
+    cache.qwen4_exp = Some(output.state.clone());
+    output
+}
+
+/// Primary prefill output with packed residual rows for the separate draft history.
+pub(crate) fn qwen4_exp_forward_with_streams(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    tokens: &[u32],
+    cache: &mut MlxKVCache,
+    offset: usize,
+) -> qwen4_exp::Qwen4ExpOutput {
+    qwen4_exp_forward_with_cache(
+        cfg,
+        weights,
+        tokens,
+        cache,
+        offset,
+        ProjectionBatchPolicy::Shared,
+    )
+}
+
+fn qwen4_exp_last_logits(cfg: &ModelConfig, logits: &MlxArray, count: usize) -> MlxArray {
+    let last = count as i32 - 1;
+    reshape(
+        &slice(
+            logits,
+            &[last, 0],
+            &[last + 1, cfg.vocab_size as i32],
+            &[1, 1],
+            None,
+        ),
+        &[cfg.vocab_size as i32],
+        None,
+    )
+}
+
 fn forward_and_logits_mode(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1047,6 +1175,21 @@ fn forward_and_logits_mode(
     token_offset: usize,
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
+    if cfg.model_family == "qwen4_exp" {
+        let output = qwen4_exp_forward_with_cache(
+            cfg,
+            weights,
+            token_ids,
+            cache,
+            token_offset,
+            ProjectionBatchPolicy::Shared,
+        );
+        return if matches!(logits_mode, FinalLogitsMode::Skip) {
+            output.stream_hidden
+        } else {
+            qwen4_exp_last_logits(cfg, &output.logits, token_ids.len())
+        };
+    }
     reject_unimplemented_qwen4_exp(cfg);
     // DeepSeek V4 owns its packed hyper-connection residual; dispatch before
     // the generic E-wide path.
@@ -1266,7 +1409,7 @@ fn forward_and_logits_mode(
     let lm_head_started = profile_prefill.then(Instant::now);
     let normed = rms_norm(
         &last_hidden,
-        Some(&weights.final_norm),
+        Some(weights.final_norm()),
         cfg.rms_norm_eps,
         None,
     );
@@ -1396,7 +1539,7 @@ fn deepseek_v4_forward_and_logits_mode(
     };
     let normed = rms_norm(
         &last_hidden,
-        Some(&weights.final_norm),
+        Some(weights.final_norm()),
         cfg.rms_norm_eps,
         None,
     );
@@ -1416,7 +1559,7 @@ fn deepseek_v4_forward_lazy_single_and_logits_mode(
     lazy_mode: LazySingleTokenMode,
 ) -> MlxArray {
     let hidden = deepseek_v4_forward_hidden(cfg, weights, token_arr, 1, cache, token_offset);
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     finalize_lm_head_logits(cfg, &logits, lazy_mode.logits_mode())
 }
@@ -1432,6 +1575,7 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
     token_offset: usize,
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
+    reject_unimplemented_qwen4_exp(cfg);
     if cfg.deepseek_v4.is_some() {
         // V4 is text-only and owns the packed HC residual; the pre-scattered
         // hidden + media-overlay path cannot express it. Defensive guard —
@@ -1538,7 +1682,7 @@ pub(crate) fn forward_with_initial_hidden_and_media_ranges(
 
     let normed = rms_norm(
         &last_hidden,
-        Some(&weights.final_norm),
+        Some(weights.final_norm()),
         cfg.rms_norm_eps,
         None,
     );
@@ -1655,7 +1799,7 @@ pub(crate) fn forward_qwen_visual_prefill(
     );
     let normed = rms_norm(
         &last_hidden,
-        Some(&weights.final_norm),
+        Some(weights.final_norm()),
         cfg.rms_norm_eps,
         None,
     );
@@ -1677,6 +1821,18 @@ pub fn forward_all_positions_update_cache(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) {
+    if cfg.model_family == "qwen4_exp" {
+        let output = qwen4_exp_forward_with_cache(
+            cfg,
+            weights,
+            token_ids,
+            cache,
+            token_offset,
+            ProjectionBatchPolicy::RowExact,
+        );
+        drop(output);
+        return;
+    }
     // DI-VL-001: match singleton decode MRoPE origin after visual prefill.
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     let ids_1d = MlxArray::from_raw_data(
@@ -1736,6 +1892,17 @@ pub fn forward_all_positions(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> MlxArray {
+    if cfg.model_family == "qwen4_exp" {
+        let output = qwen4_exp_forward_with_cache(
+            cfg,
+            weights,
+            token_ids,
+            cache,
+            token_offset,
+            ProjectionBatchPolicy::RowExact,
+        );
+        return output.logits;
+    }
     // DI-VL-001: multi-token n-gram / MTP verify must use the same MRoPE origin
     // as singleton decode after visual prefill (mrope_position_delta).
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
@@ -1749,7 +1916,7 @@ pub fn forward_all_positions(
         let hidden =
             deepseek_v4_forward_hidden(cfg, weights, &ids_1d, token_ids.len(), cache, token_offset);
         let seq = token_ids.len() as i32;
-        let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+        let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
         let logits = qw(&normed, &weights.lm_head);
         let logits_f32 = astype(&logits, MlxDtype::Float32, None);
         let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
@@ -1790,7 +1957,7 @@ pub fn forward_all_positions(
     }
 
     let seq = seq as i32;
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
@@ -1892,6 +2059,17 @@ pub fn forward_all_positions_with_post_norm_greedy(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    if cfg.model_family == "qwen4_exp" {
+        let output = qwen4_exp_forward_with_cache(
+            cfg,
+            weights,
+            token_ids,
+            cache,
+            token_offset,
+            ProjectionBatchPolicy::RowExact,
+        );
+        return (output.logits, output.hidden);
+    }
     let seq = token_ids.len();
     // LONG_MT uses physical cache length (heuristic), then map to MRoPE origin.
     let moe_long_mt = cfg.moe_expert_count > 0
@@ -1949,7 +2127,7 @@ pub fn forward_all_positions_with_post_norm_greedy(
         );
     }
     let seq_i = seq as i32;
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = lm_head_verify_window_projection(
         &normed,
         &weights.lm_head,
@@ -1969,6 +2147,17 @@ pub fn forward_all_positions_with_post_norm(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    if cfg.model_family == "qwen4_exp" {
+        let output = qwen4_exp_forward_with_cache(
+            cfg,
+            weights,
+            token_ids,
+            cache,
+            token_offset,
+            ProjectionBatchPolicy::RowExact,
+        );
+        return (output.logits, output.hidden);
+    }
     let ids_1d = MlxArray::from_raw_data(
         token_ids.as_ptr() as *const u8,
         std::mem::size_of_val(token_ids),
@@ -2003,12 +2192,30 @@ pub fn forward_all_positions_with_post_norm_ids(
     token_offset: usize,
     native_greedy_logits: bool,
 ) -> (MlxArray, MlxArray) {
+    if cfg.model_family == "qwen4_exp" {
+        assert_eq!(
+            ids_1d.dtype(),
+            MlxDtype::Uint32,
+            "Flash Next token IDs must be u32"
+        );
+        let ids = mlx_sys::contiguous(&reshape(ids_1d, &[seq as i32], None), None);
+        mlx_sys::eval(&[&ids]);
+        let output = qwen4_exp_forward_with_cache(
+            cfg,
+            weights,
+            ids.data_u32(),
+            cache,
+            token_offset,
+            ProjectionBatchPolicy::RowExact,
+        );
+        return (output.logits, output.hidden);
+    }
     // DI-VL-001: async-draft verify and MTP multi-token path share this entry.
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     if cfg.deepseek_v4.is_some() {
         let hidden = deepseek_v4_forward_hidden(cfg, weights, ids_1d, seq, cache, token_offset);
         let seq_i = seq as i32;
-        let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+        let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
         let logits = qw(&normed, &weights.lm_head);
         let logits_f32 = astype(&logits, MlxDtype::Float32, None);
         let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
@@ -2093,7 +2300,7 @@ pub fn forward_all_positions_with_post_norm_ids(
     }
 
     let seq_i = seq as i32;
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = lm_head_verify_window_projection(
         &normed,
         &weights.lm_head,
@@ -2143,6 +2350,7 @@ pub fn forward_with_initial_hidden_media_post_norm_last_lm_head(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    reject_unimplemented_qwen4_exp(cfg);
     if cfg.deepseek_v4.is_some() {
         // See the guard in `forward_with_initial_hidden_and_media_ranges`:
         // V4 is text-only and owns the packed HC residual; unreachable.
@@ -2185,7 +2393,7 @@ pub fn forward_with_initial_hidden_media_post_norm_last_lm_head(
             Some(&masks[li]),
         );
     }
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let last = (seq.saturating_sub(1)) as i32;
     let hs = cfg.hidden_size as i32;
     let last_normed = slice(&normed, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
@@ -2203,6 +2411,20 @@ pub fn forward_all_positions_post_norm_last_lm_head(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> (MlxArray, MlxArray) {
+    if cfg.model_family == "qwen4_exp" {
+        let output = qwen4_exp_forward_with_cache(
+            cfg,
+            weights,
+            token_ids,
+            cache,
+            token_offset,
+            ProjectionBatchPolicy::Shared,
+        );
+        return (
+            qwen4_exp_last_logits(cfg, &output.logits, token_ids.len()),
+            output.hidden,
+        );
+    }
     // DI-VL-001: MTP warmup / optimistic multi-token path after visual prefill.
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     let ids_1d = MlxArray::from_raw_data(
@@ -2214,7 +2436,7 @@ pub fn forward_all_positions_post_norm_last_lm_head(
     if cfg.deepseek_v4.is_some() {
         let seq = token_ids.len();
         let hidden = deepseek_v4_forward_hidden(cfg, weights, &ids_1d, seq, cache, token_offset);
-        let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+        let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
         let last = (seq - 1) as i32;
         let hs = cfg.hidden_size as i32;
         let last_normed = slice(&normed, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
@@ -2262,7 +2484,7 @@ pub fn forward_all_positions_post_norm_last_lm_head(
 
     // rms_norm on ALL positions — needed for MTP warmup which iterates
     // over every position's hidden state to seed the MTP recurrent cache.
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
 
     // Slice to last position ONLY for lm_head — the key optimization.
     let last = (seq - 1) as i32;
@@ -2301,7 +2523,7 @@ pub fn deepseek_v4_forward_all_positions_with_packed(
         .as_ref()
         .expect("DeepSeek V4 head weights (hc_head_*)");
     let hidden = families::deepseek_v4::collapse_for_head(cfg, head_w, &packed);
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
@@ -2686,7 +2908,7 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
 
         let normed = rms_norm(
             &hidden,
-            Some(&self.assistant_weights.final_norm),
+            Some(self.assistant_weights.final_norm()),
             self.assistant_cfg.rms_norm_eps,
             None,
         );
@@ -3088,6 +3310,7 @@ fn forward_for_embedding_body(
     mut hidden: MlxArray,
     target_position: Option<usize>,
 ) -> MlxArray {
+    reject_unimplemented_qwen4_exp(cfg);
     // Nemotron Embed is bidirectional: None mask would force causal SDPA.
     let seq = hidden.shape()[1] as usize;
     let bidirectional = cfg.model_family == "nemotron_embed";
@@ -3149,7 +3372,7 @@ fn forward_for_embedding_body(
             None => hidden,
         }
     };
-    rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None)
+    rms_norm(&to_norm, Some(weights.final_norm()), cfg.rms_norm_eps, None)
 }
 
 /// Build an `mlx_compile`-wrapped closure that takes the pre-embedded hidden
@@ -3554,7 +3777,7 @@ fn forward_for_embedding_gemma3_batch_body(
     if let Some(ffn_out) = &pending_ffn {
         hidden = gemma3_clip_residual(&hidden, ffn_out);
     }
-    rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None)
+    rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None)
 }
 
 /// Layer-by-layer EmbeddingGemma depth probe.
@@ -3601,7 +3824,7 @@ pub fn forward_for_embedding_gemma3_depth_probe(
     }
 
     // Final checkpoint: post final-norm.
-    let final_out = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let final_out = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let cp = normed_mean_pool_probe(&final_out, &actual_lens, hidden_size);
     mlx_sys::eval(&[&cp]);
     checkpoints.push(cp);
@@ -3750,6 +3973,7 @@ pub fn forward_for_embedding_batch(
     batch_token_ids: &[Vec<u32>],
     target_positions: Option<&[usize]>,
 ) -> (MlxArray, Vec<usize>) {
+    reject_unimplemented_qwen4_exp(cfg);
     // EmbeddingGemma (Gemma3 backbone) is a bidirectional encoder with mean
     // pooling; it uses a dedicated forward (sandwich norms + bidirectional
     // padding mask) and always returns the full [B, max_seq, H] hidden so the
@@ -3953,7 +4177,7 @@ fn forward_for_embedding_batch_body(
             None => hidden,
         },
     };
-    let out = rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let out = rms_norm(&to_norm, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     if let Some(started) = final_started {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::FinalNormPool, started, &[&out]);
     }
@@ -4039,7 +4263,7 @@ fn forward_for_embedding_mean_pool_body(
         hidden = add(&hidden, ffn_out, None);
     }
     // Apply final norm to the full [B, max_seq, H] tensor.
-    let out = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let out = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     astype(&out, MlxDtype::Float32, None)
 }
 
@@ -4266,6 +4490,24 @@ fn forward_lazy_single_and_logits_mode(
     token_offset: usize,
     lazy_mode: LazySingleTokenMode,
 ) -> MlxArray {
+    if cfg.model_family == "qwen4_exp" {
+        assert_eq!(
+            token_arr.dtype(),
+            MlxDtype::Uint32,
+            "Flash Next token ID must be u32"
+        );
+        let ids = mlx_sys::contiguous(&reshape(token_arr, &[1], None), None);
+        mlx_sys::eval(&[&ids]);
+        let output = qwen4_exp_forward_with_cache(
+            cfg,
+            weights,
+            ids.data_u32(),
+            cache,
+            token_offset,
+            ProjectionBatchPolicy::Shared,
+        );
+        return qwen4_exp_last_logits(cfg, &output.logits, 1);
+    }
     // DeepSeek V4 owns its packed hyper-connection residual; the lazy token
     // array doubles as the hash-routing tid2eid index source.
     if cfg.deepseek_v4.is_some() {
@@ -4353,7 +4595,7 @@ fn forward_lazy_single_and_logits_mode(
     // versus returning a 1-D `[vocab]` array.
     let head_started = stage_profile.then(Instant::now);
     let lm_head_started = profile_decode.then(Instant::now);
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits = finalize_lm_head_logits(cfg, &logits, lazy_mode.logits_mode());
     if let Some(started) = lm_head_started {
@@ -5212,7 +5454,9 @@ mod tests {
     fn empty_model_weights(vision: Option<crate::qwen3_vl::Qwen3VlVisionWeights>) -> ModelWeights {
         ModelWeights {
             token_embedding: dense_weight(&[3, 2]),
-            final_norm: zeros(&[2], MlxDtype::Float32, None),
+            final_norm: Some(zeros(&[2], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dense_weight(&[3, 2]),
             layers: Vec::new(),
             per_layer_embed: None,
@@ -5324,7 +5568,9 @@ mod tests {
         let hidden = zeros(&[1, 1, 2], MlxDtype::Bfloat16, None);
         let weights = ModelWeights {
             token_embedding: dense_weight(&[3, 2]),
-            final_norm: zeros(&[2], MlxDtype::Float32, None),
+            final_norm: Some(zeros(&[2], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dense_weight(&[3, 2]),
             layers: Vec::new(),
             per_layer_embed: Some(dense_weight(&[3, 4])),
@@ -6002,7 +6248,9 @@ mod tests {
         };
         let weights = ModelWeights {
             token_embedding: dense_weight(&[32, 16]),
-            final_norm: zeros(&[16], MlxDtype::Float32, None),
+            final_norm: Some(zeros(&[16], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dense_weight(&[32, 16]),
             layers: Vec::new(),
             per_layer_embed: None,
@@ -6061,7 +6309,9 @@ mod tests {
         };
         let mut weights = ModelWeights {
             token_embedding: dense_weight(&[32, 16]),
-            final_norm: zeros(&[16], MlxDtype::Float32, None),
+            final_norm: Some(zeros(&[16], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dense_weight(&[32, 16]),
             layers: Vec::new(),
             per_layer_embed: None,
@@ -6225,7 +6475,9 @@ mod tests {
         };
         let weights = ModelWeights {
             token_embedding: dense_weight(&[32, 16]),
-            final_norm: zeros(&[16], MlxDtype::Float32, None),
+            final_norm: Some(zeros(&[16], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dense_weight(&[32, 16]),
             layers: Vec::new(),
             per_layer_embed: None,
@@ -6311,7 +6563,9 @@ mod tests {
         };
         let weights = ModelWeights {
             token_embedding: dense_weight(&[32, 16]),
-            final_norm: zeros(&[16], MlxDtype::Float32, None),
+            final_norm: Some(zeros(&[16], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dense_weight(&[32, 16]),
             layers: Vec::new(),
             per_layer_embed: None,
@@ -7105,7 +7359,9 @@ mod tests {
         attach_glm_moe_ffn(&mut moe_layer, &cfg);
         let weights = ModelWeights {
             token_embedding: dense_weight(&[cfg.vocab_size as i32, cfg.hidden_size as i32]),
-            final_norm: zeros(&[cfg.hidden_size as i32], MlxDtype::Float32, None),
+            final_norm: Some(zeros(&[cfg.hidden_size as i32], MlxDtype::Float32, None)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dense_weight(&[cfg.vocab_size as i32, cfg.hidden_size as i32]),
             layers: vec![dense_layer, moe_layer],
             per_layer_embed: None,
@@ -8821,7 +9077,9 @@ mod tests {
                 &patterned_signal((vocab * hidden) as usize, 31),
                 &[vocab, hidden],
             ),
-            final_norm: ones_norm(hidden),
+            final_norm: Some(ones_norm(hidden)),
+            qwen4_exp: None,
+            qwen4_exp_mtp: None,
             lm_head: dense_weight_from_data(
                 &patterned_signal((vocab * hidden) as usize, 37),
                 &[vocab, hidden],
@@ -8885,7 +9143,7 @@ mod tests {
                     owns_output_head: true,
                 },
                 token_embedding: None,
-                final_norm: Some(rank1_source.final_norm),
+                final_norm: rank1_source.final_norm,
                 lm_head: Some(rank1_source.lm_head),
                 layers: vec![rank1_layer],
             };

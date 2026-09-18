@@ -230,6 +230,14 @@ mod tests {
     }
 
     #[test]
+    fn flash_next_execution_does_not_imply_checkpoint_certification() {
+        assert_eq!(
+            support_tier_for_family("qwen4_exp"),
+            ModelSupportTier::Experimental
+        );
+    }
+
+    #[test]
     fn experimental_gate_covers_diffusion_family() {
         assert_eq!(
             support_tier_for_family("diffusion_gemma"),

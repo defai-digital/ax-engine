@@ -1,0 +1,83 @@
+{
+  "schema": "ax-engine.flash-next.offline-alias-evidence.v1",
+  "date": "2026-09-17",
+  "completed": true,
+  "release_ready": false,
+  "published": false,
+  "fresh_download": false,
+  "host": "Apple M2 Ultra 192 GiB, macOS 27.0",
+  "scope": "Installed CLI alias resolution, native manifest regeneration and validation against independent metadata copies and hardlinks to already verified public payloads; no model inference or network download.",
+  "source_base": "d8e7f8d1dbec33881eb41426e18e602d862c1a51",
+  "source_sha256": {
+    "scripts/download_model.py": "7bd8d1288eae418fff4284cd4575573e65bc36be783cc99f960f7b662426a78d",
+    "scripts/test_download_model.py": "5c1f2bb595a5eec5fa0fcfbd11358fd1108dcc0b382c68781864f3c1d7038e22"
+  },
+  "wheel": {
+    "old_sha256": "b600ddd713a25c946fd663a991179446b62ca69ee8735fdd94cb4d22a1d2fed2",
+    "new_sha256": "ab5bde7adbf1b5f24a81d766dce85f66b14ec25f5552cd639a0ae9a48846547d",
+    "added": [],
+    "removed": [],
+    "changed": [
+      "ax_engine-7.4.0.dist-info/RECORD",
+      "ax_engine-7.4.0.dist-info/sboms/ax-engine-py.cyclonedx.json",
+      "scripts/download_model.py"
+    ],
+    "native_members_identical": true
+  },
+  "regressions": {
+    "download_helper_tests": 80,
+    "download_helper_subtests": 74,
+    "installed_packaging_tests": 79,
+    "script_gate": "passed; 74, 970 (5 skipped), 420, 5 and 20 test groups"
+  },
+  "observed_failures_before_fix": [
+    "Generic dense norm role requirements incorrectly reject Flash Next HC manifests.",
+    "Missing I64 header support incorrectly rejects native PLE n-gram offset tensor bindings."
+  ],
+  "checks": [
+    "Exact qwen4_exp family matching",
+    "Required global and per-layer HC roles retained",
+    "Native geometry and readiness validation retained",
+    "I64 dtype and eight-byte payload binding checked",
+    "Both original factory metadata sets unchanged"
+  ],
+  "cases": [
+    {
+      "bits": "4",
+      "alias": "qwen3.8-flash-next:axq",
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+      "revision": "680573112360bfd3f71556082f875c907c21a6e7",
+      "exit_code": 0,
+      "linked_files": 27,
+      "linked_bytes": 136092216249,
+      "network_forbidden": true,
+      "manifest_sha256": "2335dd43261547e4fbb1f8459f24c886305994b25e194536ac9afbb0640081ed",
+      "source_metadata_unchanged": true,
+      "status": "ready"
+    },
+    {
+      "bits": "6",
+      "alias": "qwen3.8-flash-next:axq-6bit",
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+      "revision": "d514dcebf3086068ed7968caf395083c95ebcfca",
+      "exit_code": 0,
+      "linked_files": 34,
+      "linked_bytes": 167025781506,
+      "network_forbidden": true,
+      "manifest_sha256": "acc469146de31896f55a4c5dcac3b553bc1f739a7d96188861f388b5f770ed3b",
+      "source_metadata_unchanged": true,
+      "status": "ready"
+    }
+  ],
+  "limitations": [
+    "Existing payloads were reused; this does not qualify fresh Hub downloads.",
+    "No target Mac Studio M5 Ultra 256 GB qualification.",
+    "Independent numerical holdout and current throughput matrix remain open."
+  ],
+  "record_sha256": {
+    "installed-offline-cache-retry2-result.json": "363084f1bb3373b16ad2ec0b4f36e114fd69275a70be154cf602d4b8e4d1abf1",
+    "wheel-download-fix-build-retry2.log": "cbd6ce6c7b3482457ae203e516c8be86ad3eb2c9acdc4f25f75b00310da9e1d5",
+    "wheel-download-fix-installed-tests-retry2.log": "0f25c435ff63f22ab6fb0e56104ecc15ff95fd59899cc6b9ad829beeec91bca6",
+    "download-fix-script-gate-retry2.log": "46295f92d04238bbf179422ce6d0e5d001bd9a40f6afe6bffbb8946ab3fd291f"
+  }
+}

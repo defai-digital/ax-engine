@@ -1,0 +1,54 @@
+{
+  "schema": "ax-engine.flash-next.runner-margin-replay.v1",
+  "qualification": false,
+  "release_ready": false,
+  "hardware": "Apple M2 Ultra 192 GB",
+  "source_parent_commit": "2cbdb41f117dc297ad1d4b49bdbf7bd68ad31326",
+  "source_file": "crates/ax-engine-mlx/src/runner/flash_next_tests.rs",
+  "source_sha256": "c4b760936de305c968a2044eafebc3dd2ab990b8abb77e02f31dc12438b55e63",
+  "binary_sha256": "f3d9745fe953842649522df73837a6cdacfde0266212d9dc2d6c37fdd3e98234",
+  "raw_sha256": "559e1cfbf57233bd8ca763536e75746b26f5894030e49fcc1e951e78360076e0",
+  "log_sha256": "618d50502f61866f384e80c918914341f4624925aef9f0123feb1a4f4da54dd3",
+  "historical_margin": {
+    "value": 1.3125,
+    "valid": false,
+    "reason": "The replay duplicated the generated token already consumed by the direct pipeline bootstrap."
+  },
+  "corrected": {
+    "direct_ids": [
+      11751,
+      13,
+      271
+    ],
+    "mtp_ids": [
+      11751,
+      13,
+      561
+    ],
+    "direct_prefill_position": 6,
+    "tie_divergences": [
+      {
+        "margin": 0.125,
+        "position": 2,
+        "tokens": [
+          271,
+          561
+        ]
+      }
+    ],
+    "within_tolerance": true
+  },
+  "margin_contract": "Replay only unconsumed matching tokens; confirm direct argmax; measure direct logit minus actual MTP token logit. Missing evidence fails closed.",
+  "state_failure_still_open": {
+    "relative_logit_error": 0.10086382,
+    "limit": 0.1
+  },
+  "tests": {
+    "mlx_passed": 1533,
+    "mlx_failed": 0,
+    "mlx_ignored": 37,
+    "native_runner_passed": 1,
+    "clippy": "passed"
+  },
+  "runtime_math_changed": false
+}

@@ -285,6 +285,30 @@ impl MlxArray {
         }
     }
 
+    /// Read exact signed checkpoint metadata. Array must be evaluated and contiguous.
+    pub fn data_i64(&self) -> &[i64] {
+        assert_eq!(
+            self.dtype(),
+            MlxDtype::Int64,
+            "data_i64 requires Int64 dtype"
+        );
+        unsafe {
+            ensure_error_handler();
+            let ptr = ffi::mlx_array_data_int64(self.inner);
+            if ptr.is_null() {
+                if let Some(msg) = take_last_error() {
+                    panic!("mlx_array_data_int64 failed: {msg}");
+                }
+                return &[];
+            }
+            let len = self.nbytes() / std::mem::size_of::<i64>();
+            if len == 0 {
+                return &[];
+            }
+            std::slice::from_raw_parts(ptr, len)
+        }
+    }
+
     /// Read the first u32 element without dtype or length validation.
     ///
     /// This is for hot scalar-token paths where the caller already owns the
@@ -493,6 +517,41 @@ mod tests {
         eval(&[&lazy]);
         assert!(lazy.is_evaled());
         assert_eq!(lazy.data_f32(), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn data_i64_preserves_exact_metadata_and_rejects_unreadable_views() {
+        let expected = [i64::MIN, -(1_i64 << 54) - 1, (1_i64 << 54) + 3, i64::MAX];
+        let source = MlxArray::from_raw_data(
+            expected.as_ptr().cast(),
+            std::mem::size_of_val(&expected),
+            &[2, 2],
+            MlxDtype::Int64,
+        );
+        eval(&[&source]);
+        assert_eq!(source.data_i64(), expected);
+        let lazy = crate::ops::transpose(&source, &[1, 0], None);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lazy.data_i64().to_vec()))
+                .is_err()
+        );
+        eval(&[&lazy]);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lazy.data_i64().to_vec()))
+                .is_err()
+        );
+        let readable = crate::ops::contiguous(&lazy, None);
+        eval(&[&readable]);
+        assert_eq!(
+            readable.data_i64(),
+            [expected[0], expected[2], expected[1], expected[3]]
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| MlxArray::from_f32(0.0)
+                .data_i64()
+                .to_vec()))
+            .is_err()
+        );
     }
 
     /// Round-trip `from_raw_data` -> `astype(f32)` -> `eval` -> `data_f32`

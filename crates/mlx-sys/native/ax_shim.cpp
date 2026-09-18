@@ -370,6 +370,18 @@ extern "C" const uint32_t* mlx_array_data_uint32(const mlx_array a) {
   catch (...) { ax_set_current_error(); return nullptr; }
 }
 
+extern "C" const int64_t* mlx_array_data_int64(const mlx_array a) {
+  AX_TRY {
+    const auto& arr = aref(a);
+    ax_require_evaled(arr, "mlx_array_data_int64");
+    ax_require_row_contiguous(arr, "mlx_array_data_int64");
+    ax_require_dtype(arr, mx::int64, "mlx_array_data_int64");
+    return arr.data<int64_t>();
+  }
+  catch (const std::exception&) { ax_set_current_error(); return nullptr; }
+  catch (...) { ax_set_current_error(); return nullptr; }
+}
+
 /* ================================================================
  * Stream
  * ================================================================ */

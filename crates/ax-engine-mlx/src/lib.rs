@@ -1,4 +1,5 @@
 pub(crate) mod artifact_identity;
+mod artifact_path;
 pub(crate) mod attention_mask;
 pub mod batched_decode_certification;
 pub mod batched_decode_policy;
@@ -21,7 +22,10 @@ pub mod kv_cache;
 pub mod minicpm_v;
 pub mod nemotron_omni;
 mod nemotron_omni_audio;
+pub mod ngram_table;
 pub mod qwen3_vl;
+pub mod qwen4_exp_ngram;
+pub mod qwen4_exp_qsa;
 pub mod unlimited_ocr;
 pub mod vision_feature_cache;
 pub mod whisper;

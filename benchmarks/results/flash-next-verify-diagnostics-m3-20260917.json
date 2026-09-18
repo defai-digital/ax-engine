@@ -1,0 +1,148 @@
+{
+  "qualification": false,
+  "release_ready": false,
+  "hardware": "Apple M3 Max 128 GB",
+  "scope": "Tiny synthetic model only; no real-pack or target-SKU qualification",
+  "enabled_disabled_controls_identical": true,
+  "diagnostic_events": 4,
+  "controls": {
+    "controls": [
+      {
+        "committed": [
+          20,
+          10
+        ],
+        "next_primary": 30,
+        "state_sha256": "554b9e58c2e9e4badee7de458fdc44dca13d2842f61fbd5bb746d9b19c2ded6f"
+      },
+      {
+        "committed": [
+          20
+        ],
+        "next_primary": 10,
+        "state_sha256": "c8865a4f9ea698749913cd2429d8494cf27b4b793c2c6061a974e230ba637512"
+      },
+      {
+        "committed": [
+          20
+        ],
+        "next_primary": 10,
+        "state_sha256": "c8865a4f9ea698749913cd2429d8494cf27b4b793c2c6061a974e230ba637512"
+      },
+      {
+        "committed": [
+          20
+        ],
+        "next_primary": 10,
+        "state_sha256": "c8865a4f9ea698749913cd2429d8494cf27b4b793c2c6061a974e230ba637512"
+      }
+    ],
+    "qualification": false,
+    "synthetic_fixture": true
+  },
+  "logs": {
+    "final-verify-enabled": "c0eb49a8ee6e250d40ed8bf811309997eb9ce3536769cbd42b5b85a499b2c12d",
+    "final-verify-disabled": "7ea0970a0e00ca4af8ad46f8ecfd185fb4fc3b0e80dadc6cc6ad667c6e7a4bca",
+    "final-mlx-tests": "328f2b3b00310decffe3b58be933f601aca9c00f209dc9575ed64c5110164f05"
+  },
+  "schema": "ax-engine.flash-next.synthetic-verify-diagnostics.v1",
+  "performance_claim": false,
+  "source_parent_commit": "42686ac2",
+  "source_files_sha256": {
+    "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": "18f2e6fc910722e5e91066c543086070b2d92fd15cfd9a0630e23e887c42a54d",
+    "scripts/curate_flash_next_evidence.py": "10ab824e5ed1e8b1f0632286b3c7e1e1cddb09bd2d9130f231e9ff6bf8be51e3",
+    "scripts/test_curate_flash_next_evidence.py": "ffec8de37b5b0609579967862a0176aef48e0974f36e95cd939e732a73c9a79d"
+  },
+  "test_binary_sha256": "359f4c107b9bab395762bf081fff0d0a68b9c4a524953ca1e66329258a8c7870",
+  "events": [
+    {
+      "accepted": true,
+      "batched_row0": {
+        "margin": 0.004903431981801987,
+        "token": 10
+      },
+      "batched_singleton_argmax_equal": null,
+      "committed_len": 2,
+      "draft": 10,
+      "performance_claim": false,
+      "position": 4,
+      "primary": 20,
+      "qualification": false,
+      "remaining": 2,
+      "schema": "ax-engine.flash-next.verify-diagnostic.v1",
+      "singleton": null
+    },
+    {
+      "accepted": false,
+      "batched_row0": {
+        "margin": 0.004903431981801987,
+        "token": 10
+      },
+      "batched_singleton_argmax_equal": true,
+      "committed_len": 1,
+      "draft": 11,
+      "performance_claim": false,
+      "position": 4,
+      "primary": 20,
+      "qualification": false,
+      "remaining": 2,
+      "schema": "ax-engine.flash-next.verify-diagnostic.v1",
+      "singleton": {
+        "margin": 0.004903428256511688,
+        "source": "rejection_replay",
+        "token": 10
+      }
+    },
+    {
+      "accepted": false,
+      "batched_row0": null,
+      "batched_singleton_argmax_equal": null,
+      "committed_len": 1,
+      "draft": 10,
+      "performance_claim": false,
+      "position": 4,
+      "primary": 20,
+      "qualification": false,
+      "remaining": 1,
+      "schema": "ax-engine.flash-next.verify-diagnostic.v1",
+      "singleton": {
+        "margin": 0.004903428256511688,
+        "source": "one_slot_budget",
+        "token": 10
+      }
+    },
+    {
+      "accepted": false,
+      "batched_row0": {
+        "margin": 0.004903431981801987,
+        "token": 10
+      },
+      "batched_singleton_argmax_equal": true,
+      "committed_len": 1,
+      "draft": 10,
+      "performance_claim": false,
+      "position": 4,
+      "primary": 20,
+      "qualification": false,
+      "remaining": 2,
+      "schema": "ax-engine.flash-next.verify-diagnostic.v1",
+      "singleton": {
+        "margin": 0.004903428256511688,
+        "source": "rejection_replay",
+        "token": 10
+      }
+    }
+  ],
+  "limitations": [
+    "Synthetic fixture, not checkpoint evidence.",
+    "Diagnostic synchronization is not a performance measurement.",
+    "Source files are bound by hash; existing M2 campaign is not rerun by this artifact."
+  ],
+  "fixture_files_sha256": {
+    "config.json": "91429e45751611202c258fdcd70a24e90ec5a0161fb5eb0ee4ba55307ed231b0",
+    "model.safetensors": "f9e0f5b351a98d1d7564140e46270661fb23faa5506974525e81cf63424f3ba4",
+    "mtp.safetensors": "92b3d2c9b9b4db2dc773cb10c2e82a42a17bce3e075ea7d31c8b1ddf405a7a54",
+    "mtplx_runtime.json": "cb27a3ad49358fcd2935dd1c5e427b596548ba83407736a3f10d46ac87207314",
+    "provenance.json": "be3592dd7229d61f9108725b5431b73f40a7c798976830dce73e329ef7b2014c"
+  }
+}

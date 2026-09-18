@@ -13,6 +13,17 @@ use super::fixtures::{
     spawn_llama_cpp_completion_stream_server,
 };
 
+async fn assert_no_pending_jobs(state: &crate::app_state::AppState) {
+    let live = state.snapshot();
+    // The worker sends command replies before decrementing pending_jobs.
+    // Admission permits must already be released; command cleanup may follow.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while live.generation_service.pending_jobs() != 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(live.generation_service.pending_jobs(), 0);
+}
+
 #[tokio::test]
 async fn submit_request_is_not_globally_blocked_by_a_model_load() {
     // The lifecycle-mutation flag serializes registry changes; it must not be
@@ -306,7 +317,7 @@ async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
     assert_eq!(terminal_status, StatusCode::OK);
     assert_eq!(terminal_json, expected_terminal);
     assert_eq!(state.admission.active_jobs(), 0);
-    assert_eq!(state.snapshot().generation_service.pending_jobs(), 0);
+    assert_no_pending_jobs(&state).await;
     let step_models = state.metrics.engine_step_gauges_per_model();
     assert!(
         !step_models.is_empty(),
@@ -443,7 +454,7 @@ async fn llama_cpp_stepwise_request_endpoints_aggregate_multiple_active_requests
         }
     }
     assert_eq!(state.admission.active_jobs(), 0);
-    assert_eq!(state.snapshot().generation_service.pending_jobs(), 0);
+    assert_no_pending_jobs(&state).await;
 
     llama_cpp_server_handle
         .join()
@@ -506,7 +517,7 @@ async fn llama_cpp_cancel_endpoint_surfaces_cancelled_snapshot() {
         Some(true)
     );
     assert_eq!(state.admission.active_jobs(), 0);
-    assert_eq!(state.snapshot().generation_service.pending_jobs(), 0);
+    assert_no_pending_jobs(&state).await;
 
     llama_cpp_server_handle
         .join()
@@ -549,7 +560,7 @@ async fn step_error_cancels_request_and_releases_admission() {
     .await;
     assert_eq!(step_status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(state.admission.active_jobs(), 0);
-    assert_eq!(state.snapshot().generation_service.pending_jobs(), 0);
+    assert_no_pending_jobs(&state).await;
 
     let (cancel_status, cancel_json) = json_response(
         &app,

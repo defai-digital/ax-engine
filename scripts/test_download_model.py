@@ -2418,6 +2418,64 @@ class ManifestHeaderBindingTest(unittest.TestCase):
             self.assertIsNotNone(reason)
             self.assertIn("final_norm", reason)
 
+    def _write_flash_next_role_fixture(self, model_dir: Path) -> dict:
+        # Bind minimal source tensors; full Flash Next geometry remains native.
+        roles = [entry for entry in _MINIMAL_READY_ROLES
+                 if entry[0] not in {"final_norm", "attention_norm", "ffn_norm"}]
+        roles.extend((f"qwen4_exp_hc_mixer_{part}", None)
+                     for part in ("norm", "mix_down", "mix_up"))
+        roles.extend((f"qwen4_exp_{component}_hc_{part}", 0)
+                     for component in ("attn", "mlp")
+                     for part in ("norm", "mix_down", "mix_up", "inject"))
+        with patch(f"{__name__}._MINIMAL_READY_ROLES", roles):
+            manifest = self._write_bound_fixture(model_dir)
+        manifest["model_family"] = "qwen4_exp"
+        (model_dir / "model-manifest.json").write_text(json.dumps(manifest))
+        return manifest
+
+    def test_flash_next_hc_roles_do_not_require_dense_norms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            manifest = self._write_flash_next_role_fixture(model_dir)
+            self.assertIsNone(download_model._manifest_missing_required_roles(manifest))
+            self.assertFalse(download_model._manifest_needs_rebuild(model_dir))
+
+    def test_flash_next_missing_hc_roles_still_fail_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._write_flash_next_role_fixture(Path(tmp))
+            for tensor in manifest["tensors"]:
+                if not tensor["role"].startswith("qwen4_exp_"):
+                    continue
+                with self.subTest(role=tensor["role"]):
+                    incomplete = {**manifest, "tensors": [
+                        other for other in manifest["tensors"] if other is not tensor
+                    ]}
+                    reason = download_model._manifest_missing_required_roles(incomplete)
+                    self.assertIsNotNone(reason)
+                    self.assertIn(tensor["role"], reason)
+
+    def test_flash_next_roles_do_not_bypass_native_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            self._write_flash_next_role_fixture(model_dir)
+            with patch.object(download_model, "_try_validate_manifest", return_value=False) as validate:
+                self.assertEqual(
+                    download_model._manifest_readiness_error(model_dir, quiet=True),
+                    "native manifest validation failed",
+                )
+                validate.assert_called_once_with(model_dir, quiet=True)
+
+    def test_flash_next_role_exception_requires_exact_family(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._write_flash_next_role_fixture(Path(tmp))
+            for family in ("qwen3", "qwen3_5", "qwen4_exp_variant"):
+                with self.subTest(family=family):
+                    manifest["model_family"] = family
+                    self.assertEqual(
+                        download_model._manifest_missing_required_roles(manifest),
+                        "missing required tensor role final_norm",
+                    )
+
     def test_manifest_may_omit_unrelated_source_tensors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)
@@ -2478,6 +2536,7 @@ class ManifestHeaderBindingTest(unittest.TestCase):
             "BF16": "bf16",
             "F32": "f32",
             "I8": "i8",
+            "I64": "i64",
             "U8": "u8",
             "U32": "u32",
         }
@@ -2501,6 +2560,23 @@ class ManifestHeaderBindingTest(unittest.TestCase):
             (model_dir / "model.safetensors").write_bytes(b"\0")
 
             self.assertTrue(download_model._manifest_needs_rebuild(model_dir))
+
+    def test_i64_metadata_rejects_wrong_length_and_dtype(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for label, length, dtype in (("short", 4, "i64"), ("wrong_dtype", 8, "u32")):
+                with self.subTest(label=label):
+                    model_dir = root / label
+                    model_dir.mkdir()
+                    self._write_bound_fixture(
+                        model_dir, source_dtype="I64", manifest_dtype=dtype,
+                        source_length=length,
+                    )
+                    self.assertTrue(download_model._manifest_needs_rebuild(model_dir))
+                    if label == "short":
+                        self.assertIsNotNone(download_model._safetensors_file_error(
+                            model_dir / "model.safetensors"
+                        ))
 
     def test_supported_tensor_rejects_inconsistent_shape_and_length(self) -> None:
         cases = {

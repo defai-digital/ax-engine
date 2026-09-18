@@ -231,6 +231,17 @@ pub fn linear_attention_conv1d(
     conv_weight: &MlxArray,
     cached_conv_state: Option<&MlxArray>,
 ) -> (MlxArray, MlxArray) {
+    let (conv_out, new_state) =
+        linear_attention_conv1d_pre_activation(cfg, qkv, conv_weight, cached_conv_state);
+    (mlx_sys::ops::silu(&conv_out, None), new_state)
+}
+
+pub(crate) fn linear_attention_conv1d_pre_activation(
+    cfg: &LinearAttentionConfig,
+    qkv: &MlxArray,
+    conv_weight: &MlxArray,
+    cached_conv_state: Option<&MlxArray>,
+) -> (MlxArray, MlxArray) {
     let shape = qkv.shape();
     let batch = shape[0];
     let conv_dim = cfg.conv_dim() as i32;
@@ -250,7 +261,7 @@ pub fn linear_attention_conv1d(
         None,
     );
     let conv_out = conv1d(&conv_input, conv_weight, 1, 0, 1, conv_dim, None);
-    (mlx_sys::ops::silu(&conv_out, None), new_state)
+    (conv_out, new_state)
 }
 
 #[allow(clippy::too_many_arguments)]

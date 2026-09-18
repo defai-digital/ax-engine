@@ -44,6 +44,17 @@ fn parse_stream_experts_mode(raw: &str) -> Result<ax_engine_sdk::MlxStreamExpert
     }
 }
 
+fn parse_mlx_mtp_policy(raw: &str) -> Result<ax_engine_sdk::MlxMtpPolicy, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(ax_engine_sdk::MlxMtpPolicy::Auto),
+        "disabled" => Ok(ax_engine_sdk::MlxMtpPolicy::Disabled),
+        "required" => Ok(ax_engine_sdk::MlxMtpPolicy::Required),
+        other => Err(format!(
+            "invalid --mlx-mtp-policy {other:?} (expected auto, disabled, or required)"
+        )),
+    }
+}
+
 fn parse_finite_f64(raw: &str) -> Result<f64, String> {
     let value = raw
         .parse::<f64>()
@@ -174,10 +185,15 @@ pub struct ServerArgs {
     #[arg(long = "hf-cache-root")]
     pub hf_cache_root: Option<PathBuf>,
 
-    /// Disable n-gram acceleration and run the direct same-policy decode path.
-    /// Useful for establishing clean benchmark comparisons against mlx_lm.
+    /// Disable n-gram acceleration and automatic model MTP for a direct baseline.
+    /// An explicit --mlx-mtp-policy required still requires the model drafter.
     #[arg(long = "disable-ngram-acceleration", default_value_t = false)]
     pub disable_ngram_acceleration: bool,
+
+    /// Native MLX MTP policy: auto follows certification, disabled uses no
+    /// model drafter, required rejects session creation without an admitted drafter.
+    #[arg(long = "mlx-mtp-policy", default_value = "auto", value_parser = parse_mlx_mtp_policy)]
+    pub mlx_mtp_policy: ax_engine_sdk::MlxMtpPolicy,
 
     /// Enable n-gram-first drafting inside the MTP verify loop. Disabled by
     /// default after the Gemma 4 12B Phase 4 sweep found pure assistant-MTP is

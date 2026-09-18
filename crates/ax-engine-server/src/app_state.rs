@@ -682,6 +682,8 @@ struct EngineStepStats {
     /// rate the low-acceptance bypass watches; expose it so operators can see
     /// speculation paying for itself (or not) without bench tooling.
     mtp_accept_rate_ewma_x1000: u64,
+    mlx_flash_next_selected_expert_gathers_total: u64,
+    mlx_flash_next_selected_expert_payload_kib_total: u64,
     mlx_prefix_cache_hits_total: u64,
     mlx_prefix_cache_misses_total: u64,
     mlx_prefix_cache_reused_tokens_total: u64,
@@ -736,6 +738,8 @@ pub(crate) struct EngineStepGauges {
     pub(crate) mtp_accepted_tokens_total: u64,
     pub(crate) mtp_direct_fallback_steps_total: u64,
     pub(crate) mtp_accept_rate_ewma_x1000: u64,
+    pub(crate) mlx_flash_next_selected_expert_gathers_total: u64,
+    pub(crate) mlx_flash_next_selected_expert_payload_kib_total: u64,
     pub(crate) mlx_prefix_cache_hits_total: u64,
     pub(crate) mlx_prefix_cache_misses_total: u64,
     pub(crate) mlx_prefix_cache_reused_tokens_total: u64,
@@ -949,6 +953,14 @@ impl ServerMetrics {
             }
             for (target, key) in [
                 (
+                    &mut entry.mlx_flash_next_selected_expert_gathers_total,
+                    "ax_mlx_flash_next_selected_expert_gathers",
+                ),
+                (
+                    &mut entry.mlx_flash_next_selected_expert_payload_kib_total,
+                    "ax_mlx_flash_next_selected_expert_payload_kib",
+                ),
+                (
                     &mut entry.mlx_prefix_cache_hits_total,
                     "ax_mlx_prefix_cache_hits",
                 ),
@@ -1112,6 +1124,10 @@ impl ServerMetrics {
                         mtp_accepted_tokens_total: entry.mtp_accepted_tokens_total,
                         mtp_direct_fallback_steps_total: entry.mtp_direct_fallback_steps_total,
                         mtp_accept_rate_ewma_x1000: entry.mtp_accept_rate_ewma_x1000,
+                        mlx_flash_next_selected_expert_gathers_total: entry
+                            .mlx_flash_next_selected_expert_gathers_total,
+                        mlx_flash_next_selected_expert_payload_kib_total: entry
+                            .mlx_flash_next_selected_expert_payload_kib_total,
                         mlx_prefix_cache_hits_total: entry.mlx_prefix_cache_hits_total,
                         mlx_prefix_cache_misses_total: entry.mlx_prefix_cache_misses_total,
                         mlx_prefix_cache_reused_tokens_total: entry
@@ -1606,6 +1622,42 @@ mod step_metrics_tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(stats.ttft_ms_samples.len(), TTFT_SAMPLE_WINDOW);
+    }
+
+    #[test]
+    fn selected_expert_counters_sum_per_step_deltas_and_keep_model_identity() {
+        let metrics = ServerMetrics::default();
+        for (step, gathers, kib) in [(1, 48, 864000), (2, 48, 864000), (3, 0, 0)] {
+            let mut report = step_report(step, 0);
+            report.route = Some(ax_engine_sdk::GenerateRouteReport {
+                crossover_decisions: BTreeMap::from([
+                    ("ax_mlx_flash_next_selected_expert_gathers".into(), gathers),
+                    ("ax_mlx_flash_next_selected_expert_payload_kib".into(), kib),
+                ]),
+                ..Default::default()
+            });
+            metrics.record_step_report("flash", &report);
+        }
+        metrics.record_step_report("other", &step_report(1, 0));
+        let mut totals: Vec<_> = metrics
+            .engine_step_gauges_per_model()
+            .into_iter()
+            .map(|(name, values)| {
+                (
+                    name,
+                    values.mlx_flash_next_selected_expert_gathers_total,
+                    values.mlx_flash_next_selected_expert_payload_kib_total,
+                )
+            })
+            .collect();
+        totals.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            totals,
+            vec![
+                ("flash".to_string(), 96, 1728000),
+                ("other".to_string(), 0, 0)
+            ]
+        );
     }
 
     #[test]

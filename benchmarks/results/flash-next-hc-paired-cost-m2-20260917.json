@@ -1,0 +1,170 @@
+{
+  "schema": "ax-engine.flash-next.hc-paired-cost.v1",
+  "qualification": false,
+  "release_ready": false,
+  "hardware": "Apple M2 Ultra 192 GB",
+  "binary_sha256": "5431a758b08e77f92923969a2e8760d9bc82de042d0b49c6142ba835dd3d1795",
+  "source_sha256": {
+    "crates/ax-engine-mlx/src/model/qwen4_exp.rs": "73b1948b31bd14364dacfd22e7bf70abd43a95e6c0b9e424f537fe7401ca9f16",
+    "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": "0a8b926228b443c9d9e9f0c0fee184b7a1baf252450bff9ddee857bf64695ae0",
+    "crates/ax-engine-mlx/src/model/shared/qwen4_exp_residual.rs": "c8d083777ba283f379439f0061356dd288145096dda7cc34fc0b6dc310c18319",
+    "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": "c4b760936de305c968a2044eafebc3dd2ab990b8abb77e02f31dc12438b55e63"
+  },
+  "completed": true,
+  "all_28_requests_token_identity": true,
+  "protocol": {
+    "pack": "4-bit affine",
+    "residency": "forced resident",
+    "prompt_ids": [
+      760,
+      6511,
+      314,
+      9338,
+      369
+    ],
+    "output_tokens": 32,
+    "warmup_pairs": 2,
+    "measured_pairs": 12,
+    "alternating_order": true,
+    "head_attached_in_both_modes": true,
+    "prefix_stores": "cleared before every request",
+    "timing_boundary": "runner_call_with_host_visible_tokens"
+  },
+  "median_paired_mtp_direct_decode_ratio": 0.7904040305259583,
+  "min_paired_ratio": 0.7857182504742425,
+  "max_paired_ratio": 0.7991374241902409,
+  "ratio_sample_stddev": 0.003479029252133446,
+  "median_direct_decode_seconds": 1.5415465875,
+  "median_mtp_decode_seconds": 1.2202162925,
+  "load_seconds": 398.509989583,
+  "pairs": [
+    {
+      "pair": 2,
+      "direct_decode_seconds": 1.5306287510000003,
+      "mtp_decode_seconds": 1.214076793,
+      "mtp_direct_decode_ratio": 0.7931882843614505,
+      "direct_total_seconds": 1.735866042,
+      "mtp_total_seconds": 1.368419166,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 3,
+      "direct_decode_seconds": 1.5350796220000003,
+      "mtp_decode_seconds": 1.2178294579999998,
+      "mtp_direct_decode_ratio": 0.7933330887510144,
+      "direct_total_seconds": 1.739951625,
+      "mtp_total_seconds": 1.371697292,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 4,
+      "direct_decode_seconds": 1.541252589,
+      "mtp_decode_seconds": 1.231672624,
+      "mtp_direct_decode_ratio": 0.7991374241902409,
+      "direct_total_seconds": 1.7467680840000002,
+      "mtp_total_seconds": 1.3873876250000001,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 5,
+      "direct_decode_seconds": 1.5485079180000005,
+      "mtp_decode_seconds": 1.2235612919999999,
+      "mtp_direct_decode_ratio": 0.7901550116581318,
+      "direct_total_seconds": 1.755043125,
+      "mtp_total_seconds": 1.379192209,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 6,
+      "direct_decode_seconds": 1.5657647469999998,
+      "mtp_decode_seconds": 1.231570165,
+      "mtp_direct_decode_ratio": 0.78656143418715,
+      "direct_total_seconds": 1.774427791,
+      "mtp_total_seconds": 1.387136959,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 7,
+      "direct_decode_seconds": 1.5561922129999999,
+      "mtp_decode_seconds": 1.2227286229999996,
+      "mtp_direct_decode_ratio": 0.7857182504742425,
+      "direct_total_seconds": 1.764522916,
+      "mtp_total_seconds": 1.3785577500000001,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 8,
+      "direct_decode_seconds": 1.54719712,
+      "mtp_decode_seconds": 1.221371624,
+      "mtp_direct_decode_ratio": 0.7894091891794628,
+      "direct_total_seconds": 1.755890583,
+      "mtp_total_seconds": 1.377499292,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 9,
+      "direct_decode_seconds": 1.547591497,
+      "mtp_decode_seconds": 1.224387168,
+      "mtp_direct_decode_ratio": 0.7911565619050439,
+      "direct_total_seconds": 1.756839292,
+      "mtp_total_seconds": 1.381401333,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 10,
+      "direct_decode_seconds": 1.5366968289999998,
+      "mtp_decode_seconds": 1.212927752,
+      "mtp_direct_decode_ratio": 0.7893084238283412,
+      "direct_total_seconds": 1.7450168750000001,
+      "mtp_total_seconds": 1.366989792,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 11,
+      "direct_decode_seconds": 1.537852248,
+      "mtp_decode_seconds": 1.215111665,
+      "mtp_direct_decode_ratio": 0.7901355065678585,
+      "direct_total_seconds": 1.743312625,
+      "mtp_total_seconds": 1.369281,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 12,
+      "direct_decode_seconds": 1.5377361629999997,
+      "mtp_decode_seconds": 1.2186014589999998,
+      "mtp_direct_decode_ratio": 0.7924645906893457,
+      "direct_total_seconds": 1.743921125,
+      "mtp_total_seconds": 1.373079083,
+      "accepted": 15,
+      "verified_steps": 16
+    },
+    {
+      "pair": 13,
+      "direct_decode_seconds": 1.5418405860000002,
+      "mtp_decode_seconds": 1.219060961,
+      "mtp_direct_decode_ratio": 0.7906530493937847,
+      "direct_total_seconds": 1.7482600000000001,
+      "mtp_total_seconds": 1.374242958,
+      "accepted": 15,
+      "verified_steps": 16
+    }
+  ],
+  "raw_artifact": "flash-next-hc-paired-raw-m2-20260917.json.gz",
+  "raw_artifact_sha256": "57b1c2242d640ade738ed2f09e81d917b057ac6807beaacacd1bec11619a723d",
+  "raw_json_sha256": "206f33bf784167d186abbc6366642e09066c2d386f56a27286c90e2a2bb5a836",
+  "limitations": [
+    "Single short prompt on supplementary M2 hardware, not general MTP profitability or target qualification.",
+    "Resident control does not replace required paged throughput or the reference baseline.",
+    "The earlier sampled timing run is excluded; this separate run has no process sampling or competing owned GPU/bulk IO jobs."
+  ]
+}

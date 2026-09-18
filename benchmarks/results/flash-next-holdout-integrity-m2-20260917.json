@@ -1,0 +1,87 @@
+{
+  "schema": "ax-engine.flash-next.holdout-integrity.v1",
+  "completed": true,
+  "passed": true,
+  "qualification": false,
+  "release_ready": false,
+  "hardware": "Apple M2 Ultra 192 GB",
+  "target_hardware": false,
+  "source_commit": "cad80818734522f444d106cb9018e20e224b08f1",
+  "native_binary_sha256": "6468d80f60dd1a5135e2e3511afd4c5b3fe2de8e149ffec78fa5b2bfac647e4f",
+  "dependency_count": 51,
+  "admission_freeze_sha256": "2627b27828e3b527a83646fedb70b71c925acb44b72fb67c05ae61a94fc6c3fb",
+  "terminal_record_sha256": "9d404a2d700717d69b0e914b68e5664e478db22702e55d5defbb4083b8cf3aa2",
+  "supervisor_sha256": "ae3a2c7423a8a3ed14245844a3c5ac98491e72043892db0305153b6c10bf1e06",
+  "packs": [
+    {
+      "bits": 4,
+      "verified_file_count": 48,
+      "verified_byte_count": 136125454177
+    },
+    {
+      "bits": 6,
+      "verified_file_count": 55,
+      "verified_byte_count": 167059023291
+    }
+  ],
+  "acceptance": {
+    "4": {
+      "evaluated": true,
+      "passed": true,
+      "multiplier": 1.25,
+      "high_margin_threshold": 1.0,
+      "high_margin_max_rate": 0.01,
+      "ax_mean_kl": 0.02823177274468516,
+      "floor_mean_kl": 0.03005586693894401,
+      "mean_kl_limit": 0.03756983367368001,
+      "mean_kl_ok": true,
+      "ax_top1_disagreement_rate": 0.08655006031363088,
+      "floor_top1_disagreement_rate": 0.08353437876960193,
+      "top1_limit": 0.1044179734620024,
+      "top1_ok": true,
+      "high_margin_ax_only_count": 4,
+      "high_margin_rate": 0.0012062726176115801,
+      "high_margin_mlx_vlm_disagrees_with_reference": 2,
+      "high_margin_mlx_vlm_agrees_with_reference": 2,
+      "high_margin_ok": true,
+      "coverage_parity_ok": true,
+      "coverage_parity": true,
+      "floor_graph": "official-recurrent",
+      "ax_position_count": 3316,
+      "floor_position_count": 3316,
+      "coverage_mismatches": []
+    },
+    "6": {
+      "evaluated": true,
+      "passed": true,
+      "multiplier": 1.25,
+      "high_margin_threshold": 1.0,
+      "high_margin_max_rate": 0.01,
+      "ax_mean_kl": 0.01938742250971336,
+      "floor_mean_kl": 0.022427325992325588,
+      "mean_kl_limit": 0.028034157490406983,
+      "mean_kl_ok": true,
+      "ax_top1_disagreement_rate": 0.08624849215922799,
+      "floor_top1_disagreement_rate": 0.08956574185765984,
+      "top1_limit": 0.1119571773220748,
+      "top1_ok": true,
+      "high_margin_ax_only_count": 4,
+      "high_margin_rate": 0.0012062726176115801,
+      "high_margin_mlx_vlm_disagrees_with_reference": 1,
+      "high_margin_mlx_vlm_agrees_with_reference": 3,
+      "high_margin_ok": true,
+      "coverage_parity_ok": true,
+      "coverage_parity": true,
+      "floor_graph": "official-recurrent",
+      "ax_position_count": 3316,
+      "floor_position_count": 3316,
+      "coverage_mismatches": []
+    }
+  },
+  "verification": "Supervisor completed only after rehashing every admission fixture file against the pre-collection freeze and verifying all 51 frozen dependencies. Process exit was independently observed.",
+  "limitations": [
+    "Admission fixtures differ from historical derived manifests only in runtime_status; model payloads are unchanged.",
+    "Three four-bit reference collections were reused with recorded artifact hashes; six-bit graphs were freshly collected.",
+    "This closes the frozen numerical campaign and integrity check, not fresh delivery, installed/default QA, throughput, target hardware or release qualification."
+  ]
+}

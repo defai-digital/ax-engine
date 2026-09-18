@@ -60,16 +60,19 @@ resolved session*, not how well a family is supported.
 | **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
 | **64 GB (Mac mini M4 Pro)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| **256 GB (Mac Studio M5 Ultra)** | Best experience for Qwen 3.8 Flash Next (125B-A6B). Not a certified AX default yet. Super-class Qwen 3.8 (2.4T) stays experimental. |
+| **128 GB (MacBook Pro M5 Max)** | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
 Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
 
 The current Certified families are `qwen3` (dense and MoE), `qwen3_5` /
-`qwen3_next` (Qwen 3.5/3.6), `qwen3_vl`, `gemma4` / `gemma4_vl`,
-`glm4_moe_lite`, `gpt_oss`, and `deepseek_v3` / `deepseek_v32`. Registered
-families without certification evidence are Compatible; `diffusion_gemma` is
-Experimental. A manifest whose structural signals force a feature-gated
+`qwen3_next` (Qwen 3.5/3.6), `qwen3_vl`,
+`gemma4` / `gemma4_vl`, `glm4_moe_lite`, `gpt_oss`, and `deepseek_v3` /
+`deepseek_v32`. Registered
+families without certification evidence are Compatible unless explicitly
+gated as Experimental. `diffusion_gemma` and `qwen4_exp` (Flash Next) are
+Experimental; implemented execution does not establish certification.
+A manifest whose structural signals force a feature-gated
 generation kind (for example a diffusion canvas) resolves to Experimental even
 when its family label is otherwise Certified — the tier reflects the path that
 actually runs. Unknown family labels resolve to Compatible only in the quality
@@ -110,9 +113,14 @@ Qwen 3.8 caveat:
   the unique general-purpose default and primary optimization target.
   Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
 - **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU
-  for Mac Studio M5 Ultra 256 GB. It is **incubating**: convert maps metadata
-  but load/serve stay fail-closed (`qwen4_exp_native_trunk_not_implemented`).
-  No download alias. Do not treat it as 27B or as Super-class 2.4T. Record:
+  for MacBook Pro M5 Max 128 GB. Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
+  CLI aliases are `qwen3.8-flash-next:axq` (4-bit) and
+  `qwen3.8-flash-next:axq-6bit`. Public pack availability and immutable alias revisions are verified; full
+  payload, fresh-download and installed-runtime qualification remain open.
+  Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
+  variable. 2-bit still needs `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
+  `AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4 stays rejected. Do not treat it as 27B
+  or as Super-class 2.4T. Record:
   [Qwen 3.8 Flash Next](model-certifications/qwen3.8-flash-next.md).
 
 A model moves between tiers by landing evidence, not by renaming:
@@ -122,8 +130,9 @@ A model moves between tiers by landing evidence, not by renaming:
   and link the evidence.
 - Certified → Compatible: evidence goes stale (no artifact refresh within the
   policy window) or a regression invalidates the certification run.
-- Any → Experimental: the only working path is a feature-gated one; promotion
-  requires the gate to ship as a default path.
+- Any → Experimental: execution depends on a feature gate or native
+  validation remains incomplete. Default admission alone does not promote
+  the family; promotion requires the corresponding qualification evidence.
 
 The tiered smoke matrix (`scripts/smoke_compatible_models.py`) keeps the
 Compatible/Certified claims honest: it resolves a local snapshot, runs

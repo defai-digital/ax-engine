@@ -11,6 +11,9 @@
 //! v1 is layer-stack paging only: the existing `gather_qmm` kernel runs
 //! unchanged on the paged packed tensors. No per-expert unfused kernels.
 
+mod selected;
+pub(crate) use selected::take_selected_expert_read_stats;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -611,6 +614,11 @@ pub struct ExpertStackPager {
     /// MiniMax packs are stream-required, so this must stay false for them.
     fuse_split_experts: bool,
     cache: Mutex<PagerCache>,
+    selected_readers: Mutex<HashMap<u32, Arc<selected::SelectedExpertRows>>>,
+    /// Layers that missed the selected-prefill payload cap and fell back to
+    /// whole-layer paging. Distinct from `cached_layer_count`, which also
+    /// includes resident stacks loaded for any other reason.
+    selected_prefill_capacity_fallbacks: Mutex<HashSet<u32>>,
 }
 
 impl ExpertStackPager {
@@ -629,10 +637,12 @@ impl ExpertStackPager {
             root,
             budget_layers: budget_layers.max(1),
             fuse_split_experts,
+            selected_readers: Mutex::new(HashMap::new()),
             cache: Mutex::new(PagerCache {
                 entries: HashMap::new(),
                 order: VecDeque::new(),
             }),
+            selected_prefill_capacity_fallbacks: Mutex::new(HashSet::new()),
         }
     }
 
@@ -663,6 +673,82 @@ impl ExpertStackPager {
             .collect()
     }
 
+    fn selected_reader(
+        &self,
+        layer: u32,
+    ) -> Result<Arc<selected::SelectedExpertRows>, ExpertStreamError> {
+        let reader = {
+            let mut readers = self
+                .selected_readers
+                .lock()
+                .map_err(|_| ExpertStreamError::Paging("selected reader lock poisoned".into()))?;
+            if let Some(reader) = readers.get(&layer) {
+                Arc::clone(reader)
+            } else {
+                let reader = Arc::new(
+                    selected::SelectedExpertRows::open(
+                        &self.manifest,
+                        &self.root,
+                        layer,
+                        mlx_sys::DEFAULT_MAX_GATHER_BYTES,
+                    )
+                    .map_err(ExpertStreamError::Paging)?,
+                );
+                readers.insert(layer, Arc::clone(&reader));
+                reader
+            }
+        };
+        Ok(reader)
+    }
+
+    fn selected_stack(
+        &self,
+        layer: u32,
+        ids: &[u64],
+    ) -> Result<LayerExpertStack, ExpertStreamError> {
+        self.selected_reader(layer)?
+            .gather(ids)
+            .map_err(ExpertStreamError::Paging)
+    }
+
+    fn selected_stack_if_fits(
+        &self,
+        layer: u32,
+        ids: &[u64],
+    ) -> Result<Option<LayerExpertStack>, ExpertStreamError> {
+        let stack = self
+            .selected_reader(layer)?
+            .gather_if_fits(ids)
+            .map_err(ExpertStreamError::Paging)?;
+        if stack.is_none() {
+            self.selected_prefill_capacity_fallbacks
+                .lock()
+                .expect("expert stream fallback lock")
+                .insert(layer);
+        }
+        Ok(stack)
+    }
+
+    /// Successful selected-row payload reads; excludes headers and full-layer reads.
+    pub fn selected_payload_bytes_read(&self) -> Result<u64, ExpertStreamError> {
+        let readers = self
+            .selected_readers
+            .lock()
+            .map_err(|_| ExpertStreamError::Paging("selected reader lock poisoned".into()))?;
+        Ok(readers
+            .values()
+            .map(|reader| reader.payload_bytes_read())
+            .sum())
+    }
+
+    /// Distinct layers that missed the selected-prefill payload cap.
+    pub fn selected_prefill_capacity_fallback_layers(&self) -> usize {
+        self.selected_prefill_capacity_fallbacks
+            .lock()
+            .expect("expert stream fallback lock")
+            .len()
+    }
+
     /// Make layer `layer`'s expert stack resident and return cheap clones of
     /// its `QuantizedWeight`s. Loads from disk on a cache miss, then evicts
     /// LRU layers beyond the budget.
@@ -674,6 +760,8 @@ impl ExpertStackPager {
                     cache.order.remove(pos);
                 }
                 cache.order.push_back(layer);
+                #[cfg(test)]
+                crate::model::qwen4_exp::profiling::layer_cache_hit(layer);
                 return Ok(stack);
             }
         }
@@ -705,6 +793,8 @@ impl ExpertStackPager {
     /// Read only this layer's streamed tensors from their shards and assemble
     /// the resident-path `QuantizedWeight` values.
     fn load_layer(&self, layer: u32) -> Result<LayerExpertStack, ExpertStreamError> {
+        #[cfg(test)]
+        let started = std::time::Instant::now();
         let tensors: Vec<&ExpertStreamTensor> = self.manifest.tensors_for_layer(layer).collect();
         if tensors.is_empty() {
             return Err(ExpertStreamError::Paging(format!(
@@ -734,8 +824,16 @@ impl ExpertStackPager {
                 mlx_sys::SafetensorsNameFilter::Keep(keep),
             )
             .map_err(ExpertStreamError::Paging)?;
-            loaded.extend(tensors);
+            for (name, array) in tensors {
+                if loaded.insert(name.clone(), array).is_some() {
+                    return Err(ExpertStreamError::Paging(format!(
+                        "tensor {name} appears in multiple files for layer {layer}"
+                    )));
+                }
+            }
         }
+        #[cfg(test)]
+        let materialized_payload_bytes = loaded.values().map(mlx_sys::MlxArray::nbytes).sum();
         // Wire the freshly created arrays into MLX's working set, mirroring the
         // initial-load eval for both loader paths. Use try_eval so a paging
         // failure stays on the ExpertStreamError path instead of panicking.
@@ -798,6 +896,12 @@ impl ExpertStackPager {
             stack.gate_exps = gate;
             stack.up_exps = up;
         }
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::layer_loaded(
+            layer,
+            materialized_payload_bytes,
+            started.elapsed().as_secs_f64(),
+        );
         Ok(stack)
     }
 }
@@ -816,6 +920,22 @@ impl ExpertLayerSource {
 
     pub fn layer(&self) -> u32 {
         self.layer
+    }
+
+    /// Gather a compact stack in exactly the requested expert order.
+    pub(crate) fn selected_stack(
+        &self,
+        ids: &[u64],
+    ) -> Result<LayerExpertStack, ExpertStreamError> {
+        self.pager.selected_stack(self.layer, ids)
+    }
+
+    /// Return None only when the validated union exceeds the selected payload cap.
+    pub(crate) fn selected_stack_if_fits(
+        &self,
+        ids: &[u64],
+    ) -> Result<Option<LayerExpertStack>, ExpertStreamError> {
+        self.pager.selected_stack_if_fits(self.layer, ids)
     }
 
     /// Resolve this layer's expert stack, paging it in when needed.
@@ -1317,6 +1437,30 @@ mod tests {
     }
 
     #[test]
+    fn pager_rejects_duplicate_sidecars_before_caching() {
+        let dir = synth_fixture("duplicate_sidecar");
+        let name = "model.layers.0.mlp.switch_mlp.gate_up_proj.scales";
+        let mut tensors = synth_tensors(0).to_vec();
+        tensors.push((name, vec![SYN_EXPERTS, 2 * SYN_INTER, 1], vec![1.0; 16]));
+        write_safetensors_f32(&dir, "experts.safetensors", &tensors);
+        write_safetensors_f32(
+            &dir,
+            "sidecars.safetensors",
+            &[(name, vec![SYN_EXPERTS, 2 * SYN_INTER, 1], vec![2.0; 16])],
+        );
+        let mut manifest = synth_manifest();
+        let mut sidecar = manifest.tensors[0].clone();
+        sidecar.name = name.into();
+        sidecar.file = "sidecars.safetensors".into();
+        manifest.tensors.push(sidecar);
+        let pager = ExpertStackPager::new(Arc::new(manifest), dir.clone(), 1);
+        let error = pager.ensure_layer(0).err().expect("duplicate must fail");
+        assert!(error.to_string().contains("appears in multiple files"));
+        assert_eq!(pager.cached_layer_count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn pager_pages_layer_zero_and_keeps_layer_one_absent() {
         let dir = synth_fixture("page_l0");
         let pager = ExpertStackPager::new(
@@ -1326,6 +1470,7 @@ mod tests {
         );
         assert_eq!(pager.budget_layers(), 1);
         assert_eq!(pager.cached_layer_count(), 0);
+        assert_eq!(pager.selected_prefill_capacity_fallback_layers(), 0);
 
         let stack = pager.ensure_layer(0).expect("layer 0 must page in");
         let gate_up = stack
@@ -1348,6 +1493,7 @@ mod tests {
         // Layer 1 must still be absent after paging layer 0.
         assert_eq!(pager.cached_layer_count(), 1);
         assert_eq!(pager.cached_layer_indices(), vec![0]);
+        assert_eq!(pager.selected_prefill_capacity_fallback_layers(), 0);
 
         // The paged weight must flow through the existing gather kernel.
         // Dense fixture (no .scales sidecar) exercises the same lane

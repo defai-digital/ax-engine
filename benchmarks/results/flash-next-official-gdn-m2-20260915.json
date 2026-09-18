@@ -1,0 +1,618 @@
+{
+  "schema_version": 1,
+  "qualification": false,
+  "hardware": "Apple M2 Ultra, 192 GiB",
+  "mlx_version": "0.32.2",
+  "prompt_ids": [
+    760,
+    6511,
+    314,
+    9338,
+    369
+  ],
+  "prefill_schedule": "n-1 then singleton",
+  "pack": "AXQuant 4-bit affine Flash Next",
+  "diagnostic": {
+    "completed": true,
+    "qualification": false,
+    "scope": "actual first-layer GDN tensors from one real 4-bit request",
+    "transformers_commit": "bd15bc95a89e728bbc1224084eb3b5829428c353",
+    "modeling_sha256": "2a44aeadb215acbb5c75939fcc97e9f14bccff5a51c232826427594993f6a760",
+    "torch_version": "2.14.0",
+    "passed": true,
+    "tolerance_source": "Existing F32 2e-5 and BF16 1e-3 oracle tolerances, fixed before capture.",
+    "records": [
+      {
+        "forward": 1,
+        "stage": "isolated_recurrent_output",
+        "shape": [
+          1,
+          4,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.2351741790771484e-08,
+        "mean_abs_error": 4.7512899864488034e-11,
+        "failing_values": 0,
+        "different_values": 18882
+      },
+      {
+        "forward": 1,
+        "stage": "isolated_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.384185791015625e-07,
+        "mean_abs_error": 1.3253910469135377e-10,
+        "failing_values": 0,
+        "different_values": 392595
+      },
+      {
+        "forward": 1,
+        "stage": "carried_recurrent_output",
+        "shape": [
+          1,
+          4,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.2351741790771484e-08,
+        "mean_abs_error": 4.7512899864488034e-11,
+        "failing_values": 0,
+        "different_values": 18882
+      },
+      {
+        "forward": 1,
+        "stage": "carried_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.384185791015625e-07,
+        "mean_abs_error": 1.3253910469135377e-10,
+        "failing_values": 0,
+        "different_values": 392595
+      },
+      {
+        "forward": 1,
+        "stage": "official_chunked_prefill_output",
+        "shape": [
+          1,
+          4,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 3.725290298461914e-08,
+        "mean_abs_error": 7.237810351057306e-11,
+        "failing_values": 0,
+        "different_values": 20502
+      },
+      {
+        "forward": 1,
+        "stage": "official_chunked_prefill_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 3.5762786865234375e-07,
+        "mean_abs_error": 2.086883305052467e-10,
+        "failing_values": 0,
+        "different_values": 538160
+      },
+      {
+        "forward": 1,
+        "stage": "isolated_norm_gate",
+        "shape": [
+          1,
+          4,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "failing_values": 0,
+        "different_values": 0
+      },
+      {
+        "forward": 1,
+        "stage": "recurrent_plus_norm_gate",
+        "shape": [
+          1,
+          4,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 1.52587890625e-05,
+        "mean_abs_error": 6.208817349140361e-10,
+        "failing_values": 0,
+        "different_values": 1
+      },
+      {
+        "forward": 2,
+        "stage": "isolated_recurrent_output",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.2351741790771484e-08,
+        "mean_abs_error": 5.461206140089381e-11,
+        "failing_values": 0,
+        "different_values": 4812
+      },
+      {
+        "forward": 2,
+        "stage": "isolated_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.384185791015625e-07,
+        "mean_abs_error": 1.0625895302540656e-10,
+        "failing_values": 0,
+        "different_values": 378397
+      },
+      {
+        "forward": 2,
+        "stage": "carried_recurrent_output",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.9802322387695312e-08,
+        "mean_abs_error": 5.85640702599477e-11,
+        "failing_values": 0,
+        "different_values": 4955
+      },
+      {
+        "forward": 2,
+        "stage": "carried_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.384185791015625e-07,
+        "mean_abs_error": 1.6534902613773994e-10,
+        "failing_values": 0,
+        "different_values": 468441
+      },
+      {
+        "forward": 2,
+        "stage": "isolated_norm_gate",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 1.52587890625e-05,
+        "mean_abs_error": 2.4835269396561444e-09,
+        "failing_values": 0,
+        "different_values": 1
+      },
+      {
+        "forward": 2,
+        "stage": "recurrent_plus_norm_gate",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 1.52587890625e-05,
+        "mean_abs_error": 2.4835269396561444e-09,
+        "failing_values": 0,
+        "different_values": 1
+      },
+      {
+        "forward": 3,
+        "stage": "isolated_recurrent_output",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 1.4901161193847656e-08,
+        "mean_abs_error": 6.033708949138017e-11,
+        "failing_values": 0,
+        "different_values": 4810
+      },
+      {
+        "forward": 3,
+        "stage": "isolated_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 4.172325134277344e-07,
+        "mean_abs_error": 1.2327260046074429e-10,
+        "failing_values": 0,
+        "different_values": 358758
+      },
+      {
+        "forward": 3,
+        "stage": "carried_recurrent_output",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 4.470348358154297e-08,
+        "mean_abs_error": 7.10119740787718e-11,
+        "failing_values": 0,
+        "different_values": 4904
+      },
+      {
+        "forward": 3,
+        "stage": "carried_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 4.172325134277344e-07,
+        "mean_abs_error": 1.9087133262818412e-10,
+        "failing_values": 0,
+        "different_values": 458764
+      },
+      {
+        "forward": 3,
+        "stage": "isolated_norm_gate",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "failing_values": 0,
+        "different_values": 0
+      },
+      {
+        "forward": 3,
+        "stage": "recurrent_plus_norm_gate",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "failing_values": 0,
+        "different_values": 0
+      },
+      {
+        "forward": 4,
+        "stage": "isolated_recurrent_output",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.2351741790771484e-08,
+        "mean_abs_error": 7.46067860268873e-11,
+        "failing_values": 0,
+        "different_values": 5229
+      },
+      {
+        "forward": 4,
+        "stage": "isolated_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 4.172325134277344e-07,
+        "mean_abs_error": 1.2968488782849619e-10,
+        "failing_values": 0,
+        "different_values": 419147
+      },
+      {
+        "forward": 4,
+        "stage": "carried_recurrent_output",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.2351741790771484e-08,
+        "mean_abs_error": 8.00144325796559e-11,
+        "failing_values": 0,
+        "different_values": 5322
+      },
+      {
+        "forward": 4,
+        "stage": "carried_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 4.76837158203125e-07,
+        "mean_abs_error": 2.2103911756499173e-10,
+        "failing_values": 0,
+        "different_values": 541164
+      },
+      {
+        "forward": 4,
+        "stage": "isolated_norm_gate",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "failing_values": 0,
+        "different_values": 0
+      },
+      {
+        "forward": 4,
+        "stage": "recurrent_plus_norm_gate",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "failing_values": 0,
+        "different_values": 0
+      },
+      {
+        "forward": 5,
+        "stage": "isolated_recurrent_output",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 2.2351741790771484e-08,
+        "mean_abs_error": 4.730120115037373e-11,
+        "failing_values": 0,
+        "different_values": 5074
+      },
+      {
+        "forward": 5,
+        "stage": "isolated_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 3.5762786865234375e-07,
+        "mean_abs_error": 9.482892249224051e-11,
+        "failing_values": 0,
+        "different_values": 348575
+      },
+      {
+        "forward": 5,
+        "stage": "carried_recurrent_output",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 1.4901161193847656e-08,
+        "mean_abs_error": 5.2488208224232835e-11,
+        "failing_values": 0,
+        "different_values": 5227
+      },
+      {
+        "forward": 5,
+        "stage": "carried_recurrent_state",
+        "shape": [
+          1,
+          48,
+          128,
+          128
+        ],
+        "atol": 2e-05,
+        "rtol": 2e-05,
+        "passed": true,
+        "max_abs_error": 4.76837158203125e-07,
+        "mean_abs_error": 1.9300751274986538e-10,
+        "failing_values": 0,
+        "different_values": 495602
+      },
+      {
+        "forward": 5,
+        "stage": "isolated_norm_gate",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "failing_values": 0,
+        "different_values": 0
+      },
+      {
+        "forward": 5,
+        "stage": "recurrent_plus_norm_gate",
+        "shape": [
+          1,
+          1,
+          48,
+          128
+        ],
+        "atol": 0.001,
+        "rtol": 0.001,
+        "passed": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "failing_values": 0,
+        "different_values": 0
+      }
+    ]
+  },
+  "capture_controls": {
+    "completed": true,
+    "binary_sha256": "f3cf749218b4d55b921b62be1e015950b2bcd543309c889ae44f5069d5ce1205",
+    "runs": [
+      {
+        "mode": "plain",
+        "exit_code": 0,
+        "full_logits_and_state_exact": true
+      },
+      {
+        "mode": "observed",
+        "exit_code": 0,
+        "full_logits_and_state_exact": true
+      }
+    ],
+    "swap": "vm.swapusage: total = 1024.00M  used = 35.31M  free = 988.69M  (encrypted)"
+  },
+  "capture_provenance": {
+    "base_commit": "93fe06410a0c73d21c7cd552973547d7018cee88",
+    "profile": "test",
+    "binary_sha256": "f3cf749218b4d55b921b62be1e015950b2bcd543309c889ae44f5069d5ce1205",
+    "sources": {
+      "crates/ax-engine-mlx/src/model/shared/qwen4_exp_gdn.rs": "6c22ae8caa63b1bd1365f82464ce9e5e692a3adf60a1e00c4cd490299d7f8e46",
+      "crates/ax-engine-mlx/src/model/qwen4_exp/profiling.rs": "faa7fb475a4c917974fb7ef458bb5ef143b7416fc5aac4c6466853df56ffaa8a"
+    }
+  },
+  "reviews": {
+    "claude": {
+      "completed": true,
+      "exit_code": 0
+    },
+    "muse": {
+      "completed": true,
+      "exit_code": 0
+    }
+  },
+  "reference_adjudication": [
+    "AX promotes Q/K to FP32 before normalization; the review claiming BF16 was incorrect.",
+    "Beta and decay already have value-head count and are not repeated with key heads.",
+    "Independently carried official recurrent state is compared across all five forwards."
+  ],
+  "limitations": [
+    "Only first-layer captured GDN tensors; projections are inputs to this comparison.",
+    "The official carried-state control uses captured AX projections, not an independent full-model rollout.",
+    "The full-checkpoint MLX-VLM logit mismatch remains open."
+  ],
+  "performance_claim": false
+}

@@ -298,6 +298,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         hf_cache_root: None,
         disable_ngram_acceleration: false,
         mlx_mtp_enable_ngram_stacking: false,
+        mlx_mtp_policy: ax_engine_sdk::MlxMtpPolicy::Auto,
         mlx_mtp_disable_ngram_stacking: false,
         speculation_profile: None,
         prefill_chunk: None,

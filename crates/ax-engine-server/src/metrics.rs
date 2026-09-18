@@ -334,6 +334,20 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
                 },
             ),
             (
+                "ax_engine_mlx_flash_next_selected_expert_gathers_total",
+                "Successful selected-expert stack gathers observed in engine steps.",
+                |step: &crate::app_state::EngineStepGauges| {
+                    step.mlx_flash_next_selected_expert_gathers_total
+                },
+            ),
+            (
+                "ax_engine_mlx_flash_next_selected_expert_payload_kib_total",
+                "Selected-expert payload KiB from successful gathers; excludes headers, whole-layer reads and failed gathers.",
+                |step: &crate::app_state::EngineStepGauges| {
+                    step.mlx_flash_next_selected_expert_payload_kib_total
+                },
+            ),
+            (
                 "ax_engine_mlx_prefill_wall_us_total",
                 "Total MLX prefill wall time observed in microseconds.",
                 |step: &crate::app_state::EngineStepGauges| step.mlx_prefill_wall_us_total,

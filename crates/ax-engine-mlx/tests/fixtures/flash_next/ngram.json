@@ -1,0 +1,99 @@
+{
+  "vocabulary": 32,
+  "eos": 31,
+  "multipliers": [
+    256496738022509279,
+    251627398771002343,
+    55314113489879221
+  ],
+  "head_sizes": [
+    17,
+    19,
+    23,
+    29
+  ],
+  "head_offsets": [
+    0,
+    17,
+    36,
+    59
+  ],
+  "table_rows": 88,
+  "heads_per_order": 2,
+  "tokens": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    31,
+    6,
+    7,
+    8
+  ],
+  "rows": [
+    [
+      6,
+      22,
+      43,
+      80
+    ],
+    [
+      13,
+      23,
+      57,
+      79
+    ],
+    [
+      0,
+      27,
+      48,
+      82
+    ],
+    [
+      3,
+      23,
+      47,
+      83
+    ],
+    [
+      8,
+      31,
+      55,
+      81
+    ],
+    [
+      4,
+      28,
+      50,
+      69
+    ],
+    [
+      6,
+      23,
+      48,
+      67
+    ],
+    [
+      0,
+      23,
+      44,
+      68
+    ],
+    [
+      8,
+      18,
+      45,
+      86
+    ]
+  ],
+  "provenance": {
+    "transformers_commit": "bd15bc95a89e728bbc1224084eb3b5829428c353",
+    "modeling_sha256": "2a44aeadb215acbb5c75939fcc97e9f14bccff5a51c232826427594993f6a760",
+    "torch_version": "2.14.0",
+    "seed": 7901,
+    "dtype": "float32",
+    "model": "synthetic four-layer Flash Next",
+    "qualification": false
+  }
+}

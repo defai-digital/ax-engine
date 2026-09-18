@@ -94,6 +94,8 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
@@ -124,7 +126,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 88)
+        self.assertEqual(len(targets), 90)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
@@ -233,6 +235,16 @@ class AxEngineCliTests(unittest.TestCase):
             "qwen3.8-27b:axq-4bit": (
                 "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
                 "7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e",
+                "candidate",
+            ),
+            "qwen3.8-flash-next:axq": (
+                "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
+                "680573112360bfd3f71556082f875c907c21a6e7",
+                "candidate",
+            ),
+            "qwen3.8-flash-next:axq-6bit": (
+                "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+                "d514dcebf3086068ed7968caf395083c95ebcfca",
                 "candidate",
             ),
             "ax-qwen3-vl-30b": (
@@ -751,6 +763,26 @@ class AxEngineCliTests(unittest.TestCase):
                 self.assertEqual(records[0]["status"], "download_failed")
                 self.assertIn(expected, records[0]["errors"][0])
                 self.assertIn(expected, stderr.getvalue())
+
+    def test_flash_next_download_aliases_forward_immutable_revisions(self) -> None:
+        class Result:
+            returncode = 0
+            stdout = json.dumps({"schema_version": "ax.download_model.v1", "status": "ready"})
+            stderr = ""
+
+        cases = (
+            ("qwen3.8-flash-next:axq", "680573112360bfd3f71556082f875c907c21a6e7"),
+            ("qwen3.8-flash-next:axq-6bit", "d514dcebf3086068ed7968caf395083c95ebcfca"),
+        )
+        for alias, revision in cases:
+            with self.subTest(alias=alias), unittest.mock.patch.object(
+                _cli, "_run_capture", return_value=Result()
+            ) as capture:
+                code, summary, _ = _cli._download_summary(alias)
+            self.assertEqual(code, 0)
+            self.assertIn(f"--revision={revision}", capture.call_args.args[0])
+            self.assertIsNotNone(summary)
+            self.assertEqual(summary["revision"], revision)
 
     def test_download_url_forwards_revision_to_helper(self) -> None:
         commands: list[list[str]] = []
@@ -1644,7 +1676,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 34)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 36)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.

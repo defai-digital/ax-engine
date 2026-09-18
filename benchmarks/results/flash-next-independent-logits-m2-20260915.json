@@ -1,0 +1,654 @@
+{
+  "schema_version": 1,
+  "qualification": false,
+  "status": "independent_logits_mismatch",
+  "hardware": "Apple M2 Ultra, 192 GiB",
+  "mlx_version": "0.32.2",
+  "reference": {
+    "url": "https://github.com/Blaizzy/mlx-vlm.git",
+    "vcs_info": {
+      "vcs": "git",
+      "commit_id": "6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb"
+    }
+  },
+  "reference_language_sha256": "30f059d6289451bde0f5ef816090ff946ebc857d1b557f83415e2ba867d76199",
+  "prompt_ids": [
+    760,
+    6511,
+    314,
+    9338,
+    369
+  ],
+  "schedule": "n-1 then singleton",
+  "generated_ids": [
+    11751,
+    13,
+    271,
+    760
+  ],
+  "generated_tokens_match": true,
+  "complete_logits_exact": false,
+  "numerical_acceptance": false,
+  "pack_config_sha256": "80ca7afe6c96a5e6c214c86113cb07662114a01f01b34c2f2d8fd242cdac97a7",
+  "pack_identity_check": "JSON hashes plus safetensors header hashes, size and mtime; not full payload hashes",
+  "reference_repeat_with_pass_through_observers_exact": true,
+  "ax_repeat_with_stage_dump_logits_and_state_exact": true,
+  "reference_peak_mlx_bytes": 107622386670,
+  "host_swap_after_reference_mib": 35.31,
+  "performance_claim": false,
+  "records": [
+    {
+      "name": "prefix",
+      "shape": [
+        4,
+        248320
+      ],
+      "exact": false,
+      "max_abs_error": 0.9609375,
+      "mean_abs_error": 0.07305224239826202,
+      "rms_error": 0.10830235481262207,
+      "ax_argmax": [
+        20438,
+        314,
+        279,
+        369
+      ],
+      "reference_argmax": [
+        220,
+        314,
+        279,
+        369
+      ],
+      "ax_logits_sha256": "b7e1bb353f51f2bb77f35485cf24b57e377c50208600fa2fb4458b75a4d227c1",
+      "reference_logits_sha256": "213975d0519bbacd787e946ec5fabd77335f40dbe81c72a5fac274aac90ac323"
+    },
+    {
+      "name": "decode-0",
+      "shape": [
+        1,
+        248320
+      ],
+      "exact": false,
+      "max_abs_error": 2.3427734375,
+      "mean_abs_error": 0.29303139448165894,
+      "rms_error": 0.3724387288093567,
+      "ax_argmax": [
+        11751
+      ],
+      "reference_argmax": [
+        11751
+      ],
+      "ax_logits_sha256": "5d422951f70a861f2ab8d99d81ebf0f5b4e1ebeecfc9d19e2bf77ff39cb81880",
+      "reference_logits_sha256": "2f41d526be9e87a6bc71e3231c6f4640567120dcc3f9279855e82e0bdc58e2ef"
+    },
+    {
+      "name": "decode-1",
+      "shape": [
+        1,
+        248320
+      ],
+      "exact": false,
+      "max_abs_error": 1.89453125,
+      "mean_abs_error": 0.2191648781299591,
+      "rms_error": 0.2793302536010742,
+      "ax_argmax": [
+        13
+      ],
+      "reference_argmax": [
+        13
+      ],
+      "ax_logits_sha256": "60a59b5415c6f04a1c8b044b9bb65ddfe7693cab634ae22e109b9d5a711b42b7",
+      "reference_logits_sha256": "2b5620d070341774a6d013ae0ef0d573eb72a072bc9427fb706433624d2c0f94"
+    },
+    {
+      "name": "decode-2",
+      "shape": [
+        1,
+        248320
+      ],
+      "exact": false,
+      "max_abs_error": 1.4375,
+      "mean_abs_error": 0.22951771318912506,
+      "rms_error": 0.2879260778427124,
+      "ax_argmax": [
+        271
+      ],
+      "reference_argmax": [
+        271
+      ],
+      "ax_logits_sha256": "7a3fb7e65872a4e580826f99d54411ab150e307ca719ff1f04a29f901d708418",
+      "reference_logits_sha256": "54b9fbeda914fbd47ab197a26d3407d576bf2eea33ef6a339044699ae4ea867b"
+    },
+    {
+      "name": "decode-3",
+      "shape": [
+        1,
+        248320
+      ],
+      "exact": false,
+      "max_abs_error": 1.38671875,
+      "mean_abs_error": 0.23506787419319153,
+      "rms_error": 0.2941552698612213,
+      "ax_argmax": [
+        760
+      ],
+      "reference_argmax": [
+        760
+      ],
+      "ax_logits_sha256": "93a7a2b3b2ee947e6ca59e10affd9c779fa4b51f47b2734f741c7e9d0e03c0c6",
+      "reference_logits_sha256": "ff00347284492d4d914117ce09e2c89d0124a7d87bc07dcf3eed4f9a5479bcd4"
+    }
+  ],
+  "first_layer": [
+    {
+      "forward": 1,
+      "stage": "embedding",
+      "shape": [
+        1,
+        4,
+        10240
+      ],
+      "different_values": 0,
+      "max_abs_error": 0.0,
+      "mean_abs_error": 0.0
+    },
+    {
+      "forward": 1,
+      "stage": "attention_hc_read",
+      "shape": [
+        1,
+        4,
+        2560
+      ],
+      "different_values": 1,
+      "max_abs_error": 0.0078125,
+      "mean_abs_error": 7.629394644936838e-07
+    },
+    {
+      "forward": 1,
+      "stage": "gdn",
+      "shape": [
+        1,
+        4,
+        2560
+      ],
+      "different_values": 7779,
+      "max_abs_error": 0.0078125,
+      "mean_abs_error": 0.0005787814734503627
+    },
+    {
+      "forward": 1,
+      "stage": "attention_hc_write",
+      "shape": [
+        1,
+        4,
+        10240
+      ],
+      "different_values": 24272,
+      "max_abs_error": 0.0009765625,
+      "mean_abs_error": 2.980512181238737e-05
+    },
+    {
+      "forward": 1,
+      "stage": "mlp_hc_read",
+      "shape": [
+        1,
+        4,
+        2560
+      ],
+      "different_values": 8138,
+      "max_abs_error": 0.03125,
+      "mean_abs_error": 0.0027331500314176083
+    },
+    {
+      "forward": 1,
+      "stage": "mlp_hc_write",
+      "shape": [
+        1,
+        4,
+        10240
+      ],
+      "different_values": 27857,
+      "max_abs_error": 0.001953125,
+      "mean_abs_error": 5.820496517117135e-05
+    },
+    {
+      "forward": 2,
+      "stage": "embedding",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 0,
+      "max_abs_error": 0.0,
+      "mean_abs_error": 0.0
+    },
+    {
+      "forward": 2,
+      "stage": "attention_hc_read",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 0,
+      "max_abs_error": 0.0,
+      "mean_abs_error": 0.0
+    },
+    {
+      "forward": 2,
+      "stage": "gdn",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 2000,
+      "max_abs_error": 0.00390625,
+      "mean_abs_error": 0.000505134288687259
+    },
+    {
+      "forward": 2,
+      "stage": "attention_hc_write",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 6105,
+      "max_abs_error": 0.0003662109375,
+      "mean_abs_error": 1.73193166119745e-05
+    },
+    {
+      "forward": 2,
+      "stage": "mlp_hc_read",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 2043,
+      "max_abs_error": 0.0234375,
+      "mean_abs_error": 0.00277490122243762
+    },
+    {
+      "forward": 2,
+      "stage": "mlp_hc_write",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 7500,
+      "max_abs_error": 0.001953125,
+      "mean_abs_error": 5.0197180826216936e-05
+    },
+    {
+      "forward": 3,
+      "stage": "embedding",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 0,
+      "max_abs_error": 0.0,
+      "mean_abs_error": 0.0
+    },
+    {
+      "forward": 3,
+      "stage": "attention_hc_read",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 0,
+      "max_abs_error": 0.0,
+      "mean_abs_error": 0.0
+    },
+    {
+      "forward": 3,
+      "stage": "gdn",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 1977,
+      "max_abs_error": 0.00390625,
+      "mean_abs_error": 0.000594077748246491
+    },
+    {
+      "forward": 3,
+      "stage": "attention_hc_write",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 6495,
+      "max_abs_error": 0.0009765625,
+      "mean_abs_error": 4.846695810556412e-05
+    },
+    {
+      "forward": 3,
+      "stage": "mlp_hc_read",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 2038,
+      "max_abs_error": 0.03515625,
+      "mean_abs_error": 0.0030853168573230505
+    },
+    {
+      "forward": 3,
+      "stage": "mlp_hc_write",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 6990,
+      "max_abs_error": 0.002471923828125,
+      "mean_abs_error": 7.030642154859379e-05
+    },
+    {
+      "forward": 4,
+      "stage": "embedding",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 0,
+      "max_abs_error": 0.0,
+      "mean_abs_error": 0.0
+    },
+    {
+      "forward": 4,
+      "stage": "attention_hc_read",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 0,
+      "max_abs_error": 0.0,
+      "mean_abs_error": 0.0
+    },
+    {
+      "forward": 4,
+      "stage": "gdn",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 2185,
+      "max_abs_error": 0.0087890625,
+      "mean_abs_error": 0.0007285391911864281
+    },
+    {
+      "forward": 4,
+      "stage": "attention_hc_write",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 6647,
+      "max_abs_error": 0.00067138671875,
+      "mean_abs_error": 1.665184390731156e-05
+    },
+    {
+      "forward": 4,
+      "stage": "mlp_hc_read",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 2170,
+      "max_abs_error": 0.0361328125,
+      "mean_abs_error": 0.004332259297370911
+    },
+    {
+      "forward": 4,
+      "stage": "mlp_hc_write",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 7582,
+      "max_abs_error": 0.001953125,
+      "mean_abs_error": 3.811596252489835e-05
+    },
+    {
+      "forward": 5,
+      "stage": "embedding",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 0,
+      "max_abs_error": 0.0,
+      "mean_abs_error": 0.0
+    },
+    {
+      "forward": 5,
+      "stage": "attention_hc_read",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 1,
+      "max_abs_error": 0.001953125,
+      "mean_abs_error": 7.629394644936838e-07
+    },
+    {
+      "forward": 5,
+      "stage": "gdn",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 1884,
+      "max_abs_error": 0.00390625,
+      "mean_abs_error": 0.0004193924833089113
+    },
+    {
+      "forward": 5,
+      "stage": "attention_hc_write",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 4707,
+      "max_abs_error": 0.0003662109375,
+      "mean_abs_error": 9.304596460424364e-06
+    },
+    {
+      "forward": 5,
+      "stage": "mlp_hc_read",
+      "shape": [
+        1,
+        1,
+        2560
+      ],
+      "different_values": 1945,
+      "max_abs_error": 0.03125,
+      "mean_abs_error": 0.002521207556128502
+    },
+    {
+      "forward": 5,
+      "stage": "mlp_hc_write",
+      "shape": [
+        1,
+        1,
+        10240
+      ],
+      "different_values": 6535,
+      "max_abs_error": 0.001708984375,
+      "mean_abs_error": 3.0241766580729745e-05
+    }
+  ],
+  "normalization_diagnostic": [
+    {
+      "forward": 1,
+      "tensor": "q",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.0004855915904045105,
+      "mean_abs_error": 7.561340225947788e-06,
+      "exact": false
+    },
+    {
+      "forward": 1,
+      "tensor": "k",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.0037731528282165527,
+      "mean_abs_error": 9.458934800932184e-05,
+      "exact": false
+    },
+    {
+      "forward": 2,
+      "tensor": "q",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.00029594823718070984,
+      "mean_abs_error": 7.875797564338427e-06,
+      "exact": false
+    },
+    {
+      "forward": 2,
+      "tensor": "k",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.0025525689125061035,
+      "mean_abs_error": 0.00010326386836823076,
+      "exact": false
+    },
+    {
+      "forward": 3,
+      "tensor": "q",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.000306643545627594,
+      "mean_abs_error": 7.068507329677232e-06,
+      "exact": false
+    },
+    {
+      "forward": 3,
+      "tensor": "k",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.0029119253158569336,
+      "mean_abs_error": 9.027734631672502e-05,
+      "exact": false
+    },
+    {
+      "forward": 4,
+      "tensor": "q",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.0005179569125175476,
+      "mean_abs_error": 6.6606180553208105e-06,
+      "exact": false
+    },
+    {
+      "forward": 4,
+      "tensor": "k",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.0026862025260925293,
+      "mean_abs_error": 9.583249629940838e-05,
+      "exact": false
+    },
+    {
+      "forward": 5,
+      "tensor": "q",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.00048626214265823364,
+      "mean_abs_error": 6.936968020454515e-06,
+      "exact": false
+    },
+    {
+      "forward": 5,
+      "tensor": "k",
+      "reference_dtype": "mlx.core.bfloat16",
+      "max_abs_error": 0.0032738447189331055,
+      "mean_abs_error": 9.243279782822356e-05,
+      "exact": false
+    }
+  ],
+  "limitations": [
+    "Four decode tokens and one five-token prompt.",
+    "MLX-VLM BF16 Q/K normalization differs from official Transformers FP32 fallback and AX.",
+    "The normalization difference does not establish the entire cause of final-logit errors.",
+    "Independent full-checkpoint correctness remains open."
+  ],
+  "reviews": {
+    "claude": {
+      "completed": true,
+      "exit_code": 0
+    },
+    "grok": {
+      "completed": false,
+      "exit_code": 1
+    },
+    "muse": {
+      "completed": true,
+      "exit_code": 0
+    }
+  },
+  "review_limitation": "Grok plan review returned HTTP 402: usage balance exhausted.",
+  "code_review": {
+    "completed": true,
+    "exit_code": 0
+  },
+  "final_gates": {
+    "workspace-tests": 0,
+    "mlx-test-clippy": 0,
+    "script-gates": 0,
+    "format": 0
+  },
+  "workspace_tests": {
+    "passed": 3637,
+    "failed": 0,
+    "ignored": 39
+  },
+  "workspace_clippy": {
+    "new_line_findings": [],
+    "workspace_clippy_exit_code": 101,
+    "note": "Existing core test lint failures retained; relevant MLX lib/tests strict Clippy is checked separately."
+  },
+  "final_source_binary_replay": {
+    "completed": true,
+    "binary_sha256": "0d15c189de2615844bf6f0afd753d7425dbc2cb2b579729880b7e2a2765ba203",
+    "runs": [
+      {
+        "mode": "plain",
+        "exit_code": 0,
+        "full_logits_and_state_exact": true
+      },
+      {
+        "mode": "observed",
+        "exit_code": 0,
+        "full_logits_and_state_exact": true
+      }
+    ],
+    "swap": "vm.swapusage: total = 1024.00M  used = 35.31M  free = 988.69M  (encrypted)"
+  },
+  "source_provenance": {
+    "base_commit": "b8b46167683c42d996f685d52a15c5b488d09541",
+    "profile": "test (debug, diagnostic correctness only)",
+    "binary_sha256": "0d15c189de2615844bf6f0afd753d7425dbc2cb2b579729880b7e2a2765ba203",
+    "sources": {
+      "crates/ax-engine-mlx/src/model/qwen4_exp/profiling.rs": "b409374f4347686fdffe255099fbc9cde8ca71430f9b71cd2178cb1b7d98826b",
+      "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": "c6c709cd0d46938b82889a67eeec4406f99563588c73f55dea4e4ade5d87f465",
+      "scripts/mlx_eval_site_baseline.json": "a5ff00b13ad215cc8ba52bc6c50237bd2fbf5c6b9e6319e1a3bb29135ef312b7"
+    }
+  }
+}
