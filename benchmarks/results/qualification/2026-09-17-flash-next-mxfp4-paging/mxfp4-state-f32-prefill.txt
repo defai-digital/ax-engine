@@ -1,0 +1,6 @@
+
+running 1 test
+test model::qwen4_exp_integration_tests::qwen4_exp_selected_prefill_preserves_hybrid_state_and_recovers_io ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1582 filtered out; finished in 0.13s
+

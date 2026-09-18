@@ -71,3 +71,11 @@ System swap used remained0.25MiB across these samples. This neither attributes
 swap to the model nor proves a zero-swap guarantee for longer workloads.
 Ten-second process samples can miss peaks. MLX allocator peaks in the native
 results are separate from process RSS and system filesystem-cache accounting.
+
+mxfp4-state-controls.json adds four tiny full-trunk controls on the M3 Max build
+host: F32/BF16 fixtures, each with selected decode and selected prefill. Only
+synthetic expert matrices are quantized to MXFP4; other tensors are unchanged.
+All four controls require exact resident/selected logits and serialized state,
+unchanged committed state after an injected expert-file read failure, and exact
+recovery after restoring that file. Fixture and log hashes are retained. These
+are storage/state unit controls, not full-checkpoint M5 numerical qualification.
