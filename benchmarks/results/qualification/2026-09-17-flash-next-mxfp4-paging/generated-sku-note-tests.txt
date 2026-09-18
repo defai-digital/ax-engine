@@ -1,0 +1,46 @@
+   Compiling ax-engine-core v7.4.0 ($WORKTREE/crates/ax-engine-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.72s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_core-495e2507fce36b6e)
+
+running 39 tests
+test convert::qwen4_exp_layout::tests::conflicting_root_sanitize_field_rejects ... ok
+test convert::qwen4_exp_layout::tests::conv_features_disabled_do_not_require_conv_tensors ... ok
+test convert::qwen4_exp_layout::tests::experimental_admission_is_narrow_and_preserves_readiness ... ok
+test convert::qwen4_exp_layout::tests::experimental_affine_formats_require_observed_and_uniform_expert_layouts ... ok
+test convert::qwen4_exp_layout::tests::ill_typed_nested_sanitize_field_rejects ... ok
+test convert::qwen4_exp_layout::tests::malformed_json_returns_parse_error ... ok
+test convert::qwen4_exp_layout::tests::matching_tuple_with_matching_optional_commit_and_sanitize_hints_applies ... ok
+test convert::qwen4_exp_layout::tests::matching_tuple_with_valid_convs_sets_hf_norm_only_and_stays_ready ... ok
+test convert::qwen4_exp_layout::tests::missing_gdn_conv_when_linear_attention_layer_type_present_rejects ... ok
+test convert::qwen4_exp_layout::tests::missing_manifest_blocks_layout_and_leaves_sanitize_unchanged ... ok
+test convert::qwen4_exp_layout::tests::missing_ple_conv_when_ple_layer_ids_present_rejects ... ok
+test convert::qwen4_exp_layout::tests::missing_required_field_is_unknown_tuple_not_error ... ok
+test convert::qwen4_exp_layout::tests::mixed_valid_gdn_invalid_ple_axes_rejects ... ok
+test convert::qwen4_exp_layout::tests::mxfp4_admission_preserves_mode_overrides_and_requires_opt_in ... ok
+test convert::qwen4_exp_layout::tests::nonfloating_conv_tensor_rejects ... ok
+test convert::qwen4_exp_layout::tests::other_axquant_version_is_unknown_tuple ... ok
+test convert::qwen4_exp_layout::tests::other_family_ignores_even_malformed_exporter_metadata ... ok
+test convert::qwen4_exp_layout::tests::quantized_conv_tensor_rejects ... ok
+test convert::qwen4_exp_layout::tests::raw_hf_conv_axes_reject ... ok
+test convert::qwen4_exp_layout::tests::unknown_tuple_blocks_layout_like_missing_file ... ok
+test convert::qwen4_exp_layout::tests::wrong_optional_commit_rejects ... ok
+test convert::qwen4_exp_layout::tests::zero_channel_conv_tensor_rejects ... ok
+test convert::tests::converts_qwen4_exp_flash_next_but_load_stays_fail_closed ... ok
+test convert::tests::ensure_manifest_fail_closes_qwen4_exp_without_writing ... ok
+test convert::tests::maps_qwen4_exp_published_hf_checkpoint_names ... ok
+test convert::tests::qwen4_exp_campaign_pack_metadata_validates_without_loading_weights ... ignored, requires header-only metadata captured from the campaign pack
+test convert::tests::qwen4_exp_official_oracle_metadata_maps_and_validates ... ok
+test convert::tests::qwen4_exp_parse_rope_defaults_partial_rotary_factor ... ok
+test convert::tests::qwen4_exp_preserves_ngram_layer_ownership_and_hash_buffers ... ok
+test convert::tests::qwen4_exp_preserves_ple_and_block_selection_contract ... ok
+test convert::tests::qwen4_exp_rejects_malformed_contract_fields_without_dropping_entries ... ok
+test convert::tests::qwen4_exp_write_real_server_candidate_manifest ... ignored, requires an isolated real Flash Next candidate pack directory
+test model::qwen4_exp::tests::rejects_bad_ngram_shards_and_hash_dtype ... ok
+test model::qwen4_exp::tests::rejects_bad_ple_ids_and_generic_norms ... ok
+test model::qwen4_exp::tests::rejects_bad_qsa_and_rotary ... ok
+test model::qwen4_exp::tests::rejects_bad_shapes_and_stray_roles ... ok
+test model::qwen4_exp::tests::rejects_mixed_moe_layout_and_missing_shared ... ok
+test model::qwen4_exp::tests::rejects_wrong_gate_type_and_family ... ok
+test model::qwen4_exp::tests::valid_synthetic_manifest_passes ... ok
+
+test result: ok. 37 passed; 0 failed; 2 ignored; 0 measured; 760 filtered out; finished in 0.04s

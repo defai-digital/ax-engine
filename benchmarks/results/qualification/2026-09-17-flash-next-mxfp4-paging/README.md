@@ -37,3 +37,17 @@ the wheel, native binaries, model inputs and exact positive/negative commands.
 The pinned stock mlx-lm 0.31.3 class lookup rejects qwen4_exp; its primary
 reference gap remains open. Installed whole-model controls are still running;
 no inference or performance pass is claimed by this preflight artifact.
+
+The first M5 selected-paging direct request completed 32 output tokens with
+zero MTP draft tokens and normal server exit. The paired required-MTP request
+did not start: the harness reused the same listening port after shutdown and
+its bind probe failed. native-selected-attempt-1.json preserves the partial
+result and error. The retry uses distinct ports and a separate output tree;
+it does not replace or relabel this failed paired control. Full payload
+hashing before startup means this is not cold-storage latency evidence.
+
+The observed 85a2bab0 health metadata still contained the former Studio SKU
+note. Current source changes that generated note to the M5 Max MXFP4 MTP
+qualification target, explicitly pending. The running retry keeps the frozen
+85a2bab0 binary and manifest unchanged; it does not claim the note fix is
+already installed on that target.
