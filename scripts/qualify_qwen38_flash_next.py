@@ -61,7 +61,10 @@ def contract() -> dict[str, Any]:
         "repo_id": PRIMARY_REPO,
         "pack_revision": PACK_REVISION,
         "target_quantization": {"mode": "mxfp4", "bits": 4, "group_size": 32},
-        "mixed_tensor_overrides": "per-tensor affine8/group32; preserve checkpoint metadata",
+        "mixed_tensor_overrides": (
+            "affine8/group32 embedding/router overrides and affine8/group64 output head; "
+            "preserve checkpoint metadata"
+        ),
         "sixbit_in_target_scope": False,
         "existing_affine_alias": AFFINE_ALIAS,
         "existing_affine_repo_id": AFFINE_REPO,

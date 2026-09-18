@@ -25,16 +25,24 @@ layouts and I/O recovery; target whole-model qualification is still open.
 records full file hashes and quantization geometry. Successful Hub staging does
 not establish installed AX delivery or model execution.
 
+Installed M5 fixed-input controls now pass both direct and required MTP on the
+[selected route](../../benchmarks/results/qualification/2026-09-17-flash-next-mxfp4-paging/native-selected-r2.json)
+and [default Auto route](../../benchmarks/results/qualification/2026-09-17-flash-next-mxfp4-paging/native-default-r2.json),
+including post-run file hashes and identical text/usage (46 input, 32 output
+tokens). These four requests do not establish full QA, numerical certification,
+or throughput. The required Auto request includes intrusive stack sampling;
+its elapsed time is not benchmark evidence. Full target QA is in progress.
+
 Six-bit is excluded from this target campaign. The former Studio target and
 all affine results below are historical; they do not qualify MXFP4 on M5 Max.
 Existing download aliases retain their original pack identity.
 
 | Gate | Current target state |
 | --- | --- |
-| MXFP4 execution | Diagnostic mode binding and U8 scales implemented; full-layer/selected-row controls pass. Target whole-model validation remains open |
+| MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
 | Immutable delivery | All 47 pinned files and 26 tensor headers verified on target NAS; installed AX delivery remains open |
 | Numerical and MTP | New pack-specific holdout, direct/MTP state, rollback and trained-head evidence required |
-| Installed QA and lifecycle | Target QA, SSE/disconnect/recovery, stop/budget and long-context evidence pending |
+| Installed QA and lifecycle | Frozen105-item target QA is in progress; SSE/disconnect/recovery, stop/budget and long-context qualification remain pending |
 | Throughput and memory | Nine new cells: 512/2048/8192 prompt tokens x AX direct/reference/AX MTP; target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |
 
