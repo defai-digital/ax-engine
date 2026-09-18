@@ -2,7 +2,7 @@ use mlx_sys::{
     MlxArray, MlxDtype, MlxQuantizationMode, MlxVectorArray, async_eval, concatenate, contiguous,
     eval, qwen_linear_attention_inputs_packed, qwen_linear_attention_inputs_packed_compiled,
     qwen_linear_attention_post_input, qwen_linear_attention_post_input_compiled, reshape, rms_norm,
-    rms_norm_quantized_matmul, silu_mul_quantized_matmul, slice, slice_last_dim, zeros,
+    rms_norm_quantized_matmul, rms_norm_silu_mul_normed, slice, slice_last_dim, zeros,
 };
 use std::time::Instant;
 
@@ -780,23 +780,34 @@ fn try_qwen_la_out_proj_silu_mul_qmm(
     if !fastpath::should_qwen_la_out_proj_silu_mul_qmm(&cfg.model_family, seq) {
         return None;
     }
-    if !linear_w.out_proj.is_fused_qmm_quantized() {
+    qwen_la_gated_out_projection(
+        hidden,
+        gate,
+        &linear_w.norm,
+        &linear_w.out_proj,
+        cfg.rms_norm_eps,
+        seq,
+        value_dim,
+    )
+}
+
+fn qwen_la_gated_out_projection(
+    hidden: &MlxArray,
+    gate: &MlxArray,
+    norm: &MlxArray,
+    out_proj: &QuantizedWeight,
+    eps: f32,
+    seq: i32,
+    value_dim: i32,
+) -> Option<MlxArray> {
+    if !out_proj.is_fused_qmm_quantized() {
         return None;
     }
-    let scales = linear_w.out_proj.scales.as_ref()?;
-    let normed = rms_norm(hidden, Some(&linear_w.norm), cfg.rms_norm_eps, None);
-    let flat_n = reshape(&normed, &[1, seq, value_dim], None);
-    let flat_z = reshape(gate, &[1, seq, value_dim], None);
-    silu_mul_quantized_matmul(
-        &flat_z,
-        &flat_n,
-        &linear_w.out_proj.weight,
-        scales,
-        linear_w.out_proj.biases.as_ref(),
-        linear_w.out_proj.group_size,
-        linear_w.out_proj.bits,
-        None,
-    )
+    // Gated RMSNorm uses float32 SiLU/multiply, then casts before projection.
+    // FFN SwiGLU has a different precision contract; its low-precision
+    // silu_mul composition must not be substituted here.
+    let gated = rms_norm_silu_mul_normed(hidden, gate, norm, eps, None);
+    Some(qw(&reshape(&gated, &[1, seq, value_dim], None), out_proj))
 }
 
 fn linear_attention_conv_prefix_state(
@@ -2114,6 +2125,104 @@ pub(crate) fn try_linear_attention_whole_layer_metal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qwen_la_projection_preserves_float32_gate_before_output_cast() {
+        use mlx_sys::{astype, quantize, quantized_matmul, silu_mul};
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+            for seq in [2, 4, 8] {
+                let array = |values: Vec<f32>, shape: &[i32]| {
+                    astype(
+                        &MlxArray::from_raw_data(
+                            values.as_ptr() as *const u8,
+                            std::mem::size_of_val(values.as_slice()),
+                            shape,
+                            MlxDtype::Float32,
+                        ),
+                        dtype,
+                        None,
+                    )
+                };
+                let hidden = array(
+                    (0..seq * 64)
+                        .map(|i| ((i % 73) as f32 - 35.0) * 0.053)
+                        .collect(),
+                    &[1, seq, 2, 32],
+                );
+                let gate = array(
+                    (0..seq * 64)
+                        .map(|i| ((i % 97) as f32 - 47.0) * 0.031)
+                        .collect(),
+                    &[1, seq, 2, 32],
+                );
+                let norm = array(vec![1.0; 32], &[32]);
+                // Identity rows keep the activation precision observable.
+                let weight = array(
+                    (0..64 * 64)
+                        .map(|i| if i / 64 == i % 64 { 1.0 } else { 0.0 })
+                        .collect(),
+                    &[64, 64],
+                );
+                let q = quantize(
+                    &weight,
+                    Some(32),
+                    Some(4),
+                    MlxQuantizationMode::Affine,
+                    None,
+                    None,
+                );
+                let out_proj = QuantizedWeight {
+                    weight: q[0].clone(),
+                    scales: Some(q[1].clone()),
+                    biases: Some(q[2].clone()),
+                    group_size: 32,
+                    bits: 4,
+                    mode: "affine".into(),
+                    linear_bias: None,
+                    decode_weight_t: None,
+                    decode_q2_weight: None,
+                    decode_q2_scales: None,
+                    decode_q2_biases: None,
+                };
+                let normed = rms_norm(&hidden, Some(&norm), 1e-6, None);
+                let expected_gate = astype(
+                    &silu_mul(
+                        &astype(&gate, MlxDtype::Float32, None),
+                        &astype(&normed, MlxDtype::Float32, None),
+                        None,
+                    ),
+                    dtype,
+                    None,
+                );
+                let expected = quantized_matmul(
+                    &reshape(&expected_gate, &[1, seq, 64], None),
+                    &q[0],
+                    &q[1],
+                    Some(&q[2]),
+                    true,
+                    Some(32),
+                    Some(4),
+                    None,
+                );
+                let actual =
+                    qwen_la_gated_out_projection(&hidden, &gate, &norm, &out_proj, 1e-6, seq, 64)
+                        .expect("affine projection must engage");
+                let a = astype(&actual, MlxDtype::Float32, None);
+                let b = astype(&expected, MlxDtype::Float32, None);
+                eval(&[&a, &b]);
+                let max_abs = a
+                    .data_f32()
+                    .iter()
+                    .zip(b.data_f32())
+                    .fold(0.0_f32, |m, (x, y)| m.max((x - y).abs()));
+                assert_eq!(
+                    a.data_f32(),
+                    b.data_f32(),
+                    "dtype={dtype:?} seq={seq} max_abs={max_abs}"
+                );
+            }
+        }
+    }
 
     const TEST_COMPILE_IDENTITY: u64 = 0x5445_5354_4C41_4348;
 

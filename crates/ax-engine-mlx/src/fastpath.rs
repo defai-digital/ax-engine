@@ -871,7 +871,8 @@ pub fn should_mtp_async_dual_gate_up_for(
 
 env_flag_default_on!(
     /// `AX_MLX_MTP_LA_OUT_PROJ_SILU_MUL_QMM` — fuse gated RMS output
-    /// preparation into the quantized linear-attention output projection
+    /// preparation with the quantized linear-attention output projection,
+    /// preserving float32 gating and the output cast before projection,
     /// during relaxed Qwen MTP request work. Ordinary direct sessions and
     /// row-exact verification retain their existing arithmetic.
     ///
