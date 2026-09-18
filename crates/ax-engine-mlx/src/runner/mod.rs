@@ -6930,7 +6930,9 @@ impl MlxRunner {
     /// back at store time. `None` when the prompt end is already aligned
     /// (the exact-alignment store path handles it), when the boundary falls
     /// inside already-cached context, or when there is nothing to prefill.
-    fn linear_boundary_capture_head_len(
+    /// Return the aligned cache-only head used by linear prefix capture.
+    /// Diagnostics use this policy to reproduce the runner's prefill layout.
+    pub fn linear_boundary_capture_head_len(
         block_size: usize,
         prior_seq_len: usize,
         item_len: usize,

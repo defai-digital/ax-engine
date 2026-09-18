@@ -69,6 +69,18 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-18 prefix-prefill diagnosis resolves the standalone oracle's output117
+  disagreement: it omitted the runner's block-aligned cache-only head. For the
+  cold409-token case, reproducing head400/tail9 matches all192 actual-server
+  IDs and all128 logical cache arrays at each of seven observed boundaries.
+  Disabling only the clean server's prefix cache reproduces the old unsplit
+  output; restoring defaults restores the original output. The final CLI
+  exposes the layout explicitly and fixes strided Float32 comparison reads,
+  invalid numerical comparisons and asymmetric missing-state handling. These
+  are diagnostic repairs; production arithmetic and defaults are unchanged.
+  Existing MTP route differences, broad quality and promotion remain separate.
+  [Prefix-prefill controls, regressions and validation](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-prefix-prefill/).
+
 - 2026-09-18 direct-history diagnosis separates synchronous replay from the
   production pipeline API sequence. Both standalone modes still reject the
   actual direct-server prefix at output 117. On the actual direct cache at

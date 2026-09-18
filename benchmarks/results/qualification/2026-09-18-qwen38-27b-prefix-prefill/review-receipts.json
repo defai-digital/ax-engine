@@ -1,0 +1,50 @@
+[
+  {
+    "model": "DeepSeek V4 Pro",
+    "exit_code": 0,
+    "timed_out": false,
+    "elapsed_seconds": 44.01027100000647,
+    "prompt_sha256": "4fdb616e7a926d18408a8cb962b62a21037ba0c9643a100ef56901125d8f958b",
+    "log_sha256": "306eb13d8a9c14d809a487bb94b15268a79214e40fcdeeaca8b629420e8d8014"
+  },
+  {
+    "model": "DeepSeek V4 Pro",
+    "exit_code": 0,
+    "timed_out": false,
+    "elapsed_seconds": 68.49932891700882,
+    "prompt_sha256": "7a40ae1a2e8a55c1d9723f22f5e6be37d8c7cf21ba3e6f293517aef0c5e147ad",
+    "log_sha256": "ffdd6ce7342d49c94250d3df2795f4bc9122ffc70c086dd5269ff14e625cb6c2"
+  },
+  {
+    "model": "DeepSeek V4 Pro",
+    "exit_code": 0,
+    "timed_out": false,
+    "elapsed_seconds": 57.92775087498012,
+    "prompt_sha256": "21051c2a13c81597fec809fbda2c4d0257b32b4e34dfa5bd61c52d8cc0d273b8",
+    "log_sha256": "0afcb8a4a79e238b514342a81649964b01d306abbafe73f7e221389dacbd8595"
+  },
+  {
+    "model": "MiniMax M2.7",
+    "exit_code": 0,
+    "timed_out": false,
+    "elapsed_seconds": 31.66313829200226,
+    "prompt_sha256": "4fdb616e7a926d18408a8cb962b62a21037ba0c9643a100ef56901125d8f958b",
+    "log_sha256": "5f47e02cc39f905aa6be29fa258ceb76f9f26ced4c7f682f44dfd0570cab30f1"
+  },
+  {
+    "model": "MiniMax M2.7",
+    "exit_code": 0,
+    "timed_out": false,
+    "elapsed_seconds": 41.787707916024374,
+    "prompt_sha256": "7a40ae1a2e8a55c1d9723f22f5e6be37d8c7cf21ba3e6f293517aef0c5e147ad",
+    "log_sha256": "3cdefc0bd8b64e08378fab621a11d12ad186ade0d7e06baba7174eecd6d07026"
+  },
+  {
+    "model": "MiniMax M2.7",
+    "exit_code": 0,
+    "timed_out": false,
+    "elapsed_seconds": 34.52381699997932,
+    "prompt_sha256": "21051c2a13c81597fec809fbda2c4d0257b32b4e34dfa5bd61c52d8cc0d273b8",
+    "log_sha256": "61dd46df31d3cb95091972a3344161d967525e6b8604e87c58ed4c3050db50f3"
+  }
+]

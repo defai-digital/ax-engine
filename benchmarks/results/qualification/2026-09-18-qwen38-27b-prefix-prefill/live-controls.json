@@ -1,0 +1,159 @@
+[
+  {
+    "name": "clean-direct",
+    "mode": "direct",
+    "command": [
+      "<qualification-root>/forced-replay-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server",
+      "--mlx",
+      "--mlx-model-artifacts-dir",
+      "<qualification-root>/model",
+      "--model-id",
+      "qwen3.8-27b",
+      "--port",
+      "31498",
+      "--disable-ngram-acceleration"
+    ],
+    "request_canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+    "binary_sha256": "6631b1740934d8a990cbb8efd2277e2e2ed364f920696f42f89cdfb124641efa",
+    "request_body_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+    "http_status": 200,
+    "request_seconds": 18.36104183399584,
+    "response_body_sha256": "f908f537b3c69b4f92b4498d0d28a56dafa7a07a9dcbd6dfa9f00083bf09de52",
+    "cleanup": {
+      "pid": 17082,
+      "action": "terminate",
+      "returncode": 0
+    },
+    "elapsed_seconds": 40.158808124950156,
+    "watchdog_expired": false,
+    "log_sha256": "23e68396c4226198056c5249bfd0c7631e293efa3520c4e97aa4da03aacd8ea3",
+    "folder": "live",
+    "environment": {}
+  },
+  {
+    "name": "observer-direct",
+    "mode": "direct",
+    "command": [
+      "<qualification-root>/prefill-history-server",
+      "--mlx",
+      "--mlx-model-artifacts-dir",
+      "<qualification-root>/model",
+      "--model-id",
+      "qwen3.8-27b",
+      "--port",
+      "31498",
+      "--disable-ngram-acceleration"
+    ],
+    "request_canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+    "binary_sha256": "fa0a3f45d660a2753faf636212cc1c9d6e4752d53de7c9fe4138ffec78c097c7",
+    "request_body_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+    "http_status": 200,
+    "request_seconds": 21.86327504098881,
+    "response_body_sha256": "8a435ebfe9c0a52213ff4bec590ee5cb48c1e989ecf6bd9ea4eed6d836319dd9",
+    "cleanup": {
+      "pid": 17315,
+      "action": "terminate",
+      "returncode": 0
+    },
+    "elapsed_seconds": 44.70473287499044,
+    "watchdog_expired": false,
+    "log_sha256": "159bbe0384c452d5df6a33db4fa142783a1aeee01f1823fddef77fab01c23048",
+    "folder": "live",
+    "environment": {}
+  },
+  {
+    "name": "clean-direct-repeat",
+    "mode": "direct",
+    "command": [
+      "<qualification-root>/forced-replay-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server",
+      "--mlx",
+      "--mlx-model-artifacts-dir",
+      "<qualification-root>/model",
+      "--model-id",
+      "qwen3.8-27b",
+      "--port",
+      "31498",
+      "--disable-ngram-acceleration"
+    ],
+    "request_canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+    "binary_sha256": "6631b1740934d8a990cbb8efd2277e2e2ed364f920696f42f89cdfb124641efa",
+    "request_body_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+    "http_status": 200,
+    "request_seconds": 18.532648000051267,
+    "response_body_sha256": "ceb31ddc9c706c5994b16e8bc1ef171053f4894e9c344683cf9fd0e07d504661",
+    "cleanup": {
+      "pid": 17564,
+      "action": "terminate",
+      "returncode": 0
+    },
+    "elapsed_seconds": 40.53876941592898,
+    "watchdog_expired": false,
+    "log_sha256": "23e68396c4226198056c5249bfd0c7631e293efa3520c4e97aa4da03aacd8ea3",
+    "folder": "live",
+    "environment": {}
+  },
+  {
+    "name": "cache-off-direct",
+    "mode": "direct",
+    "command": [
+      "<qualification-root>/forced-replay-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server",
+      "--mlx",
+      "--mlx-model-artifacts-dir",
+      "<qualification-root>/model",
+      "--model-id",
+      "qwen3.8-27b",
+      "--port",
+      "31499",
+      "--disable-ngram-acceleration"
+    ],
+    "request_canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+    "binary_sha256": "6631b1740934d8a990cbb8efd2277e2e2ed364f920696f42f89cdfb124641efa",
+    "request_body_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+    "http_status": 200,
+    "request_seconds": 17.924434125074185,
+    "response_body_sha256": "22d8ab4d255fd29e3f92904c178236a6eea17220420694b83232165bec945c11",
+    "cleanup": {
+      "pid": 16416,
+      "action": "terminate",
+      "returncode": 0
+    },
+    "elapsed_seconds": 47.717404415947385,
+    "watchdog_expired": false,
+    "log_sha256": "ed28084157a6c67bba640147e47e1b5651bb80c75c090b82444ccfc7914dba15",
+    "folder": "cache-off",
+    "environment": {
+      "AX_MLX_PREFIX_CACHE_MAX_BYTES": "0"
+    }
+  },
+  {
+    "name": "default-direct-repeat",
+    "mode": "direct",
+    "command": [
+      "<qualification-root>/forced-replay-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server",
+      "--mlx",
+      "--mlx-model-artifacts-dir",
+      "<qualification-root>/model",
+      "--model-id",
+      "qwen3.8-27b",
+      "--port",
+      "31499",
+      "--disable-ngram-acceleration"
+    ],
+    "request_canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+    "binary_sha256": "6631b1740934d8a990cbb8efd2277e2e2ed364f920696f42f89cdfb124641efa",
+    "request_body_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+    "http_status": 200,
+    "request_seconds": 18.32638170896098,
+    "response_body_sha256": "932e24b53bef0ff0d00bef0eb0de4195eba8690c053158325caeb71561f62be8",
+    "cleanup": {
+      "pid": 16687,
+      "action": "terminate",
+      "returncode": 0
+    },
+    "elapsed_seconds": 39.908644500072114,
+    "watchdog_expired": false,
+    "log_sha256": "ed28084157a6c67bba640147e47e1b5651bb80c75c090b82444ccfc7914dba15",
+    "folder": "cache-off",
+    "environment": {}
+  }
+]

@@ -1,0 +1,25 @@
+{
+  "source_base": "c43bd901770f13f179b8102a83760a1c6f0f99b8",
+  "source_files": {
+    "crates/ax-engine-mlx/src/bin/linear_mtp_state_oracle_probe.rs": "01bc3e2bbfaff5f2bdfcf742221f29171e863ee11191fa572382116f45a4049b",
+    "crates/ax-engine-mlx/src/runner/mod.rs": "f4b0d067a4c8fb4ac03a0eaa9bbe02b16af34d0bfbe5569892048a509a56eb28"
+  },
+  "patch_sha256": "fd9b5925c0aeafd5abf97fea6cc2e09222bc884e1b6839ea8be05337f9ae143c",
+  "command": [
+    "rustup",
+    "run",
+    "1.97.1",
+    "cargo",
+    "build",
+    "--locked",
+    "--profile",
+    "release-server",
+    "-p",
+    "ax-engine-mlx",
+    "--bin",
+    "linear_mtp_state_oracle_probe"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 62.89857441600179,
+  "binary_sha256": "4d4c40a5b9ffbd70be82b329ed45538c61bd4bc7de6df38ee16b3bcac1abed4a"
+}

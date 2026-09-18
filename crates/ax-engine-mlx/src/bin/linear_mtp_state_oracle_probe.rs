@@ -1,15 +1,18 @@
-//! Compare a two-token Qwen linear-attention verify graph with two singleton
-//! synchronous singleton graphs on the same real checkpoint and cache state.
+//! Compare a two-token Qwen linear-attention verify graph with two synchronous
+//! singleton graphs on the same real checkpoint and cache state.
 //!
 //! Usage:
 //!   linear_mtp_state_oracle_probe <model_dir> <prompt-tokens> [decode-prefix-tokens]
 //!       [--validate-history=synchronous|direct-pipeline]
+//!       [--prefix-cache-block-size=N]
 //!
 //! The optional generated prefix is replayed token-by-token, never appended to
 //! the prefill prompt. A mismatch aborts the probe. History validation exits
 //! before the two-token comparison. Direct-pipeline validation uses the
 //! production lazy bootstrap/advance sequence; matching IDs alone does not
 //! establish identity with a live server's cache or logits.
+//! The optional block size reproduces the runner's aligned linear-prefix
+//! capture prefill. Omit it for an unsplit standalone prefill.
 
 use std::env;
 use std::path::Path;
@@ -18,7 +21,8 @@ use std::process::ExitCode;
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::{
     generate::{
-        DEFAULT_PREFILL_CHUNK, advance_direct_pipeline, chunked_prefill, start_direct_pipeline,
+        CacheOnlyBarrier, CacheOnlyPrefillLayout, DEFAULT_PREFILL_CHUNK, advance_direct_pipeline,
+        chunked_prefill, chunked_prefill_cache_only, start_direct_pipeline,
     },
     kv_cache::MlxKVCache,
     model::{
@@ -60,6 +64,40 @@ impl HistoryMode {
     }
 }
 
+struct ProbeOptions {
+    history: HistoryMode,
+    prefix_cache_block_size: Option<usize>,
+}
+
+impl ProbeOptions {
+    fn parse(args: impl Iterator<Item = String>, has_prefix: bool) -> Result<Self, String> {
+        let mut history = None;
+        let mut block_size = None;
+        for option in args {
+            if let Some(raw) = option.strip_prefix("--prefix-cache-block-size=") {
+                if block_size.is_some() {
+                    return Err("duplicate prefix-cache block size".to_string());
+                }
+                block_size = Some(
+                    raw.parse::<usize>()
+                        .ok()
+                        .filter(|&size| size > 0)
+                        .ok_or("prefix-cache block size must be a positive integer")?,
+                );
+            } else {
+                if history.is_some() {
+                    return Err(format!("unexpected or duplicate argument: {option}"));
+                }
+                history = Some(HistoryMode::parse(Some(&option), has_prefix)?);
+            }
+        }
+        Ok(Self {
+            history: history.unwrap_or(HistoryMode::SynchronousComparison),
+            prefix_cache_block_size: block_size,
+        })
+    }
+}
+
 fn parse_tokens(raw: &str) -> Result<Vec<u32>, String> {
     let tokens = raw
         .split(|character: char| character == ',' || character.is_whitespace())
@@ -85,33 +123,75 @@ fn materialized_argmax(logits: &MlxArray, cache: &MlxKVCache) -> u32 {
     token.data_u32().first().copied().unwrap_or(0)
 }
 
-fn max_abs_diff(left: &MlxArray, right: &MlxArray) -> f32 {
-    let left = astype(left, MlxDtype::Float32, None);
-    let right = astype(right, MlxDtype::Float32, None);
-    eval(&[&left, &right]);
-    left.data_f32()
-        .iter()
-        .zip(right.data_f32())
-        .fold(0.0_f32, |maximum, (left, right)| {
-            maximum.max((left - right).abs())
-        })
+fn materialized_f32_values(array: &MlxArray) -> Vec<f32> {
+    // A no-op dtype cast preserves strided Float32 cache and logit views.
+    // Raw MLX data access requires row-contiguous storage.
+    let array = mlx_sys::contiguous(&astype(array, MlxDtype::Float32, None), None);
+    eval(&[&array]);
+    array.data_f32().to_vec()
 }
 
-fn print_logit_comparison(label: &str, singleton: &MlxArray, batched: &MlxArray) {
-    let singleton = astype(singleton, MlxDtype::Float32, None);
-    let batched = astype(batched, MlxDtype::Float32, None);
-    eval(&[&singleton, &batched]);
-    for (route, logits) in [("singleton", &singleton), ("batched", &batched)] {
-        let values = logits.data_f32();
+fn checked_max_abs_diff(left: &[f32], right: &[f32]) -> Result<f32, String> {
+    if left.is_empty() || left.len() != right.len() {
+        return Err(format!(
+            "comparison requires equal nonempty extents: left={}, right={}",
+            left.len(),
+            right.len()
+        ));
+    }
+    if !left.iter().chain(right).all(|value| value.is_finite()) {
+        return Err("comparison contains non-finite values".to_string());
+    }
+    let difference = left
+        .iter()
+        .zip(right)
+        .fold(0.0_f32, |maximum, (left, right)| {
+            maximum.max((left - right).abs())
+        });
+    if !difference.is_finite() {
+        return Err("comparison difference overflowed".to_string());
+    }
+    Ok(difference)
+}
+
+fn max_abs_diff(left: &MlxArray, right: &MlxArray) -> Result<f32, String> {
+    checked_max_abs_diff(
+        &materialized_f32_values(left),
+        &materialized_f32_values(right),
+    )
+}
+
+fn optional_state_diff(
+    label: &str,
+    left: Option<&MlxArray>,
+    right: Option<&MlxArray>,
+) -> Result<f32, String> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            max_abs_diff(left, right).map_err(|error| format!("{label}: {error}"))
+        }
+        // Full-attention layers have neither linear state on either route.
+        (None, None) => Ok(0.0),
+        _ => Err(format!("{label}: state presence mismatch")),
+    }
+}
+
+fn print_logit_comparison(
+    label: &str,
+    singleton: &MlxArray,
+    batched: &MlxArray,
+) -> Result<(), String> {
+    let singleton = materialized_f32_values(singleton);
+    let batched = materialized_f32_values(batched);
+    let difference = checked_max_abs_diff(&singleton, &batched)?;
+    for (route, values) in [("singleton", &singleton), ("batched", &batched)] {
         let mut indices: Vec<usize> = (0..values.len()).collect();
         indices.sort_by(|&left, &right| values[right].total_cmp(&values[left]));
         let top: Vec<(usize, f32)> = indices.iter().take(2).map(|&i| (i, values[i])).collect();
         println!("row={label} route={route} top2={top:?}");
     }
-    println!(
-        "row={label} logits_max_abs={:.9e}",
-        max_abs_diff(&singleton, &batched)
-    );
+    println!("row={label} logits_max_abs={difference:.9e}");
+    Ok(())
 }
 
 fn validate_prefix_token(index: usize, expected: u32, actual: u32) -> Result<(), String> {
@@ -149,7 +229,7 @@ fn print_first_layer_hidden_diff(
     primary: u32,
     draft: u32,
     skip_ffn: bool,
-) {
+) -> Result<(), String> {
     let mut singleton_cache = base_cache.clone();
     let singleton_first = if skip_ffn {
         layer_forward_last_only(
@@ -240,27 +320,30 @@ fn print_first_layer_hidden_diff(
     println!(
         "layer=0 stage={} hidden_first_max_abs={:.9e} hidden_second_max_abs={:.9e}",
         if skip_ffn { "attention" } else { "full" },
-        max_abs_diff(&singleton_first, &batched_first),
-        max_abs_diff(&singleton_second, &batched_second),
+        max_abs_diff(&singleton_first, &batched_first)?,
+        max_abs_diff(&singleton_second, &batched_second)?,
     );
+    Ok(())
 }
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let model_dir = args.next().ok_or_else(|| {
-        "usage: linear_mtp_state_oracle_probe <model_dir> <prompt-tokens> [decode-prefix-tokens] [--validate-history=synchronous|direct-pipeline]".to_string()
+        "usage: linear_mtp_state_oracle_probe <model_dir> <prompt-tokens> [decode-prefix-tokens] [--validate-history=synchronous|direct-pipeline] [--prefix-cache-block-size=N]".to_string()
     })?;
     let prompt = parse_tokens(
         &args
             .next()
             .ok_or_else(|| "missing comma-separated prompt tokens".to_string())?,
     )?;
-    let replay_prefix = args.next().map(|raw| parse_tokens(&raw)).transpose()?;
-    let history_option = args.next();
-    let history_mode = HistoryMode::parse(history_option.as_deref(), replay_prefix.is_some())?;
-    if let Some(unexpected) = args.next() {
-        return Err(format!("unexpected argument: {unexpected}"));
-    }
+    let mut args = args.peekable();
+    let replay_prefix = if args.peek().is_some_and(|arg| !arg.starts_with("--")) {
+        args.next().map(|raw| parse_tokens(&raw)).transpose()?
+    } else {
+        None
+    };
+    let options = ProbeOptions::parse(args, replay_prefix.is_some())?;
+    let history_mode = options.history;
 
     let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
         .map_err(|error| format!("failed to load model artifacts: {error}"))?;
@@ -273,12 +356,29 @@ fn run() -> Result<(), String> {
 
     let mut base_cache = MlxKVCache::new(cfg.layer_count);
     let mut rng = Xorshift64::new(0);
+    let prefill_head = options.prefix_cache_block_size.and_then(|block_size| {
+        ax_engine_mlx::MlxRunner::linear_boundary_capture_head_len(block_size, 0, prompt.len())
+    });
+    // Retain the aligned snapshot as the runner's prefix store does. It also
+    // prevents the following FA append from donating this snapshot's buffers.
+    let _prefix_snapshot = prefill_head.map(|head| {
+        chunked_prefill_cache_only(
+            &cfg,
+            &weights,
+            &prompt[..head],
+            &mut base_cache,
+            DEFAULT_PREFILL_CHUNK,
+            CacheOnlyPrefillLayout::PreserveFinalTokenStep,
+            CacheOnlyBarrier::Blocking,
+        );
+        base_cache.clone()
+    });
     // Seed the direct-history oracle through the same prefill entry as a
     // direct runner. MTP history capture uses a different final-layer path.
     let mut primary = chunked_prefill(
         &cfg,
         &weights,
-        &prompt,
+        &prompt[prefill_head.unwrap_or(0)..],
         &mut base_cache,
         DEFAULT_PREFILL_CHUNK,
         MlxSamplingRequest::new(MlxSamplingParams::greedy(), &prompt),
@@ -286,6 +386,10 @@ fn run() -> Result<(), String> {
     );
 
     println!("history_mode={}", history_mode.label());
+    println!(
+        "prefill_prefix_cache_block_size={:?} prefill_capture_head={prefill_head:?}",
+        options.prefix_cache_block_size
+    );
     if let Some(prefix) = replay_prefix {
         validate_prefix_token(0, prefix[0], primary)?;
         let mut actual_tokens = vec![primary];
@@ -336,7 +440,9 @@ fn run() -> Result<(), String> {
                 "history_validation {}",
                 serde_json::json!({
                     "mode": history_mode.label(), "validated_tokens": actual_tokens,
-                    "cache_seq_len": base_cache.seq_len(), "prompt_tokens": prompt.len(),
+                "cache_seq_len": base_cache.seq_len(), "prompt_tokens": prompt.len(),
+                "prefix_cache_block_size": options.prefix_cache_block_size,
+                "prefill_capture_head": prefill_head,
                     "server_cache_identity_established": false,
                 })
             );
@@ -357,7 +463,7 @@ fn run() -> Result<(), String> {
         primary,
         draft,
         true,
-    );
+    )?;
     print_first_layer_hidden_diff(
         &cfg,
         &weights,
@@ -366,7 +472,7 @@ fn run() -> Result<(), String> {
         primary,
         draft,
         false,
-    );
+    )?;
 
     let mut singleton_cache = base_cache.clone();
     let singleton_first = forward_argmax(
@@ -412,21 +518,18 @@ fn run() -> Result<(), String> {
     let vocab = cfg.vocab_size as i32;
     let first_row = slice(&batched_logits, &[0, 0], &[1, vocab], &[1, 1], None);
     let second_row = slice(&batched_logits, &[1, 0], &[2, vocab], &[1, 1], None);
-    print_logit_comparison("first", &singleton_first, &first_row);
-    print_logit_comparison("second", &singleton_second, &second_row);
+    print_logit_comparison("first", &singleton_first, &first_row)?;
+    print_logit_comparison("second", &singleton_second, &second_row)?;
     for layer in 0..cfg.layer_count {
         let (singleton_conv, singleton_recurrent) = singleton_cache.linear_state(layer);
         let (batched_conv, batched_recurrent) = batched_cache.linear_state(layer);
-        let conv_diff = match (singleton_conv, batched_conv) {
-            (Some(singleton), Some(batched)) => max_abs_diff(singleton, batched),
-            (None, None) => 0.0,
-            _ => f32::INFINITY,
-        };
-        let recurrent_diff = match (singleton_recurrent, batched_recurrent) {
-            (Some(singleton), Some(batched)) => max_abs_diff(singleton, batched),
-            (None, None) => 0.0,
-            _ => f32::INFINITY,
-        };
+        let conv_diff =
+            optional_state_diff(&format!("layer={layer} conv"), singleton_conv, batched_conv)?;
+        let recurrent_diff = optional_state_diff(
+            &format!("layer={layer} recurrent"),
+            singleton_recurrent,
+            batched_recurrent,
+        )?;
         if conv_diff != 0.0 || recurrent_diff != 0.0 {
             println!(
                 "layer={layer} conv_max_abs={conv_diff:.9e} recurrent_max_abs={recurrent_diff:.9e}"
@@ -439,16 +542,16 @@ fn run() -> Result<(), String> {
     for layer in 0..cfg.layer_count {
         let (singleton_conv, singleton_recurrent) = first_cache.linear_state(layer);
         let (checkpoint_conv, checkpoint_recurrent) = batched_cache.linear_state(layer);
-        let conv_diff = match (singleton_conv, checkpoint_conv) {
-            (Some(singleton), Some(checkpoint)) => max_abs_diff(singleton, checkpoint),
-            (None, None) => 0.0,
-            _ => f32::INFINITY,
-        };
-        let recurrent_diff = match (singleton_recurrent, checkpoint_recurrent) {
-            (Some(singleton), Some(checkpoint)) => max_abs_diff(singleton, checkpoint),
-            (None, None) => 0.0,
-            _ => f32::INFINITY,
-        };
+        let conv_diff = optional_state_diff(
+            &format!("checkpoint_layer={layer} conv"),
+            singleton_conv,
+            checkpoint_conv,
+        )?;
+        let recurrent_diff = optional_state_diff(
+            &format!("checkpoint_layer={layer} recurrent"),
+            singleton_recurrent,
+            checkpoint_recurrent,
+        )?;
         if conv_diff != 0.0 || recurrent_diff != 0.0 {
             println!(
                 "checkpoint_layer={layer} conv_max_abs={conv_diff:.9e} \
@@ -472,6 +575,95 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comparison_reads_strided_float32_views_in_logical_order() {
+        let values = MlxArray::from_f32_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let matrix = mlx_sys::reshape(&values, &[2, 3], None);
+        let transposed = mlx_sys::transpose(&matrix, &[1, 0], None);
+        let expected = MlxArray::from_f32_slice(&[0.0, 3.0, 1.0, 4.0, 2.0, 5.0]);
+        assert_eq!(max_abs_diff(&transposed, &expected).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn comparison_rejects_truncated_empty_or_nonfinite_evidence() {
+        assert!(checked_max_abs_diff(&[1.0], &[1.0, 9.0]).is_err());
+        assert!(checked_max_abs_diff(&[], &[]).is_err());
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(checked_max_abs_diff(&[value], &[0.0]).is_err());
+            assert!(checked_max_abs_diff(&[0.0], &[value]).is_err());
+        }
+        assert!(checked_max_abs_diff(&[f32::MAX], &[-f32::MAX]).is_err());
+        assert_eq!(checked_max_abs_diff(&[1.0, 2.0], &[1.0, 5.0]).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn comparison_rejects_missing_state_without_rejecting_full_attention_layers() {
+        let state = MlxArray::from_f32_slice(&[1.0]);
+        assert_eq!(optional_state_diff("conv", None, None).unwrap(), 0.0);
+        assert_eq!(
+            optional_state_diff("conv", Some(&state), Some(&state)).unwrap(),
+            0.0
+        );
+        for (left, right) in [(Some(&state), None), (None, Some(&state))] {
+            assert!(
+                optional_state_diff("layer=0 conv", left, right)
+                    .unwrap_err()
+                    .contains("layer=0 conv: state presence mismatch")
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_layout_is_explicit_and_uses_the_runner_boundary_policy() {
+        let parse =
+            |args: &[&str]| ProbeOptions::parse(args.iter().map(|arg| arg.to_string()), true);
+        assert_eq!(parse(&[]).unwrap().prefix_cache_block_size, None);
+        for args in [
+            [
+                "--prefix-cache-block-size=16",
+                "--validate-history=direct-pipeline",
+            ],
+            [
+                "--validate-history=direct-pipeline",
+                "--prefix-cache-block-size=16",
+            ],
+        ] {
+            let options = parse(&args).unwrap();
+            assert_eq!(options.history, HistoryMode::DirectPipelineValidation);
+            let size = options.prefix_cache_block_size.unwrap();
+            assert_eq!(
+                ax_engine_mlx::MlxRunner::linear_boundary_capture_head_len(size, 0, 409),
+                Some(400)
+            );
+            assert_eq!(
+                ax_engine_mlx::MlxRunner::linear_boundary_capture_head_len(size, 0, 400),
+                None
+            );
+            assert_eq!(
+                ax_engine_mlx::MlxRunner::linear_boundary_capture_head_len(size, 0, 15),
+                None
+            );
+        }
+        for raw in ["0", "-1", "no", "", "184467440737095516160"] {
+            assert!(parse(&[&format!("--prefix-cache-block-size={raw}")]).is_err());
+        }
+        assert!(
+            parse(&[
+                "--prefix-cache-block-size=16",
+                "--prefix-cache-block-size=32"
+            ])
+            .is_err()
+        );
+        assert!(
+            parse(&[
+                "--validate-history=synchronous",
+                "--validate-history=direct-pipeline"
+            ])
+            .is_err()
+        );
+        assert!(parse(&["--unknown"]).is_err());
+    }
 
     #[test]
     fn replay_boundary_rejects_a_different_generated_prefix() {

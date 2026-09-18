@@ -1,0 +1,184 @@
+{
+  "results": [
+    {
+      "check": "history-regression",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--bin",
+        "linear_mtp_state_oracle_probe"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 7.767208041012054,
+      "raw_log_sha256": "2094d696db331110105aad602890bf37f6624cb4bf02434401feb10758c93fc5",
+      "excerpt": false,
+      "published_log_sha256": "d3a7694f7e775911aae8edb1c1efe3e41c6723c01ef6c1271ab81e816c2963fa"
+    },
+    {
+      "check": "fmt",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 2.0394598340208177,
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "excerpt": false,
+      "published_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "check": "strict-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 101,
+      "elapsed_seconds": 10.535947791999206,
+      "raw_log_sha256": "8274bda229bd3fd44e07c55e22d0657a9598ec2e90a4ee9d496a0c26880c729c",
+      "excerpt": true,
+      "published_log_sha256": "3a13123005d9ae701364d26a97369550e08fe0ea63d99340d6d91e3cc2dbbaef"
+    },
+    {
+      "check": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+        "--force-warn",
+        "clippy::unwrap-used",
+        "--force-warn",
+        "clippy::expect-used",
+        "--force-warn",
+        "clippy::panic",
+        "--force-warn",
+        "clippy::dbg-macro",
+        "--force-warn",
+        "clippy::large-enum-variant"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 38.862074540986214,
+      "raw_log_sha256": "da72a013bb41dbdcc124b3aa61a284a3f32424413424f5630a1bfa118dd61cc1",
+      "excerpt": true,
+      "published_log_sha256": "a3759f3ce81ea88f4ed646430a95f7f0c2cced3a3c7eaa524bbe6c5a6e87cb25"
+    },
+    {
+      "check": "rust",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 185.64645670898608,
+      "raw_log_sha256": "40a6e61420dbe264da4e1a01b13b919b9c12cdff8ee5383d94e35d71191fbf19",
+      "excerpt": true,
+      "published_log_sha256": "528aef07e26a86a6587a0768028bfa0923ee925643d43cfe456b34e0e86ae53f"
+    },
+    {
+      "check": "maturin",
+      "command": [
+        "maturin",
+        "develop"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 76.3744960409822,
+      "raw_log_sha256": "d9185fa5de5910e1fa1edc11c13d0ee322921ea8fdccf842853295d2205b49c7",
+      "excerpt": false,
+      "published_log_sha256": "b3d56296fa8b767b0a2a2c05fee65f01a0f48dc33ed66606b090acb0fdc297a7"
+    },
+    {
+      "check": "scripts",
+      "command": [
+        "bash",
+        "scripts/check-scripts.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 16.262810082989745,
+      "raw_log_sha256": "26693d4c23dea5026b1f6dc3f41a92f3792d70f9ff7d6b677935d73ada268a67",
+      "excerpt": true,
+      "published_log_sha256": "da240397e1fa35455b39381894c42c051eb27d578af7e55a0ffe31ba4f2bdfa4"
+    },
+    {
+      "check": "python",
+      "command": [
+        "<repository>/.venv/bin/python",
+        "-m",
+        "pytest",
+        "python/tests",
+        "-q"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 6.733555125014391,
+      "raw_log_sha256": "5680241beb588b50ecfd4186170a3fbdf3c8d823f5d3546a93a2513a5f40ba98",
+      "excerpt": false,
+      "published_log_sha256": "5680241beb588b50ecfd4186170a3fbdf3c8d823f5d3546a93a2513a5f40ba98"
+    },
+    {
+      "check": "qwen27b",
+      "command": [
+        "<repository>/.venv/bin/python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.038400417019147426,
+      "raw_log_sha256": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+      "excerpt": false,
+      "published_log_sha256": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c"
+    },
+    {
+      "check": "flash_next",
+      "command": [
+        "<repository>/.venv/bin/python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.036399709002580494,
+      "raw_log_sha256": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+      "excerpt": false,
+      "published_log_sha256": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707"
+    },
+    {
+      "check": "claims",
+      "command": [
+        "<repository>/.venv/bin/python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.1282088330190163,
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "excerpt": false,
+      "published_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "source_before": {
+    "crates/ax-engine-mlx/src/bin/linear_mtp_state_oracle_probe.rs": "01bc3e2bbfaff5f2bdfcf742221f29171e863ee11191fa572382116f45a4049b",
+    "crates/ax-engine-mlx/src/runner/mod.rs": "f4b0d067a4c8fb4ac03a0eaa9bbe02b16af34d0bfbe5569892048a509a56eb28",
+    "crates/ax-engine-mlx/src/ngram_accel.rs": "a390db47d6c1de5faa75dbc24b394dbc2be767c66e5766b15b5200dd3ccc487c"
+  },
+  "source_after": {
+    "crates/ax-engine-mlx/src/bin/linear_mtp_state_oracle_probe.rs": "01bc3e2bbfaff5f2bdfcf742221f29171e863ee11191fa572382116f45a4049b",
+    "crates/ax-engine-mlx/src/runner/mod.rs": "f4b0d067a4c8fb4ac03a0eaa9bbe02b16af34d0bfbe5569892048a509a56eb28",
+    "crates/ax-engine-mlx/src/ngram_accel.rs": "a390db47d6c1de5faa75dbc24b394dbc2be767c66e5766b15b5200dd3ccc487c"
+  }
+}

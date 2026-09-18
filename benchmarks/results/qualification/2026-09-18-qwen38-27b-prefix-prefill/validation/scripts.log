@@ -1,0 +1,151 @@
+==> QA: py_compile harness modules
+==> QA: validate question bank
+Bank OK: 79 prompts, 14 categories
+==> QA: unit tests (sampling, checkers, matrix, surface, embedding, multimodal)
+test_hash_changes_with_evidence (scripts.test_audit_qa_retest.RetestAuditTests.test_hash_changes_with_evidence) ... ok
+test_recovery_preserves_primary_and_reports_partial_recall (scripts.test_audit_qa_retest.RetestAuditTests.test_recovery_preserves_primary_and_reports_partial_recall) ... ok
+test_rejects_different_question_key (scripts.test_audit_qa_retest.RetestAuditTests.test_rejects_different_question_key) ... ok
+test_rejects_missing_or_duplicate_records (scripts.test_audit_qa_retest.RetestAuditTests.test_rejects_missing_or_duplicate_records) ... ok
+test_rejects_tampered_grade (scripts.test_audit_qa_retest.RetestAuditTests.test_rejects_tampered_grade) ... ok
+test_case_sensitive_match (scripts.test_qa_sampling.ExactAnswerTests.test_case_sensitive_match) ... ok
+test_exact_answer_aliases (scripts.test_qa_sampling.ExactAnswerTests.test_exact_answer_aliases) ... ok
+test_exact_answer_fails_when_missing (scripts.test_qa_sampling.ExactAnswerTests.test_exact_answer_fails_when_missing) ... ok
+test_exact_answer_normalizes_nbsp (scripts.test_qa_sampling.ExactAnswerTests.test_exact_answer_normalizes_nbsp)
+gpt-oss-20b emitted NBSP between tokens for instruction_three_colors. ... ok
+test_exact_answer_passes_substring_for_long (scripts.test_qa_sampling.ExactAnswerTests.test_exact_answer_passes_substring_for_long) ... ok
+test_full_match_rejects_prose (scripts.test_qa_sampling.ExactAnswerTests.test_full_match_rejects_prose) ... ok
+test_keywords_are_soft_and_do_not_fail_hard_pass (scripts.test_qa_sampling.ExactAnswerTests.test_keywords_are_soft_and_do_not_fail_hard_pass) ... ok
+test_run_all_checks_includes_exact_answer (scripts.test_qa_sampling.ExactAnswerTests.test_run_all_checks_includes_exact_answer) ... ok
+test_short_token_does_not_match_inside_words (scripts.test_qa_sampling.ExactAnswerTests.test_short_token_does_not_match_inside_words) ... ok
+test_bank_is_larger_than_default_sample (scripts.test_qa_sampling.QaSamplingTests.test_bank_is_larger_than_default_sample) ... ok
+test_bank_validates_clean (scripts.test_qa_sampling.QaSamplingTests.test_bank_validates_clean) ... ok
+test_different_seeds_usually_differ (scripts.test_qa_sampling.QaSamplingTests.test_different_seeds_usually_differ) ... ok
+test_explicit_ids (scripts.test_qa_sampling.QaSamplingTests.test_explicit_ids) ... ok
+test_sample_is_deterministic_with_seed (scripts.test_qa_sampling.QaSamplingTests.test_sample_is_deterministic_with_seed) ... ok
+test_stratified_covers_multiple_categories (scripts.test_qa_sampling.QaSamplingTests.test_stratified_covers_multiple_categories) ... ok
+test_unique_prompt_ids_in_bank (scripts.test_qa_sampling.QaSamplingTests.test_unique_prompt_ids_in_bank) ... ok
+test_json_report_schema (scripts.test_qa_checkers.JsonReportTests.test_json_report_schema) ... ok
+test_regex_requires_all_patterns (scripts.test_qa_checkers.QaCheckerTests.test_regex_requires_all_patterns) ... ok
+test_run_all_checks_fails_visible_replacement_chars (scripts.test_qa_checkers.QaCheckerTests.test_run_all_checks_fails_visible_replacement_chars) ... ok
+test_unicode_replacement_checker_fails_corrupt_text (scripts.test_qa_checkers.QaCheckerTests.test_unicode_replacement_checker_fails_corrupt_text) ... ok
+test_unicode_replacement_checker_passes_clean_text (scripts.test_qa_checkers.QaCheckerTests.test_unicode_replacement_checker_passes_clean_text) ... ok
+test_build_server_cmd_embed_and_multimodal_disable_ngram (scripts.test_run_qa_matrix.RunQaMatrixTests.test_build_server_cmd_embed_and_multimodal_disable_ngram) ... ok
+test_build_server_cmd_modes (scripts.test_run_qa_matrix.RunQaMatrixTests.test_build_server_cmd_modes)
+Regression: MTP must not disable ngram; direct must; ngram neither MTP flag. ... ok
+test_classify_engine_fail_detects_panic_and_null (scripts.test_run_qa_matrix.RunQaMatrixTests.test_classify_engine_fail_detects_panic_and_null) ... ok
+test_live_route_requires_completed_draft_and_verify (scripts.test_run_qa_matrix.RunQaMatrixTests.test_live_route_requires_completed_draft_and_verify) ... ok
+test_load_matrix_parses_ok_lines_and_modes (scripts.test_run_qa_matrix.RunQaMatrixTests.test_load_matrix_parses_ok_lines_and_modes) ... ok
+test_mtp_telemetry_active_requires_positive_signal (scripts.test_run_qa_matrix.RunQaMatrixTests.test_mtp_telemetry_active_requires_positive_signal) ... ok
+test_package_looks_like_mtp_sidecar_and_assistant (scripts.test_run_qa_matrix.RunQaMatrixTests.test_package_looks_like_mtp_sidecar_and_assistant) ... ok
+test_package_looks_like_multimodal (scripts.test_run_qa_matrix.RunQaMatrixTests.test_package_looks_like_multimodal) ... ok
+test_port_preflight_preserves_listener_and_allows_time_wait (scripts.test_run_qa_matrix.RunQaMatrixTests.test_port_preflight_preserves_listener_and_allows_time_wait) ... ok
+test_write_inventory (scripts.test_run_qa_matrix.RunQaMatrixTests.test_write_inventory) ... ok
+test_cancel_accepts_http_201_submit (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_cancel_accepts_http_201_submit)
+Server returns 201 Created for /v1/requests submit. ... ok
+test_cancel_skipped_on_404 (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_cancel_skipped_on_404) ... ok
+test_cancel_success_path (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_cancel_success_path) ... ok
+test_chat_completion_payload_with_tools (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_chat_completion_payload_with_tools) ... ok
+test_concurrent_chat_all_ok (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_concurrent_chat_all_ok) ... ok
+test_extract_chat_content (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_extract_chat_content) ... ok
+test_media_policy_probes (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_media_policy_probes) ... ok
+test_multimodal_hard_fail_when_capability_claimed (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_multimodal_hard_fail_when_capability_claimed) ... ok
+test_multimodal_soft_skip_on_400_without_capability (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_multimodal_soft_skip_on_400_without_capability) ... ok
+test_png_fixture_crc_and_pixel_data (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_png_fixture_crc_and_pixel_data) ... ok
+test_sse_and_normalize_helpers (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_sse_and_normalize_helpers) ... ok
+test_stream_parity_ok (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_stream_parity_ok) ... ok
+test_surface_report_hard_pass_with_soft_skip (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_surface_report_hard_pass_with_soft_skip) ... ok
+test_tiny_png_data_url (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_tiny_png_data_url) ... ok
+test_tools_schema_fails_on_500 (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_tools_schema_fails_on_500) ... ok
+test_tools_schema_soft_skip_on_422 (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_tools_schema_soft_skip_on_422) ... ok
+test_video_capability_requires_real_success (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_video_capability_requires_real_success) ... ok
+test_default_batch_threshold_ignores_8b_inside_snapshot_hash (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_default_batch_threshold_ignores_8b_inside_snapshot_hash) ... ok
+test_default_batch_threshold_looser_for_qwen8b (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_default_batch_threshold_looser_for_qwen8b) ... ok
+test_infer_model_kind (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_infer_model_kind) ... ok
+test_infer_pooling (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_infer_pooling) ... ok
+test_resolve_eos_from_tokenizer_config (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_resolve_eos_from_tokenizer_config) ... ok
+test_resolve_eos_prefers_im_end_over_legacy_s (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_resolve_eos_prefers_im_end_over_legacy_s)
+Regression: Qwen configs use <|im_end|>; </s> must not win first. ... ok
+test_average_precision_perfect (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_average_precision_perfect) ... ok
+test_cosine_identical (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_cosine_identical) ... ok
+test_cosine_orthogonal (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_cosine_orthogonal) ... ok
+test_hit_and_mrr (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_hit_and_mrr) ... ok
+test_is_finite (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_is_finite) ... ok
+test_l2_norm (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_l2_norm) ... ok
+test_rank_by_cosine (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_rank_by_cosine) ... ok
+test_empty_rejected (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_empty_rejected) ... ok
+test_extract_vectors_sorts_by_index (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_extract_vectors_sorts_by_index) ... ok
+test_pair_classification_mock (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_pair_classification_mock) ... ok
+test_probe_api_shape_ok (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_probe_api_shape_ok) ... ok
+test_probe_l2_normalized (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_probe_l2_normalized) ... ok
+test_report_schema_v2 (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_report_schema_v2) ... ok
+test_retrieval_mock (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_retrieval_mock) ... ok
+test_semantic_order_majority (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_semantic_order_majority) ... ok
+test_image_color_content_match (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_image_color_content_match) ... ok
+test_model_advertises_image_from_capabilities (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_model_advertises_image_from_capabilities) ... ok
+test_multimodal_soft_skip_only_without_require (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_multimodal_soft_skip_only_without_require) ... ok
+test_remote_media_must_reject (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_remote_media_must_reject) ... ok
+test_run_multimodal_smoke_policy_only_with_mocks (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_run_multimodal_smoke_policy_only_with_mocks) ... ok
+test_sse_extract_and_normalize (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_sse_extract_and_normalize) ... ok
+test_video_must_reject (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_video_must_reject) ... ok
+test_package_detection_vision_config (scripts.test_qa_multimodal_probes.MultimodalPackageTests.test_package_detection_vision_config) ... ok
+test_solid_png_header (scripts.test_qa_multimodal_probes.MultimodalPackageTests.test_solid_png_header) ... ok
+
+----------------------------------------------------------------------
+Ran 83 tests in 0.041s
+
+OK
+==> QA: offline gate OK
+............................................................................................................................................    [reference] warmup x 1
+    [ax-engine-py] warmup x 1
+    [reference] trial 1: 1264201.7 chunks/s  1264201.7 tok/s  p95=0.0 ms
+[middle omitted; raw hash in validation.json]
+[skip] no current linear-attention pack promotion artifacts declared
+[skip] no current Qwen post-input route promotion artifacts declared
+[skip] no current MLA prefix-restore evidence artifacts declared
+[skip] no current MLA prefix-restore retirement artifacts declared
+README performance charts are up to date
+ok: no MLXcel-specific Markdown under docs/
+Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+alias: qwen3.8-27b:axq
+repo:  AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP
+rev:   3e290738e96972307c6aeb9934ab170ca0eae1c1
+host:  Mac mini M4 Pro, 64 GB
+ci:    dry-run only; do not mount 27B weights on CI
+release-blocking:
+  - ax-engine doctor ready on the pinned snapshot
+  - QA surface: direct + MTP for qwen3.8-27b
+  - no silent MTP direct-fallback
+  - paired 64-token direct/MTP greedy probe is identical
+  - clean worktree + matching engine commit
+campaign-only:
+  - MTP Tier 2 promotion
+  - 8h/72h endurance
+  - long-context decode-at-depth
+  - peer ranking
+  - multi-model add-mode
+  - P0 multimodal quality
+commands:
+  doctor: ax-engine doctor --mlx-model-artifacts-dir $MODEL_DIR --json
+  serve: ax-engine serve qwen3.8-27b:axq
+  qa_inventory: OK|direct|qwen3.8-27b:axq|$MODEL_DIR
+OK|mtp|qwen3.8-27b:axq|$MODEL_DIR
+  stack: python3 scripts/bench_mlx_inference_stack.py --model-repo-id AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP --model-dir $MODEL_DIR
+Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+family: qwen4_exp
+alias:  not registered for the MXFP4 target
+repo:   AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP
+host:   MacBook Pro M5 Max, 128 GB
+target admission: MXFP4/group32 blocked pending native paging implementation
+existing affine admission: 4-bit/group64 and 6-bit/group64; not target qualification
+fail-closed: convert must not remap onto qwen3_5
+ok: no TurboQuant references outside the historical allowlist
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.002s
+
+OK
+....................
+----------------------------------------------------------------------
+Ran 20 tests in 0.325s
+
+OK

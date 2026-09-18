@@ -1,0 +1,151 @@
+   Compiling mlx-sys v7.4.0 (<repository>/crates/mlx-sys)
+   Compiling ax-engine-mlx v7.4.0 (<repository>/crates/ax-engine-mlx)
+    Checking ax-engine-core v7.4.0 (<repository>/crates/ax-engine-core)
+   Compiling ax-engine-microbench v7.4.0 (<repository>/crates/ax-engine-microbench)
+   Compiling ax-engine-sdk v7.4.0 (<repository>/crates/ax-engine-sdk)
+   Compiling ax-engine-pipeline v7.4.0 (<repository>/crates/ax-engine-pipeline)
+   Compiling ax-engine-bench v7.4.0 (<repository>/crates/ax-engine-bench)
+   Compiling ax-engine-server v7.4.0 (<repository>/crates/ax-engine-server)
+   Compiling ax-engine-py v7.4.0 (<repository>/crates/ax-engine-py)
+warning: `panic` should not be present in production code
+   --> crates/mlx-sys/build.rs:115:9
+    |
+115 | /         panic!(
+116 | |             "No usable MLX installation found: checked MLX_LIB_DIR, the repo \
+117 | |              .venv, the active Python's mlx package, `brew --prefix mlx`, and \
+118 | |              {prefix}. Install MLX with `pip install mlx=={}` (preferred — \
+...   |
+121 | |             pinned_mlx_version()
+122 | |         );
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#panic
+    = note: requested on the command line with `--force-warn clippy::panic`
+    = note: the `clippy::panic` lint ignores `-D warnings`
+
+warning: used `expect()` on a `Result` value
+   --> crates/mlx-sys/build.rs:231:9
+    |
+231 |         std::env::var("CARGO_MANIFEST_DIR").expect("Cargo must provide CARGO_MANIFEST_DIR");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+    = note: requested on the command line with `--force-warn clippy::expect-used`
+    = note: the `clippy::expect_used` lint ignores `-D warnings`
+
+warning: `panic` should not be present in production code
+   --> crates/mlx-sys/build.rs:234:35
+    |
+234 |         .unwrap_or_else(|message| panic!("{message}; restore mlx.version before building"))
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#panic
+
+warning: `panic` should not be present in production code
+   --> crates/mlx-sys/build.rs:272:9
+    |
+272 | ...   panic!("cannot read MLX version identity from {}/mlx/version.h; refusing to link an unidentified runtime", dirs.mlx_include_dir)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#panic
+
+warning: `panic` should not be present in production code
+   --> crates/mlx-sys/build.rs:286:13
+    |
+286 | /             panic!(
+287 | |                 "mlx-sys resolved MLX to the Homebrew formula at {} — refusing to link it. \
+288 | |                  Homebrew's build derives its deployment target from the macOS minor version, \
+289 | |                  which truncates to 26.0 on macOS 26.x hosts and silently compiles out the NAX \
+...   |
+294 | |                 pin.expected_header_version()
+295 | |             );
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#panic
+
+warning: `panic` should not be present in production code
+   --> crates/mlx-sys/build.rs:309:13
+    |
+309 | /             panic!(
+310 | |                 "mlx-sys resolved MLX {version} from {} but the repo pins {expected} \
+311 | |                  (mlx.version). Use the admitted runtime ({hint}), or — to deliberately \
+312 | |                  test a different MLX — set AX_MLX_VERSION_OVERRIDE=1 and rerun the qmm \
+...   |
+315 | |                 dirs.mlx_lib_dir
+316 | |             );
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#panic
+
+warning: used `expect()` on a `Result` value
+   --> crates/mlx-sys/build.rs:391:20
+    |
+391 |       let bindings = bindgen::Builder::default()
+    |  ____________________^
+392 | |         .header("native/ax_shim.h")
+393 | |         .clang_arg(format!("-I{}", native_dir.display()))
+394 | |         .allowlist_file(r".*native/ax_shim\.h")
+...   |
+405 | |         .generate()
+406 | |         .expect("Unable to generate ax_shim bindings");
+    | |______________________________________________________^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+
+warning: used `unwrap()` on a `Result` value
+   --> crates/mlx-sys/build.rs:408:34
+    |
+408 |     let out_path = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+[middle omitted; raw hash in validation.json]
+   = note: if this value is an `Err`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+
+warning: `ax-engine-pipeline` (bin "ax-engine-pipeline-rank" test) generated 1 warning (1 duplicate)
+warning: `ax-engine-server` (bin "ax-engine-server" test) generated 1464 warnings (4 duplicates)
+warning: used `expect()` on an `Option` value
+   --> crates/ax-engine-microbench/src/bin/moe_downproj_fusion_probe.rs:174:5
+    |
+174 | /     outputs
+175 | |         .pop()
+176 | |         .expect("weighted-sum kernel must produce output")
+    | |__________________________________________________________^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+    = note: requested on the command line with `--force-warn clippy::expect-used`
+    = note: the `clippy::expect_used` lint ignores `-D warnings`
+
+warning: used `expect()` on an `Option` value
+   --> crates/ax-engine-microbench/src/bin/moe_downproj_fusion_probe.rs:219:5
+    |
+219 | /     outputs
+220 | |         .pop()
+221 | |         .expect("residual weighted-sum kernel must produce output")
+    | |___________________________________________________________________^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+
+warning: `ax-engine-microbench` (bin "moe-downproj-fusion-probe" test) generated 2 warnings
+warning: used `expect()` on an `Option` value
+   --> crates/ax-engine-microbench/src/bin/rmsnorm_fused_probe.rs:147:5
+    |
+147 | /     outputs
+148 | |         .into_iter()
+149 | |         .next()
+150 | |         .expect("kernel must produce one output")
+    | |_________________________________________________^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+    = note: requested on the command line with `--force-warn clippy::expect-used`
+    = note: the `clippy::expect_used` lint ignores `-D warnings`
+
+warning: `ax-engine-microbench` (bin "rmsnorm-fused-probe") generated 1 warning
+warning: `ax-engine-microbench` (bin "async-eval-overlap-probe") generated 4 warnings (4 duplicates)
+warning: `ax-engine-microbench` (bin "moe-downproj-fusion-probe") generated 2 warnings (2 duplicates)
+warning: `ax-engine-microbench` (bin "rmsnorm-fused-probe" test) generated 1 warning (1 duplicate)
+warning: `ax-engine-microbench` (bin "residual-rmsnorm-fused-probe" test) generated 2 warnings (2 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 38.74s
